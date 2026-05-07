@@ -1,0 +1,24 @@
+FROM golang:1.22-alpine
+
+WORKDIR /var/www/finance/go
+
+# Базовые утилиты. Разнесли с установкой air по разным RUN, чтобы
+# проблема с air не валила всю сборку.
+RUN apk add --no-cache git bash curl ca-certificates
+
+# air — hot-reload для Go. Ставим через официальный install.sh
+# (он качает бинарь, а не собирает через go install — это надёжнее
+# в локальной среде, где go-модули могут не резолвиться). Если
+# установка не удалась — контейнер всё равно поднимется через `go run`
+# (см. CMD ниже).
+RUN curl -sSfL https://raw.githubusercontent.com/air-verse/air/master/install.sh \
+      | sh -s -- -b /usr/local/bin \
+    || echo "[warn] air install failed, will fallback to plain 'go run'"
+
+ENV PATH=/usr/local/bin:/go/bin:$PATH \
+    GOFLAGS=-mod=mod
+
+EXPOSE 8080
+
+# Если air есть и .air.toml существует — hot-reload; иначе обычный go run.
+CMD ["sh", "-c", "if command -v air >/dev/null 2>&1 && [ -f .air.toml ]; then exec air; else exec go run ./cmd/api; fi"]

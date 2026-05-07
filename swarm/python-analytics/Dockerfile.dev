@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+WORKDIR /var/www/analytics
+
+RUN apt-get update -qq \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# Зависимости устанавливаем по факту, чтобы pip-кеш слоя не протухал
+# при добавлении новых пакетов аналитиком — он сам делает pip install в pyproject.
+COPY python/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt || true
+
+EXPOSE 8090
+
+CMD ["python", "-m", "app.main"]

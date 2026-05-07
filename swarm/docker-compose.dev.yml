@@ -1,0 +1,143 @@
+# Finance Cabinet — dev-контур.
+#
+# Запуск:  cd swarm && make up
+#
+# Сети:
+#   - finance_dev_network — общая сеть для всех сервисов dev-контура
+#   - data_net — приватная сеть postgres ↔ python-analytics
+#                (python-сandbox не должен ходить в Go и наоборот)
+#
+# Имена контейнеров фиксируем (container_name), чтобы make-таргеты
+# работали детерминированно: `docker exec -it swarm-go-api-1 ...`
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_USER=finance
+      - POSTGRES_PASSWORD=finance
+      - POSTGRES_DB=finance
+      - PGDATA=/var/lib/postgresql/data/finance/
+    restart: on-failure
+    volumes:
+      - db_data:/var/lib/postgresql/data:rw
+      - ../migrations:/docker-entrypoint-initdb.d/migrations:ro
+      - ./init-db.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+    ports:
+      - "55432:5432"
+    networks:
+      - finance_dev_network
+      - data_net
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+    volumes:
+      - redis_data:/data
+    networks:
+      - finance_dev_network
+    ports:
+      - "63791:6379"
+
+  go-api:
+    build:
+      context: ..
+      dockerfile: swarm/go-api/Dockerfile.dev
+    working_dir: /var/www/finance/go
+    volumes:
+      - ../go:/var/www/finance/go
+      - go_modcache:/go/pkg/mod
+    environment:
+      - HTTP_ADDR=:8080
+      - POSTGRES_URL=postgres://finance:finance@postgres:5432/finance?sslmode=disable
+      - REDIS_ADDR=redis:6379
+      - CORS_ORIGINS=http://finance.local,http://finance.local:3001,http://localhost:3001,http://localhost
+    restart: on-failure
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - finance_dev_network
+    ports:
+      - "8081:8080"
+
+  nuxt:
+    build:
+      context: ..
+      dockerfile: swarm/nuxt/Dockerfile.dev
+    working_dir: /var/www/nuxt_app
+    volumes:
+      - ../nuxt:/var/www/nuxt_app
+      - nuxt_node_modules:/var/www/nuxt_app/node_modules
+    env_file:
+      - ../.env
+    environment:
+      - NUXT_HOST=0.0.0.0
+      - NUXT_PORT=3000
+      - CHOKIDAR_USEPOLLING=true
+      # Server-side запросы из Nuxt (callback B24 и пр.) ходят в Go-API напрямую
+      # через docker-сеть, минуя nginx — иначе нужен отдельный nginx-server для
+      # имени хоста "go-api"/"nginx". Public-fetch с фронта идёт через
+      # NUXT_PUBLIC_API_BASE → api.finance.local.
+      - NUXT_INTERNAL_API_BASE=http://go-api:8080
+    ports:
+      - "3001:3000"
+    depends_on:
+      - go-api
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - finance_dev_network
+
+  python-analytics:
+    build:
+      context: ..
+      dockerfile: swarm/python-analytics/Dockerfile.dev
+    working_dir: /var/www/analytics
+    volumes:
+      - ../python:/var/www/analytics
+    environment:
+      - PORT=8090
+      - ANALYTICS_DATABASE_URL=postgres://analytics_ro:analytics_ro@postgres:5432/finance?sslmode=disable
+    restart: on-failure
+    depends_on:
+      - postgres
+    networks:
+      - data_net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile.dev
+    ports:
+      - "80:80"
+    depends_on:
+      go-api:
+        condition: service_started
+      nuxt:
+        condition: service_healthy
+    networks:
+      - finance_dev_network
+
+volumes:
+  db_data:
+  redis_data:
+  nuxt_node_modules:
+  go_modcache:
+
+networks:
+  finance_dev_network:
+    driver: bridge
+  data_net:
+    driver: bridge

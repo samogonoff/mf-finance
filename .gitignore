@@ -1,0 +1,23 @@
+.env
+.env.local
+*.log
+
+# Node
+node_modules/
+.nuxt/
+.output/
+dist/
+
+# Go
+go/bin/
+go/vendor/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+/var
+/go/.tmp

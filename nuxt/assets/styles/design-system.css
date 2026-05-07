@@ -1,0 +1,305 @@
+/**
+ * Finance Cabinet Design System
+ *
+ * Strict, dense, data-first. Spec:
+ *   - монохром нейтралы (графит) + узкий accent indigo
+ *   - JetBrains Mono для всех чисел (tabular-nums)
+ *   - hairline borders (1px), без теней по умолчанию
+ *   - плотность ↑ (13px base, gap 8/12px)
+ *   - чёткая пара semantic для дельт: green/red/amber
+ *
+ * Все компоненты должны использовать только переменные из этого файла —
+ * это позволит позднее ввести бренд-тему без правок CSS.
+ */
+
+html {
+  scrollbar-gutter: stable;
+}
+
+:root,
+html.theme-light,
+body.theme-light {
+  /* === Поверхности === */
+  --bg-app: #f4f5f7;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #fafbfc;
+  --bg-surface-3: #f0f2f5;
+  --bg-elevated: #ffffff;
+  --bg-overlay: rgba(15, 23, 42, 0.45);
+  --bg-tonal: #eef0f3;
+
+  /* === Текст === */
+  --text-strong: #0b1220;
+  --text-primary: #1f2937;
+  --text-secondary: #5b6573;
+  --text-muted: #8b94a3;
+  --text-inverse: #ffffff;
+  --text-link: #3730a3;
+
+  /* === Границы === */
+  --border: #e3e6ea;
+  --border-strong: #c8ccd4;
+  --border-focus: #4338ca;
+
+  /* === Акцент (узкий, только для активных состояний / CTA) === */
+  --accent: #4338ca;
+  --accent-hover: #3730a3;
+  --accent-active: #312e81;
+  --accent-soft: #eef0fb;
+  --accent-fg: #ffffff;
+
+  /* === Семантика для финансовых дельт === */
+  --pos: #0a7f3f;            /* доход / рост */
+  --pos-soft: #e6f4ec;
+  --pos-strong: #075e2e;
+  --neg: #b42318;            /* расход / падение */
+  --neg-soft: #fbeae8;
+  --neg-strong: #8a1c12;
+  --warn: #b76e00;           /* просрочка, alert */
+  --warn-soft: #fdf3e3;
+  --info: #0b5cad;
+  --info-soft: #e7f0fa;
+
+  /* === Тени (минимально, только для оверлеев) === */
+  --shadow-pop: 0 6px 20px rgba(15, 23, 42, 0.08);
+  --shadow-modal: 0 20px 50px rgba(15, 23, 42, 0.18);
+  --shadow-focus: 0 0 0 3px rgba(67, 56, 202, 0.18);
+
+  /* === Типографика === */
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Menlo",
+    "Cascadia Mono", "Consolas", monospace;
+
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 34px;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  --lh-tight: 1.2;
+  --lh-normal: 1.45;
+  --lh-relaxed: 1.6;
+
+  /* === Spacing (компактнее MP) === */
+  --sp-1: 2px;
+  --sp-2: 4px;
+  --sp-3: 6px;
+  --sp-4: 8px;
+  --sp-5: 12px;
+  --sp-6: 16px;
+  --sp-7: 20px;
+  --sp-8: 24px;
+  --sp-9: 32px;
+  --sp-10: 40px;
+
+  /* === Радиусы (меньше, строже) === */
+  --rd-2: 2px;
+  --rd-3: 4px;
+  --rd-4: 6px;
+  --rd-5: 8px;
+  --rd-pill: 999px;
+
+  /* === Транзишены === */
+  --t-fast: 0.1s ease;
+  --t-base: 0.16s ease;
+  --t-slow: 0.24s ease;
+
+  /* === Z-index === */
+  --z-base: 1;
+  --z-sticky: 10;
+  --z-dropdown: 110;
+  --z-drawer: 800;
+  --z-modal: 1000;
+  --z-toast: 1100;
+}
+
+/* Тёмная тема: финансовая «терминальная», без синюшности */
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) {
+    --bg-app: #0a0e14;
+    --bg-surface: #11161e;
+    --bg-surface-2: #0d1219;
+    --bg-surface-3: #161c25;
+    --bg-elevated: #1a212c;
+    --bg-tonal: #161c25;
+
+    --text-strong: #f1f5f9;
+    --text-primary: #d8dee7;
+    --text-secondary: #8b94a3;
+    --text-muted: #5b6573;
+    --text-inverse: #0b1220;
+    --text-link: #a5b4fc;
+
+    --border: #1e252f;
+    --border-strong: #2a323d;
+    --border-focus: #818cf8;
+
+    --accent: #818cf8;
+    --accent-hover: #a5b4fc;
+    --accent-active: #c7d2fe;
+    --accent-soft: rgba(129, 140, 248, 0.14);
+
+    --pos: #34d399;
+    --pos-soft: rgba(52, 211, 153, 0.14);
+    --pos-strong: #6ee7b7;
+    --neg: #f87171;
+    --neg-soft: rgba(248, 113, 113, 0.14);
+    --neg-strong: #fca5a5;
+    --warn: #fbbf24;
+    --warn-soft: rgba(251, 191, 36, 0.14);
+    --info: #60a5fa;
+    --info-soft: rgba(96, 165, 250, 0.14);
+
+    --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --shadow-modal: 0 20px 50px rgba(0, 0, 0, 0.65);
+    --shadow-focus: 0 0 0 3px rgba(129, 140, 248, 0.3);
+  }
+}
+
+html.theme-dark,
+body.theme-dark {
+  --bg-app: #0a0e14;
+  --bg-surface: #11161e;
+  --bg-surface-2: #0d1219;
+  --bg-surface-3: #161c25;
+  --bg-elevated: #1a212c;
+  --bg-tonal: #161c25;
+
+  --text-strong: #f1f5f9;
+  --text-primary: #d8dee7;
+  --text-secondary: #8b94a3;
+  --text-muted: #5b6573;
+  --text-inverse: #0b1220;
+  --text-link: #a5b4fc;
+
+  --border: #1e252f;
+  --border-strong: #2a323d;
+  --border-focus: #818cf8;
+
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-active: #c7d2fe;
+  --accent-soft: rgba(129, 140, 248, 0.14);
+
+  --pos: #34d399;
+  --pos-soft: rgba(52, 211, 153, 0.14);
+  --pos-strong: #6ee7b7;
+  --neg: #f87171;
+  --neg-soft: rgba(248, 113, 113, 0.14);
+  --neg-strong: #fca5a5;
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.14);
+  --info: #60a5fa;
+  --info-soft: rgba(96, 165, 250, 0.14);
+
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0 20px 50px rgba(0, 0, 0, 0.65);
+  --shadow-focus: 0 0 0 3px rgba(129, 140, 248, 0.3);
+}
+
+/* ==============================
+ * База
+ * ============================== */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  color: var(--text-primary);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* В финансовом UI мы много раз пишем числа в монотипе с табличными цифрами.
+   Класс .num — для любых чисел, .num-strong — крупные/итоговые. */
+.num,
+.num-strong,
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  letter-spacing: -0.01em;
+}
+
+.num-strong {
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+}
+
+/* Утилиты направлений изменений */
+.delta-pos { color: var(--pos); }
+.delta-neg { color: var(--neg); }
+.delta-warn { color: var(--warn); }
+.delta-zero { color: var(--text-muted); }
+
+/* Семантические бэкграунды для бэйджей */
+.bg-pos { background: var(--pos-soft); color: var(--pos-strong); }
+.bg-neg { background: var(--neg-soft); color: var(--neg-strong); }
+.bg-warn { background: var(--warn-soft); color: var(--warn); }
+.bg-info { background: var(--info-soft); color: var(--info); }
+
+/* Заголовки страниц */
+h1, h2, h3, h4 {
+  margin: 0;
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+  letter-spacing: -0.01em;
+}
+
+h1 { font-size: var(--fs-2xl); }
+h2 { font-size: var(--fs-xl); }
+h3 { font-size: var(--fs-lg); }
+h4 { font-size: var(--fs-md); }
+
+/* Скроллбары — узкие, нейтральные */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--rd-pill);
+  border: 2px solid var(--bg-app);
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Селекшен — не кричит */
+::selection {
+  background: var(--accent-soft);
+  color: var(--accent-active);
+}
+
+/* Layout: full-width для финансовых дашбордов.
+   Финансисты работают на больших мониторах — каждый пиксель важен.
+   .layout-width применяется только к узким страницам (login, error).
+   Основной контент занимает 100% ширины с боковой навигацией. */
+.layout-width {
+  max-width: 560px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 0 var(--sp-7);
+}
+.layout-fluid {
+  width: 100%;
+  padding: 0 var(--sp-7);
+}
+@media (min-width: 1920px) {
+  .layout-fluid { padding: 0 var(--sp-9); }
+}
+@media (max-width: 768px) {
+  .layout-width,
+  .layout-fluid { padding: 0 var(--sp-5); }
+}
