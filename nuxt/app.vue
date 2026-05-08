@@ -11,25 +11,29 @@
       </div>
 
       <nav class="nav-list">
-        <NuxtLink to="/" class="nav-item" exact-active-class="router-link-active">
+        <NuxtLink v-if="!isCostOnly" to="/" class="nav-item" exact-active-class="router-link-active">
           <Icon name="lucide:layout-dashboard" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Дашборд</span>
         </NuxtLink>
-        <NuxtLink to="/operations" class="nav-item">
+        <NuxtLink v-if="!isCostOnly" to="/operations" class="nav-item">
           <Icon name="lucide:arrow-right-left" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Операции</span>
         </NuxtLink>
-        <NuxtLink to="/reports" class="nav-item">
+        <NuxtLink v-if="!isCostOnly" to="/reports" class="nav-item">
           <Icon name="lucide:file-bar-chart-2" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Отчёты</span>
         </NuxtLink>
-        <NuxtLink to="/counterparties" class="nav-item">
+        <NuxtLink v-if="!isCostOnly" to="/counterparties" class="nav-item">
           <Icon name="lucide:users" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Контрагенты</span>
         </NuxtLink>
-        <NuxtLink to="/analytics" class="nav-item">
+        <NuxtLink v-if="!isCostOnly" to="/analytics" class="nav-item">
           <Icon name="lucide:line-chart" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Аналитика</span>
+        </NuxtLink>
+        <NuxtLink to="/cost" class="nav-item">
+          <Icon name="lucide:package" class="nav-item-icon" />
+          <span v-if="!sidebarCollapsed">Себестоимость</span>
         </NuxtLink>
 
         <template v-if="isAdmin">
@@ -114,6 +118,10 @@
                 <Icon name="lucide:line-chart" class="nav-item-icon" />
                 <span>Аналитика</span>
               </NuxtLink>
+              <NuxtLink to="/cost" class="nav-item" @click="closeMobileMenu">
+                <Icon name="lucide:package" class="nav-item-icon" />
+                <span>Себестоимость</span>
+              </NuxtLink>
               <div class="nav-section">Сервис</div>
               <NuxtLink to="/account" class="nav-item" @click="closeMobileMenu">
                 <Icon name="lucide:user" class="nav-item-icon" />
@@ -129,12 +137,12 @@
       </Transition>
 
       <main class="app-main">
-        <div v-if="loadingValue && !userValue && hasToken" class="gate">
+        <div v-if="loadingValue && !userValue && hasToken && !isCostOnly" class="gate">
           <div class="loader"></div>
           <p class="muted">Проверка авторизации…</p>
         </div>
 
-        <div v-else-if="errorValue && !userValue && hasToken" class="gate">
+        <div v-else-if="errorValue && !userValue && hasToken && !isCostOnly" class="gate">
           <div class="auth-error-card">
             <p class="eyebrow">Авторизация</p>
             <h2>Не удалось подтвердить вход</h2>
@@ -147,7 +155,7 @@
           </div>
         </div>
 
-        <div v-else-if="!userValue" class="gate">
+        <div v-else-if="!userValue && !isCostOnly" class="gate">
           <LoginCard />
         </div>
 
@@ -183,6 +191,10 @@ const userValue = computed(() => user.value);
 const loadingValue = computed(() => loading.value);
 const errorValue = computed(() => error.value);
 
+// Контур swarm/docker-compose.cost.yml — без Go-API. Auth-гейт скипается
+// плагином cost-bypass.client.ts (см. python/cost/nuxt-layer/plugins).
+const isCostOnly = computed(() => !!config.public.costOnly);
+
 const hasToken = computed(() => {
   if (typeof window === "undefined") return false;
   return !!localStorage.getItem("auth_token");
@@ -202,7 +214,8 @@ const titleByPath: Record<string, string> = {
   "/counterparties": "Контрагенты",
   "/analytics": "Аналитика",
   "/account": "Профиль",
-  "/admin/users": "Пользователи"
+  "/admin/users": "Пользователи",
+  "/cost": "Себестоимость"
 };
 const currentPageTitle = computed(() => {
   const path = route.path;

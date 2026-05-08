@@ -1,5 +1,9 @@
 export default defineNuxtConfig({
   devtools: { enabled: false },
+  // Раздел «Себестоимость» — отдельный модуль. Шаблоны и плагины раздела
+  // лежат в python/cost/nuxt-layer (там же, где FastAPI и миграции этого
+  // раздела), чтобы разработчик правил всё в одном каталоге.
+  extends: ["../python/cost/nuxt-layer"],
   modules: ["@nuxt/icon"],
   icon: {
     mode: "svg",
@@ -30,7 +34,9 @@ export default defineNuxtConfig({
       b24ClientId: process.env.NUXT_PUBLIC_B24_CLIENT_ID || "local.finance.xxx",
       authRedirect:
         process.env.NUXT_PUBLIC_AUTH_REDIRECT ||
-        "http://finance.local:3001/api/auth/b24/callback"
+        "http://finance.local:3001/api/auth/b24/callback",
+      // Поднят docker-compose.cost.yml: бэк только cost, auth-гейт скипается.
+      costOnly: process.env.NUXT_PUBLIC_COST_ONLY === "1"
     },
     b24ClientSecret: process.env.B24_CLIENT_SECRET || "",
     b24TokenUrl: process.env.B24_TOKEN_URL || "https://mfportal.by/oauth/token/",

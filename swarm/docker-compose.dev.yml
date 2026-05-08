@@ -68,8 +68,13 @@ services:
       context: ..
       dockerfile: swarm/nuxt/Dockerfile.dev
     working_dir: /var/www/nuxt_app
+    # extends "../python/cost/nuxt-layer" в nuxt.config.ts требует, чтобы
+    # каталог раздела был виден из контейнера nuxt по тому же относительному
+    # пути, что и на хосте. Монтируем read-only — основной разработчик
+    # этого раздела не правит.
     volumes:
       - ../nuxt:/var/www/nuxt_app
+      - ../python/cost:/var/www/python/cost:ro
       - nuxt_node_modules:/var/www/nuxt_app/node_modules
     env_file:
       - ../.env

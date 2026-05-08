@@ -58,3 +58,36 @@ build:                 ## пересобрать все образы без кэ
 
 restart-%:             ## перезапустить сервис: make restart-go-api
 	docker compose -f docker-compose.dev.yml restart $*
+
+# === Раздел «Себестоимость» — изолированный контур ============================
+# Запускается отдельно от основного dev-контура: своя БД, свой env, свой nginx.
+# Конфиг разработчика — python/cost/.env (создаётся из .env.example).
+COST_COMPOSE := docker compose --env-file ../python/cost/.env -f docker-compose.cost.yml
+
+cost-up:               ## поднять контур раздела «Себестоимость»
+	@test -f ../python/cost/.env || cp ../python/cost/.env.example ../python/cost/.env
+	$(COST_COMPOSE) up --build -d
+	@echo "→ UI:    http://localhost:$${COST_NGINX_PORT:-8088}/cost"
+	@echo "→ API:   http://localhost:$${COST_NGINX_PORT:-8088}/api/cost/items"
+	@echo "→ PG:    psql -h localhost -p $${COST_POSTGRES_PORT:-55433} -U cost cost"
+
+cost-down:             ## остановить контур
+	$(COST_COMPOSE) down
+
+cost-logs:             ## tail логов контура
+	$(COST_COMPOSE) logs -f --tail=200
+
+cost-ps:               ## статус контейнеров контура
+	$(COST_COMPOSE) ps
+
+cost-psql:             ## psql в БД cost
+	docker exec -it swarm-postgres-cost-1 psql -U cost cost
+
+cost-console-py:       ## shell в python-cost
+	docker exec -it swarm-python-cost-1 sh
+
+cost-reset-db:         ## ⚠ полностью пересоздать БД раздела
+	$(COST_COMPOSE) stop postgres-cost
+	$(COST_COMPOSE) rm -fv postgres-cost
+	docker volume rm swarm_cost_db_data || true
+	$(COST_COMPOSE) up -d postgres-cost

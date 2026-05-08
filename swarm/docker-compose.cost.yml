@@ -1,0 +1,111 @@
+# Раздел «Себестоимость» — изолированный dev-контур.
+#
+# Запуск:
+#   cd swarm && make cost-up
+# (или вручную: docker compose --env-file ../python/cost/.env -f docker-compose.cost.yml up -d)
+#
+# Что входит:
+#   postgres-cost   — отдельная БД, отдельный том, порт COST_POSTGRES_PORT
+#   python-cost     — FastAPI раздела, hot-reload на python/cost/app
+#   nuxt-cost       — Nuxt с layer'ом python/cost/nuxt-layer; auth обходится
+#                     через NUXT_PUBLIC_COST_ONLY=1
+#   nginx-cost      — фасад: / → nuxt, /api/cost/* → python-cost
+#
+# Контур не пересекается ни с основным docker-compose.dev.yml, ни с его БД.
+
+services:
+
+  postgres-cost:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_USER=${COST_POSTGRES_USER:-cost}
+      - POSTGRES_PASSWORD=${COST_POSTGRES_PASSWORD:-cost}
+      - POSTGRES_DB=${COST_POSTGRES_DB:-cost}
+      - PGDATA=/var/lib/postgresql/data/cost/
+    volumes:
+      - cost_db_data:/var/lib/postgresql/data:rw
+      - ../python/cost/migrations:/docker-entrypoint-initdb.d/migrations:ro
+      - ../python/cost/init-db.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+    ports:
+      - "${COST_POSTGRES_PORT:-55433}:5432"
+    networks:
+      - cost_net
+    restart: on-failure
+
+  python-cost:
+    build:
+      context: ..
+      dockerfile: python/cost/Dockerfile.dev
+    working_dir: /var/www/cost
+    volumes:
+      - ../python/cost:/var/www/cost
+    env_file:
+      - ../python/cost/.env
+    environment:
+      - COST_DATABASE_URL=postgres://${COST_POSTGRES_USER:-cost}:${COST_POSTGRES_PASSWORD:-cost}@postgres-cost:5432/${COST_POSTGRES_DB:-cost}
+      - COST_API_PREFIX=${COST_API_PREFIX:-/api/cost}
+      - COST_MOCK=${COST_MOCK:-0}
+    ports:
+      - "${COST_API_PORT:-8091}:8091"
+    depends_on:
+      - postgres-cost
+    # Дополнительно цепляемся к сети основного dev-контура, чтобы main nginx
+    # мог проксировать /api/cost/* на этот сервис, когда раздел открывают
+    # из http://finance.local/cost (а не из cost-only фасада на :8088).
+    networks:
+      - cost_net
+      - finance_dev_network
+    restart: on-failure
+
+  nuxt-cost:
+    build:
+      context: ..
+      dockerfile: swarm/nuxt/Dockerfile.dev
+    working_dir: /var/www/nuxt_app
+    # Монтируем и nuxt/, и python/cost/ — чтобы extends "../python/cost/nuxt-layer"
+    # резолвился относительно /var/www/nuxt_app -> /var/www/python/cost/nuxt-layer.
+    volumes:
+      - ../nuxt:/var/www/nuxt_app
+      - ../python/cost:/var/www/python/cost
+      - cost_nuxt_node_modules:/var/www/nuxt_app/node_modules
+    env_file:
+      - ../python/cost/.env
+    environment:
+      - NUXT_HOST=0.0.0.0
+      - NUXT_PORT=3000
+      - CHOKIDAR_USEPOLLING=true
+      # Фронт ходит через nginx-cost (тот же origin), поэтому apiBase внутри
+      # cost-страницы и так "" — но оставляем для совместимости с другими
+      # страницами проекта, если разраб откроет /operations и т.п.
+      - NUXT_PUBLIC_API_BASE=http://localhost:${COST_NGINX_PORT:-8088}
+      - NUXT_PUBLIC_COST_ONLY=${NUXT_PUBLIC_COST_ONLY:-1}
+    ports:
+      - "${COST_NUXT_PORT:-3002}:3000"
+    networks:
+      - cost_net
+
+  nginx-cost:
+    image: nginx:1.26-alpine
+    volumes:
+      - ./config/cost.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${COST_NGINX_PORT:-8088}:80"
+    depends_on:
+      - python-cost
+      - nuxt-cost
+    networks:
+      - cost_net
+
+volumes:
+  cost_db_data:
+  cost_nuxt_node_modules:
+
+networks:
+  cost_net:
+    driver: bridge
+  # Внешняя сеть основного dev-контура (создаётся docker-compose.dev.yml).
+  # Используется только python-cost — чтобы main nginx мог его видеть.
+  finance_dev_network:
+    name: swarm_finance_dev_network
+    external: true
