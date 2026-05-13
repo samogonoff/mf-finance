@@ -6,7 +6,7 @@ FROM base AS builder
 WORKDIR /var/www/nuxt_app
 
 
-COPY web/package*.json ./
+COPY nuxt/package*.json ./
 RUN npm install
 
 COPY nuxt/. .
