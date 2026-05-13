@@ -1,0 +1,166 @@
+variables:
+  TAG_COMMIT: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  DOCKER_AUTH_CONFIG: >
+    {
+        "auths": {
+          "registry.markformelle.ru": {
+            "username": "$GROUP_REGISTRY_USER",
+            "password": "$GROUP_REGISTRY_PASSWORD"
+          }
+        }
+    }
+
+stages:
+  - publish
+  - deploy
+
+
+.publish_common_template: &publish_common_template
+  stage: publish
+  image: registry.markformelle.ru/services/docker-registry/docker:v1.0
+  services:
+    - name: registry.markformelle.ru/services/docker-registry/docker-dind:v1.0
+      alias: docker
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - echo "$GROUP_REGISTRY_PASSWORD" | docker login -u "$GROUP_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    # go-api
+    - docker build --build-arg tag=$tag -f swarm/go-api/Dockerfile -t "$CI_REGISTRY_IMAGE/go-api-$reg_tag:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$CI_REGISTRY_IMAGE/go-api-$reg_tag:$CI_COMMIT_SHORT_SHA"
+    # nuxt
+    - docker build --build-arg tag=$tag -f swarm/nuxt/Dockerfile  -t "$CI_REGISTRY_IMAGE/nuxt-$reg_tag:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$CI_REGISTRY_IMAGE/nuxt-$reg_tag:$CI_COMMIT_SHORT_SHA"
+    # python-cost
+    - docker build --build-arg tag=$tag -f swarm/python-cost/Dockerfile -t "$CI_REGISTRY_IMAGE/python-cost-$reg_tag:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$CI_REGISTRY_IMAGE/python-cost-$reg_tag:$CI_COMMIT_SHORT_SHA"
+    # redis
+    - docker build --build-arg tag=$tag -f swarm/redis/Dockerfile -t "$CI_REGISTRY_IMAGE/redis-$reg_tag:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$CI_REGISTRY_IMAGE/redis-$reg_tag:$CI_COMMIT_SHORT_SHA"
+
+
+
+publish_stage:
+  <<: *publish_common_template
+  environment: staging
+  tags:
+    - ci-stage-apps-docker
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME == "stage"'
+      when: on_success
+    - when: never
+  allow_failure: false
+
+
+publish_prod:
+  <<: *publish_common_template
+  environment: production
+  tags:
+    - ci-prod-apps-docker
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME == "master"'
+      when: on_success
+    - when: never
+  allow_failure: false
+
+
+
+.deploy_common_template: &deploy_common_template
+  stage: deploy
+  before_script:
+    - docker context use "$SWARM_CONTEXT"
+    - export CONFIG_NAME="api_env_${CI_PIPELINE_ID}_$(date +%s)"
+    - printf "%b" "$ENV_FILE" > .env
+    - docker config rm "$CONFIG_NAME" || true
+    - docker config create "$CONFIG_NAME" .env
+  script:
+    - echo "$GROUP_REGISTRY_PASSWORD" | docker login -u "$GROUP_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - sed "s/%%CONFIG_NAME%%/$CONFIG_NAME/g" swarm/docker-compose.yml > swarm/tmp.yml
+    - docker stack deploy --with-registry-auth --detach=false -c swarm/tmp.yml "$SWARM_SERVICE_NAME"
+    - echo "⏳ Ждём завершения обновления сервисов..."
+    - sleep 15
+    # 🔍 Проверка: все сервисы используют нужный образ (по SHA)
+    - |
+      echo "🔍 Проверка соответствия образов коммиту: $CI_COMMIT_SHORT_SHA"
+      FAILED=0
+      for SERVICE in $(docker stack services "$SWARM_SERVICE_NAME" --format '{{.Name}}'); do
+        IMAGE=$(docker service inspect "$SERVICE" --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}')
+        TAG=$(echo "$IMAGE" | cut -d: -f2 | cut -d@ -f1)
+        
+        if [[ "$TAG" != "$CI_COMMIT_SHORT_SHA" ]]; then
+          echo "❌ $SERVICE использует неактуальный тег: $TAG"
+          FAILED=1
+        else
+          echo "✅ $SERVICE OK (tag=$TAG)"
+        fi
+      done
+
+      if [[ "$FAILED" -ne 0 ]]; then
+        echo "🚨 Один или несколько сервисов используют неактуальный образ — прерываем пайплайн"
+        exit 1
+      fi
+    - docker config ls --format '{{.Name}}' | grep '^api_env_' | grep -v "$CONFIG_NAME" | xargs -r docker config rm || true
+
+deploy_app_stage:
+  <<: *deploy_common_template
+  environment: staging
+  tags:
+    - ci-stage-apps-shell
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME == "stage"'
+      when: on_success
+    - when: never
+  allow_failure: false
+
+
+deploy_app_prod:
+  <<: *deploy_common_template
+  environment: production
+  tags:
+    - ci-prod-apps-shell
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME == "master"'
+      when: on_success
+    - when: never
+  allow_failure: false
+
+
+
+.rollback_common_template: &rollback_common_template
+  stage: deploy
+  script:
+    - |
+      docker context use "$SWARM_CONTEXT"
+      echo "🔁 Rollback всех сервисов стека: $SWARM_SERVICE_NAME"
+
+      for SERVICE in $(docker stack services "$SWARM_SERVICE_NAME" --format '{{.Name}}'); do
+        echo "↩️  Rollback $SERVICE"
+        docker service update --rollback "$SERVICE" || echo "⚠️ Ошибка отката $SERVICE"
+      done
+
+      echo "📋 Статусы:"
+      docker stack ps "$SWARM_SERVICE_NAME"
+  rules:
+    - when: manual
+  allow_failure: true
+
+
+rollback_app_stage:
+  <<: *rollback_common_template
+  environment: staging
+  tags:
+    - shell_dev
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "stage"'
+      when: manual
+    - when: never
+
+rollback_app_prod:
+  <<: *rollback_common_template
+  environment: production
+  tags:
+    - shell_prod
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "master"'
+      when: manual
+    - when: never

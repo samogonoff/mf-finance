@@ -1,0 +1,98 @@
+x-default-deploy: &default-deploy
+  replicas: 1
+  update_config:
+    parallelism: 1
+    delay: 2s
+    failure_action: rollback
+    order: start-first
+  rollback_config:
+    parallelism: 1
+    delay: 1s
+    order: start-first
+  restart_policy:
+    condition: any
+    max_attempts: 3
+
+services:
+ 
+
+  go-api:
+    image: ${CI_REGISTRY_IMAGE}/go-api-${reg_tag}:${CI_COMMIT_SHORT_SHA}
+    deploy:
+      <<: *default-deploy
+    ports:
+      - "8089:8080"
+    configs:
+      - source: %%CONFIG_NAME%%
+        target: /etc/api.env
+    #healthcheck:
+    #  test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
+    #  interval: 10s
+    #  timeout: 5s
+    #  retries: 5
+    #  start_period: 15s
+    networks:
+      - network
+
+
+  nuxt:
+    image: ${CI_REGISTRY_IMAGE}/nuxt-${reg_tag}:${CI_COMMIT_SHORT_SHA}
+    ports:
+      - "8088:3000"
+    deploy:
+      <<: *default-deploy
+    configs:
+      - source: %%CONFIG_NAME%%
+        target: /var/www/nuxt_app/.env
+    networks:
+      - network
+
+
+  python-cost:
+    image: ${CI_REGISTRY_IMAGE}/python-cost-${reg_tag}:${CI_COMMIT_SHORT_SHA}
+    command: ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port 8091"]
+    deploy:
+      <<: *default-deploy
+    configs:
+      - source: %%CONFIG_NAME%%
+        target: /var/www/cost/.env
+    ports:
+      - "8091:8091"
+    networks:
+      - network
+
+
+  redis:
+    image: ${CI_REGISTRY_IMAGE}/redis-${reg_tag}:${CI_COMMIT_SHORT_SHA}
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "16381:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      <<: *default-deploy
+    networks:
+      - network
+
+
+
+configs:
+  %%CONFIG_NAME%%:
+    external: true
+
+volumes:
+  redis_data:
+
+networks:
+  network:
+    driver: overlay
