@@ -19,7 +19,7 @@ RUN apk add --no-cache ca-certificates tzdata wget && update-ca-certificates
 WORKDIR /app
 
 COPY --from=builder /server /server
-COPY swarm/api/entrypoint.sh /entrypoint.sh
+COPY swarm/go-api/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 EXPOSE 8080

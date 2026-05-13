@@ -10,7 +10,7 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 COPY python/cost/. .
-COPY swarm/entrypoint.sh /entrypoint.sh
+COPY swarm/python-cost/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh
 
