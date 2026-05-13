@@ -13,6 +13,7 @@ export default defineEventHandler(async (event) => {
   const code = query.code as string | undefined;
   const incomingState = query.state as string | undefined;
   const domain = query.domain as string | undefined;
+  const serverDomain = query.server_domain as string | undefined;
 
   if (!code) {
     throw createError({ statusCode: 400, statusMessage: "Missing auth code" });
@@ -23,21 +24,43 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: "Invalid oauth state" });
   }
 
-  const tokenUrl = new URL(config.b24TokenUrl);
+  // В новой схеме B24 обмен code → token идёт на server_domain из колбэка,
+  // а не на домен портала. server_domain выглядит как oauth.bitrix24.tech.
+  const tokenUrl = serverDomain
+    ? new URL(`https://${serverDomain}/oauth/token/`)
+    : new URL(config.b24TokenUrl);
   tokenUrl.searchParams.set("client_id", String(config.public.b24ClientId));
   tokenUrl.searchParams.set("client_secret", String(config.b24ClientSecret));
   tokenUrl.searchParams.set("code", code);
   tokenUrl.searchParams.set("grant_type", "authorization_code");
 
-  const response = await $fetch<{
+  let response: {
     access_token?: string;
     refresh_token?: string;
     expires_in?: number;
     error?: string;
     error_description?: string;
-  }>(tokenUrl.toString());
+  };
+  try {
+    response = await $fetch(tokenUrl.toString());
+  } catch (err: any) {
+    const body = err?.data ?? err?.response?._data;
+    console.error("[b24/callback] token exchange failed", {
+      url: tokenUrl.toString().replace(/client_secret=[^&]+/, "client_secret=***"),
+      status: err?.statusCode || err?.response?.status,
+      body
+    });
+    throw createError({
+      statusCode: 400,
+      statusMessage:
+        (body && (body.error_description || body.error)) ||
+        err?.message ||
+        "Token exchange failed"
+    });
+  }
 
   if (response.error || !response.access_token) {
+    console.error("[b24/callback] token exchange returned error", response);
     throw createError({
       statusCode: 400,
       statusMessage: response.error_description || response.error || "No access token received"
