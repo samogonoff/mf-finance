@@ -27,3 +27,4 @@ node_modules
 **/.env.*
 
 migrations
+init-db.sh
