@@ -8,7 +8,7 @@ RUN go mod download
 
 COPY go/. .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /server ./cmd/api
 
 
 # -------- Runtime --------
