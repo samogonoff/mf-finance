@@ -50,7 +50,7 @@ services:
 
   python-cost:
     image: ${CI_REGISTRY_IMAGE}/python-cost-${reg_tag}:${CI_COMMIT_SHORT_SHA}
-    command: ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port 8091"]
+    command: ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8091"]
     deploy:
       <<: *default-deploy
     configs:
