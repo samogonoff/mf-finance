@@ -10,6 +10,9 @@ COPY nuxt/package*.json ./
 RUN npm install
 
 COPY nuxt/. .
+# Слой раздела «Себестоимость» — в nuxt.config.ts: extends ["../python/cost/nuxt-layer"].
+# Без него /cost не попадает в build → на проде Nuxt отдаёт 404.
+COPY python/cost/nuxt-layer /var/www/python/cost/nuxt-layer
 
 ENV NODE_ENV=production
 RUN npm run build
