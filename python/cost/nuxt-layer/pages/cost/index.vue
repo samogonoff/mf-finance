@@ -684,7 +684,11 @@ onMounted(async () => {
   text-transform: uppercase;
 }
 
-.filters-card { margin-bottom: var(--sp-4); }
+.filters-card {
+  margin-bottom: var(--sp-4);
+  /* .card по дефолту с overflow:hidden — режет выпадашки CostMultiSelect. */
+  overflow: visible;
+}
 .card-actions {
   display: inline-flex;
   align-items: center;
