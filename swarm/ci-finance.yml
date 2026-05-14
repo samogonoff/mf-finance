@@ -78,6 +78,8 @@ publish_prod:
     - printf "%b" "$ENV_FILE" > .env
     - docker pull "$MIGRATE_IMAGE"
     - docker run --rm --network host --env-file .env "$MIGRATE_IMAGE" up
+  after_script:
+    - rm -f .env
   allow_failure: false
 
 
