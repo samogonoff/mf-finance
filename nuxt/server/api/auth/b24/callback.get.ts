@@ -13,7 +13,6 @@ export default defineEventHandler(async (event) => {
   const code = query.code as string | undefined;
   const incomingState = query.state as string | undefined;
   const domain = query.domain as string | undefined;
-  const serverDomain = query.server_domain as string | undefined;
 
   if (!code) {
     throw createError({ statusCode: 400, statusMessage: "Missing auth code" });
@@ -24,11 +23,9 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: "Invalid oauth state" });
   }
 
-  // В новой схеме B24 обмен code → token идёт на server_domain из колбэка,
-  // а не на домен портала. server_domain выглядит как oauth.bitrix24.tech.
-  const tokenUrl = serverDomain
-    ? new URL(`https://${serverDomain}/oauth/token/`)
-    : new URL(config.b24TokenUrl);
+  // Локальные приложения B24 (local.*) обмениваются на портале, а не на
+  // oauth.bitrix24.tech — центральный сервер про них не знает (invalid_client).
+  const tokenUrl = new URL(config.b24TokenUrl);
   tokenUrl.searchParams.set("client_id", String(config.public.b24ClientId));
   tokenUrl.searchParams.set("client_secret", String(config.b24ClientSecret));
   tokenUrl.searchParams.set("code", code);
