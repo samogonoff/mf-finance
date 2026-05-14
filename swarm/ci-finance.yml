@@ -12,6 +12,7 @@ variables:
 
 stages:
   - publish
+  - migrations
   - deploy
 
 
@@ -37,6 +38,9 @@ stages:
     # redis
     - docker build --build-arg tag=$tag -f swarm/redis/Dockerfile -t "$CI_REGISTRY_IMAGE/redis-$reg_tag:$CI_COMMIT_SHORT_SHA" .
     - docker push "$CI_REGISTRY_IMAGE/redis-$reg_tag:$CI_COMMIT_SHORT_SHA"
+    # migrations
+    - docker build --build-arg tag=$tag -f swarm/migrations/Dockerfile -t "$CI_REGISTRY_IMAGE/migrations-$reg_tag:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$CI_REGISTRY_IMAGE/migrations-$reg_tag:$CI_COMMIT_SHORT_SHA"
 
 
 
@@ -63,6 +67,47 @@ publish_prod:
     - when: never
   allow_failure: false
 
+
+.migrations_common_template: &migrations_common_template
+  stage: migrations
+  before_script:
+    - docker context use default || true
+    - echo "$GROUP_REGISTRY_PASSWORD" | docker login -u "$GROUP_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - export MIGRATE_IMAGE="$CI_REGISTRY_IMAGE/migrations-$reg_tag:$CI_COMMIT_SHORT_SHA"
+    - printf "%b" "$ENV_FILE" > .env
+    - docker pull "$MIGRATE_IMAGE"
+    - docker run --rm --network host --env-file .env "$MIGRATE_IMAGE" up
+  allow_failure: false
+
+
+migrations_stage:
+  <<: *migrations_common_template
+  environment: staging
+  tags:
+    - ci-stage-apps-shell
+  needs:
+    - publish_stage
+  resource_group: finance-stage-migrations
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME == "stage"'
+      when: on_success
+    - when: never
+
+
+
+migrations_prod:
+  <<: *migrations_common_template
+  environment: production
+  tags:
+    - ci-prod-apps-shell
+  needs:
+    - publish_prod
+  resource_group: finance-prod-migrations
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME == "master"'
+      when: on_success
+    - when: never
 
 
 .deploy_common_template: &deploy_common_template
@@ -104,6 +149,8 @@ publish_prod:
 deploy_app_stage:
   <<: *deploy_common_template
   environment: staging
+  needs:
+    - migrations_stage
   tags:
     - ci-stage-apps-shell
   rules:
@@ -116,6 +163,8 @@ deploy_app_stage:
 deploy_app_prod:
   <<: *deploy_common_template
   environment: production
+  needs:
+    - migrations_prod
   tags:
     - ci-prod-apps-shell
   rules:
