@@ -26,7 +26,16 @@ _pool: asyncpg.Pool | None = None
 async def init_pool() -> None:
     global _pool
     dsn = os.environ["COST_DATABASE_URL"]
-    _pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=8)
+    for attempt in range(10):
+        try:
+            _pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=8)
+            return
+        except (OSError, asyncpg.PostgresError) as e:
+            if attempt < 9:
+                import asyncio
+                await asyncio.sleep(2 ** attempt * 0.2)  # exponential backoff: 0.2, 0.4, 0.8, ...
+            else:
+                raise
 
 
 async def close_pool() -> None:
@@ -90,4 +99,15 @@ def get_olap_conn() -> pyodbc.Connection:
         user=os.environ["OLAP_USER"],
         password=os.environ["OLAP_PASSWORD"],
         readonly=False,
+    )
+
+
+def get_dwh_conn() -> pyodbc.Connection:
+    """Чтение справочника групп (DWH.dim.groups) для каскадных фильтров."""
+    return _mssql_connect(
+        server=os.environ["OLAP_SERVER_IP"],
+        database="DWH",
+        user=os.environ["OLAP_USER"],
+        password=os.environ["OLAP_PASSWORD"],
+        readonly=True,
     )
