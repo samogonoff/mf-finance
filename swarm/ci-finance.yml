@@ -120,9 +120,14 @@ migrations_prod:
     - printf "%b" "$ENV_FILE" > .env
     - docker config rm "$CONFIG_NAME" || true
     - docker config create "$CONFIG_NAME" .env
+    # config for cost
+    - export CONFIG2_NAME="cost_env_${CI_PIPELINE_ID}_$(date +%s)"
+    - printf "%b" "$ENV_FILE_COST" > .env.cost
+    - docker config rm "$CONFIG2_NAME" || true
+    - docker config create "$CONFIG2_NAME" .env.cost
   script:
     - echo "$GROUP_REGISTRY_PASSWORD" | docker login -u "$GROUP_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-    - sed "s/%%CONFIG_NAME%%/$CONFIG_NAME/g" swarm/docker-compose.yml > swarm/tmp.yml
+    - sed "s/%%CONFIG_NAME%%/$CONFIG_NAME/g; s/%%CONFIG2_NAME%%/$CONFIG2_NAME/g" swarm/docker-compose.yml > swarm/tmp.yml
     - docker stack deploy --with-registry-auth --detach=false -c swarm/tmp.yml "$SWARM_SERVICE_NAME"
     - echo "⏳ Ждём завершения обновления сервисов..."
     - sleep 15

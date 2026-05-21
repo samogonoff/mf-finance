@@ -54,7 +54,7 @@ services:
     deploy:
       <<: *default-deploy
     configs:
-      - source: %%CONFIG_NAME%%
+      - source: %%CONFIG2_NAME%%
         target: /var/www/cost/.env
     ports:
       - "8091:8091"
@@ -89,6 +89,9 @@ services:
 configs:
   %%CONFIG_NAME%%:
     external: true
+  %%CONFIG2_NAME%%:
+    external: true
+
 
 volumes:
   redis_data:
