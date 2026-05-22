@@ -49,35 +49,16 @@ def get_filter_options(request: Request) -> dict:
     try:
         result: dict[str, Any] = {}
 
-        # 1. Бренд-менеджеры — фильтруются по выбранным уровням
-        has_any_level = any(selected.get(k) for k in LEVEL_KEYS)
-        if has_any_level:
-            query = """
-                SELECT DISTINCT RTRIM(BRAND_FIO) AS val
-                FROM [DWH].[dim].[groups]
-                WHERE BRAND_FIO IS NOT NULL AND BRAND_FIO != ''
-            """
-            params: list[str] = []
-            for i in range(1, 6):
-                key = f"level0{i}"
-                vals = selected.get(key)
-                if vals:
-                    placeholders = ",".join(["?"] * len(vals))
-                    query += f" AND gr{i} IN ({placeholders})"
-                    params.extend(v.strip() for v in vals)
-            query += " ORDER BY val"
-            cursor.execute(query, params)
-            result["brand_manager"] = [row[0].strip() for row in cursor.fetchall() if row[0]]
-        else:
-            cursor.execute("""
-                SELECT DISTINCT RTRIM(BRAND_FIO) AS val
-                FROM [DWH].[dim].[groups]
-                WHERE BRAND_FIO IS NOT NULL AND BRAND_FIO != ''
-                ORDER BY val
-            """)
-            result["brand_manager"] = [row[0].strip() for row in cursor.fetchall() if row[0]]
+        # 1. Бренд-менеджеры — НЕ фильтруются уровнями (top-down cascade)
+        cursor.execute("""
+            SELECT DISTINCT RTRIM(BRAND_FIO) AS val
+            FROM [DWH].[dim].[groups]
+            WHERE BRAND_FIO IS NOT NULL AND BRAND_FIO != ''
+            ORDER BY val
+        """)
+        result["brand_manager"] = [row[0].strip() for row in cursor.fetchall() if row[0]]
 
-        # 2. Level 01-05 — полный двусторонний каскад
+        # 2. Level 01-05 — только top-down каскад (вышестоящие уровни фильтруют нижестоящие)
         for i in range(1, 6):
             col_gr = f"gr{i}"
             col_group = f"group{i}"
@@ -95,15 +76,16 @@ def get_filter_options(request: Request) -> dict:
                 query += f" AND BRAND_FIO IN ({placeholders})"
                 params.extend(vals)
 
-            for j in range(1, 6):
-                if j == i:
-                    continue
+            # Только уровни выше (меньший индекс) фильтруют текущий уровень
+            for j in range(1, i):
                 key = f"level0{j}"
                 vals = selected.get(key)
                 if vals:
                     placeholders = ",".join(["?"] * len(vals))
                     query += f" AND gr{j} IN ({placeholders})"
                     params.extend(v.strip() for v in vals)
+
+            # Уровни ниже (больший индекс) НЕ фильтруют вышестоящие — чистый top-down
 
             query += f" ORDER BY {col_group}"
             cursor.execute(query, params)
@@ -218,6 +200,10 @@ AGG_AVG_FIELDS = [
     "Пошив, USD.",
     "Раскрой, руб.",
     "Раскрой, USD.",
+    "Декоры, руб.",
+    "Декоры, USD.",
+    "Вязание, руб.",
+    "Вязание, USD.",
 ]
 
 AGG_SUM_FIELDS = [
@@ -225,10 +211,24 @@ AGG_SUM_FIELDS = [
     "Основные материалы, USD.",
     "Вспомогательные материалы, руб.",
     "Вспомогательные материалы, USD.",
-    "Декоры, руб.",
-    "Декоры, USD.",
-    "Себестоимость, руб.",
-    "Себестоимость, USD.",
+]
+
+# Поля-компоненты для расчёта себестоимости (сумма 6 статей)
+SEBEST_COMPONENTS_RUB = [
+    "avg_Пошив, руб.",
+    "avg_Раскрой, руб.",
+    "avg_Декоры, руб.",
+    "avg_Вязание, руб.",
+    "sum_Основные материалы, руб.",
+    "sum_Вспомогательные материалы, руб.",
+]
+SEBEST_COMPONENTS_USD = [
+    "avg_Пошив, USD.",
+    "avg_Раскрой, USD.",
+    "avg_Декоры, USD.",
+    "avg_Вязание, USD.",
+    "sum_Основные материалы, USD.",
+    "sum_Вспомогательные материалы, USD.",
 ]
 
 
@@ -267,6 +267,14 @@ def get_aggregated(payload: dict) -> dict:
         columns = [d[0] for d in cursor.description]
         rows = cursor.fetchall()
         data = [dict(zip(columns, row)) for row in rows]
+        # Пересчитываем себестоимость как сумму 6 компонентов (как в детализации)
+        for row in data:
+            row["sum_Себестоимость, руб."] = round(
+                sum(float(row.get(f, 0) or 0) for f in SEBEST_COMPONENTS_RUB), 2
+            )
+            row["sum_Себестоимость, USD."] = round(
+                sum(float(row.get(f, 0) or 0) for f in SEBEST_COMPONENTS_USD), 2
+            )
         return {"data": data, "count": len(data)}
     finally:
         conn.close()

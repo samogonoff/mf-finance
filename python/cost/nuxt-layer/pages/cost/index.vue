@@ -16,7 +16,7 @@
       <div class="card-header">
         <div>
           <div class="card-title">Фильтры</div>
-          <div class="card-subtitle">Двусторонний каскад — каждый фильтр пересчитывает остальные</div>
+          <div class="card-subtitle">Top-down каскад — вышестоящие фильтры ограничивают нижестоящие</div>
         </div>
         <div class="card-actions">
           <button class="btn btn-ghost btn-sm" @click="resetFilters">
@@ -40,12 +40,13 @@
         </div>
 
         <div class="filters-grid">
-          <div v-for="f in filterConfig" :key="f.key" class="filter-item">
+          <div v-for="f in filterConfig" :key="f.key" class="filter-item" :class="{ locked: isLocked(f.key) }">
             <label>{{ f.label }}</label>
             <CostMultiSelect
               v-model="selected[f.key]"
               :options="filterOptions[f.key] || []"
-              :placeholder="`Все · ${f.label.toLowerCase()}`"
+              :placeholder="isLocked(f.key) ? '—' : `Все · ${f.label.toLowerCase()}`"
+              :disabled="isLocked(f.key)"
               @change="onFilterChange(f.key)"
             />
           </div>
@@ -74,6 +75,12 @@
           <span class="muted">Выберите фильтры и нажмите «Загрузить данные»</span>
         </template>
       </div>
+      <label class="usd-toggle" title="Показать/скрыть $ колонки">
+        <input type="checkbox" v-model="showUSD" />
+        <span class="usd-toggle-track">
+          <span class="usd-toggle-thumb">$</span>
+        </span>
+      </label>
       <div class="cost-actions-buttons">
         <button class="btn btn-ghost" :disabled="!totalAllRecords" @click="exportToExcel">
           <Icon name="lucide:download" /> Экспорт в Excel
@@ -131,12 +138,14 @@
         </div>
       </div>
       <div v-if="allAggregated.length > 0" class="col-filters" :class="{ 'is-active': columnFiltersActive }">
-        <div v-for="cfg in columnFilterConfig" :key="cfg.key" class="col-filter-item">
+        <div v-for="cfg in columnFilterConfig" :key="cfg.key" class="col-filter-item" :class="{ locked: isColFilterLocked(cfg.key) }">
           <label>{{ cfg.label }}</label>
           <CostMultiSelect
             v-model="columnFilters[cfg.key]"
             :options="columnFilterOptions[cfg.key] || []"
-            :placeholder="`Все · ${cfg.label.toLowerCase()}`"
+            :placeholder="isColFilterLocked(cfg.key) ? '—' : `Все · ${cfg.label.toLowerCase()}`"
+            :disabled="isColFilterLocked(cfg.key)"
+            @change="onColFilterChange(cfg.key)"
           />
         </div>
         <a href="#" class="col-filter-reset" @click.prevent="resetColumnFilters">Сбросить фильтры колонок</a>
@@ -146,43 +155,103 @@
           <thead>
             <tr>
               <th></th>
-              <th>Бренд-менеджер</th>
-              <th>Модель</th>
-              <th>Артикул</th>
-              <th>Страна</th>
-              <th>Семья</th>
-              <th>Сезон</th>
-              <th>Дата</th>
-              <th>Уровень цен</th>
-              <th class="col-num">Сред. розница (руб)</th>
-              <th class="col-num">Сред. опт (руб)</th>
-              <th class="col-num">Сред. розница ($)</th>
-              <th class="col-num">Сред. опт ($)</th>
-              <th class="col-num">Осн. материалы (руб)</th>
-              <th class="col-num">Осн. материалы ($)</th>
-              <th class="col-num">Вспом. (руб)</th>
-              <th class="col-num">Вспом. ($)</th>
-              <th class="col-num">Пошив (руб)</th>
-              <th class="col-num">Пошив ($)</th>
-              <th class="col-num">Раскрой (руб)</th>
-              <th class="col-num">Раскрой ($)</th>
-              <th class="col-num">Декоры (руб)</th>
-              <th class="col-num">Декоры ($)</th>
-              <th class="col-num">Себест. (руб)</th>
-              <th class="col-num">Себест. ($)</th>
-              <th class="col-num">Наценка (руб)</th>
-              <th class="col-num">Наценка (%)</th>
-              <th class="col-num">Маржа (%)</th>
+              <th :class="{ sorted: sortField === 'Бренд-менеджер' }" @click="toggleSort('Бренд-менеджер')">
+                Бренд-менеджер<span v-if="sortField === 'Бренд-менеджер'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th :class="{ sorted: sortField === 'Модель' }" @click="toggleSort('Модель')">
+                Модель<span v-if="sortField === 'Модель'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th :class="{ sorted: sortField === 'Артикул' }" @click="toggleSort('Артикул')">
+                Артикул<span v-if="sortField === 'Артикул'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th :class="{ sorted: sortField === 'Страна пр-ва' }" @click="toggleSort('Страна пр-ва')">
+                Страна<span v-if="sortField === 'Страна пр-ва'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th :class="{ sorted: sortField === 'Семья' }" @click="toggleSort('Семья')">
+                Семья<span v-if="sortField === 'Семья'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th :class="{ sorted: sortField === 'Сезон' }" @click="toggleSort('Сезон')">
+                Сезон<span v-if="sortField === 'Сезон'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th :class="{ sorted: sortField === 'дата расчета' }" @click="toggleSort('дата расчета')">
+                Дата<span v-if="sortField === 'дата расчета'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th :class="{ sorted: sortField === 'Уровень цен' }" @click="toggleSort('Уровень цен')">
+                Уровень цен<span v-if="sortField === 'Уровень цен'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
+                Сред. розница (руб)<span v-if="sortField === 'avg_Розничная цена по уровню, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
+                Сред. опт (руб)<span v-if="sortField === 'avg_Отпускная цена по уровню, руб'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, USD.' }" @click="toggleSort('avg_Розничная цена по уровню, USD.')">
+                Сред. розница ($)<span v-if="sortField === 'avg_Розничная цена по уровню, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, USD.' }" @click="toggleSort('avg_Отпускная цена по уровню, USD.')">
+                Сред. опт ($)<span v-if="sortField === 'avg_Отпускная цена по уровню, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, руб.' }" @click="toggleSort('sum_Основные материалы, руб.')">
+                Осн. материалы (руб)<span v-if="sortField === 'sum_Основные материалы, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, USD.' }" @click="toggleSort('sum_Основные материалы, USD.')">
+                Осн. материалы ($)<span v-if="sortField === 'sum_Основные материалы, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, руб.' }" @click="toggleSort('sum_Вспомогательные материалы, руб.')">
+                Вспом. (руб)<span v-if="sortField === 'sum_Вспомогательные материалы, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, USD.' }" @click="toggleSort('sum_Вспомогательные материалы, USD.')">
+                Вспом. ($)<span v-if="sortField === 'sum_Вспомогательные материалы, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'avg_Пошив, руб.' }" @click="toggleSort('avg_Пошив, руб.')">
+                Пошив (руб)<span v-if="sortField === 'avg_Пошив, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Пошив, USD.' }" @click="toggleSort('avg_Пошив, USD.')">
+                Пошив ($)<span v-if="sortField === 'avg_Пошив, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, руб.' }" @click="toggleSort('avg_Раскрой, руб.')">
+                Раскрой (руб)<span v-if="sortField === 'avg_Раскрой, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, USD.' }" @click="toggleSort('avg_Раскрой, USD.')">
+                Раскрой ($)<span v-if="sortField === 'avg_Раскрой, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
+                Декоры (руб)<span v-if="sortField === 'sum_Декоры, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, USD.' }" @click="toggleSort('sum_Декоры, USD.')">
+                Декоры ($)<span v-if="sortField === 'sum_Декоры, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'avg_Вязание, руб.' }" @click="toggleSort('avg_Вязание, руб.')">
+                Вязание (руб)<span v-if="sortField === 'avg_Вязание, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Вязание, USD.' }" @click="toggleSort('avg_Вязание, USD.')">
+                Вязание ($)<span v-if="sortField === 'avg_Вязание, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
+                Себест. (руб)<span v-if="sortField === 'sum_Себестоимость, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, USD.' }" @click="toggleSort('sum_Себестоимость, USD.')">
+                Себест. ($)<span v-if="sortField === 'sum_Себестоимость, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
+                Наценка (руб)<span v-if="sortField === 'calc_markup_rub'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
+                Наценка (%)<span v-if="sortField === 'calc_markup_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
+                Маржа (%)<span v-if="sortField === 'calc_margin_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="28" class="muted" style="text-align: center; padding: 24px">
+              <td :colspan="showUSD ? 30 : 21" class="muted" style="text-align: center; padding: 24px">
                 Загрузка данных…
               </td>
             </tr>
             <tr v-else-if="!pageRows.length">
-              <td colspan="28" class="muted" style="text-align: center; padding: 24px">
+              <td :colspan="showUSD ? 30 : 21" class="muted" style="text-align: center; padding: 24px">
                 Нет данных. Загрузите данные кнопкой выше.
               </td>
             </tr>
@@ -215,20 +284,22 @@
               </td>
               <td class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, руб.']) }}</td>
               <td class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
-              <td class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
-              <td class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, USD.']) }}</td>
+              <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
+              <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, USD.']) }}</td>
               <td class="col-num num">{{ fmt(row['sum_Основные материалы, руб.']) }}</td>
-              <td class="col-num num">{{ fmt(row['sum_Основные материалы, USD.']) }}</td>
+              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, USD.']) }}</td>
               <td class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, руб.']) }}</td>
-              <td class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, USD.']) }}</td>
+              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, USD.']) }}</td>
               <td class="col-num num">{{ fmt(row['avg_Пошив, руб.']) }}</td>
-              <td class="col-num num">{{ fmt(row['avg_Пошив, USD.']) }}</td>
+              <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Пошив, USD.']) }}</td>
               <td class="col-num num">{{ fmt(row['avg_Раскрой, руб.']) }}</td>
-              <td class="col-num num">{{ fmt(row['avg_Раскрой, USD.']) }}</td>
+              <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Раскрой, USD.']) }}</td>
               <td class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
-              <td class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
+              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
+              <td class="col-num num">{{ fmt(row['avg_Вязание, руб.']) }}</td>
+              <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Вязание, USD.']) }}</td>
               <td class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
-              <td class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
+              <td v-if="showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
               <td class="col-num num">{{ fmt(calc(row).markupRub) }}</td>
               <td class="col-num num" :class="calc(row).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
                 {{ calc(row).markupPct.toFixed(1) }}%
@@ -255,20 +326,27 @@
           <label>Дата от <input v-model="detailDateFrom" type="date" class="form-input" /></label>
           <label>Дата до <input v-model="detailDateTo" type="date" class="form-input" /></label>
           <label>Признак калькуляции
-            <select v-model="detailCalcSign" multiple class="form-select-multi">
-              <option v-for="cs in (filterOptions['calc_sign'] || [])" :key="cs" :value="cs">{{ cs }}</option>
-            </select>
+            <CostMultiSelect
+              v-model="detailCalcSign"
+              :options="filterOptions['calc_sign'] || []"
+              placeholder="Все · признак калькуляции"
+              @change="loadDetailsData"
+            />
           </label>
           <button class="btn btn-primary btn-sm" @click="loadDetailsData">Применить</button>
           <button class="btn btn-ghost btn-sm" @click="resetDetailsFilters">Сбросить</button>
         </div>
         <!-- Column filters row -->
         <div class="details-col-filters" v-if="detailsAllData.length">
-          <div v-for="cfg in detailsFilterConfig" :key="cfg.key" class="details-col-filter-item">
+          <div v-for="cfg in detailsFilterConfig" :key="cfg.key" class="details-col-filter-item" :class="{ locked: isDetFilterLocked(cfg.key) }">
             <label>{{ cfg.label }}</label>
-            <select multiple v-model="detailsColumnFilters[cfg.key]" @change="applyDetailsFilters">
-              <option v-for="opt in getDetailFilterOptions(cfg)" :key="opt" :value="opt">{{ opt }}</option>
-            </select>
+            <CostMultiSelect
+              v-model="detailsColumnFilters[cfg.key]"
+              :options="detailsColumnFilterOptions[cfg.key] || []"
+              :placeholder="isDetFilterLocked(cfg.key) ? '—' : `Все · ${cfg.label.toLowerCase()}`"
+              :disabled="isDetFilterLocked(cfg.key)"
+              @change="onDetFilterChange(cfg.key)"
+            />
           </div>
           <a href="#" class="details-col-filter-reset" @click.prevent="resetDetailsColumnFilters">Сбросить фильтры колонок</a>
         </div>
@@ -355,6 +433,7 @@ const apiBase = computed(() =>
 const apiHostLabel = computed(() => apiBase.value || "локального API");
 
 const mockMode = ref(false);
+const showUSD = ref(true);
 
 // ── Filter state ────────────────────────────────────────────────────────────
 
@@ -417,7 +496,35 @@ async function loadFilters() {
   }
 }
 
+function isLocked(key: FilterKey): boolean {
+  if (key === 'calc_sign') return false;
+  // Находим самый нижний уровень (максимальный индекс) с выбранными значениями
+  let lowestIdx = -1;
+  for (let i = LEVEL_KEYS.length - 1; i >= 0; i--) {
+    if (selected[LEVEL_KEYS[i]]?.length > 0) {
+      lowestIdx = i;
+      break;
+    }
+  }
+  if (lowestIdx === -1) return false;
+  // brand_manager выше всех уровней — блокируется если любой уровень выбран
+  if (key === 'brand_manager') return true;
+  const keyIdx = LEVEL_KEYS.indexOf(key as any);
+  if (keyIdx === -1) return false;
+  return keyIdx < lowestIdx;
+}
+
 async function onFilterChange(changedKey: FilterKey) {
+  // При изменении вышестоящего уровня — сбрасываем все нижестоящие
+  if (changedKey === 'brand_manager') {
+    for (const k of LEVEL_KEYS) selected[k] = [];
+  } else if (LEVEL_KEYS.includes(changedKey)) {
+    const changedIdx = LEVEL_KEYS.indexOf(changedKey);
+    for (let i = changedIdx + 1; i < LEVEL_KEYS.length; i++) {
+      selected[LEVEL_KEYS[i]] = [];
+    }
+  }
+
   const params = new URLSearchParams();
 
   // For level filters, send id values for cascade
@@ -496,23 +603,45 @@ const allAggregated = ref<any[]>([]);
 const totalAllRecords = ref(0);
 const pageSize = 50;
 
-// ── Column filters (client-side) ────────────────────────────────────────────
-const columnFilters = reactive<Record<string, string[]>>({
-  country: [], family: [], season: [],
-});
+// ── Column filters (client-side, top-down cascade) ──────────────────────────
+type ColFilterKey = 'col_bm' | 'col_model' | 'col_articul' | 'col_country' | 'col_season' | 'col_date';
 
-const columnFilterConfig = [
-  { key: 'country', label: 'Страна пр-ва', field: 'Страна пр-ва' },
-  { key: 'family', label: 'Семья', field: 'Семья' },
-  { key: 'season', label: 'Сезон', field: 'Сезон' },
+const COL_FILTER_KEYS: ColFilterKey[] = ['col_bm', 'col_model', 'col_articul', 'col_country', 'col_season', 'col_date'];
+
+const columnFilterConfig: { key: ColFilterKey; label: string; field: string }[] = [
+  { key: 'col_bm', label: 'Бренд-менеджер', field: 'Бренд-менеджер' },
+  { key: 'col_model', label: 'Модель', field: 'Модель' },
+  { key: 'col_articul', label: 'Артикул', field: 'Артикул' },
+  { key: 'col_country', label: 'Страна пр-ва', field: 'Страна пр-ва' },
+  { key: 'col_season', label: 'Сезон', field: 'Сезон' },
+  { key: 'col_date', label: 'Дата', field: 'дата расчета' },
 ];
+
+const columnFilters = reactive<Record<string, string[]>>(
+  Object.fromEntries(columnFilterConfig.map((c) => [c.key, [] as string[]])) as any
+);
+
+function _colFilterValue(row: any, field: string): string {
+  return (row[field] ?? '').toString().trim();
+}
 
 const columnFilterOptions = computed(() => {
   const opts: Record<string, string[]> = {};
-  for (const cfg of columnFilterConfig) {
+  for (let i = 0; i < columnFilterConfig.length; i++) {
+    const cfg = columnFilterConfig[i];
+    // Каскад: только вышестоящие фильтры (меньший индекс) ограничивают опции
+    let available = allAggregated.value;
+    for (let j = 0; j < i; j++) {
+      const higher = columnFilterConfig[j];
+      const sel = columnFilters[higher.key];
+      if (sel && sel.length > 0) {
+        available = available.filter((r: any) => sel.includes(_colFilterValue(r, higher.field)));
+      }
+    }
     const vals = new Set<string>();
-    for (const row of allAggregated.value) {
-      const v = (row[cfg.field] || '').toString().trim();
+    for (const row of available) {
+      let v = _colFilterValue(row, cfg.field);
+      if (cfg.key === 'col_date') v = v.split('T')[0];
       if (v) vals.add(v);
     }
     opts[cfg.key] = Array.from(vals).sort();
@@ -520,12 +649,31 @@ const columnFilterOptions = computed(() => {
   return opts;
 });
 
+function isColFilterLocked(key: string): boolean {
+  const idx = COL_FILTER_KEYS.indexOf(key as ColFilterKey);
+  if (idx === -1) return false;
+  for (let i = COL_FILTER_KEYS.length - 1; i > idx; i--) {
+    if (columnFilters[COL_FILTER_KEYS[i]]?.length > 0) return true;
+  }
+  return false;
+}
+
+function onColFilterChange(changedKey: string) {
+  const idx = COL_FILTER_KEYS.indexOf(changedKey as ColFilterKey);
+  if (idx >= 0) {
+    for (let i = idx + 1; i < COL_FILTER_KEYS.length; i++) {
+      columnFilters[COL_FILTER_KEYS[i]] = [];
+    }
+  }
+}
+
 const filteredAggregated = computed(() => {
   return allAggregated.value.filter((row: any) => {
     return columnFilterConfig.every((cfg) => {
       const sel = columnFilters[cfg.key];
       if (!sel || sel.length === 0) return true;
-      const val = (row[cfg.field] || '').toString().trim();
+      let val = _colFilterValue(row, cfg.field);
+      if (cfg.key === 'col_date') val = val.split('T')[0];
       return sel.includes(val);
     });
   });
@@ -542,22 +690,61 @@ function resetColumnFilters() {
   currentPage.value = 0;
 }
 
+// ── Sorting ────────────────────────────────────────────────────────────────────
+const sortField = ref<string>('');
+const sortDir = ref<'asc' | 'desc'>('asc');
+
+function toggleSort(field: string) {
+  if (sortField.value === field) {
+    if (sortDir.value === 'asc') sortDir.value = 'desc';
+    else { sortField.value = ''; sortDir.value = 'asc'; }
+  } else {
+    sortField.value = field;
+    sortDir.value = 'asc';
+  }
+  currentPage.value = 0;
+}
+
+const sortedRows = computed(() => {
+  const data = filteredAggregated.value;
+  if (!sortField.value) return data;
+  const field = sortField.value;
+  const dir = sortDir.value === 'asc' ? 1 : -1;
+  return [...data].sort((a, b) => {
+    let va: any, vb: any;
+    // Вычисляемые поля (наценка/маржа)
+    if (field === 'calc_markup_rub' || field === 'calc_markup_pct' || field === 'calc_margin_pct') {
+      const ca = calc(a), cb = calc(b);
+      if (field === 'calc_markup_rub') { va = ca.markupRub; vb = cb.markupRub; }
+      else if (field === 'calc_markup_pct') { va = ca.markupPct; vb = cb.markupPct; }
+      else { va = ca.marginPct; vb = cb.marginPct; }
+    } else {
+      va = a[field]; vb = b[field];
+    }
+    // Numeric comparison
+    const na = Number(va), nb = Number(vb);
+    if (!isNaN(na) && !isNaN(nb)) return (na - nb) * dir;
+    // String comparison
+    return String(va ?? '').localeCompare(String(vb ?? '')) * dir;
+  });
+});
+
 function getOriginalIndex(row: any): number {
   return allAggregated.value.indexOf(row);
 }
 
-watch(() => filteredAggregated.value.length, (newLen) => {
+watch(() => sortedRows.value.length, (newLen) => {
   if (currentPage.value * pageSize >= newLen && newLen > 0) {
     currentPage.value = 0;
   }
 });
 
 const currentPage = ref(0);
-const totalPages = computed(() => Math.max(1, Math.ceil(filteredAggregated.value.length / pageSize)));
+const totalPages = computed(() => Math.max(1, Math.ceil(sortedRows.value.length / pageSize)));
 const pageStart = computed(() => currentPage.value * pageSize);
-const pageRows = computed(() => filteredAggregated.value.slice(pageStart.value, pageStart.value + pageSize));
+const pageRows = computed(() => sortedRows.value.slice(pageStart.value, pageStart.value + pageSize));
 const pageRange = computed(() => {
-  const filteredCount = filteredAggregated.value.length;
+  const filteredCount = sortedRows.value.length;
   if (!filteredCount) return "0";
   const a = pageStart.value + 1;
   const b = Math.min(pageStart.value + pageSize, filteredCount);
@@ -605,35 +792,64 @@ const detailsFilteredData = ref<any[]>([]);
 const detailsLoading = ref(false);
 
 const detailsFilterConfig = [
+  { key: 'col_date', label: 'Дата', field: 'дата расчета' },
   { key: 'calc_sign', label: 'Пр.кальк', field: 'Признак калькуляции' },
   { key: 'articul', label: 'Артикул', field: 'Артикул' },
   { key: 'name', label: 'Наименование', field: 'Наименование модели' },
   { key: 'task_num', label: '№ задания', field: 'Номер задания производства' },
 ];
 
-const detailsColumnFilters = reactive<Record<string, string[]>>({
-  calc_sign: [], articul: [], name: [], task_num: [],
+const DET_COL_FILTER_KEYS = detailsFilterConfig.map((c) => c.key);
+
+const detailsColumnFilters = reactive<Record<string, string[]>>(
+  Object.fromEntries(detailsFilterConfig.map((c) => [c.key, [] as string[]])) as any
+);
+
+function _detColFilterValue(row: any, cfg: { key: string; field: string }): string {
+  let v = (row[cfg.field] ?? '').toString().trim();
+  if (cfg.key === 'col_date') v = v.split('T')[0];
+  return v;
+}
+
+const detailsColumnFilterOptions = computed(() => {
+  const opts: Record<string, string[]> = {};
+  for (let i = 0; i < detailsFilterConfig.length; i++) {
+    const cfg = detailsFilterConfig[i];
+    let available = detailsAllData.value;
+    for (let j = 0; j < i; j++) {
+      const higher = detailsFilterConfig[j];
+      const sel = detailsColumnFilters[higher.key];
+      if (sel && sel.length > 0) {
+        available = available.filter((r: any) => sel.includes(_detColFilterValue(r, higher)));
+      }
+    }
+    const vals = new Set<string>();
+    for (const row of available) {
+      const v = _detColFilterValue(row, cfg);
+      if (v) vals.add(v);
+    }
+    opts[cfg.key] = Array.from(vals).sort();
+  }
+  return opts;
 });
 
-function getDetailFilterOptions(cfg: { key: string; field: string }): string[] {
-  // Cascade: higher-order filters limit options for lower ones
-  let available = detailsAllData.value;
-  for (const fc of detailsFilterConfig) {
-    if (fc.key === cfg.key) break; // stop before current filter
-    const sel = detailsColumnFilters[fc.key];
-    if (sel && sel.length > 0) {
-      available = available.filter((r: any) => {
-        const v = (r[fc.field] || '').toString().trim();
-        return sel.includes(v);
-      });
+function isDetFilterLocked(key: string): boolean {
+  const idx = DET_COL_FILTER_KEYS.indexOf(key);
+  if (idx === -1) return false;
+  for (let i = DET_COL_FILTER_KEYS.length - 1; i > idx; i--) {
+    if (detailsColumnFilters[DET_COL_FILTER_KEYS[i]]?.length > 0) return true;
+  }
+  return false;
+}
+
+function onDetFilterChange(changedKey: string) {
+  const idx = DET_COL_FILTER_KEYS.indexOf(changedKey);
+  if (idx >= 0) {
+    for (let i = idx + 1; i < DET_COL_FILTER_KEYS.length; i++) {
+      detailsColumnFilters[DET_COL_FILTER_KEYS[i]] = [];
     }
   }
-  const vals = new Set<string>();
-  available.forEach((r: any) => {
-    const v = (r[cfg.field] || '').toString().trim();
-    if (v) vals.add(v);
-  });
-  return Array.from(vals).sort();
+  applyDetailsFilters();
 }
 
 function applyDetailsFilters() {
@@ -641,7 +857,7 @@ function applyDetailsFilters() {
     return detailsFilterConfig.every((cfg) => {
       const sel = detailsColumnFilters[cfg.key];
       if (!sel || sel.length === 0) return true;
-      const val = (row[cfg.field] || '').toString().trim();
+      const val = _detColFilterValue(row, cfg);
       return sel.includes(val);
     });
   });
@@ -699,58 +915,140 @@ function resetDetailsFilters() {
 }
 
 function openDetailsInNewTab() {
-  // Open a new window with standalone details HTML
   const w = window.open('', '_blank');
   if (!w) return;
 
-  let html = `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><title>Детализация: ${detailsModel.value}</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; background: #f5f5f5; }
-    .container { max-width: 100%; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
-    .header { padding: 16px 24px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
-    .header h1 { font-size: 18px; }
-    .content { padding: 16px 24px; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
-    th { background: #f8f9fa; border-bottom: 2px solid #dee2e6; padding: 8px; text-align: center; font-weight: 700; font-size: 11px; position: sticky; top: 0; }
-    td { padding: 6px 8px; border-bottom: 1px solid #eee; text-align: right; }
-    td:nth-child(-n+5) { text-align: left; }
-    tbody tr:hover { background: #f1f3f5; }
-    .count { padding: 8px 24px; font-size: 12px; color: #6c757d; border-top: 1px solid #eee; }
-  </style></head><body><div class="container">`;
-  html += `<div class="header"><h1>Детализация: ${detailsModel.value}</h1></div>`;
-  html += `<div class="content"><table><thead><tr>
-    <th>Дата</th><th>Пр.кальк</th><th>Артикул</th><th>Наименование</th><th>№ задания</th>
-    <th>Розница</th><th>Опт</th><th>Осн.мат</th><th>Вспом.</th><th>Пошив</th><th>Раскрой</th><th>Декор</th><th>Вязание</th>
-    <th>Себест.</th><th>Наценка</th><th>Наценка%</th><th>Маржа%</th>
-  </tr></thead><tbody>`;
+  const rows = detailsFilteredData.value;
+  const model = detailsModel.value;
+  const hasData = rows && rows.length > 0;
 
-  for (const r of detailsFilteredData.value) {
-    const dateVal = r['дата расчета'] ? (String(r['дата расчета']).includes('T') ? String(r['дата расчета']).split('T')[0] : String(r['дата расчета'])) : '-';
-    html += '<tr>';
-    html += `<td>${dateVal}</td>`;
-    html += `<td>${r['Признак калькуляции'] || '-'}</td>`;
-    html += `<td>${r['Артикул'] || '-'}</td>`;
-    html += `<td>${r['Наименование модели'] || '-'}</td>`;
-    html += `<td>${r['Номер задания производства'] || '-'}</td>`;
-    html += `<td>${fmt(r['Розничная цена, руб.'])}</td>`;
-    html += `<td>${fmt(r['Оптовая цена, руб.'])}</td>`;
-    html += `<td>${fmt(r['Осн. материалы, руб.'])}</td>`;
-    html += `<td>${fmt(r['Вспом. материалы, руб.'])}</td>`;
-    html += `<td>${fmt(r['Пошив, руб.'])}</td>`;
-    html += `<td>${fmt(r['Раскрой, руб.'])}</td>`;
-    html += `<td>${fmt(r['Декор, руб.'])}</td>`;
-    html += `<td>${fmt(r['Вязание, руб.'])}</td>`;
-    html += `<td>${fmt(r['Себестоимость, руб.'])}</td>`;
-    html += `<td>${fmt(r['Наценка, руб.'])}</td>`;
-    html += `<td>${r['Наценка, %']}</td>`;
-    html += `<td>${r['Маржинальность, %']}</td>`;
-    html += '</tr>';
+  function nf(v) {
+    if (v == null || v === '') return '\u2014';
+    const n = Number(v);
+    if (Number.isNaN(n)) return String(v);
+    return n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
-  html += `</tbody></table></div>`;
-  html += `<div class="count">Найдено строк: ${detailsFilteredData.value.length}</div>`;
-  html += `</div></body></html>`;
+  function escHtml(s) { return String(s).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+  // Build static table rows (always visible, JS-overridable)
+  let tableHtml = '';
+  for (let i = 0; i < (hasData ? rows.length : 0); i++) {
+    const r = rows[i];
+    let dv = r['\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430'];
+    if (dv) {
+      const s = String(dv);
+      dv = s.includes('T') ? s.split('T')[0] : s;
+    } else { dv = '\u2014'; }
+    const cells = [
+      dv,
+      r['\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438'] || '\u2014',
+      r['\u0410\u0440\u0442\u0438\u043A\u0443\u043B'] || '\u2014',
+      r['\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435 \u043C\u043E\u0434\u0435\u043B\u0438'] || '\u2014',
+      r['\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430'] || '\u2014',
+      nf(r['\u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431.']),
+      nf(r['\u041E\u043F\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431.']),
+      nf(r['\u041E\u0441\u043D. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431.']),
+      nf(r['\u0412\u0441\u043F\u043E\u043C. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431.']),
+      nf(r['\u041F\u043E\u0448\u0438\u0432, \u0440\u0443\u0431.']),
+      nf(r['\u0420\u0430\u0441\u043A\u0440\u043E\u0439, \u0440\u0443\u0431.']),
+      nf(r['\u0414\u0435\u043A\u043E\u0440, \u0440\u0443\u0431.']),
+      nf(r['\u0412\u044F\u0437\u0430\u043D\u0438\u0435, \u0440\u0443\u0431.']),
+      nf(r['\u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C, \u0440\u0443\u0431.']),
+      nf(r['\u041D\u0430\u0446\u0435\u043D\u043A\u0430, \u0440\u0443\u0431.']),
+      r['\u041D\u0430\u0446\u0435\u043D\u043A\u0430, %'] ?? '',
+      r['\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u044C, %'] ?? '',
+    ];
+    tableHtml += '<tr>';
+    for (const c of cells) tableHtml += '<td>' + escHtml(String(c)) + '<\/td>';
+    tableHtml += '<\/tr>';
+  }
+
+  // Filter config
+  const filterFields = [
+    { key: 'col_date', label: '\u0414\u0430\u0442\u0430', field: '\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430' },
+    { key: 'calc_sign', label: '\u041F\u0440.\u043A\u0430\u043B\u044C\u043A', field: '\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438' },
+    { key: 'articul', label: '\u0410\u0440\u0442\u0438\u043A\u0443\u043B', field: '\u0410\u0440\u0442\u0438\u043A\u0443\u043B' },
+    { key: 'name', label: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435', field: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435 \u043C\u043E\u0434\u0435\u043B\u0438' },
+    { key: 'task_num', label: '\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F', field: '\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430' },
+  ];
+
+  // Build filter HTML with all options pre-populated
+  let filterHtml = '';
+  for (const ff of filterFields) {
+    const vals = new Set();
+    for (const r of rows) {
+      let v = (r[ff.field] ?? '').toString().trim();
+      if (ff.field === '\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430' && v.includes('T')) v = v.split('T')[0];
+      if (v) vals.add(v);
+    }
+    const sorted = Array.from(vals).sort();
+    filterHtml += '<div class="filter-item" data-key="' + ff.key + '"><label>' + ff.label + '<\/label><select multiple id="sel_' + ff.key + '">';
+    for (const v of sorted) filterHtml += '<option value="' + escHtml(v) + '">' + escHtml(v) + '<\/option>';
+    filterHtml += '<\/select><\/div>';
+  }
+  filterHtml += '<a href="#" class="filter-reset" id="resetFilters">\u0421\u0431\u0440\u043E\u0441\u0438\u0442\u044C<\/a>';
+
+  // JS to embed in popup (completely self-contained, no toString() serialization)
+  const popupScript =
+    'try{' +
+    'var R=' + JSON.stringify(rows) + ';' +
+    'var FK=' + JSON.stringify(filterFields.map(f => f.key)) + ';' +
+    'var FF=' + JSON.stringify(filterFields.map(f => f.field)) + ';' +
+    'function gv(r,f){var v=(r[f]||"").toString().trim();if(f==="' + '\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430' + '"&&v.indexOf("T")>=0)v=v.split("T")[0];return v}' +
+    'function nf(v){if(v==null||v==="")return"\u2014";var n=Number(v);if(isNaN(n))return String(v);return n.toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})}' +
+    'function rt(rr){var h="";for(var i=0;i<rr.length;i++){var r=rr[i],dv=gv(r,FF[0]);h+="<tr><td>"+dv+"</td><td>"+(r[FF[1]]||"\u2014")+"</td><td>"+(r[FF[2]]||"\u2014")+"</td><td>"+(r[FF[3]]||"\u2014")+"</td><td>"+(r[FF[4]]||"\u2014")+"</td><td>"+nf(r["\u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041E\u043F\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041E\u0441\u043D. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0412\u0441\u043F\u043E\u043C. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041F\u043E\u0448\u0438\u0432, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0420\u0430\u0441\u043A\u0440\u043E\u0439, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0414\u0435\u043A\u043E\u0440, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0412\u044F\u0437\u0430\u043D\u0438\u0435, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041D\u0430\u0446\u0435\u043D\u043A\u0430, \u0440\u0443\u0431."])+"</td><td>"+(r["\u041D\u0430\u0446\u0435\u043D\u043A\u0430, %"]||"")+"</td><td>"+(r["\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u044C, %"]||"")+"</td><\/tr>"}return h}' +
+    'function ap(){' +
+    'var sel={};' +
+    'for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(!e){sel[FK[i]]=[];continue}var v=[];for(var j=0;j<e.options.length;j++){if(e.options[j].selected)v.push(e.options[j].value)}sel[FK[i]]=v}' +
+    'var fd=R.filter(function(r){for(var i=0;i<FK.length;i++){var s=sel[FK[i]];if(s&&s.length){var v=gv(r,FF[i]);if(s.indexOf(v)<0)return false}}return true});' +
+    'document.getElementById("popupBody").innerHTML=rt(fd);' +
+    'document.getElementById("popupCount").textContent="\u041D\u0430\u0439\u0434\u0435\u043D\u043E \u0441\u0442\u0440\u043E\u043A: "+fd.length' +
+    '}' +
+    'ap();' +
+    'for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(e)e.onchange=ap}' +
+    'var rf=document.getElementById("resetFilters");if(rf)rf.onclick=function(){for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(e)for(var j=0;j<e.options.length;j++)e.options[j].selected=false}ap();return false}' +
+    '}catch(e){console.error("[cost-popup]",e)}';
+
+  const html =
+    '<!DOCTYPE html>' +
+    '<html lang="ru"><head><meta charset="utf-8">' +
+    '<title>\u0414\u0435\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F: ' + escHtml(model) + '<\/title>' +
+    '<style>' +
+    '*{box-sizing:border-box;margin:0;padding:0}' +
+    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:20px;background:#f5f5f5}' +
+    '.container{max-width:100%;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.1)}' +
+    '.header{padding:16px 24px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center}' +
+    '.header h1{font-size:18px}' +
+    '.filters{padding:12px 24px;border-bottom:1px solid #eee;display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;background:#fafafa}' +
+    '.filter-item{display:flex;flex-direction:column;gap:2px}' +
+    '.filter-item label{font-size:10px;color:#888;font-weight:600}' +
+    '.filter-item select{min-width:120px;max-width:180px;height:60px;border:1px solid #ddd;border-radius:4px;background:#fff;font-size:10px;padding:2px}' +
+    '.filter-reset{font-size:12px;color:#888;padding-top:14px;cursor:pointer;white-space:nowrap;text-decoration:none}' +
+    '.filter-reset:hover{color:#333}' +
+    '.content{padding:16px 24px;overflow-x:auto}' +
+    'table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}' +
+    'th{background:#f8f9fa;border-bottom:2px solid #dee2e6;padding:8px;text-align:center;font-weight:700;font-size:11px;position:sticky;top:0}' +
+    'td{padding:6px 8px;border-bottom:1px solid #eee;text-align:right}' +
+    'td:nth-child(-n+5){text-align:left}' +
+    'tbody tr:hover{background:#f1f3f5}' +
+    '.count{padding:8px 24px;font-size:12px;color:#6c757d;border-top:1px solid #eee}' +
+    '<\/style><\/head><body>' +
+    '<div class="container">' +
+      '<div class="header"><h1>\u0414\u0435\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F: ' + escHtml(model) + '<\/h1><\/div>' +
+      '<div class="filters">' + filterHtml + '<\/div>' +
+      '<div class="content">' +
+        '<table><thead><tr>' +
+          '<th>\u0414\u0430\u0442\u0430<\/th><th>\u041F\u0440.\u043A\u0430\u043B\u044C\u043A<\/th><th>\u0410\u0440\u0442\u0438\u043A\u0443\u043B<\/th><th>\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435<\/th><th>\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F<\/th>' +
+          '<th>\u0420\u043E\u0437\u043D\u0438\u0446\u0430<\/th><th>\u041E\u043F\u0442<\/th><th>\u041E\u0441\u043D.\u043C\u0430\u0442<\/th><th>\u0412\u0441\u043F\u043E\u043C.<\/th><th>\u041F\u043E\u0448\u0438\u0432<\/th><th>\u0420\u0430\u0441\u043A\u0440\u043E\u0439<\/th><th>\u0414\u0435\u043A\u043E\u0440<\/th><th>\u0412\u044F\u0437\u0430\u043D\u0438\u0435<\/th>' +
+          '<th>\u0421\u0435\u0431\u0435\u0441\u0442.<\/th><th>\u041D\u0430\u0446\u0435\u043D\u043A\u0430<\/th><th>\u041D\u0430\u0446\u0435\u043D\u043A\u0430%<\/th><th>\u041C\u0430\u0440\u0436\u0430%<\/th>' +
+        '<\/tr><\/thead>' +
+        '<tbody id="popupBody">' + tableHtml + '<\/tbody><\/table>' +
+      '<\/div>' +
+      '<div class="count" id="popupCount">\u041D\u0430\u0439\u0434\u0435\u043D\u043E \u0441\u0442\u0440\u043E\u043A: ' + rows.length + '<\/div>' +
+    '<\/div>' +
+    '<script>' + popupScript + '<\/script>' +
+    '<\/body><\/html>';
 
   w.document.write(html);
   w.document.close();
@@ -871,7 +1169,9 @@ const headers = [
   "Осн. материалы (руб)", "Осн. материалы ($)",
   "Вспом. материалы (руб)", "Вспом. материалы ($)",
   "Пошив (руб)", "Пошив ($)", "Раскрой (руб)", "Раскрой ($)",
-  "Декоры (руб)", "Декоры ($)", "Себест. (руб)", "Себест. ($)",
+  "Декоры (руб)", "Декоры ($)",
+  "Вязание (руб)", "Вязание ($)",
+  "Себест. (руб)", "Себест. ($)",
   "Наценка (руб)", "Наценка (%)", "Маржа (%)",
 ];
 
@@ -906,6 +1206,8 @@ const exportToExcel = () => {
       fmt(row["avg_Раскрой, USD."]),
       fmt(row["sum_Декоры, руб."]),
       fmt(row["sum_Декоры, USD."]),
+      fmt(row["avg_Вязание, руб."]),
+      fmt(row["avg_Вязание, USD."]),
       fmt(row["sum_Себестоимость, руб."]),
       fmt(row["sum_Себестоимость, USD."]),
       fmt(c.markupRub),
@@ -943,6 +1245,24 @@ const onCopyShortcut = (e: KeyboardEvent) => {
 };
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
+
+const USD_SORT_FIELDS = [
+  'avg_Розничная цена по уровню, USD.',
+  'avg_Отпускная цена по уровню, USD.',
+  'sum_Основные материалы, USD.',
+  'sum_Вспомогательные материалы, USD.',
+  'avg_Пошив, USD.',
+  'avg_Раскрой, USD.',
+  'sum_Декоры, USD.',
+  'avg_Вязание, USD.',
+  'sum_Себестоимость, USD.',
+];
+
+watch(showUSD, (val) => {
+  if (!val && USD_SORT_FIELDS.includes(sortField.value)) {
+    sortField.value = '';
+  }
+});
 
 watch(currentPage, () => {
   selectedRowIndex.value = -1;
@@ -1032,6 +1352,9 @@ onMounted(async () => {
   display: block;
   margin-bottom: var(--sp-2);
 }
+.filter-item.locked {
+  opacity: 0.5;
+}
 
 /* Action bar */
 .cost-actions {
@@ -1056,6 +1379,50 @@ onMounted(async () => {
 .cost-info .info-ok { color: var(--pos); }
 .cost-info .info-muted { color: var(--text-muted); }
 .cost-info .spinning { animation: cost-spin 0.9s linear infinite; }
+
+/* USD toggle */
+.usd-toggle {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  gap: 6px;
+  user-select: none;
+}
+.usd-toggle input {
+  display: none;
+}
+.usd-toggle-track {
+  width: 36px;
+  height: 20px;
+  background: var(--border, #d1d5db);
+  border-radius: 10px;
+  position: relative;
+  transition: background 0.2s;
+}
+.usd-toggle input:checked + .usd-toggle-track {
+  background: var(--accent, #4f46e5);
+}
+.usd-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 700;
+  color: var(--text-muted, #6b7280);
+  transition: left 0.2s, color 0.2s;
+}
+.usd-toggle input:checked + .usd-toggle-track .usd-toggle-thumb {
+  left: 18px;
+  color: var(--accent, #4f46e5);
+}
+
 .cost-actions-buttons {
   display: inline-flex;
   align-items: center;
@@ -1112,12 +1479,11 @@ onMounted(async () => {
 .details-filters { padding: var(--sp-4) var(--sp-5); background: var(--bg-surface-2); border-bottom: 1px solid var(--border); display: flex; gap: var(--sp-4); align-items: flex-end; flex-wrap: wrap; flex-shrink: 0; }
 .details-filters label { font-size: var(--fs-xs); font-weight: var(--fw-medium); display: flex; flex-direction: column; gap: 4px; color: var(--text-muted); }
 .details-filters input[type="date"] { height: 32px; padding: 0 var(--sp-3); border: 1px solid var(--border); border-radius: var(--rd-2); background: var(--bg-surface); }
-select.form-select-multi { height: 60px; min-width: 180px; border: 1px solid var(--border); border-radius: var(--rd-2); background: var(--bg-surface); font-size: var(--fs-xs); }
 
 .details-col-filters { padding: var(--sp-3) var(--sp-5); border-bottom: 1px solid var(--border); display: flex; gap: var(--sp-3); align-items: flex-start; flex-wrap: wrap; flex-shrink: 0; }
-.details-col-filter-item { display: flex; flex-direction: column; gap: 2px; }
+.details-col-filter-item { display: flex; flex-direction: column; gap: 2px; min-width: 140px; max-width: 200px; flex: 1; }
+.details-col-filter-item.locked { opacity: 0.5; }
 .details-col-filter-item label { font-size: 10px; color: var(--text-muted); font-weight: var(--fw-medium); }
-.details-col-filter-item select { min-width: 120px; max-width: 180px; height: 50px; border: 1px solid var(--border); border-radius: var(--rd-2); background: var(--bg-surface); font-size: 10px; }
 .details-col-filter-reset { font-size: var(--fs-xs); color: var(--text-muted); padding-top: 16px; white-space: nowrap; }
 .details-col-filter-reset:hover { color: var(--text-strong); }
 
@@ -1164,6 +1530,10 @@ select.form-select-multi { height: 60px; min-width: 180px; border: 1px solid var
 .cost-error-x:hover { color: var(--text-strong); background: var(--bg-surface-3); }
 
 /* Tables */
+.data-table th { cursor: pointer; user-select: none; }
+.data-table th:hover { background: var(--bg-surface-3); }
+.data-table th.sorted { background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface)); }
+.sort-arrow { font-size: 10px; color: var(--accent); }
 .data-table tr.selected { background: var(--bg-surface-3); }
 .data-table tbody tr { cursor: pointer; }
 .data-table .price-select {
@@ -1211,6 +1581,9 @@ select.form-select-multi { height: 60px; min-width: 180px; border: 1px solid var
   min-width: 140px;
   max-width: 200px;
   flex: 1;
+}
+.col-filter-item.locked {
+  opacity: 0.5;
 }
 .col-filter-item label {
   font-size: 10px;

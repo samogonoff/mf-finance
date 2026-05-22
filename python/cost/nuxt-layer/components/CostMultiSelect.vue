@@ -1,10 +1,11 @@
 <template>
-  <div ref="root" class="ms" :class="{ 'is-open': open, 'is-empty': !options.length }">
+  <div ref="root" class="ms" :class="{ 'is-open': open, 'is-empty': !options.length, 'is-disabled': disabled }">
     <div class="ms-control" @click="toggle">
       <div class="ms-tags">
         <span v-for="v in modelValue" :key="v" class="ms-tag">
           <span class="ms-tag-label">{{ v }}</span>
           <button
+            v-if="!disabled"
             type="button"
             class="ms-x"
             aria-label="Удалить"
@@ -58,8 +59,9 @@ const props = withDefaults(
     modelValue: string[];
     options: string[];
     placeholder?: string;
+    disabled?: boolean;
   }>(),
-  { placeholder: "Все значения" }
+  { placeholder: "Все значения", disabled: false }
 );
 
 const emit = defineEmits<{
@@ -79,6 +81,7 @@ const filtered = computed(() => {
 });
 
 const toggle = () => {
+  if (props.disabled) return;
   open.value = !open.value;
   if (open.value) {
     nextTick(() => searchInput.value?.focus());
@@ -98,10 +101,12 @@ const toggleOption = (opt: string) => {
   emit("change");
 };
 const remove = (opt: string) => {
+  if (props.disabled) return;
   emit("update:modelValue", props.modelValue.filter((v) => v !== opt));
   emit("change");
 };
 const clear = () => {
+  if (props.disabled) return;
   emit("update:modelValue", []);
   emit("change");
   close();
@@ -272,4 +277,13 @@ onUnmounted(() => document.removeEventListener("click", onClickOutside));
   border-radius: var(--rd-1);
 }
 .ms-clear:hover { color: var(--accent); background: var(--bg-surface-3); }
+
+/* Disabled state */
+.ms.is-disabled .ms-control {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--bg-surface-2, #f8f9fa);
+}
+.ms.is-disabled .ms-caret { display: none; }
+.ms.is-disabled .ms-placeholder { color: var(--text-muted); }
 </style>
