@@ -161,18 +161,14 @@ def _get_available_ids(
         if allowed_bm:
             ids &= allowed_bm
 
+    # Только вышестоящие уровни (меньший индекс) фильтруют текущий — top-down
     for j in range(key_index):
         higher_selected = selected_levels.get(LEVEL_KEYS[j], [])
         if higher_selected:
             propagated = _propagate_down(j, key_index, set(higher_selected))
             ids &= propagated
 
-    for j in range(key_index + 1, len(LEVEL_KEYS)):
-        lower_selected = selected_levels.get(LEVEL_KEYS[j], [])
-        if lower_selected:
-            propagated = _propagate_up(j, key_index, set(lower_selected))
-            ids &= propagated
-
+    # Нижестоящие уровни НЕ фильтруют вышестоящие
     return ids
 
 
@@ -203,15 +199,8 @@ def get_filter_options(params: dict[str, list[str]]) -> dict[str, Any]:
 
     result: dict[str, Any] = {}
 
-    # 1. Brand managers — фильтруются по ВСЕМ выбранным уровням, не только level01
-    has_any_level = any(selected_levels.values())
-    if has_any_level:
-        result["brand_manager"] = [
-            bm for bm in BRAND_MANAGERS
-            if _match_brand_manager(bm, selected_levels)
-        ] or list(BRAND_MANAGERS)
-    else:
-        result["brand_manager"] = list(BRAND_MANAGERS)
+    # 1. Brand managers — НЕ фильтруются уровнями (top-down cascade)
+    result["brand_manager"] = list(BRAND_MANAGERS)
 
     # 2. Level 01–05 — полный двусторонний многоуровневый каскад
     for i, key in enumerate(LEVEL_KEYS):
@@ -262,10 +251,10 @@ def _make_row(i: int, overrides: dict | None = None) -> dict[str, Any]:
         "sum_Основные материалы, USD.":      round(cost * 0.55 / 92, 2),
         "sum_Вспомогательные материалы, руб.": round(cost * 0.08, 2),
         "sum_Вспомогательные материалы, USD.": round(cost * 0.08 / 92, 2),
-        "sum_Декоры, руб.":      round(cost * 0.04, 2),
-        "sum_Декоры, USD.":      round(cost * 0.04 / 92, 2),
-        "sum_Себестоимость, руб.": round(cost, 2),
-        "sum_Себестоимость, USD.": round(cost / 92, 2),
+        "avg_Декоры, руб.":      round(cost * 0.04, 2),
+        "avg_Декоры, USD.":      round(cost * 0.04 / 92, 2),
+        "avg_Вязание, руб.":     round(cost * 0.02, 2),
+        "avg_Вязание, USD.":     round(cost * 0.02 / 92, 2),
     }
     if overrides:
         row.update(overrides)
@@ -326,6 +315,26 @@ def aggregated(payload: dict | None = None) -> dict:
     rows = _all_rows()
     if payload:
         rows = [r for r in rows if _match_filters(r, payload)]
+    # Пересчитываем себестоимость как сумму 6 компонентов (как в детализации)
+    for row in rows:
+        row["sum_Себестоимость, руб."] = round(
+            float(row.get("avg_Пошив, руб.", 0) or 0)
+            + float(row.get("avg_Раскрой, руб.", 0) or 0)
+            + float(row.get("avg_Декоры, руб.", 0) or 0)
+            + float(row.get("avg_Вязание, руб.", 0) or 0)
+            + float(row.get("sum_Основные материалы, руб.", 0) or 0)
+            + float(row.get("sum_Вспомогательные материалы, руб.", 0) or 0),
+            2,
+        )
+        row["sum_Себестоимость, USD."] = round(
+            float(row.get("avg_Пошив, USD.", 0) or 0)
+            + float(row.get("avg_Раскрой, USD.", 0) or 0)
+            + float(row.get("avg_Декоры, USD.", 0) or 0)
+            + float(row.get("avg_Вязание, USD.", 0) or 0)
+            + float(row.get("sum_Основные материалы, USD.", 0) or 0)
+            + float(row.get("sum_Вспомогательные материалы, USD.", 0) or 0),
+            2,
+        )
     return {"data": rows, "count": len(rows)}
 
 
