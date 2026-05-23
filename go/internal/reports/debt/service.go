@@ -176,6 +176,7 @@ func BuildReport(raw []rawRow) []DebtRow {
 			CompanyINN: rr.CompanyID,
 			PartnerINN: rr.CounterpartyID.String,
 			Account:    rr.AccountRoot,
+			Currency:   CurrencyForCountry(ent.Country), // функциональная валюта юрлица
 		}
 		row.AccountName = accountNameFor(ent.Country, rr.AccountRoot)
 		if p, ok := partnerByINN[rr.CounterpartyID.String]; ok {
@@ -198,7 +199,7 @@ func BuildReport(raw []rawRow) []DebtRow {
 		case KindRevenue:
 			// Выручка по 90.x: проводка Cr 90.x → signed = −amt; делаем положительной.
 			row.RevenuePeriod = -rr.TurnoverSigned
-			// RevenueLastMonth заполнится в M4 отдельным запросом по дате последнего месяца.
+			row.RevenueLastMonth = -rr.LastMonthSigned
 		}
 
 		out = append(out, row)

@@ -58,13 +58,18 @@ func WrapPremasterRepo(db *sql.DB) PremasterRepo {
 
 // rawRow — что отдаёт SQL: signed-сальдо по (CompanyID, CounterpartyID, account_root).
 // Знак: для Dr-движения = +amt, для Cr-движения = −amt.
+//
+// LastMonthSigned — signed-сальдо только за последний календарный месяц периода
+// [DateFrom; DateTo]. Используется для RevenueLastMonth (отдельный показатель в ТЗ).
+// Для non-revenue счетов не используется и не должно влиять на DZ/KZ-показатели.
 type rawRow struct {
-	CompanyID      string
-	CounterpartyID sql.NullString // NULL → внутренние операции, отфильтруем
-	AccountRoot    string
-	OpeningSigned  float64
-	TurnoverSigned float64
-	ClosingSigned  float64
+	CompanyID       string
+	CounterpartyID  sql.NullString // NULL → внутренние операции, отфильтруем
+	AccountRoot     string
+	OpeningSigned   float64
+	TurnoverSigned  float64
+	LastMonthSigned float64
+	ClosingSigned   float64
 }
 
 // Report — основной запрос. Берёт сырые проводки Premaster1C по выбранным
@@ -112,8 +117,10 @@ func (r *premasterRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 
 	dateFromParam := "@dfrom"
 	dateToParam := "@dto"
+	dateLastMonthParam := "@dlast"
 	args = append(args, sql.Named("dfrom", asMSSQLDate(f.DateFrom)))
 	args = append(args, sql.Named("dto", asMSSQLDate(endOfDay(f.DateTo))))
+	args = append(args, sql.Named("dlast", asMSSQLDate(startOfLastMonth(f.DateTo))))
 
 	// 3. SQL: UNION ALL Dr/Cr, GROUP BY (CompanyID, CounterpartyID, root).
 	//    `Coalesce(CounterpartyID, '')` чтобы NULL не терялся в GROUP BY (мы потом отбросим).
@@ -145,13 +152,14 @@ SELECT
     acc_root,
     SUM(CASE WHEN [Date] <  %[3]s THEN amt * sign_dr ELSE 0 END) AS opening_signed,
     SUM(CASE WHEN [Date] >= %[3]s THEN amt * sign_dr ELSE 0 END) AS turnover_signed,
+    SUM(CASE WHEN [Date] >= %[4]s THEN amt * sign_dr ELSE 0 END) AS last_month_signed,
     SUM(amt * sign_dr) AS closing_signed
 FROM src
 GROUP BY CompanyID, CounterpartyID, acc_root
 HAVING ABS(SUM(amt * sign_dr)) > 0.005    -- отбросить строки с нулевым сальдо
     OR ABS(SUM(CASE WHEN [Date] <  %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
     OR ABS(SUM(CASE WHEN [Date] >= %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
-`, strings.Join(innParams, ","), dateToParam, dateFromParam)
+`, strings.Join(innParams, ","), dateToParam, dateFromParam, dateLastMonthParam)
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -163,7 +171,7 @@ HAVING ABS(SUM(amt * sign_dr)) > 0.005    -- отбросить строки с 
 	for rows.Next() {
 		var rr rawRow
 		if err := rows.Scan(&rr.CompanyID, &rr.CounterpartyID, &rr.AccountRoot,
-			&rr.OpeningSigned, &rr.TurnoverSigned, &rr.ClosingSigned); err != nil {
+			&rr.OpeningSigned, &rr.TurnoverSigned, &rr.LastMonthSigned, &rr.ClosingSigned); err != nil {
 			return nil, fmt.Errorf("debt.premaster.Report: scan: %w", err)
 		}
 		raw = append(raw, rr)
@@ -280,6 +288,12 @@ func asMSSQLDate(t time.Time) time.Time {
 // endOfDay — конец суток для DateTo (включительно по дню).
 func endOfDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.UTC)
+}
+
+// startOfLastMonth — первое число календарного месяца, в котором находится t.
+// Для t = 2026-04-15 → 2026-04-01. Используется для RevenueLastMonth.
+func startOfLastMonth(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
 }
 
 // countriesForINNs — определяет уникальные страны по списку наших ИНН/УНП

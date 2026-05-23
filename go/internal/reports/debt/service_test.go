@@ -182,3 +182,75 @@ func TestBuildReport_KZ_4DigitPlan(t *testing.T) {
 		t.Errorf("KZ DZ amounts: %+v", r)
 	}
 }
+
+func TestBuildReport_FillsCurrencyForRF(t *testing.T) {
+	in := []rawRow{
+		{
+			CompanyID:      "6950135110", // РФ
+			CounterpartyID: nstr("7826156685"),
+			AccountRoot:    "62",
+			ClosingSigned:  100,
+		},
+	}
+	got := BuildReport(in)
+	if got[0].Currency != "RUB" {
+		t.Errorf("Currency для РФ-юрлица должна быть RUB, got %q", got[0].Currency)
+	}
+}
+
+func TestBuildReport_FillsCurrencyForKZ(t *testing.T) {
+	in := []rawRow{
+		{
+			CompanyID:      "141240004842", // КЗ
+			CounterpartyID: nstr("KZ-PARTNER"),
+			AccountRoot:    "1210",
+			ClosingSigned:  100,
+		},
+	}
+	got := BuildReport(in)
+	if got[0].Currency != "KZT" {
+		t.Errorf("Currency для КЗ-юрлица должна быть KZT, got %q", got[0].Currency)
+	}
+}
+
+func TestBuildReport_RevenueLastMonthSeparateField(t *testing.T) {
+	// Cr 90.x за период: TurnoverSigned=-100000 (вся выручка периода),
+	// LastMonthSigned=-30000 (последний месяц периода).
+	// После flip: RevenuePeriod=100000, RevenueLastMonth=30000.
+	in := []rawRow{
+		{
+			CompanyID:       "6950135110",
+			CounterpartyID:  nstr("7705935687"),
+			AccountRoot:     "90",
+			TurnoverSigned:  -100000,
+			LastMonthSigned: -30000,
+			ClosingSigned:   -100000,
+		},
+	}
+	got := BuildReport(in)
+	r := got[0]
+	if r.RevenuePeriod != 100000 {
+		t.Errorf("RevenuePeriod = %v, want 100000", r.RevenuePeriod)
+	}
+	if r.RevenueLastMonth != 30000 {
+		t.Errorf("RevenueLastMonth = %v, want 30000", r.RevenueLastMonth)
+	}
+}
+
+func TestBuildReport_NonRevenueLeavesRevenueLastMonthZero(t *testing.T) {
+	// Для ДЗ/КЗ-счетов LastMonthSigned не используется, RevenueLastMonth = 0.
+	in := []rawRow{
+		{
+			CompanyID:       "6950135110",
+			CounterpartyID:  nstr("7826156685"),
+			AccountRoot:     "62",
+			TurnoverSigned:  5000,
+			LastMonthSigned: 1000, // должно игнорироваться для KindDZ
+			ClosingSigned:   5000,
+		},
+	}
+	got := BuildReport(in)
+	if got[0].RevenueLastMonth != 0 {
+		t.Errorf("RevenueLastMonth для ДЗ-счёта должна быть 0, got %v", got[0].RevenueLastMonth)
+	}
+}
