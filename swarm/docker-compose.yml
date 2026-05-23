@@ -25,6 +25,8 @@ services:
     configs:
       - source: %%CONFIG_NAME%%
         target: /etc/api.env
+    volumes:
+      - bugtracker_uploads:/var/lib/finance/uploads
     #healthcheck:
     #  test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
     #  interval: 10s
@@ -95,6 +97,7 @@ configs:
 
 volumes:
   redis_data:
+  bugtracker_uploads:
 
 networks:
   network:

@@ -46,6 +46,10 @@ services:
       - COST_DATABASE_URL=postgres://${COST_POSTGRES_USER:-cost}:${COST_POSTGRES_PASSWORD:-cost}@postgres-cost:5432/${COST_POSTGRES_DB:-cost}
       - COST_API_PREFIX=${COST_API_PREFIX:-/api/cost}
       - COST_MOCK=${COST_MOCK:-0}
+      # Канал к Go-API для создания уведомлений (см. /internal/notifications).
+      # Доступно только когда поднят основной dev-контур (finance_dev_network).
+      - FINANCE_INTERNAL_API=${FINANCE_INTERNAL_API:-http://go-api:8080}
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-dev-internal-token-change-me}
     ports:
       - "${COST_API_PORT:-8091}:8091"
     depends_on:

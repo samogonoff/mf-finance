@@ -33,14 +33,23 @@ func (p *B24CallbackPayload) Normalize() {
 	}
 }
 
+// PostLoginHook вызывается из HandleB24Callback после успешной выдачи токена.
+// Передан как extension-point, чтобы избежать цикла зависимостей с
+// пакетом notifications (он импортирует auth). Если nil — не вызывается.
+type PostLoginHook func(ctx context.Context, u *User)
+
 type Service struct {
-	users  *UserRepo
-	tokens *TokenRepo
+	users    *UserRepo
+	tokens   *TokenRepo
+	onLogin  PostLoginHook
 }
 
 func NewService(u *UserRepo, t *TokenRepo) *Service {
 	return &Service{users: u, tokens: t}
 }
+
+// SetPostLoginHook регистрирует пост-логин-обработчик (welcome-уведомление и т.п.).
+func (s *Service) SetPostLoginHook(h PostLoginHook) { s.onLogin = h }
 
 type IssuedSession struct {
 	Access      string
@@ -61,6 +70,9 @@ func (s *Service) HandleB24Callback(ctx context.Context, in B24CallbackPayload) 
 	access, refresh, err := s.tokens.Issue(ctx, u.ID)
 	if err != nil {
 		return nil, err
+	}
+	if s.onLogin != nil {
+		s.onLogin(ctx, u)
 	}
 	return &IssuedSession{
 		Access: access, Refresh: refresh, ExpiresIn: int64(accessTTL.Seconds()), User: u,
