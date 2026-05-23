@@ -230,3 +230,105 @@ func accountNameFor(country Country, accountRoot string) string {
 	}
 	return "Счёт " + accountRoot
 }
+
+// BuildDrilldown группирует сырые проводки документа по DocID и считает
+// дельты DZ/KZ для выбранного account root в выбранной стране.
+//
+// Правила:
+//   - В пределах одного DocID все строки идут в один DocumentRow.
+//   - DocDate берётся как min(Date) внутри документа.
+//   - DocKind/DocNumber через ResolveDoc (Objects → Mapping → TransDesc → fallback).
+//   - DZChange: сумма по строкам, где DrAcc.root = accountRoot И счёт в категории KindDZ для страны.
+//     минус сумма где CrAcc.root = accountRoot И счёт в KindDZ.
+//   - KZChange: зеркально для KindKZ (с положительным знаком долга — Cr увеличивает, Dr уменьшает).
+//   - Если страна неизвестна (CompanyINN не наш) — отдаём все строки с DZChange/KZChange = 0,
+//     но имена документов всё равно показываем.
+//   - PaymentDueDate/OverdueDays не заполняются (M5).
+//
+// Экспортирована, чтобы repo_premaster.Drilldown мог её вызвать после Scan.
+func BuildDrilldown(raw []drillRow, country Country, accountRoot string) []DocumentRow {
+	if len(raw) == 0 {
+		return []DocumentRow{}
+	}
+	kind := ClassifyAccount(country, accountRoot)
+
+	type bucket struct {
+		date    time.Time
+		dzDelta float64
+		kzDelta float64
+		// для парсинга — берём первую непустую тройку (objects/mapping/trans)
+		objects string
+		mapping string
+		trans   string
+	}
+	byDoc := map[string]*bucket{}
+	order := []string{} // сохраняем порядок появления DocID
+
+	for _, r := range raw {
+		b, ok := byDoc[r.DocID]
+		if !ok {
+			b = &bucket{date: r.Date}
+			byDoc[r.DocID] = b
+			order = append(order, r.DocID)
+		}
+		if r.Date.Before(b.date) {
+			b.date = r.Date
+		}
+		if b.objects == "" {
+			b.objects = r.ObjectsName
+		}
+		if b.mapping == "" && r.Mapping.Valid {
+			b.mapping = r.Mapping.String
+		}
+		if b.trans == "" && r.TransDescription.Valid {
+			b.trans = r.TransDescription.String
+		}
+
+		// Учёт дельт.
+		drRoot := AccountRoot(r.DrAcc)
+		crRoot := AccountRoot(r.CrAcc)
+		switch kind {
+		case KindDZ:
+			if drRoot == accountRoot {
+				b.dzDelta += r.Amount // увеличение ДЗ
+			}
+			if crRoot == accountRoot {
+				b.dzDelta -= r.Amount // погашение ДЗ
+			}
+		case KindKZ:
+			if crRoot == accountRoot {
+				b.kzDelta += r.Amount // увеличение КЗ (наш долг)
+			}
+			if drRoot == accountRoot {
+				b.kzDelta -= r.Amount // погашение КЗ
+			}
+		}
+	}
+
+	out := make([]DocumentRow, 0, len(order))
+	for _, id := range order {
+		b := byDoc[id]
+		p := ResolveDoc(b.objects, b.mapping, b.trans)
+		number := p.Number
+		if number == "" {
+			number = id // fallback: внутренний 1С-GUID
+		}
+		dKind := p.Kind
+		if dKind == "" {
+			dKind = "Документ"
+		}
+		docDate := b.date
+		if !p.Date.IsZero() {
+			docDate = p.Date
+		}
+		out = append(out, DocumentRow{
+			DocDate:   docDate,
+			DocNumber: number,
+			DocKind:   dKind,
+			DZChange:  b.dzDelta,
+			KZChange:  b.kzDelta,
+			// PaymentDueDate / OverdueDays — M5.
+		})
+	}
+	return out
+}

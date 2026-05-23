@@ -175,10 +175,87 @@ HAVING ABS(SUM(amt * sign_dr)) > 0.005    -- отбросить строки с 
 	return BuildReport(raw), nil
 }
 
-// Drilldown — TODO в M2. Сейчас сохраняем «not implemented», чтобы handler
-// продолжал работать в mock-режиме для drill-down.
+// drillRow — что вернёт SQL для drill-down: проводка с распознанными именами.
+type drillRow struct {
+	Date                 time.Time
+	DocID                string
+	RwNm                 int64
+	DrAcc                string
+	CrAcc                string
+	Amount               float64
+	ObjectsName          string         // из [FinDWH].[dbo].[Objects].Name (NULL → "")
+	Mapping              sql.NullString
+	TransDescription     sql.NullString
+	OperationDescription sql.NullString
+}
+
+// Drilldown — детализация по документам внутри (CompanyINN, PartnerINN, Account, Period).
+// Игнорирует q.Contract и q.Currency в M2 (нет resolver субконто и нет колонки валюты
+// в Premaster — см. M4/M5). UI должен дёргать с пустыми Contract/Currency.
 func (r *premasterRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]DocumentRow, error) {
-	return nil, errors.New("debt.premaster.Drilldown: not implemented (M2 pending)")
+	if q.CompanyINN == "" || q.PartnerINN == "" || q.Account == "" {
+		return nil, errors.New("debt.premaster.Drilldown: company_inn/partner_inn/account required")
+	}
+	if q.DateTo.IsZero() {
+		return nil, errors.New("debt.premaster.Drilldown: date_to required")
+	}
+
+	args := []any{
+		sql.Named("company", q.CompanyINN),
+		sql.Named("partner", q.PartnerINN),
+		sql.Named("acc", AccountRoot(q.Account)),
+		sql.Named("dfrom", asMSSQLDate(q.DateFrom)),
+		sql.Named("dto", asMSSQLDate(endOfDay(q.DateTo))),
+	}
+
+	// `LEFT(... , CHARINDEX('.', acc + '.') - 1)` — корень счёта (см. Report).
+	// LEFT JOIN Objects по DocID — даёт читаемое имя документа без regex (приоритет в ResolveDoc).
+	const q1 = `
+SELECT A.[Date], CONVERT(nvarchar(max), A.DocID, 1) AS DocID, A.RwNm,
+       A.DrAcc, A.CrAcc, A.AmountWithVATCurrency,
+       ISNULL(F.[Name], '') AS objects_name,
+       A.Mapping, A.TransDescription, A.OperationDescription
+FROM [FinDWH].[dbo].[Premaster1C] A WITH (NOLOCK)
+LEFT JOIN [FinDWH].[dbo].[Objects] F ON A.DocID = F.ID
+WHERE A.CompanyID = @company
+  AND A.CounterpartyID = @partner
+  AND (   LEFT(A.DrAcc, CHARINDEX('.', A.DrAcc + '.') - 1) = @acc
+       OR LEFT(A.CrAcc, CHARINDEX('.', A.CrAcc + '.') - 1) = @acc )
+  AND A.[Date] BETWEEN @dfrom AND @dto
+ORDER BY A.[Date], A.DocID, A.RwNm`
+
+	rows, err := r.db.QueryContext(ctx, q1, args...)
+	if err != nil {
+		return nil, fmt.Errorf("debt.premaster.Drilldown: query: %w", err)
+	}
+	defer rows.Close()
+
+	raw := make([]drillRow, 0, 64)
+	for rows.Next() {
+		var d drillRow
+		if err := rows.Scan(&d.Date, &d.DocID, &d.RwNm, &d.DrAcc, &d.CrAcc, &d.Amount,
+			&d.ObjectsName, &d.Mapping, &d.TransDescription, &d.OperationDescription); err != nil {
+			return nil, fmt.Errorf("debt.premaster.Drilldown: scan: %w", err)
+		}
+		raw = append(raw, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("debt.premaster.Drilldown: rows: %w", err)
+	}
+
+	// Определяем страну юрлица — нужно для классификации DZ/KZ по счёту.
+	country := countryOfINN(q.CompanyINN)
+	return BuildDrilldown(raw, country, AccountRoot(q.Account)), nil
+}
+
+// countryOfINN — страна нашего юрлица; пустая если CompanyINN не наш.
+func countryOfINN(inn string) Country {
+	for _, e := range Entities() {
+		if e.INN == inn {
+			return e.Country
+		}
+	}
+	return ""
 }
 
 // bindIN — добавляет позиционные параметры для IN-clause и возвращает их
