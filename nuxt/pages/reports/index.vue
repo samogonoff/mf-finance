@@ -17,18 +17,20 @@
         {{ t }}
       </button>
       <div class="reports-tab-spacer"></div>
-      <select v-model="year" class="select" style="width: 110px">
-        <option v-for="y in [2024, 2025, 2026]" :key="y" :value="y">{{ y }}</option>
-      </select>
-      <select v-model="grain" class="select" style="width: 130px">
-        <option value="month">По месяцам</option>
-        <option value="quarter">По кварталам</option>
-      </select>
-      <select v-model="comparison" class="select" style="width: 180px">
-        <option value="none">Без сравнения</option>
-        <option value="prev">с прошлым годом</option>
-        <option value="plan">с планом</option>
-      </select>
+      <template v-if="activeTab !== 'Задолженность ВГО'">
+        <select v-model="year" class="select" style="width: 110px">
+          <option v-for="y in [2024, 2025, 2026]" :key="y" :value="y">{{ y }}</option>
+        </select>
+        <select v-model="grain" class="select" style="width: 130px">
+          <option value="month">По месяцам</option>
+          <option value="quarter">По кварталам</option>
+        </select>
+        <select v-model="comparison" class="select" style="width: 180px">
+          <option value="none">Без сравнения</option>
+          <option value="prev">с прошлым годом</option>
+          <option value="plan">с планом</option>
+        </select>
+      </template>
     </div>
 
     <!-- P&L таблица -->
@@ -90,6 +92,9 @@
       </table>
     </div>
 
+    <!-- Задолженность ВГО — параметризованный отчёт с многоуровневой группировкой -->
+    <DebtReport v-else-if="activeTab === 'Задолженность ВГО'" />
+
     <!-- Cash Flow / Balance: упрощённые stub'ы -->
     <div v-else class="card">
       <div class="card-body empty">
@@ -104,10 +109,11 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import { money, pct as pctFmt } from "~/utils/format";
+import DebtReport from "~/components/reports/DebtReport.vue";
 
 definePageMeta({ middleware: "scope-guard" });
 
-const tabs = ["P&L", "Cash Flow", "Баланс", "Налоги"];
+const tabs = ["P&L", "Cash Flow", "Баланс", "Налоги", "Задолженность ВГО"];
 const activeTab = ref("P&L");
 const year = ref(2026);
 const grain = ref<"month" | "quarter">("month");
