@@ -212,6 +212,12 @@ const savePresetPrompt = async () => {
 onMounted(async () => {
   try {
     options.value = await filterOptions();
+    // Level 1 MVP: бэк требует обязательный entity_inns, без него Report → 400.
+    // По дефолту выбираем все доступные юрлица (Level1 = РФ+РБ). Пользователь
+    // в любой момент может сузить выбор в мультиселекте.
+    if (options.value && filters.entity_inns.length === 0) {
+      filters.entity_inns = options.value.entities.map((e) => e.inn);
+    }
   } catch (e: any) {
     errorMessage.value = e?.data?.error || "Не удалось загрузить справочники фильтров";
   }
