@@ -2,19 +2,21 @@
   <div class="table-wrap report-table-wrap debt-table-wrap">
     <table class="data-table report-table debt-table">
       <thead>
+        <!--
+          Level 1 MVP (см. docs/reports/debt/open-questions.md §E): скрыты колонки
+          «Отсрочка, дн.», «Дата оплаты по договору», «Выручка», «Просрочка, дн.» —
+          для них пока нет источника данных / подтверждённой формулы.
+          После ответов автора ТЗ (B3, C3) — вернуть колонки и пересчитать colspan.
+        -->
         <tr>
           <th class="col-sticky col-article" rowspan="2">Группировка</th>
           <th rowspan="2">Счёт</th>
           <th rowspan="2">Субсчёт</th>
           <th rowspan="2">Договор</th>
-          <th class="col-num" rowspan="2">Отсрочка, дн.</th>
-          <th rowspan="2">Дата оплаты по&nbsp;договору</th>
           <th rowspan="2">Валюта</th>
           <th class="col-num group-th" colspan="2">На начало</th>
           <th class="col-num group-th" colspan="2">Обороты</th>
           <th class="col-num group-th" colspan="2">На конец</th>
-          <th class="col-num group-th" colspan="2">Выручка</th>
-          <th class="col-num" rowspan="2">Просрочка, дн.</th>
         </tr>
         <tr>
           <th class="col-num">ДЗ</th>
@@ -23,8 +25,6 @@
           <th class="col-num">КЗ</th>
           <th class="col-num">ДЗ</th>
           <th class="col-num">КЗ</th>
-          <th class="col-num">за период</th>
-          <th class="col-num">за месяц</th>
         </tr>
       </thead>
       <tbody>
@@ -50,8 +50,6 @@
             <td>{{ node.aggCols.account }}</td>
             <td>{{ node.aggCols.subaccount }}</td>
             <td>{{ node.aggCols.contract }}</td>
-            <td class="col-num">{{ node.aggCols.paymentTerm }}</td>
-            <td>—</td>
             <td>{{ node.aggCols.currency }}</td>
             <td class="col-num">{{ moneyAuto(node.sums.opening_dz, node.currency) }}</td>
             <td class="col-num">{{ moneyAuto(node.sums.opening_kz, node.currency) }}</td>
@@ -59,9 +57,6 @@
             <td class="col-num">{{ moneyAuto(node.sums.turnover_kz, node.currency) }}</td>
             <td class="col-num">{{ moneyAuto(node.sums.closing_dz, node.currency) }}</td>
             <td class="col-num">{{ moneyAuto(node.sums.closing_kz, node.currency) }}</td>
-            <td class="col-num">{{ moneyAuto(node.sums.revenue_period, node.currency) }}</td>
-            <td class="col-num">{{ moneyAuto(node.sums.revenue_last_month, node.currency) }}</td>
-            <td>—</td>
           </tr>
 
           <!-- Лист — строка-валюта -->
@@ -75,8 +70,6 @@
             <td>{{ node.row.account }}</td>
             <td>{{ node.row.subaccount }}</td>
             <td :title="node.row.contract">{{ node.row.contract }}</td>
-            <td class="col-num">{{ node.row.payment_term_days || "—" }}</td>
-            <td>—</td>
             <td>{{ node.row.currency }}</td>
             <td class="col-num">{{ moneyFmt(node.row.opening_dz, node.row.currency) }}</td>
             <td class="col-num">{{ moneyFmt(node.row.opening_kz, node.row.currency) }}</td>
@@ -84,17 +77,14 @@
             <td class="col-num">{{ moneyFmt(node.row.turnover_kz, node.row.currency) }}</td>
             <td class="col-num">{{ moneyFmt(node.row.closing_dz, node.row.currency) }}</td>
             <td class="col-num">{{ moneyFmt(node.row.closing_kz, node.row.currency) }}</td>
-            <td class="col-num">{{ moneyFmt(node.row.revenue_period, node.row.currency) }}</td>
-            <td class="col-num">{{ moneyFmt(node.row.revenue_last_month, node.row.currency) }}</td>
-            <td>—</td>
           </tr>
 
           <!-- Документы drilldown -->
           <tr v-else-if="node.kind === 'doc-loading'" class="row-leaf">
-            <td colspan="16" class="docs-loading">Загружаем документы…</td>
+            <td colspan="11" class="docs-loading">Загружаем документы…</td>
           </tr>
           <tr v-else-if="node.kind === 'doc-error'" class="row-leaf">
-            <td colspan="16" class="docs-error">{{ node.message }}</td>
+            <td colspan="11" class="docs-error">{{ node.message }}</td>
           </tr>
           <tr v-else-if="node.kind === 'doc'" class="row-leaf row-doc">
             <td class="col-sticky col-article">
@@ -106,8 +96,6 @@
             <td>—</td>
             <td>—</td>
             <td>{{ formatDate(node.doc.doc_date) }}</td>
-            <td class="col-num">—</td>
-            <td>{{ formatDate(node.doc.payment_due_date) }}</td>
             <td>{{ node.currency }}</td>
             <td class="col-num">—</td>
             <td class="col-num">—</td>
@@ -115,16 +103,11 @@
             <td class="col-num">{{ node.doc.kz_change ? moneyFmt(node.doc.kz_change, node.currency) : "—" }}</td>
             <td class="col-num">—</td>
             <td class="col-num">—</td>
-            <td class="col-num">—</td>
-            <td class="col-num">—</td>
-            <td class="col-num" :class="node.doc.overdue_days > 0 ? 'delta-neg num-strong' : ''">
-              {{ node.doc.overdue_days > 0 ? node.doc.overdue_days : "—" }}
-            </td>
           </tr>
         </template>
 
         <tr v-if="!rows.length" class="row-leaf">
-          <td colspan="16" class="empty-row">Нет данных по выбранным фильтрам.</td>
+          <td colspan="11" class="empty-row">Нет данных по выбранным фильтрам.</td>
         </tr>
       </tbody>
     </table>

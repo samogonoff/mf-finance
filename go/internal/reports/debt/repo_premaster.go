@@ -122,6 +122,13 @@ func (r *premasterRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 	args = append(args, sql.Named("dto", asMSSQLDate(endOfDay(f.DateTo))))
 	args = append(args, sql.Named("dlast", asMSSQLDate(startOfLastMonth(f.DateTo))))
 
+	// ВГО-фильтр: при OnlyICO=true к WHERE добавляем `AND ICO = 1`.
+	// Колонка ICO документирована в schema-draft.md §4 — tinyint, 1=ВГО, 0=внешний.
+	icoClause := ""
+	if f.OnlyICO {
+		icoClause = " AND ICO = 1"
+	}
+
 	// 3. SQL: UNION ALL Dr/Cr, GROUP BY (CompanyID, CounterpartyID, root).
 	//    `Coalesce(CounterpartyID, '')` чтобы NULL не терялся в GROUP BY (мы потом отбросим).
 	//    Корень счёта — `LEFT(acc, CHARINDEX('.', acc + '.') - 1)`: `+ '.'` гарантирует, что
@@ -136,7 +143,7 @@ WITH src AS (
            CAST(1 AS smallint) AS sign_dr,
            [Date]
     FROM [FinDWH].[dbo].[Premaster1C] WITH (NOLOCK)
-    WHERE CompanyID IN (%[1]s) AND [Date] <= %[2]s
+    WHERE CompanyID IN (%[1]s) AND [Date] <= %[2]s%[5]s
     UNION ALL
     SELECT CompanyID, ISNULL(CounterpartyID,''),
            LEFT(CrAcc, CHARINDEX('.', CrAcc + '.') - 1),
@@ -144,7 +151,7 @@ WITH src AS (
            CAST(-1 AS smallint),
            [Date]
     FROM [FinDWH].[dbo].[Premaster1C] WITH (NOLOCK)
-    WHERE CompanyID IN (%[1]s) AND [Date] <= %[2]s
+    WHERE CompanyID IN (%[1]s) AND [Date] <= %[2]s%[5]s
 )
 SELECT
     CompanyID,
@@ -159,7 +166,7 @@ GROUP BY CompanyID, CounterpartyID, acc_root
 HAVING ABS(SUM(amt * sign_dr)) > 0.005    -- отбросить строки с нулевым сальдо
     OR ABS(SUM(CASE WHEN [Date] <  %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
     OR ABS(SUM(CASE WHEN [Date] >= %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
-`, strings.Join(innParams, ","), dateToParam, dateFromParam, dateLastMonthParam)
+`, strings.Join(innParams, ","), dateToParam, dateFromParam, dateLastMonthParam, icoClause)
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {

@@ -60,6 +60,7 @@ func (h *Handler) Report(w http.ResponseWriter, r *http.Request) {
 		EntityINNs: collectList(q, "entity_inns"),
 		Accounts:   collectList(q, "accounts"),
 		Currencies: collectList(q, "currencies"),
+		OnlyICO:    parseBoolDefault(q.Get("only_ico"), true),
 	}
 	resp, err := h.svc.Report(r.Context(), f)
 	if err != nil {
@@ -179,6 +180,20 @@ func parseDate(s string) (time.Time, error) {
 	}
 	// принимаем ISO-8601 (YYYY-MM-DD) — UI отправляет именно так
 	return time.Parse("2006-01-02", s)
+}
+
+// parseBoolDefault разбирает "1"/"true"/"yes" → true, "0"/"false"/"no" → false,
+// пустое значение → def. Используется для query-параметров с дефолтом.
+func parseBoolDefault(s string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return def
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	return def
 }
 
 func collectList(q url.Values, key string) []string {

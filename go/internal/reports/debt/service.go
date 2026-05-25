@@ -41,10 +41,14 @@ func NewService(mock bool, repo PremasterRepo) *Service {
 
 // FilterOptions — справочные значения для UI.
 // Не зависит от MSSQL — отдаёт seed-данные из приложения к ТЗ.
+//
+// Level 1 MVP: возвращаем только юрлица и счета стран из MVP_LEVEL1_COUNTRIES
+// (РФ+РБ). По остальным странам план счетов не подтверждён автором ТЗ —
+// см. open-questions.md §A1/§A2. Расширение — после ответов от финансиста.
 func (s *Service) FilterOptions() FilterOptions {
 	return FilterOptions{
-		Entities:   Entities(),
-		Accounts:   Accounts(),
+		Entities:   EntitiesLevel1(),
+		Accounts:   AccountsLevel1(),
 		Currencies: append([]string{}, Currencies...),
 	}
 }

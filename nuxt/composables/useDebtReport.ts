@@ -72,6 +72,9 @@ export interface DebtReportFilters {
   entity_inns: string[];
   accounts: string[];
   currencies: string[];
+  // only_ico — фильтр «только внутригрупповые операции» (Premaster.ICO=1).
+  // По дефолту true в UI Level 1 MVP (см. docs/reports/debt/open-questions.md §A3).
+  only_ico: boolean;
 }
 
 const authHeader = (): Record<string, string> => {
@@ -99,6 +102,7 @@ export const useDebtReport = () => {
     if (f.entity_inns.length) params.entity_inns = csv(f.entity_inns);
     if (f.accounts.length) params.accounts = csv(f.accounts);
     if (f.currencies.length) params.currencies = csv(f.currencies);
+    params.only_ico = f.only_ico ? "1" : "0";
     return $fetch<DebtReportResponse>(`${base}/api/reports/debt/report`, {
       params,
       headers: authHeader()

@@ -59,3 +59,35 @@ func Accounts() []Account {
 	copy(out, accounts)
 	return out
 }
+
+// MVP_LEVEL1_COUNTRIES — страны, для которых отчёт официально показывается
+// в Level 1 MVP (см. open-questions.md §E). По остальным странам план счетов
+// не подтверждён автором ТЗ (§A1/§A2), поэтому юрлица скрываются из UI-фильтра.
+// При появлении подтверждённых планов счетов — расширить список.
+var MVP_LEVEL1_COUNTRIES = map[Country]bool{
+	CountryRF: true,
+	CountryRB: true,
+}
+
+// EntitiesLevel1 — юрлица, разрешённые в Level 1 MVP. Используется в FilterOptions.
+func EntitiesLevel1() []Entity {
+	out := make([]Entity, 0, len(entities))
+	for _, e := range entities {
+		if MVP_LEVEL1_COUNTRIES[e.Country] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// AccountsLevel1 — счета БУ, разрешённые в Level 1 MVP (страны из MVP_LEVEL1_COUNTRIES
+// и общие записи без привязки к стране — Country == "").
+func AccountsLevel1() []Account {
+	out := make([]Account, 0, len(accounts))
+	for _, a := range accounts {
+		if a.Country == "" || MVP_LEVEL1_COUNTRIES[a.Country] {
+			out = append(out, a)
+		}
+	}
+	return out
+}

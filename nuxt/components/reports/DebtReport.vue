@@ -41,6 +41,14 @@
           >{{ c }}</button>
         </div>
       </div>
+
+      <div class="filter filter-ico">
+        <label class="filter-label">Сегмент</label>
+        <label class="checkbox-row" title="Premaster.ICO = 1 — операции между компаниями ГК">
+          <input v-model="filters.only_ico" type="checkbox" />
+          <span>Только внутригрупповые (ВГО)</span>
+        </label>
+      </div>
     </div>
 
     <div class="actions-bar">
@@ -98,7 +106,10 @@ const filters = reactive<DebtReportFilters>({
   date_to: dateTo.value,
   entity_inns: [],
   accounts: [],
-  currencies: []
+  currencies: [],
+  // Level 1 MVP: дефолт «только ВГО» включён до подтверждения от автора ТЗ
+  // (см. docs/reports/debt/open-questions.md §A3).
+  only_ico: true
 });
 
 const options = ref<DebtFilterOptions | null>(null);
@@ -169,6 +180,8 @@ const applyPreset = () => {
   filters.entity_inns = [...(p.payload.entity_inns || [])];
   filters.accounts = [...(p.payload.accounts || [])];
   filters.currencies = [...(p.payload.currencies || [])];
+  // Старые пресеты могут не иметь only_ico — подставляем Level 1 дефолт true.
+  filters.only_ico = typeof p.payload.only_ico === "boolean" ? p.payload.only_ico : true;
 };
 
 const deletePreset = async () => {
@@ -247,6 +260,19 @@ onMounted(async () => {
   border-color: var(--accent);
 }
 .chip:hover:not(.active) { background: var(--bg-surface-2); }
+
+.filter-ico { min-width: 240px; }
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: var(--fs-sm);
+  color: var(--text-strong);
+  cursor: pointer;
+  user-select: none;
+}
+.checkbox-row input[type="checkbox"] { cursor: pointer; }
 
 .actions-bar {
   display: flex;

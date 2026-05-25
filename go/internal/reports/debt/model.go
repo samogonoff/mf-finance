@@ -33,11 +33,15 @@ type Account struct {
 
 // Filters — параметры запроса отчёта.
 type Filters struct {
-	DateFrom    time.Time
-	DateTo      time.Time
-	EntityINNs  []string
-	Accounts    []string
-	Currencies  []string
+	DateFrom   time.Time
+	DateTo     time.Time
+	EntityINNs []string
+	Accounts   []string
+	Currencies []string
+	// OnlyICO — фильтр «только внутригрупповые операции» (Premaster.ICO = 1).
+	// По дефолту true в handler: см. open-questions.md §A3 (ВГО-сценарий по
+	// умолчанию до подтверждения от автора ТЗ).
+	OnlyICO bool
 }
 
 // DebtRow — плоская строка отчёта; UI сам группирует по
@@ -91,12 +95,16 @@ type SavedFilter struct {
 }
 
 // FilterPayload — JSON-форма фильтра, хранится в jsonb-колонке.
+//
+// OnlyICO — указатель, чтобы отличать «явно не задано» (старые пресеты, до Level 1
+// MVP) от «явно false». При nil — handler подставит дефолт true.
 type FilterPayload struct {
 	DateFrom   string   `json:"date_from"`
 	DateTo     string   `json:"date_to"`
 	EntityINNs []string `json:"entity_inns"`
 	Accounts   []string `json:"accounts"`
 	Currencies []string `json:"currencies"`
+	OnlyICO    *bool    `json:"only_ico,omitempty"`
 }
 
 // FilterOptions — ответ /filter-options.
