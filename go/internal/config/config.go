@@ -12,14 +12,19 @@ type Config struct {
 	CORSOrigins []string
 
 	// Premaster1C — MSSQL-витрина для отчёта «Задолженность ВГО».
-	// В dev держится в .env пустым; реальные значения берутся из var/original/.env.
-	// По умолчанию указывает на СНЭПШОТ Premaster1C_20260514 — на живую витрину
-	// `Premaster1C` ходить не следует, пока не выясним схему по снэпшоту.
-	PremasterServer   string
-	PremasterDatabase string
-	PremasterUser     string
-	PremasterPassword string
-	DebtMock          bool
+	// На OLAP-сервере 10.10.6.15 это ТАБЛИЦА [FinDWH].[dbo].[Premaster1C]
+	// (а не отдельная БД). PremasterDatabase = "FinDWH", PremasterTable = "Premaster1C".
+	// Имена вынесены в env, чтобы можно было быстро переключиться на снэпшот
+	// (например, [FinDWH].[dbo].[Premaster1C_20260514]) без правки кода.
+	PremasterServer        string
+	PremasterPort          string
+	PremasterDatabase      string
+	PremasterSchema        string
+	PremasterTable         string
+	PremasterObjectsTable  string
+	PremasterUser          string
+	PremasterPassword      string
+	DebtMock               bool
 }
 
 func Load() Config {
@@ -29,11 +34,15 @@ func Load() Config {
 		RedisAddr:   env("REDIS_ADDR", "redis:6379"),
 		CORSOrigins: splitCSV(env("CORS_ORIGINS", "*")),
 
-		PremasterServer:   env("MSSQL_PREMASTER_SERVER", ""),
-		PremasterDatabase: env("MSSQL_PREMASTER_DB", "Premaster1C_20260514"),
-		PremasterUser:     env("MSSQL_PREMASTER_USER", ""),
-		PremasterPassword: env("MSSQL_PREMASTER_PASSWORD", ""),
-		DebtMock:          env("DEBT_MOCK", "0") == "1",
+		PremasterServer:       env("MSSQL_PREMASTER_SERVER", ""),
+		PremasterPort:         env("MSSQL_PREMASTER_PORT", "1433"),
+		PremasterDatabase:     env("MSSQL_PREMASTER_DB", "FinDWH"),
+		PremasterSchema:       env("MSSQL_PREMASTER_SCHEMA", "dbo"),
+		PremasterTable:        env("MSSQL_PREMASTER_TABLE", "Premaster1C"),
+		PremasterObjectsTable: env("MSSQL_PREMASTER_OBJECTS_TABLE", "Objects"),
+		PremasterUser:         env("MSSQL_PREMASTER_USER", ""),
+		PremasterPassword:     env("MSSQL_PREMASTER_PASSWORD", ""),
+		DebtMock:              env("DEBT_MOCK", "0") == "1",
 	}
 }
 

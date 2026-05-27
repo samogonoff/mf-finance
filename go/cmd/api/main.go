@@ -104,15 +104,25 @@ func main() {
 	mux.HandleFunc("GET /uploads/bugtracker/", bugH.ServeUpload)
 
 	// Reports — Задолженность ВГО.
-	// В DEBT_MOCK=1 отдаются фикстуры. В live-режиме нужны MSSQL_PREMASTER_*; по
-	// умолчанию ходим в снэпшот Premaster1C_20260514, к живой Premaster1C не лезем.
+	// В DEBT_MOCK=1 отдаются фикстуры. В live-режиме нужны MSSQL_PREMASTER_*.
+	// По умолчанию ходим в [FinDWH].[dbo].[Premaster1C] (живая таблица проводок).
+	// Чтобы переключиться на снэпшот — поменять MSSQL_PREMASTER_TABLE/DB в env, без правки кода.
 	var premasterRepo debt.PremasterRepo
 	if !cfg.DebtMock {
-		mssqlDB, err := debt.NewPremasterRepo(cfg.PremasterServer, cfg.PremasterDatabase, cfg.PremasterUser, cfg.PremasterPassword)
+		mssqlDB, err := debt.NewPremasterRepo(cfg.PremasterServer, cfg.PremasterPort, cfg.PremasterDatabase, cfg.PremasterUser, cfg.PremasterPassword)
 		if err != nil {
 			log.Fatalf("debt: mssql open: %v", err)
 		}
-		premasterRepo = debt.WrapPremasterRepo(mssqlDB)
+		tables := debt.PremasterTables{
+			Database:     cfg.PremasterDatabase,
+			Schema:       cfg.PremasterSchema,
+			Main:         cfg.PremasterTable,
+			ObjectsTable: cfg.PremasterObjectsTable,
+		}
+		premasterRepo, err = debt.WrapPremasterRepo(mssqlDB, tables)
+		if err != nil {
+			log.Fatalf("debt: wrap premaster: %v", err)
+		}
 		if mssqlDB != nil {
 			defer mssqlDB.Close()
 		}

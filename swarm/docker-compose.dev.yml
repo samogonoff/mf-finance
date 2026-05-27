@@ -63,11 +63,16 @@ services:
       - POSTGRES_URL=postgres://finance:finance@postgres:5432/finance?sslmode=disable
       - REDIS_ADDR=redis:6379
       - CORS_ORIGINS=http://finance.local,http://finance.local:3001,http://localhost:3001,http://localhost
-      # «Задолженность ВГО» — Premaster1C-витрина. В dev по умолчанию DEBT_MOCK=1,
-      # реальные значения берутся из var/original/.env (как у python-cost).
+      # «Задолженность ВГО» — таблица [FinDWH].[dbo].[Premaster1C] на OLAP 10.10.6.15.
+      # В dev по умолчанию DEBT_MOCK=1; для live-режима задать MSSQL_PREMASTER_{SERVER,USER,PASSWORD}.
+      # Имена БД/схемы/таблиц вынесены в env, чтобы переключаться на снэпшоты без правки кода.
       - DEBT_MOCK=${DEBT_MOCK:-1}
       - MSSQL_PREMASTER_SERVER=${MSSQL_PREMASTER_SERVER:-}
-      - MSSQL_PREMASTER_DB=${MSSQL_PREMASTER_DB:-Premaster1C_20260514}
+      - MSSQL_PREMASTER_PORT=${MSSQL_PREMASTER_PORT:-1433}
+      - MSSQL_PREMASTER_DB=${MSSQL_PREMASTER_DB:-FinDWH}
+      - MSSQL_PREMASTER_SCHEMA=${MSSQL_PREMASTER_SCHEMA:-dbo}
+      - MSSQL_PREMASTER_TABLE=${MSSQL_PREMASTER_TABLE:-Premaster1C}
+      - MSSQL_PREMASTER_OBJECTS_TABLE=${MSSQL_PREMASTER_OBJECTS_TABLE:-Objects}
       - MSSQL_PREMASTER_USER=${MSSQL_PREMASTER_USER:-}
       - MSSQL_PREMASTER_PASSWORD=${MSSQL_PREMASTER_PASSWORD:-}
       # Bug tracker — каталог хранения скриншотов (named volume).

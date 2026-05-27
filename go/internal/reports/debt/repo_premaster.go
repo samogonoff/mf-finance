@@ -5,11 +5,41 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	_ "github.com/microsoft/go-mssqldb"
 )
+
+// PremasterTables — куда репо ходит за данными. Имена идентификаторов
+// подставляются в SQL напрямую (нельзя параметризовать), поэтому валидируются
+// строгим regex.
+type PremasterTables struct {
+	Database     string // FinDWH
+	Schema       string // dbo
+	Main         string // Premaster1C — главная таблица проводок
+	ObjectsTable string // Objects — справочник DocID → имя документа (LEFT JOIN в Drilldown)
+}
+
+var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func (t PremasterTables) Validate() error {
+	for k, v := range map[string]string{
+		"database":       t.Database,
+		"schema":         t.Schema,
+		"main_table":     t.Main,
+		"objects_table":  t.ObjectsTable,
+	} {
+		if !identRe.MatchString(v) {
+			return fmt.Errorf("debt.PremasterTables: invalid %s %q (must match %s)", k, v, identRe.String())
+		}
+	}
+	return nil
+}
+
+func (t PremasterTables) MainFQN() string    { return "[" + t.Database + "].[" + t.Schema + "].[" + t.Main + "]" }
+func (t PremasterTables) ObjectsFQN() string { return "[" + t.Database + "].[" + t.Schema + "].[" + t.ObjectsTable + "]" }
 
 // premasterRepo — реализация PremasterRepo через MSSQL Premaster1C на OLAP-сервере.
 // Логика и шаблон SQL — см. docs/reports/debt/schema-draft.md (§ 4.4, § 8a.2).
@@ -25,19 +55,27 @@ import (
 // через chart_of_accounts (для дебиторских счетов: positive=ДЗ; для кредиторских —
 // flip знака, чтобы наш долг показывался как положительная сумма КЗ).
 type premasterRepo struct {
-	db *sql.DB
+	db         *sql.DB
+	mainFQN    string // [FinDWH].[dbo].[Premaster1C]
+	objectsFQN string // [FinDWH].[dbo].[Objects]
 }
 
-// NewPremasterRepo открывает MSSQL-пул к OLAP-серверу (Premaster1C живёт в FinDWH).
+// NewPremasterRepo открывает MSSQL-пул к OLAP-серверу (Premaster1C — таблица в FinDWH).
 // При пустых учётках возвращает (nil, nil) — это сигнал main.go, что
 // live-репо не настроено (UI должен оставаться в режиме DEBT_MOCK=1).
-func NewPremasterRepo(server, database, user, password string) (*sql.DB, error) {
+// port — числовая строка ("1433" дефолт); если в server уже есть ":port",
+// можно передать port="" и драйвер сам распарсит host:port.
+func NewPremasterRepo(server, port, database, user, password string) (*sql.DB, error) {
 	if server == "" || user == "" || password == "" {
 		return nil, nil
 	}
+	host := server
+	if port != "" && !strings.Contains(server, ":") {
+		host = server + ":" + port
+	}
 	dsn := fmt.Sprintf(
 		"sqlserver://%s:%s@%s?database=%s&encrypt=true&trustservercertificate=true&app+name=finance-api",
-		user, password, server, database,
+		user, password, host, database,
 	)
 	db, err := sql.Open("sqlserver", dsn)
 	if err != nil {
@@ -49,11 +87,20 @@ func NewPremasterRepo(server, database, user, password string) (*sql.DB, error) 
 }
 
 // WrapPremasterRepo — фабрика, упрощающая wiring в main.go.
-func WrapPremasterRepo(db *sql.DB) PremasterRepo {
+// tables валидируется заранее — невалидный идентификатор тут же возвращает ошибку,
+// чтобы не получить SQL-инъекцию через env (теоретически).
+func WrapPremasterRepo(db *sql.DB, tables PremasterTables) (PremasterRepo, error) {
 	if db == nil {
-		return nil
+		return nil, nil
 	}
-	return &premasterRepo{db: db}
+	if err := tables.Validate(); err != nil {
+		return nil, err
+	}
+	return &premasterRepo{
+		db:         db,
+		mainFQN:    tables.MainFQN(),
+		objectsFQN: tables.ObjectsFQN(),
+	}, nil
 }
 
 // rawRow — что отдаёт SQL: signed-сальдо по (CompanyID, CounterpartyID, account_root).
@@ -142,7 +189,7 @@ WITH src AS (
            AmountWithVATCurrency AS amt,
            CAST(1 AS smallint) AS sign_dr,
            [Date]
-    FROM [FinDWH].[dbo].[Premaster1C] WITH (NOLOCK)
+    FROM %[6]s WITH (NOLOCK)
     WHERE CompanyID IN (%[1]s) AND [Date] <= %[2]s%[5]s
     UNION ALL
     SELECT CompanyID, ISNULL(CounterpartyID,''),
@@ -150,7 +197,7 @@ WITH src AS (
            AmountWithVATCurrency,
            CAST(-1 AS smallint),
            [Date]
-    FROM [FinDWH].[dbo].[Premaster1C] WITH (NOLOCK)
+    FROM %[6]s WITH (NOLOCK)
     WHERE CompanyID IN (%[1]s) AND [Date] <= %[2]s%[5]s
 )
 SELECT
@@ -166,7 +213,7 @@ GROUP BY CompanyID, CounterpartyID, acc_root
 HAVING ABS(SUM(amt * sign_dr)) > 0.005    -- отбросить строки с нулевым сальдо
     OR ABS(SUM(CASE WHEN [Date] <  %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
     OR ABS(SUM(CASE WHEN [Date] >= %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
-`, strings.Join(innParams, ","), dateToParam, dateFromParam, dateLastMonthParam, icoClause)
+`, strings.Join(innParams, ","), dateToParam, dateFromParam, dateLastMonthParam, icoClause, r.mainFQN)
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -198,7 +245,7 @@ type drillRow struct {
 	DrAcc                string
 	CrAcc                string
 	Amount               float64
-	ObjectsName          string         // из [FinDWH].[dbo].[Objects].Name (NULL → "")
+	ObjectsName          string         // из Objects.Name (NULL → ""), FQN — см. premasterRepo.objectsFQN
 	Mapping              sql.NullString
 	TransDescription     sql.NullString
 	OperationDescription sql.NullString
@@ -225,19 +272,19 @@ func (r *premasterRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Docu
 
 	// `LEFT(... , CHARINDEX('.', acc + '.') - 1)` — корень счёта (см. Report).
 	// LEFT JOIN Objects по DocID — даёт читаемое имя документа без regex (приоритет в ResolveDoc).
-	const q1 = `
+	q1 := fmt.Sprintf(`
 SELECT A.[Date], CONVERT(nvarchar(max), A.DocID, 1) AS DocID, A.RwNm,
        A.DrAcc, A.CrAcc, A.AmountWithVATCurrency,
        ISNULL(F.[Name], '') AS objects_name,
        A.Mapping, A.TransDescription, A.OperationDescription
-FROM [FinDWH].[dbo].[Premaster1C] A WITH (NOLOCK)
-LEFT JOIN [FinDWH].[dbo].[Objects] F ON A.DocID = F.ID
+FROM %[1]s A WITH (NOLOCK)
+LEFT JOIN %[2]s F ON A.DocID = F.ID
 WHERE A.CompanyID = @company
   AND A.CounterpartyID = @partner
   AND (   LEFT(A.DrAcc, CHARINDEX('.', A.DrAcc + '.') - 1) = @acc
        OR LEFT(A.CrAcc, CHARINDEX('.', A.CrAcc + '.') - 1) = @acc )
   AND A.[Date] BETWEEN @dfrom AND @dto
-ORDER BY A.[Date], A.DocID, A.RwNm`
+ORDER BY A.[Date], A.DocID, A.RwNm`, r.mainFQN, r.objectsFQN)
 
 	rows, err := r.db.QueryContext(ctx, q1, args...)
 	if err != nil {
