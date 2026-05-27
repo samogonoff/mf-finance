@@ -93,12 +93,15 @@ import DebtMultiSelect from "~/components/reports/DebtMultiSelect.vue";
 const { filterOptions, report: fetchReport, drilldown } = useDebtReport();
 const { list: listPresets, create: createPreset, remove: removePreset } = useDebtFilters();
 
-// период по умолчанию — текущий месяц (по локальному времени)
+// период по умолчанию — последние 2 дня (today-1 → today). Premaster1C тяжело
+// отдаёт большие диапазоны, дефолт держим минимальным, чтобы первый запрос
+// гарантированно отвечал; пользователь расширит при необходимости.
 const today = new Date();
 const yyyymmdd = (d: Date) => d.toISOString().slice(0, 10);
-const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+const defaultDateFrom = new Date(today);
+defaultDateFrom.setDate(defaultDateFrom.getDate() - 1);
 
-const dateFrom = ref(yyyymmdd(firstDayOfMonth));
+const dateFrom = ref(yyyymmdd(defaultDateFrom));
 const dateTo = ref(yyyymmdd(today));
 
 const filters = reactive<DebtReportFilters>({
@@ -213,10 +216,15 @@ onMounted(async () => {
   try {
     options.value = await filterOptions();
     // Level 1 MVP: бэк требует обязательный entity_inns, без него Report → 400.
-    // По дефолту выбираем все доступные юрлица (Level1 = РФ+РБ). Пользователь
-    // в любой момент может сузить выбор в мультиселекте.
+    // По дефолту — только ТД («ООО ТД Марк Формэль», ИНН 6950135110): минимальная
+    // нагрузка на Premaster1C, чтобы первый запрос отвечал быстро. Остальные
+    // юрлица пользователь добавляет вручную.
+    const DEFAULT_INN = "6950135110";
     if (options.value && filters.entity_inns.length === 0) {
-      filters.entity_inns = options.value.entities.map((e) => e.inn);
+      const hasTD = options.value.entities.some((e) => e.inn === DEFAULT_INN);
+      filters.entity_inns = hasTD
+        ? [DEFAULT_INN]
+        : options.value.entities.map((e) => e.inn).slice(0, 1);
     }
   } catch (e: any) {
     errorMessage.value = e?.data?.error || "Не удалось загрузить справочники фильтров";
