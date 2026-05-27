@@ -168,6 +168,20 @@ GitLab CI (`swarm/ci-finance.yml`):
 
 В компоузе `docker-compose.yml` строки с `%%CONFIG_NAME%%` — это плейсхолдеры, которые CI заменяет; для prod-стека не запускай этот файл локально как есть.
 
+## Правила работы с env-переменными
+
+**Любая новая переменная окружения, которую читает код (Go `os.Getenv`/`env(...)`,
+Python `os.environ`, Nuxt `process.env.*` / `runtimeConfig`), ОБЯЗАНА появиться
+в `.env.example` в том же коммите.** Каждая запись — с коротким комментарием:
+что управляет, какой дефолт, что произойдёт, если оставить пустой.
+
+Аналогично для cost-раздела — `python/cost/.env.example`.
+
+Запрещено добавлять env «втихую» (только в `docker-compose.dev.yml` или `config.go`,
+без описания в `.env.example`). Прод-конфиги собираются по этому файлу — пропуск
+там = выкатим релиз без переменной, и сервис упадёт после деплоя
+(как было с `MSSQL_PREMASTER_*` / `DEBT_MOCK` → «premaster repo not configured»).
+
 ## Часто встречающиеся ошибки
 
 - **«Auth callback ломается локально»** → проверь `NUXT_INTERNAL_API_BASE=http://go-api:8080` в env Nuxt. Server-route bypasses nginx по докер-сети.
@@ -177,3 +191,4 @@ GitLab CI (`swarm/ci-finance.yml`):
 - **«analytics_ro не видит таблицу»** → права через `ALTER DEFAULT PRIVILEGES` выдаются только на будущие таблицы. Для уже созданных — `GRANT SELECT ON ALL TABLES IN SCHEMA public TO analytics_ro;` в `init-db.sh`.
 - **«python-cost не может создать уведомление»** → проверь, что `INTERNAL_SERVICE_TOKEN` одинаков у `go-api` и `python-cost` (`.env`), и что cost-стек запущен В ОДНОЙ сети с go-api (`finance_dev_network`, см. `docker-compose.cost.yml`). Если токен у go-api пуст — `/internal/*` возвращают 503.
 - **«В Б24 не приходят уведомления в prod»** → причины по убыванию вероятности: (1) не задана хотя бы одна из `SITE_API_NOTIFY_URL/USER/PASSWORD`; (2) у юзера `notify_via_b24=false` (см. `/account`); (3) у юзера в БД `b24_id IS NULL` (не залогинился через B24 OAuth); (4) site_api отвечает `success=false` → смотри `notifications.b24_last_error` и `b24_attempts`.
+- **«premaster repo not configured» на /api/reports/debt/***» → в env go-api не заданы `MSSQL_PREMASTER_SERVER/USER/PASSWORD` И `DEBT_MOCK` не равен `1`. Решение: либо `DEBT_MOCK=1` (фикстуры), либо все три `MSSQL_PREMASTER_*` (live на снэпшот `Premaster1C_20260514`). См. `.env.example` блок «Задолженность ВГО».
