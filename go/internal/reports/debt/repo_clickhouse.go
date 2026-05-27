@@ -90,15 +90,18 @@ SELECT
     company_id,
     counterparty_id,
     acc_root,
-    sumIf(amt * sgn, date <  toDate('%[3]s'))                                AS opening_signed,
-    sumIf(amt * sgn, date >= toDate('%[3]s') AND date <= toDate('%[2]s'))    AS turnover_signed,
-    sumIf(amt * sgn, date >= toDate('%[4]s') AND date <= toDate('%[2]s'))    AS last_month_signed,
-    sum(amt * sgn)                                                            AS closing_signed
+    -- CAST в String: CH 24.3 по дефолту отдаёт Decimal как число, что ломает
+    -- json.Decode в наш string-тип и при float64-парсинге может терять
+    -- precision на больших суммах. Строка безопасна.
+    toString(sumIf(amt * sgn, date <  toDate('%[3]s')))                            AS opening_signed,
+    toString(sumIf(amt * sgn, date >= toDate('%[3]s') AND date <= toDate('%[2]s'))) AS turnover_signed,
+    toString(sumIf(amt * sgn, date >= toDate('%[4]s') AND date <= toDate('%[2]s'))) AS last_month_signed,
+    toString(sum(amt * sgn))                                                        AS closing_signed
 FROM src
 GROUP BY company_id, counterparty_id, acc_root
-HAVING abs(closing_signed) > 0.005
-    OR abs(opening_signed)  > 0.005
-    OR abs(turnover_signed) > 0.005
+HAVING abs(sum(amt * sgn)) > 0.005
+    OR abs(sumIf(amt * sgn, date <  toDate('%[3]s'))) > 0.005
+    OR abs(sumIf(amt * sgn, date >= toDate('%[3]s') AND date <= toDate('%[2]s'))) > 0.005
 FORMAT JSONEachRow`,
 		strings.Join(innsList, ","), dto, dfrom, dlast, icoClause)
 

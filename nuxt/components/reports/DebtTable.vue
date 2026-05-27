@@ -79,6 +79,27 @@
             <td class="col-num">{{ moneyFmt(node.row.closing_kz, node.row.currency) }}</td>
           </tr>
 
+          <!-- Подгруппа документов по trans_description (M5) -->
+          <tr v-else-if="node.kind === 'trans-group'" class="row-leaf row-trans-group">
+            <td class="col-sticky col-article">
+              <span class="lvl-indent" :style="{ paddingLeft: `${node.level * 14}px` }">
+                <span class="row-chevron-spacer" />
+                <span class="row-group-label">{{ node.label }}</span>
+                <span class="trans-count">×{{ node.count }}</span>
+              </span>
+            </td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>{{ node.currency }}</td>
+            <td class="col-num">{{ moneyFmt(node.sumAmount, node.currency) }}</td>
+            <td class="col-num">—</td>
+            <td class="col-num">—</td>
+            <td class="col-num">—</td>
+            <td class="col-num">—</td>
+            <td class="col-num">—</td>
+          </tr>
+
           <!-- Документы drilldown -->
           <tr v-else-if="node.kind === 'doc-loading'" class="row-leaf">
             <td colspan="11" class="docs-loading">Загружаем документы…</td>
@@ -93,16 +114,20 @@
                 <span class="row-group-label">{{ node.doc.doc_kind }} № {{ node.doc.doc_number }}</span>
               </span>
             </td>
+            <!-- 2 пустые группировочные колонки + дата + валюта + сумма -->
             <td>—</td>
             <td>—</td>
             <td>{{ formatDate(node.doc.doc_date) }}</td>
             <td>{{ node.currency }}</td>
-            <td class="col-num">—</td>
-            <td class="col-num">—</td>
+            <!-- Сумма по документу (модуль проводок) — основной "вес" -->
+            <td class="col-num">{{ node.doc.amount ? moneyFmt(node.doc.amount, node.currency) : "—" }}</td>
+            <!-- Дельты ДЗ/КЗ — заполнены только для DZ/KZ-счетов, для счёта 90 (выручка) и др. — нули -->
             <td class="col-num">{{ node.doc.dz_change ? moneyFmt(node.doc.dz_change, node.currency) : "—" }}</td>
             <td class="col-num">{{ node.doc.kz_change ? moneyFmt(node.doc.kz_change, node.currency) : "—" }}</td>
-            <td class="col-num">—</td>
-            <td class="col-num">—</td>
+            <!-- Описание операции — длинный текстовый слот через colspan на оставшиеся 3 числовые колонки -->
+            <td colspan="3" class="col-desc" :title="node.doc.description || ''">
+              {{ node.doc.description || "—" }}
+            </td>
           </tr>
         </template>
 
@@ -135,7 +160,8 @@ const props = defineProps<{
   }) => Promise<DebtDocumentRow[]>;
 }>();
 
-type Level = 0 | 1 | 2 | 3 | 4;
+// 5 — trans-group, 6 — документ внутри trans-group (M5).
+type Level = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 interface RowSums {
   opening_dz: number;
@@ -194,7 +220,19 @@ interface DocNode {
   doc: DebtDocumentRow;
 }
 
-type Node = GroupNode | LeafNode | DocLoadingNode | DocErrorNode | DocNode;
+// TransGroupNode — заголовок подгруппы документов внутри drill-down (M5).
+// Документы разделены по trans_description (тип операции из 1С).
+interface TransGroupNode {
+  kind: "trans-group";
+  key: string;
+  level: Level;
+  label: string;
+  count: number;
+  sumAmount: number;
+  currency: string;
+}
+
+type Node = GroupNode | LeafNode | DocLoadingNode | DocErrorNode | DocNode | TransGroupNode;
 
 // ── управляющее состояние раскрытия ───────────────────────────────────────
 const openKeys = ref<Set<string>>(new Set());
@@ -397,14 +435,41 @@ const flat = computed<Node[]>(() => {
               } else if (typeof docs === "object" && "error" in docs) {
                 out.push({ kind: "doc-error", key: `${docKey}/error`, level: 5 as any, message: docs.error });
               } else {
+                // M5: группируем документы по trans_group (тип операции из 1С).
+                // Внутри каждой подгруппы — сортируем по дате.
+                const byTrans = new Map<string, DebtDocumentRow[]>();
                 for (const d of docs) {
+                  const label = (d.trans_group || d.doc_kind || "Без типа").trim();
+                  if (!byTrans.has(label)) byTrans.set(label, []);
+                  byTrans.get(label)!.push(d);
+                }
+                // Стабильный порядок: подгруппы — по убыванию суммы.
+                const entries = [...byTrans.entries()].map(([label, items]) => ({
+                  label,
+                  items,
+                  sumAmount: items.reduce((s, x) => s + (x.amount || 0), 0)
+                }));
+                entries.sort((a, b) => Math.abs(b.sumAmount) - Math.abs(a.sumAmount));
+
+                for (const { label, items, sumAmount } of entries) {
                   out.push({
-                    kind: "doc",
-                    key: `${docKey}/doc:${d.doc_number}-${d.doc_date}`,
+                    kind: "trans-group",
+                    key: `${docKey}/tg:${label}`,
                     level: 5 as any,
-                    currency: r.currency,
-                    doc: d
+                    label,
+                    count: items.length,
+                    sumAmount,
+                    currency: r.currency
                   });
+                  for (const d of items) {
+                    out.push({
+                      kind: "doc",
+                      key: `${docKey}/tg:${label}/doc:${d.doc_number}-${d.doc_date}`,
+                      level: 6 as any,
+                      currency: r.currency,
+                      doc: d
+                    });
+                  }
                 }
               }
             }
@@ -499,6 +564,29 @@ const formatDate = (s: string): string => {
 .row-doc td {
   font-size: var(--fs-xs);
   background: var(--bg-surface);
+}
+.col-desc {
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.row-trans-group td {
+  background: var(--bg-surface-hover, var(--bg-surface));
+  font-weight: 500;
+  font-size: var(--fs-xs);
+}
+.trans-count {
+  margin-left: 0.5em;
+  padding: 0.05em 0.4em;
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  border-radius: 3px;
+  font-size: 0.8em;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
 }
 .docs-loading, .docs-error, .empty-row {
   text-align: center;

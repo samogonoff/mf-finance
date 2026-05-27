@@ -272,6 +272,11 @@ func (r *premasterRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Docu
 
 	// `LEFT(... , CHARINDEX('.', acc + '.') - 1)` — корень счёта (см. Report).
 	// LEFT JOIN Objects по DocID — даёт читаемое имя документа без regex (приоритет в ResolveDoc).
+	// Drill-down показывает все проводки, формирующие сальдо НА @dto,
+	// без нижней границы по дате. @dfrom хранится в DrilldownQuery, но в SQL
+	// не используется — он нужен, если в будущем добавим режим «только за период».
+	// Сейчас семантика: «что сложило задолженность к концу периода» — полная история.
+	_ = q.DateFrom
 	q1 := fmt.Sprintf(`
 SELECT A.[Date], CONVERT(nvarchar(max), A.DocID, 1) AS DocID, A.RwNm,
        A.DrAcc, A.CrAcc, A.AmountWithVATCurrency,
@@ -283,7 +288,7 @@ WHERE A.CompanyID = @company
   AND A.CounterpartyID = @partner
   AND (   LEFT(A.DrAcc, CHARINDEX('.', A.DrAcc + '.') - 1) = @acc
        OR LEFT(A.CrAcc, CHARINDEX('.', A.CrAcc + '.') - 1) = @acc )
-  AND A.[Date] BETWEEN @dfrom AND @dto
+  AND A.[Date] <= @dto
 ORDER BY A.[Date], A.DocID, A.RwNm`, r.mainFQN, r.objectsFQN)
 
 	rows, err := r.db.QueryContext(ctx, q1, args...)
