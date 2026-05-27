@@ -1,6 +1,10 @@
 ARG tag
 FROM registry.markformelle.ru/services/docker-registry/finance-go-${tag} AS builder
 
+# Базовый образ зафиксирован на Go 1.23, а go.mod требует 1.25.7.
+# GOTOOLCHAIN=auto заставляет go скачать нужный toolchain при сборке.
+ENV GOTOOLCHAIN=auto
+
 WORKDIR /app
 
 COPY go/go.mod go/go.sum ./
