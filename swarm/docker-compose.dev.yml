@@ -49,11 +49,38 @@ services:
     volumes:
       - ../go:/var/www/finance/go
       - go_modcache:/go/pkg/mod
+      - bugtracker_uploads:/var/lib/finance/uploads
+    # Подцепляем корневой .env, чтобы локальные секреты (OLAP_*, prod
+    # site_api, и т.п.) попадали внутрь без дублирования в environment.
+    env_file:
+      - ../.env
     environment:
+      # go.mod в репо требует go >= 1.25.7, базовый образ golang:1.22-alpine.
+      # GOTOOLCHAIN=auto заставит go подтянуть нужный toolchain (одноразово,
+      # кешируется в go_modcache volume).
+      - GOTOOLCHAIN=auto
       - HTTP_ADDR=:8080
       - POSTGRES_URL=postgres://finance:finance@postgres:5432/finance?sslmode=disable
       - REDIS_ADDR=redis:6379
       - CORS_ORIGINS=http://finance.local,http://finance.local:3001,http://localhost:3001,http://localhost
+      # «Задолженность ВГО» — Premaster1C-витрина. В dev по умолчанию DEBT_MOCK=1,
+      # реальные значения берутся из var/original/.env (как у python-cost).
+      - DEBT_MOCK=${DEBT_MOCK:-1}
+      - MSSQL_PREMASTER_SERVER=${MSSQL_PREMASTER_SERVER:-}
+      - MSSQL_PREMASTER_DB=${MSSQL_PREMASTER_DB:-Premaster1C_20260514}
+      - MSSQL_PREMASTER_USER=${MSSQL_PREMASTER_USER:-}
+      - MSSQL_PREMASTER_PASSWORD=${MSSQL_PREMASTER_PASSWORD:-}
+      # Bug tracker — каталог хранения скриншотов (named volume).
+      - BUGTRACKER_UPLOADS_DIR=/var/lib/finance/uploads/bugtracker
+      # Internal channel для python-cost (см. /internal/notifications).
+      # Совпадает с INTERNAL_SERVICE_TOKEN у python-cost.
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-dev-internal-token-change-me}
+      # Дублирование уведомлений в Б24 через mfportal site_api (как в MP).
+      # Включается, когда заданы ВСЕ три переменные. В dev по умолчанию пусто,
+      # автоматически делает канал «prod-only».
+      - SITE_API_NOTIFY_URL=${SITE_API_NOTIFY_URL:-}
+      - SITE_API_NOTIFY_USER=${SITE_API_NOTIFY_USER:-}
+      - SITE_API_NOTIFY_PASSWORD=${SITE_API_NOTIFY_PASSWORD:-}
     restart: on-failure
     depends_on:
       - postgres
@@ -140,6 +167,7 @@ volumes:
   redis_data:
   nuxt_node_modules:
   go_modcache:
+  bugtracker_uploads:
 
 networks:
   finance_dev_network:
