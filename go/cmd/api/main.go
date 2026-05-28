@@ -154,12 +154,15 @@ func main() {
 		}
 		return u.ID, true
 	})
-	mux.HandleFunc("GET /api/reports/debt/filter-options", auth.RequireBearer(authSvc, debtH.FilterOptions))
-	mux.HandleFunc("GET /api/reports/debt/report", auth.RequireBearer(authSvc, debtH.Report))
-	mux.HandleFunc("GET /api/reports/debt/drilldown", auth.RequireBearer(authSvc, debtH.Drilldown))
-	mux.HandleFunc("GET /api/reports/debt/saved-filters", auth.RequireBearer(authSvc, debtH.ListSavedFilters))
-	mux.HandleFunc("POST /api/reports/debt/saved-filters", auth.RequireBearer(authSvc, debtH.CreateSavedFilter))
-	mux.HandleFunc("DELETE /api/reports/debt/saved-filters", auth.RequireBearer(authSvc, debtH.DeleteSavedFilter))
+	// Доступ к отчёту «Задолженность ВГО» — только ROLE_FINANCE_ADMIN (или ROLE_ADMIN
+	// через иерархию ExpandRoles). До широкого внедрения отчётность закрыта от
+	// обычных пользователей; расширим RoleFinanceUser, когда определимся с моделью.
+	mux.HandleFunc("GET /api/reports/debt/filter-options", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.FilterOptions))
+	mux.HandleFunc("GET /api/reports/debt/report", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.Report))
+	mux.HandleFunc("GET /api/reports/debt/drilldown", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.Drilldown))
+	mux.HandleFunc("GET /api/reports/debt/saved-filters", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.ListSavedFilters))
+	mux.HandleFunc("POST /api/reports/debt/saved-filters", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.CreateSavedFilter))
+	mux.HandleFunc("DELETE /api/reports/debt/saved-filters", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.DeleteSavedFilter))
 
 	// ETL — admin-управление заливкой Premaster1C → ClickHouse и инкрементальный
 	// pull-воркер. Требует MSSQL-коннект (для bootstrap'а из источника), поэтому
