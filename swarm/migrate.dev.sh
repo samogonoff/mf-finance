@@ -76,4 +76,12 @@ run_migrate() {
 run_migrate "finance" "$ROOT_DIR/migrations"             "$POSTGRES_URL"      "$@"
 run_migrate "cost"    "$ROOT_DIR/python/cost/migrations" "$COST_DATABASE_URL" "$@"
 
+# ClickHouse — HTTP-аплай (см. migrate-clickhouse.sh). Только на 'up'; сам
+# пропустится, если CLICKHOUSE_HTTP_URL пуст. Локально CH обычно накатывается
+# init-скриптом контейнера, так что это для повторного прогона на живом volume.
+if [[ "$1" == "up" ]]; then
+  echo "==> [clickhouse] $ROOT_DIR/clickhouse/migrations"
+  "$SCRIPT_DIR/migrate-clickhouse.sh" "$ROOT_DIR/clickhouse/migrations"
+fi
+
 echo "==> done"
