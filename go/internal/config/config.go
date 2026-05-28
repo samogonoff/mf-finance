@@ -25,6 +25,15 @@ type Config struct {
 	PremasterUser          string
 	PremasterPassword      string
 	DebtMock               bool
+
+	// DEBT_BACKEND — какой источник дёргает отчёт «Задолженность ВГО».
+	//   "mssql" (default) → repo_premaster.go, ходит в Premaster1C напрямую.
+	//   "ch"              → repo_clickhouse.go, ходит в локальный CH-снэпшот.
+	// Drilldown в ch-режиме пока не реализован — falls back to mssql.
+	DebtBackend       string
+	ClickHouseHTTPURL string
+	ClickHouseUser    string
+	ClickHousePass    string
 }
 
 func Load() Config {
@@ -43,6 +52,11 @@ func Load() Config {
 		PremasterUser:         env("MSSQL_PREMASTER_USER", ""),
 		PremasterPassword:     env("MSSQL_PREMASTER_PASSWORD", ""),
 		DebtMock:              env("DEBT_MOCK", "0") == "1",
+
+		DebtBackend:       strings.ToLower(env("DEBT_BACKEND", "mssql")),
+		ClickHouseHTTPURL: env("CLICKHOUSE_HTTP_URL", "http://clickhouse:8123"),
+		ClickHouseUser:    env("CLICKHOUSE_USER", "finance"),
+		ClickHousePass:    env("CLICKHOUSE_PASSWORD", "finance"),
 	}
 }
 

@@ -74,14 +74,28 @@ type DebtRow struct {
 // DocumentRow — детализация по документу (drill-down под договором).
 // "Дата оплаты по договору" и "Задолженность в днях" заполняются ТОЛЬКО здесь
 // (по ТЗ — на уровне группировки они пустые).
+//
+// Amount — суммарный modulus по проводкам документа (показатель «вес» документа,
+// независимо от того, DZ/KZ это или revenue-счёт).
+//
+// Description — operation_description первой проводки документа (если нет —
+// trans_description). Текстовая расшифровка «что произошло».
+//
+// TransGroup — trans_description первой проводки документа. Используется UI
+// для группировки документов внутри drill-down (M5): когда контракт пуст,
+// документы разделяются по типу операции: «Реализация материалов», «Аренда»
+// и т.п. Если пусто — UI ставит fallback на DocKind.
 type DocumentRow struct {
-	DocDate         time.Time `json:"doc_date"`
-	DocNumber       string    `json:"doc_number"`
-	DocKind         string    `json:"doc_kind"`
-	DZChange        float64   `json:"dz_change"`
-	KZChange        float64   `json:"kz_change"`
-	PaymentDueDate  time.Time `json:"payment_due_date"`
-	OverdueDays     int       `json:"overdue_days"`
+	DocDate        time.Time `json:"doc_date"`
+	DocNumber      string    `json:"doc_number"`
+	DocKind        string    `json:"doc_kind"`
+	TransGroup     string    `json:"trans_group"`
+	Amount         float64   `json:"amount"`
+	Description    string    `json:"description"`
+	DZChange       float64   `json:"dz_change"`
+	KZChange       float64   `json:"kz_change"`
+	PaymentDueDate time.Time `json:"payment_due_date"`
+	OverdueDays    int       `json:"overdue_days"`
 }
 
 // SavedFilter — сохранённый пресет фильтров пользователя.

@@ -221,9 +221,16 @@ func indexCompaniesByINN() map[string]Entity {
 	return out
 }
 
-// indexPartnersByINN — в M1 заглушка, partner-имена идут как ИНН.
-// В M2/M3 заполним через cache из [FinDWH].[dbo].[Counterparty].
-func indexPartnersByINN() map[string]string { return map[string]string{} }
+// indexPartnersByINN — для ВГО-операций партнёр всегда другое наше ЮЛ ГК МФ,
+// имя берём из Entities() (15 ЮЛ с именами и странами). Для внешних партнёров
+// справочника пока нет — отображается ИНН (M5).
+func indexPartnersByINN() map[string]string {
+	out := map[string]string{}
+	for _, e := range Entities() {
+		out[e.INN] = e.Name
+	}
+	return out
+}
 
 // accountNameFor — имя счёта по коду и стране из seed.go.
 // Если не нашли в seed (помеченные Country="" — общие для РФ/РБ) — возвращаем «Счёт <код>».
@@ -258,16 +265,17 @@ func BuildDrilldown(raw []drillRow, country Country, accountRoot string) []Docum
 	kind := ClassifyAccount(country, accountRoot)
 
 	type bucket struct {
-		date    time.Time
-		dzDelta float64
-		kzDelta float64
-		// для парсинга — берём первую непустую тройку (objects/mapping/trans)
-		objects string
-		mapping string
-		trans   string
+		date          time.Time
+		dzDelta       float64
+		kzDelta       float64
+		amount        float64 // суммарный модуль проводок документа
+		objects       string
+		mapping       string
+		trans         string
+		descOperation string // первая непустая operation_description
 	}
 	byDoc := map[string]*bucket{}
-	order := []string{} // сохраняем порядок появления DocID
+	order := []string{}
 
 	for _, r := range raw {
 		b, ok := byDoc[r.DocID]
@@ -288,24 +296,30 @@ func BuildDrilldown(raw []drillRow, country Country, accountRoot string) []Docum
 		if b.trans == "" && r.TransDescription.Valid {
 			b.trans = r.TransDescription.String
 		}
+		if b.descOperation == "" && r.OperationDescription.Valid {
+			b.descOperation = r.OperationDescription.String
+		}
 
-		// Учёт дельт.
+		// Суммарный «вес» документа — модуль каждой проводки (по сути это abs(Amount),
+		// поскольку Amount в Premaster всегда положительный; знак уходит в Dr/Cr).
+		b.amount += r.Amount
+
 		drRoot := AccountRoot(r.DrAcc)
 		crRoot := AccountRoot(r.CrAcc)
 		switch kind {
 		case KindDZ:
 			if drRoot == accountRoot {
-				b.dzDelta += r.Amount // увеличение ДЗ
+				b.dzDelta += r.Amount
 			}
 			if crRoot == accountRoot {
-				b.dzDelta -= r.Amount // погашение ДЗ
+				b.dzDelta -= r.Amount
 			}
 		case KindKZ:
 			if crRoot == accountRoot {
-				b.kzDelta += r.Amount // увеличение КЗ (наш долг)
+				b.kzDelta += r.Amount
 			}
 			if drRoot == accountRoot {
-				b.kzDelta -= r.Amount // погашение КЗ
+				b.kzDelta -= r.Amount
 			}
 		}
 	}
@@ -316,7 +330,7 @@ func BuildDrilldown(raw []drillRow, country Country, accountRoot string) []Docum
 		p := ResolveDoc(b.objects, b.mapping, b.trans)
 		number := p.Number
 		if number == "" {
-			number = id // fallback: внутренний 1С-GUID
+			number = id
 		}
 		dKind := p.Kind
 		if dKind == "" {
@@ -326,13 +340,19 @@ func BuildDrilldown(raw []drillRow, country Country, accountRoot string) []Docum
 		if !p.Date.IsZero() {
 			docDate = p.Date
 		}
+		desc := b.descOperation
+		if desc == "" {
+			desc = b.trans
+		}
 		out = append(out, DocumentRow{
-			DocDate:   docDate,
-			DocNumber: number,
-			DocKind:   dKind,
-			DZChange:  b.dzDelta,
-			KZChange:  b.kzDelta,
-			// PaymentDueDate / OverdueDays — M5.
+			DocDate:     docDate,
+			DocNumber:   number,
+			DocKind:     dKind,
+			TransGroup:  b.trans, // тип операции для UI-группировки (M5)
+			Amount:      b.amount,
+			Description: desc,
+			DZChange:    b.dzDelta,
+			KZChange:    b.kzDelta,
 		})
 	}
 	return out

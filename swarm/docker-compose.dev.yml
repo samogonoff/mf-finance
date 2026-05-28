@@ -41,6 +41,34 @@ services:
     ports:
       - "63791:6379"
 
+  # ClickHouse — аналитический слой для отчётов финансиста. На первом этапе
+  # питает «Задолженность ВГО» через ETL из MSSQL Premaster1C (см. clickhouse-design.md).
+  # Миграции (clickhouse/migrations/*.up.sql) монтируются как init-скрипты —
+  # применяются автоматически при первом старте volume.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    container_name: swarm-finance-clickhouse-1
+    environment:
+      - CLICKHOUSE_DB=finance
+      - CLICKHOUSE_USER=finance
+      - CLICKHOUSE_PASSWORD=finance
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - ch_data:/var/lib/clickhouse
+      # Только up-миграции применяются init-стартом. Монтируем по одной, чтобы
+      # down.sql не попал в /docker-entrypoint-initdb.d/.
+      - ../clickhouse/migrations/001_init_finance.up.sql:/docker-entrypoint-initdb.d/001_init_finance.sql:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    ports:
+      - "58123:8123"   # HTTP
+      - "59000:9000"   # native protocol
+    networks:
+      - finance_dev_network
+    restart: on-failure
+
   go-api:
     build:
       context: ..
@@ -75,6 +103,12 @@ services:
       - MSSQL_PREMASTER_OBJECTS_TABLE=${MSSQL_PREMASTER_OBJECTS_TABLE:-Objects}
       - MSSQL_PREMASTER_USER=${MSSQL_PREMASTER_USER:-}
       - MSSQL_PREMASTER_PASSWORD=${MSSQL_PREMASTER_PASSWORD:-}
+      # ClickHouse — аналитический слой (см. clickhouse-design.md, cmd/debt-bootstrap).
+      # DEBT_BACKEND=mssql (default) | ch — переключает источник свёртки отчёта.
+      - DEBT_BACKEND=${DEBT_BACKEND:-mssql}
+      - CLICKHOUSE_HTTP_URL=${CLICKHOUSE_HTTP_URL:-http://clickhouse:8123}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-finance}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-finance}
       # Bug tracker — каталог хранения скриншотов (named volume).
       - BUGTRACKER_UPLOADS_DIR=/var/lib/finance/uploads/bugtracker
       # Internal channel для python-cost (см. /internal/notifications).
@@ -173,6 +207,7 @@ volumes:
   nuxt_node_modules:
   go_modcache:
   bugtracker_uploads:
+  ch_data:
 
 networks:
   finance_dev_network:

@@ -57,12 +57,17 @@
       </button>
 
       <div class="presets">
-        <select v-model="selectedPreset" class="select" style="width: 240px">
+        <select v-model="selectedPreset" class="select" style="width: 260px">
           <option value="">— сохранённые пресеты —</option>
-          <option v-for="p in presets" :key="p.id" :value="String(p.id)">{{ p.name }}</option>
+          <optgroup label="Шаблоны (CH-снэпшот)">
+            <option v-for="p in systemPresets" :key="p.id" :value="String(p.id)">{{ p.name }}</option>
+          </optgroup>
+          <optgroup v-if="presets.length" label="Мои пресеты">
+            <option v-for="p in presets" :key="p.id" :value="String(p.id)">{{ p.name }}</option>
+          </optgroup>
         </select>
         <button class="btn btn-ghost" :disabled="!selectedPreset" @click="applyPreset">Применить</button>
-        <button class="btn btn-ghost" :disabled="!selectedPreset" @click="deletePreset">Удалить</button>
+        <button class="btn btn-ghost" :disabled="!selectedPreset || isSystemPreset" @click="deletePreset">Удалить</button>
         <button class="btn btn-ghost" @click="savePresetPrompt">
           <Icon name="lucide:save" /> Сохранить как…
         </button>
@@ -93,12 +98,15 @@ import DebtMultiSelect from "~/components/reports/DebtMultiSelect.vue";
 const { filterOptions, report: fetchReport, drilldown } = useDebtReport();
 const { list: listPresets, create: createPreset, remove: removePreset } = useDebtFilters();
 
-// период по умолчанию — текущий месяц (по локальному времени)
+// период по умолчанию — последние 2 дня (today-1 → today). Premaster1C тяжело
+// отдаёт большие диапазоны, дефолт держим минимальным, чтобы первый запрос
+// гарантированно отвечал; пользователь расширит при необходимости.
 const today = new Date();
 const yyyymmdd = (d: Date) => d.toISOString().slice(0, 10);
-const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+const defaultDateFrom = new Date(today);
+defaultDateFrom.setDate(defaultDateFrom.getDate() - 1);
 
-const dateFrom = ref(yyyymmdd(firstDayOfMonth));
+const dateFrom = ref(yyyymmdd(defaultDateFrom));
 const dateTo = ref(yyyymmdd(today));
 
 const filters = reactive<DebtReportFilters>({
@@ -128,6 +136,25 @@ const accountOptions = computed(() =>
 
 const presets = ref<DebtSavedFilter[]>([]);
 const selectedPreset = ref<string>("");
+
+// Системные пресеты — захардкожены под текущее наполнение CH-снэпшота. ID
+// отрицательные, чтобы не путаться с user-saved (BIGSERIAL → положительные).
+// Если в bootstrap'е залиты другие ЮЛ — расширь список вручную.
+const systemPresets = [
+  {
+    id: -1,
+    name: "ПТИР + ТЭКС (CH-снэпшот)",
+    payload: {
+      date_from: "2025-01-01",
+      date_to: dateTo.value,
+      entity_inns: ["9731039708", "5031159833"],
+      accounts: [] as string[],
+      currencies: [] as string[],
+      only_ico: true
+    }
+  }
+];
+const isSystemPreset = computed(() => Number(selectedPreset.value) < 0);
 
 const report = ref<DebtReportResponse | null>(null);
 const loading = ref(false);
@@ -171,7 +198,9 @@ const refreshPresets = async () => {
 };
 
 const applyPreset = () => {
-  const p = presets.value.find((x) => String(x.id) === selectedPreset.value);
+  // системные пресеты ищем по отрицательному id, user-saved — по положительному
+  const all = [...systemPresets, ...presets.value];
+  const p = all.find((x) => String(x.id) === selectedPreset.value);
   if (!p) return;
   dateFrom.value = p.payload.date_from;
   dateTo.value = p.payload.date_to;
@@ -213,10 +242,15 @@ onMounted(async () => {
   try {
     options.value = await filterOptions();
     // Level 1 MVP: бэк требует обязательный entity_inns, без него Report → 400.
-    // По дефолту выбираем все доступные юрлица (Level1 = РФ+РБ). Пользователь
-    // в любой момент может сузить выбор в мультиселекте.
+    // По дефолту — только ТД («ООО ТД Марк Формэль», ИНН 6950135110): минимальная
+    // нагрузка на Premaster1C, чтобы первый запрос отвечал быстро. Остальные
+    // юрлица пользователь добавляет вручную.
+    const DEFAULT_INN = "6950135110";
     if (options.value && filters.entity_inns.length === 0) {
-      filters.entity_inns = options.value.entities.map((e) => e.inn);
+      const hasTD = options.value.entities.some((e) => e.inn === DEFAULT_INN);
+      filters.entity_inns = hasTD
+        ? [DEFAULT_INN]
+        : options.value.entities.map((e) => e.inn).slice(0, 1);
     }
   } catch (e: any) {
     errorMessage.value = e?.data?.error || "Не удалось загрузить справочники фильтров";

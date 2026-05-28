@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/company/finance-api/internal/bugtracker"
 	"github.com/company/finance-api/internal/config"
 	"github.com/company/finance-api/internal/db"
+	"github.com/company/finance-api/internal/etl"
 	"github.com/company/finance-api/internal/internalapi"
 	"github.com/company/finance-api/internal/notifications"
 	"github.com/company/finance-api/internal/redisx"
@@ -104,12 +106,13 @@ func main() {
 	mux.HandleFunc("GET /uploads/bugtracker/", bugH.ServeUpload)
 
 	// Reports — Задолженность ВГО.
-	// В DEBT_MOCK=1 отдаются фикстуры. В live-режиме нужны MSSQL_PREMASTER_*.
-	// По умолчанию ходим в [FinDWH].[dbo].[Premaster1C] (живая таблица проводок).
-	// Чтобы переключиться на снэпшот — поменять MSSQL_PREMASTER_TABLE/DB в env, без правки кода.
+	// DEBT_MOCK=1 → фикстуры. DEBT_BACKEND=ch → CH-снэпшот для свёртки + MSSQL для drill-down.
+	// По умолчанию (DEBT_BACKEND=mssql) — live из [FinDWH].[dbo].[Premaster1C].
 	var premasterRepo debt.PremasterRepo
+	var mssqlDB *sql.DB // нужен и для debt-репо, и для ETL admin/worker
 	if !cfg.DebtMock {
-		mssqlDB, err := debt.NewPremasterRepo(cfg.PremasterServer, cfg.PremasterPort, cfg.PremasterDatabase, cfg.PremasterUser, cfg.PremasterPassword)
+		// MSSQL-репо: нужен и для DEBT_BACKEND=mssql (всё), и для DEBT_BACKEND=ch (drill-down).
+		mssqlDB, err = debt.NewPremasterRepo(cfg.PremasterServer, cfg.PremasterPort, cfg.PremasterDatabase, cfg.PremasterUser, cfg.PremasterPassword)
 		if err != nil {
 			log.Fatalf("debt: mssql open: %v", err)
 		}
@@ -119,12 +122,27 @@ func main() {
 			Main:         cfg.PremasterTable,
 			ObjectsTable: cfg.PremasterObjectsTable,
 		}
-		premasterRepo, err = debt.WrapPremasterRepo(mssqlDB, tables)
+		mssqlRepo, err := debt.WrapPremasterRepo(mssqlDB, tables)
 		if err != nil {
 			log.Fatalf("debt: wrap premaster: %v", err)
 		}
 		if mssqlDB != nil {
 			defer mssqlDB.Close()
+		}
+
+		if cfg.DebtBackend == "ch" || cfg.DebtBackend == "clickhouse" {
+			chRepo, err := debt.NewClickHouseRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
+			if err != nil {
+				log.Fatalf("debt: clickhouse init: %v", err)
+			}
+			if chRepo == nil {
+				log.Fatalf("debt: DEBT_BACKEND=ch but CLICKHOUSE_HTTP_URL/USER not set")
+			}
+			premasterRepo = debt.NewCompositeRepo(chRepo, mssqlRepo)
+			log.Printf("debt: backend=ch (report→clickhouse, drilldown→mssql)")
+		} else {
+			premasterRepo = mssqlRepo
+			log.Printf("debt: backend=mssql")
 		}
 	}
 	debtSvc := debt.NewService(cfg.DebtMock, premasterRepo)
@@ -142,6 +160,29 @@ func main() {
 	mux.HandleFunc("GET /api/reports/debt/saved-filters", auth.RequireBearer(authSvc, debtH.ListSavedFilters))
 	mux.HandleFunc("POST /api/reports/debt/saved-filters", auth.RequireBearer(authSvc, debtH.CreateSavedFilter))
 	mux.HandleFunc("DELETE /api/reports/debt/saved-filters", auth.RequireBearer(authSvc, debtH.DeleteSavedFilter))
+
+	// ETL — admin-управление заливкой Premaster1C → ClickHouse и инкрементальный
+	// pull-воркер. Требует MSSQL-коннект (для bootstrap'а из источника), поэтому
+	// активен только при !DEBT_MOCK.
+	if mssqlDB != nil {
+		etlDeps := etl.Deps{
+			MSSQL:  mssqlDB,
+			PG:     pool,
+			CHURL:  cfg.ClickHouseHTTPURL,
+			CHUser: cfg.ClickHouseUser,
+			CHPass: cfg.ClickHousePass,
+		}
+		adminH := etl.NewAdminHandler(etlDeps)
+		mux.HandleFunc("GET /api/admin/etl/debt/status", auth.RequireRole(authSvc, auth.RoleAdmin, adminH.Status))
+		mux.HandleFunc("GET /api/admin/etl/debt/settings", auth.RequireRole(authSvc, auth.RoleAdmin, adminH.Settings))
+		mux.HandleFunc("PUT /api/admin/etl/debt/settings", auth.RequireRole(authSvc, auth.RoleAdmin, adminH.UpdateSettings))
+		mux.HandleFunc("POST /api/admin/etl/debt/bootstrap", auth.RequireRole(authSvc, auth.RoleAdmin, adminH.StartBootstrap))
+		mux.HandleFunc("GET /api/admin/etl/debt/log", auth.RequireRole(authSvc, auth.RoleAdmin, adminH.Log))
+
+		// Инкрементальный воркер. Сам читает debt_etl_settings каждый тик —
+		// вкл/выкл и интервал управляются через PUT /api/admin/etl/debt/settings.
+		etl.NewIncrementalWorker(etlDeps).Start(context.Background())
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

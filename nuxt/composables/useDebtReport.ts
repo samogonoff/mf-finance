@@ -60,6 +60,9 @@ export interface DebtDocumentRow {
   doc_date: string;
   doc_number: string;
   doc_kind: string;
+  trans_group: string;     // тип операции для группировки внутри drill-down (M5)
+  amount: number;          // суммарный модуль проводок документа
+  description: string;     // operation_description / trans_description
   dz_change: number;
   kz_change: number;
   payment_due_date: string;
