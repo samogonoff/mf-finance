@@ -90,6 +90,9 @@ func (w *IncrementalWorker) pullDelta(ctx context.Context, ch *chClient, inn str
 		return fmt.Errorf("last_change_at: %w", err)
 	}
 
+	// ВГО-фильтр: дельта-синк тоже тянет только внутригрупповые проводки —
+	// та же логика, что в bootstrap (vgoFilter).
+	vgoClause, vgoArgs := vgoFilter()
 	q := `
 SELECT
     p.CompanyID,
@@ -109,12 +112,11 @@ SELECT
     CONVERT(VARCHAR(19), ISNULL(p.DateOfChange, p.[Date]), 120)
 FROM [FinDWH].[dbo].[Premaster1C] AS p WITH (NOLOCK)
 LEFT JOIN [FinDWH].[dbo].[Objects] AS o WITH (NOLOCK) ON o.ID = p.DocID
-WHERE p.CompanyID = @inn AND p.DateOfChange > @last
+WHERE p.CompanyID = @inn AND p.DateOfChange > @last` + vgoClause + `
 ORDER BY p.DateOfChange, p.DocID, p.RwNm`
 
-	rows, err := w.deps.MSSQL.QueryContext(ctx, q,
-		sql.Named("inn", inn),
-		sql.Named("last", last))
+	args := append([]interface{}{sql.Named("inn", inn), sql.Named("last", last)}, vgoArgs...)
+	rows, err := w.deps.MSSQL.QueryContext(ctx, q, args...)
 	if err != nil {
 		return fmt.Errorf("mssql query: %w", err)
 	}
