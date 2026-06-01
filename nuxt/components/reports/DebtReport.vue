@@ -98,6 +98,11 @@ import DebtMultiSelect from "~/components/reports/DebtMultiSelect.vue";
 const { filterOptions, report: fetchReport, drilldown } = useDebtReport();
 const { list: listPresets, create: createPreset, remove: removePreset } = useDebtFilters();
 
+// Deep-link: состояние отчёта живёт в URL, чтобы перезагрузка/шаринг открывали
+// тот же экран. Пишем канонический query при каждом «Сформировать», читаем — на mount.
+const route = useRoute();
+const router = useRouter();
+
 // период по умолчанию — последние 2 дня (today-1 → today). Premaster1C тяжело
 // отдаёт большие диапазоны, дефолт держим минимальным, чтобы первый запрос
 // гарантированно отвечал; пользователь расширит при необходимости.
@@ -173,8 +178,44 @@ const syncDates = () => {
   filters.date_to = dateTo.value;
 };
 
+// --- URL <-> filters (deep-link) -------------------------------------------
+const csv = (v: unknown): string[] =>
+  typeof v === "string" && v.length
+    ? v.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+
+// Гидратация фильтров из query при заходе по ссылке/перезагрузке. Возвращает
+// true, если в URL были параметры (чтобы не перетирать их дефолтами).
+const hydrateFromQuery = (): boolean => {
+  const q = route.query;
+  if (Object.keys(q).length === 0) return false;
+  if (typeof q.from === "string" && q.from) dateFrom.value = q.from;
+  if (typeof q.to === "string" && q.to) dateTo.value = q.to;
+  syncDates();
+  if ("entities" in q) filters.entity_inns = csv(q.entities);
+  if ("accounts" in q) filters.accounts = csv(q.accounts);
+  if ("currencies" in q) filters.currencies = csv(q.currencies);
+  if (typeof q.ico === "string") filters.only_ico = q.ico !== "0";
+  return true;
+};
+
+// Запись текущих фильтров в URL (replace — без лишних записей в history).
+const writeQuery = () => {
+  const q: Record<string, string> = {
+    from: filters.date_from,
+    to: filters.date_to,
+    ico: filters.only_ico ? "1" : "0"
+  };
+  if (filters.entity_inns.length) q.entities = filters.entity_inns.join(",");
+  if (filters.accounts.length) q.accounts = filters.accounts.join(",");
+  if (filters.currencies.length) q.currencies = filters.currencies.join(",");
+  // duplicate-navigation отвергается роутером — гасим, это не ошибка.
+  router.replace({ query: q }).catch(() => {});
+};
+
 const runReport = async () => {
   syncDates();
+  writeQuery();
   loading.value = true;
   errorMessage.value = "";
   try {
@@ -239,6 +280,8 @@ const savePresetPrompt = async () => {
 };
 
 onMounted(async () => {
+  // Сначала восстанавливаем состояние из URL (deep-link), потом грузим справочники.
+  hydrateFromQuery();
   try {
     options.value = await filterOptions();
     // Level 1 MVP: бэк требует обязательный entity_inns, без него Report → 400.
