@@ -200,7 +200,10 @@ const hydrateFromQuery = (): boolean => {
 };
 
 // Запись текущих фильтров в URL (replace — без лишних записей в history).
-const writeQuery = () => {
+// keepExpansion=true (заход по ссылке/перезагрузка) сохраняет exp-параметр
+// раскрытия дерева — его владелец DebtTable восстановит при монтировании.
+// Ручное «Сформировать» строит новое дерево, поэтому exp сбрасывается.
+const writeQuery = (keepExpansion: boolean) => {
   const q: Record<string, string> = {
     from: filters.date_from,
     to: filters.date_to,
@@ -209,13 +212,16 @@ const writeQuery = () => {
   if (filters.entity_inns.length) q.entities = filters.entity_inns.join(",");
   if (filters.accounts.length) q.accounts = filters.accounts.join(",");
   if (filters.currencies.length) q.currencies = filters.currencies.join(",");
+  if (keepExpansion && typeof route.query.exp === "string") q.exp = route.query.exp;
   // duplicate-navigation отвергается роутером — гасим, это не ошибка.
   router.replace({ query: q }).catch(() => {});
 };
 
-const runReport = async () => {
+// keepExpansion прокидываем только из onMounted; из @click приходит MouseEvent
+// (не объект с keepExpansion) → раскрытие сбрасывается, как и задумано.
+const runReport = async (opts?: { keepExpansion?: boolean }) => {
   syncDates();
-  writeQuery();
+  writeQuery(opts?.keepExpansion === true);
   loading.value = true;
   errorMessage.value = "";
   try {
@@ -299,7 +305,7 @@ onMounted(async () => {
     errorMessage.value = e?.data?.error || "Не удалось загрузить справочники фильтров";
   }
   await refreshPresets();
-  await runReport();
+  await runReport({ keepExpansion: true });
 });
 </script>
 
