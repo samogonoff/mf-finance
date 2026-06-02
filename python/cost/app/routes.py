@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import os
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
 from app import mocks
-from app.db import get_dwh_conn, get_gpartner_conn, get_mssql_conn, get_olap_conn, pool
+from app.db import (
+    get_cache_status,
+    get_dwh_conn,
+    get_gpartner_conn,
+    get_mssql_conn,
+    get_olap_conn,
+    load_cost_data_to_cache,
+    pool,
+)
 
 router = APIRouter()
 
@@ -122,59 +132,42 @@ MULTI_FILTER_COLUMNS: dict[str, str] = {
 
 
 @router.post("/load-data")
-def load_data(payload: dict) -> dict:
-    """Загружает сырые отфильтрованные данные с пагинацией."""
+async def load_data(payload: dict) -> dict:
+    """Загружает сырые отфильтрованные данные из кеша с пагинацией."""
     if _is_mock():
         return mocks.load_data(payload)
 
     limit = min(payload.get("limit", 1000), 5000)
     offset = payload.get("offset", 0)
 
-    conn = get_mssql_conn()
-    cursor = conn.cursor()
-    try:
-        query = "SELECT TOP (?) * FROM [CostHistory] WHERE 1=1"
-        params: list[Any] = [limit + offset]
+    params: list[Any] = []
+    where_parts: list[str] = []
 
-        if payload.get("date_from"):
-            query += " AND [дата расчета] >= ?"
-            params.append(payload["date_from"])
-        if payload.get("date_to"):
-            query += " AND [дата расчета] <= ?"
-            params.append(payload["date_to"])
+    if payload.get("date_from"):
+        where_parts.append(f'"дата расчета" >= ${len(params) + 1}')
+        params.append(date.fromisoformat(payload["date_from"]))
+    if payload.get("date_to"):
+        where_parts.append(f'"дата расчета" <= ${len(params) + 1}')
+        params.append(date.fromisoformat(payload["date_to"]))
 
-        for key, col in MULTI_FILTER_COLUMNS.items():
-            values = payload.get(key) or []
-            if values and "all" not in values:
-                placeholders = ",".join(["?"] * len(values))
-                query += f" AND [{col}] IN ({placeholders})"
-                params.extend(values)
+    for key, col in MULTI_FILTER_COLUMNS.items():
+        values = payload.get(key) or []
+        if values and "all" not in values:
+            placeholders = ",".join(f"${len(params) + i + 1}" for i in range(len(values)))
+            where_parts.append(f'TRIM("{col}") IN ({placeholders})')
+            params.extend(values)
 
-        cursor.execute(query, params)
-        columns = [desc[0] for desc in cursor.description]
-        rows = cursor.fetchall()
+    where = " AND ".join(where_parts) if where_parts else "TRUE"
 
-        if offset > 0:
-            rows = rows[offset:]
-            rows = rows[:limit]
+    async with pool().acquire() as conn:
+        total = await conn.fetchval(f"SELECT COUNT(*) FROM cost_data_cache WHERE {where}", *params) or 0
 
-        data = [dict(zip(columns, row)) for row in rows]
+        paginated_params = params + [limit, offset]
+        query = f"SELECT * FROM cost_data_cache WHERE {where} ORDER BY id LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}"
+        rows = await conn.fetch(query, *paginated_params)
+        data = [dict(row) for row in rows]
 
-        count_query = "SELECT COUNT(*) FROM [CostHistory] WHERE 1=1"
-        count_params: list[Any] = []
-        if payload.get("date_from"):
-            count_query += " AND [дата расчета] >= ?"
-            count_params.append(payload["date_from"])
-        if payload.get("date_to"):
-            count_query += " AND [дата расчета] <= ?"
-            count_params.append(payload["date_to"])
-        cursor.execute(count_query, count_params)
-        total_row = cursor.fetchone()
-        total = total_row[0] if total_row else 0
-
-        return {"data": data, "count": len(data), "total": total, "offset": offset, "limit": limit}
-    finally:
-        conn.close()
+    return {"data": data, "count": len(data), "total": total, "offset": offset, "limit": limit}
 
 
 # ── Aggregated data ──────────────────────────────────────────────────────────
@@ -183,6 +176,8 @@ AGG_GROUP_FIELDS = [
     "Бренд-менеджер",
     "Модель",
     "Артикул",
+    "Наименование модели",
+    "PLAN_ID",
     "Признак калькуляции",
     "дата расчета",
     "Уровень цен",
@@ -233,58 +228,53 @@ SEBEST_COMPONENTS_USD = [
 
 
 @router.post("/aggregated")
-def get_aggregated(payload: dict) -> dict:
+async def get_aggregated(payload: dict) -> dict:
     if _is_mock():
         return mocks.aggregated(payload)
 
-    select_parts: list[str] = [f"[{f}]" for f in AGG_GROUP_FIELDS]
-    select_parts += [f"AVG([{f}]) AS [avg_{f}]" for f in AGG_AVG_FIELDS]
-    select_parts += [f"SUM([{f}]) AS [sum_{f}]" for f in AGG_SUM_FIELDS]
+    select_parts: list[str] = [f'"{f}"' for f in AGG_GROUP_FIELDS]
+    select_parts += [f'AVG("{f}") AS "avg_{f}"' for f in AGG_AVG_FIELDS]
+    select_parts += [f'SUM("{f}") AS "sum_{f}"' for f in AGG_SUM_FIELDS]
 
-    query = f"SELECT {', '.join(select_parts)} FROM [CostHistory] WHERE 1=1"
     params: list[Any] = []
+    where_parts: list[str] = []
 
     if payload.get("date_from"):
-        query += " AND [дата расчета] >= ?"
-        params.append(payload["date_from"])
+        where_parts.append(f'"дата расчета" >= ${len(params) + 1}')
+        params.append(date.fromisoformat(payload["date_from"]))
     if payload.get("date_to"):
-        query += " AND [дата расчета] <= ?"
-        params.append(payload["date_to"])
+        where_parts.append(f'"дата расчета" <= ${len(params) + 1}')
+        params.append(date.fromisoformat(payload["date_to"]))
 
     for key, col in MULTI_FILTER_COLUMNS.items():
         values = payload.get(key) or []
         if values and "all" not in values:
-            placeholders = ",".join(["?"] * len(values))
-            query += f" AND [{col}] IN ({placeholders})"
+            placeholders = ",".join(f"${len(params) + i + 1}" for i in range(len(values)))
+            where_parts.append(f'TRIM("{col}") IN ({placeholders})')
             params.extend(values)
 
-    query += " GROUP BY " + ", ".join(f"[{f}]" for f in AGG_GROUP_FIELDS)
+    where = " AND ".join(where_parts) if where_parts else "TRUE"
+    query = f"SELECT {', '.join(select_parts)} FROM cost_data_cache WHERE {where} GROUP BY {', '.join(f'"{f}"' for f in AGG_GROUP_FIELDS)}"
 
-    conn = get_mssql_conn()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(query, params)
-        columns = [d[0] for d in cursor.description]
-        rows = cursor.fetchall()
-        data = [dict(zip(columns, row)) for row in rows]
-        # Пересчитываем себестоимость как сумму 6 компонентов (как в детализации)
-        for row in data:
-            row["sum_Себестоимость, руб."] = round(
-                sum(float(row.get(f, 0) or 0) for f in SEBEST_COMPONENTS_RUB), 2
-            )
-            row["sum_Себестоимость, USD."] = round(
-                sum(float(row.get(f, 0) or 0) for f in SEBEST_COMPONENTS_USD), 2
-            )
-        return {"data": data, "count": len(data)}
-    finally:
-        conn.close()
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(query, *params)
+        data = [dict(row) for row in rows]
+
+    for row in data:
+        row["sum_Себестоимость, руб."] = round(
+            sum(float(row.get(f, 0) or 0) for f in SEBEST_COMPONENTS_RUB), 2
+        )
+        row["sum_Себестоимость, USD."] = round(
+            sum(float(row.get(f, 0) or 0) for f in SEBEST_COMPONENTS_USD), 2
+        )
+    return {"data": data, "count": len(data)}
 
 
 # ── Details по модели ────────────────────────────────────────────────────────
 
 
 @router.post("/details")
-def get_details(payload: dict) -> dict:
+async def get_details(payload: dict) -> dict:
     """Детализация по модели с GROUP BY и опциональными фильтрами."""
     model = (payload.get("model") or "").strip()
     if not model:
@@ -293,64 +283,60 @@ def get_details(payload: dict) -> dict:
     if _is_mock():
         return mocks.details(model)
 
-    query = """
-        SELECT
-            [дата расчета],
-            [Признак калькуляции],
-            RTRIM([Модель]) AS [Модель],
-            RTRIM([Артикул]) AS [Артикул],
-            RTRIM([Наименование модели]) AS [Наименование модели],
-            RTRIM([Номер задания производства]) AS [Номер задания производства],
-            ISNULL(AVG([Розничная цена по уровню, руб.]), 0) AS [Розничная цена, руб.],
-            ISNULL(AVG([Отпускная цена по уровню, руб]), 0) AS [Оптовая цена, руб.],
-            ISNULL(SUM([Основные материалы, руб.]), 0) AS [Осн. материалы, руб.],
-            ISNULL(SUM([Вспомогательные материалы, руб.]), 0) AS [Вспом. материалы, руб.],
-            ISNULL(AVG([Пошив, руб.]), 0) AS [Пошив, руб.],
-            ISNULL(AVG([Раскрой, руб.]), 0) AS [Раскрой, руб.],
-            ISNULL(AVG([Декоры, руб.]), 0) AS [Декор, руб.],
-            ISNULL(AVG([Вязание, руб.]), 0) AS [Вязание, руб.]
-        FROM [CostHistory]
-        WHERE RTRIM([Модель]) = ?
-    """
-    params: list[Any] = [model]
+    params: list[Any] = []
+    where_parts: list[str] = [f'TRIM("Модель") = ${len(params) + 1}']
+    params.append(model)
 
     date_from = (payload.get("date_from") or "").strip()
     date_to = (payload.get("date_to") or "").strip()
     calc_sign = payload.get("calc_sign") or []
 
     if date_from:
-        query += " AND [дата расчета] >= ?"
-        params.append(date_from)
+        where_parts.append(f'"дата расчета" >= ${len(params) + 1}')
+        params.append(date.fromisoformat(date_from))
     if date_to:
-        query += " AND [дата расчета] <= ?"
-        params.append(date_to)
+        where_parts.append(f'"дата расчета" <= ${len(params) + 1}')
+        params.append(date.fromisoformat(date_to))
     if calc_sign:
-        placeholders = ",".join(["?"] * len(calc_sign))
-        query += f" AND [Признак калькуляции] IN ({placeholders})"
+        placeholders = ",".join(f"${len(params) + i + 1}" for i in range(len(calc_sign)))
+        where_parts.append(f'TRIM("Признак калькуляции") IN ({placeholders})')
         params.extend(calc_sign)
 
-    query += """
+    where = " AND ".join(where_parts)
+
+    query = f"""
+        SELECT
+            "дата расчета",
+            "Признак калькуляции",
+            TRIM("Модель") AS "Модель",
+            TRIM("Артикул") AS "Артикул",
+            TRIM("Наименование модели") AS "Наименование модели",
+            TRIM("Номер задания производства") AS "Номер задания производства",
+            COALESCE(AVG("Розничная цена по уровню, руб."), 0) AS "Розничная цена, руб.",
+            COALESCE(AVG("Отпускная цена по уровню, руб"), 0) AS "Оптовая цена, руб.",
+            COALESCE(SUM("Основные материалы, руб."), 0) AS "Осн. материалы, руб.",
+            COALESCE(SUM("Вспомогательные материалы, руб."), 0) AS "Вспом. материалы, руб.",
+            COALESCE(AVG("Пошив, руб."), 0) AS "Пошив, руб.",
+            COALESCE(AVG("Раскрой, руб."), 0) AS "Раскрой, руб.",
+            COALESCE(AVG("Декоры, руб."), 0) AS "Декор, руб.",
+            COALESCE(AVG("Вязание, руб."), 0) AS "Вязание, руб."
+        FROM cost_data_cache
+        WHERE {where}
         GROUP BY
-            [дата расчета],
-            [Признак калькуляции],
-            RTRIM([Модель]),
-            RTRIM([Артикул]),
-            RTRIM([Наименование модели]),
-            RTRIM([Номер задания производства])
-        ORDER BY [дата расчета] DESC, RTRIM([Артикул])
+            "дата расчета",
+            "Признак калькуляции",
+            TRIM("Модель"),
+            TRIM("Артикул"),
+            TRIM("Наименование модели"),
+            TRIM("Номер задания производства")
+        ORDER BY "дата расчета" DESC, TRIM("Артикул")
     """
 
-    conn = get_mssql_conn()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(query, params)
-        columns = [d[0] for d in cursor.description]
-        rows = cursor.fetchall()
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(query, *params)
         details_data: list[dict[str, Any]] = []
         for row in rows:
-            r = dict(zip(columns, row))
-            r["Модель"] = r.get("Модель", "").strip() if r.get("Модель") else ""
-            r["Артикул"] = r.get("Артикул", "").strip() if r.get("Артикул") else ""
+            r = dict(row)
             poshiv = r.get("Пошив, руб.") or 0
             raskr = r.get("Раскрой, руб.") or 0
             decor = r.get("Декор, руб.") or 0
@@ -366,8 +352,6 @@ def get_details(payload: dict) -> dict:
             r["Маржинальность, %"] = round(markup / float(opt) * 100, 2) if float(opt) else 0
             details_data.append(r)
         return {"data": details_data, "count": len(details_data)}
-    finally:
-        conn.close()
 
 
 # ── Price levels ─────────────────────────────────────────────────────────────
@@ -533,3 +517,37 @@ async def save_batch_changes(payload: dict) -> dict:
         )
 
     return {"success": True, "count": len(changes)}
+
+
+# ── Cache refresh & status ──────────────────────────────────────────────────
+
+
+@router.post("/refresh-cache")
+async def refresh_cache() -> dict:
+    """Принудительное обновление кеша из MSSQL v_CostHistory_MatchedOrLatest."""
+    if _is_mock():
+        return mocks.refresh_cache()
+
+    status = await get_cache_status()
+    if status and status["is_refreshing"]:
+        REFRESH_TIMEOUT_MINUTES = 10
+        refreshed_at = status.get("refreshed_at")
+        if refreshed_at:
+            age = (datetime.now(timezone.utc) - refreshed_at).total_seconds() / 60
+            if age < REFRESH_TIMEOUT_MINUTES:
+                return {"status": "already_refreshing", "message": "Cache refresh already in progress"}
+
+    asyncio.ensure_future(load_cost_data_to_cache())
+    return {"status": "started", "message": "Cache refresh started in background"}
+
+
+@router.get("/cache-status")
+async def cache_status() -> dict:
+    """Текущее состояние кеша."""
+    if _is_mock():
+        return mocks.cache_status()
+
+    status = await get_cache_status()
+    if status is None:
+        return {"refreshed_at": None, "row_count": 0, "is_refreshing": False, "error_message": "Cache not initialized"}
+    return status
