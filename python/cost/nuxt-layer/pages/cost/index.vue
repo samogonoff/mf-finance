@@ -81,6 +81,19 @@
           <span class="usd-toggle-thumb">$</span>
         </span>
       </label>
+      <div class="cost-cache-status">
+        <button class="btn btn-ghost btn-sm" :disabled="cacheRefreshing" @click="refreshCache">
+          <Icon name="lucide:refresh-cw" />
+          {{ cacheRefreshing ? 'Обновление…' : 'Обновить кеш' }}
+        </button>
+        <span v-if="cacheRefreshing" class="cache-spinner">
+          <Icon name="lucide:loader" class="spinning" /> обновление данных…
+        </span>
+        <span v-else-if="cacheInfo?.refreshed_at" class="cache-info">
+          <Icon name="lucide:database" />
+          Кеш: {{ (cacheInfo.row_count || 0).toLocaleString("ru-RU") }} записей · {{ formatDateTime(cacheInfo.refreshed_at) }}
+        </span>
+      </div>
       <div class="cost-actions-buttons">
         <button class="btn btn-ghost" :disabled="!totalAllRecords" @click="exportToExcel">
           <Icon name="lucide:download" /> Экспорт в Excel
@@ -164,6 +177,12 @@
               <th :class="{ sorted: sortField === 'Артикул' }" @click="toggleSort('Артикул')">
                 Артикул<span v-if="sortField === 'Артикул'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
+              <th :class="{ sorted: sortField === 'Наименование модели' }" @click="toggleSort('Наименование модели')">
+                Наименование модели<span v-if="sortField === 'Наименование модели'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th :class="{ sorted: sortField === 'PLAN_ID' }" @click="toggleSort('PLAN_ID')">
+                PLAN_ID<span v-if="sortField === 'PLAN_ID'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
               <th :class="{ sorted: sortField === 'Страна пр-ва' }" @click="toggleSort('Страна пр-ва')">
                 Страна<span v-if="sortField === 'Страна пр-ва'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
@@ -176,13 +195,16 @@
               <th :class="{ sorted: sortField === 'дата расчета' }" @click="toggleSort('дата расчета')">
                 Дата<span v-if="sortField === 'дата расчета'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
+              <th :class="{ sorted: sortField === 'Признак калькуляции' }" @click="toggleSort('Признак калькуляции')">
+                Пр.кальк<span v-if="sortField === 'Признак калькуляции'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
               <th :class="{ sorted: sortField === 'Уровень цен' }" @click="toggleSort('Уровень цен')">
                 Уровень цен<span v-if="sortField === 'Уровень цен'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
                 Сред. розница (руб)<span v-if="sortField === 'avg_Розничная цена по уровню, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
                 Сред. опт (руб)<span v-if="sortField === 'avg_Отпускная цена по уровню, руб'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, USD.' }" @click="toggleSort('avg_Розничная цена по уровню, USD.')">
@@ -191,50 +213,50 @@
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, USD.' }" @click="toggleSort('avg_Отпускная цена по уровню, USD.')">
                 Сред. опт ($)<span v-if="sortField === 'avg_Отпускная цена по уровню, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, руб.' }" @click="toggleSort('sum_Основные материалы, руб.')">
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, руб.' }" @click="toggleSort('sum_Основные материалы, руб.')">
                 Осн. материалы (руб)<span v-if="sortField === 'sum_Основные материалы, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, USD.' }" @click="toggleSort('sum_Основные материалы, USD.')">
                 Осн. материалы ($)<span v-if="sortField === 'sum_Основные материалы, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, руб.' }" @click="toggleSort('sum_Вспомогательные материалы, руб.')">
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, руб.' }" @click="toggleSort('sum_Вспомогательные материалы, руб.')">
                 Вспом. (руб)<span v-if="sortField === 'sum_Вспомогательные материалы, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, USD.' }" @click="toggleSort('sum_Вспомогательные материалы, USD.')">
                 Вспом. ($)<span v-if="sortField === 'sum_Вспомогательные материалы, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'avg_Пошив, руб.' }" @click="toggleSort('avg_Пошив, руб.')">
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Пошив, руб.' }" @click="toggleSort('avg_Пошив, руб.')">
                 Пошив (руб)<span v-if="sortField === 'avg_Пошив, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Пошив, USD.' }" @click="toggleSort('avg_Пошив, USD.')">
                 Пошив ($)<span v-if="sortField === 'avg_Пошив, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, руб.' }" @click="toggleSort('avg_Раскрой, руб.')">
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, руб.' }" @click="toggleSort('avg_Раскрой, руб.')">
                 Раскрой (руб)<span v-if="sortField === 'avg_Раскрой, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, USD.' }" @click="toggleSort('avg_Раскрой, USD.')">
                 Раскрой ($)<span v-if="sortField === 'avg_Раскрой, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
                 Декоры (руб)<span v-if="sortField === 'sum_Декоры, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, USD.' }" @click="toggleSort('sum_Декоры, USD.')">
                 Декоры ($)<span v-if="sortField === 'sum_Декоры, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'avg_Вязание, руб.' }" @click="toggleSort('avg_Вязание, руб.')">
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Вязание, руб.' }" @click="toggleSort('avg_Вязание, руб.')">
                 Вязание (руб)<span v-if="sortField === 'avg_Вязание, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Вязание, USD.' }" @click="toggleSort('avg_Вязание, USD.')">
                 Вязание ($)<span v-if="sortField === 'avg_Вязание, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
                 Себест. (руб)<span v-if="sortField === 'sum_Себестоимость, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, USD.' }" @click="toggleSort('sum_Себестоимость, USD.')">
                 Себест. ($)<span v-if="sortField === 'sum_Себестоимость, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th class="col-num" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
-                Наценка (руб)<span v-if="sortField === 'calc_markup_rub'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                Наценка <template v-if="showUSD">($)</template><template v-else>(руб)</template><span v-if="sortField === 'calc_markup_rub'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th class="col-num" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
                 Наценка (%)<span v-if="sortField === 'calc_markup_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
@@ -246,12 +268,12 @@
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td :colspan="showUSD ? 30 : 21" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="24" class="muted" style="text-align: center; padding: 24px">
                 Загрузка данных…
               </td>
             </tr>
             <tr v-else-if="!pageRows.length">
-              <td :colspan="showUSD ? 30 : 21" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="24" class="muted" style="text-align: center; padding: 24px">
                 Нет данных. Загрузите данные кнопкой выше.
               </td>
             </tr>
@@ -265,10 +287,13 @@
               <td>{{ row['Бренд-менеджер'] || '—' }}</td>
               <td>{{ row['Модель'] || '—' }}</td>
               <td>{{ row['Артикул'] || '—' }}</td>
+              <td>{{ row['Наименование модели'] || '—' }}</td>
+              <td>{{ row['PLAN_ID'] || '—' }}</td>
               <td>{{ row['Страна пр-ва'] || '—' }}</td>
               <td>{{ row['Семья'] || '—' }}</td>
               <td>{{ row['Сезон'] || '—' }}</td>
               <td class="num">{{ formatDate(row['дата расчета']) }}</td>
+              <td>{{ row['Признак калькуляции'] || '—' }}</td>
               <td>
                 <select
                   class="price-select"
@@ -282,29 +307,29 @@
                   </option>
                 </select>
               </td>
-              <td class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, руб.']) }}</td>
-              <td class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
+              <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, руб.']) }}</td>
+              <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, USD.']) }}</td>
-              <td class="col-num num">{{ fmt(row['sum_Основные материалы, руб.']) }}</td>
+              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, USD.']) }}</td>
-              <td class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, руб.']) }}</td>
+              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, USD.']) }}</td>
-              <td class="col-num num">{{ fmt(row['avg_Пошив, руб.']) }}</td>
+              <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Пошив, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Пошив, USD.']) }}</td>
-              <td class="col-num num">{{ fmt(row['avg_Раскрой, руб.']) }}</td>
+              <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Раскрой, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Раскрой, USD.']) }}</td>
-              <td class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
+              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
-              <td class="col-num num">{{ fmt(row['avg_Вязание, руб.']) }}</td>
+              <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Вязание, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Вязание, USD.']) }}</td>
-              <td class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
+              <td v-if="!showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
-              <td class="col-num num">{{ fmt(calc(row).markupRub) }}</td>
-              <td class="col-num num" :class="calc(row).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
-                {{ calc(row).markupPct.toFixed(1) }}%
+              <td class="col-num num">{{ fmt(calc(row, showUSD).markupRub) }}</td>
+              <td class="col-num num" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
+                {{ calc(row, showUSD).markupPct.toFixed(1) }}%
               </td>
-              <td class="col-num num">{{ calc(row).marginPct.toFixed(1) }}%</td>
+              <td class="col-num num">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
             </tr>
           </tbody>
         </table>
@@ -446,6 +471,8 @@ const dateTo = ref("");
 const cascadeBusy = ref(false);
 const loading = ref(false);
 const lastError = ref("");
+
+
 
 // ── Helper: normalize level options ─────────────────────────────────────────
 // API returns {id, text} for levels; CostMultiSelect needs string[]
@@ -604,14 +631,17 @@ const totalAllRecords = ref(0);
 const pageSize = 50;
 
 // ── Column filters (client-side, top-down cascade) ──────────────────────────
-type ColFilterKey = 'col_bm' | 'col_model' | 'col_articul' | 'col_country' | 'col_season' | 'col_date';
+type ColFilterKey = 'col_bm' | 'col_model' | 'col_articul' | 'col_model_name' | 'col_plan_id' | 'col_calc_sign' | 'col_country' | 'col_season' | 'col_date';
 
-const COL_FILTER_KEYS: ColFilterKey[] = ['col_bm', 'col_model', 'col_articul', 'col_country', 'col_season', 'col_date'];
+const COL_FILTER_KEYS: ColFilterKey[] = ['col_bm', 'col_model', 'col_articul', 'col_model_name', 'col_plan_id', 'col_calc_sign', 'col_country', 'col_season', 'col_date'];
 
 const columnFilterConfig: { key: ColFilterKey; label: string; field: string }[] = [
   { key: 'col_bm', label: 'Бренд-менеджер', field: 'Бренд-менеджер' },
   { key: 'col_model', label: 'Модель', field: 'Модель' },
   { key: 'col_articul', label: 'Артикул', field: 'Артикул' },
+  { key: 'col_model_name', label: 'Наименование модели', field: 'Наименование модели' },
+  { key: 'col_plan_id', label: 'PLAN_ID', field: 'PLAN_ID' },
+  { key: 'col_calc_sign', label: 'Пр.кальк', field: 'Признак калькуляции' },
   { key: 'col_country', label: 'Страна пр-ва', field: 'Страна пр-ва' },
   { key: 'col_season', label: 'Сезон', field: 'Сезон' },
   { key: 'col_date', label: 'Дата', field: 'дата расчета' },
@@ -714,7 +744,7 @@ const sortedRows = computed(() => {
     let va: any, vb: any;
     // Вычисляемые поля (наценка/маржа)
     if (field === 'calc_markup_rub' || field === 'calc_markup_pct' || field === 'calc_margin_pct') {
-      const ca = calc(a), cb = calc(b);
+      const ca = calc(a, showUSD.value), cb = calc(b, showUSD.value);
       if (field === 'calc_markup_rub') { va = ca.markupRub; vb = cb.markupRub; }
       else if (field === 'calc_markup_pct') { va = ca.markupPct; vb = cb.markupPct; }
       else { va = ca.marginPct; vb = cb.marginPct; }
@@ -1054,6 +1084,57 @@ function openDetailsInNewTab() {
   w.document.close();
 }
 
+// ── Cache refresh & status ──────────────────────────────────────────────────
+
+const cacheRefreshing = ref(false);
+const cacheInfo = ref<{ refreshed_at: string | null; row_count: number; is_refreshing: boolean; error_message: string | null } | null>(null);
+
+async function loadCacheStatus() {
+  try {
+    cacheInfo.value = await $fetch<typeof cacheInfo.value>(
+      `${apiBase.value}/api/cost/cache-status`,
+      { headers: fetchHeaders.value }
+    );
+  } catch (e: any) {
+    console.error("[cost] cache-status failed", e);
+  }
+}
+
+async function refreshCache() {
+  try {
+    const result = await $fetch<{ status: string }>(
+      `${apiBase.value}/api/cost/refresh-cache`,
+      { method: "POST", headers: fetchHeaders.value }
+    );
+    if (result.status === "already_refreshing") return;
+    if (result.status === "mock") return;
+
+    cacheRefreshing.value = true;
+    // Poll until refresh completes
+    const poll = async () => {
+      while (cacheRefreshing.value) {
+        await new Promise((r) => setTimeout(r, 5000));
+        try {
+          const s = await $fetch<typeof cacheInfo.value>(
+            `${apiBase.value}/api/cost/cache-status`,
+            { headers: fetchHeaders.value }
+          );
+          cacheInfo.value = s;
+          if (!s?.is_refreshing) {
+            cacheRefreshing.value = false;
+          }
+        } catch {
+          cacheRefreshing.value = false;
+        }
+      }
+    };
+    poll();
+  } catch (e: any) {
+    console.error("[cost] refresh-cache failed", e);
+    cacheRefreshing.value = false;
+  }
+}
+
 // ── Price levels & save ─────────────────────────────────────────────────────
 
 const priceLevels = ref<PriceLevel[]>([]);
@@ -1151,20 +1232,35 @@ const formatDate = (v: any): string => {
   return s.includes("T") ? s.split("T")[0] : s;
 };
 
-const calc = (row: any) => {
-  const wholesaleRub = Number(row["avg_Отпускная цена по уровню, руб"] || 0);
-  const costRub = Number(row["sum_Себестоимость, руб."] || 0);
-  const markupRub = wholesaleRub - costRub;
-  const markupPct = costRub > 0 ? (markupRub / costRub) * 100 : 0;
-  const marginPct = wholesaleRub > 0 ? (markupRub / wholesaleRub) * 100 : 0;
-  return { markupRub, markupPct, marginPct };
+const formatDateTime = (v: string | null): string => {
+  if (!v) return "—";
+  const d = new Date(v);
+  return d.toLocaleString("ru-RU", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
+
+const calc = (row: any, useUsd: boolean = false) => {
+  const wholesale = useUsd
+    ? Number(row["avg_Отпускная цена по уровню, USD."] || 0)
+    : Number(row["avg_Отпускная цена по уровню, руб"] || 0);
+  const cost = useUsd
+    ? Number(row["sum_Себестоимость, USD."] || 0)
+    : Number(row["sum_Себестоимость, руб."] || 0);
+  const markup = wholesale - cost;
+  const markupPct = cost > 0 ? (markup / cost) * 100 : 0;
+  const marginPct = wholesale > 0 ? (markup / wholesale) * 100 : 0;
+  return { markupRub: markup, markupPct, marginPct };
 };
 
 // ── Excel export ────────────────────────────────────────────────────────────
 
 const headers = [
-  "", "Бренд-менеджер", "Модель", "Артикул", "Страна", "Семья", "Сезон",
-  "Дата", "Уровень цен",
+  "", "Бренд-менеджер", "Модель", "Артикул", "Наименование модели", "PLAN_ID", "Страна", "Семья", "Сезон",
+  "Дата", "Пр.кальк", "Уровень цен",
   "Сред. розница (руб)", "Сред. опт (руб)", "Сред. розница ($)", "Сред. опт ($)",
   "Осн. материалы (руб)", "Осн. материалы ($)",
   "Вспом. материалы (руб)", "Вспом. материалы ($)",
@@ -1187,10 +1283,13 @@ const exportToExcel = () => {
       row["Бренд-менеджер"] || "",
       row["Модель"] || "",
       row["Артикул"] || "",
+      row["Наименование модели"] || "",
+      row["PLAN_ID"] || "",
       row["Страна пр-ва"] || "",
       row["Семья"] || "",
       row["Сезон"] || "",
       formatDate(row["дата расчета"]),
+      row["Признак калькуляции"] || "",
       row["Уровень цен"] || "",
       fmt(row["avg_Розничная цена по уровню, руб."]),
       fmt(row["avg_Отпускная цена по уровню, руб"]),
@@ -1269,7 +1368,7 @@ watch(currentPage, () => {
 });
 
 onMounted(async () => {
-  await Promise.all([loadFilters(), loadPriceLevels()]);
+  await Promise.all([loadFilters(), loadPriceLevels(), loadCacheStatus()]);
 });
 </script>
 
@@ -1600,5 +1699,27 @@ onMounted(async () => {
 .col-filter-reset:hover {
   color: var(--accent);
   text-decoration: underline;
+}
+
+/* Cache status */
+.cost-cache-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
+}
+.cache-spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+}
+.cache-info {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
 }
 </style>
