@@ -349,6 +349,26 @@ def load_data(payload: dict) -> dict:
     return {"data": page, "count": len(page), "total": total, "offset": offset, "limit": limit}
 
 
+# ── Mock cache endpoints ──────────────────────────────────────────────────────
+
+
+def refresh_cache() -> dict:
+    return {"status": "mock", "message": "Mock cache: no-op"}
+
+
+def cache_status() -> dict:
+    import datetime
+    return {
+        "refreshed_at": datetime.datetime.now().isoformat(),
+        "row_count": 144,
+        "is_refreshing": False,
+        "error_message": None,
+    }
+
+
+# ── Mock details ──────────────────────────────────────────────────────────────
+
+
 def details(model: str) -> dict:
     """Мок для details: возвращает 2 детальные строки."""
     rows = [
