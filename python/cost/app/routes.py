@@ -8,15 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app import mocks
-from app.db import (
-    get_cache_status,
-    get_dwh_conn,
-    get_gpartner_conn,
-    get_mssql_conn,
-    get_olap_conn,
-    load_cost_data_to_cache,
-    pool,
-)
+from app.db import get_cache_status, get_dwh_conn, get_gpartner_conn, get_mssql_conn, get_olap_conn, load_cost_data_to_cache, pool
 from app.notify import notify_admins
 
 router = APIRouter()
