@@ -17,6 +17,7 @@ from app.db import (
     load_cost_data_to_cache,
     pool,
 )
+from app.notify import notify_admins
 
 router = APIRouter()
 
