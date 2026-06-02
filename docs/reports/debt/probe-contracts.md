@@ -85,6 +85,58 @@ WHERE p.CompanyID='9731039708' AND p.ICO=1
 по месяцам в цикле. Из вывода и так уже видно: в `Name` есть **номер+дата**, но
 **нет срока отсрочки** — подтверждаем, что срок берём не отсюда (вопрос к автору ТЗ).
 
+## Полная картина по одному ЮЛ (ПТИР `9731039708`, для ТЕКС — заменить ИНН на `5031159833`)
+
+**A. С какими нашими РФ/РБ ЮЛ есть расчёты (+ метка ICO):**
+
+```bash
+PROBE_SQL="
+SELECT LTRIM(RTRIM(p.CounterpartyID)) AS cp_inn, COUNT(*) AS rows,
+       MAX(p.ICO) AS ico, MIN(p.[Date]) AS first_dt, MAX(p.[Date]) AS last_dt
+FROM [FinDWH].[dbo].[Premaster1C] p WITH (NOLOCK)
+WHERE p.CompanyID='9731039708' AND p.[Date] >= '2024-01-01'
+  AND LTRIM(RTRIM(p.CounterpartyID)) IN
+      ('690591512','690719790','6950135110','5031159833','9909349268','695018688905')
+GROUP BY LTRIM(RTRIM(p.CounterpartyID))
+ORDER BY rows DESC
+" go run ./cmd/mssql-probe
+```
+
+Если в выводе только `6950135110` — расчёты фактически только с ТД. `ico` покажет,
+помечены ли строки как ВГО (ожидаем смесь 0/1 — корень #4: union-фильтр их добирает).
+
+**B. Все контрагенты ЮЛ (топ по объёму) — масштаб + внешние:**
+
+```bash
+PROBE_SQL="
+SELECT TOP 30 LTRIM(RTRIM(p.CounterpartyID)) AS cp_inn, COUNT(*) AS rows, MAX(p.ICO) AS ico
+FROM [FinDWH].[dbo].[Premaster1C] p WITH (NOLOCK)
+WHERE p.CompanyID='9731039708' AND p.[Date] >= '2024-01-01'
+  AND LTRIM(RTRIM(p.CounterpartyID)) <> ''
+GROUP BY LTRIM(RTRIM(p.CounterpartyID))
+ORDER BY rows DESC
+" go run ./cmd/mssql-probe
+```
+
+**C. Все названия договоров ЮЛ (кредиторка CrSubconto1 + дебиторка DrSubconto2):**
+
+```bash
+PROBE_FULL_TEXT=1 PROBE_SQL="
+SELECT DISTINCT name FROM (
+  SELECT o.[Name] AS name
+  FROM [FinDWH].[dbo].[Premaster1C] p WITH (NOLOCK)
+  JOIN [FinDWH].[dbo].[Objects] o WITH (NOLOCK) ON o.ID = p.CrSubconto1
+  WHERE p.CompanyID='9731039708' AND p.[Date] >= '2023-01-01'
+    AND (p.CrAcc LIKE '60%' OR p.CrAcc LIKE '76%')
+  UNION
+  SELECT o.[Name]
+  FROM [FinDWH].[dbo].[Premaster1C] p WITH (NOLOCK)
+  JOIN [FinDWH].[dbo].[Objects] o WITH (NOLOCK) ON o.ID = p.DrSubconto2
+  WHERE p.CompanyID='9731039708' AND p.[Date] >= '2023-01-01' AND p.DrAcc LIKE '62%'
+) t ORDER BY name
+" go run ./cmd/mssql-probe
+```
+
 ## Почему Шаг 1 был медленным и как забирать быстро
 
 Тормозил **сам probe**: 6 `LEFT JOIN` к `Objects` (5.2 млн) поверх скана всей
