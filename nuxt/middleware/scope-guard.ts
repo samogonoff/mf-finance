@@ -22,11 +22,18 @@ export default defineNuxtRouteMiddleware(async (to) => {
     if (!hasScope("admin")) return navigateTo("/", { replace: true });
     return;
   }
+  if (path.startsWith("/reports")) {
+    // Отчётность пока закрыта только для ROLE_FINANCE_ADMIN (или ROLE_ADMIN
+    // через иерархию). До расширения модели ролей шире не пускаем.
+    if (!hasScope("finance")) return navigateTo("/", { replace: true });
+    return;
+  }
   if (path.startsWith("/analytics")) {
     if (!hasScope("analytics")) return navigateTo("/", { replace: true });
     return;
   }
-  if (!hasScope("finance")) {
-    return navigateTo("/login", { replace: true });
+  if (path.startsWith("/cost")) {
+    if (!hasScope("cost")) return navigateTo("/", { replace: true });
+    return;
   }
 });

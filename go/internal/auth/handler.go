@@ -26,7 +26,7 @@ type userDTO struct {
 }
 
 func toDTO(u *User) userDTO {
-	return userDTO{ID: u.ID, Email: u.Email, Name: u.DisplayName(), Roles: u.Roles}
+	return userDTO{ID: u.ID, Email: u.Email, Name: u.DisplayName(), Roles: ExpandRoles(u.Roles)}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -105,6 +105,14 @@ func RequireBearer(svc *Service, next http.HandlerFunc) http.HandlerFunc {
 func userFromCtx(ctx context.Context) *User {
 	u, _ := ctx.Value(ctxKeyUser).(*User)
 	return u
+}
+
+// UserFromCtx — публичный аксессор к *User, положенному в context middleware'ом
+// RequireBearer. Возвращает (nil, false) если контекст без юзера. Используется
+// другими доменами (например, reports/debt) для определения user_id.
+func UserFromCtx(ctx context.Context) (*User, bool) {
+	u, ok := ctx.Value(ctxKeyUser).(*User)
+	return u, ok
 }
 
 func tokenFromCtx(ctx context.Context) string {

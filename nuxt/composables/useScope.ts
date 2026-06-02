@@ -1,35 +1,37 @@
 /**
  * Финансовые роли и scope-проверки.
  *
- * Иерархия:
- *   ROLE_FINANCE_ADMIN → ROLE_FINANCE → ROLE_USER
- *   ROLE_ANALYST       → ROLE_USER  (доступ только к Python-аналитике)
+ * Иерархия (разворачивается на бэке через auth.ExpandRoles):
+ *   ROLE_ADMIN        ⊇ ROLE_COST_ADMIN, ROLE_FINANCE_ADMIN
+ *   ROLE_COST_ADMIN   ⊇ ROLE_COST_USER
+ *   ROLE_USER         — всегда присутствует у любого залогиненного
  *
- * scope:
- *   - "finance"   — основной кабинет (операции, отчёты, контрагенты)
- *   - "analytics" — Python-песочница аналитика
- *   - "admin"     — управление пользователями
+ * Поскольку /api/auth/me возвращает уже эффективный набор ролей,
+ * проверки сводятся к простому includes().
  */
 
-type Scope = "finance" | "analytics" | "admin";
+type Scope = "finance" | "cost" | "analytics" | "admin";
+
+const SCOPE_ROLES: Record<Scope, string[]> = {
+  admin: ["ROLE_ADMIN"],
+  cost: ["ROLE_ADMIN", "ROLE_COST_ADMIN", "ROLE_COST_USER"],
+  finance: ["ROLE_ADMIN", "ROLE_FINANCE_ADMIN"],
+  analytics: ["ROLE_ADMIN", "ROLE_FINANCE_ADMIN"]
+};
 
 export const useScope = () => {
   const { user } = useAuth();
 
   const roles = computed(() => user.value?.roles ?? []);
 
-  const isAdmin = computed(
-    () => roles.value.includes("ROLE_FINANCE_ADMIN") || roles.value.includes("ROLE_ADMIN")
-  );
+  const isAdmin = computed(() => roles.value.includes("ROLE_ADMIN"));
+
+  const hasRole = (role: string): boolean => roles.value.includes(role);
 
   const hasScope = (scope: Scope): boolean => {
-    const r = roles.value;
-    if (r.includes("ROLE_ADMIN") || r.includes("ROLE_FINANCE_ADMIN")) return true;
-    if (scope === "finance") return r.includes("ROLE_FINANCE");
-    if (scope === "analytics") return r.includes("ROLE_ANALYST") || r.includes("ROLE_FINANCE");
-    if (scope === "admin") return false;
-    return false;
+    const allowed = SCOPE_ROLES[scope] ?? [];
+    return allowed.some((r) => roles.value.includes(r));
   };
 
-  return { roles, isAdmin, hasScope };
+  return { roles, isAdmin, hasRole, hasScope };
 };

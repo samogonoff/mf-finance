@@ -22,3 +22,7 @@ go/vendor/
 
 /var
 /go/.tmp
+
+# Python
+__pycache__/
+*.pyc

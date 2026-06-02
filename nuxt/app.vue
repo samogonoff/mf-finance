@@ -43,6 +43,14 @@
             <Icon name="lucide:shield-check" class="nav-item-icon" />
             <span v-if="!sidebarCollapsed">Пользователи</span>
           </NuxtLink>
+          <NuxtLink to="/admin/bugtracker" class="nav-item">
+            <Icon name="lucide:bug" class="nav-item-icon" />
+            <span v-if="!sidebarCollapsed">Баг-трекер</span>
+          </NuxtLink>
+          <NuxtLink to="/admin/etl/debt" class="nav-item">
+            <Icon name="lucide:database" class="nav-item-icon" />
+            <span v-if="!sidebarCollapsed">ETL задолженности</span>
+          </NuxtLink>
         </template>
       </nav>
 
@@ -74,6 +82,9 @@
         </div>
 
         <div class="topbar-actions">
+          <ClientOnly>
+            <NotificationsBell />
+          </ClientOnly>
           <button class="btn btn-ghost btn-icon" @click="toggleTheme" aria-label="Тема">
             <Icon :name="effective === 'dark' ? 'lucide:sun' : 'lucide:moon'" />
           </button>
@@ -167,6 +178,11 @@
         </ClientOnly>
       </main>
     </div>
+
+    <!-- FAB «Сообщить о проблеме» — на всех страницах кроме /login и cost-only. -->
+    <ClientOnly>
+      <BugReportFab />
+    </ClientOnly>
   </div>
 </template>
 
@@ -215,6 +231,7 @@ const titleByPath: Record<string, string> = {
   "/analytics": "Аналитика",
   "/account": "Профиль",
   "/admin/users": "Пользователи",
+  "/admin/etl/debt": "ETL задолженности",
   "/cost": "Себестоимость"
 };
 const currentPageTitle = computed(() => {

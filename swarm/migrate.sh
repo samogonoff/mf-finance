@@ -20,4 +20,12 @@ echo "==> migrate cost"
   -database "$COST_DATABASE_URL" \
   "$@"
 
+# ClickHouse — отдельный канал (HTTP-аплай, без golang-migrate/schema_migrations).
+# Применяем только на 'up'; down/version/force этим путём не поддерживаются.
+# Скрипт сам пропускается, если CLICKHOUSE_HTTP_URL пуст (CH-слой не настроен).
+if [ "$1" = "up" ]; then
+  echo "==> migrate clickhouse"
+  /bin/sh /usr/local/bin/migrate-clickhouse.sh /migrations/clickhouse
+fi
+
 echo "==> done"

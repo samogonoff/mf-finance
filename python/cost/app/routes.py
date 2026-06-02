@@ -434,6 +434,13 @@ async def save_price_changes(payload: dict) -> dict:
             username,
         )
 
+    await notify_admins(
+        title="Изменение цены (Себестоимость)",
+        message=f"{username}: модель {payload.get('model')}, артикул {payload.get('articul')}",
+        type="info",
+        object_type="cost_price_set",
+        data={"model": payload.get("model"), "articul": payload.get("articul"), "url": "/cost"},
+    )
     return {"success": True}
 
 
@@ -464,6 +471,13 @@ async def save_batch_changes(payload: dict) -> dict:
                     for c in changes
                 ],
             )
+        await notify_admins(
+            title=f"Изменение цен (Себестоимость, mock): {len(changes)} строк",
+            message=f"{username} сохранил {len(changes)} изменений (mock-режим)",
+            type="info",
+            object_type="cost_price_set",
+            data={"count": len(changes), "url": "/cost"},
+        )
         return {"success": True, "count": len(changes), "mock": True}
 
     olap = get_olap_conn()
@@ -509,6 +523,13 @@ async def save_batch_changes(payload: dict) -> dict:
             ],
         )
 
+    await notify_admins(
+        title=f"Изменение цен (Себестоимость): {len(changes)} строк",
+        message=f"{username} сохранил {len(changes)} изменений",
+        type="info",
+        object_type="cost_price_set",
+        data={"count": len(changes), "url": "/cost"},
+    )
     return {"success": True, "count": len(changes)}
 
 

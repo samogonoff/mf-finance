@@ -4,32 +4,32 @@ help:                  ## список команд
 	@fgrep -h "##" $(MAKEFILE_LIST) | fgrep -v fgrep | sed -e 's/\\$$//' | sed -e 's/##//'
 
 up:                    ## поднять dev-контур
-	docker compose -f docker-compose.dev.yml up --build -d
+	docker compose --env-file ../.env -f docker-compose.dev.yml up --build -d
 	@echo "→ Nuxt:   http://finance.local       (или http://localhost:3001 без nginx)"
 	@echo "→ API:    http://api.finance.local   (или http://localhost:8081 без nginx)"
 	@echo "→ PG:     psql -h localhost -p 55432 -U finance finance"
 	@echo "→ Redis:  redis-cli -h localhost -p 63791"
 
 down:                  ## остановить контур
-	docker compose -f docker-compose.dev.yml down
+	docker compose --env-file ../.env -f docker-compose.dev.yml down
 
 down-remove:           ## остановить + убрать orphan-ов
-	docker compose -f docker-compose.dev.yml down --remove-orphans
+	docker compose --env-file ../.env -f docker-compose.dev.yml down --remove-orphans
 
 down-volumes:          ## ⚠ остановить и удалить volume'ы (БД пропадёт)
-	docker compose -f docker-compose.dev.yml down -v
+	docker compose --env-file ../.env -f docker-compose.dev.yml down -v
 
 logs:                  ## tail логов всех сервисов
-	docker compose -f docker-compose.dev.yml logs -f --tail=200
+	docker compose --env-file ../.env -f docker-compose.dev.yml logs -f --tail=200
 
 logs-go:               ## логи go-api
-	docker compose -f docker-compose.dev.yml logs -f go-api
+	docker compose --env-file ../.env -f docker-compose.dev.yml logs -f go-api
 
 logs-nuxt:             ## логи nuxt
-	docker compose -f docker-compose.dev.yml logs -f nuxt
+	docker compose --env-file ../.env -f docker-compose.dev.yml logs -f nuxt
 
 ps:                    ## статус контейнеров
-	docker compose -f docker-compose.dev.yml ps
+	docker compose --env-file ../.env -f docker-compose.dev.yml ps
 
 console-go:            ## shell в go-api
 	docker exec -it swarm-go-api-1 sh
@@ -48,16 +48,16 @@ migrate:               ## применить миграции (заново — 
 	  'for f in /docker-entrypoint-initdb.d/migrations/*.up.sql; do echo "applying $$f"; psql -U finance -d finance -f "$$f"; done'
 
 reset-db:              ## ⚠ полностью пересоздать БД (drop volume + миграции)
-	docker compose -f docker-compose.dev.yml stop postgres
-	docker compose -f docker-compose.dev.yml rm -fv postgres
+	docker compose --env-file ../.env -f docker-compose.dev.yml stop postgres
+	docker compose --env-file ../.env -f docker-compose.dev.yml rm -fv postgres
 	docker volume rm swarm_db_data || true
-	docker compose -f docker-compose.dev.yml up -d postgres
+	docker compose --env-file ../.env -f docker-compose.dev.yml up -d postgres
 
 build:                 ## пересобрать все образы без кэша
-	docker compose -f docker-compose.dev.yml build --no-cache
+	docker compose --env-file ../.env -f docker-compose.dev.yml build --no-cache
 
 restart-%:             ## перезапустить сервис: make restart-go-api
-	docker compose -f docker-compose.dev.yml restart $*
+	docker compose --env-file ../.env -f docker-compose.dev.yml restart $*
 
 # === Раздел «Себестоимость» — изолированный контур ============================
 # Запускается отдельно от основного dev-контура: своя БД, свой env, свой nginx.

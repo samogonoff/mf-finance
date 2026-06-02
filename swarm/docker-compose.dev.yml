@@ -41,6 +41,34 @@ services:
     ports:
       - "63791:6379"
 
+  # ClickHouse — аналитический слой для отчётов финансиста. На первом этапе
+  # питает «Задолженность ВГО» через ETL из MSSQL Premaster1C (см. clickhouse-design.md).
+  # Миграции (clickhouse/migrations/*.up.sql) монтируются как init-скрипты —
+  # применяются автоматически при первом старте volume.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    container_name: swarm-finance-clickhouse-1
+    environment:
+      - CLICKHOUSE_DB=finance
+      - CLICKHOUSE_USER=finance
+      - CLICKHOUSE_PASSWORD=finance
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - ch_data:/var/lib/clickhouse
+      # Только up-миграции применяются init-стартом. Монтируем по одной, чтобы
+      # down.sql не попал в /docker-entrypoint-initdb.d/.
+      - ../clickhouse/migrations/001_init_finance.up.sql:/docker-entrypoint-initdb.d/001_init_finance.sql:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    ports:
+      - "58123:8123"   # HTTP
+      - "59000:9000"   # native protocol
+    networks:
+      - finance_dev_network
+    restart: on-failure
+
   go-api:
     build:
       context: ..
@@ -49,11 +77,49 @@ services:
     volumes:
       - ../go:/var/www/finance/go
       - go_modcache:/go/pkg/mod
+      - bugtracker_uploads:/var/lib/finance/uploads
+    # Подцепляем корневой .env, чтобы локальные секреты (OLAP_*, prod
+    # site_api, и т.п.) попадали внутрь без дублирования в environment.
+    env_file:
+      - ../.env
     environment:
+      # go.mod в репо требует go >= 1.25.7, базовый образ golang:1.22-alpine.
+      # GOTOOLCHAIN=auto заставит go подтянуть нужный toolchain (одноразово,
+      # кешируется в go_modcache volume).
+      - GOTOOLCHAIN=auto
       - HTTP_ADDR=:8080
       - POSTGRES_URL=postgres://finance:finance@postgres:5432/finance?sslmode=disable
       - REDIS_ADDR=redis:6379
       - CORS_ORIGINS=http://finance.local,http://finance.local:3001,http://localhost:3001,http://localhost
+      # «Задолженность ВГО» — таблица [FinDWH].[dbo].[Premaster1C] на OLAP 10.10.6.15.
+      # В dev по умолчанию DEBT_MOCK=1; для live-режима задать MSSQL_PREMASTER_{SERVER,USER,PASSWORD}.
+      # Имена БД/схемы/таблиц вынесены в env, чтобы переключаться на снэпшоты без правки кода.
+      - DEBT_MOCK=${DEBT_MOCK:-1}
+      - MSSQL_PREMASTER_SERVER=${MSSQL_PREMASTER_SERVER:-}
+      - MSSQL_PREMASTER_PORT=${MSSQL_PREMASTER_PORT:-1433}
+      - MSSQL_PREMASTER_DB=${MSSQL_PREMASTER_DB:-FinDWH}
+      - MSSQL_PREMASTER_SCHEMA=${MSSQL_PREMASTER_SCHEMA:-dbo}
+      - MSSQL_PREMASTER_TABLE=${MSSQL_PREMASTER_TABLE:-Premaster1C}
+      - MSSQL_PREMASTER_OBJECTS_TABLE=${MSSQL_PREMASTER_OBJECTS_TABLE:-Objects}
+      - MSSQL_PREMASTER_USER=${MSSQL_PREMASTER_USER:-}
+      - MSSQL_PREMASTER_PASSWORD=${MSSQL_PREMASTER_PASSWORD:-}
+      # ClickHouse — аналитический слой (см. clickhouse-design.md, cmd/debt-bootstrap).
+      # DEBT_BACKEND=mssql (default) | ch — переключает источник свёртки отчёта.
+      - DEBT_BACKEND=${DEBT_BACKEND:-mssql}
+      - CLICKHOUSE_HTTP_URL=${CLICKHOUSE_HTTP_URL:-http://clickhouse:8123}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-finance}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-finance}
+      # Bug tracker — каталог хранения скриншотов (named volume).
+      - BUGTRACKER_UPLOADS_DIR=/var/lib/finance/uploads/bugtracker
+      # Internal channel для python-cost (см. /internal/notifications).
+      # Совпадает с INTERNAL_SERVICE_TOKEN у python-cost.
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-dev-internal-token-change-me}
+      # Дублирование уведомлений в Б24 через mfportal site_api (как в MP).
+      # Включается, когда заданы ВСЕ три переменные. В dev по умолчанию пусто,
+      # автоматически делает канал «prod-only».
+      - SITE_API_NOTIFY_URL=${SITE_API_NOTIFY_URL:-}
+      - SITE_API_NOTIFY_USER=${SITE_API_NOTIFY_USER:-}
+      - SITE_API_NOTIFY_PASSWORD=${SITE_API_NOTIFY_PASSWORD:-}
     restart: on-failure
     depends_on:
       - postgres
@@ -140,6 +206,8 @@ volumes:
   redis_data:
   nuxt_node_modules:
   go_modcache:
+  bugtracker_uploads:
+  ch_data:
 
 networks:
   finance_dev_network:
