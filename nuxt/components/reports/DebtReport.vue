@@ -41,14 +41,6 @@
           >{{ c }}</button>
         </div>
       </div>
-
-      <div class="filter filter-ico">
-        <label class="filter-label">Сегмент</label>
-        <label class="checkbox-row" title="Premaster.ICO = 1 — операции между компаниями ГК">
-          <input v-model="filters.only_ico" type="checkbox" />
-          <span>Только внутригрупповые (ВГО)</span>
-        </label>
-      </div>
     </div>
 
     <div class="actions-bar">
@@ -120,8 +112,9 @@ const filters = reactive<DebtReportFilters>({
   entity_inns: [],
   accounts: [],
   currencies: [],
-  // Level 1 MVP: дефолт «только ВГО» включён до подтверждения от автора ТЗ
-  // (см. docs/reports/debt/open-questions.md §A3).
+  // Отчёт всегда ВГО — ВГО-фильтр теперь безусловный на бэке (vgoMSSQLClause/
+  // vgoCHClause), галки в UI нет. Поле оставлено для совместимости API/пресетов
+  // и бэком игнорируется.
   only_ico: true
 });
 
@@ -195,7 +188,6 @@ const hydrateFromQuery = (): boolean => {
   if ("entities" in q) filters.entity_inns = csv(q.entities);
   if ("accounts" in q) filters.accounts = csv(q.accounts);
   if ("currencies" in q) filters.currencies = csv(q.currencies);
-  if (typeof q.ico === "string") filters.only_ico = q.ico !== "0";
   return true;
 };
 
@@ -206,8 +198,7 @@ const hydrateFromQuery = (): boolean => {
 const writeQuery = (keepExpansion: boolean) => {
   const q: Record<string, string> = {
     from: filters.date_from,
-    to: filters.date_to,
-    ico: filters.only_ico ? "1" : "0"
+    to: filters.date_to
   };
   if (filters.entity_inns.length) q.entities = filters.entity_inns.join(",");
   if (filters.accounts.length) q.accounts = filters.accounts.join(",");
@@ -349,19 +340,6 @@ onMounted(async () => {
   border-color: var(--accent);
 }
 .chip:hover:not(.active) { background: var(--bg-surface-2); }
-
-.filter-ico { min-width: 240px; }
-.checkbox-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-  font-size: var(--fs-sm);
-  color: var(--text-strong);
-  cursor: pointer;
-  user-select: none;
-}
-.checkbox-row input[type="checkbox"] { cursor: pointer; }
 
 .actions-bar {
   display: flex;
