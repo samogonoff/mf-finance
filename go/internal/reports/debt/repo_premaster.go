@@ -169,12 +169,11 @@ func (r *premasterRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 	args = append(args, sql.Named("dto", asMSSQLDate(endOfDay(f.DateTo))))
 	args = append(args, sql.Named("dlast", asMSSQLDate(startOfLastMonth(f.DateTo))))
 
-	// ВГО-фильтр: при OnlyICO=true к WHERE добавляем `AND ICO = 1`.
-	// Колонка ICO документирована в schema-draft.md §4 — tinyint, 1=ВГО, 0=внешний.
-	icoClause := ""
-	if f.OnlyICO {
-		icoClause = " AND ICO = 1"
-	}
+	// ВГО-фильтр БЕЗУСЛОВНЫЙ: отчёт всегда внутригрупповой (union ico=1 / наш
+	// контрагент) — то же определение, что в импорте. См. vgoMSSQLClause.
+	// @vgoN переиспользуются в обоих WHERE (Dr и Cr) одного запроса.
+	icoClause, vgoArgs := vgoMSSQLClause()
+	args = append(args, vgoArgs...)
 
 	// 3. SQL: UNION ALL Dr/Cr, GROUP BY (CompanyID, CounterpartyID, root).
 	//    `Coalesce(CounterpartyID, '')` чтобы NULL не терялся в GROUP BY (мы потом отбросим).

@@ -41,14 +41,6 @@
           >{{ c }}</button>
         </div>
       </div>
-
-      <div class="filter filter-ico">
-        <label class="filter-label">Сегмент</label>
-        <label class="checkbox-row" title="Premaster.ICO = 1 — операции между компаниями ГК">
-          <input v-model="filters.only_ico" type="checkbox" />
-          <span>Только внутригрупповые (ВГО)</span>
-        </label>
-      </div>
     </div>
 
     <div class="actions-bar">
@@ -98,6 +90,11 @@ import DebtMultiSelect from "~/components/reports/DebtMultiSelect.vue";
 const { filterOptions, report: fetchReport, drilldown } = useDebtReport();
 const { list: listPresets, create: createPreset, remove: removePreset } = useDebtFilters();
 
+// Deep-link: состояние отчёта живёт в URL, чтобы перезагрузка/шаринг открывали
+// тот же экран. Пишем канонический query при каждом «Сформировать», читаем — на mount.
+const route = useRoute();
+const router = useRouter();
+
 // период по умолчанию — последние 2 дня (today-1 → today). Premaster1C тяжело
 // отдаёт большие диапазоны, дефолт держим минимальным, чтобы первый запрос
 // гарантированно отвечал; пользователь расширит при необходимости.
@@ -115,8 +112,9 @@ const filters = reactive<DebtReportFilters>({
   entity_inns: [],
   accounts: [],
   currencies: [],
-  // Level 1 MVP: дефолт «только ВГО» включён до подтверждения от автора ТЗ
-  // (см. docs/reports/debt/open-questions.md §A3).
+  // Отчёт всегда ВГО — ВГО-фильтр теперь безусловный на бэке (vgoMSSQLClause/
+  // vgoCHClause), галки в UI нет. Поле оставлено для совместимости API/пресетов
+  // и бэком игнорируется.
   only_ico: true
 });
 
@@ -173,8 +171,48 @@ const syncDates = () => {
   filters.date_to = dateTo.value;
 };
 
-const runReport = async () => {
+// --- URL <-> filters (deep-link) -------------------------------------------
+const csv = (v: unknown): string[] =>
+  typeof v === "string" && v.length
+    ? v.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+
+// Гидратация фильтров из query при заходе по ссылке/перезагрузке. Возвращает
+// true, если в URL были параметры (чтобы не перетирать их дефолтами).
+const hydrateFromQuery = (): boolean => {
+  const q = route.query;
+  if (Object.keys(q).length === 0) return false;
+  if (typeof q.from === "string" && q.from) dateFrom.value = q.from;
+  if (typeof q.to === "string" && q.to) dateTo.value = q.to;
   syncDates();
+  if ("entities" in q) filters.entity_inns = csv(q.entities);
+  if ("accounts" in q) filters.accounts = csv(q.accounts);
+  if ("currencies" in q) filters.currencies = csv(q.currencies);
+  return true;
+};
+
+// Запись текущих фильтров в URL (replace — без лишних записей в history).
+// keepExpansion=true (заход по ссылке/перезагрузка) сохраняет exp-параметр
+// раскрытия дерева — его владелец DebtTable восстановит при монтировании.
+// Ручное «Сформировать» строит новое дерево, поэтому exp сбрасывается.
+const writeQuery = (keepExpansion: boolean) => {
+  const q: Record<string, string> = {
+    from: filters.date_from,
+    to: filters.date_to
+  };
+  if (filters.entity_inns.length) q.entities = filters.entity_inns.join(",");
+  if (filters.accounts.length) q.accounts = filters.accounts.join(",");
+  if (filters.currencies.length) q.currencies = filters.currencies.join(",");
+  if (keepExpansion && typeof route.query.exp === "string") q.exp = route.query.exp;
+  // duplicate-navigation отвергается роутером — гасим, это не ошибка.
+  router.replace({ query: q }).catch(() => {});
+};
+
+// keepExpansion прокидываем только из onMounted; из @click приходит MouseEvent
+// (не объект с keepExpansion) → раскрытие сбрасывается, как и задумано.
+const runReport = async (opts?: { keepExpansion?: boolean }) => {
+  syncDates();
+  writeQuery(opts?.keepExpansion === true);
   loading.value = true;
   errorMessage.value = "";
   try {
@@ -239,6 +277,8 @@ const savePresetPrompt = async () => {
 };
 
 onMounted(async () => {
+  // Сначала восстанавливаем состояние из URL (deep-link), потом грузим справочники.
+  hydrateFromQuery();
   try {
     options.value = await filterOptions();
     // Level 1 MVP: бэк требует обязательный entity_inns, без него Report → 400.
@@ -256,7 +296,7 @@ onMounted(async () => {
     errorMessage.value = e?.data?.error || "Не удалось загрузить справочники фильтров";
   }
   await refreshPresets();
-  await runReport();
+  await runReport({ keepExpansion: true });
 });
 </script>
 
@@ -300,19 +340,6 @@ onMounted(async () => {
   border-color: var(--accent);
 }
 .chip:hover:not(.active) { background: var(--bg-surface-2); }
-
-.filter-ico { min-width: 240px; }
-.checkbox-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-  font-size: var(--fs-sm);
-  color: var(--text-strong);
-  cursor: pointer;
-  user-select: none;
-}
-.checkbox-row input[type="checkbox"] { cursor: pointer; }
 
 .actions-bar {
   display: flex;

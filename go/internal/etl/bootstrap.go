@@ -158,6 +158,9 @@ func streamPremaster(ctx context.Context, deps Deps, ch *chClient, opts Bootstra
 		log.Printf("  warn: unknown country for %s — leaving empty", opts.CompanyID)
 	}
 
+	// ВГО-фильтр: тянем только внутригрупповые проводки (ICO=1 ИЛИ контрагент —
+	// наше ЮЛ). См. vgoFilter / plan «ВГО-only».
+	vgoClause, vgoArgs := vgoFilter()
 	q := `
 SELECT
     p.CompanyID,
@@ -177,10 +180,11 @@ SELECT
     CONVERT(VARCHAR(19), ISNULL(p.DateOfChange, p.[Date]), 120)
 FROM [FinDWH].[dbo].[Premaster1C] AS p WITH (NOLOCK)
 LEFT JOIN [FinDWH].[dbo].[Objects] AS o WITH (NOLOCK) ON o.ID = p.DocID
-WHERE p.CompanyID = @inn
+WHERE p.CompanyID = @inn` + vgoClause + `
 ORDER BY p.[Date], p.DocID, p.RwNm`
 
-	rows, err := deps.MSSQL.QueryContext(ctx, q, sql.Named("inn", opts.CompanyID))
+	args := append([]interface{}{sql.Named("inn", opts.CompanyID)}, vgoArgs...)
+	rows, err := deps.MSSQL.QueryContext(ctx, q, args...)
 	if err != nil {
 		return 0, fmt.Errorf("mssql query: %w", err)
 	}

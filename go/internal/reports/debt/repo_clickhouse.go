@@ -69,10 +69,8 @@ func (r *clickhouseRepo) Report(ctx context.Context, f Filters) ([]DebtRow, erro
 	dto := asDate(f.DateTo)
 	dlast := asDate(startOfLastMonth(f.DateTo))
 
-	icoClause := ""
-	if f.OnlyICO {
-		icoClause = " AND ico = 1"
-	}
+	// Отчёт всегда ВГО (union ico=1 / наш контрагент). См. vgoCHClause.
+	icoClause := vgoCHClause()
 
 	q := fmt.Sprintf(`
 WITH src AS (

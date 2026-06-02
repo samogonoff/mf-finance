@@ -1,5 +1,7 @@
 package debt
 
+import "strings"
+
 // Список 16 ЮЛ ГК «Марк Формэль» (sheet «список ГК МФ» из
 // var/fin/Приложение_к_ТЗ_задолженность_ВГО.xlsx).
 // Используется для /filter-options и в качестве справочника при свёртке
@@ -50,6 +52,23 @@ var accounts = []Account{
 func Entities() []Entity {
 	out := make([]Entity, len(entities))
 	copy(out, entities)
+	return out
+}
+
+// OurINNs возвращает ИНН/УНП всех наших ЮЛ (TRIM, без дублей). Питает ВГО-фильтр
+// импорта из Premaster1C: проводка считается внутригрупповой, если контрагент —
+// одно из наших ЮЛ (CounterpartyID ∈ OurINNs), независимо от upstream-флага ICO.
+func OurINNs() []string {
+	out := make([]string, 0, len(entities))
+	seen := make(map[string]bool, len(entities))
+	for _, e := range entities {
+		inn := strings.TrimSpace(e.INN)
+		if inn == "" || seen[inn] {
+			continue
+		}
+		seen[inn] = true
+		out = append(out, inn)
+	}
 	return out
 }
 

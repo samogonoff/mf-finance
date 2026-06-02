@@ -140,7 +140,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { money } from "~/utils/format";
 import type { DebtRow, DebtDocumentRow } from "~/composables/useDebtReport";
 
@@ -238,6 +238,46 @@ type Node = GroupNode | LeafNode | DocLoadingNode | DocErrorNode | DocNode | Tra
 const openKeys = ref<Set<string>>(new Set());
 const isOpen = (k: string) => openKeys.value.has(k);
 
+// Deep-link раскрытия дерева: DebtTable — единственный владелец query-параметра
+// `exp` (фильтры пишет DebtReport). Сериализуем открытые ключи JSON+URI; при
+// заходе по ссылке восстанавливаем и лениво дотягиваем документы.
+const route = useRoute();
+const router = useRouter();
+const EXP_MAX_LEN = 1800; // предел длины exp в URL; глубже — усекаем с предупреждением
+
+const encodeOpen = (keys: string[]): string => encodeURIComponent(JSON.stringify(keys));
+const decodeOpen = (raw: unknown): string[] => {
+  if (typeof raw !== "string" || !raw) return [];
+  try {
+    const a = JSON.parse(decodeURIComponent(raw));
+    return Array.isArray(a) ? a.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+};
+
+// Запись текущего раскрытия в URL (merge поверх фильтров DebtReport).
+const writeExp = () => {
+  const keys = [...openKeys.value];
+  let encoded = encodeOpen(keys);
+  if (encoded.length > EXP_MAX_LEN) {
+    // не влезаем в URL — оставляем менее глубокие (короткие) ключи, остальное
+    // не теряем молча, а сообщаем в консоль (см. plan Task 3.2).
+    const sorted = [...keys].sort((a, b) => a.length - b.length);
+    const kept: string[] = [];
+    for (const k of sorted) {
+      if (encodeOpen([...kept, k]).length > EXP_MAX_LEN) break;
+      kept.push(k);
+    }
+    console.warn(`[DebtTable] раскрытие усечено в URL: ${kept.length}/${keys.length} узлов (лимит длины)`);
+    encoded = encodeOpen(kept);
+  }
+  const q = { ...route.query };
+  if (openKeys.value.size) q.exp = encoded;
+  else delete q.exp;
+  router.replace({ query: q }).catch(() => {});
+};
+
 // drilldown-cache: key (contract+currency) → DocumentRow[] | "loading" | {error: string}
 const docCache = reactive<Record<string, DebtDocumentRow[] | "loading" | { error: string }>>({});
 
@@ -254,7 +294,21 @@ const toggleNode = async (key: string, expandable: boolean) => {
     }
   }
   openKeys.value = next;
+  writeExp();
 };
+
+// Восстановление раскрытия из URL при заходе по ссылке/перезагрузке. DebtTable
+// перемонтируется на каждый новый отчёт, поэтому restore идёт один раз на mount
+// с уже готовыми props.rows; ручное «Сформировать» сбрасывает exp в DebtReport.
+onMounted(async () => {
+  const keys = decodeOpen(route.query.exp);
+  if (!keys.length) return;
+  openKeys.value = new Set(keys);
+  // дотягиваем документы для открытых договоров (docKey начинается с "contract:")
+  for (const k of keys) {
+    if (k.startsWith("contract:")) await ensureDocs(k);
+  }
+});
 
 const ensureDocs = async (groupKey: string) => {
   // ключ группы договора имеет вид "contract:<companyINN>|<partnerINN>|<account>|<contract>|<currency>"
