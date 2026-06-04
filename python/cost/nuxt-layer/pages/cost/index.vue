@@ -1024,34 +1024,23 @@ function openDetailsInNewTab() {
     { key: 'task_num', label: '\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F', field: '\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430' },
   ];
 
-  // Build API-level filter HTML (date range, calc_sign, load button)
-  let filterHtml = '<div class="filter-section-api">';
+  // Build API-level filter HTML (date range, calc_sign multiselect, load button)
+  let filterHtml = '<div class="filter-section-api" id="filterApi">';
   filterHtml += '<div class="fi-item"><label>Дата с</label><input type="date" id="f_dateFrom" value="' + escHtml(detailDateFrom.value) + '" class="fi-date" /><\/div>';
   filterHtml += '<div class="fi-item"><label>Дата по</label><input type="date" id="f_dateTo" value="' + escHtml(detailDateTo.value) + '" class="fi-date" /><\/div>';
-  const defaultCs = detailCalcSign.value.length > 0 ? detailCalcSign.value[0] : '';
-  filterHtml += '<div class="fi-item"><label>Пр.кальк</label><select id="f_calcSign" class="fi-cs">';
-  filterHtml += '<option value="">—<\/option>';
-  for (const cs of ['ПКПСС', 'КПСС', 'ПФКСС', 'ФКСС']) {
-    const sel = cs === defaultCs ? ' selected' : '';
-    filterHtml += '<option value="' + escHtml(cs) + '"' + sel + '>' + escHtml(cs) + '<\/option>';
-  }
-  filterHtml += '<\/select><\/div>';
+  filterHtml += '<div class="fi-item"><label>Пр.кальк</label><div class="ms-wrap" style="min-width:100px">';
+  filterHtml += '<div class="ms-trigger" onclick="msToggle(\'api_cs\',event)"><span class="ms-label" id="msl_api_cs">—<\/span><span class="ms-arrow">▾<\/span><\/div>';
+  filterHtml += '<div class="ms-drop" id="msd_api_cs"><\/div>';
+  filterHtml += '<div class="ms-tags" id="mst_api_cs"><\/div><\/div><\/div>';
   filterHtml += '<button id="loadBtn" class="btn-load">Загрузить данные<\/button>';
   filterHtml += '<\/div>';
-  // Build client-side column filter HTML (all options pre-populated)
-  filterHtml += '<div class="filter-section-cols">';
+  // Build client-side column filter HTML (multiselect checkboxes, populated by ap())
+  filterHtml += '<div class="filter-section-cols" id="filterCols">';
   for (const ff of filterFields) {
-    const vals = new Set();
-    for (const r of rows) {
-      let v = (r[ff.field] ?? '').toString().trim();
-      if (ff.field === '\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430' && v.includes('T')) v = v.split('T')[0];
-      if (v) vals.add(v);
-    }
-    const sorted = Array.from(vals).sort();
-    filterHtml += '<div class="fi-item" data-key="' + ff.key + '"><label>' + ff.label + '<\/label><select id="sel_' + ff.key + '">';
-    filterHtml += '<option value="">—<\/option>';
-    for (const v of sorted) filterHtml += '<option value="' + escHtml(v) + '">' + escHtml(v) + '<\/option>';
-    filterHtml += '<\/select><\/div>';
+    filterHtml += '<div class="fi-item ms-wrap" data-key="' + ff.key + '"><label>' + ff.label + '<\/label>';
+    filterHtml += '<div class="ms-trigger" onclick="msToggle(\'' + ff.key + '\',event)"><span class="ms-label" id="msl_' + ff.key + '">—<\/span><span class="ms-arrow">▾<\/span><\/div>';
+    filterHtml += '<div class="ms-drop" id="msd_' + ff.key + '"><\/div>';
+    filterHtml += '<div class="ms-tags" id="mst_' + ff.key + '"><\/div><\/div>';
   }
   filterHtml += '<a href="#" class="filter-reset" id="resetFilters">Сбросить фильтры колонок<\/a>';
   filterHtml += '<\/div>';
@@ -1074,6 +1063,12 @@ for(var fi=0;fi<NF.length;fi++){
   }
   RG[f]=mn===Infinity?{m:0,M:0}:{m:mn,M:mx};
 }
+// Multi-select state: for column filters + API calc_sign
+var MS_SEL={};
+for(var mi=0;mi<FK.length;mi++)MS_SEL[FK[mi]]=[];
+var MS_API_CS=[];
+
+function escHtml(s){return String(s).replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 function gv(r,f){var v=(r[f]||"").toString().trim();if(f==="\\u0434\\u0430\\u0442\\u0430 \\u0440\\u0430\\u0441\\u0447\\u0435\\u0442\\u0430"&&v.indexOf("T")>=0)v=v.split("T")[0];return v}
 function nf(v){if(v==null||v==="")return"\\u2014";var n=Number(v);if(isNaN(n))return String(v);return n.toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})}
 function hb(v,f){
@@ -1082,6 +1077,39 @@ function hb(v,f){
   var t=(n-rg.m)/(rg.M-rg.m);
   return"background-color:rgb("+Math.round(240-190*t)+","+Math.round(245-145*t)+","+Math.round(255-35*t)+");text-align:right;";
 }
+
+// Multiselect dropdown toggle
+function msToggle(k,ev){
+  if(ev)ev.stopPropagation();
+  var d=document.getElementById("msd_"+k);
+  if(!d)return;
+  var isVis=d.style.display==="block";
+  msCloseAll();
+  if(!isVis)d.style.display="block";
+}
+function msCloseAll(){
+  var all=document.querySelectorAll(".ms-drop");
+  for(var i=0;i<all.length;i++)all[i].style.display="none";
+}
+function msUpdateUI(k){
+  var sel=k==="api_cs"?MS_API_CS:(MS_SEL[k]||[]);
+  var lbl=document.getElementById("msl_"+k);
+  var tags=document.getElementById("mst_"+k);
+  if(!lbl)return;
+  if(sel.length===0){
+    lbl.textContent="\\u2014";
+    if(tags)tags.innerHTML="";
+  }else{
+    lbl.textContent=sel.length+" \\u0432\\u044B\\u0431\\u0440\\u0430\\u043D\\u043E";
+    if(tags){
+      var th="";
+      for(var i=0;i<sel.length;i++)th+='<span class="ms-tag">'+escHtml(sel[i])+'<span class="ms-tag-x" data-mskey="'+k+'" data-msval="'+escHtml(sel[i])+'">\\u00D7<\\/span><\\/span>';
+      tags.innerHTML=th;
+    }
+  }
+}
+
+// Build table rows
 function rt(rr){
   var h="";
   for(var i=0;i<rr.length;i++){
@@ -1108,58 +1136,130 @@ function rt(rr){
   }
   return h;
 }
+
+// Column filter cascade + render
 function ap(){
-  var sel={};
+  // Read current selections from checkboxes
   for(var i=0;i<FK.length;i++){
-    var e=document.getElementById("sel_"+FK[i]);
-    sel[FK[i]]=(e&&e.value)?[e.value]:[];
+    var dd=document.getElementById("msd_"+FK[i]);
+    if(dd){
+      var cbs=dd.querySelectorAll("input[type=checkbox]:checked");
+      MS_SEL[FK[i]]=[];
+      for(var ci=0;ci<cbs.length;ci++)MS_SEL[FK[i]].push(cbs[ci].value);
+    }
   }
+  var sel={};for(var i=0;i<FK.length;i++)sel[FK[i]]=MS_SEL[FK[i]];
   // Cascade: restrict each filter's options based on higher-level selections only
   for(var fi=0;fi<FK.length;fi++){
     var fd=R;
     for(var j=0;j<fi;j++){
       var s=sel[FK[j]];
-      if(s&&s.length){
-        fd=fd.filter(function(rr){var vv=gv(rr,FF[j]);return s.indexOf(vv)>=0});
-      }
+      if(s&&s.length)fd=fd.filter(function(rr){var vv=gv(rr,FF[j]);return s.indexOf(vv)>=0});
     }
-    var e=document.getElementById("sel_"+FK[fi]);
-    if(e){
-      var curVal=sel[FK[fi]][0]||"";
+    // Rebuild checkbox panel
+    var dd=document.getElementById("msd_"+FK[fi]);
+    if(dd){
       var opts=[];var seen={};
       for(var ri=0;ri<fd.length;ri++){
         var vv=gv(fd[ri],FF[fi]);
         if(vv&&!seen[vv]){seen[vv]=true;opts.push(vv);}
       }
       opts.sort();
-      e.innerHTML="<option value>\\u2014<\\/option>";
+      var curSel=MS_SEL[FK[fi]]||[];
+      var h="";
       for(var oi=0;oi<opts.length;oi++){
-        var opt=document.createElement("option");
-        opt.value=opts[oi];
-        opt.textContent=opts[oi];
-        if(curVal===opts[oi])opt.selected=true;
-        e.appendChild(opt);
+        var checked=curSel.indexOf(opts[oi])>=0?" checked":"";
+        h+='<label><input type="checkbox" value="'+escHtml(opts[oi])+'"'+checked+">"+escHtml(opts[oi])+"<\\/label>";
       }
+      dd.innerHTML=h;
+      // Clean up MS_SEL — remove values no longer in available options
+      var valid={};
+      var newCbs=dd.querySelectorAll("input[type=checkbox]");
+      for(var nc=0;nc<newCbs.length;nc++)valid[newCbs[nc].value]=true;
+      MS_SEL[FK[fi]]=MS_SEL[FK[fi]].filter(function(x){return valid[x]});
     }
   }
   // Filter all data by every selection
   var fd2=R;
   for(var fi=0;fi<FK.length;fi++){
     var s=sel[FK[fi]];
-    if(s&&s.length){
-      fd2=fd2.filter(function(rr){var vv=gv(rr,FF[fi]);return s.indexOf(vv)>=0});
-    }
+    if(s&&s.length)fd2=fd2.filter(function(rr){var vv=gv(rr,FF[fi]);return s.indexOf(vv)>=0});
   }
   document.getElementById("popupBody").innerHTML=rt(fd2);
   document.getElementById("popupCount").textContent="\\u041D\\u0430\\u0439\\u0434\\u0435\\u043D\\u043E \\u0441\\u0442\\u0440\\u043E\\u043A: "+fd2.length;
+  // Update UI labels/tags for all filters
+  for(var ui=0;ui<FK.length;ui++)msUpdateUI(FK[ui]);
 }
-// Fetch fresh data from API with current date/calc_sign filters
+
+// Populate API calc_sign checkboxes (static options)
+(function(){
+  var dd=document.getElementById("msd_api_cs");
+  if(dd){
+    var csOpts=["\\u041F\\u041A\\u041F\\u0421\\u0421","\\u041A\\u041F\\u0421\\u0421","\\u041F\\u0424\\u041A\\u0421\\u0421","\\u0424\\u041A\\u0421\\u0421"];
+    var h="";
+    for(var oi=0;oi<csOpts.length;oi++)h+='<label><input type="checkbox" value="'+csOpts[oi]+'">'+csOpts[oi]+"<\\/label>";
+    dd.innerHTML=h;
+  }
+})();
+
+// Delegate change on column filter checkboxes
+document.getElementById("filterCols").addEventListener("change",function(e){
+  if(e.target&&e.target.type==="checkbox"){
+    var dd=e.target.closest(".ms-drop");
+    if(!dd)return;
+    var k=dd.id.replace("msd_","");
+    var cbs=dd.querySelectorAll("input[type=checkbox]:checked");
+    MS_SEL[k]=[];
+    for(var ci=0;ci<cbs.length;ci++)MS_SEL[k].push(cbs[ci].value);
+    msUpdateUI(k);
+    ap();
+  }
+});
+
+// Delegate change on API calc_sign checkboxes
+document.getElementById("filterApi").addEventListener("change",function(e){
+  if(e.target&&e.target.type==="checkbox"){
+    var dd=e.target.closest(".ms-drop");
+    if(!dd||dd.id!=="msd_api_cs")return;
+    var cbs=dd.querySelectorAll("input[type=checkbox]:checked");
+    MS_API_CS=[];
+    for(var ci=0;ci<cbs.length;ci++)MS_API_CS.push(cbs[ci].value);
+    msUpdateUI("api_cs");
+  }
+});
+
+// Tag remove: delegate click on × buttons
+document.addEventListener("click",function(e){
+  var x=e.target.closest(".ms-tag-x");
+  if(x){
+    var k=x.getAttribute("data-mskey");
+    var v=x.getAttribute("data-msval");
+    if(k==="api_cs"){
+      MS_API_CS=MS_API_CS.filter(function(xx){return xx!==v});
+      var dd=document.getElementById("msd_api_cs");
+      if(dd){var cbs=dd.querySelectorAll("input[type=checkbox]");for(var ci=0;ci<cbs.length;ci++){if(cbs[ci].value===v)cbs[ci].checked=false;}}
+      msUpdateUI("api_cs");
+    }else{
+      MS_SEL[k]=MS_SEL[k].filter(function(xx){return xx!==v});
+      var dd=document.getElementById("msd_"+k);
+      if(dd){var cbs=dd.querySelectorAll("input[type=checkbox]");for(var ci=0;ci<cbs.length;ci++){if(cbs[ci].value===v)cbs[ci].checked=false;}}
+      msUpdateUI(k);
+      ap();
+    }
+  }
+});
+
+// Close dropdowns on outside click (delegated)
+document.addEventListener("click",function(e){
+  if(!e.target.closest||!e.target.closest(".ms-wrap"))msCloseAll();
+});
+
+// Load fresh data from API
 async function loadData(){
   try{
     var df=document.getElementById("f_dateFrom").value;
     var dt=document.getElementById("f_dateTo").value;
-    var csEl=document.getElementById("f_calcSign");
-    var cs=csEl.value?[csEl.value]:[];
+    var cs=MS_API_CS;
     var body={model:MODEL};
     if(df)body.date_from=df;
     if(dt)body.date_to=dt;
@@ -1174,24 +1274,33 @@ async function loadData(){
       for(var ri=0;ri<R.length;ri++){var nv=Number(R[ri][f]);if(!isNaN(nv)){if(nv<mn)mn=nv;if(nv>mx)mx=nv;}}
       RG[f]=mn===Infinity?{m:0,M:0}:{m:mn,M:mx};
     }
-    // Reset column filter selections and re-render
-    for(var fi=0;fi<FK.length;fi++){
-      var e=document.getElementById("sel_"+FK[fi]);
-      if(e)e.selectedIndex=0;
-    }
+    // Reset all selections
+    for(var mi=0;mi<FK.length;mi++)MS_SEL[FK[mi]]=[];
+    MS_API_CS=[];
+    for(var mi=0;mi<FK.length;mi++){var dd=document.getElementById("msd_"+FK[mi]);if(dd){var cbs=dd.querySelectorAll("input[type=checkbox]");for(var ci=0;ci<cbs.length;ci++)cbs[ci].checked=false;}}
+    var dd2=document.getElementById("msd_api_cs");if(dd2){var cbs2=dd2.querySelectorAll("input[type=checkbox]");for(var ci=0;ci<cbs2.length;ci++)cbs2[ci].checked=false;}
     ap();
+    msUpdateUI("api_cs");
   }catch(e){
     console.error("[cost-popup] load failed",e);
     alert("\\u041E\\u0448\\u0438\\u0431\\u043A\\u0430 \\u0437\\u0430\\u0433\\u0440\\u0443\\u0437\\u043A\\u0438 \\u0434\\u0430\\u043D\\u043D\\u044B\\u0445");
   }
 }
+
+// Initial render
 ap();
-for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(e)e.onchange=ap}
-var rf=document.getElementById("resetFilters");if(rf)rf.onclick=function(){
-  for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(e)e.selectedIndex=0}
-  ap();return false
+
+// Reset handler
+document.getElementById("resetFilters").onclick=function(){
+  for(var mi=0;mi<FK.length;mi++)MS_SEL[FK[mi]]=[];
+  for(var mi=0;mi<FK.length;mi++){var dd=document.getElementById("msd_"+FK[mi]);if(dd){var cbs=dd.querySelectorAll("input[type=checkbox]");for(var ci=0;ci<cbs.length;ci++)cbs[ci].checked=false;}}
+  for(var ui=0;ui<FK.length;ui++)msUpdateUI(FK[ui]);
+  ap();
+  return false;
 };
-var lb=document.getElementById("loadBtn");if(lb)lb.onclick=loadData;
+
+// Load button
+document.getElementById("loadBtn").onclick=loadData;
 }catch(e){console.error("[cost-popup]",e)}`;
 
   const html =
@@ -1216,6 +1325,19 @@ var lb=document.getElementById("loadBtn");if(lb)lb.onclick=loadData;
     '.btn-load:hover{background:#3b5de7}' +
     '.filter-reset{font-size:11px;color:#888;padding-top:8px;cursor:pointer;white-space:nowrap;text-decoration:none}' +
     '.filter-reset:hover{color:#333}' +
+    '.ms-wrap{position:relative;display:inline-block;min-width:120px;max-width:180px}' +
+    '.ms-trigger{display:flex;align-items:center;justify-content:space-between;border:1px solid #ddd;border-radius:4px;background:#fff;font-size:10px;padding:3px 6px;height:24px;cursor:pointer;gap:4px;user-select:none}' +
+    '.ms-trigger:hover{border-color:#aaa}' +
+    '.ms-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#555}' +
+    '.ms-arrow{font-size:8px;color:#999}' +
+    '.ms-drop{display:none;position:absolute;top:100%;left:0;right:0;z-index:999;background:#fff;border:1px solid #ddd;border-radius:4px;max-height:200px;overflow-y:auto;margin-top:2px;box-shadow:0 2px 8px rgba(0,0,0,.12)}' +
+    '.ms-drop label{display:block;padding:4px 8px;font-size:11px;cursor:pointer;white-space:nowrap}' +
+    '.ms-drop label:hover{background:#f0f4ff}' +
+    '.ms-drop input[type=checkbox]{margin-right:6px}' +
+    '.ms-tags{display:flex;flex-wrap:wrap;gap:2px;margin-top:2px}' +
+    '.ms-tag{display:inline-flex;align-items:center;gap:2px;background:#e8eefb;border-radius:3px;padding:1px 5px;font-size:9px;color:#333;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+    '.ms-tag-x{margin-left:2px;cursor:pointer;font-size:11px;color:#888;line-height:1}' +
+    '.ms-tag-x:hover{color:#c00}' +
     '.content{padding:16px 24px;overflow-x:auto}' +
     'table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}' +
     'th{background:#f8f9fa;border-bottom:2px solid #dee2e6;padding:8px;text-align:center;font-weight:700;font-size:11px;position:sticky;top:0}' +
