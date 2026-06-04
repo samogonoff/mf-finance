@@ -408,18 +408,18 @@
                 <td>{{ d['Артикул'] || '—' }}</td>
                 <td>{{ d['Наименование модели'] || '—' }}</td>
                 <td>{{ d['Номер задания производства'] || '—' }}</td>
-                <td class="col-num num">{{ fmt(d['Розничная цена, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Оптовая цена, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Осн. материалы, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Вспом. материалы, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Пошив, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Раскрой, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Декор, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Вязание, руб.']) }}</td>
-                <td class="col-num num-strong">{{ fmt(d['Себестоимость, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Наценка, руб.']) }}</td>
-                <td class="col-num num">{{ d['Наценка, %'] }}%</td>
-                <td class="col-num num">{{ d['Маржинальность, %'] }}%</td>
+                <td class="col-num num" :style="heatBg(d['Розничная цена, руб.'], 'Розничная цена, руб.')">{{ fmt(d['Розничная цена, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Оптовая цена, руб.'], 'Оптовая цена, руб.')">{{ fmt(d['Оптовая цена, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Осн. материалы, руб.'], 'Осн. материалы, руб.')">{{ fmt(d['Осн. материалы, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Вспом. материалы, руб.'], 'Вспом. материалы, руб.')">{{ fmt(d['Вспом. материалы, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Пошив, руб.'], 'Пошив, руб.')">{{ fmt(d['Пошив, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Раскрой, руб.'], 'Раскрой, руб.')">{{ fmt(d['Раскрой, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Декор, руб.'], 'Декор, руб.')">{{ fmt(d['Декор, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Вязание, руб.'], 'Вязание, руб.')">{{ fmt(d['Вязание, руб.']) }}</td>
+                <td class="col-num num-strong" :style="heatBg(d['Себестоимость, руб.'], 'Себестоимость, руб.')">{{ fmt(d['Себестоимость, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Наценка, руб.'], 'Наценка, руб.')">{{ fmt(d['Наценка, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Наценка, %'], 'Наценка, %')">{{ d['Наценка, %'] }}%</td>
+                <td class="col-num num" :style="heatBg(d['Маржинальность, %'], 'Маржинальность, %')">{{ d['Маржинальность, %'] }}%</td>
               </tr>
             </tbody>
           </table>
@@ -961,6 +961,15 @@ function openDetailsInNewTab() {
 
   function escHtml(s) { return String(s).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
+  function hbStyleStr(v: any, field: string): string {
+    const n = Number(v);
+    if (isNaN(n)) return '';
+    const rng = detailsRanges.value[field];
+    if (!rng || rng.max === rng.min) return '';
+    const t = (n - rng.min) / (rng.max - rng.min);
+    return `background-color:rgb(${Math.round(240 - 190 * t)},${Math.round(245 - 145 * t)},${Math.round(255 - 35 * t)});text-align:right;`;
+  }
+
   // Build static table rows (always visible, JS-overridable)
   let tableHtml = '';
   for (let i = 0; i < (hasData ? rows.length : 0); i++) {
@@ -989,8 +998,20 @@ function openDetailsInNewTab() {
       r['\u041D\u0430\u0446\u0435\u043D\u043A\u0430, %'] ?? '',
       r['\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u044C, %'] ?? '',
     ];
+    const POPUP_NUM_FIELDS = [
+      'Розничная цена, руб.', 'Оптовая цена, руб.', 'Осн. материалы, руб.', 'Вспом. материалы, руб.',
+      'Пошив, руб.', 'Раскрой, руб.', 'Декор, руб.', 'Вязание, руб.',
+      'Себестоимость, руб.', 'Наценка, руб.', 'Наценка, %', 'Маржинальность, %',
+    ];
     tableHtml += '<tr>';
-    for (const c of cells) tableHtml += '<td>' + escHtml(String(c)) + '<\/td>';
+    for (let ci = 0; ci < 5; ci++) tableHtml += '<td>' + escHtml(String(cells[ci])) + '<\/td>';
+    for (let ci = 0; ci < POPUP_NUM_FIELDS.length; ci++) {
+      const field = POPUP_NUM_FIELDS[ci];
+      const rawVal = r[field];
+      const style = hbStyleStr(rawVal, field);
+      const display = ci >= 10 ? (rawVal ?? '') : nf(rawVal);
+      tableHtml += '<td style="' + style + '">' + escHtml(String(display)) + '<\/td>';
+    }
     tableHtml += '<\/tr>';
   }
 
@@ -1003,8 +1024,22 @@ function openDetailsInNewTab() {
     { key: 'task_num', label: '\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F', field: '\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430' },
   ];
 
-  // Build filter HTML with all options pre-populated
-  let filterHtml = '';
+  // Build API-level filter HTML (date range, calc_sign, load button)
+  let filterHtml = '<div class="filter-section-api">';
+  filterHtml += '<div class="fi-item"><label>Дата с</label><input type="date" id="f_dateFrom" value="' + escHtml(detailDateFrom.value) + '" class="fi-date" /><\/div>';
+  filterHtml += '<div class="fi-item"><label>Дата по</label><input type="date" id="f_dateTo" value="' + escHtml(detailDateTo.value) + '" class="fi-date" /><\/div>';
+  const defaultCs = detailCalcSign.value.length > 0 ? detailCalcSign.value[0] : '';
+  filterHtml += '<div class="fi-item"><label>Пр.кальк</label><select id="f_calcSign" class="fi-cs">';
+  filterHtml += '<option value="">—<\/option>';
+  for (const cs of ['ПКПСС', 'КПСС', 'ПФКСС', 'ФКСС']) {
+    const sel = cs === defaultCs ? ' selected' : '';
+    filterHtml += '<option value="' + escHtml(cs) + '"' + sel + '>' + escHtml(cs) + '<\/option>';
+  }
+  filterHtml += '<\/select><\/div>';
+  filterHtml += '<button id="loadBtn" class="btn-load">Загрузить данные<\/button>';
+  filterHtml += '<\/div>';
+  // Build client-side column filter HTML (all options pre-populated)
+  filterHtml += '<div class="filter-section-cols">';
   for (const ff of filterFields) {
     const vals = new Set();
     for (const r of rows) {
@@ -1013,32 +1048,151 @@ function openDetailsInNewTab() {
       if (v) vals.add(v);
     }
     const sorted = Array.from(vals).sort();
-    filterHtml += '<div class="filter-item" data-key="' + ff.key + '"><label>' + ff.label + '<\/label><select multiple id="sel_' + ff.key + '">';
+    filterHtml += '<div class="fi-item" data-key="' + ff.key + '"><label>' + ff.label + '<\/label><select id="sel_' + ff.key + '">';
+    filterHtml += '<option value="">—<\/option>';
     for (const v of sorted) filterHtml += '<option value="' + escHtml(v) + '">' + escHtml(v) + '<\/option>';
     filterHtml += '<\/select><\/div>';
   }
-  filterHtml += '<a href="#" class="filter-reset" id="resetFilters">\u0421\u0431\u0440\u043E\u0441\u0438\u0442\u044C<\/a>';
+  filterHtml += '<a href="#" class="filter-reset" id="resetFilters">Сбросить фильтры колонок<\/a>';
+  filterHtml += '<\/div>';
 
   // JS to embed in popup (completely self-contained, no toString() serialization)
-  const popupScript =
-    'try{' +
-    'var R=' + JSON.stringify(rows) + ';' +
-    'var FK=' + JSON.stringify(filterFields.map(f => f.key)) + ';' +
-    'var FF=' + JSON.stringify(filterFields.map(f => f.field)) + ';' +
-    'function gv(r,f){var v=(r[f]||"").toString().trim();if(f==="' + '\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430' + '"&&v.indexOf("T")>=0)v=v.split("T")[0];return v}' +
-    'function nf(v){if(v==null||v==="")return"\u2014";var n=Number(v);if(isNaN(n))return String(v);return n.toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})}' +
-    'function rt(rr){var h="";for(var i=0;i<rr.length;i++){var r=rr[i],dv=gv(r,FF[0]);h+="<tr><td>"+dv+"</td><td>"+(r[FF[1]]||"\u2014")+"</td><td>"+(r[FF[2]]||"\u2014")+"</td><td>"+(r[FF[3]]||"\u2014")+"</td><td>"+(r[FF[4]]||"\u2014")+"</td><td>"+nf(r["\u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041E\u043F\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041E\u0441\u043D. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0412\u0441\u043F\u043E\u043C. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041F\u043E\u0448\u0438\u0432, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0420\u0430\u0441\u043A\u0440\u043E\u0439, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0414\u0435\u043A\u043E\u0440, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0412\u044F\u0437\u0430\u043D\u0438\u0435, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041D\u0430\u0446\u0435\u043D\u043A\u0430, \u0440\u0443\u0431."])+"</td><td>"+(r["\u041D\u0430\u0446\u0435\u043D\u043A\u0430, %"]||"")+"</td><td>"+(r["\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u044C, %"]||"")+"</td><\/tr>"}return h}' +
-    'function ap(){' +
-    'var sel={};' +
-    'for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(!e){sel[FK[i]]=[];continue}var v=[];for(var j=0;j<e.options.length;j++){if(e.options[j].selected)v.push(e.options[j].value)}sel[FK[i]]=v}' +
-    'var fd=R.filter(function(r){for(var i=0;i<FK.length;i++){var s=sel[FK[i]];if(s&&s.length){var v=gv(r,FF[i]);if(s.indexOf(v)<0)return false}}return true});' +
-    'document.getElementById("popupBody").innerHTML=rt(fd);' +
-    'document.getElementById("popupCount").textContent="\u041D\u0430\u0439\u0434\u0435\u043D\u043E \u0441\u0442\u0440\u043E\u043A: "+fd.length' +
-    '}' +
-    'ap();' +
-    'for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(e)e.onchange=ap}' +
-    'var rf=document.getElementById("resetFilters");if(rf)rf.onclick=function(){for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(e)for(var j=0;j<e.options.length;j++)e.options[j].selected=false}ap();return false}' +
-    '}catch(e){console.error("[cost-popup]",e)}';
+  const popupScript = `try{
+var R=${JSON.stringify(rows)};
+var MODEL=${JSON.stringify(detailsModel.value)};
+var API_BASE=${JSON.stringify(apiBase.value)};
+var FK=${JSON.stringify(filterFields.map(f => f.key))};
+var FF=${JSON.stringify(filterFields.map(f => f.field))};
+var NF=${JSON.stringify(DETAILS_NUMERIC_FIELDS)};
+// Compute per-column ranges for heatmap
+var RG={};
+for(var fi=0;fi<NF.length;fi++){
+  var f=NF[fi],mn=Infinity,mx=-Infinity;
+  for(var ri=0;ri<R.length;ri++){
+    var nv=Number(R[ri][f]);
+    if(!isNaN(nv)){if(nv<mn)mn=nv;if(nv>mx)mx=nv;}
+  }
+  RG[f]=mn===Infinity?{m:0,M:0}:{m:mn,M:mx};
+}
+function gv(r,f){var v=(r[f]||"").toString().trim();if(f==="\\u0434\\u0430\\u0442\\u0430 \\u0440\\u0430\\u0441\\u0447\\u0435\\u0442\\u0430"&&v.indexOf("T")>=0)v=v.split("T")[0];return v}
+function nf(v){if(v==null||v==="")return"\\u2014";var n=Number(v);if(isNaN(n))return String(v);return n.toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})}
+function hb(v,f){
+  var n=Number(v);if(isNaN(n))return"";
+  var rg=RG[f];if(!rg||rg.M===rg.m)return"";
+  var t=(n-rg.m)/(rg.M-rg.m);
+  return"background-color:rgb("+Math.round(240-190*t)+","+Math.round(245-145*t)+","+Math.round(255-35*t)+");text-align:right;";
+}
+function rt(rr){
+  var h="";
+  for(var i=0;i<rr.length;i++){
+    var r=rr[i];
+    h+="<tr>"
+      +"<td>"+gv(r,FF[0])+"<\\/td>"
+      +"<td>"+(r[FF[1]]||"\\u2014")+"<\\/td>"
+      +"<td>"+(r[FF[2]]||"\\u2014")+"<\\/td>"
+      +"<td>"+(r[FF[3]]||"\\u2014")+"<\\/td>"
+      +"<td>"+(r[FF[4]]||"\\u2014")+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."],"\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."],"\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431."],"\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431."],"\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431."],"\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0412\\u044F\\u0437\\u0430\\u043D\\u0438\\u0435, \\u0440\\u0443\\u0431."],"\\u0412\\u044F\\u0437\\u0430\\u043D\\u0438\\u0435, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0412\\u044F\\u0437\\u0430\\u043D\\u0438\\u0435, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0421\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u044C, \\u0440\\u0443\\u0431."],"\\u0421\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u044C, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0421\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u044C, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, \\u0440\\u0443\\u0431."],"\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, %"],"\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, %")+"\\">"+nf(r["\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, %"])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041C\\u0430\\u0440\\u0436\\u0438\\u043D\\u0430\\u043B\\u044C\\u043D\\u043E\\u0441\u0442\u044C, %"],"\\u041C\\u0430\\u0440\\u0436\\u0438\\u043D\\u0430\\u043B\\u044C\\u043D\\u043E\\u0441\u0442\u044C, %")+"\\">"+nf(r["\\u041C\\u0430\\u0440\\u0436\\u0438\\u043D\\u0430\\u043B\\u044C\\u043D\\u043E\\u0441\u0442\u044C, %"])+"<\\/td>"
+    +"<\\/tr>";
+  }
+  return h;
+}
+function ap(){
+  var sel={};
+  for(var i=0;i<FK.length;i++){
+    var e=document.getElementById("sel_"+FK[i]);
+    sel[FK[i]]=(e&&e.value)?[e.value]:[];
+  }
+  // Cascade: restrict each filter's options based on higher-level selections only
+  for(var fi=0;fi<FK.length;fi++){
+    var fd=R;
+    for(var j=0;j<fi;j++){
+      var s=sel[FK[j]];
+      if(s&&s.length){
+        fd=fd.filter(function(rr){var vv=gv(rr,FF[j]);return s.indexOf(vv)>=0});
+      }
+    }
+    var e=document.getElementById("sel_"+FK[fi]);
+    if(e){
+      var curVal=sel[FK[fi]][0]||"";
+      var opts=[];var seen={};
+      for(var ri=0;ri<fd.length;ri++){
+        var vv=gv(fd[ri],FF[fi]);
+        if(vv&&!seen[vv]){seen[vv]=true;opts.push(vv);}
+      }
+      opts.sort();
+      e.innerHTML="<option value>\\u2014<\\/option>";
+      for(var oi=0;oi<opts.length;oi++){
+        var opt=document.createElement("option");
+        opt.value=opts[oi];
+        opt.textContent=opts[oi];
+        if(curVal===opts[oi])opt.selected=true;
+        e.appendChild(opt);
+      }
+    }
+  }
+  // Filter all data by every selection
+  var fd2=R;
+  for(var fi=0;fi<FK.length;fi++){
+    var s=sel[FK[fi]];
+    if(s&&s.length){
+      fd2=fd2.filter(function(rr){var vv=gv(rr,FF[fi]);return s.indexOf(vv)>=0});
+    }
+  }
+  document.getElementById("popupBody").innerHTML=rt(fd2);
+  document.getElementById("popupCount").textContent="\\u041D\\u0430\\u0439\\u0434\\u0435\\u043D\\u043E \\u0441\\u0442\\u0440\\u043E\\u043A: "+fd2.length;
+}
+// Fetch fresh data from API with current date/calc_sign filters
+async function loadData(){
+  try{
+    var df=document.getElementById("f_dateFrom").value;
+    var dt=document.getElementById("f_dateTo").value;
+    var csEl=document.getElementById("f_calcSign");
+    var cs=csEl.value?[csEl.value]:[];
+    var body={model:MODEL};
+    if(df)body.date_from=df;
+    if(dt)body.date_to=dt;
+    if(cs.length)body.calc_sign=cs;
+    var resp=await fetch(API_BASE+"/api/cost/details",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!resp.ok)throw new Error("HTTP "+resp.status);
+    var json=await resp.json();
+    R=json.data||[];
+    // Recompute heatmap ranges
+    for(var fi=0;fi<NF.length;fi++){
+      var f=NF[fi],mn=Infinity,mx=-Infinity;
+      for(var ri=0;ri<R.length;ri++){var nv=Number(R[ri][f]);if(!isNaN(nv)){if(nv<mn)mn=nv;if(nv>mx)mx=nv;}}
+      RG[f]=mn===Infinity?{m:0,M:0}:{m:mn,M:mx};
+    }
+    // Reset column filter selections and re-render
+    for(var fi=0;fi<FK.length;fi++){
+      var e=document.getElementById("sel_"+FK[fi]);
+      if(e)e.selectedIndex=0;
+    }
+    ap();
+  }catch(e){
+    console.error("[cost-popup] load failed",e);
+    alert("\\u041E\\u0448\\u0438\\u0431\\u043A\\u0430 \\u0437\\u0430\\u0433\\u0440\\u0443\\u0437\\u043A\\u0438 \\u0434\\u0430\\u043D\\u043D\\u044B\\u0445");
+  }
+}
+ap();
+for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(e)e.onchange=ap}
+var rf=document.getElementById("resetFilters");if(rf)rf.onclick=function(){
+  for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(e)e.selectedIndex=0}
+  ap();return false
+};
+var lb=document.getElementById("loadBtn");if(lb)lb.onclick=loadData;
+}catch(e){console.error("[cost-popup]",e)}`;
 
   const html =
     '<!DOCTYPE html>' +
@@ -1050,11 +1204,17 @@ function openDetailsInNewTab() {
     '.container{max-width:100%;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.1)}' +
     '.header{padding:16px 24px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center}' +
     '.header h1{font-size:18px}' +
-    '.filters{padding:12px 24px;border-bottom:1px solid #eee;display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;background:#fafafa}' +
-    '.filter-item{display:flex;flex-direction:column;gap:2px}' +
-    '.filter-item label{font-size:10px;color:#888;font-weight:600}' +
-    '.filter-item select{min-width:120px;max-width:180px;height:60px;border:1px solid #ddd;border-radius:4px;background:#fff;font-size:10px;padding:2px}' +
-    '.filter-reset{font-size:12px;color:#888;padding-top:14px;cursor:pointer;white-space:nowrap;text-decoration:none}' +
+    '.filters{padding:0;border-bottom:1px solid #eee}' +
+    '.filter-section-api{padding:10px 24px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;background:#f0f4ff;border-bottom:1px solid #dde4f0}' +
+    '.filter-section-cols{padding:10px 24px;display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;background:#fafafa}' +
+    '.fi-item{display:flex;flex-direction:column;gap:2px}' +
+    '.fi-item label{font-size:10px;color:#555;font-weight:600}' +
+    '.fi-item select{min-width:120px;max-width:180px;border:1px solid #ddd;border-radius:4px;background:#fff;font-size:10px;padding:2px 4px;height:24px}' +
+    'input.fi-date{height:24px;border:1px solid #ddd;border-radius:4px;padding:2px 6px;font-size:11px;background:#fff}' +
+    'select.fi-cs{min-width:100px;height:24px}' +
+    '.btn-load{height:28px;padding:0 14px;border:1px solid #4a6cf7;border-radius:4px;background:#4a6cf7;color:#fff;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}' +
+    '.btn-load:hover{background:#3b5de7}' +
+    '.filter-reset{font-size:11px;color:#888;padding-top:8px;cursor:pointer;white-space:nowrap;text-decoration:none}' +
     '.filter-reset:hover{color:#333}' +
     '.content{padding:16px 24px;overflow-x:auto}' +
     'table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}' +
@@ -1370,6 +1530,62 @@ watch(currentPage, () => {
 onMounted(async () => {
   await Promise.all([loadFilters(), loadPriceLevels(), loadCacheStatus()]);
 });
+
+// ── Heatmap (details table conditional formatting) ─────────────────────────
+
+const DETAILS_NUMERIC_FIELDS = [
+  'Розничная цена, руб.',
+  'Оптовая цена, руб.',
+  'Осн. материалы, руб.',
+  'Вспом. материалы, руб.',
+  'Пошив, руб.',
+  'Раскрой, руб.',
+  'Декор, руб.',
+  'Вязание, руб.',
+  'Себестоимость, руб.',
+  'Наценка, руб.',
+  'Наценка, %',
+  'Маржинальность, %',
+];
+
+const detailsRanges = computed(() => {
+  const ranges: Record<string, { min: number; max: number }> = {};
+  const data = detailsFilteredData.value;
+  if (!data || data.length === 0) return ranges;
+
+  for (const field of DETAILS_NUMERIC_FIELDS) {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const row of data) {
+      const v = Number(row[field]);
+      if (!isNaN(v)) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    }
+    ranges[field] = min === Infinity
+      ? { min: 0, max: 0 }
+      : { min, max };
+  }
+  return ranges;
+});
+
+function heatBg(value: any, field: string): { backgroundColor?: string } {
+  const n = Number(value);
+  if (isNaN(n)) return {};
+
+  const range = detailsRanges.value[field];
+  if (!range || range.max === range.min) return {};
+
+  // Blue gradient: white (low) → blue (high)
+  // rgb(240, 245, 255) → rgb(50, 100, 220)
+  const t = (n - range.min) / (range.max - range.min);
+  const r = Math.round(240 - 190 * t);
+  const g = Math.round(245 - 145 * t);
+  const b = Math.round(255 - 35 * t);
+
+  return { backgroundColor: `rgb(${r}, ${g}, ${b})` };
+}
 </script>
 
 <style scoped>
