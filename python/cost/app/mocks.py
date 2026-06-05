@@ -335,7 +335,41 @@ def aggregated(payload: dict | None = None) -> dict:
             + float(row.get("sum_Вспомогательные материалы, USD.", 0) or 0),
             2,
         )
+    # Inject margin targets into each row
+    for row in rows:
+        l1 = (row.get("Level 01") or "").strip()
+        row["target_margin_pct"] = _mock_margin_targets.get(l1)
     return {"data": rows, "count": len(rows)}
+
+
+# ── Mock margin targets ─────────────────────────────────────────────────────
+
+_mock_margin_targets: dict[str, float] = {}
+
+
+def margin_targets() -> list[dict]:
+    """Return all saved mock margin targets (one per level01 entry)."""
+    result: list[dict] = []
+    for entry in _LEVELS["level01"]:
+        text = entry["text"]
+        pct = _mock_margin_targets.get(text)
+        result.append({
+            "level1": text,
+            "target_margin_pct": pct,
+            "updated_at": None,
+            "updated_by": None,
+        })
+    return result
+
+
+def save_margin_targets(targets: list[dict], username: str) -> dict:
+    """Save mock margin targets in memory."""
+    for t in targets:
+        level1 = (t.get("level1") or "").strip()
+        pct = t.get("target_margin_pct")
+        if level1:
+            _mock_margin_targets[level1] = float(pct) if pct is not None else 0.0
+    return {"success": True, "count": len(targets)}
 
 
 def load_data(payload: dict) -> dict:
