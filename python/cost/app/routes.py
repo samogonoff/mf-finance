@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app import mocks
-from app.db import get_cache_status, get_dwh_conn, get_gpartner_conn, get_mssql_conn, get_olap_conn, load_cost_data_to_cache, pool
+from app.db import get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, load_cost_data_to_cache, pool, save_margin_targets
 from app.notify import notify_admins
 
 router = APIRouter()
@@ -177,6 +177,11 @@ AGG_GROUP_FIELDS = [
     "Страна пр-ва",
     "Семья",
     "Сезон",
+    "Level 01",
+    "Level 02",
+    "Level 03",
+    "Level 04",
+    "Level 05",
 ]
 
 AGG_AVG_FIELDS = [
@@ -260,6 +265,19 @@ async def get_aggregated(payload: dict) -> dict:
         row["sum_Себестоимость, USD."] = round(
             sum(float(row.get(f, 0) or 0) for f in SEBEST_COMPONENTS_USD), 2
         )
+
+    # Inject margin targets per level1
+    try:
+        targets_raw = await get_margin_targets()
+        target_map: dict[str, float] = {
+            t["level1"]: float(t["target_margin_pct"]) for t in targets_raw
+        }
+        for row in data:
+            l1 = (row.get("Level 01") or "").strip()
+            row["target_margin_pct"] = target_map.get(l1)
+    except Exception:
+        pass  # no targets yet — leave field empty
+
     return {"data": data, "count": len(data)}
 
 
@@ -533,6 +551,28 @@ async def save_batch_changes(payload: dict) -> dict:
     return {"success": True, "count": len(changes)}
 
 
+# ── Margin targets ──────────────────────────────────────────────────────────
+
+
+@router.get("/margin-targets")
+async def margin_targets() -> list[dict]:
+    """Return all saved margin targets keyed by level1."""
+    if _is_mock():
+        return mocks.margin_targets()
+    return await get_margin_targets()
+
+
+@router.post("/margin-targets")
+async def update_margin_targets(payload: dict) -> dict:
+    """Save margin targets (upsert by level1) with username tracking."""
+    targets = payload.get("targets") or []
+    username = (payload.get("username") or "system").strip()
+    if _is_mock():
+        return mocks.save_margin_targets(targets, username)
+    await save_margin_targets(targets, username)
+    return {"success": True, "count": len(targets)}
+
+
 # ── Cache refresh & status ──────────────────────────────────────────────────
 
 
@@ -551,8 +591,8 @@ async def refresh_cache() -> dict:
             if age < REFRESH_TIMEOUT_MINUTES:
                 return {"status": "already_refreshing", "message": "Cache refresh already in progress"}
 
-    asyncio.ensure_future(load_cost_data_to_cache())
-    return {"status": "started", "message": "Cache refresh started in background"}
+    asyncio.ensure_future(load_cost_data_to_cache(partial_months=2))
+    return {"status": "started", "message": "Cache refresh (last 2 months) started in background"}
 
 
 @router.get("/cache-status")

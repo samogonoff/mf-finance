@@ -95,6 +95,9 @@
         </span>
       </div>
       <div class="cost-actions-buttons">
+        <button class="btn btn-ghost" @click="openMarginModal">
+          <Icon name="lucide:target" /> Таргеты маржинальности
+        </button>
         <button class="btn btn-ghost" :disabled="!totalAllRecords" @click="exportToExcel">
           <Icon name="lucide:download" /> Экспорт в Excel
         </button>
@@ -264,23 +267,26 @@
               <th class="col-num" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
                 Маржа (%)<span v-if="sortField === 'calc_margin_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
+              <th class="col-num" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
+                Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="24" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="25" class="muted" style="text-align: center; padding: 24px">
                 Загрузка данных…
               </td>
             </tr>
             <tr v-else-if="!pageRows.length">
-              <td colspan="24" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="25" class="muted" style="text-align: center; padding: 24px">
                 Нет данных. Загрузите данные кнопкой выше.
               </td>
             </tr>
             <tr
               v-for="(row, idx) in pageRows"
               :key="idx"
-              :class="{ selected: selectedRowIndex === getOriginalIndex(row) }"
+              :class="{ selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
               @click="selectRow(getOriginalIndex(row))"
             >
               <td><button class="btn-details" @click.stop="openDetails(row)">🔍</button></td>
@@ -330,6 +336,7 @@
                 {{ calc(row, showUSD).markupPct.toFixed(1) }}%
               </td>
               <td class="col-num num">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
+              <td class="col-num num" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
             </tr>
           </tbody>
         </table>
@@ -427,6 +434,57 @@
         </div>
       </div>
     </div>
+    <!-- Margin targets modal -->
+    <div v-if="showMarginModal" class="modal-overlay" @click.self="showMarginModal = false">
+      <div class="modal-content" style="max-width:600px" @click.stop>
+        <div class="modal-header">
+          <h2>Таргеты маржинальности</h2>
+          <button class="modal-close" @click="showMarginModal = false">×</button>
+        </div>
+        <div class="margin-targets-body" style="padding:var(--sp-4) var(--sp-5);overflow:auto;flex:1">
+          <div v-if="marginTargetsLoading" class="muted" style="text-align:center;padding:24px">Загрузка…</div>
+          <table v-else class="data-table compact" style="width:100%">
+            <thead>
+              <tr>
+                <th style="text-align:left">Level 01</th>
+                <th class="col-num">Таргет маржинальности, %</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="mt in marginTargetsList" :key="mt.level1">
+                <td>{{ mt.level1 }}</td>
+                <td class="col-num">
+                  <input
+                    v-model.number="mt.target_margin_pct"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    class="form-input"
+                    style="width:100px;text-align:right"
+                    placeholder="—"
+                  />
+                </td>
+              </tr>
+              <tr v-if="!marginTargetsList.length">
+                <td colspan="2" class="muted" style="text-align:center;padding:16px">
+                  Нет данных Level 01
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+          <span style="font-size:var(--fs-xs);color:var(--text-muted)">{{ marginSaveStatus }}</span>
+          <div style="display:flex;gap:var(--sp-3)">
+            <button class="btn btn-ghost btn-sm" @click="showMarginModal = false">Отмена</button>
+            <button class="btn btn-primary btn-sm" :disabled="marginSaving" @click="saveMarginTargets">
+              {{ marginSaving ? 'Сохранение…' : 'Сохранить' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -459,6 +517,14 @@ const apiHostLabel = computed(() => apiBase.value || "локального API")
 
 const mockMode = ref(false);
 const showUSD = ref(true);
+
+// ── Margin targets state ─────────────────────────────────────────────────────
+
+const showMarginModal = ref(false);
+const marginTargetsLoading = ref(false);
+const marginSaving = ref(false);
+const marginSaveStatus = ref('');
+const marginTargetsList = ref<{ level1: string; target_margin_pct: number | null }[]>([]);
 
 // ── Filter state ────────────────────────────────────────────────────────────
 
@@ -742,12 +808,18 @@ const sortedRows = computed(() => {
   const dir = sortDir.value === 'asc' ? 1 : -1;
   return [...data].sort((a, b) => {
     let va: any, vb: any;
-    // Вычисляемые поля (наценка/маржа)
-    if (field === 'calc_markup_rub' || field === 'calc_markup_pct' || field === 'calc_margin_pct') {
+    // Вычисляемые поля (наценка/маржа/отклонение)
+    if (field === 'calc_markup_rub' || field === 'calc_markup_pct' || field === 'calc_margin_pct' || field === 'calc_margin_deviation') {
       const ca = calc(a, showUSD.value), cb = calc(b, showUSD.value);
       if (field === 'calc_markup_rub') { va = ca.markupRub; vb = cb.markupRub; }
       else if (field === 'calc_markup_pct') { va = ca.markupPct; vb = cb.markupPct; }
-      else { va = ca.marginPct; vb = cb.marginPct; }
+      else if (field === 'calc_margin_pct') { va = ca.marginPct; vb = cb.marginPct; }
+      else {
+        va = marginDeviation(a, showUSD.value);
+        vb = marginDeviation(b, showUSD.value);
+        if (va === null) va = -Infinity;
+        if (vb === null) vb = -Infinity;
+      }
     } else {
       va = a[field]; vb = b[field];
     }
@@ -810,6 +882,80 @@ const selectedRowIndex = ref<number>(-1);
 const selectRow = (absoluteIdx: number) => {
   selectedRowIndex.value = absoluteIdx;
 };
+
+// ── Margin targets modal ─────────────────────────────────────────────────────
+
+async function openMarginModal() {
+  showMarginModal.value = true;
+  marginTargetsLoading.value = true;
+  marginSaveStatus.value = '';
+  try {
+    // Fetch all level01 options (no cascade filters)
+    const raw = await $fetch<Record<string, any>>(
+      `${apiBase.value}/api/cost/filter-options`,
+      { headers: fetchHeaders.value }
+    );
+    const level1Texts: string[] = [];
+    if (Array.isArray(raw.level01) && raw.level01.length > 0 && typeof raw.level01[0] === 'object') {
+      level1Texts.push(...raw.level01.map((v: any) => v.text));
+    } else if (Array.isArray(raw.level01)) {
+      level1Texts.push(...raw.level01);
+    }
+
+    // Fetch existing targets
+    const targets = await $fetch<{ level1: string; target_margin_pct: number | null }[]>(
+      `${apiBase.value}/api/cost/margin-targets`,
+      { headers: fetchHeaders.value }
+    );
+    const targetMap: Record<string, number | null> = {};
+    for (const t of targets) {
+      targetMap[t.level1] = t.target_margin_pct;
+    }
+
+    // Merge: all level01 values + existing targets (default 0)
+    marginTargetsList.value = level1Texts.map((l1) => ({
+      level1: l1,
+      target_margin_pct: targetMap[l1] ?? 0,
+    }));
+  } catch (e: any) {
+    console.error('[cost] load margin targets failed', e);
+    marginSaveStatus.value = 'Ошибка загрузки';
+  } finally {
+    marginTargetsLoading.value = false;
+  }
+}
+
+async function saveMarginTargets() {
+  marginSaving.value = true;
+  marginSaveStatus.value = '';
+  try {
+    const username = 'system';
+    const result = await $fetch<{ success: boolean; count: number }>(
+      `${apiBase.value}/api/cost/margin-targets`,
+      {
+        method: 'POST',
+        body: {
+          targets: marginTargetsList.value.map((t) => ({
+            level1: t.level1,
+            target_margin_pct: Number(t.target_margin_pct) || 0,
+          })),
+          username,
+        },
+        headers: fetchHeaders.value,
+      }
+    );
+    if (result.success) {
+      marginSaveStatus.value = `Сохранено: ${result.count} таргетов`;
+    } else {
+      marginSaveStatus.value = 'Ошибка сохранения';
+    }
+  } catch (e: any) {
+    console.error('[cost] save margin targets failed', e);
+    marginSaveStatus.value = 'Ошибка: ' + (e?.data?.detail || e?.message || String(e));
+  } finally {
+    marginSaving.value = false;
+  }
+}
 
 // ── Details modal ────────────────────────────────────────────────────────────
 const showDetailsModal = ref(false);
@@ -1434,6 +1580,17 @@ async function loadPriceLevels() {
   }
 }
 
+/** Derive RUB→USD exchange rate from a row. Tries wholesale first, then retail. */
+function _deriveRate(row: any): number {
+  const rub = Number(row["avg_Отпускная цена по уровню, руб"] || 0);
+  const usd = Number(row["avg_Отпускная цена по уровню, USD."] || 0);
+  if (rub > 0 && usd > 0) return rub / usd;
+  const rubR = Number(row["avg_Розничная цена по уровню, руб."] || 0);
+  const usdR = Number(row["avg_Розничная цена по уровню, USD."] || 0);
+  if (rubR > 0 && usdR > 0) return rubR / usdR;
+  return 0;
+}
+
 const onPriceLevelChange = async (absoluteIdx: number, levelName: string) => {
   if (!levelName) return;
   const level = priceLevels.value.find((l) => l.name === levelName);
@@ -1441,9 +1598,24 @@ const onPriceLevelChange = async (absoluteIdx: number, levelName: string) => {
   const row = allAggregated.value[absoluteIdx];
   if (!row) return;
 
+  // Derive exchange rate RUB→USD for computing USD prices.
+  // Try: current row's wholesale → retail → any row in dataset → hard default.
+  let rate = _deriveRate(row);
+  if (rate === 0) {
+    for (const r of allAggregated.value) {
+      rate = _deriveRate(r);
+      if (rate > 0) break;
+    }
+  }
+  if (rate === 0) rate = 92; // last-resort fallback
+
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+
   row["Уровень цен"] = levelName;
   row["avg_Розничная цена по уровню, руб."] = level.price_type3;
   row["avg_Отпускная цена по уровню, руб"] = level.price_type1;
+  row["avg_Розничная цена по уровню, USD."] = r2(level.price_type3 / rate);
+  row["avg_Отпускная цена по уровню, USD."] = r2(level.price_type1 / rate);
 
   changedRows.add(absoluteIdx);
 
@@ -1538,6 +1710,33 @@ const calc = (row: any, useUsd: boolean = false) => {
   return { markupRub: markup, markupPct, marginPct };
 };
 
+// ── Margin deviation helpers ────────────────────────────────────────────────
+
+const marginDeviation = (row: any, useUsd: boolean = false): number | null => {
+  const target = row.target_margin_pct;
+  if (target === null || target === undefined) return null;
+  const { marginPct } = calc(row, useUsd);
+  return marginPct - target;
+};
+
+const marginDevText = (row: any, useUsd: boolean = false): string => {
+  const dev = marginDeviation(row, useUsd);
+  if (dev === null) return '—';
+  return (dev >= 0 ? '+' : '') + dev.toFixed(1) + '%';
+};
+
+const marginDevClass = (row: any, useUsd: boolean = false): Record<string, boolean> => {
+  const dev = marginDeviation(row, useUsd);
+  if (dev === null) return {};
+  return { 'delta-pos': dev >= 0, 'delta-neg': dev < 0 };
+};
+
+const marginRowClass = (row: any): Record<string, boolean> => {
+  const dev = marginDeviation(row, showUSD.value);
+  if (dev === null) return {};
+  return { 'row-margin-ok': dev >= 0, 'row-margin-bad': dev < 0 };
+};
+
 // ── Excel export ────────────────────────────────────────────────────────────
 
 const headers = [
@@ -1550,7 +1749,7 @@ const headers = [
   "Декоры (руб)", "Декоры ($)",
   "Вязание (руб)", "Вязание ($)",
   "Себест. (руб)", "Себест. ($)",
-  "Наценка (руб)", "Наценка (%)", "Маржа (%)",
+  "Наценка (руб)", "Наценка (%)", "Маржа (%)", "Откл. маржи (%)",
 ];
 
 const exportToExcel = () => {
@@ -1594,6 +1793,7 @@ const exportToExcel = () => {
       fmt(c.markupRub),
       `${c.markupPct.toFixed(1)}%`,
       `${c.marginPct.toFixed(1)}%`,
+      marginDevText(row),
     ];
     html += "<tr>" + cells.map((v) => `<td>${v}</td>`).join("") + "</tr>";
   }
@@ -2037,6 +2237,20 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .col-filter-reset:hover {
   color: var(--accent);
   text-decoration: underline;
+}
+
+/* Row-level margin deviation conditional formatting */
+.row-margin-ok {
+  background-color: color-mix(in srgb, var(--pos, #16a34a) 8%, transparent) !important;
+}
+.row-margin-ok:hover {
+  background-color: color-mix(in srgb, var(--pos, #16a34a) 14%, transparent) !important;
+}
+.row-margin-bad {
+  background-color: color-mix(in srgb, var(--neg, #dc2626) 8%, transparent) !important;
+}
+.row-margin-bad:hover {
+  background-color: color-mix(in srgb, var(--neg, #dc2626) 14%, transparent) !important;
 }
 
 /* Cache status */
