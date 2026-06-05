@@ -13,6 +13,8 @@ pyodbc — синхронный драйвер; FastAPI запускает sync-
 
 from __future__ import annotations
 
+import asyncio
+import datetime
 import os
 
 import asyncpg
@@ -203,66 +205,147 @@ async def clear_cache() -> None:
         await conn.execute("TRUNCATE TABLE cost_data_cache")
 
 
-async def load_cost_data_to_cache() -> dict:
+# ── Margin targets ────────────────────────────────────────────────────────────
+
+
+async def get_margin_targets() -> list[dict]:
+    """Return all margin targets keyed by level1."""
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT level1, target_margin_pct, updated_at, updated_by"
+            "  FROM cost_margin_targets"
+            "  ORDER BY level1"
+        )
+        return [dict(r) for r in rows]
+
+
+async def save_margin_targets(targets: list[dict], username: str) -> None:
+    """Upsert margin targets in a single transaction."""
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            for t in targets:
+                await conn.execute(
+                    """
+                    INSERT INTO cost_margin_targets (level1, target_margin_pct, created_by, updated_by)
+                    VALUES ($1, $2, $3, $3)
+                    ON CONFLICT (level1) DO UPDATE SET
+                        target_margin_pct = EXCLUDED.target_margin_pct,
+                        updated_by        = EXCLUDED.updated_by,
+                        updated_at        = NOW()
+                    """,
+                    t["level1"],
+                    t.get("target_margin_pct") or 0,
+                    username,
+                )
+
+
+BATCH_SIZE = 10_000
+
+
+def _get_cutoff_date(months_ago: int) -> datetime.date:
+    """Return the first day of N months ago (inclusive) as datetime.date."""
+    today = datetime.date.today()
+    month = today.month - months_ago
+    year = today.year
+    while month < 1:
+        month += 12
+        year -= 1
+    return datetime.date(year, month, 1)
+
+
+def _convert_mssql_row(row: tuple, col_indices: list[int], cache_columns: list[str]) -> tuple:
+    """Convert a single MSSQL row: strip text fields, pass numerics/dates as-is."""
+    converted = []
+    for i, col in zip(col_indices, cache_columns):
+        val = row[i]
+        if col not in _CACHE_NON_TEXT:
+            if val is None:
+                converted.append(None)
+                continue
+            if not isinstance(val, str):
+                val = str(val)
+            val = val.strip()
+        converted.append(val)
+    return tuple(converted)
+
+
+async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
     """Fetch from MSSQL v_CostHistory_MatchedOrLatest and bulk insert into cache.
+
+    Batches of BATCH_SIZE rows — never loads the full dataset into Python memory.
+    Uses a producer thread (MSSQL fetch) + async consumer (PG copy) with a
+    threading.Queue for backpressure.
+
+    If *partial_months* is set (e.g. 2), only refreshes records where
+    ``[дата расчета] >= N months ago`` — deletes those rows from the cache
+    and re-inserts them.  Full refresh (= TRUNCATE + all rows) when omitted.
 
     Returns {'success': True, 'row_count': N} or {'success': False, 'error': '...'}.
     """
-    import asyncio
+    import queue as thr_queue
     import traceback
 
     await set_cache_refreshing(True)
 
-    try:
-        def _fetch_from_mssql():
-            conn = get_mssql_conn()
-            cursor = conn.cursor()
-            try:
+    q: thr_queue.Queue = thr_queue.Queue(maxsize=4)
+
+    cutoff_date: datetime.date | None = _get_cutoff_date(partial_months) if partial_months is not None else None
+    cache_columns: list[str] | None = None
+    total_rows = 0
+
+    def _producer() -> None:
+        nonlocal cache_columns
+        conn = get_mssql_conn()
+        cursor = conn.cursor()
+        try:
+            if cutoff_date is not None:
+                cursor.execute("SELECT * FROM [v_CostHistory_MatchedOrLatest] WHERE [дата расчета] >= ?", cutoff_date)
+            else:
                 cursor.execute("SELECT * FROM [v_CostHistory_MatchedOrLatest]")
-                columns = [desc[0] for desc in cursor.description]
-                rows = cursor.fetchall()
-                return columns, rows
-            finally:
-                conn.close()
+            mssql_columns = [desc[0] for desc in cursor.description]
+            cols = [c for c in CACHE_COLUMNS if c in mssql_columns]
+            idx = [mssql_columns.index(c) for c in cols]
+            cache_columns = cols
 
-        loop = asyncio.get_running_loop()
-        mssql_columns, rows = await loop.run_in_executor(None, _fetch_from_mssql)
+            while True:
+                rows = cursor.fetchmany(BATCH_SIZE)
+                if not rows:
+                    break
+                batch = [_convert_mssql_row(r, idx, cols) for r in rows]
+                q.put(batch)
+        finally:
+            q.put(None)
+            conn.close()
 
-        if not rows:
-            await set_cache_completed(0)
-            return {"success": True, "row_count": 0}
+    loop = asyncio.get_running_loop()
 
-        cache_columns = [c for c in CACHE_COLUMNS if c in mssql_columns]
-        col_indices = [mssql_columns.index(c) for c in cache_columns]
+    try:
+        prod_fut = loop.run_in_executor(None, _producer)
 
-        records: list[tuple] = []
-        for row in rows:
-            converted = []
-            for i, col in zip(col_indices, cache_columns):
-                val = row[i]
-                if col not in _CACHE_NON_TEXT:
-                    if val is None:
-                        converted.append(None)
-                        continue
-                    if not isinstance(val, str):
-                        val = str(val)
-                    val = val.strip()  # убираем trailing spaces из MSSQL char(n)
-                converted.append(val)
-            records.append(tuple(converted))
-
-        # Truncate + bulk insert in one transaction — minimal downtime
         async with pool().acquire() as conn:
             async with conn.transaction():
-                await conn.execute("TRUNCATE TABLE cost_data_cache")
-                await conn.copy_records_to_table(
-                    "cost_data_cache",
-                    records=records,
-                    columns=cache_columns,
-                )
+                if cutoff_date is not None:
+                    await conn.execute('DELETE FROM cost_data_cache WHERE "дата расчета" >= $1', cutoff_date)
+                else:
+                    await conn.execute("TRUNCATE TABLE cost_data_cache")
 
-        rc = len(rows)
-        await set_cache_completed(rc)
-        return {"success": True, "row_count": rc}
+                while True:
+                    batch = await loop.run_in_executor(None, q.get)
+                    if batch is None:
+                        break
+                    if cache_columns is None:
+                        raise RuntimeError("cache_columns not set by producer")
+                    await conn.copy_records_to_table(
+                        "cost_data_cache",
+                        records=batch,
+                        columns=cache_columns,
+                    )
+                    total_rows += len(batch)
+
+        await prod_fut
+
+        await set_cache_completed(total_rows)
+        return {"success": True, "row_count": total_rows}
 
     except Exception:
         err_msg = traceback.format_exc()

@@ -95,6 +95,9 @@
         </span>
       </div>
       <div class="cost-actions-buttons">
+        <button class="btn btn-ghost" @click="openMarginModal">
+          <Icon name="lucide:target" /> Таргеты маржинальности
+        </button>
         <button class="btn btn-ghost" :disabled="!totalAllRecords" @click="exportToExcel">
           <Icon name="lucide:download" /> Экспорт в Excel
         </button>
@@ -264,23 +267,26 @@
               <th class="col-num" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
                 Маржа (%)<span v-if="sortField === 'calc_margin_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
+              <th class="col-num" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
+                Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="24" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="25" class="muted" style="text-align: center; padding: 24px">
                 Загрузка данных…
               </td>
             </tr>
             <tr v-else-if="!pageRows.length">
-              <td colspan="24" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="25" class="muted" style="text-align: center; padding: 24px">
                 Нет данных. Загрузите данные кнопкой выше.
               </td>
             </tr>
             <tr
               v-for="(row, idx) in pageRows"
               :key="idx"
-              :class="{ selected: selectedRowIndex === getOriginalIndex(row) }"
+              :class="{ selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
               @click="selectRow(getOriginalIndex(row))"
             >
               <td><button class="btn-details" @click.stop="openDetails(row)">🔍</button></td>
@@ -330,6 +336,7 @@
                 {{ calc(row, showUSD).markupPct.toFixed(1) }}%
               </td>
               <td class="col-num num">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
+              <td class="col-num num" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
             </tr>
           </tbody>
         </table>
@@ -408,22 +415,73 @@
                 <td>{{ d['Артикул'] || '—' }}</td>
                 <td>{{ d['Наименование модели'] || '—' }}</td>
                 <td>{{ d['Номер задания производства'] || '—' }}</td>
-                <td class="col-num num">{{ fmt(d['Розничная цена, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Оптовая цена, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Осн. материалы, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Вспом. материалы, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Пошив, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Раскрой, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Декор, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Вязание, руб.']) }}</td>
-                <td class="col-num num-strong">{{ fmt(d['Себестоимость, руб.']) }}</td>
-                <td class="col-num num">{{ fmt(d['Наценка, руб.']) }}</td>
-                <td class="col-num num">{{ d['Наценка, %'] }}%</td>
-                <td class="col-num num">{{ d['Маржинальность, %'] }}%</td>
+                <td class="col-num num" :style="heatBg(d['Розничная цена, руб.'], 'Розничная цена, руб.')">{{ fmt(d['Розничная цена, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Оптовая цена, руб.'], 'Оптовая цена, руб.')">{{ fmt(d['Оптовая цена, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Осн. материалы, руб.'], 'Осн. материалы, руб.')">{{ fmt(d['Осн. материалы, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Вспом. материалы, руб.'], 'Вспом. материалы, руб.')">{{ fmt(d['Вспом. материалы, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Пошив, руб.'], 'Пошив, руб.')">{{ fmt(d['Пошив, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Раскрой, руб.'], 'Раскрой, руб.')">{{ fmt(d['Раскрой, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Декор, руб.'], 'Декор, руб.')">{{ fmt(d['Декор, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Вязание, руб.'], 'Вязание, руб.')">{{ fmt(d['Вязание, руб.']) }}</td>
+                <td class="col-num num-strong" :style="heatBg(d['Себестоимость, руб.'], 'Себестоимость, руб.')">{{ fmt(d['Себестоимость, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Наценка, руб.'], 'Наценка, руб.')">{{ fmt(d['Наценка, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Наценка, %'], 'Наценка, %')">{{ d['Наценка, %'] }}%</td>
+                <td class="col-num num" :style="heatBg(d['Маржинальность, %'], 'Маржинальность, %')">{{ d['Маржинальность, %'] }}%</td>
               </tr>
             </tbody>
           </table>
           <div v-if="detailsFilteredData.length" class="details-count">Найдено строк: {{ detailsFilteredData.length }}</div>
+        </div>
+      </div>
+    </div>
+    <!-- Margin targets modal -->
+    <div v-if="showMarginModal" class="modal-overlay" @click.self="showMarginModal = false">
+      <div class="modal-content" style="max-width:600px" @click.stop>
+        <div class="modal-header">
+          <h2>Таргеты маржинальности</h2>
+          <button class="modal-close" @click="showMarginModal = false">×</button>
+        </div>
+        <div class="margin-targets-body" style="padding:var(--sp-4) var(--sp-5);overflow:auto;flex:1">
+          <div v-if="marginTargetsLoading" class="muted" style="text-align:center;padding:24px">Загрузка…</div>
+          <table v-else class="data-table compact" style="width:100%">
+            <thead>
+              <tr>
+                <th style="text-align:left">Level 01</th>
+                <th class="col-num">Таргет маржинальности, %</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="mt in marginTargetsList" :key="mt.level1">
+                <td>{{ mt.level1 }}</td>
+                <td class="col-num">
+                  <input
+                    v-model.number="mt.target_margin_pct"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    class="form-input"
+                    style="width:100px;text-align:right"
+                    placeholder="—"
+                  />
+                </td>
+              </tr>
+              <tr v-if="!marginTargetsList.length">
+                <td colspan="2" class="muted" style="text-align:center;padding:16px">
+                  Нет данных Level 01
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+          <span style="font-size:var(--fs-xs);color:var(--text-muted)">{{ marginSaveStatus }}</span>
+          <div style="display:flex;gap:var(--sp-3)">
+            <button class="btn btn-ghost btn-sm" @click="showMarginModal = false">Отмена</button>
+            <button class="btn btn-primary btn-sm" :disabled="marginSaving" @click="saveMarginTargets">
+              {{ marginSaving ? 'Сохранение…' : 'Сохранить' }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -459,6 +517,14 @@ const apiHostLabel = computed(() => apiBase.value || "локального API")
 
 const mockMode = ref(false);
 const showUSD = ref(true);
+
+// ── Margin targets state ─────────────────────────────────────────────────────
+
+const showMarginModal = ref(false);
+const marginTargetsLoading = ref(false);
+const marginSaving = ref(false);
+const marginSaveStatus = ref('');
+const marginTargetsList = ref<{ level1: string; target_margin_pct: number | null }[]>([]);
 
 // ── Filter state ────────────────────────────────────────────────────────────
 
@@ -742,12 +808,18 @@ const sortedRows = computed(() => {
   const dir = sortDir.value === 'asc' ? 1 : -1;
   return [...data].sort((a, b) => {
     let va: any, vb: any;
-    // Вычисляемые поля (наценка/маржа)
-    if (field === 'calc_markup_rub' || field === 'calc_markup_pct' || field === 'calc_margin_pct') {
+    // Вычисляемые поля (наценка/маржа/отклонение)
+    if (field === 'calc_markup_rub' || field === 'calc_markup_pct' || field === 'calc_margin_pct' || field === 'calc_margin_deviation') {
       const ca = calc(a, showUSD.value), cb = calc(b, showUSD.value);
       if (field === 'calc_markup_rub') { va = ca.markupRub; vb = cb.markupRub; }
       else if (field === 'calc_markup_pct') { va = ca.markupPct; vb = cb.markupPct; }
-      else { va = ca.marginPct; vb = cb.marginPct; }
+      else if (field === 'calc_margin_pct') { va = ca.marginPct; vb = cb.marginPct; }
+      else {
+        va = marginDeviation(a, showUSD.value);
+        vb = marginDeviation(b, showUSD.value);
+        if (va === null) va = -Infinity;
+        if (vb === null) vb = -Infinity;
+      }
     } else {
       va = a[field]; vb = b[field];
     }
@@ -810,6 +882,80 @@ const selectedRowIndex = ref<number>(-1);
 const selectRow = (absoluteIdx: number) => {
   selectedRowIndex.value = absoluteIdx;
 };
+
+// ── Margin targets modal ─────────────────────────────────────────────────────
+
+async function openMarginModal() {
+  showMarginModal.value = true;
+  marginTargetsLoading.value = true;
+  marginSaveStatus.value = '';
+  try {
+    // Fetch all level01 options (no cascade filters)
+    const raw = await $fetch<Record<string, any>>(
+      `${apiBase.value}/api/cost/filter-options`,
+      { headers: fetchHeaders.value }
+    );
+    const level1Texts: string[] = [];
+    if (Array.isArray(raw.level01) && raw.level01.length > 0 && typeof raw.level01[0] === 'object') {
+      level1Texts.push(...raw.level01.map((v: any) => v.text));
+    } else if (Array.isArray(raw.level01)) {
+      level1Texts.push(...raw.level01);
+    }
+
+    // Fetch existing targets
+    const targets = await $fetch<{ level1: string; target_margin_pct: number | null }[]>(
+      `${apiBase.value}/api/cost/margin-targets`,
+      { headers: fetchHeaders.value }
+    );
+    const targetMap: Record<string, number | null> = {};
+    for (const t of targets) {
+      targetMap[t.level1] = t.target_margin_pct;
+    }
+
+    // Merge: all level01 values + existing targets (default 0)
+    marginTargetsList.value = level1Texts.map((l1) => ({
+      level1: l1,
+      target_margin_pct: targetMap[l1] ?? 0,
+    }));
+  } catch (e: any) {
+    console.error('[cost] load margin targets failed', e);
+    marginSaveStatus.value = 'Ошибка загрузки';
+  } finally {
+    marginTargetsLoading.value = false;
+  }
+}
+
+async function saveMarginTargets() {
+  marginSaving.value = true;
+  marginSaveStatus.value = '';
+  try {
+    const username = 'system';
+    const result = await $fetch<{ success: boolean; count: number }>(
+      `${apiBase.value}/api/cost/margin-targets`,
+      {
+        method: 'POST',
+        body: {
+          targets: marginTargetsList.value.map((t) => ({
+            level1: t.level1,
+            target_margin_pct: Number(t.target_margin_pct) || 0,
+          })),
+          username,
+        },
+        headers: fetchHeaders.value,
+      }
+    );
+    if (result.success) {
+      marginSaveStatus.value = `Сохранено: ${result.count} таргетов`;
+    } else {
+      marginSaveStatus.value = 'Ошибка сохранения';
+    }
+  } catch (e: any) {
+    console.error('[cost] save margin targets failed', e);
+    marginSaveStatus.value = 'Ошибка: ' + (e?.data?.detail || e?.message || String(e));
+  } finally {
+    marginSaving.value = false;
+  }
+}
 
 // ── Details modal ────────────────────────────────────────────────────────────
 const showDetailsModal = ref(false);
@@ -961,6 +1107,15 @@ function openDetailsInNewTab() {
 
   function escHtml(s) { return String(s).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
+  function hbStyleStr(v: any, field: string): string {
+    const n = Number(v);
+    if (isNaN(n)) return '';
+    const rng = detailsRanges.value[field];
+    if (!rng || rng.max === rng.min) return '';
+    const t = (n - rng.min) / (rng.max - rng.min);
+    return `background-color:rgb(${Math.round(240 - 190 * t)},${Math.round(245 - 145 * t)},${Math.round(255 - 35 * t)});text-align:right;`;
+  }
+
   // Build static table rows (always visible, JS-overridable)
   let tableHtml = '';
   for (let i = 0; i < (hasData ? rows.length : 0); i++) {
@@ -989,8 +1144,20 @@ function openDetailsInNewTab() {
       r['\u041D\u0430\u0446\u0435\u043D\u043A\u0430, %'] ?? '',
       r['\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u044C, %'] ?? '',
     ];
+    const POPUP_NUM_FIELDS = [
+      'Розничная цена, руб.', 'Оптовая цена, руб.', 'Осн. материалы, руб.', 'Вспом. материалы, руб.',
+      'Пошив, руб.', 'Раскрой, руб.', 'Декор, руб.', 'Вязание, руб.',
+      'Себестоимость, руб.', 'Наценка, руб.', 'Наценка, %', 'Маржинальность, %',
+    ];
     tableHtml += '<tr>';
-    for (const c of cells) tableHtml += '<td>' + escHtml(String(c)) + '<\/td>';
+    for (let ci = 0; ci < 5; ci++) tableHtml += '<td>' + escHtml(String(cells[ci])) + '<\/td>';
+    for (let ci = 0; ci < POPUP_NUM_FIELDS.length; ci++) {
+      const field = POPUP_NUM_FIELDS[ci];
+      const rawVal = r[field];
+      const style = hbStyleStr(rawVal, field);
+      const display = ci >= 10 ? (rawVal ?? '') : nf(rawVal);
+      tableHtml += '<td style="' + style + '">' + escHtml(String(display)) + '<\/td>';
+    }
     tableHtml += '<\/tr>';
   }
 
@@ -1003,42 +1170,284 @@ function openDetailsInNewTab() {
     { key: 'task_num', label: '\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F', field: '\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430' },
   ];
 
-  // Build filter HTML with all options pre-populated
-  let filterHtml = '';
+  // Build API-level filter HTML (date range, calc_sign multiselect, load button)
+  let filterHtml = '<div class="filter-section-api" id="filterApi">';
+  filterHtml += '<div class="fi-item"><label>Дата с</label><input type="date" id="f_dateFrom" value="' + escHtml(detailDateFrom.value) + '" class="fi-date" /><\/div>';
+  filterHtml += '<div class="fi-item"><label>Дата по</label><input type="date" id="f_dateTo" value="' + escHtml(detailDateTo.value) + '" class="fi-date" /><\/div>';
+  filterHtml += '<div class="fi-item"><label>Пр.кальк</label><div class="ms-wrap" style="min-width:100px">';
+  filterHtml += '<div class="ms-trigger" onclick="msToggle(\'api_cs\',event)"><span class="ms-label" id="msl_api_cs">—<\/span><span class="ms-arrow">▾<\/span><\/div>';
+  filterHtml += '<div class="ms-drop" id="msd_api_cs"><\/div>';
+  filterHtml += '<div class="ms-tags" id="mst_api_cs"><\/div><\/div><\/div>';
+  filterHtml += '<button id="loadBtn" class="btn-load">Загрузить данные<\/button>';
+  filterHtml += '<\/div>';
+  // Build client-side column filter HTML (multiselect checkboxes, populated by ap())
+  filterHtml += '<div class="filter-section-cols" id="filterCols">';
   for (const ff of filterFields) {
-    const vals = new Set();
-    for (const r of rows) {
-      let v = (r[ff.field] ?? '').toString().trim();
-      if (ff.field === '\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430' && v.includes('T')) v = v.split('T')[0];
-      if (v) vals.add(v);
-    }
-    const sorted = Array.from(vals).sort();
-    filterHtml += '<div class="filter-item" data-key="' + ff.key + '"><label>' + ff.label + '<\/label><select multiple id="sel_' + ff.key + '">';
-    for (const v of sorted) filterHtml += '<option value="' + escHtml(v) + '">' + escHtml(v) + '<\/option>';
-    filterHtml += '<\/select><\/div>';
+    filterHtml += '<div class="fi-item ms-wrap" data-key="' + ff.key + '"><label>' + ff.label + '<\/label>';
+    filterHtml += '<div class="ms-trigger" onclick="msToggle(\'' + ff.key + '\',event)"><span class="ms-label" id="msl_' + ff.key + '">—<\/span><span class="ms-arrow">▾<\/span><\/div>';
+    filterHtml += '<div class="ms-drop" id="msd_' + ff.key + '"><\/div>';
+    filterHtml += '<div class="ms-tags" id="mst_' + ff.key + '"><\/div><\/div>';
   }
-  filterHtml += '<a href="#" class="filter-reset" id="resetFilters">\u0421\u0431\u0440\u043E\u0441\u0438\u0442\u044C<\/a>';
+  filterHtml += '<a href="#" class="filter-reset" id="resetFilters">Сбросить фильтры колонок<\/a>';
+  filterHtml += '<\/div>';
 
   // JS to embed in popup (completely self-contained, no toString() serialization)
-  const popupScript =
-    'try{' +
-    'var R=' + JSON.stringify(rows) + ';' +
-    'var FK=' + JSON.stringify(filterFields.map(f => f.key)) + ';' +
-    'var FF=' + JSON.stringify(filterFields.map(f => f.field)) + ';' +
-    'function gv(r,f){var v=(r[f]||"").toString().trim();if(f==="' + '\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430' + '"&&v.indexOf("T")>=0)v=v.split("T")[0];return v}' +
-    'function nf(v){if(v==null||v==="")return"\u2014";var n=Number(v);if(isNaN(n))return String(v);return n.toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})}' +
-    'function rt(rr){var h="";for(var i=0;i<rr.length;i++){var r=rr[i],dv=gv(r,FF[0]);h+="<tr><td>"+dv+"</td><td>"+(r[FF[1]]||"\u2014")+"</td><td>"+(r[FF[2]]||"\u2014")+"</td><td>"+(r[FF[3]]||"\u2014")+"</td><td>"+(r[FF[4]]||"\u2014")+"</td><td>"+nf(r["\u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041E\u043F\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041E\u0441\u043D. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0412\u0441\u043F\u043E\u043C. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041F\u043E\u0448\u0438\u0432, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0420\u0430\u0441\u043A\u0440\u043E\u0439, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0414\u0435\u043A\u043E\u0440, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0412\u044F\u0437\u0430\u043D\u0438\u0435, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C, \u0440\u0443\u0431."])+"</td><td>"+nf(r["\u041D\u0430\u0446\u0435\u043D\u043A\u0430, \u0440\u0443\u0431."])+"</td><td>"+(r["\u041D\u0430\u0446\u0435\u043D\u043A\u0430, %"]||"")+"</td><td>"+(r["\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u044C, %"]||"")+"</td><\/tr>"}return h}' +
-    'function ap(){' +
-    'var sel={};' +
-    'for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(!e){sel[FK[i]]=[];continue}var v=[];for(var j=0;j<e.options.length;j++){if(e.options[j].selected)v.push(e.options[j].value)}sel[FK[i]]=v}' +
-    'var fd=R.filter(function(r){for(var i=0;i<FK.length;i++){var s=sel[FK[i]];if(s&&s.length){var v=gv(r,FF[i]);if(s.indexOf(v)<0)return false}}return true});' +
-    'document.getElementById("popupBody").innerHTML=rt(fd);' +
-    'document.getElementById("popupCount").textContent="\u041D\u0430\u0439\u0434\u0435\u043D\u043E \u0441\u0442\u0440\u043E\u043A: "+fd.length' +
-    '}' +
-    'ap();' +
-    'for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(e)e.onchange=ap}' +
-    'var rf=document.getElementById("resetFilters");if(rf)rf.onclick=function(){for(var i=0;i<FK.length;i++){var e=document.getElementById("sel_"+FK[i]);if(e)for(var j=0;j<e.options.length;j++)e.options[j].selected=false}ap();return false}' +
-    '}catch(e){console.error("[cost-popup]",e)}';
+  const popupScript = `try{
+var R=${JSON.stringify(rows)};
+var MODEL=${JSON.stringify(detailsModel.value)};
+var API_BASE=${JSON.stringify(apiBase.value)};
+var FK=${JSON.stringify(filterFields.map(f => f.key))};
+var FF=${JSON.stringify(filterFields.map(f => f.field))};
+var NF=${JSON.stringify(DETAILS_NUMERIC_FIELDS)};
+// Compute per-column ranges for heatmap
+var RG={};
+for(var fi=0;fi<NF.length;fi++){
+  var f=NF[fi],mn=Infinity,mx=-Infinity;
+  for(var ri=0;ri<R.length;ri++){
+    var nv=Number(R[ri][f]);
+    if(!isNaN(nv)){if(nv<mn)mn=nv;if(nv>mx)mx=nv;}
+  }
+  RG[f]=mn===Infinity?{m:0,M:0}:{m:mn,M:mx};
+}
+// Multi-select state: for column filters + API calc_sign
+var MS_SEL={};
+for(var mi=0;mi<FK.length;mi++)MS_SEL[FK[mi]]=[];
+var MS_API_CS=[];
+
+function escHtml(s){return String(s).replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function gv(r,f){var v=(r[f]||"").toString().trim();if(f==="\\u0434\\u0430\\u0442\\u0430 \\u0440\\u0430\\u0441\\u0447\\u0435\\u0442\\u0430"&&v.indexOf("T")>=0)v=v.split("T")[0];return v}
+function nf(v){if(v==null||v==="")return"\\u2014";var n=Number(v);if(isNaN(n))return String(v);return n.toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})}
+function hb(v,f){
+  var n=Number(v);if(isNaN(n))return"";
+  var rg=RG[f];if(!rg||rg.M===rg.m)return"";
+  var t=(n-rg.m)/(rg.M-rg.m);
+  return"background-color:rgb("+Math.round(240-190*t)+","+Math.round(245-145*t)+","+Math.round(255-35*t)+");text-align:right;";
+}
+
+// Multiselect dropdown toggle
+function msToggle(k,ev){
+  if(ev)ev.stopPropagation();
+  var d=document.getElementById("msd_"+k);
+  if(!d)return;
+  var isVis=d.style.display==="block";
+  msCloseAll();
+  if(!isVis)d.style.display="block";
+}
+function msCloseAll(){
+  var all=document.querySelectorAll(".ms-drop");
+  for(var i=0;i<all.length;i++)all[i].style.display="none";
+}
+function msUpdateUI(k){
+  var sel=k==="api_cs"?MS_API_CS:(MS_SEL[k]||[]);
+  var lbl=document.getElementById("msl_"+k);
+  var tags=document.getElementById("mst_"+k);
+  if(!lbl)return;
+  if(sel.length===0){
+    lbl.textContent="\\u2014";
+    if(tags)tags.innerHTML="";
+  }else{
+    lbl.textContent=sel.length+" \\u0432\\u044B\\u0431\\u0440\\u0430\\u043D\\u043E";
+    if(tags){
+      var th="";
+      for(var i=0;i<sel.length;i++)th+='<span class="ms-tag">'+escHtml(sel[i])+'<span class="ms-tag-x" data-mskey="'+k+'" data-msval="'+escHtml(sel[i])+'">\\u00D7<\\/span><\\/span>';
+      tags.innerHTML=th;
+    }
+  }
+}
+
+// Build table rows
+function rt(rr){
+  var h="";
+  for(var i=0;i<rr.length;i++){
+    var r=rr[i];
+    h+="<tr>"
+      +"<td>"+gv(r,FF[0])+"<\\/td>"
+      +"<td>"+(r[FF[1]]||"\\u2014")+"<\\/td>"
+      +"<td>"+(r[FF[2]]||"\\u2014")+"<\\/td>"
+      +"<td>"+(r[FF[3]]||"\\u2014")+"<\\/td>"
+      +"<td>"+(r[FF[4]]||"\\u2014")+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."],"\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."],"\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431."],"\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431."],"\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431."],"\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0412\\u044F\\u0437\\u0430\\u043D\\u0438\\u0435, \\u0440\\u0443\\u0431."],"\\u0412\\u044F\\u0437\\u0430\\u043D\\u0438\\u0435, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0412\\u044F\\u0437\\u0430\\u043D\\u0438\\u0435, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u0421\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u044C, \\u0440\\u0443\\u0431."],"\\u0421\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u044C, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0421\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u044C, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, \\u0440\\u0443\\u0431."],"\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, %"],"\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, %")+"\\">"+nf(r["\\u041D\\u0430\\u0446\\u0435\\u043D\\u043A\\u0430, %"])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041C\\u0430\\u0440\\u0436\\u0438\\u043D\\u0430\\u043B\\u044C\\u043D\\u043E\\u0441\u0442\u044C, %"],"\\u041C\\u0430\\u0440\\u0436\\u0438\\u043D\\u0430\\u043B\\u044C\\u043D\\u043E\\u0441\u0442\u044C, %")+"\\">"+nf(r["\\u041C\\u0430\\u0440\\u0436\\u0438\\u043D\\u0430\\u043B\\u044C\\u043D\\u043E\\u0441\u0442\u044C, %"])+"<\\/td>"
+    +"<\\/tr>";
+  }
+  return h;
+}
+
+// Column filter cascade + render
+function ap(){
+  // Read current selections from checkboxes
+  for(var i=0;i<FK.length;i++){
+    var dd=document.getElementById("msd_"+FK[i]);
+    if(dd){
+      var cbs=dd.querySelectorAll("input[type=checkbox]:checked");
+      MS_SEL[FK[i]]=[];
+      for(var ci=0;ci<cbs.length;ci++)MS_SEL[FK[i]].push(cbs[ci].value);
+    }
+  }
+  var sel={};for(var i=0;i<FK.length;i++)sel[FK[i]]=MS_SEL[FK[i]];
+  // Cascade: restrict each filter's options based on higher-level selections only
+  for(var fi=0;fi<FK.length;fi++){
+    var fd=R;
+    for(var j=0;j<fi;j++){
+      var s=sel[FK[j]];
+      if(s&&s.length)fd=fd.filter(function(rr){var vv=gv(rr,FF[j]);return s.indexOf(vv)>=0});
+    }
+    // Rebuild checkbox panel
+    var dd=document.getElementById("msd_"+FK[fi]);
+    if(dd){
+      var opts=[];var seen={};
+      for(var ri=0;ri<fd.length;ri++){
+        var vv=gv(fd[ri],FF[fi]);
+        if(vv&&!seen[vv]){seen[vv]=true;opts.push(vv);}
+      }
+      opts.sort();
+      var curSel=MS_SEL[FK[fi]]||[];
+      var h="";
+      for(var oi=0;oi<opts.length;oi++){
+        var checked=curSel.indexOf(opts[oi])>=0?" checked":"";
+        h+='<label><input type="checkbox" value="'+escHtml(opts[oi])+'"'+checked+">"+escHtml(opts[oi])+"<\\/label>";
+      }
+      dd.innerHTML=h;
+      // Clean up MS_SEL — remove values no longer in available options
+      var valid={};
+      var newCbs=dd.querySelectorAll("input[type=checkbox]");
+      for(var nc=0;nc<newCbs.length;nc++)valid[newCbs[nc].value]=true;
+      MS_SEL[FK[fi]]=MS_SEL[FK[fi]].filter(function(x){return valid[x]});
+    }
+  }
+  // Filter all data by every selection
+  var fd2=R;
+  for(var fi=0;fi<FK.length;fi++){
+    var s=sel[FK[fi]];
+    if(s&&s.length)fd2=fd2.filter(function(rr){var vv=gv(rr,FF[fi]);return s.indexOf(vv)>=0});
+  }
+  document.getElementById("popupBody").innerHTML=rt(fd2);
+  document.getElementById("popupCount").textContent="\\u041D\\u0430\\u0439\\u0434\\u0435\\u043D\\u043E \\u0441\\u0442\\u0440\\u043E\\u043A: "+fd2.length;
+  // Update UI labels/tags for all filters
+  for(var ui=0;ui<FK.length;ui++)msUpdateUI(FK[ui]);
+}
+
+// Populate API calc_sign checkboxes (static options)
+(function(){
+  var dd=document.getElementById("msd_api_cs");
+  if(dd){
+    var csOpts=["\\u041F\\u041A\\u041F\\u0421\\u0421","\\u041A\\u041F\\u0421\\u0421","\\u041F\\u0424\\u041A\\u0421\\u0421","\\u0424\\u041A\\u0421\\u0421"];
+    var h="";
+    for(var oi=0;oi<csOpts.length;oi++)h+='<label><input type="checkbox" value="'+csOpts[oi]+'">'+csOpts[oi]+"<\\/label>";
+    dd.innerHTML=h;
+  }
+})();
+
+// Delegate change on column filter checkboxes
+document.getElementById("filterCols").addEventListener("change",function(e){
+  if(e.target&&e.target.type==="checkbox"){
+    var dd=e.target.closest(".ms-drop");
+    if(!dd)return;
+    var k=dd.id.replace("msd_","");
+    var cbs=dd.querySelectorAll("input[type=checkbox]:checked");
+    MS_SEL[k]=[];
+    for(var ci=0;ci<cbs.length;ci++)MS_SEL[k].push(cbs[ci].value);
+    msUpdateUI(k);
+    ap();
+  }
+});
+
+// Delegate change on API calc_sign checkboxes
+document.getElementById("filterApi").addEventListener("change",function(e){
+  if(e.target&&e.target.type==="checkbox"){
+    var dd=e.target.closest(".ms-drop");
+    if(!dd||dd.id!=="msd_api_cs")return;
+    var cbs=dd.querySelectorAll("input[type=checkbox]:checked");
+    MS_API_CS=[];
+    for(var ci=0;ci<cbs.length;ci++)MS_API_CS.push(cbs[ci].value);
+    msUpdateUI("api_cs");
+  }
+});
+
+// Tag remove: delegate click on × buttons
+document.addEventListener("click",function(e){
+  var x=e.target.closest(".ms-tag-x");
+  if(x){
+    var k=x.getAttribute("data-mskey");
+    var v=x.getAttribute("data-msval");
+    if(k==="api_cs"){
+      MS_API_CS=MS_API_CS.filter(function(xx){return xx!==v});
+      var dd=document.getElementById("msd_api_cs");
+      if(dd){var cbs=dd.querySelectorAll("input[type=checkbox]");for(var ci=0;ci<cbs.length;ci++){if(cbs[ci].value===v)cbs[ci].checked=false;}}
+      msUpdateUI("api_cs");
+    }else{
+      MS_SEL[k]=MS_SEL[k].filter(function(xx){return xx!==v});
+      var dd=document.getElementById("msd_"+k);
+      if(dd){var cbs=dd.querySelectorAll("input[type=checkbox]");for(var ci=0;ci<cbs.length;ci++){if(cbs[ci].value===v)cbs[ci].checked=false;}}
+      msUpdateUI(k);
+      ap();
+    }
+  }
+});
+
+// Close dropdowns on outside click (delegated)
+document.addEventListener("click",function(e){
+  if(!e.target.closest||!e.target.closest(".ms-wrap"))msCloseAll();
+});
+
+// Load fresh data from API
+async function loadData(){
+  try{
+    var df=document.getElementById("f_dateFrom").value;
+    var dt=document.getElementById("f_dateTo").value;
+    var cs=MS_API_CS;
+    var body={model:MODEL};
+    if(df)body.date_from=df;
+    if(dt)body.date_to=dt;
+    if(cs.length)body.calc_sign=cs;
+    var resp=await fetch(API_BASE+"/api/cost/details",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!resp.ok)throw new Error("HTTP "+resp.status);
+    var json=await resp.json();
+    R=json.data||[];
+    // Recompute heatmap ranges
+    for(var fi=0;fi<NF.length;fi++){
+      var f=NF[fi],mn=Infinity,mx=-Infinity;
+      for(var ri=0;ri<R.length;ri++){var nv=Number(R[ri][f]);if(!isNaN(nv)){if(nv<mn)mn=nv;if(nv>mx)mx=nv;}}
+      RG[f]=mn===Infinity?{m:0,M:0}:{m:mn,M:mx};
+    }
+    // Reset all selections
+    for(var mi=0;mi<FK.length;mi++)MS_SEL[FK[mi]]=[];
+    MS_API_CS=[];
+    for(var mi=0;mi<FK.length;mi++){var dd=document.getElementById("msd_"+FK[mi]);if(dd){var cbs=dd.querySelectorAll("input[type=checkbox]");for(var ci=0;ci<cbs.length;ci++)cbs[ci].checked=false;}}
+    var dd2=document.getElementById("msd_api_cs");if(dd2){var cbs2=dd2.querySelectorAll("input[type=checkbox]");for(var ci=0;ci<cbs2.length;ci++)cbs2[ci].checked=false;}
+    ap();
+    msUpdateUI("api_cs");
+  }catch(e){
+    console.error("[cost-popup] load failed",e);
+    alert("\\u041E\\u0448\\u0438\\u0431\\u043A\\u0430 \\u0437\\u0430\\u0433\\u0440\\u0443\\u0437\\u043A\\u0438 \\u0434\\u0430\\u043D\\u043D\\u044B\\u0445");
+  }
+}
+
+// Initial render
+ap();
+
+// Reset handler
+document.getElementById("resetFilters").onclick=function(){
+  for(var mi=0;mi<FK.length;mi++)MS_SEL[FK[mi]]=[];
+  for(var mi=0;mi<FK.length;mi++){var dd=document.getElementById("msd_"+FK[mi]);if(dd){var cbs=dd.querySelectorAll("input[type=checkbox]");for(var ci=0;ci<cbs.length;ci++)cbs[ci].checked=false;}}
+  for(var ui=0;ui<FK.length;ui++)msUpdateUI(FK[ui]);
+  ap();
+  return false;
+};
+
+// Load button
+document.getElementById("loadBtn").onclick=loadData;
+}catch(e){console.error("[cost-popup]",e)}`;
 
   const html =
     '<!DOCTYPE html>' +
@@ -1050,12 +1459,31 @@ function openDetailsInNewTab() {
     '.container{max-width:100%;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.1)}' +
     '.header{padding:16px 24px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center}' +
     '.header h1{font-size:18px}' +
-    '.filters{padding:12px 24px;border-bottom:1px solid #eee;display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;background:#fafafa}' +
-    '.filter-item{display:flex;flex-direction:column;gap:2px}' +
-    '.filter-item label{font-size:10px;color:#888;font-weight:600}' +
-    '.filter-item select{min-width:120px;max-width:180px;height:60px;border:1px solid #ddd;border-radius:4px;background:#fff;font-size:10px;padding:2px}' +
-    '.filter-reset{font-size:12px;color:#888;padding-top:14px;cursor:pointer;white-space:nowrap;text-decoration:none}' +
+    '.filters{padding:0;border-bottom:1px solid #eee}' +
+    '.filter-section-api{padding:10px 24px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;background:#f0f4ff;border-bottom:1px solid #dde4f0}' +
+    '.filter-section-cols{padding:10px 24px;display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;background:#fafafa}' +
+    '.fi-item{display:flex;flex-direction:column;gap:2px}' +
+    '.fi-item label{font-size:10px;color:#555;font-weight:600}' +
+    '.fi-item select{min-width:120px;max-width:180px;border:1px solid #ddd;border-radius:4px;background:#fff;font-size:10px;padding:2px 4px;height:24px}' +
+    'input.fi-date{height:24px;border:1px solid #ddd;border-radius:4px;padding:2px 6px;font-size:11px;background:#fff}' +
+    'select.fi-cs{min-width:100px;height:24px}' +
+    '.btn-load{height:28px;padding:0 14px;border:1px solid #4a6cf7;border-radius:4px;background:#4a6cf7;color:#fff;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}' +
+    '.btn-load:hover{background:#3b5de7}' +
+    '.filter-reset{font-size:11px;color:#888;padding-top:8px;cursor:pointer;white-space:nowrap;text-decoration:none}' +
     '.filter-reset:hover{color:#333}' +
+    '.ms-wrap{position:relative;display:inline-block;min-width:120px;max-width:180px}' +
+    '.ms-trigger{display:flex;align-items:center;justify-content:space-between;border:1px solid #ddd;border-radius:4px;background:#fff;font-size:10px;padding:3px 6px;height:24px;cursor:pointer;gap:4px;user-select:none}' +
+    '.ms-trigger:hover{border-color:#aaa}' +
+    '.ms-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#555}' +
+    '.ms-arrow{font-size:8px;color:#999}' +
+    '.ms-drop{display:none;position:absolute;top:100%;left:0;right:0;z-index:999;background:#fff;border:1px solid #ddd;border-radius:4px;max-height:200px;overflow-y:auto;margin-top:2px;box-shadow:0 2px 8px rgba(0,0,0,.12)}' +
+    '.ms-drop label{display:block;padding:4px 8px;font-size:11px;cursor:pointer;white-space:nowrap}' +
+    '.ms-drop label:hover{background:#f0f4ff}' +
+    '.ms-drop input[type=checkbox]{margin-right:6px}' +
+    '.ms-tags{display:flex;flex-wrap:wrap;gap:2px;margin-top:2px}' +
+    '.ms-tag{display:inline-flex;align-items:center;gap:2px;background:#e8eefb;border-radius:3px;padding:1px 5px;font-size:9px;color:#333;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+    '.ms-tag-x{margin-left:2px;cursor:pointer;font-size:11px;color:#888;line-height:1}' +
+    '.ms-tag-x:hover{color:#c00}' +
     '.content{padding:16px 24px;overflow-x:auto}' +
     'table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}' +
     'th{background:#f8f9fa;border-bottom:2px solid #dee2e6;padding:8px;text-align:center;font-weight:700;font-size:11px;position:sticky;top:0}' +
@@ -1152,6 +1580,17 @@ async function loadPriceLevels() {
   }
 }
 
+/** Derive RUB→USD exchange rate from a row. Tries wholesale first, then retail. */
+function _deriveRate(row: any): number {
+  const rub = Number(row["avg_Отпускная цена по уровню, руб"] || 0);
+  const usd = Number(row["avg_Отпускная цена по уровню, USD."] || 0);
+  if (rub > 0 && usd > 0) return rub / usd;
+  const rubR = Number(row["avg_Розничная цена по уровню, руб."] || 0);
+  const usdR = Number(row["avg_Розничная цена по уровню, USD."] || 0);
+  if (rubR > 0 && usdR > 0) return rubR / usdR;
+  return 0;
+}
+
 const onPriceLevelChange = async (absoluteIdx: number, levelName: string) => {
   if (!levelName) return;
   const level = priceLevels.value.find((l) => l.name === levelName);
@@ -1159,9 +1598,24 @@ const onPriceLevelChange = async (absoluteIdx: number, levelName: string) => {
   const row = allAggregated.value[absoluteIdx];
   if (!row) return;
 
+  // Derive exchange rate RUB→USD for computing USD prices.
+  // Try: current row's wholesale → retail → any row in dataset → hard default.
+  let rate = _deriveRate(row);
+  if (rate === 0) {
+    for (const r of allAggregated.value) {
+      rate = _deriveRate(r);
+      if (rate > 0) break;
+    }
+  }
+  if (rate === 0) rate = 92; // last-resort fallback
+
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+
   row["Уровень цен"] = levelName;
   row["avg_Розничная цена по уровню, руб."] = level.price_type3;
   row["avg_Отпускная цена по уровню, руб"] = level.price_type1;
+  row["avg_Розничная цена по уровню, USD."] = r2(level.price_type3 / rate);
+  row["avg_Отпускная цена по уровню, USD."] = r2(level.price_type1 / rate);
 
   changedRows.add(absoluteIdx);
 
@@ -1256,6 +1710,33 @@ const calc = (row: any, useUsd: boolean = false) => {
   return { markupRub: markup, markupPct, marginPct };
 };
 
+// ── Margin deviation helpers ────────────────────────────────────────────────
+
+const marginDeviation = (row: any, useUsd: boolean = false): number | null => {
+  const target = row.target_margin_pct;
+  if (target === null || target === undefined) return null;
+  const { marginPct } = calc(row, useUsd);
+  return marginPct - target;
+};
+
+const marginDevText = (row: any, useUsd: boolean = false): string => {
+  const dev = marginDeviation(row, useUsd);
+  if (dev === null) return '—';
+  return (dev >= 0 ? '+' : '') + dev.toFixed(1) + '%';
+};
+
+const marginDevClass = (row: any, useUsd: boolean = false): Record<string, boolean> => {
+  const dev = marginDeviation(row, useUsd);
+  if (dev === null) return {};
+  return { 'delta-pos': dev >= 0, 'delta-neg': dev < 0 };
+};
+
+const marginRowClass = (row: any): Record<string, boolean> => {
+  const dev = marginDeviation(row, showUSD.value);
+  if (dev === null) return {};
+  return { 'row-margin-ok': dev >= 0, 'row-margin-bad': dev < 0 };
+};
+
 // ── Excel export ────────────────────────────────────────────────────────────
 
 const headers = [
@@ -1268,7 +1749,7 @@ const headers = [
   "Декоры (руб)", "Декоры ($)",
   "Вязание (руб)", "Вязание ($)",
   "Себест. (руб)", "Себест. ($)",
-  "Наценка (руб)", "Наценка (%)", "Маржа (%)",
+  "Наценка (руб)", "Наценка (%)", "Маржа (%)", "Откл. маржи (%)",
 ];
 
 const exportToExcel = () => {
@@ -1312,6 +1793,7 @@ const exportToExcel = () => {
       fmt(c.markupRub),
       `${c.markupPct.toFixed(1)}%`,
       `${c.marginPct.toFixed(1)}%`,
+      marginDevText(row),
     ];
     html += "<tr>" + cells.map((v) => `<td>${v}</td>`).join("") + "</tr>";
   }
@@ -1370,6 +1852,62 @@ watch(currentPage, () => {
 onMounted(async () => {
   await Promise.all([loadFilters(), loadPriceLevels(), loadCacheStatus()]);
 });
+
+// ── Heatmap (details table conditional formatting) ─────────────────────────
+
+const DETAILS_NUMERIC_FIELDS = [
+  'Розничная цена, руб.',
+  'Оптовая цена, руб.',
+  'Осн. материалы, руб.',
+  'Вспом. материалы, руб.',
+  'Пошив, руб.',
+  'Раскрой, руб.',
+  'Декор, руб.',
+  'Вязание, руб.',
+  'Себестоимость, руб.',
+  'Наценка, руб.',
+  'Наценка, %',
+  'Маржинальность, %',
+];
+
+const detailsRanges = computed(() => {
+  const ranges: Record<string, { min: number; max: number }> = {};
+  const data = detailsFilteredData.value;
+  if (!data || data.length === 0) return ranges;
+
+  for (const field of DETAILS_NUMERIC_FIELDS) {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const row of data) {
+      const v = Number(row[field]);
+      if (!isNaN(v)) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    }
+    ranges[field] = min === Infinity
+      ? { min: 0, max: 0 }
+      : { min, max };
+  }
+  return ranges;
+});
+
+function heatBg(value: any, field: string): { backgroundColor?: string } {
+  const n = Number(value);
+  if (isNaN(n)) return {};
+
+  const range = detailsRanges.value[field];
+  if (!range || range.max === range.min) return {};
+
+  // Blue gradient: white (low) → blue (high)
+  // rgb(240, 245, 255) → rgb(50, 100, 220)
+  const t = (n - range.min) / (range.max - range.min);
+  const r = Math.round(240 - 190 * t);
+  const g = Math.round(245 - 145 * t);
+  const b = Math.round(255 - 35 * t);
+
+  return { backgroundColor: `rgb(${r}, ${g}, ${b})` };
+}
 </script>
 
 <style scoped>
@@ -1699,6 +2237,20 @@ onMounted(async () => {
 .col-filter-reset:hover {
   color: var(--accent);
   text-decoration: underline;
+}
+
+/* Row-level margin deviation conditional formatting */
+.row-margin-ok {
+  background-color: color-mix(in srgb, var(--pos, #16a34a) 8%, transparent) !important;
+}
+.row-margin-ok:hover {
+  background-color: color-mix(in srgb, var(--pos, #16a34a) 14%, transparent) !important;
+}
+.row-margin-bad {
+  background-color: color-mix(in srgb, var(--neg, #dc2626) 8%, transparent) !important;
+}
+.row-margin-bad:hover {
+  background-color: color-mix(in srgb, var(--neg, #dc2626) 14%, transparent) !important;
 }
 
 /* Cache status */

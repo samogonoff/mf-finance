@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,18 +27,29 @@ _cache_task: asyncio.Task | None = None
 
 
 async def _cache_worker() -> None:
-    """Initial cache fill + periodic refresh every 3 hours."""
+    """Initial cache fill + periodic refresh every 3 hours.
+
+    Full refresh (all rows) once per 24 hours, partial refresh (last 2 months)
+    on the remaining 3-hourly ticks.
+    """
+    last_full: datetime | None = None
     try:
         status = await get_cache_status()
         if status is None or status["row_count"] == 0:
             await load_cost_data_to_cache()
+            last_full = datetime.now(timezone.utc)
     except Exception:
         pass
 
     while True:
         await asyncio.sleep(3 * 3600)
         try:
-            await load_cost_data_to_cache()
+            now = datetime.now(timezone.utc)
+            if last_full is None or (now - last_full).total_seconds() >= 86400:
+                await load_cost_data_to_cache()
+                last_full = now
+            else:
+                await load_cost_data_to_cache(partial_months=2)
         except Exception:
             pass
 
