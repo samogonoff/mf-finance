@@ -8,8 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app import mocks
-from app.db import get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, load_cost_data_to_cache, pool, save_margin_targets
-from app.notify import notify_admins
+from app.db import (apply_pending_changes, clear_pending_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, load_cost_data_to_cache, pool, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch)
 
 router = APIRouter()
 
@@ -244,6 +243,9 @@ async def get_aggregated(payload: dict) -> dict:
         where_parts.append(f'"дата расчета" <= ${len(params) + 1}')
         params.append(date.fromisoformat(payload["date_to"]))
 
+    if payload.get("no_wholesale_only"):
+        where_parts.append('("Отпускная цена по уровню, руб" IS NULL OR "Отпускная цена по уровню, руб" = 0)')
+
     for key, col in MULTI_FILTER_COLUMNS.items():
         values = payload.get(key) or []
         if values and "all" not in values:
@@ -398,157 +400,152 @@ def get_price_levels() -> list[dict]:
 async def save_price_changes(payload: dict) -> dict:
     username = "system"
 
+    calc_sign = payload.get("calc_sign") or payload.get("Признак калькуляции")
+    if calc_sign == "ФКСС":
+        raise HTTPException(400, "Уровень цен запрещен для редактирования для признака калькуляции 'ФКСС'")
+
+    # Build full row data for upsert (pending table stores full snapshot)
+    row_data = {
+        "Бренд-менеджер": payload.get("brand_manager"),
+        "Модель": payload.get("model"),
+        "Артикул": payload.get("articul"),
+        "Признак калькуляции": calc_sign,
+        "дата расчета": payload.get("date"),
+        "Уровень цен": payload.get("price_level"),
+        "Страна пр-ва": payload.get("country"),
+        "Семья": payload.get("family"),
+        "Сезон": payload.get("season"),
+        "Level 01": payload.get("level01"),
+        "Level 02": payload.get("level02"),
+        "Level 03": payload.get("level03"),
+        "Level 04": payload.get("level04"),
+        "Level 05": payload.get("level05"),
+        "Наименование модели": payload.get("model_name"),
+        "Номер задания производства": payload.get("task_number"),
+        "PLAN_ID": payload.get("plan_id"),
+        "Розничная цена по уровню, руб.": payload.get("retail_rub"),
+        "Отпускная цена по уровню, руб": payload.get("wholesale_rub"),
+        "Розничная цена по уровню, USD.": payload.get("retail_usd"),
+        "Отпускная цена по уровню, USD.": payload.get("wholesale_usd"),
+        "Основные материалы, руб.": payload.get("materials_rub"),
+        "Основные материалы, USD.": payload.get("materials_usd"),
+        "Вспомогательные материалы, руб.": payload.get("aux_materials_rub"),
+        "Вспомогательные материалы, USD.": payload.get("aux_materials_usd"),
+        "Пошив, руб.": payload.get("sewing_rub"),
+        "Пошив, USD.": payload.get("sewing_usd"),
+        "Раскрой, руб.": payload.get("cutting_rub"),
+        "Раскрой, USD.": payload.get("cutting_usd"),
+        "Декоры, руб.": payload.get("decors_rub"),
+        "Декоры, USD.": payload.get("decors_usd"),
+        "Вязание, руб.": payload.get("knitting_rub"),
+        "Вязание, USD.": payload.get("knitting_usd"),
+        "Себестоимость, руб.": payload.get("cost_rub"),
+        "Себестоимость, USD.": payload.get("cost_usd"),
+    }
+
     if _is_mock():
-        async with pool().acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO cost_price_changes_audit
-                    (model, articul, price_level, retail_rub, wholesale_rub, username)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                """,
-                payload.get("model"),
-                payload.get("articul"),
-                payload.get("price_level"),
-                payload.get("retail_rub"),
-                payload.get("wholesale_rub"),
-                username,
-            )
-        return {"success": True, "mock": True}
+        pending_id = await upsert_pending_change(row_data, username)
+        return {"success": True, "mock": True, "pending_id": pending_id}
 
-    olap = get_olap_conn()
-    cursor = olap.cursor()
-    try:
-        cursor.execute(
-            """
-            INSERT INTO CostHistory_Changes
-                (Модель, Артикул, Уровень_цен, Розничная_цена_руб, Отпускная_цена_руб, changed_at, Пользователь)
-            VALUES (?, ?, ?, ?, ?, GETDATE(), ?)
-            """,
-            (
-                payload.get("model"),
-                payload.get("articul"),
-                payload.get("price_level"),
-                payload.get("retail_rub"),
-                payload.get("wholesale_rub"),
-                username,
-            ),
-        )
-        olap.commit()
-    finally:
-        olap.close()
+    pending_id = await upsert_pending_change(row_data, username)
+    return {"success": True, "pending_id": pending_id}
 
-    async with pool().acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO cost_price_changes_audit
-                (model, articul, price_level, retail_rub, wholesale_rub, username)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            """,
-            payload.get("model"),
-            payload.get("articul"),
-            payload.get("price_level"),
-            payload.get("retail_rub"),
-            payload.get("wholesale_rub"),
-            username,
-        )
 
-    await notify_admins(
-        title="Изменение цены (Себестоимость)",
-        message=f"{username}: модель {payload.get('model')}, артикул {payload.get('articul')}",
-        type="info",
-        object_type="cost_price_set",
-        data={"model": payload.get("model"), "articul": payload.get("articul"), "url": "/cost"},
-    )
-    return {"success": True}
+def _row_data_from_payload(c: dict) -> dict:
+    """Build full row snapshot dict from a change payload (for upsert into pending)."""
+    calc_sign = c.get("calc_sign") or c.get("Признак калькуляции")
+    return {
+        "Бренд-менеджер": c.get("brand_manager"),
+        "Модель": c.get("model"),
+        "Артикул": c.get("articul"),
+        "Признак калькуляции": calc_sign,
+        "дата расчета": c.get("date"),
+        "Уровень цен": c.get("price_level"),
+        "Страна пр-ва": c.get("country"),
+        "Семья": c.get("family"),
+        "Сезон": c.get("season"),
+        "Level 01": c.get("level01"),
+        "Level 02": c.get("level02"),
+        "Level 03": c.get("level03"),
+        "Level 04": c.get("level04"),
+        "Level 05": c.get("level05"),
+        "Наименование модели": c.get("model_name"),
+        "Номер задания производства": c.get("task_number"),
+        "PLAN_ID": c.get("plan_id"),
+        "Розничная цена по уровню, руб.": c.get("retail_rub"),
+        "Отпускная цена по уровню, руб": c.get("wholesale_rub"),
+        "Розничная цена по уровню, USD.": c.get("retail_usd"),
+        "Отпускная цена по уровню, USD.": c.get("wholesale_usd"),
+        "Основные материалы, руб.": c.get("materials_rub"),
+        "Основные материалы, USD.": c.get("materials_usd"),
+        "Вспомогательные материалы, руб.": c.get("aux_materials_rub"),
+        "Вспомогательные материалы, USD.": c.get("aux_materials_usd"),
+        "Пошив, руб.": c.get("sewing_rub"),
+        "Пошив, USD.": c.get("sewing_usd"),
+        "Раскрой, руб.": c.get("cutting_rub"),
+        "Раскрой, USD.": c.get("cutting_usd"),
+        "Декоры, руб.": c.get("decors_rub"),
+        "Декоры, USD.": c.get("decors_usd"),
+        "Вязание, руб.": c.get("knitting_rub"),
+        "Вязание, USD.": c.get("knitting_usd"),
+        "Себестоимость, руб.": c.get("cost_rub"),
+        "Себестоимость, USD.": c.get("cost_usd"),
+    }
 
 
 @router.post("/save-batch")
 async def save_batch_changes(payload: dict) -> dict:
     username = "system"
     changes = payload.get("changes") or []
-    if not changes:
-        return {"success": False, "error": "No changes to save", "count": 0}
+
+    filtered = [
+        c for c in changes
+        if (c.get("calc_sign") or c.get("Признак калькуляции")) != "ФКСС"
+    ]
+    if not filtered:
+        return {"success": False, "error": "Нет изменений для сохранения после фильтрации ФКСС", "count": 0}
+
+    row_data_list = [_row_data_from_payload(c) for c in filtered]
 
     if _is_mock():
-        async with pool().acquire() as conn:
-            await conn.executemany(
-                """
-                INSERT INTO cost_price_changes_audit
-                    (model, articul, price_level, retail_rub, wholesale_rub, username)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                """,
-                [
-                    (
-                        c.get("model"),
-                        c.get("articul"),
-                        c.get("price_level"),
-                        c.get("retail_rub"),
-                        c.get("wholesale_rub"),
-                        username,
-                    )
-                    for c in changes
-                ],
-            )
-        await notify_admins(
-            title=f"Изменение цен (Себестоимость, mock): {len(changes)} строк",
-            message=f"{username} сохранил {len(changes)} изменений (mock-режим)",
-            type="info",
-            object_type="cost_price_set",
-            data={"count": len(changes), "url": "/cost"},
-        )
-        return {"success": True, "count": len(changes), "mock": True}
+        pending_ids = await upsert_pending_changes_batch(row_data_list, username)
+        return {"success": True, "count": len(pending_ids), "mock": True, "pending_ids": pending_ids}
 
-    olap = get_olap_conn()
-    cursor = olap.cursor()
-    try:
-        for c in changes:
-            cursor.execute(
-                """
-                INSERT INTO [FinSandBox].[dbo].[CostHistory_Changes]
-                    (Модель, Артикул, Уровень_цен, Розничная_цена_руб, Отпускная_цена_руб, changed_at, Пользователь)
-                VALUES (?, ?, ?, ?, ?, GETDATE(), ?)
-                """,
-                (
-                    c.get("model"),
-                    c.get("articul"),
-                    c.get("price_level"),
-                    c.get("retail_rub"),
-                    c.get("wholesale_rub"),
-                    username,
-                ),
-            )
-        olap.commit()
-    finally:
-        olap.close()
+    pending_ids = await upsert_pending_changes_batch(row_data_list, username)
+    return {"success": True, "count": len(pending_ids), "pending_ids": pending_ids}
 
-    async with pool().acquire() as conn:
-        await conn.executemany(
-            """
-            INSERT INTO cost_price_changes_audit
-                (model, articul, price_level, retail_rub, wholesale_rub, username)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            """,
-            [
-                (
-                    c.get("model"),
-                    c.get("articul"),
-                    c.get("price_level"),
-                    c.get("retail_rub"),
-                    c.get("wholesale_rub"),
-                    username,
-                )
-                for c in changes
-            ],
-        )
 
-    await notify_admins(
-        title=f"Изменение цен (Себестоимость): {len(changes)} строк",
-        message=f"{username} сохранил {len(changes)} изменений",
-        type="info",
-        object_type="cost_price_set",
-        data={"count": len(changes), "url": "/cost"},
-    )
-    return {"success": True, "count": len(changes)}
+# ── Price approval workflow ────────────────────────────────────────────────────
+
+
+@router.get("/pending-changes")
+async def list_pending_changes() -> dict:
+    """Return all pending changes."""
+    return {"data": await get_pending_changes()}
+
+
+@router.post("/pending-changes/apply")
+async def apply_changes(payload: dict) -> dict:
+    """Apply (approve) a batch of pending changes.
+
+    Body: { "ids": [1, 2, 3] }
+    - Записывает выбранные строки в OLAP CostHistory_Changes (с 4 новыми полями)
+    - Дублирует в локальный audit
+    - Удаляет строки из cost_price_pending
+    """
+    ids = payload.get("ids") or []
+    if not ids:
+        raise HTTPException(400, "ids list is required")
+    reviewed_by = (payload.get("reviewed_by") or "system").strip()
+    count = await apply_pending_changes(ids, reviewed_by)
+    return {"success": True, "applied": count}
+
+
+@router.post("/pending-changes/clear")
+async def clear_changes() -> dict:
+    """Delete ALL rows from cost_price_pending."""
+    count = await clear_pending_changes()
+    return {"success": True, "deleted": count}
 
 
 # ── Margin targets ──────────────────────────────────────────────────────────
