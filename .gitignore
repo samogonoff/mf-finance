@@ -23,6 +23,9 @@ go/vendor/
 /var
 /go/.tmp
 
+# OpenCode
+.sisyphus/
+
 # Python
 __pycache__/
 *.pyc
