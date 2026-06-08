@@ -120,6 +120,7 @@ def get_dwh_conn() -> pyodbc.Connection:
 # Колонки НЕ текстового типа — их значения передаём как есть
 _CACHE_NON_TEXT: set[str] = {
     "дата расчета",
+    "Курс на дату расчета",
     "Розничная цена по уровню, руб.",
     "Отпускная цена по уровню, руб",
     "Розничная цена по уровню, USD.",
@@ -139,6 +140,7 @@ CACHE_COLUMNS: list[str] = [
     "Артикул",
     "Признак калькуляции",
     "дата расчета",
+    "Курс на дату расчета",
     "Уровень цен",
     "Страна пр-ва",
     "Семья",
@@ -351,3 +353,209 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
         err_msg = traceback.format_exc()
         await set_cache_error(err_msg)
         return {"success": False, "error": err_msg}
+
+
+# ── Price approval workflow ────────────────────────────────────────────────────
+
+# Колонки cost_price_pending, соответствующие CACHE_COLUMNS (для построения SQL)
+_PENDING_CACHE_COLS: list[str] = [
+    "Бренд-менеджер",
+    "Модель",
+    "Артикул",
+    "Признак калькуляции",
+    "дата расчета",
+    "Курс на дату расчета",
+    "Уровень цен",
+    "Страна пр-ва",
+    "Семья",
+    "Сезон",
+    "Level 01", "Level 02", "Level 03", "Level 04", "Level 05",
+    "Наименование модели",
+    "Номер задания производства",
+    "PLAN_ID",
+    "Розничная цена по уровню, руб.",
+    "Отпускная цена по уровню, руб",
+    "Розничная цена по уровню, USD.",
+    "Отпускная цена по уровню, USD.",
+    "Основные материалы, руб.", "Основные материалы, USD.",
+    "Вспомогательные материалы, руб.", "Вспомогательные материалы, USD.",
+    "Пошив, руб.", "Пошив, USD.",
+    "Раскрой, руб.", "Раскрой, USD.",
+    "Декоры, руб.", "Декоры, USD.",
+    "Вязание, руб.", "Вязание, USD.",
+    "Себестоимость, руб.", "Себестоимость, USD.",
+]
+
+# Псевдонимы колонок для SQL (экранированные кавычки)
+_PENDING_COLS_QUOTED = [f'"{c}"' for c in _PENDING_CACHE_COLS]
+
+# placeholders $1, $2, ..., $N для вставки
+_PENDING_PLACEHOLDERS = [f"${i+1}" for i in range(len(_PENDING_CACHE_COLS))]
+
+# Колонки для ON CONFLICT DO UPDATE (все, кроме Модель, Артикул, PLAN_ID, Признак калькуляции)
+_PENDING_UPDATE_COLS = [
+    c for c in _PENDING_CACHE_COLS
+    if c not in ("Модель", "Артикул", "PLAN_ID", "Признак калькуляции")
+]
+
+
+async def upsert_pending_change(row_data: dict, username: str) -> int:
+    """Вставка или обновление (upsert) строки в cost_price_pending.
+
+    Уникальный ключ: (Модель, Артикул, PLAN_ID, Признак калькуляции).
+    При повторном сохранении — обновляются все поля.
+    """
+    async with pool().acquire() as conn:
+        # Извлекаем значения из row_data для всех _PENDING_CACHE_COLS
+        values = [row_data.get(c) for c in _PENDING_CACHE_COLS]
+        # Добавляем служебные поля: id (serial, not needed), username, timestamp (default now)
+        # username идёт после cache-колонок
+
+        set_expr = ", ".join(
+            f'"{c}" = EXCLUDED."{c}"' for c in _PENDING_UPDATE_COLS
+        )
+        if set_expr:
+            set_expr += ", "
+
+        row = await conn.fetchrow(
+            f"""
+            INSERT INTO cost_price_pending
+                ({", ".join(_PENDING_COLS_QUOTED)}, username)
+            VALUES ({", ".join(_PENDING_PLACEHOLDERS)}, ${len(_PENDING_CACHE_COLS) + 1})
+            ON CONFLICT ("Модель", "Артикул", "PLAN_ID", "Признак калькуляции") DO UPDATE SET
+                {set_expr}
+                username = EXCLUDED.username,
+                reviewed_by = NULL,
+                reviewed_at = NULL,
+                review_comment = NULL
+            RETURNING id
+            """,
+            *values,
+            username,
+        )
+        return row["id"]
+
+
+async def upsert_pending_changes_batch(changes: list[dict], username: str) -> list[int]:
+    """Upsert нескольких строк в cost_price_pending. Возвращает список id."""
+    ids: list[int] = []
+    async with pool().acquire() as conn:
+        for c in changes:
+            values = [c.get(col) for col in _PENDING_CACHE_COLS]
+
+            set_expr = ", ".join(
+                f'"{col}" = EXCLUDED."{col}"' for col in _PENDING_UPDATE_COLS
+            )
+            if set_expr:
+                set_expr += ", "
+
+            row = await conn.fetchrow(
+                f"""
+                INSERT INTO cost_price_pending
+                    ({", ".join(_PENDING_COLS_QUOTED)}, username)
+                VALUES ({", ".join(_PENDING_PLACEHOLDERS)}, ${len(_PENDING_CACHE_COLS) + 1})
+                ON CONFLICT ("Модель", "Артикул", "PLAN_ID", "Признак калькуляции") DO UPDATE SET
+                    {set_expr}
+                    username = EXCLUDED.username,
+                    reviewed_by = NULL,
+                    reviewed_at = NULL,
+                    review_comment = NULL
+                RETURNING id
+                """,
+                *values,
+                username,
+            )
+            ids.append(row["id"])
+    return ids
+
+
+async def get_pending_changes() -> list[dict]:
+    """Return all pending changes ordered by created_at DESC."""
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM cost_price_pending ORDER BY created_at DESC"
+        )
+        return [dict(r) for r in rows]
+
+
+async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
+    """Apply (approve) pending changes: write to OLAP + local audit, delete from pending.
+
+    Все переданные id утверждаются в одной транзакции.
+    Каждая строка пишется в CostHistory_Changes (с 4 новыми полями)
+    и дублируется в cost_price_changes_audit.
+    После успешной записи строки удаляются из cost_price_pending.
+
+    Returns: количество обработанных строк.
+    """
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM cost_price_pending WHERE id = ANY($1::bigint[])",
+            change_ids,
+        )
+        if not rows:
+            return 0
+        records = [dict(r) for r in rows]
+
+    now = datetime.datetime.now()
+
+    if os.environ.get("COST_MOCK", "").strip() != "1":
+        olap = get_olap_conn()
+        cursor = olap.cursor()
+        try:
+            for rec in records:
+                cursor.execute(
+                    """
+                    INSERT INTO CostHistory_Changes
+                        (Модель, Артикул, Уровень_цен, Розничная_цена_руб, Отпускная_цена_руб,
+                         changed_at, Пользователь, calc_sign, plan_id, approved_at, approved_by)
+                    VALUES (?, ?, ?, ?, ?, GETDATE(), ?, ?, ?, GETDATE(), ?)
+                    """,
+                    (
+                        rec.get("Модель"),
+                        rec.get("Артикул"),
+                        rec.get("Уровень цен"),
+                        rec.get("Розничная цена по уровню, руб."),
+                        rec.get("Отпускная цена по уровню, руб"),
+                        reviewed_by,
+                        rec.get("Признак калькуляции"),
+                        rec.get("PLAN_ID"),
+                        reviewed_by,
+                    ),
+                )
+            olap.commit()
+        finally:
+            olap.close()
+
+    async with pool().acquire() as conn2:
+        async with conn2.transaction():
+            for rec in records:
+                await conn2.execute(
+                    """
+                    INSERT INTO cost_price_changes_audit
+                        (model, articul, price_level, retail_rub, wholesale_rub, username, changed_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    rec.get("Модель"),
+                    rec.get("Артикул"),
+                    rec.get("Уровень цен"),
+                    rec.get("Розничная цена по уровню, руб."),
+                    rec.get("Отпускная цена по уровню, руб"),
+                    reviewed_by,
+                    now,
+                )
+            await conn2.execute(
+                "DELETE FROM cost_price_pending WHERE id = ANY($1::bigint[])",
+                change_ids,
+            )
+
+    return len(records)
+
+
+async def clear_pending_changes() -> int:
+    """Delete ALL rows from cost_price_pending. Returns count of deleted rows."""
+    async with pool().acquire() as conn:
+        result = await conn.execute("DELETE FROM cost_price_pending")
+        # result looks like "DELETE 42"
+        count = int(result.split()[1]) if result.startswith("DELETE") else 0
+        return count
