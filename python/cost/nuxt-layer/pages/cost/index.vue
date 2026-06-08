@@ -52,6 +52,11 @@
           </div>
         </div>
 
+        <label class="filter-checkbox">
+          <input v-model="noWholesaleOnly" type="checkbox" @change="loadData" />
+          <span>Только строки без оптовой цены</span>
+        </label>
+
         <div v-if="cascadeBusy" class="filters-overlay">
           <div class="loader"></div>
           <span>Обновление фильтров…</span>
@@ -97,6 +102,12 @@
       <div class="cost-actions-buttons">
         <button class="btn btn-ghost" @click="openMarginModal">
           <Icon name="lucide:target" /> Таргеты маржинальности
+        </button>
+        <button class="btn btn-ghost" @click="openApprovalModal">
+          <Icon name="lucide:check-square" /> Согласование
+        </button>
+        <button class="btn btn-ghost" @click="navigateTo('/cost/approvals')">
+          <Icon name="lucide:clipboard-check" /> Страница согласования
         </button>
         <button class="btn btn-ghost" :disabled="!totalAllRecords" @click="exportToExcel">
           <Icon name="lucide:download" /> Экспорт в Excel
@@ -304,10 +315,12 @@
                 <select
                   class="price-select"
                   :value="row['Уровень цен'] || ''"
+                  :disabled="row['Признак калькуляции'] === 'ФКСС'"
                   @click.stop
                   @change="onPriceLevelChange(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
                 >
                   <option value="">—</option>
+                  <option v-if="row['Признак калькуляции'] === 'ФКСС'" value="" disabled>(ФКСС — запрещено)</option>
                   <option v-for="lvl in priceLevels" :key="lvl.name" :value="lvl.name">
                     {{ lvl.name }}
                   </option>
@@ -480,6 +493,64 @@
             <button class="btn btn-ghost btn-sm" @click="showMarginModal = false">Отмена</button>
             <button class="btn btn-primary btn-sm" :disabled="marginSaving" @click="saveMarginTargets">
               {{ marginSaving ? 'Сохранение…' : 'Сохранить' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Approval popup modal -->
+    <div v-if="showApprovalModal" class="modal-overlay" @click.self="showApprovalModal = false">
+      <div class="modal-content approval-modal-content" @click.stop>
+        <div class="modal-header">
+          <h2>Согласование цен</h2>
+          <button class="modal-close" @click="showApprovalModal = false">×</button>
+        </div>
+        <div class="approval-modal-body">
+          <div v-if="approvalLoading" class="muted" style="text-align:center;padding:24px">Загрузка…</div>
+          <div v-else-if="!approvalPendingChanges.length" class="muted" style="text-align:center;padding:24px">
+            Нет ожидающих согласования изменений
+          </div>
+          <table v-else class="data-table compact approval-table">
+            <thead>
+              <tr>
+                <th><input type="checkbox" :checked="selectedPendingIds.length === approvalPendingChanges.length && approvalPendingChanges.length > 0" @change="toggleSelectAllPending" /></th>
+                <th>Модель</th>
+                <th>Артикул</th>
+                <th>Уровень цен</th>
+                <th class="col-num">Розн., руб</th>
+                <th class="col-num">Опт., руб</th>
+                <th>Признак калькуляции</th>
+                <th>Автор</th>
+                <th>Дата</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="pc in approvalPendingChanges" :key="pc.id">
+                <td><input type="checkbox" :value="pc.id" v-model="selectedPendingIds" /></td>
+                <td>{{ pc['Модель'] || pc.model || '—' }}</td>
+                <td>{{ pc['Артикул'] || pc.articul || '—' }}</td>
+                <td>{{ pc['Уровень цен'] || pc.price_level || '—' }}</td>
+                <td class="col-num num">{{ fmt(pc['Розничная цена по уровню, руб.'] || pc.retail_rub) }}</td>
+                <td class="col-num num">{{ fmt(pc['Отпускная цена по уровню, руб'] || pc.wholesale_rub) }}</td>
+                <td>{{ pc['Признак калькуляции'] || pc.calc_sign || '—' }}</td>
+                <td>{{ pc['username'] || pc.author || '—' }}</td>
+                <td>{{ formatDate(pc['created_at'] || pc.created_at) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="approval-modal-footer">
+          <span style="font-size:var(--fs-xs);color:var(--text-muted)">
+            Выбрано: {{ selectedPendingIds.length }} / {{ approvalPendingChanges.length }}
+          </span>
+          <div style="display:flex;gap:var(--sp-3)">
+            <button class="btn btn-ghost btn-sm" @click="showApprovalModal = false">Закрыть</button>
+            <button class="btn btn-ghost btn-sm" :disabled="!approvalPendingChanges.length || approvalClearing" @click="clearAllPendingChanges">
+              <Icon name="lucide:trash-2" /> {{ approvalClearing ? 'Очистка…' : 'Очистить таблицу' }}
+            </button>
+            <button class="btn btn-primary btn-sm" :disabled="!selectedPendingIds.length || approvalApplying" @click="applyPendingChanges">
+              {{ approvalApplying ? 'Установка…' : `Установить цены (${selectedPendingIds.length})` }}
             </button>
           </div>
         </div>
@@ -681,6 +752,7 @@ function buildFilters(): Record<string, any> {
   const f: Record<string, any> = {};
   if (dateFrom.value) f.date_from = dateFrom.value;
   if (dateTo.value) f.date_to = dateTo.value;
+  if (noWholesaleOnly.value) f.no_wholesale_only = true;
   for (const k of filterConfig.map((c) => c.key)) {
     const v = selected[k];
     if (v?.length) f[k] = v;
@@ -689,6 +761,7 @@ function buildFilters(): Record<string, any> {
 }
 
 const fetchHeaders = computed(() => ({}));
+const noWholesaleOnly = ref(false);
 
 // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -1628,6 +1701,8 @@ const onPriceLevelChange = async (absoluteIdx: number, levelName: string) => {
         price_level: levelName,
         retail_rub: level.price_type3,
         wholesale_rub: level.price_type1,
+        calc_sign: row["Признак калькуляции"],
+        plan_id: row["PLAN_ID"],
       },
       headers: fetchHeaders.value,
     });
@@ -1650,6 +1725,8 @@ const saveAllChanges = async () => {
         price_level: row["Уровень цен"],
         retail_rub: row["avg_Розничная цена по уровню, руб."],
         wholesale_rub: row["avg_Отпускная цена по уровню, руб"],
+        calc_sign: row["Признак калькуляции"],
+        plan_id: row["PLAN_ID"],
       };
     });
     const result = await $fetch<{ success: boolean; count: number; error?: string; mock?: boolean }>(
@@ -1848,6 +1925,81 @@ watch(showUSD, (val) => {
 watch(currentPage, () => {
   selectedRowIndex.value = -1;
 });
+
+// ── Approval popup modal ────────────────────────────────────────────────────
+
+const showApprovalModal = ref(false);
+const approvalPendingChanges = ref<any[]>([]);
+const selectedPendingIds = ref<number[]>([]);
+const approvalLoading = ref(false);
+const approvalApplying = ref(false);
+const approvalClearing = ref(false);
+
+async function openApprovalModal() {
+  showApprovalModal.value = true;
+  await loadApprovalPendingChanges();
+}
+
+async function loadApprovalPendingChanges() {
+  approvalLoading.value = true;
+  try {
+    const res = await $fetch<{ data: any[] }>(
+      `${apiBase.value}/api/cost/pending-changes`,
+      { headers: fetchHeaders.value }
+    );
+    approvalPendingChanges.value = res.data ?? [];
+    selectedPendingIds.value = [];
+  } catch (e: any) {
+    console.error("[cost] load approval pending changes failed", e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    approvalLoading.value = false;
+  }
+}
+
+function toggleSelectAllPending(e: Event) {
+  const checked = (e.target as HTMLInputElement).checked;
+  if (checked) {
+    selectedPendingIds.value = approvalPendingChanges.value.map((p) => p.id);
+  } else {
+    selectedPendingIds.value = [];
+  }
+}
+
+async function applyPendingChanges() {
+  if (!selectedPendingIds.value.length) return;
+  approvalApplying.value = true;
+  try {
+    await $fetch(`${apiBase.value}/api/cost/pending-changes/apply`, {
+      method: "POST",
+      body: { ids: selectedPendingIds.value },
+      headers: fetchHeaders.value,
+    });
+    await loadApprovalPendingChanges();
+  } catch (e: any) {
+    console.error("[cost] apply pending changes failed", e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    approvalApplying.value = false;
+  }
+}
+
+async function clearAllPendingChanges() {
+  if (!confirm('Очистить таблицу согласования? Все необработанные изменения будут удалены.')) return;
+  approvalClearing.value = true;
+  try {
+    await $fetch(`${apiBase.value}/api/cost/pending-changes/clear`, {
+      method: "POST",
+      headers: fetchHeaders.value,
+    });
+    await loadApprovalPendingChanges();
+  } catch (e: any) {
+    console.error("[cost] clear pending changes failed", e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    approvalClearing.value = false;
+  }
+}
 
 onMounted(async () => {
   await Promise.all([loadFilters(), loadPriceLevels(), loadCacheStatus()]);
@@ -2274,4 +2426,52 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   color: var(--text-muted);
   font-size: var(--fs-xs);
 }
+
+/* Approval modal */
+.approval-modal-content {
+  max-width: 1100px;
+  width: 95vw;
+  max-height: 90vh;
+}
+.approval-modal-body {
+  padding: var(--sp-4) var(--sp-5);
+  overflow: auto;
+  flex: 1;
+}
+.approval-modal-footer {
+  padding: var(--sp-3) var(--sp-5);
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+.approval-table th,
+.approval-table td {
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+}
+.approval-table th input[type="checkbox"],
+.approval-table td input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+/* Filter checkbox */
+.filter-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  user-select: none;
+}
+.filter-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
 </style>
