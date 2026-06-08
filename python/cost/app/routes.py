@@ -197,6 +197,7 @@ AGG_AVG_FIELDS = [
     "Декоры, USD.",
     "Вязание, руб.",
     "Вязание, USD.",
+    "Курс на дату расчета",
 ]
 
 AGG_SUM_FIELDS = [
@@ -406,12 +407,18 @@ async def save_price_changes(payload: dict) -> dict:
         raise HTTPException(400, "Уровень цен запрещен для редактирования для признака калькуляции 'ФКСС'")
 
     # Build full row data for upsert (pending table stores full snapshot)
+    raw_date = payload.get("date")
+    if isinstance(raw_date, str) and raw_date:
+        parsed_date = date.fromisoformat(raw_date.replace("T00:00:00Z", "").replace("T00:00:00", ""))
+    else:
+        parsed_date = raw_date
+
     row_data = {
         "Бренд-менеджер": payload.get("brand_manager"),
         "Модель": payload.get("model"),
         "Артикул": payload.get("articul"),
         "Признак калькуляции": calc_sign,
-        "дата расчета": payload.get("date"),
+        "дата расчета": parsed_date,
         "Уровень цен": payload.get("price_level"),
         "Страна пр-ва": payload.get("country"),
         "Семья": payload.get("family"),
@@ -455,12 +462,17 @@ async def save_price_changes(payload: dict) -> dict:
 def _row_data_from_payload(c: dict) -> dict:
     """Build full row snapshot dict from a change payload (for upsert into pending)."""
     calc_sign = c.get("calc_sign") or c.get("Признак калькуляции")
+    raw_date = c.get("date")
+    if isinstance(raw_date, str) and raw_date:
+        parsed_date = date.fromisoformat(raw_date.replace("T00:00:00Z", "").replace("T00:00:00", ""))
+    else:
+        parsed_date = raw_date
     return {
         "Бренд-менеджер": c.get("brand_manager"),
         "Модель": c.get("model"),
         "Артикул": c.get("articul"),
         "Признак калькуляции": calc_sign,
-        "дата расчета": c.get("date"),
+        "дата расчета": parsed_date,
         "Уровень цен": c.get("price_level"),
         "Страна пр-ва": c.get("country"),
         "Семья": c.get("family"),
