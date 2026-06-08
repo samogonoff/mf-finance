@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app import mocks
 from app.db import (apply_pending_changes, clear_pending_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, load_cost_data_to_cache, pool, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch)
+from app.notify import notify_admins
 
 router = APIRouter()
 
@@ -546,6 +547,28 @@ async def clear_changes() -> dict:
     """Delete ALL rows from cost_price_pending."""
     count = await clear_pending_changes()
     return {"success": True, "deleted": count}
+
+
+# ── Margin targets ──────────────────────────────────────────────────────────
+
+
+@router.get("/margin-targets")
+async def margin_targets() -> list[dict]:
+    """Return all saved margin targets keyed by level1."""
+    if _is_mock():
+        return mocks.margin_targets()
+    return await get_margin_targets()
+
+
+@router.post("/margin-targets")
+async def update_margin_targets(payload: dict) -> dict:
+    """Save margin targets (upsert by level1) with username tracking."""
+    targets = payload.get("targets") or []
+    username = (payload.get("username") or "system").strip()
+    if _is_mock():
+        return mocks.save_margin_targets(targets, username)
+    await save_margin_targets(targets, username)
+    return {"success": True, "count": len(targets)}
 
 
 # ── Margin targets ──────────────────────────────────────────────────────────

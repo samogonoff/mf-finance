@@ -498,7 +498,6 @@
         </div>
       </div>
     </div>
-
     <!-- Approval popup modal -->
     <div v-if="showApprovalModal" class="modal-overlay" @click.self="showApprovalModal = false">
       <div class="modal-content approval-modal-content" @click.stop>
