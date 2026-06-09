@@ -322,6 +322,7 @@ async def get_details(payload: dict) -> dict:
     query = f"""
         SELECT
             "дата расчета",
+            "дата производства" AS "Дата выпуска",
             "Признак калькуляции",
             TRIM("Модель") AS "Модель",
             TRIM("Артикул") AS "Артикул",
@@ -339,6 +340,7 @@ async def get_details(payload: dict) -> dict:
         WHERE {where}
         GROUP BY
             "дата расчета",
+            "дата производства",
             "Признак калькуляции",
             TRIM("Модель"),
             TRIM("Артикул"),
