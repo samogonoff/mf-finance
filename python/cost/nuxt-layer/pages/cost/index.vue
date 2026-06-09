@@ -407,6 +407,7 @@
                 <th>Артикул</th>
                 <th>Наименование</th>
                 <th>№ задания</th>
+                <th>Дата выпуска</th>
                 <th class="col-num">Розница (руб)</th>
                 <th class="col-num">Опт (руб)</th>
                 <th class="col-num">Осн. мат.</th>
@@ -428,6 +429,7 @@
                 <td>{{ d['Артикул'] || '—' }}</td>
                 <td>{{ d['Наименование модели'] || '—' }}</td>
                 <td>{{ d['Номер задания производства'] || '—' }}</td>
+                <td>{{ formatDate(d['Дата выпуска']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Розничная цена, руб.'], 'Розничная цена, руб.')">{{ fmt(d['Розничная цена, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Оптовая цена, руб.'], 'Оптовая цена, руб.')">{{ fmt(d['Оптовая цена, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Осн. материалы, руб.'], 'Осн. материалы, руб.')">{{ fmt(d['Осн. материалы, руб.']) }}</td>
@@ -1205,12 +1207,18 @@ function openDetailsInNewTab() {
       const s = String(dv);
       dv = s.includes('T') ? s.split('T')[0] : s;
     } else { dv = '\u2014'; }
+    let dvRel = r['\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430'];
+    if (dvRel) {
+      const s = String(dvRel);
+      dvRel = s.includes('T') ? s.split('T')[0] : s;
+    } else { dvRel = '\u2014'; }
     const cells = [
       dv,
       r['\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438'] || '\u2014',
       r['\u0410\u0440\u0442\u0438\u043A\u0443\u043B'] || '\u2014',
       r['\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435 \u043C\u043E\u0434\u0435\u043B\u0438'] || '\u2014',
       r['\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430'] || '\u2014',
+      dvRel,
       nf(r['\u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431.']),
       nf(r['\u041E\u043F\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431.']),
       nf(r['\u041E\u0441\u043D. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431.']),
@@ -1230,7 +1238,7 @@ function openDetailsInNewTab() {
       'Себестоимость, руб.', 'Наценка, руб.', 'Наценка, %', 'Маржинальность, %',
     ];
     tableHtml += '<tr>';
-    for (let ci = 0; ci < 5; ci++) tableHtml += '<td>' + escHtml(String(cells[ci])) + '<\/td>';
+    for (let ci = 0; ci < 6; ci++) tableHtml += '<td>' + escHtml(String(cells[ci])) + '<\/td>';
     for (let ci = 0; ci < POPUP_NUM_FIELDS.length; ci++) {
       const field = POPUP_NUM_FIELDS[ci];
       const rawVal = r[field];
@@ -1248,6 +1256,7 @@ function openDetailsInNewTab() {
     { key: 'articul', label: '\u0410\u0440\u0442\u0438\u043A\u0443\u043B', field: '\u0410\u0440\u0442\u0438\u043A\u0443\u043B' },
     { key: 'name', label: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435', field: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435 \u043C\u043E\u0434\u0435\u043B\u0438' },
     { key: 'task_num', label: '\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F', field: '\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430' },
+    { key: 'release_date', label: '\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430', field: '\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430' },
   ];
 
   // Build API-level filter HTML (date range, calc_sign multiselect, load button)
@@ -1295,7 +1304,7 @@ for(var mi=0;mi<FK.length;mi++)MS_SEL[FK[mi]]=[];
 var MS_API_CS=[];
 
 function escHtml(s){return String(s).replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
-function gv(r,f){var v=(r[f]||"").toString().trim();if(f==="\\u0434\\u0430\\u0442\\u0430 \\u0440\\u0430\\u0441\\u0447\\u0435\\u0442\\u0430"&&v.indexOf("T")>=0)v=v.split("T")[0];return v}
+function gv(r,f){var v=(r[f]||"").toString().trim();if((f==="\\u0434\\u0430\\u0442\\u0430 \\u0440\\u0430\\u0441\\u0447\\u0435\\u0442\\u0430"||f==="\\u0414\\u0430\\u0442\\u0430 \\u0432\\u044B\\u043F\\u0443\\u0441\\u043A\\u0430")&&v.indexOf("T")>=0)v=v.split("T")[0];return v}
 function nf(v){if(v==null||v==="")return"\\u2014";var n=Number(v);if(isNaN(n))return String(v);return n.toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2})}
 function hb(v,f){
   var n=Number(v);if(isNaN(n))return"";
@@ -1346,6 +1355,7 @@ function rt(rr){
       +"<td>"+(r[FF[2]]||"\\u2014")+"<\\/td>"
       +"<td>"+(r[FF[3]]||"\\u2014")+"<\\/td>"
       +"<td>"+(r[FF[4]]||"\\u2014")+"<\\/td>"
+      +"<td>"+gv(r,FF[5])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."],"\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."])+"<\\/td>"
@@ -1568,7 +1578,7 @@ document.getElementById("loadBtn").onclick=loadData;
     'table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}' +
     'th{background:#f8f9fa;border-bottom:2px solid #dee2e6;padding:8px;text-align:center;font-weight:700;font-size:11px;position:sticky;top:0}' +
     'td{padding:6px 8px;border-bottom:1px solid #eee;text-align:right}' +
-    'td:nth-child(-n+5){text-align:left}' +
+    'td:nth-child(-n+6){text-align:left}' +
     'tbody tr:hover{background:#f1f3f5}' +
     '.count{padding:8px 24px;font-size:12px;color:#6c757d;border-top:1px solid #eee}' +
     '<\/style><\/head><body>' +
@@ -1577,7 +1587,7 @@ document.getElementById("loadBtn").onclick=loadData;
       '<div class="filters">' + filterHtml + '<\/div>' +
       '<div class="content">' +
         '<table><thead><tr>' +
-          '<th>\u0414\u0430\u0442\u0430<\/th><th>\u041F\u0440.\u043A\u0430\u043B\u044C\u043A<\/th><th>\u0410\u0440\u0442\u0438\u043A\u0443\u043B<\/th><th>\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435<\/th><th>\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F<\/th>' +
+          '<th>\u0414\u0430\u0442\u0430<\/th><th>\u041F\u0440.\u043A\u0430\u043B\u044C\u043A<\/th><th>\u0410\u0440\u0442\u0438\u043A\u0443\u043B<\/th><th>\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435<\/th><th>\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F<\/th><th>\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430<\/th>' +
           '<th>\u0420\u043E\u0437\u043D\u0438\u0446\u0430<\/th><th>\u041E\u043F\u0442<\/th><th>\u041E\u0441\u043D.\u043C\u0430\u0442<\/th><th>\u0412\u0441\u043F\u043E\u043C.<\/th><th>\u041F\u043E\u0448\u0438\u0432<\/th><th>\u0420\u0430\u0441\u043A\u0440\u043E\u0439<\/th><th>\u0414\u0435\u043A\u043E\u0440<\/th><th>\u0412\u044F\u0437\u0430\u043D\u0438\u0435<\/th>' +
           '<th>\u0421\u0435\u0431\u0435\u0441\u0442.<\/th><th>\u041D\u0430\u0446\u0435\u043D\u043A\u0430<\/th><th>\u041D\u0430\u0446\u0435\u043D\u043A\u0430%<\/th><th>\u041C\u0430\u0440\u0436\u0430%<\/th>' +
         '<\/tr><\/thead>' +
