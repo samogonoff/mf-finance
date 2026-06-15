@@ -182,6 +182,7 @@
           <thead>
             <tr>
               <th></th>
+              <th></th>
               <th :class="{ sorted: sortField === 'Бренд-менеджер' }" @click="toggleSort('Бренд-менеджер')">
                 Бренд-менеджер<span v-if="sortField === 'Бренд-менеджер'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
@@ -193,6 +194,9 @@
               </th>
               <th :class="{ sorted: sortField === 'Наименование модели' }" @click="toggleSort('Наименование модели')">
                 Наименование модели<span v-if="sortField === 'Наименование модели'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th :class="{ sorted: sortField === 'Номер задания производства' }" @click="toggleSort('Номер задания производства')">
+                № задания<span v-if="sortField === 'Номер задания производства'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th :class="{ sorted: sortField === 'PLAN_ID' }" @click="toggleSort('PLAN_ID')">
                 PLAN_ID<span v-if="sortField === 'PLAN_ID'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
@@ -239,11 +243,11 @@
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, USD.' }" @click="toggleSort('sum_Вспомогательные материалы, USD.')">
                 Вспом. ($)<span v-if="sortField === 'sum_Вспомогательные материалы, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Пошив, руб.' }" @click="toggleSort('avg_Пошив, руб.')">
-                Пошив (руб)<span v-if="sortField === 'avg_Пошив, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, руб.' }" @click="toggleSort('sum_Пошив, руб.')">
+                Пошив (руб)<span v-if="sortField === 'sum_Пошив, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Пошив, USD.' }" @click="toggleSort('avg_Пошив, USD.')">
-                Пошив ($)<span v-if="sortField === 'avg_Пошив, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, USD.' }" @click="toggleSort('sum_Пошив, USD.')">
+                Пошив ($)<span v-if="sortField === 'sum_Пошив, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, руб.' }" @click="toggleSort('avg_Раскрой, руб.')">
                 Раскрой (руб)<span v-if="sortField === 'avg_Раскрой, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
@@ -285,12 +289,12 @@
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="25" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="27" class="muted" style="text-align: center; padding: 24px">
                 Загрузка данных…
               </td>
             </tr>
             <tr v-else-if="!pageRows.length">
-              <td colspan="25" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="27" class="muted" style="text-align: center; padding: 24px">
                 Нет данных. Загрузите данные кнопкой выше.
               </td>
             </tr>
@@ -301,10 +305,12 @@
               @click="selectRow(getOriginalIndex(row))"
             >
               <td><button class="btn-details" @click.stop="openDetails(row)">🔍</button></td>
+              <td><button class="btn-details" @click.stop="openRawRows(row)" title="Исходные строки">📋</button></td>
               <td>{{ row['Бренд-менеджер'] || '—' }}</td>
               <td>{{ row['Модель'] || '—' }}</td>
               <td>{{ row['Артикул'] || '—' }}</td>
               <td>{{ row['Наименование модели'] || '—' }}</td>
+              <td>{{ row['Номер задания производства'] || '—' }}</td>
               <td>{{ row['PLAN_ID'] || '—' }}</td>
               <td>{{ row['Страна пр-ва'] || '—' }}</td>
               <td>{{ row['Семья'] || '—' }}</td>
@@ -334,8 +340,8 @@
               <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, USD.']) }}</td>
               <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, USD.']) }}</td>
-              <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Пошив, руб.']) }}</td>
-              <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Пошив, USD.']) }}</td>
+              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Пошив, руб.']) }}</td>
+              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Пошив, USD.']) }}</td>
               <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Раскрой, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Раскрой, USD.']) }}</td>
               <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
@@ -446,6 +452,50 @@
             </tbody>
           </table>
           <div v-if="detailsFilteredData.length" class="details-count">Найдено строк: {{ detailsFilteredData.length }}</div>
+        </div>
+      </div>
+    </div>
+    <!-- Raw rows modal -->
+    <div v-if="showRawRowsModal" class="modal-overlay" @click.self="showRawRowsModal = false">
+      <div class="modal-content modal-wide" @click.stop>
+        <div class="modal-header">
+          <h2>Исходные строки</h2>
+          <div class="modal-header-actions">
+            <button class="modal-close" @click="showRawRowsModal = false">×</button>
+          </div>
+        </div>
+        <div class="raw-rows-banner" v-if="rawRowsData.length">
+          <strong>Фильтры:</strong>
+          <span v-for="(val, fld) in rawRowsFilterSummary" :key="fld" class="raw-rows-tag">
+            {{ fld }}: {{ val }}
+          </span>
+          <span class="raw-rows-count">
+            Найдено строк: {{ rawRowsData.length }}
+          </span>
+        </div>
+        <div v-if="lastError && showRawRowsModal" class="cost-error" style="margin:var(--sp-3) var(--sp-5);flex-shrink:0">
+          <Icon name="lucide:alert-triangle" />
+          <div>
+            <strong>Ошибка загрузки исходных строк</strong>
+            <p>{{ lastError }}</p>
+          </div>
+          <button class="cost-error-x" @click="lastError = ''" aria-label="Закрыть">×</button>
+        </div>
+        <div class="table-wrap raw-rows-table-wrap">
+          <div v-if="rawRowsLoading" class="muted" style="text-align:center;padding:24px">Загрузка исходных строк…</div>
+          <div v-else-if="!rawRowsData.length" class="muted" style="text-align:center;padding:24px">Нет данных</div>
+          <table v-else class="data-table compact">
+            <thead>
+              <tr>
+                <th v-for="col in rawRowsColumns" :key="col" :class="{ 'col-num': isRawRowsNumeric(col) }">{{ rawRowsColumnLabel(col) }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(r, ri) in rawRowsData" :key="ri">
+                <td v-for="col in rawRowsColumns" :key="col" :class="{ num: isRawRowsNumeric(col) }">{{ formatRawRowsCell(r[col], col) }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -1049,6 +1099,17 @@ const detailsAllData = ref<any[]>([]);
 const detailsFilteredData = ref<any[]>([]);
 const detailsLoading = ref(false);
 
+const AGG_GROUP_FIELDS = [
+  'Бренд-менеджер', 'Модель', 'Артикул', 'Наименование модели', 'PLAN_ID',
+  'Признак калькуляции', 'дата расчета', 'Уровень цен', 'Страна пр-ва',
+  'Семья', 'Сезон', 'Level 01', 'Level 02', 'Level 03', 'Level 04', 'Level 05',
+];
+
+const showRawRowsModal = ref(false);
+const detailsAggregatedRow = ref<any>(null);
+const rawRowsData = ref<any[]>([]);
+const rawRowsLoading = ref(false);
+
 const detailsFilterConfig = [
   { key: 'col_date', label: 'Дата', field: 'дата расчета' },
   { key: 'calc_sign', label: 'Пр.кальк', field: 'Признак калькуляции' },
@@ -1163,6 +1224,41 @@ async function loadDetailsData() {
   } finally {
     detailsLoading.value = false;
   }
+}
+
+async function loadRawRows() {
+  const row = detailsAggregatedRow.value;
+  if (!row) return;
+  rawRowsLoading.value = true;
+  rawRowsData.value = [];
+  try {
+    const body: Record<string, any> = {};
+    for (const field of AGG_GROUP_FIELDS) {
+      const val = row[field];
+      if (val !== null && val !== undefined && val !== '' && val !== '—') {
+        body[field] = val;
+      }
+    }
+    console.debug('[cost] raw-rows body', body);
+    const result = await $fetch<{ data: any[]; count: number }>(
+      `${apiBase.value}/api/cost/raw-rows`,
+      { method: 'POST', body, headers: fetchHeaders.value }
+    );
+    console.debug('[cost] raw-rows result', result);
+    rawRowsData.value = result.data || [];
+  } catch (e: any) {
+    console.error('[cost] raw-rows failed', e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    rawRowsLoading.value = false;
+  }
+}
+
+async function openRawRows(row: any) {
+  detailsAggregatedRow.value = row;
+  showRawRowsModal.value = true;
+  lastError.value = '';
+  await loadRawRows();
 }
 
 function resetDetailsFilters() {
@@ -1744,8 +1840,8 @@ const onPriceLevelChange = async (absoluteIdx: number, levelName: string) => {
         materials_usd: row["sum_Основные материалы, USD."],
         aux_materials_rub: row["sum_Вспомогательные материалы, руб."],
         aux_materials_usd: row["sum_Вспомогательные материалы, USD."],
-        sewing_rub: row["avg_Пошив, руб."],
-        sewing_usd: row["avg_Пошив, USD."],
+        sewing_rub: row["sum_Пошив, руб."],
+        sewing_usd: row["sum_Пошив, USD."],
         cutting_rub: row["avg_Раскрой, руб."],
         cutting_usd: row["avg_Раскрой, USD."],
         decors_rub: row["avg_Декоры, руб."],
@@ -1796,8 +1892,8 @@ const saveAllChanges = async () => {
         materials_usd: row["sum_Основные материалы, USD."],
         aux_materials_rub: row["sum_Вспомогательные материалы, руб."],
         aux_materials_usd: row["sum_Вспомогательные материалы, USD."],
-        sewing_rub: row["avg_Пошив, руб."],
-        sewing_usd: row["avg_Пошив, USD."],
+        sewing_rub: row["sum_Пошив, руб."],
+        sewing_usd: row["sum_Пошив, USD."],
         cutting_rub: row["avg_Раскрой, руб."],
         cutting_usd: row["avg_Раскрой, USD."],
         decors_rub: row["avg_Декоры, руб."],
@@ -1896,7 +1992,7 @@ const marginRowClass = (row: any): Record<string, boolean> => {
 // ── Excel export ────────────────────────────────────────────────────────────
 
 const headers = [
-  "", "Бренд-менеджер", "Модель", "Артикул", "Наименование модели", "PLAN_ID", "Страна", "Семья", "Сезон",
+  "", "Бренд-менеджер", "Модель", "Артикул", "Наименование модели", "Номер задания производства", "PLAN_ID", "Страна", "Семья", "Сезон",
   "Дата", "Пр.кальк", "Уровень цен",
   "Сред. розница (руб)", "Сред. опт (руб)", "Сред. розница ($)", "Сред. опт ($)",
   "Осн. материалы (руб)", "Осн. материалы ($)",
@@ -1921,6 +2017,7 @@ const exportToExcel = () => {
       row["Модель"] || "",
       row["Артикул"] || "",
       row["Наименование модели"] || "",
+      row["Номер задания производства"] || "",
       row["PLAN_ID"] || "",
       row["Страна пр-ва"] || "",
       row["Семья"] || "",
@@ -1936,8 +2033,8 @@ const exportToExcel = () => {
       fmt(row["sum_Основные материалы, USD."]),
       fmt(row["sum_Вспомогательные материалы, руб."]),
       fmt(row["sum_Вспомогательные материалы, USD."]),
-      fmt(row["avg_Пошив, руб."]),
-      fmt(row["avg_Пошив, USD."]),
+      fmt(row["sum_Пошив, руб."]),
+      fmt(row["sum_Пошив, USD."]),
       fmt(row["avg_Раскрой, руб."]),
       fmt(row["avg_Раскрой, USD."]),
       fmt(row["sum_Декоры, руб."]),
@@ -1988,7 +2085,7 @@ const USD_SORT_FIELDS = [
   'avg_Отпускная цена по уровню, USD.',
   'sum_Основные материалы, USD.',
   'sum_Вспомогательные материалы, USD.',
-  'avg_Пошив, USD.',
+  'sum_Пошив, USD.',
   'avg_Раскрой, USD.',
   'sum_Декоры, USD.',
   'avg_Вязание, USD.',
@@ -2127,6 +2224,96 @@ async function loadApprovalMarginTargets() {
 
 onMounted(async () => {
   await Promise.all([loadFilters(), loadPriceLevels(), loadCacheStatus()]);
+});
+
+// ── Raw rows helpers ────────────────────────────────────────────────────────
+
+const rawRowsColumns = computed(() => {
+  if (!rawRowsData.value.length) return [];
+  return Object.keys(rawRowsData.value[0]).filter(k => k !== 'id');
+});
+
+const RAW_ROWS_NUMERIC = new Set([
+  'Розничная цена по уровню, руб.', 'Отпускная цена по уровню, руб',
+  'Розничная цена по уровню, USD.', 'Отпускная цена по уровню, USD.',
+  'Пошив, руб.', 'Пошив, USD.', 'Раскрой, руб.', 'Раскрой, USD.',
+  'Декоры, руб.', 'Декоры, USD.', 'Вязание, руб.', 'Вязание, USD.',
+  'Основные материалы, руб.', 'Основные материалы, USD.',
+  'Вспомогательные материалы, руб.', 'Вспомогательные материалы, USD.',
+  'Курс на дату расчета',
+  'Норма',
+  'цена материала, руб.', 'цена материала, USD.',
+]);
+
+function isRawRowsNumeric(col: string): boolean {
+  return RAW_ROWS_NUMERIC.has(col);
+}
+
+function rawRowsColumnLabel(col: string): string {
+  // Shorten some long names for table headers
+  const labels: Record<string, string> = {
+    'Бренд-менеджер': 'Бренд-менеджер',
+    'Наименование модели': 'Наименование',
+    'Признак калькуляции': 'Пр.кальк',
+    'дата расчета': 'Дата',
+    'дата производства': 'Дата выпуска',
+    'Номер задания производства': '№ задания',
+    'Уровень цен': 'Уровень цен',
+    'Страна пр-ва': 'Страна',
+    'Материал/техоперация/декор(признак)': 'Тип',
+    'Наименование': 'Материал',
+    'артикул материала': 'Арт. материала',
+    'свойство1': 'Св-во 1',
+    'свойство2': 'Св-во 2',
+    'свойство3': 'Св-во 3',
+    'Норма': 'Норма',
+    'цена материала, руб.': 'Цена мат, руб.',
+    'цена материала, USD.': 'Цена мат, USD.',
+    'Розничная цена по уровню, руб.': 'Розница, руб.',
+    'Отпускная цена по уровню, руб': 'Опт, руб.',
+    'Розничная цена по уровню, USD.': 'Розница, USD.',
+    'Отпускная цена по уровню, USD.': 'Опт, USD.',
+    'Основные материалы, руб.': 'Осн.мат, руб.',
+    'Основные материалы, USD.': 'Осн.мат, USD.',
+    'Вспомогательные материалы, руб.': 'Вспом.мат, руб.',
+    'Вспомогательные материалы, USD.': 'Вспом.мат, USD.',
+    'Пошив, руб.': 'Пошив, руб.',
+    'Пошив, USD.': 'Пошив, USD.',
+    'Раскрой, руб.': 'Раскрой, руб.',
+    'Раскрой, USD.': 'Раскрой, USD.',
+    'Декоры, руб.': 'Декоры, руб.',
+    'Декоры, USD.': 'Декоры, USD.',
+    'Вязание, руб.': 'Вязание, руб.',
+    'Вязание, USD.': 'Вязание, USD.',
+    'Курс на дату расчета': 'Курс',
+  };
+  return labels[col] || col;
+}
+
+function formatRawRowsCell(val: any, col: string): string {
+  if (val === null || val === undefined) return '—';
+  if (isRawRowsNumeric(col)) {
+    const n = Number(val);
+    if (isNaN(n)) return String(val);
+    return n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  const s = String(val);
+  return s.includes('T') ? s.split('T')[0] : s;
+}
+
+const rawRowsFilterSummary = computed(() => {
+  const row = detailsAggregatedRow.value;
+  if (!row) return {};
+  const summary: Record<string, string> = {};
+  for (const field of AGG_GROUP_FIELDS) {
+    const val = row[field];
+    if (val !== null && val !== undefined && val !== '' && val !== '—') {
+      let display = String(val);
+      if (display.includes('T')) display = display.split('T')[0];
+      summary[field] = display;
+    }
+  }
+  return summary;
 });
 
 // ── Heatmap (details table conditional formatting) ─────────────────────────
@@ -2640,6 +2827,41 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   width: 16px;
   height: 16px;
   cursor: pointer;
+}
+
+.raw-rows-banner {
+  padding: var(--sp-3) var(--sp-5);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-surface-2, var(--bg-surface)));
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+  font-size: var(--fs-xs);
+  flex-shrink: 0;
+}
+.raw-rows-banner strong {
+  color: var(--text-muted);
+  margin-right: var(--sp-1);
+}
+.raw-rows-tag {
+  display: inline-flex;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--rd-1);
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.raw-rows-count {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
+}
+.raw-rows-table-wrap {
+  overflow: auto;
+  flex: 1;
 }
 
 </style>

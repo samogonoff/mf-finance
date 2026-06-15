@@ -173,6 +173,7 @@ AGG_GROUP_FIELDS = [
     "PLAN_ID",
     "Признак калькуляции",
     "дата расчета",
+    "Номер задания производства",
     "Уровень цен",
     "Страна пр-ва",
     "Семья",
@@ -189,8 +190,6 @@ AGG_AVG_FIELDS = [
     "Отпускная цена по уровню, руб",
     "Розничная цена по уровню, USD.",
     "Отпускная цена по уровню, USD.",
-    "Пошив, руб.",
-    "Пошив, USD.",
     "Раскрой, руб.",
     "Раскрой, USD.",
     "Декоры, руб.",
@@ -201,6 +200,8 @@ AGG_AVG_FIELDS = [
 ]
 
 AGG_SUM_FIELDS = [
+    "Пошив, руб.",
+    "Пошив, USD.",
     "Основные материалы, руб.",
     "Основные материалы, USD.",
     "Вспомогательные материалы, руб.",
@@ -209,7 +210,7 @@ AGG_SUM_FIELDS = [
 
 # Поля-компоненты для расчёта себестоимости (сумма 6 статей)
 SEBEST_COMPONENTS_RUB = [
-    "avg_Пошив, руб.",
+    "sum_Пошив, руб.",
     "avg_Раскрой, руб.",
     "avg_Декоры, руб.",
     "avg_Вязание, руб.",
@@ -217,7 +218,7 @@ SEBEST_COMPONENTS_RUB = [
     "sum_Вспомогательные материалы, руб.",
 ]
 SEBEST_COMPONENTS_USD = [
-    "avg_Пошив, USD.",
+    "sum_Пошив, USD.",
     "avg_Раскрой, USD.",
     "avg_Декоры, USD.",
     "avg_Вязание, USD.",
@@ -332,7 +333,7 @@ async def get_details(payload: dict) -> dict:
             COALESCE(AVG("Отпускная цена по уровню, руб"), 0) AS "Оптовая цена, руб.",
             COALESCE(SUM("Основные материалы, руб."), 0) AS "Осн. материалы, руб.",
             COALESCE(SUM("Вспомогательные материалы, руб."), 0) AS "Вспом. материалы, руб.",
-            COALESCE(AVG("Пошив, руб."), 0) AS "Пошив, руб.",
+            COALESCE(SUM("Пошив, руб."), 0) AS "Пошив, руб.",
             COALESCE(AVG("Раскрой, руб."), 0) AS "Раскрой, руб.",
             COALESCE(AVG("Декоры, руб."), 0) AS "Декор, руб.",
             COALESCE(AVG("Вязание, руб."), 0) AS "Вязание, руб."
@@ -369,6 +370,44 @@ async def get_details(payload: dict) -> dict:
             r["Маржинальность, %"] = round(markup / float(opt) * 100, 2) if float(opt) else 0
             details_data.append(r)
         return {"data": details_data, "count": len(details_data)}
+
+
+# ── Raw rows (исходные строки по агрегированной строке) ─────────────────────
+
+
+@router.post("/raw-rows")
+async def get_raw_rows(payload: dict) -> dict:
+    """Сырые строки из кеша, отфильтрованные по полям группировки агрегированной строки."""
+    if _is_mock():
+        return mocks.raw_rows(payload)
+
+    params: list[Any] = []
+    where_parts: list[str] = []
+
+    for field in AGG_GROUP_FIELDS:
+        value = payload.get(field)
+        if value is not None and value != "" and value != "—":
+            # дата расчета — TIMESTAMPTZ, asyncpg не принимает строку
+            if field == "дата расчета" and isinstance(value, str):
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            where_parts.append(f'"{field}" = ${len(params) + 1}')
+            params.append(value)
+
+    where = " AND ".join(where_parts) if where_parts else "TRUE"
+    query = f"SELECT * FROM cost_data_cache WHERE {where} ORDER BY id"
+
+    try:
+        async with pool().acquire() as conn:
+            rows = await conn.fetch(query, *params)
+            data = [dict(row) for row in rows]
+        return {"data": data, "count": len(data)}
+    except Exception as e:
+        import traceback
+        detail = f"[raw-rows] query={query!r} params={params!r} error={e}"
+        print(detail)
+        traceback.print_exc()
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=detail)
 
 
 # ── Price levels ─────────────────────────────────────────────────────────────
@@ -619,9 +658,9 @@ async def refresh_cache() -> dict:
     status = await get_cache_status()
     if status and status["is_refreshing"]:
         REFRESH_TIMEOUT_MINUTES = 10
-        refreshed_at = status.get("refreshed_at")
-        if refreshed_at:
-            age = (datetime.now(timezone.utc) - refreshed_at).total_seconds() / 60
+        refreshing_since = status.get("refreshing_since")
+        if refreshing_since:
+            age = (datetime.now(timezone.utc) - refreshing_since).total_seconds() / 60
             if age < REFRESH_TIMEOUT_MINUTES:
                 return {"status": "already_refreshing", "message": "Cache refresh already in progress"}
 
