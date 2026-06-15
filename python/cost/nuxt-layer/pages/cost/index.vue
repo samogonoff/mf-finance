@@ -249,11 +249,11 @@
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, USD.' }" @click="toggleSort('sum_Пошив, USD.')">
                 Пошив ($)<span v-if="sortField === 'sum_Пошив, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, руб.' }" @click="toggleSort('avg_Раскрой, руб.')">
-                Раскрой (руб)<span v-if="sortField === 'avg_Раскрой, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, руб.' }" @click="toggleSort('sum_Раскрой, руб.')">
+                Раскрой (руб)<span v-if="sortField === 'sum_Раскрой, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, USD.' }" @click="toggleSort('avg_Раскрой, USD.')">
-                Раскрой ($)<span v-if="sortField === 'avg_Раскрой, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, USD.' }" @click="toggleSort('sum_Раскрой, USD.')">
+                Раскрой ($)<span v-if="sortField === 'sum_Раскрой, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
                 Декоры (руб)<span v-if="sortField === 'sum_Декоры, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
@@ -261,11 +261,11 @@
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, USD.' }" @click="toggleSort('sum_Декоры, USD.')">
                 Декоры ($)<span v-if="sortField === 'sum_Декоры, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Вязание, руб.' }" @click="toggleSort('avg_Вязание, руб.')">
-                Вязание (руб)<span v-if="sortField === 'avg_Вязание, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, руб.' }" @click="toggleSort('sum_Вязание, руб.')">
+                Вязание (руб)<span v-if="sortField === 'sum_Вязание, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Вязание, USD.' }" @click="toggleSort('avg_Вязание, USD.')">
-                Вязание ($)<span v-if="sortField === 'avg_Вязание, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, USD.' }" @click="toggleSort('sum_Вязание, USD.')">
+                Вязание ($)<span v-if="sortField === 'sum_Вязание, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
                 Себест. (руб)<span v-if="sortField === 'sum_Себестоимость, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
@@ -342,12 +342,12 @@
               <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, USD.']) }}</td>
               <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Пошив, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Пошив, USD.']) }}</td>
-              <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Раскрой, руб.']) }}</td>
-              <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Раскрой, USD.']) }}</td>
+              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, руб.']) }}</td>
+              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, USD.']) }}</td>
               <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
-              <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Вязание, руб.']) }}</td>
-              <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Вязание, USD.']) }}</td>
+              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Вязание, руб.']) }}</td>
+              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Вязание, USD.']) }}</td>
               <td v-if="!showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
               <td v-if="showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
               <td class="col-num num">{{ fmt(calc(row, showUSD).markupRub) }}</td>
@@ -1842,12 +1842,12 @@ const onPriceLevelChange = async (absoluteIdx: number, levelName: string) => {
         aux_materials_usd: row["sum_Вспомогательные материалы, USD."],
         sewing_rub: row["sum_Пошив, руб."],
         sewing_usd: row["sum_Пошив, USD."],
-        cutting_rub: row["avg_Раскрой, руб."],
-        cutting_usd: row["avg_Раскрой, USD."],
-        decors_rub: row["avg_Декоры, руб."],
-        decors_usd: row["avg_Декоры, USD."],
-        knitting_rub: row["avg_Вязание, руб."],
-        knitting_usd: row["avg_Вязание, USD."],
+        cutting_rub: row["sum_Раскрой, руб."],
+        cutting_usd: row["sum_Раскрой, USD."],
+        decors_rub: row["sum_Декоры, руб."],
+        decors_usd: row["sum_Декоры, USD."],
+        knitting_rub: row["sum_Вязание, руб."],
+        knitting_usd: row["sum_Вязание, USD."],
         cost_rub: row["sum_Себестоимость, руб."],
         cost_usd: row["sum_Себестоимость, USD."],
       },
@@ -1894,12 +1894,12 @@ const saveAllChanges = async () => {
         aux_materials_usd: row["sum_Вспомогательные материалы, USD."],
         sewing_rub: row["sum_Пошив, руб."],
         sewing_usd: row["sum_Пошив, USD."],
-        cutting_rub: row["avg_Раскрой, руб."],
-        cutting_usd: row["avg_Раскрой, USD."],
-        decors_rub: row["avg_Декоры, руб."],
-        decors_usd: row["avg_Декоры, USD."],
-        knitting_rub: row["avg_Вязание, руб."],
-        knitting_usd: row["avg_Вязание, USD."],
+        cutting_rub: row["sum_Раскрой, руб."],
+        cutting_usd: row["sum_Раскрой, USD."],
+        decors_rub: row["sum_Декоры, руб."],
+        decors_usd: row["sum_Декоры, USD."],
+        knitting_rub: row["sum_Вязание, руб."],
+        knitting_usd: row["sum_Вязание, USD."],
         cost_rub: row["sum_Себестоимость, руб."],
         cost_usd: row["sum_Себестоимость, USD."],
       };
@@ -2035,12 +2035,12 @@ const exportToExcel = () => {
       fmt(row["sum_Вспомогательные материалы, USD."]),
       fmt(row["sum_Пошив, руб."]),
       fmt(row["sum_Пошив, USD."]),
-      fmt(row["avg_Раскрой, руб."]),
-      fmt(row["avg_Раскрой, USD."]),
+      fmt(row["sum_Раскрой, руб."]),
+      fmt(row["sum_Раскрой, USD."]),
       fmt(row["sum_Декоры, руб."]),
       fmt(row["sum_Декоры, USD."]),
-      fmt(row["avg_Вязание, руб."]),
-      fmt(row["avg_Вязание, USD."]),
+      fmt(row["sum_Вязание, руб."]),
+      fmt(row["sum_Вязание, USD."]),
       fmt(row["sum_Себестоимость, руб."]),
       fmt(row["sum_Себестоимость, USD."]),
       fmt(c.markupRub),
@@ -2086,9 +2086,9 @@ const USD_SORT_FIELDS = [
   'sum_Основные материалы, USD.',
   'sum_Вспомогательные материалы, USD.',
   'sum_Пошив, USD.',
-  'avg_Раскрой, USD.',
+  'sum_Раскрой, USD.',
   'sum_Декоры, USD.',
-  'avg_Вязание, USD.',
+  'sum_Вязание, USD.',
   'sum_Себестоимость, USD.',
 ];
 
