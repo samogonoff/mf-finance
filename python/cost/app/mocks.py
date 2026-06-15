@@ -253,18 +253,18 @@ def _make_row(i: int, overrides: dict | None = None) -> dict[str, Any]:
         "avg_Отпускная цена по уровню, руб":  round(base, 2),
         "avg_Розничная цена по уровню, USD.": round(base * 1.1 / 92, 2),
         "avg_Отпускная цена по уровню, USD.": round(base / 92, 2),
-        "avg_Пошив, руб.":   round(cost * 0.18, 2),
-        "avg_Пошив, USD.":   round(cost * 0.18 / 92, 2),
-        "avg_Раскрой, руб.": round(cost * 0.07, 2),
-        "avg_Раскрой, USD.": round(cost * 0.07 / 92, 2),
-        "avg_Основные материалы, руб.":      round(cost * 0.55, 2),
-        "avg_Основные материалы, USD.":      round(cost * 0.55 / 92, 2),
-        "avg_Вспомогательные материалы, руб.": round(cost * 0.08, 2),
-        "avg_Вспомогательные материалы, USD.": round(cost * 0.08 / 92, 2),
-        "avg_Декоры, руб.":      round(cost * 0.04, 2),
-        "avg_Декоры, USD.":      round(cost * 0.04 / 92, 2),
-        "avg_Вязание, руб.":     round(cost * 0.02, 2),
-        "avg_Вязание, USD.":     round(cost * 0.02 / 92, 2),
+        "sum_Пошив, руб.":   round(cost * 0.18, 2),
+        "sum_Пошив, USD.":   round(cost * 0.18 / 92, 2),
+        "sum_Раскрой, руб.": round(cost * 0.07, 2),
+        "sum_Раскрой, USD.": round(cost * 0.07 / 92, 2),
+        "sum_Основные материалы, руб.":      round(cost * 0.55, 2),
+        "sum_Основные материалы, USD.":      round(cost * 0.55 / 92, 2),
+        "sum_Вспомогательные материалы, руб.": round(cost * 0.08, 2),
+        "sum_Вспомогательные материалы, USD.": round(cost * 0.08 / 92, 2),
+        "sum_Декоры, руб.":      round(cost * 0.04, 2),
+        "sum_Декоры, USD.":      round(cost * 0.04 / 92, 2),
+        "sum_Вязание, руб.":     round(cost * 0.02, 2),
+        "sum_Вязание, USD.":     round(cost * 0.02 / 92, 2),
     }
     if overrides:
         row.update(overrides)
@@ -328,21 +328,21 @@ def aggregated(payload: dict | None = None) -> dict:
     # Пересчитываем себестоимость как сумму 6 компонентов (как в детализации)
     for row in rows:
         row["sum_Себестоимость, руб."] = round(
-            float(row.get("avg_Пошив, руб.", 0) or 0)
-            + float(row.get("avg_Раскрой, руб.", 0) or 0)
-            + float(row.get("avg_Декоры, руб.", 0) or 0)
-            + float(row.get("avg_Вязание, руб.", 0) or 0)
-            + float(row.get("avg_Основные материалы, руб.", 0) or 0)
-            + float(row.get("avg_Вспомогательные материалы, руб.", 0) or 0),
+            float(row.get("sum_Пошив, руб.", 0) or 0)
+            + float(row.get("sum_Раскрой, руб.", 0) or 0)
+            + float(row.get("sum_Декоры, руб.", 0) or 0)
+            + float(row.get("sum_Вязание, руб.", 0) or 0)
+            + float(row.get("sum_Основные материалы, руб.", 0) or 0)
+            + float(row.get("sum_Вспомогательные материалы, руб.", 0) or 0),
             2,
         )
         row["sum_Себестоимость, USD."] = round(
-            float(row.get("avg_Пошив, USD.", 0) or 0)
-            + float(row.get("avg_Раскрой, USD.", 0) or 0)
-            + float(row.get("avg_Декоры, USD.", 0) or 0)
-            + float(row.get("avg_Вязание, USD.", 0) or 0)
-            + float(row.get("avg_Основные материалы, USD.", 0) or 0)
-            + float(row.get("avg_Вспомогательные материалы, USD.", 0) or 0),
+            float(row.get("sum_Пошив, USD.", 0) or 0)
+            + float(row.get("sum_Раскрой, USD.", 0) or 0)
+            + float(row.get("sum_Декоры, USD.", 0) or 0)
+            + float(row.get("sum_Вязание, USD.", 0) or 0)
+            + float(row.get("sum_Основные материалы, USD.", 0) or 0)
+            + float(row.get("sum_Вспомогательные материалы, USD.", 0) or 0),
             2,
         )
     # Inject margin targets into each row
