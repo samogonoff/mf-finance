@@ -216,14 +216,17 @@
               <th :class="{ sorted: sortField === 'Признак калькуляции' }" @click="toggleSort('Признак калькуляции')">
                 Пр.кальк<span v-if="sortField === 'Признак калькуляции'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'Уровень цен' }" @click="toggleSort('Уровень цен')">
-                Уровень цен<span v-if="sortField === 'Уровень цен'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
-              </th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
+              <th class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
                 Сред. розница (руб)<span v-if="sortField === 'avg_Розничная цена по уровню, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th class="col-num">
+                Розничная наценка
               </th>
               <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
                 Сред. опт (руб)<span v-if="sortField === 'avg_Отпускная цена по уровню, руб'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th :class="{ sorted: sortField === 'Уровень цен' }" @click="toggleSort('Уровень цен')">
+                Уровень цен<span v-if="sortField === 'Уровень цен'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, USD.' }" @click="toggleSort('avg_Розничная цена по уровню, USD.')">
                 Сред. розница ($)<span v-if="sortField === 'avg_Розничная цена по уровню, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
@@ -289,12 +292,12 @@
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="27" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="30" class="muted" style="text-align: center; padding: 24px">
                 Загрузка данных…
               </td>
             </tr>
             <tr v-else-if="!pageRows.length">
-              <td colspan="27" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="30" class="muted" style="text-align: center; padding: 24px">
                 Нет данных. Загрузите данные кнопкой выше.
               </td>
             </tr>
@@ -318,22 +321,35 @@
               <td class="num">{{ formatDate(row['дата расчета']) }}</td>
               <td>{{ row['Признак калькуляции'] || '—' }}</td>
               <td>
-                <select
-                  class="price-select"
-                  :value="row['Уровень цен'] || ''"
+                <input
+                  class="price-input"
+                  type="number"
+                  :value="row['avg_Розничная цена по уровню, руб.'] || ''"
                   :disabled="row['Признак калькуляции'] === 'ФКСС'"
                   @click.stop
-                  @change="onPriceLevelChange(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
+                  @input="onRetailPriceInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
+                  list="retail-price-list"
+                />
+                <datalist id="retail-price-list">
+                  <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp"></option>
+                </datalist>
+              </td>
+              <td>
+                <select
+                  class="price-select"
+                  :value="markupSelections[getOriginalIndex(row)] || ''"
+                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !row['avg_Розничная цена по уровню, руб.']"
+                  @click.stop
+                  @change="onMarkupSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
                 >
                   <option value="">—</option>
-                  <option v-if="row['Признак калькуляции'] === 'ФКСС'" value="" disabled>(ФКСС — запрещено)</option>
-                  <option v-for="lvl in priceLevels" :key="lvl.name" :value="lvl.name">
-                    {{ lvl.name }}
+                  <option v-for="opt in getMarkupOptions(row)" :key="opt.value" :value="opt.value">
+                    {{ opt.label }}
                   </option>
                 </select>
               </td>
-              <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, руб.']) }}</td>
               <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
+              <td>{{ row['Уровень цен'] || '—' }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, USD.']) }}</td>
               <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, руб.']) }}</td>
@@ -1755,6 +1771,15 @@ const priceLevels = ref<PriceLevel[]>([]);
 const changedRows = reactive<Set<number>>(new Set());
 const saving = ref(false);
 
+/** Уникальные розничные цены из справочника уровней цен (для datalist). */
+const uniqueRetailPrices = computed(() => {
+  const prices = new Set(priceLevels.value.map(l => l.price_type3));
+  return Array.from(prices).sort((a, b) => a - b);
+});
+
+/** Выбранное значение «Розничная наценка» по строке (индекс → value). */
+const markupSelections = reactive<Record<number, string>>({});
+
 async function loadPriceLevels() {
   try {
     priceLevels.value = await $fetch<PriceLevel[]>(
@@ -1777,38 +1802,93 @@ function _deriveRate(row: any): number {
   return 0;
 }
 
-const onPriceLevelChange = async (absoluteIdx: number, levelName: string) => {
-  if (!levelName) return;
-  const level = priceLevels.value.find((l) => l.name === levelName);
-  if (!level) return;
+/** Рассчитать варианты «Розничная наценка» для строки на основе выбранной розничной цены и средней ставки НДС. */
+function getMarkupOptions(row: any): { value: string; label: string }[] {
+  const retailPrice = Number(row['avg_Розничная цена по уровню, руб.']);
+  const avgVat = Number(row['avg_Ставка НДС'] || 0);
+  if (!retailPrice || isNaN(retailPrice) || retailPrice <= 0) return [];
+
+  const results: { value: string; label: string }[] = [];
+  for (const level of priceLevels.value) {
+    if (level.price_type3 !== retailPrice) continue;
+    if (!level.price_type1 || level.price_type1 <= 0) continue;
+    const markupPct = ((retailPrice / (100 + avgVat) * 100) / level.price_type1 - 1) * 100;
+    results.push({
+      value: markupPct.toFixed(2),
+      label: `${markupPct.toFixed(1)}%`,
+    });
+  }
+  return results;
+}
+
+/** Ввод розничной цены: очищаем зависимые поля, при единственном варианте наценки выбираем его автоматически. */
+const onRetailPriceInput = (absoluteIdx: number, value: string) => {
+  const row = allAggregated.value[absoluteIdx];
+  if (!row) return;
+  const numVal = parseFloat(value);
+  if (isNaN(numVal) || numVal <= 0) {
+    row["avg_Розничная цена по уровню, руб."] = 0;
+    row["avg_Отпускная цена по уровню, руб"] = 0;
+    row["Уровень цен"] = "";
+    row["avg_Розничная цена по уровню, USD."] = 0;
+    row["avg_Отпускная цена по уровню, USD."] = 0;
+    markupSelections[absoluteIdx] = "";
+    return;
+  }
+  row["avg_Розничная цена по уровню, руб."] = numVal;
+  row["avg_Отпускная цена по уровню, руб"] = 0;
+  row["Уровень цен"] = "";
+  row["avg_Розничная цена по уровню, USD."] = 0;
+  row["avg_Отпускная цена по уровню, USD."] = 0;
+  markupSelections[absoluteIdx] = "";
+  // Автовыбор если ровно один вариант наценки
+  const options = getMarkupOptions(row);
+  if (options.length === 1) {
+    onMarkupSelect(absoluteIdx, options[0].value);
+  }
+};
+
+/** Выбор наценки: находим соответствующий уровень цен, обновляем строку и сохраняем. */
+const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
+  if (!markupValue) return;
   const row = allAggregated.value[absoluteIdx];
   if (!row) return;
 
-  // Exchange rate RUB→USD for computing USD prices.
-  // Priority: rate column from cache → derived from existing data → hard default.
-  let rate = Number(row["avg_Курс на дату расчета"] || 0);
-  if (rate === 0) {
-    rate = _deriveRate(row);
-  }
-  if (rate === 0) {
-    for (const r of allAggregated.value) {
-      rate = _deriveRate(r);
-      if (rate > 0) break;
+  const retailPrice = Number(row['avg_Розничная цена по уровню, руб.']);
+  const avgVat = Number(row['avg_Ставка НДС'] || 0);
+  if (!retailPrice) return;
+
+  // Ищем уровень цен, чья расчётная наценка совпадает с выбранной
+  let matchedLevel: PriceLevel | null = null;
+  for (const level of priceLevels.value) {
+    if (level.price_type3 !== retailPrice) continue;
+    if (!level.price_type1 || level.price_type1 <= 0) continue;
+    const computedPct = ((retailPrice / (100 + avgVat) * 100) / level.price_type1 - 1) * 100;
+    if (computedPct.toFixed(2) === markupValue) {
+      matchedLevel = level;
+      break;
     }
   }
-  if (rate === 0) rate = 92; // last-resort fallback
+  if (!matchedLevel) return;
+
+  // Курс RUB→USD
+  let rate = Number(row["avg_Курс на дату расчета"] || 0);
+  if (rate === 0) rate = _deriveRate(row);
+  if (rate === 0) {
+    for (const r of allAggregated.value) { rate = _deriveRate(r); if (rate > 0) break; }
+  }
+  if (rate === 0) rate = 92;
 
   const r2 = (v: number) => Math.round(v * 100) / 100;
+  const retailUsd = r2(matchedLevel.price_type3 / rate);
+  const wholesaleUsd = r2(matchedLevel.price_type1 / rate);
 
-  const retailUsd = r2(level.price_type3 / rate);
-  const wholesaleUsd = r2(level.price_type1 / rate);
-
-  row["Уровень цен"] = levelName;
-  row["avg_Розничная цена по уровню, руб."] = level.price_type3;
-  row["avg_Отпускная цена по уровню, руб"] = level.price_type1;
+  row["avg_Розничная цена по уровню, руб."] = matchedLevel.price_type3;
+  row["avg_Отпускная цена по уровню, руб"] = matchedLevel.price_type1;
+  row["Уровень цен"] = matchedLevel.name;
   row["avg_Розничная цена по уровню, USD."] = retailUsd;
   row["avg_Отпускная цена по уровню, USD."] = wholesaleUsd;
-
+  markupSelections[absoluteIdx] = markupValue;
   changedRows.add(absoluteIdx);
 
   try {
@@ -1817,9 +1897,9 @@ const onPriceLevelChange = async (absoluteIdx: number, levelName: string) => {
       body: {
         model: row["Модель"],
         articul: row["Артикул"],
-        price_level: levelName,
-        retail_rub: level.price_type3,
-        wholesale_rub: level.price_type1,
+        price_level: matchedLevel.name,
+        retail_rub: matchedLevel.price_type3,
+        wholesale_rub: matchedLevel.price_type1,
         retail_usd: retailUsd,
         wholesale_usd: wholesaleUsd,
         calc_sign: row["Признак калькуляции"],
