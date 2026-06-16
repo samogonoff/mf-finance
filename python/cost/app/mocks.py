@@ -222,12 +222,22 @@ def _make_row(i: int, overrides: dict | None = None) -> dict[str, Any]:
     base = 1500 + i * 73
     cost = base * 0.62
     brand = ["КОЦУР С.А.", "ИВАНОВ И.И.", "ПЕТРОВА А.Н.", "СИДОРОВ В.К."][i % 4]
+    materials = ["Ткань основная", "Подкладка", "Фурнитура", "Нитки", "Утеплитель"]
     row = {
         "Бренд-менеджер": brand,
         "Модель": f"M-{1000 + i:04d}",
         "Артикул": f"ART-{20000 + i:05d}",
         "Признак калькуляции": ["ПКПСС", "КПСС", "ПФКСС", "ФКСС"][i % 4],
         "дата расчета": f"2026-04-{(i % 28) + 1:02d}T00:00:00",
+        "Материал/техоперация/декор(признак)": ["материал", "техоперация", "декор"][i % 3],
+        "Наименование": f"{materials[i % 5]} арт.{20000 + i:05d}",
+        "артикул материала": f"MAT-{30000 + i:05d}",
+        "свойство1": f"состав {['100% хлопок', 'полиэстер 100%', 'вискоза 100%', 'лён 100%', 'шерсть 100%'][i % 5]}",
+        "свойство2": f"цвет {['чёрный', 'белый', 'синий', 'красный', 'зелёный'][i % 5]}",
+        "свойство3": f"размер {['42', '44', '46', '48', '50'][i % 5]}",
+        "Норма": round(0.5 + (i % 10) * 0.25, 2),
+        "цена материала, руб.": round(80 + i * 3.5, 2),
+        "цена материала, USD.": round((80 + i * 3.5) / 92, 2),
         "Уровень цен": ["Базовый розничный", "Премиум розничный", "Партнёрский"][i % 3],
         "Страна пр-ва": ["Беларусь", "Россия", "Турция", "Китай"][i % 4],
         "Семья": ["AURORA", "BOREAL", "CRAFT", "LINEA"][i % 4],
@@ -243,18 +253,18 @@ def _make_row(i: int, overrides: dict | None = None) -> dict[str, Any]:
         "avg_Отпускная цена по уровню, руб":  round(base, 2),
         "avg_Розничная цена по уровню, USD.": round(base * 1.1 / 92, 2),
         "avg_Отпускная цена по уровню, USD.": round(base / 92, 2),
-        "avg_Пошив, руб.":   round(cost * 0.18, 2),
-        "avg_Пошив, USD.":   round(cost * 0.18 / 92, 2),
-        "avg_Раскрой, руб.": round(cost * 0.07, 2),
-        "avg_Раскрой, USD.": round(cost * 0.07 / 92, 2),
+        "sum_Пошив, руб.":   round(cost * 0.18, 2),
+        "sum_Пошив, USD.":   round(cost * 0.18 / 92, 2),
+        "sum_Раскрой, руб.": round(cost * 0.07, 2),
+        "sum_Раскрой, USD.": round(cost * 0.07 / 92, 2),
         "sum_Основные материалы, руб.":      round(cost * 0.55, 2),
         "sum_Основные материалы, USD.":      round(cost * 0.55 / 92, 2),
         "sum_Вспомогательные материалы, руб.": round(cost * 0.08, 2),
         "sum_Вспомогательные материалы, USD.": round(cost * 0.08 / 92, 2),
-        "avg_Декоры, руб.":      round(cost * 0.04, 2),
-        "avg_Декоры, USD.":      round(cost * 0.04 / 92, 2),
-        "avg_Вязание, руб.":     round(cost * 0.02, 2),
-        "avg_Вязание, USD.":     round(cost * 0.02 / 92, 2),
+        "sum_Декоры, руб.":      round(cost * 0.04, 2),
+        "sum_Декоры, USD.":      round(cost * 0.04 / 92, 2),
+        "sum_Вязание, руб.":     round(cost * 0.02, 2),
+        "sum_Вязание, USD.":     round(cost * 0.02 / 92, 2),
     }
     if overrides:
         row.update(overrides)
@@ -318,19 +328,19 @@ def aggregated(payload: dict | None = None) -> dict:
     # Пересчитываем себестоимость как сумму 6 компонентов (как в детализации)
     for row in rows:
         row["sum_Себестоимость, руб."] = round(
-            float(row.get("avg_Пошив, руб.", 0) or 0)
-            + float(row.get("avg_Раскрой, руб.", 0) or 0)
-            + float(row.get("avg_Декоры, руб.", 0) or 0)
-            + float(row.get("avg_Вязание, руб.", 0) or 0)
+            float(row.get("sum_Пошив, руб.", 0) or 0)
+            + float(row.get("sum_Раскрой, руб.", 0) or 0)
+            + float(row.get("sum_Декоры, руб.", 0) or 0)
+            + float(row.get("sum_Вязание, руб.", 0) or 0)
             + float(row.get("sum_Основные материалы, руб.", 0) or 0)
             + float(row.get("sum_Вспомогательные материалы, руб.", 0) or 0),
             2,
         )
         row["sum_Себестоимость, USD."] = round(
-            float(row.get("avg_Пошив, USD.", 0) or 0)
-            + float(row.get("avg_Раскрой, USD.", 0) or 0)
-            + float(row.get("avg_Декоры, USD.", 0) or 0)
-            + float(row.get("avg_Вязание, USD.", 0) or 0)
+            float(row.get("sum_Пошив, USD.", 0) or 0)
+            + float(row.get("sum_Раскрой, USD.", 0) or 0)
+            + float(row.get("sum_Декоры, USD.", 0) or 0)
+            + float(row.get("sum_Вязание, USD.", 0) or 0)
             + float(row.get("sum_Основные материалы, USD.", 0) or 0)
             + float(row.get("sum_Вспомогательные материалы, USD.", 0) or 0),
             2,
@@ -340,6 +350,20 @@ def aggregated(payload: dict | None = None) -> dict:
         l1 = (row.get("Level 01") or "").strip()
         row["target_margin_pct"] = _mock_margin_targets.get(l1)
     return {"data": rows, "count": len(rows)}
+
+
+def raw_rows(payload: dict) -> dict:
+    """Мок для raw-rows: фильтрует _all_rows() по полям группировки."""
+    rows = _all_rows()
+    filtered = [
+        r for r in rows
+        if all(
+            str(r.get(field, "")).strip() == str(value).strip()
+            for field, value in payload.items()
+            if value is not None and value != "" and value != "—"
+        )
+    ]
+    return {"data": filtered, "count": len(filtered)}
 
 
 # ── Mock margin targets ─────────────────────────────────────────────────────
@@ -412,6 +436,7 @@ def details(model: str) -> dict:
             "Наименование модели": f"{model} · образец",
             "Номер задания производства": f"JOB-{hash(model) % 10000:04d}",
             "дата расчета": "2026-04-15T00:00:00",
+            "Дата выпуска": "2026-04-10T00:00:00",
             "Признак калькуляции": "ПКПСС",
             "Розничная цена, руб.": 2035.00,
             "Оптовая цена, руб.": 1850.00,
@@ -432,6 +457,7 @@ def details(model: str) -> dict:
             "Наименование модели": f"{model} · вариант 2",
             "Номер задания производства": f"JOB-{hash(model + 'v2') % 10000:04d}",
             "дата расчета": "2026-04-10T00:00:00",
+            "Дата выпуска": "2026-04-05T00:00:00",
             "Признак калькуляции": "КПСС",
             "Розничная цена, руб.": 2420.00,
             "Оптовая цена, руб.": 2200.00,

@@ -67,8 +67,9 @@ def _mssql_connect(server: str, database: str, user: str, password: str, *, read
         f"PWD={password};"
         "TrustServerCertificate=yes;"
         "Encrypt=optional;"
+        "LoginTimeout=30;"
     )
-    return pyodbc.connect(conn_str, readonly=readonly)
+    return pyodbc.connect(conn_str, readonly=readonly, timeout=30)
 
 
 def get_mssql_conn() -> pyodbc.Connection:
@@ -120,6 +121,7 @@ def get_dwh_conn() -> pyodbc.Connection:
 # Колонки НЕ текстового типа — их значения передаём как есть
 _CACHE_NON_TEXT: set[str] = {
     "дата расчета",
+    "дата производства",
     "Курс на дату расчета",
     "Розничная цена по уровню, руб.",
     "Отпускная цена по уровню, руб",
@@ -132,6 +134,14 @@ _CACHE_NON_TEXT: set[str] = {
     "Декоры, руб.", "Декоры, USD.",
     "Вязание, руб.", "Вязание, USD.",
     "Себестоимость, руб.", "Себестоимость, USD.",
+    "Норма",
+    "цена материала, руб.", "цена материала, USD.",
+}
+
+# Маппинг коротких имён PG → полные имена MSSQL для колонок,
+# чьи оригинальные имена превышают лимит PG в 63 байта (NAMEDATALEN).
+CACHE_COLUMN_MSSQL_MAP: dict[str, str] = {
+    "Материал/операция/декор(призн)": "Материал/техоперация/декор(признак)",
 }
 
 CACHE_COLUMNS: list[str] = [
@@ -140,6 +150,7 @@ CACHE_COLUMNS: list[str] = [
     "Артикул",
     "Признак калькуляции",
     "дата расчета",
+    "дата производства",
     "Курс на дату расчета",
     "Уровень цен",
     "Страна пр-ва",
@@ -149,6 +160,15 @@ CACHE_COLUMNS: list[str] = [
     "Наименование модели",
     "Номер задания производства",
     "PLAN_ID",
+    "Материал/операция/декор(призн)",
+    "Наименование",
+    "артикул материала",
+    "свойство1",
+    "свойство2",
+    "свойство3",
+    "Норма",
+    "цена материала, руб.",
+    "цена материала, USD.",
     "Розничная цена по уровню, руб.",
     "Отпускная цена по уровню, руб",
     "Розничная цена по уровню, USD.",
@@ -166,7 +186,7 @@ CACHE_COLUMNS: list[str] = [
 async def get_cache_status() -> dict | None:
     async with pool().acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT refreshed_at, row_count, is_refreshing, error_message FROM cost_cache_status WHERE id = 1"
+            "SELECT refreshed_at, row_count, is_refreshing, error_message, refreshing_since FROM cost_cache_status WHERE id = 1"
         )
         if row is None:
             return None
@@ -175,21 +195,26 @@ async def get_cache_status() -> dict | None:
             "row_count": row["row_count"],
             "is_refreshing": row["is_refreshing"],
             "error_message": row["error_message"],
+            "refreshing_since": row["refreshing_since"],
         }
 
 
 async def set_cache_refreshing(is_refreshing: bool) -> None:
     async with pool().acquire() as conn:
-        await conn.execute(
-            "UPDATE cost_cache_status SET is_refreshing = $1 WHERE id = 1",
-            is_refreshing,
-        )
+        if is_refreshing:
+            await conn.execute(
+                "UPDATE cost_cache_status SET is_refreshing = TRUE, error_message = NULL, refreshing_since = NOW() WHERE id = 1"
+            )
+        else:
+            await conn.execute(
+                "UPDATE cost_cache_status SET is_refreshing = FALSE, refreshing_since = NULL WHERE id = 1"
+            )
 
 
 async def set_cache_error(error_message: str) -> None:
     async with pool().acquire() as conn:
         await conn.execute(
-            "UPDATE cost_cache_status SET error_message = $1, is_refreshing = FALSE WHERE id = 1",
+            "UPDATE cost_cache_status SET error_message = $1, is_refreshing = FALSE, refreshing_since = NULL WHERE id = 1",
             error_message,
         )
 
@@ -197,7 +222,7 @@ async def set_cache_error(error_message: str) -> None:
 async def set_cache_completed(row_count: int) -> None:
     async with pool().acquire() as conn:
         await conn.execute(
-            "UPDATE cost_cache_status SET refreshed_at = NOW(), row_count = $1, is_refreshing = FALSE, error_message = NULL WHERE id = 1",
+            "UPDATE cost_cache_status SET refreshed_at = NOW(), row_count = $1, is_refreshing = FALSE, error_message = NULL, refreshing_since = NULL WHERE id = 1",
             row_count,
         )
 
@@ -298,6 +323,7 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
     def _producer() -> None:
         nonlocal cache_columns
         conn = get_mssql_conn()
+        conn.timeout = 300  # query timeout 5 min (pyodbc: timeout is on Connection, not Cursor)
         cursor = conn.cursor()
         try:
             if cutoff_date is not None:
@@ -305,8 +331,16 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
             else:
                 cursor.execute("SELECT * FROM [v_CostHistory_MatchedOrLatest]")
             mssql_columns = [desc[0] for desc in cursor.description]
-            cols = [c for c in CACHE_COLUMNS if c in mssql_columns]
-            idx = [mssql_columns.index(c) for c in cols]
+            # Для колонок, чьи PG-имена короче MSSQL-оригиналов,
+            # ищем по полному MSSQL-имени через CACHE_COLUMN_MSSQL_MAP.
+            cols = [
+                c for c in CACHE_COLUMNS
+                if (CACHE_COLUMN_MSSQL_MAP.get(c, c)) in mssql_columns
+            ]
+            idx = [
+                mssql_columns.index(CACHE_COLUMN_MSSQL_MAP.get(c, c))
+                for c in cols
+            ]
             cache_columns = cols
 
             while True:
@@ -332,7 +366,10 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
                     await conn.execute("TRUNCATE TABLE cost_data_cache")
 
                 while True:
-                    batch = await loop.run_in_executor(None, q.get)
+                    try:
+                        batch = await loop.run_in_executor(None, lambda: q.get(timeout=300))
+                    except thr_queue.Empty:
+                        raise RuntimeError("Cache producer timed out after 5 minutes")
                     if batch is None:
                         break
                     if cache_columns is None:
