@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, clear_pending_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, load_cost_data_to_cache, pool, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch)
+from app.db import (apply_pending_changes, clear_pending_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch)
 from app.notify import notify_admins
 
 router = APIRouter()
@@ -649,23 +649,36 @@ async def update_margin_targets(payload: dict) -> dict:
 # ── Cache refresh & status ──────────────────────────────────────────────────
 
 
+REFRESH_TIMEOUT_MINUTES = 10
+
+
 @router.post("/refresh-cache")
 async def refresh_cache() -> dict:
     """Принудительное обновление кеша из MSSQL v_CostHistory_MatchedOrLatest."""
     if _is_mock():
         return mocks.refresh_cache()
 
-    status = await get_cache_status()
-    if status and status["is_refreshing"]:
-        REFRESH_TIMEOUT_MINUTES = 10
-        refreshing_since = status.get("refreshing_since")
-        if refreshing_since:
-            age = (datetime.now(timezone.utc) - refreshing_since).total_seconds() / 60
-            if age < REFRESH_TIMEOUT_MINUTES:
-                return {"status": "already_refreshing", "message": "Cache refresh already in progress"}
+    # Атомарно захватываем блокировку: SET is_refreshing = TRUE WHERE FALSE
+    if await try_acquire_refresh_lock():
+        asyncio.ensure_future(load_cost_data_to_cache(partial_months=2))
+        return {"status": "started", "message": "Обновление кеша запущено"}
 
+    # Блокировка не захвачена — проверяем, не зависла ли
+    status = await get_cache_status()
+    if status and status.get("refreshing_since"):
+        age = (datetime.now(timezone.utc) - status["refreshing_since"]).total_seconds() / 60
+        if age < REFRESH_TIMEOUT_MINUTES:
+            return {"status": "already_refreshing", "message": "Обновление уже запущено другим пользователем"}
+
+    # Зависшая блокировка (> 10 мин) — форсированный перезапуск
+    async with pool().acquire() as conn:
+        await conn.execute(
+            "UPDATE cost_cache_status SET is_refreshing = TRUE,"
+            "  refreshing_since = NOW(), error_message = NULL"
+            " WHERE id = 1"
+        )
     asyncio.ensure_future(load_cost_data_to_cache(partial_months=2))
-    return {"status": "started", "message": "Cache refresh (last 2 months) started in background"}
+    return {"status": "started", "message": "Обновление кеша запущено (предыдущая блокировка сброшена)"}
 
 
 @router.get("/cache-status")

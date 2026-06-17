@@ -229,6 +229,17 @@ async def set_cache_completed(row_count: int) -> None:
         )
 
 
+async def try_acquire_refresh_lock() -> bool:
+    """Atomically set is_refreshing=TRUE if currently FALSE. Returns True if lock acquired."""
+    async with pool().acquire() as conn:
+        result = await conn.execute(
+            "UPDATE cost_cache_status SET is_refreshing = TRUE,"
+            "  refreshing_since = NOW(), error_message = NULL"
+            " WHERE id = 1 AND is_refreshing = FALSE"
+        )
+        return result == "UPDATE 1"
+
+
 async def clear_cache() -> None:
     async with pool().acquire() as conn:
         await conn.execute("TRUNCATE TABLE cost_data_cache")

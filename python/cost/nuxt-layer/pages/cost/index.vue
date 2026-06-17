@@ -98,6 +98,11 @@
           <Icon name="lucide:database" />
           Кеш: {{ (cacheInfo.row_count || 0).toLocaleString("ru-RU") }} записей · {{ formatDateTime(cacheInfo.refreshed_at) }}
         </span>
+        <Transition name="fade">
+          <span v-if="cacheNotification" class="cache-notification">
+            {{ cacheNotification }}
+          </span>
+        </Transition>
       </div>
       <div class="cost-actions-buttons">
         <button class="btn btn-ghost" @click="openMarginModal">
@@ -1730,13 +1735,23 @@ async function loadCacheStatus() {
   }
 }
 
+const cacheNotification = ref('');
+
+function showCacheNotification(msg: string) {
+  cacheNotification.value = msg;
+  setTimeout(() => { cacheNotification.value = ''; }, 4000);
+}
+
 async function refreshCache() {
   try {
-    const result = await $fetch<{ status: string }>(
+    const result = await $fetch<{ status: string; message?: string }>(
       `${apiBase.value}/api/cost/refresh-cache`,
       { method: "POST", headers: fetchHeaders.value }
     );
-    if (result.status === "already_refreshing") return;
+    if (result.status === "already_refreshing") {
+      showCacheNotification(result.message || 'Обновление уже запущено');
+      return;
+    }
     if (result.status === "mock") return;
 
     cacheRefreshing.value = true;
@@ -2816,6 +2831,24 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   gap: var(--sp-2);
   color: var(--text-muted);
   font-size: var(--fs-xs);
+}
+.cache-notification {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-1) var(--sp-3);
+  background: #fef3cd;
+  color: #856404;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 /* Approval modal — full-screen */
