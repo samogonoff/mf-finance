@@ -27,7 +27,7 @@ func TestBuildDrilldown_SalesIncreasesDZ(t *testing.T) {
 			ObjectsName: "Реализация ТДБП-003950 от 15.04.2026 10:00:00",
 		},
 	}
-	got := BuildDrilldown(raw, CountryRF, "62")
+	got := BuildDrilldown(raw, CountryRF, "62", time.Time{})
 	if len(got) != 1 {
 		t.Fatalf("один документ → одна строка, got %d", len(got))
 	}
@@ -59,7 +59,7 @@ func TestBuildDrilldown_PaymentDecreasesDZ(t *testing.T) {
 			Mapping: nstrL("Платёжное поручение ПП-0001 от 20.04.2026 (документ), Поступление на расчётный счёт (субконто)"),
 		},
 	}
-	got := BuildDrilldown(raw, CountryRF, "62")
+	got := BuildDrilldown(raw, CountryRF, "62", time.Time{})
 	if got[0].DZChange != -1500 {
 		t.Errorf("Оплата должна уменьшить ДЗ: DZChange = %v, want -1500", got[0].DZChange)
 	}
@@ -81,7 +81,7 @@ func TestBuildDrilldown_VendorBillIncreasesKZ(t *testing.T) {
 			TransDescription: nstrL("Услуга по хранению товара по вх.д. 3692 от 10.04.2026"),
 		},
 	}
-	got := BuildDrilldown(raw, CountryRF, "60")
+	got := BuildDrilldown(raw, CountryRF, "60", time.Time{})
 	if got[0].KZChange != 8000 {
 		t.Errorf("KZChange = %v, want 8000", got[0].KZChange)
 	}
@@ -104,7 +104,7 @@ func TestBuildDrilldown_PaymentToVendorDecreasesKZ(t *testing.T) {
 			DocID: "PV1", RwNm: 1, DrAcc: "60.01", CrAcc: "51", Amount: 5000,
 		},
 	}
-	got := BuildDrilldown(raw, CountryRF, "60")
+	got := BuildDrilldown(raw, CountryRF, "60", time.Time{})
 	if got[0].KZChange != -5000 {
 		t.Errorf("Оплата поставщику должна уменьшить КЗ: %v, want -5000", got[0].KZChange)
 	}
@@ -120,7 +120,7 @@ func TestBuildDrilldown_MultipleDocsKeepOrder(t *testing.T) {
 		{Date: d2, DocID: "B", DrAcc: "62.01", CrAcc: "90.01.1", Amount: 200},
 		{Date: d3, DocID: "C", DrAcc: "62.01", CrAcc: "90.01.1", Amount: 300},
 	}
-	got := BuildDrilldown(raw, CountryRF, "62")
+	got := BuildDrilldown(raw, CountryRF, "62", time.Time{})
 	if len(got) != 3 {
 		t.Fatalf("3 документа → 3 строки, got %d", len(got))
 	}
@@ -139,7 +139,7 @@ func TestBuildDrilldown_FallbackToDocID(t *testing.T) {
 			// нет ObjectsName, Mapping и TransDescription
 		},
 	}
-	got := BuildDrilldown(raw, CountryRF, "62")
+	got := BuildDrilldown(raw, CountryRF, "62", time.Time{})
 	if got[0].DocNumber != "{guid-strange}" {
 		t.Errorf("fallback DocNumber должен быть DocID, got %q", got[0].DocNumber)
 	}
@@ -157,7 +157,7 @@ func TestBuildDrilldown_UnknownCountryReturnsRowsWithZeroDelta(t *testing.T) {
 			ObjectsName: "Реализация ТДБП-001 от 01.04.2026",
 		},
 	}
-	got := BuildDrilldown(raw, "", "62")
+	got := BuildDrilldown(raw, "", "62", time.Time{})
 	if len(got) != 1 {
 		t.Fatalf("строка должна вернуться даже без классификации, got %d", len(got))
 	}
@@ -169,8 +169,62 @@ func TestBuildDrilldown_UnknownCountryReturnsRowsWithZeroDelta(t *testing.T) {
 	}
 }
 
+func ntime(t time.Time) sql.NullTime { return sql.NullTime{Time: t, Valid: true} }
+func nint(i int64) sql.NullInt64     { return sql.NullInt64{Int64: i, Valid: true} }
+
+// Просрочка из Payments.Docs: PaymentDate задаёт срок напрямую, reportDate — точку отсчёта.
+func TestBuildDrilldown_OverdueFromPaymentDate(t *testing.T) {
+	d := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
+	due := time.Date(2026, 2, 9, 0, 0, 0, 0, time.UTC) // PaymentDate
+	report := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	raw := []drillRow{
+		{Date: d, DocID: "D1", DrAcc: "62.01", CrAcc: "90.01.1", Amount: 100,
+			DocPaymentDate: ntime(due)},
+	}
+	got := BuildDrilldown(raw, CountryRF, "62", report)
+	if !got[0].PaymentDueDate.Equal(due) {
+		t.Errorf("PaymentDueDate = %v, want %v", got[0].PaymentDueDate, due)
+	}
+	if got[0].OverdueDays != 20 { // 9 фев → 1 мар = 20 дней
+		t.Errorf("OverdueDays = %d, want 20", got[0].OverdueDays)
+	}
+}
+
+// Если PaymentDate нет — срок = Date + Delay; до срока просрочка 0.
+func TestBuildDrilldown_DueFromDatePlusDelayNotYetOverdue(t *testing.T) {
+	d := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	report := time.Date(2026, 2, 20, 0, 0, 0, 0, time.UTC)
+	raw := []drillRow{
+		{Date: d, DocID: "D1", DrAcc: "62.01", CrAcc: "90.01.1", Amount: 100,
+			DocBaseDate: ntime(d), DocDelay: nint(30)}, // срок = 3 мар
+	}
+	got := BuildDrilldown(raw, CountryRF, "62", report)
+	wantDue := time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC)
+	if !got[0].PaymentDueDate.Equal(wantDue) {
+		t.Errorf("PaymentDueDate = %v, want %v", got[0].PaymentDueDate, wantDue)
+	}
+	if got[0].OverdueDays != 0 {
+		t.Errorf("OverdueDays = %d, want 0 (срок ещё не наступил)", got[0].OverdueDays)
+	}
+}
+
+// Без данных Docs (джойн отключён) — срок пустой, просрочка 0.
+func TestBuildDrilldown_NoDocsMetaLeavesDueEmpty(t *testing.T) {
+	raw := []drillRow{
+		{Date: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			DocID: "D1", DrAcc: "62.01", CrAcc: "90.01.1", Amount: 100},
+	}
+	got := BuildDrilldown(raw, CountryRF, "62", time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	if !got[0].PaymentDueDate.IsZero() {
+		t.Errorf("PaymentDueDate должен быть пустым без Docs, got %v", got[0].PaymentDueDate)
+	}
+	if got[0].OverdueDays != 0 {
+		t.Errorf("OverdueDays = %d, want 0", got[0].OverdueDays)
+	}
+}
+
 func TestBuildDrilldown_Empty(t *testing.T) {
-	got := BuildDrilldown(nil, CountryRF, "62")
+	got := BuildDrilldown(nil, CountryRF, "62", time.Time{})
 	if got == nil {
 		t.Error("должен вернуть пустой slice, не nil")
 	}

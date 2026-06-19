@@ -20,6 +20,14 @@ type PremasterTables struct {
 	Schema       string // dbo
 	Main         string // Premaster1C — главная таблица проводок
 	ObjectsTable string // Objects — справочник DocID → имя документа (LEFT JOIN в Drilldown)
+
+	// Payments-витрина (опционально). Кросс-БД на ТОМ ЖЕ OLAP-сервере.
+	// Docs несёт PaymentDate/Delay → просрочка в drill-down (мост
+	// Premaster1C.DocID = Payments.dbo.Docs.ID). Если PaymentsDatabase пуст —
+	// джойн отключён, payment_due_date/overdue_days не заполняются.
+	PaymentsDatabase string // Payments
+	DocsSchema       string // dbo
+	DocsTable        string // Docs
 }
 
 var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -35,11 +43,29 @@ func (t PremasterTables) Validate() error {
 			return fmt.Errorf("debt.PremasterTables: invalid %s %q (must match %s)", k, v, identRe.String())
 		}
 	}
+	// Docs — опционально; валидируем только если витрина Payments сконфигурирована.
+	if t.DocsConfigured() {
+		for k, v := range map[string]string{
+			"payments_database": t.PaymentsDatabase,
+			"docs_schema":       t.DocsSchema,
+			"docs_table":        t.DocsTable,
+		} {
+			if !identRe.MatchString(v) {
+				return fmt.Errorf("debt.PremasterTables: invalid %s %q (must match %s)", k, v, identRe.String())
+			}
+		}
+	}
 	return nil
 }
 
+// DocsConfigured — включён ли кросс-БД джойн к Payments.Docs (по непустому имени БД).
+func (t PremasterTables) DocsConfigured() bool { return t.PaymentsDatabase != "" }
+
 func (t PremasterTables) MainFQN() string    { return "[" + t.Database + "].[" + t.Schema + "].[" + t.Main + "]" }
 func (t PremasterTables) ObjectsFQN() string { return "[" + t.Database + "].[" + t.Schema + "].[" + t.ObjectsTable + "]" }
+func (t PremasterTables) DocsFQN() string {
+	return "[" + t.PaymentsDatabase + "].[" + t.DocsSchema + "].[" + t.DocsTable + "]"
+}
 
 // premasterRepo — реализация PremasterRepo через MSSQL Premaster1C на OLAP-сервере.
 // Логика и шаблон SQL — см. docs/reports/debt/schema-draft.md (§ 4.4, § 8a.2).
@@ -58,6 +84,7 @@ type premasterRepo struct {
 	db         *sql.DB
 	mainFQN    string // [FinDWH].[dbo].[Premaster1C]
 	objectsFQN string // [FinDWH].[dbo].[Objects]
+	docsFQN    string // [Payments].[dbo].[Docs]; "" → просрочка не заполняется
 }
 
 // NewPremasterRepo открывает MSSQL-пул к OLAP-серверу (Premaster1C — таблица в FinDWH).
@@ -96,11 +123,15 @@ func WrapPremasterRepo(db *sql.DB, tables PremasterTables) (PremasterRepo, error
 	if err := tables.Validate(); err != nil {
 		return nil, err
 	}
-	return &premasterRepo{
+	repo := &premasterRepo{
 		db:         db,
 		mainFQN:    tables.MainFQN(),
 		objectsFQN: tables.ObjectsFQN(),
-	}, nil
+	}
+	if tables.DocsConfigured() {
+		repo.docsFQN = tables.DocsFQN()
+	}
+	return repo, nil
 }
 
 // rawRow — что отдаёт SQL: signed-сальдо по (CompanyID, CounterpartyID, account_root).
@@ -248,6 +279,11 @@ type drillRow struct {
 	Mapping              sql.NullString
 	TransDescription     sql.NullString
 	OperationDescription sql.NullString
+
+	// Из Payments.Docs (LEFT JOIN по DocID; все NULL, если джойн отключён/не сматчился).
+	DocBaseDate    sql.NullTime  // Docs.Date — дата документа-основания
+	DocPaymentDate sql.NullTime  // Docs.PaymentDate — плановая дата оплаты (= срок)
+	DocDelay       sql.NullInt64 // Docs.Delay — отсрочка в днях
 }
 
 // Drilldown — детализация по документам внутри (CompanyINN, PartnerINN, Account, Period).
@@ -276,19 +312,31 @@ func (r *premasterRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Docu
 	// не используется — он нужен, если в будущем добавим режим «только за период».
 	// Сейчас семантика: «что сложило задолженность к концу периода» — полная история.
 	_ = q.DateFrom
+
+	// Опциональный кросс-БД джойн к Payments.Docs за датой оплаты/отсрочкой.
+	// LEFT JOIN: если не сконфигурирован или ключ не сматчился — drill-down
+	// возвращает проводки как раньше, просто без payment_due_date/overdue_days.
+	docsCols := ", CAST(NULL AS date) AS doc_base_date, CAST(NULL AS date) AS doc_payment_date, CAST(NULL AS int) AS doc_delay"
+	docsJoin := ""
+	if r.docsFQN != "" {
+		docsCols = ", D.[Date] AS doc_base_date, D.PaymentDate AS doc_payment_date, D.Delay AS doc_delay"
+		docsJoin = "LEFT JOIN " + r.docsFQN + " D WITH (NOLOCK) ON D.ID = A.DocID"
+	}
+
 	q1 := fmt.Sprintf(`
 SELECT A.[Date], CONVERT(nvarchar(max), A.DocID, 1) AS DocID, A.RwNm,
        A.DrAcc, A.CrAcc, A.AmountWithVATCurrency,
        ISNULL(F.[Name], '') AS objects_name,
-       A.Mapping, A.TransDescription, A.OperationDescription
+       A.Mapping, A.TransDescription, A.OperationDescription%[3]s
 FROM %[1]s A WITH (NOLOCK)
 LEFT JOIN %[2]s F ON A.DocID = F.ID
+%[4]s
 WHERE A.CompanyID = @company
   AND A.CounterpartyID = @partner
   AND (   LEFT(A.DrAcc, CHARINDEX('.', A.DrAcc + '.') - 1) = @acc
        OR LEFT(A.CrAcc, CHARINDEX('.', A.CrAcc + '.') - 1) = @acc )
   AND A.[Date] <= @dto
-ORDER BY A.[Date], A.DocID, A.RwNm`, r.mainFQN, r.objectsFQN)
+ORDER BY A.[Date], A.DocID, A.RwNm`, r.mainFQN, r.objectsFQN, docsCols, docsJoin)
 
 	rows, err := r.db.QueryContext(ctx, q1, args...)
 	if err != nil {
@@ -300,7 +348,8 @@ ORDER BY A.[Date], A.DocID, A.RwNm`, r.mainFQN, r.objectsFQN)
 	for rows.Next() {
 		var d drillRow
 		if err := rows.Scan(&d.Date, &d.DocID, &d.RwNm, &d.DrAcc, &d.CrAcc, &d.Amount,
-			&d.ObjectsName, &d.Mapping, &d.TransDescription, &d.OperationDescription); err != nil {
+			&d.ObjectsName, &d.Mapping, &d.TransDescription, &d.OperationDescription,
+			&d.DocBaseDate, &d.DocPaymentDate, &d.DocDelay); err != nil {
 			return nil, fmt.Errorf("debt.premaster.Drilldown: scan: %w", err)
 		}
 		raw = append(raw, d)
@@ -311,7 +360,7 @@ ORDER BY A.[Date], A.DocID, A.RwNm`, r.mainFQN, r.objectsFQN)
 
 	// Определяем страну юрлица — нужно для классификации DZ/KZ по счёту.
 	country := countryOfINN(q.CompanyINN)
-	return BuildDrilldown(raw, country, AccountRoot(q.Account)), nil
+	return BuildDrilldown(raw, country, AccountRoot(q.Account), q.DateTo), nil
 }
 
 // countryOfINN — страна нашего юрлица; пустая если CompanyINN не наш.

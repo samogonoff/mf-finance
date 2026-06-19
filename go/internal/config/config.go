@@ -26,6 +26,16 @@ type Config struct {
 	PremasterPassword      string
 	DebtMock               bool
 
+	// Payments-витрина (опционально) — отдельная БД [Payments] на ТОМ ЖЕ OLAP-сервере.
+	// Таблица Docs несёт PaymentDate/Delay → даёт просрочку в drill-down
+	// (мост FinDWH↔Payments: Premaster1C.DocID = Payments.dbo.Docs.ID,
+	// подтверждён аналитиком, см. docs/reports/debt/payments-source-map.md §5).
+	// Джойн опциональный и LEFT: если PaymentsDatabase пуст — drill-down работает
+	// как раньше, поля payment_due_date/overdue_days остаются пустыми.
+	PremasterPaymentsDatabase string
+	PremasterDocsSchema       string
+	PremasterDocsTable        string
+
 	// DEBT_BACKEND — какой источник дёргает отчёт «Задолженность ВГО».
 	//   "mssql" (default) → repo_premaster.go, ходит в Premaster1C напрямую.
 	//   "ch"              → repo_clickhouse.go, ходит в локальный CH-снэпшот.
@@ -52,6 +62,10 @@ func Load() Config {
 		PremasterUser:         env("MSSQL_PREMASTER_USER", ""),
 		PremasterPassword:     env("MSSQL_PREMASTER_PASSWORD", ""),
 		DebtMock:              env("DEBT_MOCK", "0") == "1",
+
+		PremasterPaymentsDatabase: env("MSSQL_PAYMENTS_DB", "Payments"),
+		PremasterDocsSchema:       env("MSSQL_PAYMENTS_DOCS_SCHEMA", "dbo"),
+		PremasterDocsTable:        env("MSSQL_PAYMENTS_DOCS_TABLE", "Docs"),
 
 		DebtBackend:       strings.ToLower(env("DEBT_BACKEND", "mssql")),
 		ClickHouseHTTPURL: env("CLICKHOUSE_HTTP_URL", "http://clickhouse:8123"),

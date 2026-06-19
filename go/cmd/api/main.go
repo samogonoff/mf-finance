@@ -117,10 +117,13 @@ func main() {
 			log.Fatalf("debt: mssql open: %v", err)
 		}
 		tables := debt.PremasterTables{
-			Database:     cfg.PremasterDatabase,
-			Schema:       cfg.PremasterSchema,
-			Main:         cfg.PremasterTable,
-			ObjectsTable: cfg.PremasterObjectsTable,
+			Database:         cfg.PremasterDatabase,
+			Schema:           cfg.PremasterSchema,
+			Main:             cfg.PremasterTable,
+			ObjectsTable:     cfg.PremasterObjectsTable,
+			PaymentsDatabase: cfg.PremasterPaymentsDatabase,
+			DocsSchema:       cfg.PremasterDocsSchema,
+			DocsTable:        cfg.PremasterDocsTable,
 		}
 		mssqlRepo, err := debt.WrapPremasterRepo(mssqlDB, tables)
 		if err != nil {
