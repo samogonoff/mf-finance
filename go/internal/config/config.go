@@ -22,9 +22,12 @@ type Config struct {
 	PremasterSchema        string
 	PremasterTable         string
 	PremasterObjectsTable  string
-	PremasterUser          string
-	PremasterPassword      string
-	DebtMock               bool
+	// Counterparty1C — обогащение отчёта именем/каналом/менеджером контрагента.
+	// Пусто → не джойнить (имя падает на seed/ИНН как раньше).
+	PremasterCounterpartyTable string
+	PremasterUser              string
+	PremasterPassword          string
+	DebtMock                   bool
 
 	// Payments-витрина (опционально) — отдельная БД [Payments] на ТОМ ЖЕ OLAP-сервере.
 	// Таблица Docs несёт PaymentDate/Delay → даёт просрочку в drill-down
@@ -67,10 +70,11 @@ func Load() Config {
 		PremasterDatabase:     env("MSSQL_PREMASTER_DB", "FinDWH"),
 		PremasterSchema:       env("MSSQL_PREMASTER_SCHEMA", "dbo"),
 		PremasterTable:        env("MSSQL_PREMASTER_TABLE", "Premaster1C"),
-		PremasterObjectsTable: env("MSSQL_PREMASTER_OBJECTS_TABLE", "Objects"),
-		PremasterUser:         env("MSSQL_PREMASTER_USER", ""),
-		PremasterPassword:     env("MSSQL_PREMASTER_PASSWORD", ""),
-		DebtMock:              env("DEBT_MOCK", "0") == "1",
+		PremasterObjectsTable:      env("MSSQL_PREMASTER_OBJECTS_TABLE", "Objects"),
+		PremasterCounterpartyTable: env("MSSQL_PREMASTER_COUNTERPARTY_TABLE", "Counterparty1C"),
+		PremasterUser:              env("MSSQL_PREMASTER_USER", ""),
+		PremasterPassword:          env("MSSQL_PREMASTER_PASSWORD", ""),
+		DebtMock:                   env("DEBT_MOCK", "0") == "1",
 
 		PremasterPaymentsDatabase: env("MSSQL_PAYMENTS_DB", "Payments"),
 		PremasterDocsSchema:       env("MSSQL_PAYMENTS_DOCS_SCHEMA", "dbo"),

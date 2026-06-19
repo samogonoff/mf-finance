@@ -16,10 +16,11 @@ import (
 // подставляются в SQL напрямую (нельзя параметризовать), поэтому валидируются
 // строгим regex.
 type PremasterTables struct {
-	Database     string // FinDWH
-	Schema       string // dbo
-	Main         string // Premaster1C — главная таблица проводок
-	ObjectsTable string // Objects — справочник DocID → имя документа (LEFT JOIN в Drilldown)
+	Database          string // FinDWH
+	Schema            string // dbo
+	Main              string // Premaster1C — главная таблица проводок
+	ObjectsTable      string // Objects — справочник DocID → имя документа (LEFT JOIN в Drilldown)
+	CounterpartyTable string // Counterparty1C — имя/канал/менеджер контрагента (LEFT JOIN в Report); "" → не джойнить
 
 	// Payments-витрина (опционально). Кросс-БД на ТОМ ЖЕ OLAP-сервере.
 	// Docs несёт PaymentDate/Delay → просрочка в drill-down (мост
@@ -43,6 +44,10 @@ func (t PremasterTables) Validate() error {
 			return fmt.Errorf("debt.PremasterTables: invalid %s %q (must match %s)", k, v, identRe.String())
 		}
 	}
+	// Counterparty1C — опционально; валидируем, только если задан.
+	if t.CounterpartyTable != "" && !identRe.MatchString(t.CounterpartyTable) {
+		return fmt.Errorf("debt.PremasterTables: invalid counterparty_table %q (must match %s)", t.CounterpartyTable, identRe.String())
+	}
 	// Docs — опционально; валидируем только если витрина Payments сконфигурирована.
 	if t.DocsConfigured() {
 		for k, v := range map[string]string{
@@ -63,6 +68,9 @@ func (t PremasterTables) DocsConfigured() bool { return t.PaymentsDatabase != ""
 
 func (t PremasterTables) MainFQN() string    { return "[" + t.Database + "].[" + t.Schema + "].[" + t.Main + "]" }
 func (t PremasterTables) ObjectsFQN() string { return "[" + t.Database + "].[" + t.Schema + "].[" + t.ObjectsTable + "]" }
+func (t PremasterTables) CounterpartyFQN() string {
+	return "[" + t.Database + "].[" + t.Schema + "].[" + t.CounterpartyTable + "]"
+}
 func (t PremasterTables) DocsFQN() string {
 	return "[" + t.PaymentsDatabase + "].[" + t.DocsSchema + "].[" + t.DocsTable + "]"
 }
@@ -81,10 +89,11 @@ func (t PremasterTables) DocsFQN() string {
 // через chart_of_accounts (для дебиторских счетов: positive=ДЗ; для кредиторских —
 // flip знака, чтобы наш долг показывался как положительная сумма КЗ).
 type premasterRepo struct {
-	db         *sql.DB
-	mainFQN    string // [FinDWH].[dbo].[Premaster1C]
-	objectsFQN string // [FinDWH].[dbo].[Objects]
-	docsFQN    string // [Payments].[dbo].[Docs]; "" → просрочка не заполняется
+	db              *sql.DB
+	mainFQN         string // [FinDWH].[dbo].[Premaster1C]
+	objectsFQN      string // [FinDWH].[dbo].[Objects]
+	counterpartyFQN string // [FinDWH].[dbo].[Counterparty1C]; "" → имя/канал/менеджер не обогащаем
+	docsFQN         string // [Payments].[dbo].[Docs]; "" → просрочка не заполняется
 }
 
 // NewPremasterRepo открывает MSSQL-пул к OLAP-серверу (Premaster1C — таблица в FinDWH).
@@ -128,6 +137,9 @@ func WrapPremasterRepo(db *sql.DB, tables PremasterTables) (PremasterRepo, error
 		mainFQN:    tables.MainFQN(),
 		objectsFQN: tables.ObjectsFQN(),
 	}
+	if tables.CounterpartyTable != "" {
+		repo.counterpartyFQN = tables.CounterpartyFQN()
+	}
 	if tables.DocsConfigured() {
 		repo.docsFQN = tables.DocsFQN()
 	}
@@ -148,6 +160,11 @@ type rawRow struct {
 	TurnoverSigned  float64
 	LastMonthSigned float64
 	ClosingSigned   float64
+
+	// Из Counterparty1C (LEFT JOIN после агрегации; NULL, если джойн отключён/не сматчился).
+	PartnerName sql.NullString // CounterpartyName1C — имя контрагента
+	Channel     sql.NullString // канал продаж
+	Manager     sql.NullString // менеджер пары
 }
 
 // Report — основной запрос. Берёт сырые проводки Premaster1C по выбранным
@@ -212,6 +229,17 @@ func (r *premasterRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 	//    точка есть, даже для счёта без точки (`'9010'` → `'9010.' `→ position=5 → LEFT(4)).
 	//
 	//    WITH (NOLOCK) — обязательно по контракту на shared OLAP.
+	//
+	//    Обогащение Counterparty1C (имя/канал/менеджер) — LEFT JOIN ПОСЛЕ агрегации
+	//    (на маленьком результате, не на 200M проводок). Опционально: при пустом
+	//    counterpartyFQN отдаём NULL-колонки, и BuildReport падает на seed/ИНН как раньше.
+	cpCols := ", CAST(NULL AS nvarchar(512)) AS partner_name, CAST(NULL AS nvarchar(256)) AS channel, CAST(NULL AS nvarchar(256)) AS manager"
+	cpJoin := ""
+	if r.counterpartyFQN != "" {
+		cpCols = ", C.CounterpartyName1C AS partner_name, C.Channel AS channel, C.Manager AS manager"
+		cpJoin = "LEFT JOIN " + r.counterpartyFQN + " C WITH (NOLOCK) ON LTRIM(RTRIM(C.UNP)) = LTRIM(RTRIM(agg.CounterpartyID))"
+	}
+
 	q := fmt.Sprintf(`
 WITH src AS (
     SELECT CompanyID, ISNULL(CounterpartyID,'') AS CounterpartyID,
@@ -229,21 +257,26 @@ WITH src AS (
            [Date]
     FROM %[6]s WITH (NOLOCK)
     WHERE CompanyID IN (%[1]s) AND [Date] <= %[2]s%[5]s
+), agg AS (
+    SELECT
+        CompanyID,
+        NULLIF(CounterpartyID,'') AS CounterpartyID,
+        acc_root,
+        SUM(CASE WHEN [Date] <  %[3]s THEN amt * sign_dr ELSE 0 END) AS opening_signed,
+        SUM(CASE WHEN [Date] >= %[3]s THEN amt * sign_dr ELSE 0 END) AS turnover_signed,
+        SUM(CASE WHEN [Date] >= %[4]s THEN amt * sign_dr ELSE 0 END) AS last_month_signed,
+        SUM(amt * sign_dr) AS closing_signed
+    FROM src
+    GROUP BY CompanyID, CounterpartyID, acc_root
+    HAVING ABS(SUM(amt * sign_dr)) > 0.005    -- отбросить строки с нулевым сальдо
+        OR ABS(SUM(CASE WHEN [Date] <  %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
+        OR ABS(SUM(CASE WHEN [Date] >= %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
 )
-SELECT
-    CompanyID,
-    NULLIF(CounterpartyID,'') AS CounterpartyID,
-    acc_root,
-    SUM(CASE WHEN [Date] <  %[3]s THEN amt * sign_dr ELSE 0 END) AS opening_signed,
-    SUM(CASE WHEN [Date] >= %[3]s THEN amt * sign_dr ELSE 0 END) AS turnover_signed,
-    SUM(CASE WHEN [Date] >= %[4]s THEN amt * sign_dr ELSE 0 END) AS last_month_signed,
-    SUM(amt * sign_dr) AS closing_signed
-FROM src
-GROUP BY CompanyID, CounterpartyID, acc_root
-HAVING ABS(SUM(amt * sign_dr)) > 0.005    -- отбросить строки с нулевым сальдо
-    OR ABS(SUM(CASE WHEN [Date] <  %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
-    OR ABS(SUM(CASE WHEN [Date] >= %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
-`, strings.Join(innParams, ","), dateToParam, dateFromParam, dateLastMonthParam, icoClause, r.mainFQN)
+SELECT agg.CompanyID, agg.CounterpartyID, agg.acc_root,
+       agg.opening_signed, agg.turnover_signed, agg.last_month_signed, agg.closing_signed%[7]s
+FROM agg
+%[8]s
+`, strings.Join(innParams, ","), dateToParam, dateFromParam, dateLastMonthParam, icoClause, r.mainFQN, cpCols, cpJoin)
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -255,7 +288,8 @@ HAVING ABS(SUM(amt * sign_dr)) > 0.005    -- отбросить строки с 
 	for rows.Next() {
 		var rr rawRow
 		if err := rows.Scan(&rr.CompanyID, &rr.CounterpartyID, &rr.AccountRoot,
-			&rr.OpeningSigned, &rr.TurnoverSigned, &rr.LastMonthSigned, &rr.ClosingSigned); err != nil {
+			&rr.OpeningSigned, &rr.TurnoverSigned, &rr.LastMonthSigned, &rr.ClosingSigned,
+			&rr.PartnerName, &rr.Channel, &rr.Manager); err != nil {
 			return nil, fmt.Errorf("debt.premaster.Report: scan: %w", err)
 		}
 		raw = append(raw, rr)

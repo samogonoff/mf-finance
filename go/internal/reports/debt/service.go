@@ -195,10 +195,21 @@ func BuildReport(raw []rawRow) []DebtRow {
 			Currency:   CurrencyForCountry(ent.Country), // функциональная валюта юрлица
 		}
 		row.AccountName = accountNameFor(ent.Country, rr.AccountRoot)
-		if p, ok := partnerByINN[rr.CounterpartyID.String]; ok {
-			row.Partner = p
-		} else {
+		// Имя партнёра: приоритет — справочник Counterparty1C (покрывает контрагентов,
+		// попавших по ICO=1 вне наших 15 ЮЛ), затем seed-имя нашего ЮЛ, затем голый ИНН.
+		switch {
+		case rr.PartnerName.Valid && strings.TrimSpace(rr.PartnerName.String) != "":
+			row.Partner = strings.TrimSpace(rr.PartnerName.String)
+		case partnerByINN[rr.CounterpartyID.String] != "":
+			row.Partner = partnerByINN[rr.CounterpartyID.String]
+		default:
 			row.Partner = rr.CounterpartyID.String // fallback: показываем ИНН
+		}
+		if rr.Channel.Valid {
+			row.Channel = strings.TrimSpace(rr.Channel.String)
+		}
+		if rr.Manager.Valid {
+			row.Manager = strings.TrimSpace(rr.Manager.String)
 		}
 
 		switch kind {
