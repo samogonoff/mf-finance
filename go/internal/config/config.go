@@ -36,6 +36,15 @@ type Config struct {
 	PremasterDocsSchema       string
 	PremasterDocsTable        string
 
+	// Revenue-оверлей из P&L-матриц (опционально, opt-in). Если включён, при старте
+	// читаем [001 Mapping PL by BK] ⋈ [002 CodePL] и дозаполняем классификацию
+	// revenue-счетами (GroupPL='ПРОДАЖИ') — закрывает «какие субсчета = выручка»
+	// (analyst-handoff §4). При любой ошибке загрузки — фолбэк на хардкод-chart.
+	DebtRevenueOverlay      bool
+	PremasterMappingPLTable string
+	PremasterCodePLTable    string
+	PremasterCompaniesTable string
+
 	// DEBT_BACKEND — какой источник дёргает отчёт «Задолженность ВГО».
 	//   "mssql" (default) → repo_premaster.go, ходит в Premaster1C напрямую.
 	//   "ch"              → repo_clickhouse.go, ходит в локальный CH-снэпшот.
@@ -66,6 +75,11 @@ func Load() Config {
 		PremasterPaymentsDatabase: env("MSSQL_PAYMENTS_DB", "Payments"),
 		PremasterDocsSchema:       env("MSSQL_PAYMENTS_DOCS_SCHEMA", "dbo"),
 		PremasterDocsTable:        env("MSSQL_PAYMENTS_DOCS_TABLE", "Docs"),
+
+		DebtRevenueOverlay:      env("DEBT_REVENUE_OVERLAY", "0") == "1",
+		PremasterMappingPLTable: env("MSSQL_PREMASTER_MAPPING_PL_TABLE", "001 Mapping PL by BK"),
+		PremasterCodePLTable:    env("MSSQL_PREMASTER_CODEPL_TABLE", "002 CodePL"),
+		PremasterCompaniesTable: env("MSSQL_PREMASTER_COMPANIES_TABLE", "CompaniesMF"),
 
 		DebtBackend:       strings.ToLower(env("DEBT_BACKEND", "mssql")),
 		ClickHouseHTTPURL: env("CLICKHOUSE_HTTP_URL", "http://clickhouse:8123"),
