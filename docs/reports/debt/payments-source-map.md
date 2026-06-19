@@ -166,8 +166,8 @@ ORDER BY Date DESC;
 |---|---|---|
 | №1 просрочка | `repo_premaster.Drilldown` LEFT JOIN `Payments.Docs` → `PaymentDueDate`/`OverdueDays`; env `MSSQL_PAYMENTS_DB`. Опционально+LEFT (фолбэк-безопасно). | **в коде** (commit `945c65e`) |
 | №4 выручка (доходная сторона) | `chart_loader.go::LoadRevenueOverlay` читает `[001 Mapping PL by BK]⋈[002 CodePL]`, `InstallRevenueOverlay` помечает revenue-счета по странам; env `DEBT_REVENUE_OVERLAY=1` (opt-in, фолбэк на хардкод). | **в коде** (commit `b4671f5`) |
-| №2/№3 баланс ДЗ/КЗ по TR/CZ/GB/CN/KG | Не покрывается P&L-матрицами. Нужен список балансовых счетов этих стран (план счетов) **или** свёртка по знаку из `Debt_arh`. | **открыто** |
-| Канал/менеджер (`Counterparty1C`) | Не реализовано (enrichment, требует полей модели + UI). | **открыто** |
+| №2/№3 баланс ДЗ/КЗ по TR/CZ/GB/CN/KG | Не покрывается P&L-матрицами. Нужен список балансовых счетов этих стран (план счетов) **или** свёртка по знаку из `Debt_arh` (отложенное решение «автору ТЗ», §8a.5). | **открыто (нужны данные/решение)** |
+| Канал/менеджер + имя партнёра (`Counterparty1C`) | `repo_premaster.Report` LEFT JOIN `Counterparty1C` после агрегации → `Partner`/`Channel`/`Manager`; закрывает имена ICO-партнёров вне 15 ЮЛ. env `MSSQL_PREMASTER_COUNTERPARTY_TABLE`. | **в коде** (commit `b74f371`) |
 | Контрольная сверка с `GLMF`/`FinDebt1` | Не автоматизировано. | **открыто** |
 
 ⚠ Оба кодовых слайса **выключены по умолчанию** до проверки SQL-допущений на живом
