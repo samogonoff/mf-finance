@@ -519,13 +519,178 @@ async def upsert_pending_changes_batch(changes: list[dict], username: str) -> li
     return ids
 
 
-async def get_pending_changes() -> list[dict]:
-    """Return all pending changes ordered by created_at DESC."""
+async def get_pending_changes(filters: dict | None = None) -> list[dict]:
+    """Return pending changes with optional filtering, ordered by created_at DESC.
+
+    filters supports:
+        q: str — text search across Модель, Артикул, Наименование модели, Бренд-менеджер
+        brand_manager: list[str]
+        level01..level05: list[str]
+        calc_sign: list[str]
+        plan_id: list[str]
+    """
+    conditions: list[str] = []
+    params: list[Any] = []
+    param_idx = 1
+
+    if filters:
+        # Text search (OR across several columns)
+        q = filters.get("q")
+        if q:
+            like_val = f"%{q}%"
+            conditions.append(
+                f'("Модель"::TEXT ILIKE ${param_idx}'
+                f' OR "Артикул"::TEXT ILIKE ${param_idx}'
+                f' OR "Наименование модели"::TEXT ILIKE ${param_idx}'
+                f' OR "Бренд-менеджер"::TEXT ILIKE ${param_idx})'
+            )
+            params.append(like_val)
+            param_idx += 1
+
+        # Exact-match filters (AND, each key can have multiple values → IN)
+        filter_keys = [
+            "brand_manager", "level01", "level02", "level03", "level04", "level05",
+            "calc_sign", "plan_id",
+        ]
+        col_map = {
+            "brand_manager": '"Бренд-менеджер"',
+            "level01": '"Level 01"',
+            "level02": '"Level 02"',
+            "level03": '"Level 03"',
+            "level04": '"Level 04"',
+            "level05": '"Level 05"',
+            "calc_sign": '"Признак калькуляции"',
+            "plan_id": '"PLAN_ID"',
+        }
+        for key in filter_keys:
+            vals = filters.get(key)
+            if vals and (isinstance(vals, list) and len(vals) > 0) or (isinstance(vals, str) and vals.strip()):
+                if isinstance(vals, str):
+                    vals = [vals]
+                col = col_map[key]
+                placeholders = ", ".join(f"${param_idx + i}" for i in range(len(vals)))
+                conditions.append(f"{col} IN ({placeholders})")
+                params.extend(vals)
+                param_idx += len(vals)
+
+    where_clause = ""
+    if conditions:
+        where_clause = " WHERE " + " AND ".join(conditions)
+
+    query = f"SELECT * FROM cost_price_pending{where_clause} ORDER BY created_at DESC"
+
     async with pool().acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM cost_price_pending ORDER BY created_at DESC"
-        )
+        rows = await conn.fetch(query, *params)
         return [dict(r) for r in rows]
+
+
+_PENDING_FILTER_COLS = [
+    "Бренд-менеджер",
+    "Level 01", "Level 02", "Level 03", "Level 04", "Level 05",
+    "Признак калькуляции",
+    "PLAN_ID",
+]
+
+_PENDING_CASCADE_KEYS = [
+    "brand_manager", "level01", "level02", "level03", "level04", "level05",
+    "calc_sign", "plan_id",
+]
+
+_PENDING_CASCADE_COL_MAP: dict[str, str] = {
+    "brand_manager": '"Бренд-менеджер"',
+    "level01": '"Level 01"',
+    "level02": '"Level 02"',
+    "level03": '"Level 03"',
+    "level04": '"Level 04"',
+    "level05": '"Level 05"',
+    "calc_sign": '"Признак калькуляции"',
+    "plan_id": '"PLAN_ID"',
+}
+
+
+async def get_pending_filter_options(selected: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Return distinct values from cost_price_pending with top-down cascade.
+
+    selected: { brand_manager: [...], level01: [...], ... }
+    Returns:  { brand_manager: [...], level01: [...], ..., calc_sign: [...], plan_id: [...] }
+    """
+    result: dict[str, list[str]] = {}
+
+    async with pool().acquire() as conn:
+        # 1. brand_manager — NOT filtered by levels (top level)
+        rows = await conn.fetch(
+            'SELECT DISTINCT "Бренд-менеджер" FROM cost_price_pending'
+            ' WHERE "Бренд-менеджер" IS NOT NULL AND "Бренд-менеджер" != \'\''
+            ' ORDER BY 1'
+        )
+        result["brand_manager"] = [r[0] for r in rows if r[0]]
+
+        # 2. Level 01-05 — top-down cascade (higher levels filter lower)
+        level_keys = ["level01", "level02", "level03", "level04", "level05"]
+        level_db_cols = [
+            '"Level 01"', '"Level 02"', '"Level 03"', '"Level 04"', '"Level 05"',
+        ]
+
+        for i, (lk, lcol) in enumerate(zip(level_keys, level_db_cols)):
+            conditions: list[str] = [f"{lcol} IS NOT NULL AND {lcol} != ''"]
+            params: list[str] = []
+
+            # Filter by brand_manager
+            bm_vals = selected.get("brand_manager")
+            if bm_vals and len(bm_vals) > 0:
+                placeholders = ", ".join(f"${p+1}" for p in range(len(bm_vals)))
+                conditions.append(f'"Бренд-менеджер" IN ({placeholders})')
+                params.extend(bm_vals)
+
+            # Filter by higher levels (smaller index)
+            for j in range(i):
+                higher_key = level_keys[j]
+                higher_vals = selected.get(higher_key)
+                if higher_vals and len(higher_vals) > 0:
+                    placeholders = ", ".join(f"${len(params)+p+1}" for p in range(len(higher_vals)))
+                    conditions.append(f"{level_db_cols[j]} IN ({placeholders})")
+                    params.extend(higher_vals)
+
+            where = " AND ".join(conditions)
+            query = f"SELECT DISTINCT {lcol} FROM cost_price_pending WHERE {where} ORDER BY 1"
+            rows = await conn.fetch(query, *params)
+            result[lk] = [r[0] for r in rows if r[0]]
+
+        # 3. calc_sign — filtered by ALL selected cascade values
+        conditions = ['"Признак калькуляции" IS NOT NULL AND "Признак калькуляции" != \'\'']
+        params = []
+        for key in ["brand_manager"] + level_keys:
+            vals = selected.get(key)
+            if vals and len(vals) > 0:
+                col = _PENDING_CASCADE_COL_MAP[key]
+                placeholders = ", ".join(f"${len(params)+p+1}" for p in range(len(vals)))
+                conditions.append(f"{col} IN ({placeholders})")
+                params.extend(vals)
+        where = " AND ".join(conditions)
+        rows = await conn.fetch(
+            f'SELECT DISTINCT "Признак калькуляции" FROM cost_price_pending WHERE {where} ORDER BY 1',
+            *params,
+        )
+        result["calc_sign"] = [r[0] for r in rows if r[0]]
+
+        # 4. plan_id — filtered by ALL cascade values including calc_sign
+        conditions = ['"PLAN_ID" IS NOT NULL AND "PLAN_ID" != \'\'']
+        params = []
+        for key in ["brand_manager"] + level_keys + ["calc_sign"]:
+            vals = selected.get(key)
+            if vals and len(vals) > 0:
+                col = _PENDING_CASCADE_COL_MAP[key]
+                placeholders = ", ".join(f"${len(params)+p+1}" for p in range(len(vals)))
+                conditions.append(f"{col} IN ({placeholders})")
+                params.extend(vals)
+        where = " AND ".join(conditions)
+        rows = await conn.fetch(
+            f'SELECT DISTINCT "PLAN_ID" FROM cost_price_pending WHERE {where} ORDER BY 1',
+            *params,
+        )
+        result["plan_id"] = [r[0] for r in rows if r[0]]
+
+    return result
 
 
 async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
