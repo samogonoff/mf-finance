@@ -29,6 +29,28 @@
       </div>
     </div>
 
+    <!-- Filter bar -->
+    <section class="card">
+      <div class="approval-filters" v-if="!loading">
+        <div class="approval-fields">
+          <div class="af-search">
+            <input v-model="approvalQuery" type="text" placeholder="Поиск по модели, артикулу…" @input="onFilterChangeDelayed" />
+          </div>
+          <div v-for="fk in approvalFilterKeys" :key="fk.key" class="af-item" :class="{ locked: isLocked(fk.key) }">
+            <CostMultiSelect
+              v-model="selected[fk.key]"
+              :options="filterOptions[fk.key] || []"
+              :placeholder="isLocked(fk.key) ? '—' : fk.label"
+              :disabled="isLocked(fk.key)"
+              @change="onFilterChange(fk.key)"
+            />
+          </div>
+          <button class="btn btn-ghost btn-xs" @click="resetFilters" :disabled="filterBusy">Сбросить</button>
+        </div>
+        <div v-if="filterBusy" class="af-busy">Обновление…</div>
+      </div>
+    </section>
+
     <!-- Table -->
     <section class="card">
       <div class="table-wrap">
@@ -168,7 +190,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, reactive, onMounted } from 'vue'
 
 const config = useRuntimeConfig()
 const apiBase = computed(() =>
@@ -183,6 +205,29 @@ const clearing = ref(false)
 const error = ref('')
 const marginTargetByLevel01 = ref<Record<string, number | null>>({})
 
+// ── Filter bar: keys & cascade ───────────────────────────────────────────────
+
+const APPROVAL_LEVEL_KEYS = ["level01", "level02", "level03", "level04", "level05"];
+
+const approvalFilterKeys = [
+  { key: "brand_manager", label: "Бренд-менеджер" },
+  { key: "level01", label: "Level 01" },
+  { key: "level02", label: "Level 02" },
+  { key: "level03", label: "Level 03" },
+  { key: "level04", label: "Level 04" },
+  { key: "level05", label: "Level 05" },
+  { key: "calc_sign", label: "Призн. кальк." },
+  { key: "plan_id", label: "План" },
+];
+
+const filterOptions = ref<Record<string, string[]>>({});
+const selected = reactive<Record<string, string[]>>(
+  Object.fromEntries(approvalFilterKeys.map((f) => [f.key, [] as string[]])) as any
+);
+const approvalQuery = ref("");
+const filterBusy = ref(false);
+let filterTimeout: ReturnType<typeof setTimeout> | null = null;
+
 const allSelected = computed(() =>
   pendingChanges.value.length > 0 && selectedIds.value.length === pendingChanges.value.length
 )
@@ -196,11 +241,79 @@ function toggleSelectAll(e: Event) {
   }
 }
 
+function isLocked(key: string): boolean {
+  let lowestIdx = -1;
+  for (let i = APPROVAL_LEVEL_KEYS.length - 1; i >= 0; i--) {
+    if (selected[APPROVAL_LEVEL_KEYS[i]]?.length > 0) {
+      lowestIdx = i;
+      break;
+    }
+  }
+  if (lowestIdx === -1) return false;
+  if (key === "brand_manager") return true;
+  const keyIdx = APPROVAL_LEVEL_KEYS.indexOf(key as any);
+  if (keyIdx === -1) return false;
+  return keyIdx < lowestIdx;
+}
+
+function buildFilterParams(): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const [key, vals] of Object.entries(selected)) {
+    if (!(vals as string[]).length) continue;
+    for (const v of vals as string[]) params.append(key, v);
+  }
+  if (approvalQuery.value.trim()) params.set("q", approvalQuery.value.trim());
+  return params;
+}
+
+async function loadFilterOptions() {
+  filterBusy.value = true;
+  try {
+    const params = buildFilterParams();
+    const raw = await $fetch<Record<string, string[]>>(
+      `${apiBase.value}/api/cost/pending-changes/filter-options?${params}`
+    );
+    filterOptions.value = raw;
+  } catch (e: any) {
+    console.error("[cost] load approval filter-options failed", e);
+  } finally {
+    filterBusy.value = false;
+  }
+}
+
+async function onFilterChange(changedKey: string) {
+  if (changedKey === "brand_manager") {
+    for (const k of APPROVAL_LEVEL_KEYS) selected[k] = [];
+  } else if (APPROVAL_LEVEL_KEYS.includes(changedKey)) {
+    const idx = APPROVAL_LEVEL_KEYS.indexOf(changedKey);
+    for (let i = idx + 1; i < APPROVAL_LEVEL_KEYS.length; i++) {
+      selected[APPROVAL_LEVEL_KEYS[i]] = [];
+    }
+  }
+  await loadFilterOptions();
+  await loadData();
+}
+
+function onFilterChangeDelayed() {
+  if (filterTimeout) clearTimeout(filterTimeout);
+  filterTimeout = setTimeout(async () => {
+    await loadData();
+  }, 300);
+}
+
+async function resetFilters() {
+  approvalQuery.value = "";
+  for (const k of approvalFilterKeys) selected[k.key] = [];
+  await loadFilterOptions();
+  await loadData();
+}
+
 async function loadData() {
   loading.value = true
   error.value = ''
   try {
-    const res = await $fetch<{ data: any[] }>(`${apiBase.value}/api/cost/pending-changes`)
+    const params = buildFilterParams();
+    const res = await $fetch<{ data: any[] }>(`${apiBase.value}/api/cost/pending-changes?${params}`)
     pendingChanges.value = res.data || []
     selectedIds.value = []
   } catch (e: any) {
@@ -302,8 +415,9 @@ async function loadMarginTargets() {
   }
 }
 
-onMounted(() => {
-  loadData()
+onMounted(async () => {
+  await loadData()
+  await loadFilterOptions()
   loadMarginTargets()
 })
 </script>
@@ -447,4 +561,28 @@ onMounted(() => {
   padding: 0 4px;
 }
 .approval-error-x:hover { color: var(--text-strong); }
+
+/* ── Filter bar ─────────────────────────────────────────────────────────────── */
+.approval-filters {
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+}
+.approval-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.af-search input {
+  width: 180px;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--rd-2);
+  font-size: var(--fs-xs);
+  background: var(--bg-surface);
+  color: var(--text-strong);
+}
+.af-item { width: 140px; }
+.af-item.locked { opacity: 0.4; pointer-events: none; }
+.af-busy { margin-top: var(--sp-1); color: var(--text-muted); font-size: var(--fs-xs); }
 </style>
