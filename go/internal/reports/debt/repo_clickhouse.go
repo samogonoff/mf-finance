@@ -72,14 +72,28 @@ func (r *clickhouseRepo) Report(ctx context.Context, f Filters) ([]DebtRow, erro
 	// Отчёт всегда ВГО (union ico=1 / наш контрагент). См. vgoCHClause.
 	icoClause := vgoCHClause()
 
+	// Договор (дебиторка 62) денормализован в fact_premaster (см. etl/extract.go).
+	// contract_ref хранится как 62-сторона; гейтим по acc_root='62' в каждой ветке
+	// UNION (в ветке Dr — по dr_acc_root, в Cr — по cr_acc_root), чтобы договор не
+	// «протёк» в строки счёта 90/51 и т.п. Имя/срок константны на договор → any().
 	q := fmt.Sprintf(`
 WITH src AS (
     SELECT company_id, counterparty_id, dr_acc_root AS acc_root,
+           if(dr_acc_root = '62', contract_ref, '')      AS contract_ref,
+           if(dr_acc_root = '62', contract_name, '')     AS contract_name,
+           if(dr_acc_root = '62', contract_delay, '')    AS contract_delay,
+           if(dr_acc_root = '62', contract_doc_date, '') AS contract_doc_date,
+           if(dr_acc_root = '62', contract_pay_date, '') AS contract_pay_date,
            amount AS amt, CAST(1 AS Int8) AS sgn, date
     FROM finance.fact_premaster FINAL
     WHERE company_id IN (%[1]s) AND date <= toDate('%[2]s')%[5]s
     UNION ALL
     SELECT company_id, counterparty_id, cr_acc_root AS acc_root,
+           if(cr_acc_root = '62', contract_ref, ''),
+           if(cr_acc_root = '62', contract_name, ''),
+           if(cr_acc_root = '62', contract_delay, ''),
+           if(cr_acc_root = '62', contract_doc_date, ''),
+           if(cr_acc_root = '62', contract_pay_date, ''),
            amount, CAST(-1 AS Int8) AS sgn, date
     FROM finance.fact_premaster FINAL
     WHERE company_id IN (%[1]s) AND date <= toDate('%[2]s')%[5]s
@@ -88,6 +102,11 @@ SELECT
     company_id,
     counterparty_id,
     acc_root,
+    contract_ref,
+    any(contract_name)     AS contract_name,
+    any(contract_delay)    AS contract_delay,
+    any(contract_doc_date) AS contract_doc_date,
+    any(contract_pay_date) AS contract_pay_date,
     -- CAST в String: CH 24.3 по дефолту отдаёт Decimal как число, что ломает
     -- json.Decode в наш string-тип и при float64-парсинге может терять
     -- precision на больших суммах. Строка безопасна.
@@ -96,7 +115,7 @@ SELECT
     toString(sumIf(amt * sgn, date >= toDate('%[4]s') AND date <= toDate('%[2]s'))) AS last_month_signed,
     toString(sum(amt * sgn))                                                        AS closing_signed
 FROM src
-GROUP BY company_id, counterparty_id, acc_root
+GROUP BY company_id, counterparty_id, acc_root, contract_ref
 HAVING abs(sum(amt * sgn)) > 0.005
     OR abs(sumIf(amt * sgn, date <  toDate('%[3]s'))) > 0.005
     OR abs(sumIf(amt * sgn, date >= toDate('%[3]s') AND date <= toDate('%[2]s'))) > 0.005
@@ -125,6 +144,11 @@ FORMAT JSONEachRow`,
 			CompanyID       string `json:"company_id"`
 			CounterpartyID  string `json:"counterparty_id"`
 			AccRoot         string `json:"acc_root"`
+			ContractRef     string `json:"contract_ref"`
+			ContractName    string `json:"contract_name"`
+			ContractDelay   string `json:"contract_delay"`
+			ContractDocDate string `json:"contract_doc_date"`
+			ContractPayDate string `json:"contract_pay_date"`
 			OpeningSigned   string `json:"opening_signed"`
 			TurnoverSigned  string `json:"turnover_signed"`
 			LastMonthSigned string `json:"last_month_signed"`
@@ -150,10 +174,15 @@ FORMAT JSONEachRow`,
 			TurnoverSigned:  tu,
 			LastMonthSigned: lm,
 			ClosingSigned:   cl,
+			ContractRef:     nullStr(jr.ContractRef),
+			ContractName:    nullStr(jr.ContractName),
+			ContractDelay:   nullIntStr(jr.ContractDelay),
+			ContractDocDate: nullDateStr(jr.ContractDocDate),
+			ContractPayDate: nullDateStr(jr.ContractPayDate),
 		})
 	}
 
-	return BuildReport(raw), nil
+	return BuildReport(raw, f.DateTo), nil
 }
 
 // Drilldown — пока fallback на MSSQL через compositeRepo (см. ниже).
@@ -186,3 +215,34 @@ func (c *compositeRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Docu
 }
 
 func asDate(t time.Time) string { return t.Format("2006-01-02") }
+
+// nullStr/nullIntStr/nullDateStr — ” из CH → невалидный Null* (договор/срок не заведён),
+// иначе распарсенное значение. Семантика совпадает с MSSQL-путём (NULL-колонки).
+func nullStr(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func nullIntStr(s string) sql.NullInt64 {
+	if s == "" {
+		return sql.NullInt64{}
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: n, Valid: true}
+}
+
+func nullDateStr(s string) sql.NullTime {
+	if s == "" {
+		return sql.NullTime{}
+	}
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: t, Valid: true}
+}

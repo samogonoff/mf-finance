@@ -93,25 +93,7 @@ func (w *IncrementalWorker) pullDelta(ctx context.Context, ch *chClient, inn str
 	// ВГО-фильтр: дельта-синк тоже тянет только внутригрупповые проводки —
 	// та же логика, что в bootstrap (vgoFilter).
 	vgoClause, vgoArgs := vgoFilter()
-	q := `
-SELECT
-    p.CompanyID,
-    ISNULL(p.CounterpartyID, ''),
-    CONVERT(NVARCHAR(MAX), p.DocID, 1),
-    p.RwNm,
-    CONVERT(CHAR(10), p.[Date], 23),
-    p.DrAcc, p.CrAcc,
-    LEFT(p.DrAcc, CHARINDEX('.', p.DrAcc + '.') - 1),
-    LEFT(p.CrAcc, CHARINDEX('.', p.CrAcc + '.') - 1),
-    CONVERT(VARCHAR(40), p.AmountWithVATCurrency),
-    ISNULL(p.ICO, 0),
-    ISNULL(o.[Name], ''),
-    ISNULL(p.Mapping, ''),
-    ISNULL(p.TransDescription, ''),
-    ISNULL(p.OperationDescription, ''),
-    CONVERT(VARCHAR(19), ISNULL(p.DateOfChange, p.[Date]), 120)
-FROM [FinDWH].[dbo].[Premaster1C] AS p WITH (NOLOCK)
-LEFT JOIN [FinDWH].[dbo].[Objects] AS o WITH (NOLOCK) ON o.ID = p.DocID
+	q := extractSelectFrom() + `
 WHERE p.CompanyID = @inn AND p.DateOfChange > @last` + vgoClause + `
 ORDER BY p.DateOfChange, p.DocID, p.RwNm`
 
@@ -148,17 +130,10 @@ ORDER BY p.DateOfChange, p.DocID, p.RwNm`
 	}
 
 	for rows.Next() {
-		var r row
-		if err := rows.Scan(
-			&r.CompanyID, &r.CounterpartyID, &r.DocID, &r.RwNm, &r.Date,
-			&r.DrAcc, &r.CrAcc, &r.DrAccRoot, &r.CrAccRoot,
-			&r.Amount, &r.ICO,
-			&r.DocName1C, &r.Mapping, &r.TransDescription, &r.OperationDescription,
-			&r.DateOfChange,
-		); err != nil {
-			return fmt.Errorf("scan: %w", err)
+		r, err := scanExtractRow(rows, country)
+		if err != nil {
+			return err
 		}
-		r.Country = country
 		if t, err := time.Parse("2006-01-02 15:04:05", r.DateOfChange); err == nil && t.After(maxChange) {
 			maxChange = t
 		}
