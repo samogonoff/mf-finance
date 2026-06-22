@@ -39,7 +39,7 @@
           <div v-for="fk in approvalFilterKeys" :key="fk.key" class="af-item" :class="{ locked: isLocked(fk.key) }">
             <CostMultiSelect
               v-model="selected[fk.key]"
-              :options="filterOptions[fk.key] || []"
+              :options="enrichFilterOptions(fk.key, filterOptions[fk.key] || [])"
               :placeholder="isLocked(fk.key) ? '—' : fk.label"
               :disabled="isLocked(fk.key)"
               @change="onFilterChange(fk.key)"
@@ -91,6 +91,7 @@
               <th class="col-min">Уровень</th>
               <th class="col-num">Розн., руб</th>
               <th class="col-num">Опт., руб</th>
+              <th class="col-num">Себест., руб</th>
               <th class="col-num">Розн., USD</th>
               <th class="col-num">Опт., USD</th>
 
@@ -149,6 +150,7 @@
               <td>{{ pc['Уровень цен'] || '—' }}</td>
               <td class="col-num num">{{ fmt(pc['Розничная цена по уровню, руб.']) }}</td>
               <td class="col-num num">{{ fmt(pc['Отпускная цена по уровню, руб']) }}</td>
+              <td class="col-num num num-strong">{{ fmt(pc['Себестоимость, руб.']) }}</td>
               <td class="col-num num">{{ fmt(pc['Розничная цена по уровню, USD.']) }}</td>
               <td class="col-num num">{{ fmt(pc['Отпускная цена по уровню, USD.']) }}</td>
 
@@ -208,6 +210,23 @@ const marginTargetByLevel01 = ref<Record<string, number | null>>({})
 // ── Filter bar: keys & cascade ───────────────────────────────────────────────
 
 const APPROVAL_LEVEL_KEYS = ["level01", "level02", "level03", "level04", "level05"];
+
+/** Расшифровки признаков калькуляции */
+const CALC_SIGN_DESCRIPTIONS: Record<string, string> = {
+  'ПКПСС': 'Плановая калькуляция по прямым статьям себестоимости',
+  'КПСС': 'Коммерческая калькуляция по статьям себестоимости',
+  'ПФКСС': 'Прямая фактическая калькуляция себестоимости',
+  'ФКСС': 'Фактическая калькуляция себестоимости (только чтение)',
+};
+
+/** Обогатить плоский список опций расшифровками для calc_sign */
+function enrichFilterOptions<T>(key: string, raw: T[]): T[] {
+  if (key !== 'calc_sign') return raw;
+  return raw.map((v) => {
+    const val = String(v);
+    return { value: val, label: val, description: CALC_SIGN_DESCRIPTIONS[val] } as any;
+  });
+}
 
 const approvalFilterKeys = [
   { key: "brand_manager", label: "Бренд-менеджер" },
@@ -585,4 +604,15 @@ onMounted(async () => {
 .af-item { width: 140px; }
 .af-item.locked { opacity: 0.4; pointer-events: none; }
 .af-busy { margin-top: var(--sp-1); color: var(--text-muted); font-size: var(--fs-xs); }
+
+/* Standalone cost column — bolder to contrast with prices */
+.num-strong {
+  font-weight: var(--fw-bold, 700);
+  color: var(--text-strong);
+}
+
+/* Filter card must not clip the absolutely-positioned dropdown */
+.page-approvals > section.card:first-of-type {
+  overflow: visible;
+}
 </style>
