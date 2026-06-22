@@ -3,6 +3,7 @@ package debt
 import (
 	"database/sql"
 	"testing"
+	"time"
 )
 
 // nstr — short helper для sql.NullString.
@@ -11,6 +12,12 @@ func nstr(s string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: s, Valid: true}
+}
+
+// nint/ntime — в drilldown_test.go (тот же пакет).
+
+func day(y int, m time.Month, d int) time.Time {
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
 func TestBuildReport_RF_62_IsDZ(t *testing.T) {
@@ -297,5 +304,100 @@ func TestBuildReport_PartnerNameFallsBackToSeedWhenNoCounterparty(t *testing.T) 
 	}
 	if r.Channel != "" || r.Manager != "" {
 		t.Errorf("без Counterparty1C канал/менеджер должны быть пустыми: %q / %q", r.Channel, r.Manager)
+	}
+}
+
+// ── договор / срок / просрочка (Report-уровень) ────────────────────────────
+
+func TestBuildReport_ContractNameAndRef(t *testing.T) {
+	ref := `{"#",376807bc-0d88-4c06-9eb2-42b72b970afb,32:b7a690e2ba57de9411effb4b88d87f0d}`
+	in := []rawRow{{
+		CompanyID: "6950135110", CounterpartyID: nstr("7826156685"), AccountRoot: "62",
+		ClosingSigned: 15000,
+		ContractRef:   nstr(ref),
+		ContractName:  nstr("Договор поставки № 1.34 от 18.09.2025"),
+	}}
+	got := BuildReport(in)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].Contract != "Договор поставки № 1.34 от 18.09.2025" {
+		t.Errorf("Contract = %q", got[0].Contract)
+	}
+	if got[0].ContractRef != ref {
+		t.Errorf("ContractRef = %q, want raw 1С-ссылку для drill-down", got[0].ContractRef)
+	}
+}
+
+func TestBuildReport_ContractTermAndOverdueFromDelay(t *testing.T) {
+	// Срок = дата документа + отсрочка; просрочка считается от срока до reportDate.
+	// 2026-01-01 + 30 дн = 2026-01-31; от него до 2026-03-01 = 29 дней (2026 не високосный).
+	in := []rawRow{{
+		CompanyID: "6950135110", CounterpartyID: nstr("7826156685"), AccountRoot: "62",
+		ClosingSigned:   100,
+		ContractDelay:   nint(30),
+		ContractDocDate: ntime(day(2026, 1, 1)),
+	}}
+	got := BuildReport(in, day(2026, 3, 1))
+	r := got[0]
+	if r.PaymentTermDays != 30 {
+		t.Errorf("PaymentTermDays = %d, want 30", r.PaymentTermDays)
+	}
+	if !r.PaymentDueDate.Equal(day(2026, 1, 31)) {
+		t.Errorf("PaymentDueDate = %v, want 2026-01-31", r.PaymentDueDate)
+	}
+	if r.OverdueDays != 29 {
+		t.Errorf("OverdueDays = %d, want 29", r.OverdueDays)
+	}
+}
+
+func TestBuildReport_ExplicitPaymentDateWins(t *testing.T) {
+	// Явная PaymentDate приоритетнее, чем дата документа + отсрочка.
+	in := []rawRow{{
+		CompanyID: "6950135110", CounterpartyID: nstr("7826156685"), AccountRoot: "62",
+		ClosingSigned:   100,
+		ContractDelay:   nint(30),
+		ContractDocDate: ntime(day(2026, 1, 1)),
+		ContractPayDate: ntime(day(2026, 2, 15)),
+	}}
+	got := BuildReport(in, day(2026, 3, 1))
+	if !got[0].PaymentDueDate.Equal(day(2026, 2, 15)) {
+		t.Errorf("PaymentDueDate = %v, want явную 2026-02-15", got[0].PaymentDueDate)
+	}
+	if got[0].OverdueDays != 14 {
+		t.Errorf("OverdueDays = %d, want 14 (15.02→01.03)", got[0].OverdueDays)
+	}
+}
+
+func TestBuildReport_NoReportDate_NoOverdueButTermKept(t *testing.T) {
+	// Без reportDate просрочку не считаем, но отсрочку/срок проставляем.
+	in := []rawRow{{
+		CompanyID: "6950135110", CounterpartyID: nstr("7826156685"), AccountRoot: "62",
+		ClosingSigned:   100,
+		ContractDelay:   nint(45),
+		ContractDocDate: ntime(day(2026, 1, 1)),
+	}}
+	got := BuildReport(in) // без reportDate
+	if got[0].PaymentTermDays != 45 {
+		t.Errorf("PaymentTermDays = %d, want 45", got[0].PaymentTermDays)
+	}
+	if got[0].OverdueDays != 0 {
+		t.Errorf("OverdueDays = %d, want 0 без reportDate", got[0].OverdueDays)
+	}
+}
+
+func TestBuildReport_NoContractLeavesFieldsEmpty(t *testing.T) {
+	// Кредиторка/без договора: поля договора и срока пустые (срока нет нигде).
+	in := []rawRow{{
+		CompanyID: "6950135110", CounterpartyID: nstr("7826156685"), AccountRoot: "60",
+		ClosingSigned: -500, // пассив → перевернётся в KZ
+	}}
+	got := BuildReport(in, day(2026, 3, 1))
+	r := got[0]
+	if r.Contract != "" || r.ContractRef != "" {
+		t.Errorf("без договора Contract/ContractRef должны быть пустыми: %q / %q", r.Contract, r.ContractRef)
+	}
+	if r.PaymentTermDays != 0 || !r.PaymentDueDate.IsZero() || r.OverdueDays != 0 {
+		t.Errorf("без договора срок/просрочка должны быть нулевыми: %+v", r)
 	}
 }

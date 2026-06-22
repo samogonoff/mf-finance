@@ -424,30 +424,30 @@ const flat = computed<Node[]>(() => {
         });
         if (!isOpen(accGroupKey)) continue;
 
-        // договоры
+        // договоры. Группируем по стабильной ссылке (contract_ref), а не по имени —
+        // разные договоры с похожим именем не сольются, и drill-down фильтрует точно.
         const byContract = new Map<string, DebtRow[]>();
         for (const r of accRows) {
-          const k = r.contract || "(без договора)";
+          const k = r.contract_ref || r.contract || "(без договора)";
           if (!byContract.has(k)) byContract.set(k, []);
           byContract.get(k)!.push(r);
         }
-        for (const [ctrKey, ctrRows] of byContract) {
-          // ключ договора несёт всю инфу для drilldown
-          // на уровне договора валюта может различаться — берём первую и сделаем по одному drilldown на (договор, валюта)
-          // фактически drilldown открывается из лиcта-валюты ниже
-          const ctrGroupKey = `${accGroupKey}/contract:${ctrKey}`;
+        for (const [ctrRefKey, ctrRows] of byContract) {
+          const ctrLabel = ctrRows[0].contract || "(без договора)";
+          const ctrRef = ctrRows[0].contract_ref || ""; // что уходит в drilldown для фильтра
+          const ctrGroupKey = `${accGroupKey}/contract:${ctrRefKey}`;
           out.push({
             kind: "group",
             key: ctrGroupKey,
             level: 3,
-            label: ctrKey,
+            label: ctrLabel,
             expandable: true,
             currency: oneCurrency(ctrRows),
             sums: ctrRows.reduce((acc, r) => addSums(acc, r), emptySums()),
             aggCols: {
               account: accKey,
               subaccount: ctrRows[0].subaccount,
-              contract: ctrKey,
+              contract: ctrLabel,
               paymentTerm: String(ctrRows[0].payment_term_days || 0),
               currency: oneCurrency(ctrRows) || "разные"
             }
@@ -465,8 +465,10 @@ const flat = computed<Node[]>(() => {
               row: r
             });
 
-            // ключ drilldown — отдельный, чтобы переиспользовать для подгрузки
-            const docKey = `contract:${companyINN}|${partnerINN}|${accKey}|${ctrKey}|${r.currency}`;
+            // ключ drilldown — отдельный, чтобы переиспользовать для подгрузки.
+            // В сегмент договора кладём сырую ссылку (ctrRef) — по ней бэк точно
+            // фильтрует документы; пустая ссылка = группа «без договора».
+            const docKey = `contract:${companyINN}|${partnerINN}|${accKey}|${ctrRef}|${r.currency}`;
             if (!isOpen(docKey)) {
               // не открыто — рисуем мини-кнопку «развернуть документы»
             }

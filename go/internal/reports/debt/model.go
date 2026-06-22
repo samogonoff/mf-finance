@@ -47,25 +47,31 @@ type Filters struct {
 // DebtRow — плоская строка отчёта; UI сам группирует по
 // (Company → Partner → Account → Contract → Currency).
 type DebtRow struct {
-	Country         Country `json:"country"`
-	Company         string  `json:"company"`
-	CompanyINN      string  `json:"company_inn"`
-	Partner         string  `json:"partner"`
-	PartnerINN      string  `json:"partner_inn,omitempty"`
+	Country    Country `json:"country"`
+	Company    string  `json:"company"`
+	CompanyINN string  `json:"company_inn"`
+	Partner    string  `json:"partner"`
+	PartnerINN string  `json:"partner_inn,omitempty"`
 	// Manager/Channel — обогащение из Counterparty1C (менеджер пары и канал продаж).
 	// Пустые, если справочник не подключён или контрагента в нём нет.
-	Manager         string  `json:"manager,omitempty"`
-	Channel         string  `json:"channel,omitempty"`
-	Account         string  `json:"account"`
-	AccountName     string  `json:"account_name"`
-	Subaccount      string  `json:"subaccount"`
-	SubaccountName  string  `json:"subaccount_name"`
-	Contract        string  `json:"contract"`
-	PaymentTermDays int     `json:"payment_term_days"`
-	Currency        string  `json:"currency"`
+	Manager        string `json:"manager,omitempty"`
+	Channel        string `json:"channel,omitempty"`
+	Account        string `json:"account"`
+	AccountName    string `json:"account_name"`
+	Subaccount     string `json:"subaccount"`
+	SubaccountName string `json:"subaccount_name"`
+	Contract       string `json:"contract"`
+	// ContractRef — сырая 1С-ссылка договора (субконто). Непрозрачна для UI, нужна
+	// только чтобы drill-down точно отфильтровал документы этого договора.
+	ContractRef     string `json:"contract_ref,omitempty"`
+	PaymentTermDays int    `json:"payment_term_days"`
+	// Срок/просрочка по договору (из Payments.Docs). Пусто, если срок не заведён.
+	PaymentDueDate time.Time `json:"payment_due_date,omitempty"`
+	OverdueDays    int       `json:"overdue_days,omitempty"`
+	Currency       string    `json:"currency"`
 
-	OpeningDZ float64 `json:"opening_dz"`
-	OpeningKZ float64 `json:"opening_kz"`
+	OpeningDZ  float64 `json:"opening_dz"`
+	OpeningKZ  float64 `json:"opening_kz"`
 	TurnoverDZ float64 `json:"turnover_dz"`
 	TurnoverKZ float64 `json:"turnover_kz"`
 	ClosingDZ  float64 `json:"closing_dz"`
@@ -104,12 +110,12 @@ type DocumentRow struct {
 
 // SavedFilter — сохранённый пресет фильтров пользователя.
 type SavedFilter struct {
-	ID        int64           `json:"id"`
-	UserID    int64           `json:"-"`
-	Name      string          `json:"name"`
-	Payload   FilterPayload   `json:"payload"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID        int64         `json:"id"`
+	UserID    int64         `json:"-"`
+	Name      string        `json:"name"`
+	Payload   FilterPayload `json:"payload"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
 }
 
 // FilterPayload — JSON-форма фильтра, хранится в jsonb-колонке.
@@ -127,9 +133,9 @@ type FilterPayload struct {
 
 // FilterOptions — ответ /filter-options.
 type FilterOptions struct {
-	Entities   []Entity `json:"entities"`
+	Entities   []Entity  `json:"entities"`
 	Accounts   []Account `json:"accounts"`
-	Currencies []string `json:"currencies"`
+	Currencies []string  `json:"currencies"`
 }
 
 // ReportResponse — ответ /report.
