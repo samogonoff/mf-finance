@@ -36,7 +36,10 @@ export interface DebtRow {
   subaccount: string;
   subaccount_name: string;
   contract: string;
+  contract_ref?: string;       // сырая 1С-ссылка договора (для точного drill-down)
   payment_term_days: number;
+  payment_due_date?: string;   // срок оплаты по договору (пусто, если не заведён)
+  overdue_days?: number;       // просрочка в днях на дату отчёта
   currency: string;
 
   opening_dz: number;

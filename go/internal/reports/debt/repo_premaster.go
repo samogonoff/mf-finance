@@ -23,9 +23,10 @@ type PremasterTables struct {
 	CounterpartyTable string // Counterparty1C — имя/канал/менеджер контрагента (LEFT JOIN в Report); "" → не джойнить
 
 	// Payments-витрина (опционально). Кросс-БД на ТОМ ЖЕ OLAP-сервере.
-	// Docs несёт PaymentDate/Delay → просрочка в drill-down (мост
-	// Premaster1C.DocID = Payments.dbo.Docs.ID). Если PaymentsDatabase пуст —
-	// джойн отключён, payment_due_date/overdue_days не заполняются.
+	// Docs несёт PaymentDate/Delay → срок/просрочка на уровне ДОГОВОРА в Report
+	// (мост: Docs.ID = чистый GUID договора из субконто Premaster, см.
+	// idrrefSQLToGUID; НЕ по DocID — это другой объект 1С). Если PaymentsDatabase
+	// пуст — джойн отключён, срок/просрочка не заполняются.
 	PaymentsDatabase string // Payments
 	DocsSchema       string // dbo
 	DocsTable        string // Docs
@@ -35,10 +36,10 @@ var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (t PremasterTables) Validate() error {
 	for k, v := range map[string]string{
-		"database":       t.Database,
-		"schema":         t.Schema,
-		"main_table":     t.Main,
-		"objects_table":  t.ObjectsTable,
+		"database":      t.Database,
+		"schema":        t.Schema,
+		"main_table":    t.Main,
+		"objects_table": t.ObjectsTable,
 	} {
 		if !identRe.MatchString(v) {
 			return fmt.Errorf("debt.PremasterTables: invalid %s %q (must match %s)", k, v, identRe.String())
@@ -66,8 +67,12 @@ func (t PremasterTables) Validate() error {
 // DocsConfigured — включён ли кросс-БД джойн к Payments.Docs (по непустому имени БД).
 func (t PremasterTables) DocsConfigured() bool { return t.PaymentsDatabase != "" }
 
-func (t PremasterTables) MainFQN() string    { return "[" + t.Database + "].[" + t.Schema + "].[" + t.Main + "]" }
-func (t PremasterTables) ObjectsFQN() string { return "[" + t.Database + "].[" + t.Schema + "].[" + t.ObjectsTable + "]" }
+func (t PremasterTables) MainFQN() string {
+	return "[" + t.Database + "].[" + t.Schema + "].[" + t.Main + "]"
+}
+func (t PremasterTables) ObjectsFQN() string {
+	return "[" + t.Database + "].[" + t.Schema + "].[" + t.ObjectsTable + "]"
+}
 func (t PremasterTables) CounterpartyFQN() string {
 	return "[" + t.Database + "].[" + t.Schema + "].[" + t.CounterpartyTable + "]"
 }
@@ -161,6 +166,15 @@ type rawRow struct {
 	LastMonthSigned float64
 	ClosingSigned   float64
 
+	// Договор (субконто Premaster). ContractRef — сырая 1С-ссылка (для drill-down),
+	// ContractName — резолв через Objects. Срок/отсрочка — из Payments.Docs по
+	// договору (NULL, если Docs отключён/договор не сматчился/срок не заведён).
+	ContractRef     sql.NullString
+	ContractName    sql.NullString
+	ContractDelay   sql.NullInt64 // Docs.Delay — отсрочка в днях
+	ContractPayDate sql.NullTime  // Docs.PaymentDate — плановая дата оплаты
+	ContractDocDate sql.NullTime  // Docs.Date — дата документа-основания (база для срока)
+
 	// Из Counterparty1C (LEFT JOIN после агрегации; NULL, если джойн отключён/не сматчился).
 	PartnerName sql.NullString // CounterpartyName1C — имя контрагента
 	Channel     sql.NullString // канал продаж
@@ -240,10 +254,32 @@ func (r *premasterRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 		cpJoin = "LEFT JOIN " + r.counterpartyFQN + " C WITH (NOLOCK) ON LTRIM(RTRIM(C.UNP)) = LTRIM(RTRIM(agg.CounterpartyID))"
 	}
 
+	// Договор лежит в субконто Premaster (1С-ссылка, резолвится через Objects).
+	// Дебиторский счёт 62 → субконто #2 той стороны проводки (Dr/Cr), где стоит 62
+	// — проверено: даёт реальные договоры (100% матч в Docs).
+	// Кредиторку (60/76) пока НЕ резолвим: позиция субконто там не универсальна —
+	// у части ЮЛ CrSubconto1 = контрагент, а не договор (проверено на ТЕКС). Чтобы
+	// не показывать контрагента как «договор», 60/76 идут в группу «без договора»
+	// до получения надёжной карты «счёт→вид субконто». См. probe-contracts.md.
+	contractDr := "CASE WHEN " + accRootSQL("DrAcc") + " = '62' THEN NULLIF(DrSubconto2,'') ELSE NULL END"
+	contractCr := "CASE WHEN " + accRootSQL("CrAcc") + " = '62' THEN NULLIF(CrSubconto2,'') ELSE NULL END"
+
+	// Имя договора — из Objects (всегда). Срок/отсрочка — из Payments.Docs по
+	// конвертированному в чистый GUID субконто-договору (мост по ДОГОВОРУ, не по
+	// DocID — см. debt-docid-bridge). Docs опционален: при пустом docsFQN отдаём NULL.
+	objJoin := "LEFT JOIN " + r.objectsFQN + " OBJ WITH (NOLOCK) ON OBJ.ID = agg.contract_ref"
+	contractTermCols := ", CAST(NULL AS int) AS contract_delay, CAST(NULL AS date) AS contract_pay_date, CAST(NULL AS date) AS contract_doc_date"
+	docsJoin := ""
+	if r.docsFQN != "" {
+		contractTermCols = ", DOC.Delay AS contract_delay, DOC.PaymentDate AS contract_pay_date, DOC.[Date] AS contract_doc_date"
+		docsJoin = "LEFT JOIN " + r.docsFQN + " DOC WITH (NOLOCK) ON DOC.ID = " + idrrefSQLToGUID("agg.contract_ref") + " COLLATE DATABASE_DEFAULT"
+	}
+
 	q := fmt.Sprintf(`
 WITH src AS (
     SELECT CompanyID, ISNULL(CounterpartyID,'') AS CounterpartyID,
-           LEFT(DrAcc, CHARINDEX('.', DrAcc + '.') - 1) AS acc_root,
+           %[9]s AS acc_root,
+           %[10]s AS contract_ref,
            AmountWithVATCurrency AS amt,
            CAST(1 AS smallint) AS sign_dr,
            [Date]
@@ -251,7 +287,8 @@ WITH src AS (
     WHERE CompanyID IN (%[1]s) AND [Date] <= %[2]s%[5]s
     UNION ALL
     SELECT CompanyID, ISNULL(CounterpartyID,''),
-           LEFT(CrAcc, CHARINDEX('.', CrAcc + '.') - 1),
+           %[11]s,
+           %[12]s,
            AmountWithVATCurrency,
            CAST(-1 AS smallint),
            [Date]
@@ -262,21 +299,26 @@ WITH src AS (
         CompanyID,
         NULLIF(CounterpartyID,'') AS CounterpartyID,
         acc_root,
+        NULLIF(ISNULL(contract_ref,''),'') AS contract_ref,
         SUM(CASE WHEN [Date] <  %[3]s THEN amt * sign_dr ELSE 0 END) AS opening_signed,
         SUM(CASE WHEN [Date] >= %[3]s THEN amt * sign_dr ELSE 0 END) AS turnover_signed,
         SUM(CASE WHEN [Date] >= %[4]s THEN amt * sign_dr ELSE 0 END) AS last_month_signed,
         SUM(amt * sign_dr) AS closing_signed
     FROM src
-    GROUP BY CompanyID, CounterpartyID, acc_root
+    GROUP BY CompanyID, CounterpartyID, acc_root, ISNULL(contract_ref,'')
     HAVING ABS(SUM(amt * sign_dr)) > 0.005    -- отбросить строки с нулевым сальдо
         OR ABS(SUM(CASE WHEN [Date] <  %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
         OR ABS(SUM(CASE WHEN [Date] >= %[3]s THEN amt * sign_dr ELSE 0 END)) > 0.005
 )
-SELECT agg.CompanyID, agg.CounterpartyID, agg.acc_root,
-       agg.opening_signed, agg.turnover_signed, agg.last_month_signed, agg.closing_signed%[7]s
+SELECT agg.CompanyID, agg.CounterpartyID, agg.acc_root, agg.contract_ref,
+       agg.opening_signed, agg.turnover_signed, agg.last_month_signed, agg.closing_signed,
+       OBJ.[Name] AS contract_name%[13]s%[7]s
 FROM agg
+%[14]s
+%[15]s
 %[8]s
-`, strings.Join(innParams, ","), dateToParam, dateFromParam, dateLastMonthParam, icoClause, r.mainFQN, cpCols, cpJoin)
+`, strings.Join(innParams, ","), dateToParam, dateFromParam, dateLastMonthParam, icoClause, r.mainFQN, cpCols, cpJoin,
+		accRootSQL("DrAcc"), contractDr, accRootSQL("CrAcc"), contractCr, contractTermCols, objJoin, docsJoin)
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -287,8 +329,9 @@ FROM agg
 	raw := make([]rawRow, 0, 256)
 	for rows.Next() {
 		var rr rawRow
-		if err := rows.Scan(&rr.CompanyID, &rr.CounterpartyID, &rr.AccountRoot,
+		if err := rows.Scan(&rr.CompanyID, &rr.CounterpartyID, &rr.AccountRoot, &rr.ContractRef,
 			&rr.OpeningSigned, &rr.TurnoverSigned, &rr.LastMonthSigned, &rr.ClosingSigned,
+			&rr.ContractName, &rr.ContractDelay, &rr.ContractPayDate, &rr.ContractDocDate,
 			&rr.PartnerName, &rr.Channel, &rr.Manager); err != nil {
 			return nil, fmt.Errorf("debt.premaster.Report: scan: %w", err)
 		}
@@ -298,7 +341,7 @@ FROM agg
 		return nil, fmt.Errorf("debt.premaster.Report: rows: %w", err)
 	}
 
-	return BuildReport(raw), nil
+	return BuildReport(raw, endOfDay(f.DateTo)), nil
 }
 
 // drillRow — что вернёт SQL для drill-down: проводка с распознанными именами.
@@ -309,7 +352,7 @@ type drillRow struct {
 	DrAcc                string
 	CrAcc                string
 	Amount               float64
-	ObjectsName          string         // из Objects.Name (NULL → ""), FQN — см. premasterRepo.objectsFQN
+	ObjectsName          string // из Objects.Name (NULL → ""), FQN — см. premasterRepo.objectsFQN
 	Mapping              sql.NullString
 	TransDescription     sql.NullString
 	OperationDescription sql.NullString
@@ -320,9 +363,10 @@ type drillRow struct {
 	DocDelay       sql.NullInt64 // Docs.Delay — отсрочка в днях
 }
 
-// Drilldown — детализация по документам внутри (CompanyINN, PartnerINN, Account, Period).
-// Игнорирует q.Contract и q.Currency в M2 (нет resolver субконто и нет колонки валюты
-// в Premaster — см. M4/M5). UI должен дёргать с пустыми Contract/Currency.
+// Drilldown — детализация по документам внутри (CompanyINN, PartnerINN, Account, Contract).
+// q.Contract (сырая 1С-ссылка договора из строки отчёта) фильтрует документы по
+// договору; пустой Contract = группа «без договора». Договор резолвится только для
+// дебиторки (62). q.Currency пока не используется (в Premaster нет колонки валюты).
 func (r *premasterRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]DocumentRow, error) {
 	if q.CompanyINN == "" || q.PartnerINN == "" || q.Account == "" {
 		return nil, errors.New("debt.premaster.Drilldown: company_inn/partner_inn/account required")
@@ -347,14 +391,30 @@ func (r *premasterRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Docu
 	// Сейчас семантика: «что сложило задолженность к концу периода» — полная история.
 	_ = q.DateFrom
 
-	// Опциональный кросс-БД джойн к Payments.Docs за датой оплаты/отсрочкой.
-	// LEFT JOIN: если не сконфигурирован или ключ не сматчился — drill-down
-	// возвращает проводки как раньше, просто без payment_due_date/overdue_days.
+	// Страна юрлица — нужна для классификации счёта (DZ/KZ) и в BuildDrilldown.
+	country := countryOfINN(q.CompanyINN)
+
+	// Срок/просрочка теперь живут на уровне ДОГОВОРА (Report), а не документа:
+	// прежний джойн Docs по A.DocID был по неверному ключу (DocID = бух-документ,
+	// а Docs ключуется по договору) и всегда давал 0 строк — он убран. Поля
+	// doc_* в drill-down остаются NULL. См. debt-docid-bridge.
 	docsCols := ", CAST(NULL AS date) AS doc_base_date, CAST(NULL AS date) AS doc_payment_date, CAST(NULL AS int) AS doc_delay"
-	docsJoin := ""
-	if r.docsFQN != "" {
-		docsCols = ", D.[Date] AS doc_base_date, D.PaymentDate AS doc_payment_date, D.Delay AS doc_delay"
-		docsJoin = "LEFT JOIN " + r.docsFQN + " D WITH (NOLOCK) ON D.ID = A.DocID"
+
+	// Фильтр по договору: drill-down показывает документы ИМЕННО этого договора.
+	// Договор берём из субконто проводки той стороны, где стоит счёт (как в Report):
+	// дебиторский 62 → субконто #2, кредиторские 60/76 → #1. q.Contract несёт сырую
+	// 1С-ссылку (ContractRef из строки отчёта). Пустой q.Contract = группа «без договора».
+	// Договор резолвим только для дебиторки (62, субконто #2) — см. Report.
+	// Кредиторка (60/76) и прочее → договор NULL (группа «без договора»).
+	contractExpr := "NULL"
+	if ClassifyAccount(country, AccountRoot(q.Account)) == KindDZ {
+		contractExpr = "CASE WHEN " + accRootSQL("A.DrAcc") + " = @acc THEN NULLIF(A.DrSubconto2,'')" +
+			" WHEN " + accRootSQL("A.CrAcc") + " = @acc THEN NULLIF(A.CrSubconto2,'') END"
+	}
+	contractFilter := " AND (" + contractExpr + ") IS NULL"
+	if strings.TrimSpace(q.Contract) != "" {
+		contractFilter = " AND (" + contractExpr + ") = @contract"
+		args = append(args, sql.Named("contract", q.Contract))
 	}
 
 	q1 := fmt.Sprintf(`
@@ -364,13 +424,12 @@ SELECT A.[Date], CONVERT(nvarchar(max), A.DocID, 1) AS DocID, A.RwNm,
        A.Mapping, A.TransDescription, A.OperationDescription%[3]s
 FROM %[1]s A WITH (NOLOCK)
 LEFT JOIN %[2]s F ON A.DocID = F.ID
-%[4]s
 WHERE A.CompanyID = @company
   AND A.CounterpartyID = @partner
   AND (   LEFT(A.DrAcc, CHARINDEX('.', A.DrAcc + '.') - 1) = @acc
        OR LEFT(A.CrAcc, CHARINDEX('.', A.CrAcc + '.') - 1) = @acc )
-  AND A.[Date] <= @dto
-ORDER BY A.[Date], A.DocID, A.RwNm`, r.mainFQN, r.objectsFQN, docsCols, docsJoin)
+  AND A.[Date] <= @dto%[4]s
+ORDER BY A.[Date], A.DocID, A.RwNm`, r.mainFQN, r.objectsFQN, docsCols, contractFilter)
 
 	rows, err := r.db.QueryContext(ctx, q1, args...)
 	if err != nil {
@@ -392,8 +451,6 @@ ORDER BY A.[Date], A.DocID, A.RwNm`, r.mainFQN, r.objectsFQN, docsCols, docsJoin
 		return nil, fmt.Errorf("debt.premaster.Drilldown: rows: %w", err)
 	}
 
-	// Определяем страну юрлица — нужно для классификации DZ/KZ по счёту.
-	country := countryOfINN(q.CompanyINN)
 	return BuildDrilldown(raw, country, AccountRoot(q.Account), q.DateTo), nil
 }
 
@@ -405,6 +462,24 @@ func countryOfINN(inn string) Country {
 		}
 	}
 	return ""
+}
+
+// accRootSQL — SQL-выражение корня счёта по колонке (LEFT до первой точки).
+// `col + '.'` гарантирует наличие точки даже для счёта без неё ('9010' → '9010.').
+func accRootSQL(col string) string {
+	return "LEFT(" + col + ", CHARINDEX('.', " + col + " + '.') - 1)"
+}
+
+// idrrefSQLToGUID — SQL-выражение, конвертирующее текстовую 1С-ссылку
+// (`{"#",<тип>,N:<hex32>}`) в чистый GUID, как Docs.ID/Debt_arh.DocID. Реплика
+// штатной UDF dbo.Convert_IDRRefToGUID инлайном — чтобы не зависеть от наличия
+// функции в конкретной БД. hex берётся из хвоста ссылки (последние 32 символа до
+// '}'), порядок байт-групп — канонический (проверено: совпадает с UDF 1:1).
+// Возвращает NULL для значений, не похожих на ссылку. См. debt-docid-bridge.
+func idrrefSQLToGUID(col string) string {
+	h := "LOWER(SUBSTRING(" + col + ",LEN(" + col + ")-32,32))"
+	return "(CASE WHEN " + col + " LIKE '{%:%}' AND LEN(" + col + ")>=33 THEN " +
+		"SUBSTRING(" + h + ",25,8)+'-'+SUBSTRING(" + h + ",21,4)+'-'+SUBSTRING(" + h + ",17,4)+'-'+SUBSTRING(" + h + ",1,4)+'-'+SUBSTRING(" + h + ",5,12) END)"
 }
 
 // bindIN — добавляет позиционные параметры для IN-clause и возвращает их

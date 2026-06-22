@@ -12,8 +12,8 @@ import (
 // В mock-режиме все запросы отдают фикстуру из mocks.go (без выхода в MSSQL).
 // В live-режиме сюда подставляется реализация PremasterRepo (см. repo_premaster.go).
 type Service struct {
-	mock    bool
-	repo    PremasterRepo // может быть nil, если mock=true
+	mock bool
+	repo PremasterRepo // может быть nil, если mock=true
 }
 
 // PremasterRepo описывает интерфейс live-источника данных (Premaster1C).
@@ -168,9 +168,15 @@ func daysOverdue(due, now time.Time) int {
 //   - Currency в v1 не заполняется (см. M4)
 //
 // Экспортирована, чтобы repo_premaster.Report мог вызвать после Scan.
-func BuildReport(raw []rawRow) []DebtRow {
+// reportDate (необязательный) — точка отсчёта просрочки по договору; если не
+// передан, OverdueDays остаётся 0 (срок всё равно проставляется).
+func BuildReport(raw []rawRow, reportDate ...time.Time) []DebtRow {
 	companyByINN := indexCompaniesByINN()
 	partnerByINN := indexPartnersByINN()
+	var asOf time.Time
+	if len(reportDate) > 0 {
+		asOf = reportDate[0]
+	}
 
 	out := make([]DebtRow, 0, len(raw))
 	for _, rr := range raw {
@@ -211,6 +217,29 @@ func BuildReport(raw []rawRow) []DebtRow {
 		if rr.Manager.Valid {
 			row.Manager = strings.TrimSpace(rr.Manager.String)
 		}
+
+		// Договор: имя из Objects (приоритет), иначе показываем сырую ссылку как
+		// fallback; ContractRef всегда несём для точного drill-down.
+		if rr.ContractRef.Valid {
+			row.ContractRef = rr.ContractRef.String
+		}
+		if rr.ContractName.Valid && strings.TrimSpace(rr.ContractName.String) != "" {
+			row.Contract = strings.TrimSpace(rr.ContractName.String)
+		}
+		// Срок/отсрочка/просрочка по договору (только для DZ/KZ; у выручки договора нет).
+		if rr.ContractDelay.Valid {
+			row.PaymentTermDays = int(rr.ContractDelay.Int64)
+		}
+		var payDate, baseDate time.Time
+		if rr.ContractPayDate.Valid {
+			payDate = rr.ContractPayDate.Time
+		}
+		if rr.ContractDocDate.Valid {
+			baseDate = rr.ContractDocDate.Time
+		}
+		due := docDueDate(payDate, baseDate, int(rr.ContractDelay.Int64), rr.ContractDelay.Valid)
+		row.PaymentDueDate = due
+		row.OverdueDays = daysOverdue(due, asOf)
 
 		switch kind {
 		case KindDZ:
