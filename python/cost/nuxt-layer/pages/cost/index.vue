@@ -44,7 +44,7 @@
             <label>{{ f.label }}</label>
             <CostMultiSelect
               v-model="selected[f.key]"
-              :options="filterOptions[f.key] || []"
+              :options="enrichFilterOptions(f.key, filterOptions[f.key] || [])"
               :placeholder="isLocked(f.key) ? '—' : `Все · ${f.label.toLowerCase()}`"
               :disabled="isLocked(f.key)"
               @change="onFilterChange(f.key)"
@@ -98,6 +98,11 @@
           <Icon name="lucide:database" />
           Кеш: {{ (cacheInfo.row_count || 0).toLocaleString("ru-RU") }} записей · {{ formatDateTime(cacheInfo.refreshed_at) }}
         </span>
+        <Transition name="fade">
+          <span v-if="cacheNotification" class="cache-notification">
+            {{ cacheNotification }}
+          </span>
+        </Transition>
       </div>
       <div class="cost-actions-buttons">
         <button class="btn btn-ghost" @click="openMarginModal">
@@ -169,7 +174,7 @@
           <label>{{ cfg.label }}</label>
           <CostMultiSelect
             v-model="columnFilters[cfg.key]"
-            :options="columnFilterOptions[cfg.key] || []"
+            :options="enrichFilterOptions(cfg.key, columnFilterOptions[cfg.key] || [])"
             :placeholder="isColFilterLocked(cfg.key) ? '—' : `Все · ${cfg.label.toLowerCase()}`"
             :disabled="isColFilterLocked(cfg.key)"
             @change="onColFilterChange(cfg.key)"
@@ -324,7 +329,7 @@
                 <input
                   class="price-input"
                   type="number"
-                  :value="row['avg_Розничная цена по уровню, руб.'] || ''"
+                  :value="row['avg_Розничная цена по уровню, руб.'] != null ? Number(row['avg_Розничная цена по уровню, руб.']).toFixed(2) : ''"
                   :disabled="row['Признак калькуляции'] === 'ФКСС'"
                   @click.stop
                   @input="onRetailPriceInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
@@ -395,7 +400,7 @@
           <label>Признак калькуляции
             <CostMultiSelect
               v-model="detailCalcSign"
-              :options="filterOptions['calc_sign'] || []"
+              :options="enrichFilterOptions('calc_sign', filterOptions['calc_sign'] || [])"
               placeholder="Все · признак калькуляции"
               @change="loadDetailsData"
             />
@@ -409,7 +414,7 @@
             <label>{{ cfg.label }}</label>
             <CostMultiSelect
               v-model="detailsColumnFilters[cfg.key]"
-              :options="detailsColumnFilterOptions[cfg.key] || []"
+              :options="enrichFilterOptions(cfg.key, detailsColumnFilterOptions[cfg.key] || [])"
               :placeholder="isDetFilterLocked(cfg.key) ? '—' : `Все · ${cfg.label.toLowerCase()}`"
               :disabled="isDetFilterLocked(cfg.key)"
               @change="onDetFilterChange(cfg.key)"
@@ -574,46 +579,70 @@
           <button class="modal-close" @click="showApprovalModal = false">×</button>
         </div>
         <div class="approval-modal-body">
+          <!-- Filter bar -->
+          <div class="approval-filters" v-if="!approvalLoading">
+            <div class="approval-fields">
+              <div class="af-search">
+                <input v-model="approvalQuery" type="text" placeholder="Поиск по модели, артикулу…" @input="onApprovalFilterChangeDelayed" />
+              </div>
+              <div v-for="fk in approvalFilterKeys" :key="fk.key" class="af-item" :class="{ locked: isApprovalLocked(fk.key) }">
+              <CostMultiSelect
+                v-model="approvalSelected[fk.key]"
+                :options="enrichFilterOptions(fk.key, approvalFilterOptions[fk.key] || [])"
+                :placeholder="isApprovalLocked(fk.key) ? '—' : fk.label"
+                :disabled="isApprovalLocked(fk.key)"
+                @change="onApprovalFilterChange(fk.key)"
+              />
+              </div>
+              <button class="btn btn-ghost btn-xs" @click="resetApprovalFilters" :disabled="approvalFilterBusy">Сбросить</button>
+            </div>
+            <div v-if="approvalFilterBusy" class="af-busy">Обновление…</div>
+          </div>
+
           <div v-if="approvalLoading" class="muted" style="text-align:center;padding:24px">Загрузка…</div>
           <div v-else-if="!approvalPendingChanges.length" class="muted" style="text-align:center;padding:24px">
             Нет ожидающих согласования изменений
           </div>
-          <table v-else class="data-table compact approval-table">
-            <thead>
-              <tr>
-                <th><input type="checkbox" :checked="selectedPendingIds.length === approvalPendingChanges.length && approvalPendingChanges.length > 0" @change="toggleSelectAllPending" /></th>
-                <th>Модель</th>
-                <th>Артикул</th>
-                <th>Уровень цен</th>
-                <th class="col-num">Розн., руб</th>
-                <th class="col-num">Опт., руб</th>
-                <th class="col-num">Наценка, руб</th>
-                <th class="col-num">Наценка, %</th>
-                <th class="col-num">Маржа, %</th>
-                <th class="col-num">Откл. %</th>
-                <th>Признак калькуляции</th>
-                <th>Автор</th>
-                <th>Дата</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="pc in approvalPendingChanges" :key="pc.id" :class="modalApprovalRowClass(pc)">
-                <td><input type="checkbox" :value="pc.id" v-model="selectedPendingIds" /></td>
-                <td>{{ pc['Модель'] || pc.model || '—' }}</td>
-                <td>{{ pc['Артикул'] || pc.articul || '—' }}</td>
-                <td>{{ pc['Уровень цен'] || pc.price_level || '—' }}</td>
-                <td class="col-num num">{{ fmt(pc['Розничная цена по уровню, руб.'] || pc.retail_rub) }}</td>
-                <td class="col-num num">{{ fmt(pc['Отпускная цена по уровню, руб'] || pc.wholesale_rub) }}</td>
-                <td class="col-num num">{{ fmt(calcApprovalModal(pc).markupRub) }}</td>
-                <td class="col-num num">{{ calcApprovalModal(pc).markupPct.toFixed(1) }}%</td>
-                <td class="col-num num">{{ calcApprovalModal(pc).marginPct.toFixed(1) }}%</td>
-                <td class="col-num num">{{ modalMarginDevText(pc) }}</td>
-                <td>{{ pc['Признак калькуляции'] || pc.calc_sign || '—' }}</td>
-                <td>{{ pc['username'] || pc.author || '—' }}</td>
-                <td>{{ formatDate(pc['created_at'] || pc.created_at) }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="approval-table-scroll" v-else>
+            <table class="data-table compact approval-table">
+              <thead>
+                <tr>
+                  <th><input type="checkbox" :checked="selectedPendingIds.length === approvalPendingChanges.length && approvalPendingChanges.length > 0" @change="toggleSelectAllPending" /></th>
+                  <th>Модель</th>
+                  <th>Артикул</th>
+                  <th>План</th>
+                  <th>Уровень цен</th>
+                  <th class="col-num">Розн., руб</th>
+                  <th class="col-num">Опт., руб</th>
+                  <th class="col-num">Наценка, руб</th>
+                  <th class="col-num">Наценка, %</th>
+                  <th class="col-num">Маржа, %</th>
+                  <th class="col-num">Откл. %</th>
+                  <th>Признак калькуляции</th>
+                  <th>Автор</th>
+                  <th>Дата</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="pc in approvalPendingChanges" :key="pc.id" :class="modalApprovalRowClass(pc)">
+                  <td><input type="checkbox" :value="pc.id" v-model="selectedPendingIds" /></td>
+                  <td>{{ pc['Модель'] || pc.model || '—' }}</td>
+                  <td>{{ pc['Артикул'] || pc.articul || '—' }}</td>
+                  <td>{{ pc['PLAN_ID'] || '—' }}</td>
+                  <td>{{ pc['Уровень цен'] || pc.price_level || '—' }}</td>
+                  <td class="col-num num">{{ fmt(pc['Розничная цена по уровню, руб.'] || pc.retail_rub) }}</td>
+                  <td class="col-num num">{{ fmt(pc['Отпускная цена по уровню, руб'] || pc.wholesale_rub) }}</td>
+                  <td class="col-num num">{{ fmt(calcApprovalModal(pc).markupRub) }}</td>
+                  <td class="col-num num">{{ calcApprovalModal(pc).markupPct.toFixed(1) }}%</td>
+                  <td class="col-num num">{{ calcApprovalModal(pc).marginPct.toFixed(1) }}%</td>
+                  <td class="col-num num">{{ modalMarginDevText(pc) }}</td>
+                  <td>{{ pc['Признак калькуляции'] || pc.calc_sign || '—' }}</td>
+                  <td>{{ pc['username'] || pc.author || '—' }}</td>
+                  <td>{{ formatDate(pc['created_at'] || pc.created_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
         <div class="approval-modal-footer">
           <span style="font-size:var(--fs-xs);color:var(--text-muted)">
@@ -654,6 +683,23 @@ const filterConfig: { key: FilterKey; label: string }[] = [
 ];
 
 const LEVEL_KEYS = ["level01", "level02", "level03", "level04", "level05"];
+
+/** Расшифровки признаков калькуляции — при необходимости уточнить у бухгалтерии */
+const CALC_SIGN_DESCRIPTIONS: Record<string, string> = {
+  'ПКПСС': 'Плановая калькуляция по прямым статьям себестоимости',
+  'КПСС': 'Коммерческая калькуляция по статьям себестоимости',
+  'ПФКСС': 'Прямая фактическая калькуляция себестоимости',
+  'ФКСС': 'Фактическая калькуляция себестоимости (только чтение)',
+};
+
+/** Обогатить плоский список опций расшифровками для calc_sign */
+function enrichFilterOptions<T>(key: string, raw: T[]): T[] {
+  if (key !== 'calc_sign' && key !== 'col_calc_sign') return raw;
+  return raw.map((v) => {
+    const val = String(v);
+    return { value: val, label: val, description: CALC_SIGN_DESCRIPTIONS[val] } as any;
+  });
+}
 
 const config = useRuntimeConfig();
 const apiBase = computed(() =>
@@ -842,7 +888,7 @@ const noWholesaleOnly = ref(false);
 
 const allAggregated = ref<any[]>([]);
 const totalAllRecords = ref(0);
-const pageSize = 50;
+const pageSize = 25;
 
 // ── Column filters (client-side, top-down cascade) ──────────────────────────
 type ColFilterKey = 'col_bm' | 'col_model' | 'col_articul' | 'col_model_name' | 'col_plan_id' | 'col_calc_sign' | 'col_country' | 'col_season' | 'col_date';
@@ -1543,9 +1589,18 @@ function ap(){
 (function(){
   var dd=document.getElementById("msd_api_cs");
   if(dd){
+    var CS_DESC={
+      "\\u041F\\u041A\\u041F\\u0421\\u0421":"\\u041F\\u043B\\u0430\\u043D\\u043E\\u0432\\u0430\\u044F \\u043A\\u0430\\u043B\\u044C\\u043A\\u0443\\u043B\\u044F\\u0446\\u0438\\u044F \\u043F\\u043E \\u043F\\u0440\\u044F\\u043C\\u044B\\u043C \\u0441\\u0442\\u0430\\u0442\\u044C\\u044F\\u043C \\u0441\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u0438",
+      "\\u041A\\u041F\\u0421\\u0421":"\\u041A\\u043E\\u043C\\u043C\\u0435\\u0440\\u0447\\u0435\\u0441\\u043A\\u0430\\u044F \\u043A\\u0430\\u043B\\u044C\\u043A\\u0443\\u043B\\u044F\\u0446\\u0438\\u044F \\u043F\\u043E \\u0441\\u0442\\u0430\\u0442\\u044C\\u044F\\u043C \\u0441\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u0438",
+      "\\u041F\\u0424\\u041A\\u0421\\u0421":"\\u041F\\u0440\\u044F\\u043C\\u0430\\u044F \\u0444\\u0430\\u043A\\u0442\\u0438\\u0447\\u0435\\u0441\\u043A\\u0430\\u044F \\u043A\\u0430\\u043B\\u044C\\u043A\\u0443\\u043B\\u044F\\u0446\\u0438\\u044F \\u0441\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u0438",
+      "\\u0424\\u041A\\u0421\\u0421":"\\u0424\\u0430\\u043A\\u0442\\u0438\\u0447\\u0435\\u0441\\u043A\\u0430\\u044F \\u043A\\u0430\\u043B\\u044C\\u043A\\u0443\\u043B\\u044F\\u0446\\u0438\\u044F \\u0441\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u0438 (\\u0442\\u043E\\u043B\\u044C\\u043A\\u043E \\u0447\\u0442\\u0435\\u043D\\u0438\\u0435)"
+    };
     var csOpts=["\\u041F\\u041A\\u041F\\u0421\\u0421","\\u041A\\u041F\\u0421\\u0421","\\u041F\\u0424\\u041A\\u0421\\u0421","\\u0424\\u041A\\u0421\\u0421"];
     var h="";
-    for(var oi=0;oi<csOpts.length;oi++)h+='<label><input type="checkbox" value="'+csOpts[oi]+'">'+csOpts[oi]+"<\\/label>";
+    for(var oi=0;oi<csOpts.length;oi++){
+      var desc=CS_DESC[csOpts[oi]]?' title="'+CS_DESC[csOpts[oi]]+'"':"";
+      h+='<label'+desc+'><input type="checkbox" value="'+csOpts[oi]+'">'+csOpts[oi]+"<\\/label>";
+    }
     dd.innerHTML=h;
   }
 })();
@@ -1730,13 +1785,23 @@ async function loadCacheStatus() {
   }
 }
 
+const cacheNotification = ref('');
+
+function showCacheNotification(msg: string) {
+  cacheNotification.value = msg;
+  setTimeout(() => { cacheNotification.value = ''; }, 4000);
+}
+
 async function refreshCache() {
   try {
-    const result = await $fetch<{ status: string }>(
+    const result = await $fetch<{ status: string; message?: string }>(
       `${apiBase.value}/api/cost/refresh-cache`,
       { method: "POST", headers: fetchHeaders.value }
     );
-    if (result.status === "already_refreshing") return;
+    if (result.status === "already_refreshing") {
+      showCacheNotification(result.message || 'Обновление уже запущено');
+      return;
+    }
     if (result.status === "mock") return;
 
     cacheRefreshing.value = true;
@@ -2193,14 +2258,19 @@ const approvalClearing = ref(false);
 
 async function openApprovalModal() {
   showApprovalModal.value = true;
-  await Promise.all([loadApprovalPendingChanges(), loadApprovalMarginTargets()]);
+  await Promise.all([
+    loadApprovalFilterOptions(),
+    loadApprovalPendingChanges(),
+    loadApprovalMarginTargets(),
+  ]);
 }
 
 async function loadApprovalPendingChanges() {
   approvalLoading.value = true;
   try {
+    const params = buildApprovalFilterParams();
     const res = await $fetch<{ data: any[] }>(
-      `${apiBase.value}/api/cost/pending-changes`,
+      `${apiBase.value}/api/cost/pending-changes?${params}`,
       { headers: fetchHeaders.value }
     );
     approvalPendingChanges.value = res.data ?? [];
@@ -2300,6 +2370,97 @@ async function loadApprovalMarginTargets() {
   } catch {
     approvalMarginTargets.value = {};
   }
+}
+
+// ── Approval modal: filters & cascade ──────────────────────────────────────────
+
+const APPROVAL_LEVEL_KEYS = ["level01", "level02", "level03", "level04", "level05"];
+
+const approvalFilterKeys = [
+  { key: "brand_manager", label: "Бренд-менеджер" },
+  { key: "level01", label: "Level 01" },
+  { key: "level02", label: "Level 02" },
+  { key: "level03", label: "Level 03" },
+  { key: "level04", label: "Level 04" },
+  { key: "level05", label: "Level 05" },
+  { key: "calc_sign", label: "Призн. кальк." },
+  { key: "plan_id", label: "План" },
+];
+
+const approvalFilterOptions = ref<Record<string, string[]>>({});
+const approvalSelected = reactive<Record<string, string[]>>(
+  Object.fromEntries(approvalFilterKeys.map((f) => [f.key, [] as string[]])) as any
+);
+const approvalQuery = ref("");
+const approvalFilterBusy = ref(false);
+let approvalFilterTimeout: ReturnType<typeof setTimeout> | null = null;
+
+function isApprovalLocked(key: string): boolean {
+  let lowestIdx = -1;
+  for (let i = APPROVAL_LEVEL_KEYS.length - 1; i >= 0; i--) {
+    if (approvalSelected[APPROVAL_LEVEL_KEYS[i]]?.length > 0) {
+      lowestIdx = i;
+      break;
+    }
+  }
+  if (lowestIdx === -1) return false;
+  if (key === "brand_manager") return true;
+  const keyIdx = APPROVAL_LEVEL_KEYS.indexOf(key as any);
+  if (keyIdx === -1) return false;
+  return keyIdx < lowestIdx;
+}
+
+function buildApprovalFilterParams(): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const [key, vals] of Object.entries(approvalSelected)) {
+    if (!(vals as string[]).length) continue;
+    for (const v of vals as string[]) params.append(key, v);
+  }
+  if (approvalQuery.value.trim()) params.set("q", approvalQuery.value.trim());
+  return params;
+}
+
+async function loadApprovalFilterOptions() {
+  approvalFilterBusy.value = true;
+  try {
+    const params = buildApprovalFilterParams();
+    const raw = await $fetch<Record<string, string[]>>(
+      `${apiBase.value}/api/cost/pending-changes/filter-options?${params}`,
+      { headers: fetchHeaders.value }
+    );
+    approvalFilterOptions.value = raw;
+  } catch (e: any) {
+    console.error("[cost] load approval filter-options failed", e);
+  } finally {
+    approvalFilterBusy.value = false;
+  }
+}
+
+async function onApprovalFilterChange(changedKey: string) {
+  if (changedKey === "brand_manager") {
+    for (const k of APPROVAL_LEVEL_KEYS) approvalSelected[k] = [];
+  } else if (APPROVAL_LEVEL_KEYS.includes(changedKey)) {
+    const idx = APPROVAL_LEVEL_KEYS.indexOf(changedKey);
+    for (let i = idx + 1; i < APPROVAL_LEVEL_KEYS.length; i++) {
+      approvalSelected[APPROVAL_LEVEL_KEYS[i]] = [];
+    }
+  }
+  await loadApprovalFilterOptions();
+  await loadApprovalPendingChanges();
+}
+
+function onApprovalFilterChangeDelayed() {
+  if (approvalFilterTimeout) clearTimeout(approvalFilterTimeout);
+  approvalFilterTimeout = setTimeout(async () => {
+    await loadApprovalPendingChanges();
+  }, 300);
+}
+
+async function resetApprovalFilters() {
+  approvalQuery.value = "";
+  for (const k of approvalFilterKeys) approvalSelected[k.key] = [];
+  await loadApprovalFilterOptions();
+  await loadApprovalPendingChanges();
 }
 
 onMounted(async () => {
@@ -2484,7 +2645,7 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   align-items: center;
   gap: var(--sp-3);
 }
-.filters-body { position: relative; padding: var(--sp-5) var(--sp-6); }
+.filters-body { position: relative; padding: var(--sp-4) var(--sp-5); }
 .filters-body.is-busy { pointer-events: none; opacity: 0.6; }
 .filters-overlay {
   position: absolute;
@@ -2503,28 +2664,29 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .dates-row {
   display: flex;
   align-items: center;
-  gap: var(--sp-4);
-  margin-bottom: var(--sp-5);
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
 }
 .dates-row label {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-3);
-  font-size: var(--fs-sm);
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
   color: var(--text-muted);
 }
 .dates-row input {
-  height: 32px;
-  padding: 0 var(--sp-3);
+  height: 28px;
+  padding: 0 var(--sp-2);
   border: 1px solid var(--border);
   background: var(--bg-surface);
   border-radius: var(--rd-2);
+  font-size: var(--fs-2xs, 11px);
 }
 
 .filters-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: var(--sp-4);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-3);
 }
 .filter-item label {
   font-size: var(--fs-xs);
@@ -2541,12 +2703,12 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-4);
-  padding: var(--sp-3) var(--sp-5);
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
   background: var(--bg-surface-2, var(--bg-surface));
   border: 1px solid var(--border);
   border-radius: var(--rd-3);
-  margin-bottom: var(--sp-5);
+  margin-bottom: var(--sp-3);
   flex-wrap: wrap;
 }
 .cost-info {
@@ -2656,9 +2818,9 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   font-size: var(--fs-sm);
 }
 
-.details-filters { padding: var(--sp-4) var(--sp-5); background: var(--bg-surface-2); border-bottom: 1px solid var(--border); display: flex; gap: var(--sp-4); align-items: flex-end; flex-wrap: wrap; flex-shrink: 0; }
-.details-filters label { font-size: var(--fs-xs); font-weight: var(--fw-medium); display: flex; flex-direction: column; gap: 4px; color: var(--text-muted); }
-.details-filters input[type="date"] { height: 32px; padding: 0 var(--sp-3); border: 1px solid var(--border); border-radius: var(--rd-2); background: var(--bg-surface); }
+.details-filters { padding: var(--sp-3) var(--sp-4); background: var(--bg-surface-2); border-bottom: 1px solid var(--border); display: flex; gap: var(--sp-3); align-items: flex-end; flex-wrap: wrap; flex-shrink: 0; }
+.details-filters label { font-size: var(--fs-2xs, 10px); font-weight: var(--fw-medium); display: flex; flex-direction: column; gap: 2px; color: var(--text-muted); }
+.details-filters input[type="date"] { height: 28px; padding: 0 var(--sp-2); border: 1px solid var(--border); border-radius: var(--rd-2); background: var(--bg-surface); font-size: var(--fs-2xs, 11px); }
 
 .details-col-filters { padding: var(--sp-3) var(--sp-5); border-bottom: 1px solid var(--border); display: flex; gap: var(--sp-3); align-items: flex-start; flex-wrap: wrap; flex-shrink: 0; }
 .details-col-filter-item { display: flex; flex-direction: column; gap: 2px; min-width: 140px; max-width: 200px; flex: 1; }
@@ -2667,9 +2829,10 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .details-col-filter-reset { font-size: var(--fs-xs); color: var(--text-muted); padding-top: 16px; white-space: nowrap; }
 .details-col-filter-reset:hover { color: var(--text-strong); }
 
+.table-wrap { overflow-x: auto; max-width: 100%; }
 .details-table-wrap { overflow: auto; flex: 1; }
 .details-count { padding: var(--sp-2) var(--sp-5); font-size: var(--fs-xs); color: var(--text-muted); border-top: 1px solid var(--border); flex-shrink: 0; }
-.btn-details { background: none; border: none; cursor: pointer; padding: 2px 6px; font-size: 14px; }
+.btn-details { background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 12px; }
 .btn-details:hover { opacity: 0.7; }
 
 /* Error banner */
@@ -2710,21 +2873,78 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .cost-error-x:hover { color: var(--text-strong); background: var(--bg-surface-3); }
 
 /* Tables */
-.data-table th { cursor: pointer; user-select: none; }
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+.data-table th {
+  cursor: pointer;
+  user-select: none;
+  white-space: normal;
+  word-break: break-word;
+  padding: 4px 6px;
+  font-size: var(--fs-2xs, 10px);
+  line-height: 1.25;
+  vertical-align: bottom;
+  text-align: left;
+  min-width: 0;
+}
+.data-table th.col-num { text-align: right; }
 .data-table th:hover { background: var(--bg-surface-3); }
 .data-table th.sorted { background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface)); }
-.sort-arrow { font-size: 10px; color: var(--accent); }
+.sort-arrow { font-size: 10px; color: var(--accent); white-space: nowrap; }
+.data-table td {
+  padding: 3px 6px;
+  font-size: var(--fs-2xs, 11px);
+  line-height: 1.3;
+  white-space: nowrap;
+  min-width: 0;
+}
+.data-table.compact td,
+.data-table.compact th {
+  padding: 3px 5px;
+}
 .data-table tr.selected { background: var(--bg-surface-3); }
 .data-table tbody tr { cursor: pointer; }
 .data-table .price-select {
-  height: 26px;
+  height: 24px;
   border: 1px solid var(--border);
   background: var(--bg-surface);
   border-radius: var(--rd-2);
-  font-size: var(--fs-xs);
-  padding: 0 4px;
-  max-width: 180px;
+  font-size: var(--fs-2xs, 10px);
+  padding: 0 2px;
+  max-width: 130px;
+  min-width: 80px;
+  width: 100%;
   color: var(--text-strong);
+}
+.data-table .price-input {
+  width: 100%;
+  min-width: 80px;
+  max-width: 130px;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--rd-2);
+  background: var(--bg-surface);
+  font-size: var(--fs-2xs, 10px);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+}
+.data-table .num {
+  font-variant-numeric: tabular-nums;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  text-align: right;
+  white-space: nowrap;
+}
+.data-table .num-strong {
+  font-variant-numeric: tabular-nums;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  text-align: right;
+  font-weight: var(--fw-semibold, 600);
+  white-space: nowrap;
 }
 
 .loader {
@@ -2742,10 +2962,10 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 /* Column filters */
 .col-filters {
   display: flex;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   align-items: flex-start;
   flex-wrap: wrap;
-  padding: var(--sp-3) var(--sp-5);
+  padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--border);
   background: var(--bg-surface-2, var(--bg-surface));
   flex-shrink: 0;
@@ -2782,6 +3002,11 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   text-decoration: underline;
 }
 
+/* Column numeric alignment */
+.data-table .col-num { text-align: right; }
+.delta-pos { color: var(--pos, #16a34a); font-weight: var(--fw-medium, 500); }
+.delta-neg { color: var(--neg, #dc2626); font-weight: var(--fw-medium, 500); }
+
 /* Row-level margin deviation conditional formatting */
 .row-margin-ok {
   background-color: color-mix(in srgb, var(--pos, #16a34a) 8%, transparent) !important;
@@ -2817,6 +3042,24 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   color: var(--text-muted);
   font-size: var(--fs-xs);
 }
+.cache-notification {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-1) var(--sp-3);
+  background: #fef3cd;
+  color: #856404;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
 
 /* Approval modal — full-screen */
 .approval-modal-content {
@@ -2841,16 +3084,47 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   flex-shrink: 0;
 }
 
+/* Approval modal — filter bar */
+.approval-filters {
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-surface-2, var(--bg-surface));
+  border: 1px solid var(--border);
+  border-radius: var(--rd-3);
+  font-size: var(--fs-xs);
+}
+.approval-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.af-search input {
+  width: 180px;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--rd-2);
+  font-size: var(--fs-xs);
+  background: var(--bg-surface);
+  color: var(--text-strong);
+}
+.af-item { width: 140px; }
+.af-item.locked { opacity: 0.4; pointer-events: none; }
+.af-busy { margin-top: var(--sp-1); color: var(--text-muted); font-size: var(--fs-xs); }
+.approval-table-scroll {
+  overflow-x: auto;
+}
+
 /* Approval table — grid + formatting */
 .approval-table {
   width: 100%;
   border-collapse: collapse;
   border: 1px solid var(--border);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-2xs, 11px);
 }
 .approval-table th,
 .approval-table td {
-  padding: var(--sp-2) var(--sp-3);
+  padding: 3px 5px;
   border: 1px solid var(--border);
   vertical-align: middle;
   background: var(--bg-surface);
@@ -2858,20 +3132,27 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .approval-table th {
   background: var(--bg-surface-2, var(--bg-surface));
   font-weight: 600;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
   position: sticky;
   top: 0;
   z-index: 1;
+  font-size: var(--fs-2xs, 10px);
+  line-height: 1.2;
+}
+.approval-table td {
+  white-space: nowrap;
 }
 .approval-table .num {
   font-variant-numeric: tabular-nums;
   font-family: 'JetBrains Mono', 'Consolas', monospace;
   text-align: right;
+  white-space: nowrap;
 }
 .approval-table th input[type="checkbox"],
 .approval-table td input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   cursor: pointer;
 }
 
@@ -2898,8 +3179,8 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  margin-top: var(--sp-3);
-  font-size: var(--fs-sm);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-xs);
   cursor: pointer;
   user-select: none;
 }

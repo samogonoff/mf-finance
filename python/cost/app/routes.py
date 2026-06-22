@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, clear_pending_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, load_cost_data_to_cache, pool, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch)
+from app.db import (apply_pending_changes, clear_pending_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch)
 from app.notify import notify_admins
 
 router = APIRouter()
@@ -573,9 +573,40 @@ async def save_batch_changes(payload: dict) -> dict:
 
 
 @router.get("/pending-changes")
-async def list_pending_changes() -> dict:
-    """Return all pending changes."""
-    return {"data": await get_pending_changes()}
+async def list_pending_changes(request: Request) -> dict:
+    """Return pending changes with optional filtering.
+
+    Query params (all optional):
+        q — text search (Модель, Артикул, Наименование модели, Бренд-менеджер)
+        brand_manager — filter by brand manager (multi)
+        level01..level05 — filter by hierarchy (multi)
+        calc_sign — filter by calc sign (multi)
+        plan_id — filter by plan (multi)
+    """
+    filters: dict[str, Any] = {}
+    for key in ["brand_manager", "level01", "level02", "level03", "level04", "level05", "calc_sign", "plan_id"]:
+        vals = request.query_params.getlist(key)
+        if vals:
+            filters[key] = vals
+    q = request.query_params.get("q")
+    if q:
+        filters["q"] = q.strip()
+    return {"data": await get_pending_changes(filters)}
+
+
+@router.get("/pending-changes/filter-options")
+async def pending_filter_options(request: Request) -> dict:
+    """Return distinct filter values from cost_price_pending with top-down cascade.
+
+    Query params (all optional, for cascade):
+        brand_manager, level01..level05, calc_sign, plan_id
+    """
+    selected: dict[str, list[str]] = {}
+    for key in ["brand_manager", "level01", "level02", "level03", "level04", "level05", "calc_sign", "plan_id"]:
+        vals = request.query_params.getlist(key)
+        if vals:
+            selected[key] = vals
+    return await get_pending_filter_options(selected)
 
 
 @router.post("/pending-changes/apply")
@@ -649,23 +680,36 @@ async def update_margin_targets(payload: dict) -> dict:
 # ── Cache refresh & status ──────────────────────────────────────────────────
 
 
+REFRESH_TIMEOUT_MINUTES = 10
+
+
 @router.post("/refresh-cache")
 async def refresh_cache() -> dict:
     """Принудительное обновление кеша из MSSQL v_CostHistory_MatchedOrLatest."""
     if _is_mock():
         return mocks.refresh_cache()
 
-    status = await get_cache_status()
-    if status and status["is_refreshing"]:
-        REFRESH_TIMEOUT_MINUTES = 10
-        refreshing_since = status.get("refreshing_since")
-        if refreshing_since:
-            age = (datetime.now(timezone.utc) - refreshing_since).total_seconds() / 60
-            if age < REFRESH_TIMEOUT_MINUTES:
-                return {"status": "already_refreshing", "message": "Cache refresh already in progress"}
+    # Атомарно захватываем блокировку: SET is_refreshing = TRUE WHERE FALSE
+    if await try_acquire_refresh_lock():
+        asyncio.ensure_future(load_cost_data_to_cache(partial_months=2))
+        return {"status": "started", "message": "Обновление кеша запущено"}
 
+    # Блокировка не захвачена — проверяем, не зависла ли
+    status = await get_cache_status()
+    if status and status.get("refreshing_since"):
+        age = (datetime.now(timezone.utc) - status["refreshing_since"]).total_seconds() / 60
+        if age < REFRESH_TIMEOUT_MINUTES:
+            return {"status": "already_refreshing", "message": "Обновление уже запущено другим пользователем"}
+
+    # Зависшая блокировка (> 10 мин) — форсированный перезапуск
+    async with pool().acquire() as conn:
+        await conn.execute(
+            "UPDATE cost_cache_status SET is_refreshing = TRUE,"
+            "  refreshing_since = NOW(), error_message = NULL"
+            " WHERE id = 1"
+        )
     asyncio.ensure_future(load_cost_data_to_cache(partial_months=2))
-    return {"status": "started", "message": "Cache refresh (last 2 months) started in background"}
+    return {"status": "started", "message": "Обновление кеша запущено (предыдущая блокировка сброшена)"}
 
 
 @router.get("/cache-status")

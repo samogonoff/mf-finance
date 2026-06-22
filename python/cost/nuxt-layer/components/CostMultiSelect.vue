@@ -1,9 +1,9 @@
 <template>
-  <div ref="root" class="ms" :class="{ 'is-open': open, 'is-empty': !options.length, 'is-disabled': disabled }">
+  <div ref="root" class="ms" :class="{ 'is-open': open, 'is-empty': !normalized.length, 'is-disabled': disabled }">
     <div class="ms-control" @click="toggle">
       <div class="ms-tags">
-        <span v-for="v in modelValue" :key="v" class="ms-tag">
-          <span class="ms-tag-label">{{ v }}</span>
+        <span v-for="v in modelValue" :key="v" class="ms-tag" :title="getDesc(v)">
+          <span class="ms-tag-label">{{ getLabel(v) }}</span>
           <button
             v-if="!disabled"
             type="button"
@@ -30,16 +30,19 @@
       <div class="ms-list">
         <div
           v-for="opt in filtered"
-          :key="opt"
+          :key="opt.value"
           class="ms-option"
-          :class="{ selected: modelValue.includes(opt) }"
-          @click.stop="toggleOption(opt)"
+          :class="{ selected: modelValue.includes(opt.value) }"
+          @click.stop="toggleOption(opt.value)"
         >
-          <span class="ms-check">{{ modelValue.includes(opt) ? "✓" : "" }}</span>
-          <span class="ms-label">{{ opt }}</span>
+          <span class="ms-check">{{ modelValue.includes(opt.value) ? "✓" : "" }}</span>
+          <div class="ms-opt-body">
+            <span class="ms-label">{{ opt.label }}</span>
+            <span v-if="opt.description" class="ms-desc">{{ opt.description }}</span>
+          </div>
         </div>
         <div v-if="!filtered.length" class="ms-empty">
-          {{ options.length ? "Нет совпадений" : "Нет данных" }}
+          {{ normalized.length ? "Нет совпадений" : "Нет данных" }}
         </div>
       </div>
       <div v-if="modelValue.length" class="ms-actions">
@@ -54,10 +57,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 
+export interface SelectOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+type OptionItem = string | SelectOption;
+
 const props = withDefaults(
   defineProps<{
     modelValue: string[];
-    options: string[];
+    options: OptionItem[];
     placeholder?: string;
     disabled?: boolean;
   }>(),
@@ -74,10 +85,39 @@ const searchInput = ref<HTMLInputElement | null>(null);
 const open = ref(false);
 const search = ref("");
 
+/** Normalize options: strings become { value, label } */
+const normalized = computed<SelectOption[]>(() =>
+  props.options.map((o) =>
+    typeof o === "string" ? { value: o, label: o } : o
+  )
+);
+
+/** Lookup table for quick description retrieval */
+const descMap = computed(() => {
+  const m: Record<string, string | undefined> = {};
+  for (const opt of normalized.value) {
+    m[opt.value] = opt.description;
+  }
+  return m;
+});
+
+function getDesc(value: string): string | undefined {
+  return descMap.value[value];
+}
+
+function getLabel(value: string): string {
+  // show original value if option isn't in the list (edge case)
+  return normalized.value.find((o) => o.value === value)?.label ?? value;
+}
+
 const filtered = computed(() => {
   const q = search.value.toLowerCase().trim();
-  if (!q) return props.options;
-  return props.options.filter((o) => o.toLowerCase().includes(q));
+  if (!q) return normalized.value;
+  return normalized.value.filter(
+    (o) =>
+      o.label.toLowerCase().includes(q) ||
+      (o.description && o.description.toLowerCase().includes(q))
+  );
 });
 
 const toggle = () => {
@@ -232,7 +272,7 @@ onUnmounted(() => document.removeEventListener("click", onClickOutside));
 }
 .ms-option {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 6px 10px;
   cursor: pointer;
@@ -249,8 +289,25 @@ onUnmounted(() => document.removeEventListener("click", onClickOutside));
   color: var(--accent);
   font-weight: var(--fw-bold);
   flex-shrink: 0;
+  margin-top: 2px;
+}
+.ms-opt-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
 }
 .ms-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--fw-medium, 500);
+}
+.ms-desc {
+  font-size: var(--fs-2xs, 10px);
+  color: var(--text-muted);
+  line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
