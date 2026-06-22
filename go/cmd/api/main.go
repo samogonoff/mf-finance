@@ -117,10 +117,14 @@ func main() {
 			log.Fatalf("debt: mssql open: %v", err)
 		}
 		tables := debt.PremasterTables{
-			Database:     cfg.PremasterDatabase,
-			Schema:       cfg.PremasterSchema,
-			Main:         cfg.PremasterTable,
-			ObjectsTable: cfg.PremasterObjectsTable,
+			Database:          cfg.PremasterDatabase,
+			Schema:            cfg.PremasterSchema,
+			Main:              cfg.PremasterTable,
+			ObjectsTable:      cfg.PremasterObjectsTable,
+			CounterpartyTable: cfg.PremasterCounterpartyTable,
+			PaymentsDatabase:  cfg.PremasterPaymentsDatabase,
+			DocsSchema:        cfg.PremasterDocsSchema,
+			DocsTable:         cfg.PremasterDocsTable,
 		}
 		mssqlRepo, err := debt.WrapPremasterRepo(mssqlDB, tables)
 		if err != nil {
@@ -143,6 +147,27 @@ func main() {
 		} else {
 			premasterRepo = mssqlRepo
 			log.Printf("debt: backend=mssql")
+		}
+
+		// Revenue-оверлей из P&L-матриц (opt-in). Закрывает «какие субсчета = выручка»
+		// для всех стран матрицы. Любая ошибка → фолбэк на хардкод-классификацию,
+		// сервис стартует как обычно. Один раз при старте, до приёма запросов.
+		if cfg.DebtRevenueOverlay && mssqlDB != nil {
+			loadCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			overlay, lerr := debt.LoadRevenueOverlay(loadCtx, mssqlDB, debt.MatrixTables{
+				Database:  cfg.PremasterDatabase,
+				Schema:    cfg.PremasterSchema,
+				MappingPL: cfg.PremasterMappingPLTable,
+				CodePL:    cfg.PremasterCodePLTable,
+				Companies: cfg.PremasterCompaniesTable,
+			})
+			cancel()
+			if lerr != nil {
+				log.Printf("debt: revenue overlay load failed, keeping hardcoded chart: %v", lerr)
+			} else {
+				debt.InstallRevenueOverlay(overlay)
+				log.Printf("debt: revenue overlay installed for %d countries", len(overlay))
+			}
 		}
 	}
 	debtSvc := debt.NewService(cfg.DebtMock, premasterRepo)

@@ -14,7 +14,7 @@ const (
 	KindRevenue                    // выручка (для RevenuePeriod/RevenueLastMonth)
 )
 
-// chartByCountry — белый список счетов по странам с их категорией.
+// defaultChart — хардкод-база белого списка счетов по странам с их категорией.
 //
 // **Источник для РФ** — общая практика 1С + комментарии в `[Payments].[dbo].[fin_debt_report_exec]`
 // (где использовалось разделение `DrAcc LIKE '5%' OR '9%'` vs `'6%' OR '7%'`).
@@ -31,7 +31,7 @@ const (
 // **Important:** ключ карты — `account_root` (до первой точки). `62.01` и `62.02` оба попадут
 // под root=`62`. Если для отдельных субсчётов нужна другая категория — делаем отдельную
 // таблицу `chartBySubaccount`, пока не требуется.
-var chartByCountry = map[Country]map[string]AccountKind{
+var defaultChart = map[Country]map[string]AccountKind{
 	CountryRF: {
 		"60": KindKZ,      // Расчёты с поставщиками и подрядчиками
 		"62": KindDZ,      // Расчёты с покупателями и заказчиками
@@ -63,7 +63,52 @@ var chartByCountry = map[Country]map[string]AccountKind{
 		"9010": KindRevenue,
 		"9020": KindRevenue,
 	},
-	// TR, CZ, GB, CN, KG: TODO — нужны коды счетов из ТЗ-приложения.
+	// TR, CZ, GB, CN, KG: ДЗ/КЗ-баланс — нужны коды счетов из ТЗ-приложения
+	// (P&L-матрицы их не содержат — schema-draft §8a.4). Revenue-счета этих стран
+	// может дозаполнить InstallRevenueOverlay из [001 Mapping PL by BK].
+}
+
+// activeChart — действующая классификация. По умолчанию = defaultChart.
+// InstallRevenueOverlay (вызывается ОДИН РАЗ при старте, до приёма запросов)
+// может дополнить её revenue-счетами из P&L-матрицы. После старта — только
+// чтение из обработчиков, поэтому гонок нет.
+var activeChart = defaultChart
+
+// InstallRevenueOverlay дозаполняет классификацию revenue-счетами, вычитанными
+// из матрицы [001 Mapping PL by BK] (см. chart_loader.go). overlay: страна →
+// список корней счетов, которые сворачиваются в статью с GroupPL='ПРОДАЖИ'.
+//
+// Семантика — ТОЛЬКО revenue: оверлей помечает счёт как KindRevenue, НЕ трогая
+// ДЗ/КЗ из defaultChart (балансовая природа счёта в P&L-матрице не лежит).
+// Каждый вызов перестраивает activeChart от defaultChart, поэтому идемпотентен.
+func InstallRevenueOverlay(overlay map[Country][]string) {
+	merged := make(map[Country]map[string]AccountKind, len(defaultChart))
+	for country, chart := range defaultChart {
+		cp := make(map[string]AccountKind, len(chart))
+		for acc, kind := range chart {
+			cp[acc] = kind
+		}
+		merged[country] = cp
+	}
+	for country, roots := range overlay {
+		chart, ok := merged[country]
+		if !ok {
+			chart = make(map[string]AccountKind, len(roots))
+			merged[country] = chart
+		}
+		for _, root := range roots {
+			root = strings.TrimSpace(root)
+			if root == "" {
+				continue
+			}
+			// Не перетираем уже заданную ДЗ/КЗ-категорию: revenue-счета и счета
+			// расчётов не пересекаются, но на всякий случай отдаём приоритет базе.
+			if _, exists := chart[root]; !exists {
+				chart[root] = KindRevenue
+			}
+		}
+	}
+	activeChart = merged
 }
 
 // AccountRoot возвращает «корень» счёта — всё до первой точки.
@@ -78,7 +123,7 @@ func AccountRoot(acc string) string {
 // ClassifyAccount — категория счёта для конкретной страны.
 // Возвращает KindOther, если счёт неизвестен — такой счёт в отчёт debt не попадает.
 func ClassifyAccount(country Country, acc string) AccountKind {
-	chart, ok := chartByCountry[country]
+	chart, ok := activeChart[country]
 	if !ok {
 		return KindOther
 	}
@@ -92,7 +137,7 @@ func ClassifyAccount(country Country, acc string) AccountKind {
 // (DZ + KZ + Revenue). Используется для построения WHERE-фильтра SQL
 // и точной выборки строк из Premaster1C по интересующим счетам.
 func AccountsForCountry(country Country) []string {
-	chart, ok := chartByCountry[country]
+	chart, ok := activeChart[country]
 	if !ok {
 		return nil
 	}

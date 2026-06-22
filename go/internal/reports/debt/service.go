@@ -134,6 +134,18 @@ func strSet(ss []string) map[string]bool {
 	return m
 }
 
+// docDueDate — плановая дата оплаты документа из Payments.Docs.
+// Приоритет: явная PaymentDate; иначе Date + Delay дней; иначе ноль (срок неизвестен).
+func docDueDate(payDate, baseDate time.Time, delayDays int, hasDelay bool) time.Time {
+	if !payDate.IsZero() {
+		return payDate
+	}
+	if !baseDate.IsZero() && hasDelay {
+		return baseDate.AddDate(0, 0, delayDays)
+	}
+	return time.Time{}
+}
+
 // daysOverdue считает дни просрочки от due до now, обрезая на 0.
 func daysOverdue(due, now time.Time) int {
 	if due.IsZero() || now.Before(due) {
@@ -183,10 +195,21 @@ func BuildReport(raw []rawRow) []DebtRow {
 			Currency:   CurrencyForCountry(ent.Country), // функциональная валюта юрлица
 		}
 		row.AccountName = accountNameFor(ent.Country, rr.AccountRoot)
-		if p, ok := partnerByINN[rr.CounterpartyID.String]; ok {
-			row.Partner = p
-		} else {
+		// Имя партнёра: приоритет — справочник Counterparty1C (покрывает контрагентов,
+		// попавших по ICO=1 вне наших 15 ЮЛ), затем seed-имя нашего ЮЛ, затем голый ИНН.
+		switch {
+		case rr.PartnerName.Valid && strings.TrimSpace(rr.PartnerName.String) != "":
+			row.Partner = strings.TrimSpace(rr.PartnerName.String)
+		case partnerByINN[rr.CounterpartyID.String] != "":
+			row.Partner = partnerByINN[rr.CounterpartyID.String]
+		default:
 			row.Partner = rr.CounterpartyID.String // fallback: показываем ИНН
+		}
+		if rr.Channel.Valid {
+			row.Channel = strings.TrimSpace(rr.Channel.String)
+		}
+		if rr.Manager.Valid {
+			row.Manager = strings.TrimSpace(rr.Manager.String)
 		}
 
 		switch kind {
@@ -255,10 +278,12 @@ func accountNameFor(country Country, accountRoot string) string {
 //   - KZChange: зеркально для KindKZ (с положительным знаком долга — Cr увеличивает, Dr уменьшает).
 //   - Если страна неизвестна (CompanyINN не наш) — отдаём все строки с DZChange/KZChange = 0,
 //     но имена документов всё равно показываем.
-//   - PaymentDueDate/OverdueDays не заполняются (M5).
+//   - PaymentDueDate/OverdueDays заполняются из Payments.Docs (PaymentDate/Delay),
+//     если кросс-БД джойн включён; иначе остаются нулевыми. reportDate (= конец
+//     периода отчёта) — точка отсчёта для просрочки.
 //
 // Экспортирована, чтобы repo_premaster.Drilldown мог её вызвать после Scan.
-func BuildDrilldown(raw []drillRow, country Country, accountRoot string) []DocumentRow {
+func BuildDrilldown(raw []drillRow, country Country, accountRoot string, reportDate time.Time) []DocumentRow {
 	if len(raw) == 0 {
 		return []DocumentRow{}
 	}
@@ -273,6 +298,12 @@ func BuildDrilldown(raw []drillRow, country Country, accountRoot string) []Docum
 		mapping       string
 		trans         string
 		descOperation string // первая непустая operation_description
+
+		// Срок оплаты из Payments.Docs (одна строка Docs на DocID → берём первую непустую).
+		docBaseDate time.Time // Docs.Date
+		docPayDate  time.Time // Docs.PaymentDate (= плановая дата оплаты)
+		docDelay    int       // Docs.Delay (дни)
+		hasDelay    bool
 	}
 	byDoc := map[string]*bucket{}
 	order := []string{}
@@ -298,6 +329,16 @@ func BuildDrilldown(raw []drillRow, country Country, accountRoot string) []Docum
 		}
 		if b.descOperation == "" && r.OperationDescription.Valid {
 			b.descOperation = r.OperationDescription.String
+		}
+		if b.docPayDate.IsZero() && r.DocPaymentDate.Valid {
+			b.docPayDate = r.DocPaymentDate.Time
+		}
+		if b.docBaseDate.IsZero() && r.DocBaseDate.Valid {
+			b.docBaseDate = r.DocBaseDate.Time
+		}
+		if !b.hasDelay && r.DocDelay.Valid {
+			b.docDelay = int(r.DocDelay.Int64)
+			b.hasDelay = true
 		}
 
 		// Суммарный «вес» документа — модуль каждой проводки (по сути это abs(Amount),
@@ -344,15 +385,18 @@ func BuildDrilldown(raw []drillRow, country Country, accountRoot string) []Docum
 		if desc == "" {
 			desc = b.trans
 		}
+		due := docDueDate(b.docPayDate, b.docBaseDate, b.docDelay, b.hasDelay)
 		out = append(out, DocumentRow{
-			DocDate:     docDate,
-			DocNumber:   number,
-			DocKind:     dKind,
-			TransGroup:  b.trans, // тип операции для UI-группировки (M5)
-			Amount:      b.amount,
-			Description: desc,
-			DZChange:    b.dzDelta,
-			KZChange:    b.kzDelta,
+			DocDate:        docDate,
+			DocNumber:      number,
+			DocKind:        dKind,
+			TransGroup:     b.trans, // тип операции для UI-группировки (M5)
+			Amount:         b.amount,
+			Description:    desc,
+			DZChange:       b.dzDelta,
+			KZChange:       b.kzDelta,
+			PaymentDueDate: due,
+			OverdueDays:    daysOverdue(due, reportDate),
 		})
 	}
 	return out

@@ -52,6 +52,10 @@ type DebtRow struct {
 	CompanyINN      string  `json:"company_inn"`
 	Partner         string  `json:"partner"`
 	PartnerINN      string  `json:"partner_inn,omitempty"`
+	// Manager/Channel — обогащение из Counterparty1C (менеджер пары и канал продаж).
+	// Пустые, если справочник не подключён или контрагента в нём нет.
+	Manager         string  `json:"manager,omitempty"`
+	Channel         string  `json:"channel,omitempty"`
 	Account         string  `json:"account"`
 	AccountName     string  `json:"account_name"`
 	Subaccount      string  `json:"subaccount"`

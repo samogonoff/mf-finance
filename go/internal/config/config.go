@@ -22,9 +22,31 @@ type Config struct {
 	PremasterSchema        string
 	PremasterTable         string
 	PremasterObjectsTable  string
-	PremasterUser          string
-	PremasterPassword      string
-	DebtMock               bool
+	// Counterparty1C — обогащение отчёта именем/каналом/менеджером контрагента.
+	// Пусто → не джойнить (имя падает на seed/ИНН как раньше).
+	PremasterCounterpartyTable string
+	PremasterUser              string
+	PremasterPassword          string
+	DebtMock                   bool
+
+	// Payments-витрина (опционально) — отдельная БД [Payments] на ТОМ ЖЕ OLAP-сервере.
+	// Таблица Docs несёт PaymentDate/Delay → даёт просрочку в drill-down
+	// (мост FinDWH↔Payments: Premaster1C.DocID = Payments.dbo.Docs.ID,
+	// подтверждён аналитиком, см. docs/reports/debt/payments-source-map.md §5).
+	// Джойн опциональный и LEFT: если PaymentsDatabase пуст — drill-down работает
+	// как раньше, поля payment_due_date/overdue_days остаются пустыми.
+	PremasterPaymentsDatabase string
+	PremasterDocsSchema       string
+	PremasterDocsTable        string
+
+	// Revenue-оверлей из P&L-матриц (опционально, opt-in). Если включён, при старте
+	// читаем [001 Mapping PL by BK] ⋈ [002 CodePL] и дозаполняем классификацию
+	// revenue-счетами (GroupPL='ПРОДАЖИ') — закрывает «какие субсчета = выручка»
+	// (analyst-handoff §4). При любой ошибке загрузки — фолбэк на хардкод-chart.
+	DebtRevenueOverlay      bool
+	PremasterMappingPLTable string
+	PremasterCodePLTable    string
+	PremasterCompaniesTable string
 
 	// DEBT_BACKEND — какой источник дёргает отчёт «Задолженность ВГО».
 	//   "mssql" (default) → repo_premaster.go, ходит в Premaster1C напрямую.
@@ -48,10 +70,20 @@ func Load() Config {
 		PremasterDatabase:     env("MSSQL_PREMASTER_DB", "FinDWH"),
 		PremasterSchema:       env("MSSQL_PREMASTER_SCHEMA", "dbo"),
 		PremasterTable:        env("MSSQL_PREMASTER_TABLE", "Premaster1C"),
-		PremasterObjectsTable: env("MSSQL_PREMASTER_OBJECTS_TABLE", "Objects"),
-		PremasterUser:         env("MSSQL_PREMASTER_USER", ""),
-		PremasterPassword:     env("MSSQL_PREMASTER_PASSWORD", ""),
-		DebtMock:              env("DEBT_MOCK", "0") == "1",
+		PremasterObjectsTable:      env("MSSQL_PREMASTER_OBJECTS_TABLE", "Objects"),
+		PremasterCounterpartyTable: env("MSSQL_PREMASTER_COUNTERPARTY_TABLE", "Counterparty1C"),
+		PremasterUser:              env("MSSQL_PREMASTER_USER", ""),
+		PremasterPassword:          env("MSSQL_PREMASTER_PASSWORD", ""),
+		DebtMock:                   env("DEBT_MOCK", "0") == "1",
+
+		PremasterPaymentsDatabase: env("MSSQL_PAYMENTS_DB", "Payments"),
+		PremasterDocsSchema:       env("MSSQL_PAYMENTS_DOCS_SCHEMA", "dbo"),
+		PremasterDocsTable:        env("MSSQL_PAYMENTS_DOCS_TABLE", "Docs"),
+
+		DebtRevenueOverlay:      env("DEBT_REVENUE_OVERLAY", "0") == "1",
+		PremasterMappingPLTable: env("MSSQL_PREMASTER_MAPPING_PL_TABLE", "001 Mapping PL by BK"),
+		PremasterCodePLTable:    env("MSSQL_PREMASTER_CODEPL_TABLE", "002 CodePL"),
+		PremasterCompaniesTable: env("MSSQL_PREMASTER_COMPANIES_TABLE", "CompaniesMF"),
 
 		DebtBackend:       strings.ToLower(env("DEBT_BACKEND", "mssql")),
 		ClickHouseHTTPURL: env("CLICKHOUSE_HTTP_URL", "http://clickhouse:8123"),

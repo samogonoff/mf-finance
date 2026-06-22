@@ -254,3 +254,48 @@ func TestBuildReport_NonRevenueLeavesRevenueLastMonthZero(t *testing.T) {
 		t.Errorf("RevenueLastMonth для ДЗ-счёта должна быть 0, got %v", got[0].RevenueLastMonth)
 	}
 }
+
+func TestBuildReport_PartnerNameFromCounterparty1C(t *testing.T) {
+	// Контрагент попал по ICO=1 и НЕ входит в наши 15 ЮЛ → seed-имени нет.
+	// Имя/канал/менеджер должны прийти из Counterparty1C.
+	in := []rawRow{
+		{
+			CompanyID:      "6950135110",
+			CounterpartyID: nstr("7700000001"), // не из seed
+			AccountRoot:    "62",
+			ClosingSigned:  1000,
+			PartnerName:    nstr("ООО «Внешний Контрагент»"),
+			Channel:        nstr("Опт"),
+			Manager:        nstr("Иванов И.И."),
+		},
+	}
+	got := BuildReport(in)
+	r := got[0]
+	if r.Partner != "ООО «Внешний Контрагент»" {
+		t.Errorf("Partner = %q, want имя из Counterparty1C", r.Partner)
+	}
+	if r.Channel != "Опт" || r.Manager != "Иванов И.И." {
+		t.Errorf("Channel/Manager не проставлены: %q / %q", r.Channel, r.Manager)
+	}
+}
+
+func TestBuildReport_PartnerNameFallsBackToSeedWhenNoCounterparty(t *testing.T) {
+	// Counterparty1C не подключён (PartnerName=NULL), но контрагент — наше ЮЛ:
+	// имя берётся из seed, канал/менеджер пустые.
+	in := []rawRow{
+		{
+			CompanyID:      "6950135110",
+			CounterpartyID: nstr("690591512"), // ООО «Марк Формэль» из seed
+			AccountRoot:    "62",
+			ClosingSigned:  1000,
+		},
+	}
+	got := BuildReport(in)
+	r := got[0]
+	if r.Partner != "ООО «Марк Формэль»" {
+		t.Errorf("Partner = %q, want seed-имя", r.Partner)
+	}
+	if r.Channel != "" || r.Manager != "" {
+		t.Errorf("без Counterparty1C канал/менеджер должны быть пустыми: %q / %q", r.Channel, r.Manager)
+	}
+}
