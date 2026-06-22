@@ -37,9 +37,9 @@ type Deps struct {
 
 // BootstrapOpts — параметры одного запуска bootstrap'а.
 type BootstrapOpts struct {
-	CompanyID    string
-	BatchSize    int    // дефолт 5000
-	TriggeredBy  string // 'manual' | 'admin-ui' | 'cron'
+	CompanyID   string
+	BatchSize   int    // дефолт 5000
+	TriggeredBy string // 'manual' | 'admin-ui' | 'cron'
 }
 
 // row — одна строка для CH insert'а.
@@ -61,6 +61,14 @@ type row struct {
 	TransDescription     string `json:"trans_description"`
 	OperationDescription string `json:"operation_description"`
 	DateOfChange         string `json:"date_of_change"`
+
+	// Договор (дебиторка 62), денормализован при заливке — CH не джойнит MSSQL.
+	// Пустые строки = договора/срока нет. См. extract.go.
+	ContractRef     string `json:"contract_ref"`      // сырая 1С-ссылка субконто (для drill-down)
+	ContractName    string `json:"contract_name"`     // Objects.Name
+	ContractDelay   string `json:"contract_delay"`    // Docs.Delay (число строкой; '' = нет)
+	ContractDocDate string `json:"contract_doc_date"` // Docs.Date 'YYYY-MM-DD' ('' = нет)
+	ContractPayDate string `json:"contract_pay_date"` // Docs.PaymentDate 'YYYY-MM-DD' ('' = нет)
 }
 
 // RunBootstrap — полная заливка одного ЮЛ. Идемпотентна: чистит CH от
@@ -161,25 +169,7 @@ func streamPremaster(ctx context.Context, deps Deps, ch *chClient, opts Bootstra
 	// ВГО-фильтр: тянем только внутригрупповые проводки (ICO=1 ИЛИ контрагент —
 	// наше ЮЛ). См. vgoFilter / plan «ВГО-only».
 	vgoClause, vgoArgs := vgoFilter()
-	q := `
-SELECT
-    p.CompanyID,
-    ISNULL(p.CounterpartyID, ''),
-    CONVERT(NVARCHAR(MAX), p.DocID, 1),
-    p.RwNm,
-    CONVERT(CHAR(10), p.[Date], 23),
-    p.DrAcc, p.CrAcc,
-    LEFT(p.DrAcc, CHARINDEX('.', p.DrAcc + '.') - 1),
-    LEFT(p.CrAcc, CHARINDEX('.', p.CrAcc + '.') - 1),
-    CONVERT(VARCHAR(40), p.AmountWithVATCurrency),
-    ISNULL(p.ICO, 0),
-    ISNULL(o.[Name], ''),
-    ISNULL(p.Mapping, ''),
-    ISNULL(p.TransDescription, ''),
-    ISNULL(p.OperationDescription, ''),
-    CONVERT(VARCHAR(19), ISNULL(p.DateOfChange, p.[Date]), 120)
-FROM [FinDWH].[dbo].[Premaster1C] AS p WITH (NOLOCK)
-LEFT JOIN [FinDWH].[dbo].[Objects] AS o WITH (NOLOCK) ON o.ID = p.DocID
+	q := extractSelectFrom() + `
 WHERE p.CompanyID = @inn` + vgoClause + `
 ORDER BY p.[Date], p.DocID, p.RwNm`
 
@@ -223,17 +213,10 @@ ORDER BY p.[Date], p.DocID, p.RwNm`
 	}
 
 	for rows.Next() {
-		var r row
-		if err := rows.Scan(
-			&r.CompanyID, &r.CounterpartyID, &r.DocID, &r.RwNm, &r.Date,
-			&r.DrAcc, &r.CrAcc, &r.DrAccRoot, &r.CrAccRoot,
-			&r.Amount, &r.ICO,
-			&r.DocName1C, &r.Mapping, &r.TransDescription, &r.OperationDescription,
-			&r.DateOfChange,
-		); err != nil {
-			return totalLoaded, fmt.Errorf("scan: %w", err)
+		r, err := scanExtractRow(rows, country)
+		if err != nil {
+			return totalLoaded, err
 		}
-		r.Country = country
 		batch = append(batch, r)
 		if len(batch) >= opts.BatchSize {
 			if err := flush(); err != nil {
