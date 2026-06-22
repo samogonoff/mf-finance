@@ -579,46 +579,70 @@
           <button class="modal-close" @click="showApprovalModal = false">×</button>
         </div>
         <div class="approval-modal-body">
+          <!-- Filter bar -->
+          <div class="approval-filters" v-if="!approvalLoading">
+            <div class="approval-fields">
+              <div class="af-search">
+                <input v-model="approvalQuery" type="text" placeholder="Поиск по модели, артикулу…" @input="onApprovalFilterChangeDelayed" />
+              </div>
+              <div v-for="fk in approvalFilterKeys" :key="fk.key" class="af-item" :class="{ locked: isApprovalLocked(fk.key) }">
+                <CostMultiSelect
+                  v-model="approvalSelected[fk.key]"
+                  :options="approvalFilterOptions[fk.key] || []"
+                  :placeholder="isApprovalLocked(fk.key) ? '—' : fk.label"
+                  :disabled="isApprovalLocked(fk.key)"
+                  @change="onApprovalFilterChange(fk.key)"
+                />
+              </div>
+              <button class="btn btn-ghost btn-xs" @click="resetApprovalFilters" :disabled="approvalFilterBusy">Сбросить</button>
+            </div>
+            <div v-if="approvalFilterBusy" class="af-busy">Обновление…</div>
+          </div>
+
           <div v-if="approvalLoading" class="muted" style="text-align:center;padding:24px">Загрузка…</div>
           <div v-else-if="!approvalPendingChanges.length" class="muted" style="text-align:center;padding:24px">
             Нет ожидающих согласования изменений
           </div>
-          <table v-else class="data-table compact approval-table">
-            <thead>
-              <tr>
-                <th><input type="checkbox" :checked="selectedPendingIds.length === approvalPendingChanges.length && approvalPendingChanges.length > 0" @change="toggleSelectAllPending" /></th>
-                <th>Модель</th>
-                <th>Артикул</th>
-                <th>Уровень цен</th>
-                <th class="col-num">Розн., руб</th>
-                <th class="col-num">Опт., руб</th>
-                <th class="col-num">Наценка, руб</th>
-                <th class="col-num">Наценка, %</th>
-                <th class="col-num">Маржа, %</th>
-                <th class="col-num">Откл. %</th>
-                <th>Признак калькуляции</th>
-                <th>Автор</th>
-                <th>Дата</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="pc in approvalPendingChanges" :key="pc.id" :class="modalApprovalRowClass(pc)">
-                <td><input type="checkbox" :value="pc.id" v-model="selectedPendingIds" /></td>
-                <td>{{ pc['Модель'] || pc.model || '—' }}</td>
-                <td>{{ pc['Артикул'] || pc.articul || '—' }}</td>
-                <td>{{ pc['Уровень цен'] || pc.price_level || '—' }}</td>
-                <td class="col-num num">{{ fmt(pc['Розничная цена по уровню, руб.'] || pc.retail_rub) }}</td>
-                <td class="col-num num">{{ fmt(pc['Отпускная цена по уровню, руб'] || pc.wholesale_rub) }}</td>
-                <td class="col-num num">{{ fmt(calcApprovalModal(pc).markupRub) }}</td>
-                <td class="col-num num">{{ calcApprovalModal(pc).markupPct.toFixed(1) }}%</td>
-                <td class="col-num num">{{ calcApprovalModal(pc).marginPct.toFixed(1) }}%</td>
-                <td class="col-num num">{{ modalMarginDevText(pc) }}</td>
-                <td>{{ pc['Признак калькуляции'] || pc.calc_sign || '—' }}</td>
-                <td>{{ pc['username'] || pc.author || '—' }}</td>
-                <td>{{ formatDate(pc['created_at'] || pc.created_at) }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="approval-table-scroll" v-else>
+            <table class="data-table compact approval-table">
+              <thead>
+                <tr>
+                  <th><input type="checkbox" :checked="selectedPendingIds.length === approvalPendingChanges.length && approvalPendingChanges.length > 0" @change="toggleSelectAllPending" /></th>
+                  <th>Модель</th>
+                  <th>Артикул</th>
+                  <th>План</th>
+                  <th>Уровень цен</th>
+                  <th class="col-num">Розн., руб</th>
+                  <th class="col-num">Опт., руб</th>
+                  <th class="col-num">Наценка, руб</th>
+                  <th class="col-num">Наценка, %</th>
+                  <th class="col-num">Маржа, %</th>
+                  <th class="col-num">Откл. %</th>
+                  <th>Признак калькуляции</th>
+                  <th>Автор</th>
+                  <th>Дата</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="pc in approvalPendingChanges" :key="pc.id" :class="modalApprovalRowClass(pc)">
+                  <td><input type="checkbox" :value="pc.id" v-model="selectedPendingIds" /></td>
+                  <td>{{ pc['Модель'] || pc.model || '—' }}</td>
+                  <td>{{ pc['Артикул'] || pc.articul || '—' }}</td>
+                  <td>{{ pc['PLAN_ID'] || '—' }}</td>
+                  <td>{{ pc['Уровень цен'] || pc.price_level || '—' }}</td>
+                  <td class="col-num num">{{ fmt(pc['Розничная цена по уровню, руб.'] || pc.retail_rub) }}</td>
+                  <td class="col-num num">{{ fmt(pc['Отпускная цена по уровню, руб'] || pc.wholesale_rub) }}</td>
+                  <td class="col-num num">{{ fmt(calcApprovalModal(pc).markupRub) }}</td>
+                  <td class="col-num num">{{ calcApprovalModal(pc).markupPct.toFixed(1) }}%</td>
+                  <td class="col-num num">{{ calcApprovalModal(pc).marginPct.toFixed(1) }}%</td>
+                  <td class="col-num num">{{ modalMarginDevText(pc) }}</td>
+                  <td>{{ pc['Признак калькуляции'] || pc.calc_sign || '—' }}</td>
+                  <td>{{ pc['username'] || pc.author || '—' }}</td>
+                  <td>{{ formatDate(pc['created_at'] || pc.created_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
         <div class="approval-modal-footer">
           <span style="font-size:var(--fs-xs);color:var(--text-muted)">
@@ -2208,14 +2232,19 @@ const approvalClearing = ref(false);
 
 async function openApprovalModal() {
   showApprovalModal.value = true;
-  await Promise.all([loadApprovalPendingChanges(), loadApprovalMarginTargets()]);
+  await Promise.all([
+    loadApprovalFilterOptions(),
+    loadApprovalPendingChanges(),
+    loadApprovalMarginTargets(),
+  ]);
 }
 
 async function loadApprovalPendingChanges() {
   approvalLoading.value = true;
   try {
+    const params = buildApprovalFilterParams();
     const res = await $fetch<{ data: any[] }>(
-      `${apiBase.value}/api/cost/pending-changes`,
+      `${apiBase.value}/api/cost/pending-changes?${params}`,
       { headers: fetchHeaders.value }
     );
     approvalPendingChanges.value = res.data ?? [];
@@ -2315,6 +2344,97 @@ async function loadApprovalMarginTargets() {
   } catch {
     approvalMarginTargets.value = {};
   }
+}
+
+// ── Approval modal: filters & cascade ──────────────────────────────────────────
+
+const APPROVAL_LEVEL_KEYS = ["level01", "level02", "level03", "level04", "level05"];
+
+const approvalFilterKeys = [
+  { key: "brand_manager", label: "Бренд-менеджер" },
+  { key: "level01", label: "Level 01" },
+  { key: "level02", label: "Level 02" },
+  { key: "level03", label: "Level 03" },
+  { key: "level04", label: "Level 04" },
+  { key: "level05", label: "Level 05" },
+  { key: "calc_sign", label: "Призн. кальк." },
+  { key: "plan_id", label: "План" },
+];
+
+const approvalFilterOptions = ref<Record<string, string[]>>({});
+const approvalSelected = reactive<Record<string, string[]>>(
+  Object.fromEntries(approvalFilterKeys.map((f) => [f.key, [] as string[]])) as any
+);
+const approvalQuery = ref("");
+const approvalFilterBusy = ref(false);
+let approvalFilterTimeout: ReturnType<typeof setTimeout> | null = null;
+
+function isApprovalLocked(key: string): boolean {
+  let lowestIdx = -1;
+  for (let i = APPROVAL_LEVEL_KEYS.length - 1; i >= 0; i--) {
+    if (approvalSelected[APPROVAL_LEVEL_KEYS[i]]?.length > 0) {
+      lowestIdx = i;
+      break;
+    }
+  }
+  if (lowestIdx === -1) return false;
+  if (key === "brand_manager") return true;
+  const keyIdx = APPROVAL_LEVEL_KEYS.indexOf(key as any);
+  if (keyIdx === -1) return false;
+  return keyIdx < lowestIdx;
+}
+
+function buildApprovalFilterParams(): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const [key, vals] of Object.entries(approvalSelected)) {
+    if (!(vals as string[]).length) continue;
+    for (const v of vals as string[]) params.append(key, v);
+  }
+  if (approvalQuery.value.trim()) params.set("q", approvalQuery.value.trim());
+  return params;
+}
+
+async function loadApprovalFilterOptions() {
+  approvalFilterBusy.value = true;
+  try {
+    const params = buildApprovalFilterParams();
+    const raw = await $fetch<Record<string, string[]>>(
+      `${apiBase.value}/api/cost/pending-changes/filter-options?${params}`,
+      { headers: fetchHeaders.value }
+    );
+    approvalFilterOptions.value = raw;
+  } catch (e: any) {
+    console.error("[cost] load approval filter-options failed", e);
+  } finally {
+    approvalFilterBusy.value = false;
+  }
+}
+
+async function onApprovalFilterChange(changedKey: string) {
+  if (changedKey === "brand_manager") {
+    for (const k of APPROVAL_LEVEL_KEYS) approvalSelected[k] = [];
+  } else if (APPROVAL_LEVEL_KEYS.includes(changedKey)) {
+    const idx = APPROVAL_LEVEL_KEYS.indexOf(changedKey);
+    for (let i = idx + 1; i < APPROVAL_LEVEL_KEYS.length; i++) {
+      approvalSelected[APPROVAL_LEVEL_KEYS[i]] = [];
+    }
+  }
+  await loadApprovalFilterOptions();
+  await loadApprovalPendingChanges();
+}
+
+function onApprovalFilterChangeDelayed() {
+  if (approvalFilterTimeout) clearTimeout(approvalFilterTimeout);
+  approvalFilterTimeout = setTimeout(async () => {
+    await loadApprovalPendingChanges();
+  }, 300);
+}
+
+async function resetApprovalFilters() {
+  approvalQuery.value = "";
+  for (const k of approvalFilterKeys) approvalSelected[k.key] = [];
+  await loadApprovalFilterOptions();
+  await loadApprovalPendingChanges();
 }
 
 onMounted(async () => {
@@ -2872,6 +2992,37 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   justify-content: space-between;
   align-items: center;
   flex-shrink: 0;
+}
+
+/* Approval modal — filter bar */
+.approval-filters {
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-surface-2, var(--bg-surface));
+  border: 1px solid var(--border);
+  border-radius: var(--rd-3);
+  font-size: var(--fs-xs);
+}
+.approval-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.af-search input {
+  width: 180px;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--rd-2);
+  font-size: var(--fs-xs);
+  background: var(--bg-surface);
+  color: var(--text-strong);
+}
+.af-item { width: 140px; }
+.af-item.locked { opacity: 0.4; pointer-events: none; }
+.af-busy { margin-top: var(--sp-1); color: var(--text-muted); font-size: var(--fs-xs); }
+.approval-table-scroll {
+  overflow-x: auto;
 }
 
 /* Approval table — grid + formatting */
