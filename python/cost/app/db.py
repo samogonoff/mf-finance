@@ -723,8 +723,9 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                     """
                     INSERT INTO CostHistory_Changes
                         (Модель, Артикул, Уровень_цен, Розничная_цена_руб, Отпускная_цена_руб,
-                         changed_at, Пользователь, calc_sign, plan_id, approved_at, approved_by)
-                    VALUES (?, ?, ?, ?, ?, GETDATE(), ?, ?, ?, GETDATE(), ?)
+                         changed_at, Пользователь, calc_sign, plan_id, approved_at, approved_by,
+                         sebestoimost_rub, sebestoimost_usd)
+                    VALUES (?, ?, ?, ?, ?, GETDATE(), ?, ?, ?, GETDATE(), ?, ?, ?)
                     """,
                     (
                         rec.get("Модель"),
@@ -736,6 +737,8 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                         rec.get("Признак калькуляции"),
                         rec.get("PLAN_ID"),
                         reviewed_by,
+                        rec.get("Себестоимость, руб."),
+                        rec.get("Себестоимость, USD."),
                     ),
                 )
             olap.commit()
