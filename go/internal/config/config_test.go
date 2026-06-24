@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// T2: finpl-источник отчёта «Задолженность ВГО» — новые env с дефолтами.
-// Дефолт DEBT_BACKEND пока остаётся mssql (флип на finpl — в T9).
+// finpl-источник отчёта «Задолженность ВГО» — новые env с дефолтами.
+// После cutover (T9) дефолт DEBT_BACKEND = finpl.
 func TestLoad_FinPLDefaults(t *testing.T) {
 	for _, k := range []string{"MSSQL_FINPL_TABLE", "DEBT_FINPL_MIN_MONTH", "DEBT_BACKEND"} {
 		t.Setenv(k, "") // гарантируем «не задано» → дефолт
@@ -19,8 +19,8 @@ func TestLoad_FinPLDefaults(t *testing.T) {
 	if cfg.DebtFinPLMinMonth != "2025-01-01" {
 		t.Errorf("DebtFinPLMinMonth default = %q, want 2025-01-01", cfg.DebtFinPLMinMonth)
 	}
-	if cfg.DebtBackend != "mssql" {
-		t.Errorf("DebtBackend default = %q, want mssql (флип на finpl — в T9)", cfg.DebtBackend)
+	if cfg.DebtBackend != "finpl" {
+		t.Errorf("DebtBackend default = %q, want finpl (cutover T9)", cfg.DebtBackend)
 	}
 }
 

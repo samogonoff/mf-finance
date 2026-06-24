@@ -49,10 +49,10 @@ type Config struct {
 	PremasterCompaniesTable string
 
 	// DEBT_BACKEND — какой источник дёргает отчёт «Задолженность ВГО».
-	//   "mssql" (default) → repo_premaster.go, ходит в Premaster1C напрямую.
-	//   "ch"              → repo_clickhouse.go, ходит в локальный CH-снэпшот.
-	//   "finpl"           → repo_finpl.go, каноническая ОПУ-витрина Table_Fin_PL
+	//   "finpl" (default) → repo_finpl.go, каноническая ОПУ-витрина Table_Fin_PL
 	//                       (выручка/ВГО) + Premaster для ДЗ/КЗ/договора/просрочки.
+	//   "mssql"           → repo_premaster.go, ходит в Premaster1C напрямую (откат).
+	//   "ch"              → repo_clickhouse.go, ходит в локальный CH-снэпшот.
 	// Drilldown в ch-режиме пока не реализован — falls back to mssql.
 	DebtBackend       string
 	ClickHouseHTTPURL string
@@ -94,7 +94,7 @@ func Load() Config {
 		PremasterCodePLTable:    env("MSSQL_PREMASTER_CODEPL_TABLE", "002 CodePL"),
 		PremasterCompaniesTable: env("MSSQL_PREMASTER_COMPANIES_TABLE", "CompaniesMF"),
 
-		DebtBackend:       strings.ToLower(env("DEBT_BACKEND", "mssql")),
+		DebtBackend:       strings.ToLower(env("DEBT_BACKEND", "finpl")),
 		ClickHouseHTTPURL: env("CLICKHOUSE_HTTP_URL", "http://clickhouse:8123"),
 		ClickHouseUser:    env("CLICKHOUSE_USER", "finance"),
 		ClickHousePass:    env("CLICKHOUSE_PASSWORD", "finance"),
