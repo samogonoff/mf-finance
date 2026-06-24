@@ -98,7 +98,7 @@ sum(amt_wovat_byn) FROM finance.fact_glmf WHERE company_id='6950135110' AND mont
 **Acceptance:** все ЮЛ налиты; инкремент тянет дельту по DateOfLoad без дублей (Replacing).
 **Verify:** `make logs-go`; CH counts по всем company_id; повторный тик не растит дубли (FINAL).
 
-### [ ] T7. config/env + wiring `DEBT_BACKEND=ch`→`fact_glmf`
+### [x] T7. ✅ config/env + wiring `DEBT_BACKEND=ch`→`fact_glmf`
 **Файлы:** `config.go`, `cmd/api/main.go`, `.env.example`
 - ch-бэкенд читает `fact_glmf` (+dim_contract). Env: `MSSQL_GLMF_VIEW=vGLMFAddUSD`,
   watermark-настройки. **Все новые env — в `.env.example` тем же коммитом.**
