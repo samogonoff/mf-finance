@@ -79,19 +79,29 @@ func NewAdminHandler(deps Deps) *AdminHandler {
 func (h *AdminHandler) Status(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// ?source=premaster (default) | glmf — прогресс соответствующего потока.
+	source := r.URL.Query().Get("source")
+	if source == "" {
+		source = "premaster"
+	}
+	if source != "premaster" && source != "glmf" {
+		writeErr(w, http.StatusBadRequest, "source must be premaster|glmf")
+		return
+	}
+
 	rows, err := h.deps.PG.Query(ctx, `
 		SELECT company_id, phase, rows_loaded, started_at, updated_at,
 		       finished_at, error_text, last_change_at
 		  FROM debt_etl_checkpoint
-		 WHERE source='premaster'
-		 ORDER BY company_id, phase`)
+		 WHERE source=$1
+		 ORDER BY company_id, phase`, source)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "pg query: "+err.Error())
 		return
 	}
 	defer rows.Close()
 
-	chCounts, chErr := h.fetchCHCounts(ctx)
+	chCounts, chErr := h.fetchCHCounts(ctx, source)
 
 	byCompany := map[string]*CompanyStatus{}
 	for rows.Next() {
@@ -146,7 +156,7 @@ func (h *AdminHandler) Status(w http.ResponseWriter, r *http.Request) {
 				c.CHRows = &cnt
 			}
 		}
-		if _, ok := h.running.Load(c.CompanyID); ok {
+		if _, ok := h.running.Load(source + ":" + c.CompanyID); ok {
 			c.Running = true
 		}
 		out = append(out, *c)
@@ -235,8 +245,12 @@ func (h *AdminHandler) StartBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "unknown source (premaster|glmf|contract): "+body.Source)
 		return
 	}
+	source := body.Source
+	if source == "" {
+		source = "premaster"
+	}
 	// Ключ блокировки включает source — bootstrap разных источников одного ЮЛ не мешают.
-	runKey := body.Source + ":" + body.CompanyID
+	runKey := source + ":" + body.CompanyID
 	if _, busy := h.running.LoadOrStore(runKey, struct{}{}); busy {
 		writeErr(w, http.StatusConflict, "bootstrap already in progress for "+runKey)
 		return
@@ -339,11 +353,15 @@ func (h *AdminHandler) readSettings(ctx context.Context) (*Settings, error) {
 	return s, rows.Err()
 }
 
-func (h *AdminHandler) fetchCHCounts(ctx context.Context) (map[string]int64, error) {
+func (h *AdminHandler) fetchCHCounts(ctx context.Context, source string) (map[string]int64, error) {
 	if h.ch == nil {
 		return nil, fmt.Errorf("clickhouse url not configured")
 	}
-	q := "SELECT company_id, toString(count()) AS cnt FROM finance.fact_premaster GROUP BY company_id FORMAT JSONEachRow"
+	table := "finance.fact_premaster"
+	if source == "glmf" {
+		table = "finance.fact_glmf"
+	}
+	q := "SELECT company_id, toString(count()) AS cnt FROM " + table + " GROUP BY company_id FORMAT JSONEachRow"
 	body, err := h.ch.queryString(ctx, q)
 	if err != nil {
 		return nil, err

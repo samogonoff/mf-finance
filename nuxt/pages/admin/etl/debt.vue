@@ -1,6 +1,6 @@
 <template>
   <div class="etl-page">
-    <h1 class="page-title">ETL задолженности — Premaster1C → ClickHouse</h1>
+    <h1 class="page-title">ETL задолженности → ClickHouse (Premaster / GLMF)</h1>
 
     <!-- Settings -->
     <section class="card">
@@ -39,6 +39,15 @@
     <section class="card">
       <header class="card-header">
         <h2>Юрлица</h2>
+        <div class="src-toggle">
+          <button
+            v-for="s in (['premaster','glmf'] as const)"
+            :key="s"
+            class="chip"
+            :class="{ active: source === s }"
+            @click="setSource(s)"
+          >{{ s === 'glmf' ? 'GLMF (fact_glmf)' : 'Premaster (fact_premaster)' }}</button>
+        </div>
         <button class="btn-ghost" :disabled="loading" @click="refresh">
           <Icon name="lucide:refresh-cw" /> Обновить
         </button>
@@ -87,8 +96,16 @@
               <button
                 class="btn"
                 :disabled="row.running || actionPending[row.company_id]"
-                @click="startBootstrap(row.company_id, row.bootstrap?.finished_at != null)">
+                @click="startBootstrap(row.company_id, row.bootstrap?.finished_at != null, source)">
                 {{ row.bootstrap?.finished_at ? 'Перезалить' : 'Залить' }}
+              </button>
+              <button
+                v-if="source === 'glmf'"
+                class="btn-ghost small"
+                :disabled="actionPending[row.company_id]"
+                title="Залить договоры (dim_contract) из субконто Premaster"
+                @click="startBootstrap(row.company_id, true, 'contract')">
+                + договоры
               </button>
             </td>
           </tr>
@@ -199,15 +216,24 @@ const authHeader = () => {
   return t ? { Authorization: `Bearer ${t}` } : {};
 };
 
+// Источник прогресса/заливки: premaster (fact_premaster) | glmf (fact_glmf).
+const source = ref<"premaster" | "glmf">("premaster");
+
 const fetchStatus = async () => {
   const data = await $fetch<{ items: CompanyRow[]; ch_error?: string }>(
-    `${apiBase}/api/admin/etl/debt/status`,
+    `${apiBase}/api/admin/etl/debt/status?source=${source.value}`,
     { headers: authHeader() }
   );
   companies.value = (data.items || []).sort((a, b) =>
     (a.company_id || "").localeCompare(b.company_id || "")
   );
   chError.value = data.ch_error || "";
+};
+
+const setSource = (s: "premaster" | "glmf") => {
+  if (source.value === s) return;
+  source.value = s;
+  fetchStatus();
 };
 
 const fetchSettings = async () => {
@@ -246,14 +272,15 @@ const saveSettings = async (patch: Partial<Settings>) => {
   }
 };
 
-const startBootstrap = async (inn: string, isReload: boolean) => {
+const startBootstrap = async (inn: string, isReload: boolean, src: "premaster" | "glmf" | "contract") => {
   const verb = isReload ? "перезалить" : "залить";
-  if (!confirm(`Точно ${verb} ${inn}? Это удалит существующие строки в CH и перельёт их заново.`)) return;
+  const what = src === "contract" ? "договоры (dim_contract)" : `данные (${src})`;
+  if (!confirm(`Точно ${verb} ${what} для ${inn}? Это перельёт строки в CH заново.`)) return;
   actionPending[inn] = true;
   try {
     await $fetch(`${apiBase}/api/admin/etl/debt/bootstrap`, {
       method: "POST",
-      body: { company_id: inn },
+      body: { company_id: inn, source: src },
       headers: authHeader()
     });
     await fetchStatus();
@@ -368,6 +395,23 @@ const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n) + "…"
   background: var(--surface-2); color: var(--text-muted);
   border-radius: 3px;
 }
+.src-toggle { display: flex; gap: 6px; margin-left: auto; margin-right: var(--sp-2, 12px); }
+.src-toggle .chip {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--rd-2, 6px);
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--text-secondary);
+}
+.src-toggle .chip.active {
+  background: var(--accent, #4338ca);
+  color: #fff;
+  border-color: var(--accent, #4338ca);
+}
+.btn-ghost.small { font-size: 0.78rem; padding: 2px 8px; margin-left: 6px; }
 .status { font-size: 0.875rem; }
 .status.ok { color: var(--success, #16a34a); }
 .status.err { color: var(--danger, #dc2626); }
