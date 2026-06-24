@@ -35,11 +35,13 @@ func RunIncrementalGLMF(ctx context.Context, deps Deps, inn string) (int64, erro
 		return 0, fmt.Errorf("incremental-glmf: watermark: %w", err)
 	}
 
+	// Фильтр по Company-коду (кластерный индекс GLMF) + watermark DateOfLoad.
+	// БЕЗ ORDER BY (maxLoad считаем в цикле, порядок не нужен).
+	coClause, coArgs := glmfCompanyWhere(inn)
 	vgoClause, vgoArgs := vgoFilter()
 	q := extractGLMFSelectFrom() + `
-WHERE p.CompanyID = @inn` + incrementalGLMFWhere() + vgoClause + `
-ORDER BY p.DateOfLoad, p.DocID, p.Num`
-	args := append([]interface{}{sql.Named("inn", inn), sql.Named("last", last)}, vgoArgs...)
+WHERE ` + coClause + incrementalGLMFWhere() + vgoClause
+	args := append(coArgs, append([]interface{}{sql.Named("last", last)}, vgoArgs...)...)
 	rows, err := deps.MSSQL.QueryContext(ctx, q, args...)
 	if err != nil {
 		return 0, fmt.Errorf("incremental-glmf: mssql: %w", err)

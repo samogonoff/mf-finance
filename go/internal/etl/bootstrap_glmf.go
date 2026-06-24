@@ -3,7 +3,6 @@ package etl
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -96,12 +95,15 @@ func RunBootstrapGLMF(ctx context.Context, deps Deps, opts BootstrapOpts) (int64
 
 // streamGLMF — SELECT cursor (GLMF, ВГО-фильтр) → batches → fact_glmf.
 func streamGLMF(ctx context.Context, deps Deps, ch *chClient, opts BootstrapOpts, startedAt time.Time) (int64, error) {
+	// Фильтр по Company-коду (кластерный индекс GLMF) — иначе full scan 209M строк.
+	// БЕЗ ORDER BY: сортировка результата заставляет MSSQL ждать до первой строки
+	// (батчи не идут); ReplacingMergeTree схлопнёт дубли и так, порядок не важен.
+	coClause, coArgs := glmfCompanyWhere(opts.CompanyID)
 	vgoClause, vgoArgs := vgoFilter()
 	q := extractGLMFSelectFrom() + `
-WHERE p.CompanyID = @inn` + vgoClause + `
-ORDER BY p.[Date], p.DocID, p.Num`
+WHERE ` + coClause + vgoClause
 
-	args := append([]interface{}{sql.Named("inn", opts.CompanyID)}, vgoArgs...)
+	args := append(coArgs, vgoArgs...)
 	rows, err := deps.MSSQL.QueryContext(ctx, q, args...)
 	if err != nil {
 		return 0, fmt.Errorf("mssql query: %w", err)
