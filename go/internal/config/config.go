@@ -51,11 +51,20 @@ type Config struct {
 	// DEBT_BACKEND — какой источник дёргает отчёт «Задолженность ВГО».
 	//   "mssql" (default) → repo_premaster.go, ходит в Premaster1C напрямую.
 	//   "ch"              → repo_clickhouse.go, ходит в локальный CH-снэпшот.
+	//   "finpl"           → repo_finpl.go, каноническая ОПУ-витрина Table_Fin_PL
+	//                       (выручка/ВГО) + Premaster для ДЗ/КЗ/договора/просрочки.
 	// Drilldown в ch-режиме пока не реализован — falls back to mssql.
 	DebtBackend       string
 	ClickHouseHTTPURL string
 	ClickHouseUser    string
 	ClickHousePass    string
+
+	// Table_Fin_PL — каноническая месячная ОПУ-витрина на том же OLAP (FinDWH.dbo),
+	// первоисточник отчёта при DEBT_BACKEND=finpl. Имя таблицы вынесено в env,
+	// чтобы переключаться на тестовую копию без правки кода. DebtFinPLMinMonth —
+	// нижняя граница периода (раньше неё данных нет): фильтр клампится к ней.
+	DebtFinPLTable    string
+	DebtFinPLMinMonth string
 }
 
 func Load() Config {
@@ -89,6 +98,9 @@ func Load() Config {
 		ClickHouseHTTPURL: env("CLICKHOUSE_HTTP_URL", "http://clickhouse:8123"),
 		ClickHouseUser:    env("CLICKHOUSE_USER", "finance"),
 		ClickHousePass:    env("CLICKHOUSE_PASSWORD", "finance"),
+
+		DebtFinPLTable:    env("MSSQL_FINPL_TABLE", "Table_Fin_PL"),
+		DebtFinPLMinMonth: env("DEBT_FINPL_MIN_MONTH", "2025-01-01"),
 	}
 }
 
