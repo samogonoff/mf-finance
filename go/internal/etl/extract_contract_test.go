@@ -59,7 +59,7 @@ func TestExtractContractSelectFrom(t *testing.T) {
 
 // contractRow → JSON-ключи = колонки dim_contract.
 func TestContractRowJSONKeys(t *testing.T) {
-	want := []string{"doc_id", "contract_ref", "contract_name", "account_kind"}
+	want := []string{"doc_id", "company_id", "contract_ref", "contract_name", "account_kind"}
 	raw, _ := json.Marshal(contractRow{})
 	b := string(raw)
 	for _, k := range want {

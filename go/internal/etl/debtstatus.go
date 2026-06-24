@@ -29,6 +29,7 @@ type CompanyStatus struct {
 	Bootstrap  *Status `json:"bootstrap,omitempty"`
 	Increment  *Status `json:"incremental,omitempty"`
 	CHRows     *int64  `json:"ch_rows,omitempty"`
+	DocRows    *int64  `json:"doc_rows,omitempty"` // строк в dim_contract (договоры), при source=glmf
 	Running    bool    `json:"running"` // bootstrap идёт прямо сейчас
 }
 
@@ -102,6 +103,11 @@ func (h *AdminHandler) Status(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	chCounts, chErr := h.fetchCHCounts(ctx, source)
+	// При GLMF — ещё счётчик договоров (dim_contract per company).
+	var docCounts map[string]int64
+	if source == "glmf" {
+		docCounts, _ = h.fetchDocCounts(ctx)
+	}
 
 	byCompany := map[string]*CompanyStatus{}
 	for rows.Next() {
@@ -154,6 +160,12 @@ func (h *AdminHandler) Status(w http.ResponseWriter, r *http.Request) {
 			if v, ok := chCounts[c.CompanyID]; ok {
 				cnt := v
 				c.CHRows = &cnt
+			}
+		}
+		if docCounts != nil {
+			if v, ok := docCounts[c.CompanyID]; ok {
+				dc := v
+				c.DocRows = &dc
 			}
 		}
 		if _, ok := h.running.Load(source + ":" + c.CompanyID); ok {
@@ -351,6 +363,33 @@ func (h *AdminHandler) readSettings(ctx context.Context) (*Settings, error) {
 		}
 	}
 	return s, rows.Err()
+}
+
+// fetchDocCounts — число договоров в dim_contract per company (source=glmf).
+func (h *AdminHandler) fetchDocCounts(ctx context.Context) (map[string]int64, error) {
+	if h.ch == nil {
+		return nil, fmt.Errorf("clickhouse url not configured")
+	}
+	q := "SELECT company_id, toString(count()) AS cnt FROM finance.dim_contract WHERE company_id != '' GROUP BY company_id FORMAT JSONEachRow"
+	body, err := h.ch.queryString(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int64{}
+	dec := json.NewDecoder(strings.NewReader(body))
+	for dec.More() {
+		var r struct {
+			CompanyID string `json:"company_id"`
+			Cnt       string `json:"cnt"`
+		}
+		if err := dec.Decode(&r); err != nil {
+			return nil, err
+		}
+		var n int64
+		fmt.Sscanf(r.Cnt, "%d", &n)
+		out[r.CompanyID] = n
+	}
+	return out, nil
 }
 
 func (h *AdminHandler) fetchCHCounts(ctx context.Context, source string) (map[string]int64, error) {

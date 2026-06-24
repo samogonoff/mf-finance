@@ -58,6 +58,7 @@
             <th>ЮЛ</th>
             <th>ИНН</th>
             <th class="num">Строк в CH</th>
+            <th v-if="source === 'glmf'" class="num">Договоры</th>
             <th>Bootstrap</th>
             <th>Incremental</th>
             <th>Действие</th>
@@ -71,6 +72,7 @@
             </td>
             <td class="mono">{{ row.company_id }}</td>
             <td class="num">{{ row.ch_rows != null ? formatNum(row.ch_rows) : '—' }}</td>
+            <td v-if="source === 'glmf'" class="num">{{ row.doc_rows != null ? formatNum(row.doc_rows) : '—' }}</td>
             <td>
               <span v-if="row.running" class="status running">⟳ идёт…</span>
               <span v-else-if="row.bootstrap?.finished_at" class="status ok">
@@ -96,21 +98,14 @@
               <button
                 class="btn"
                 :disabled="row.running || actionPending[row.company_id]"
-                @click="startBootstrap(row.company_id, row.bootstrap?.finished_at != null, source)">
+                :title="source === 'glmf' ? 'Заливает данные (fact_glmf) + договоры (dim_contract)' : ''"
+                @click="onLoad(row.company_id, row.bootstrap?.finished_at != null)">
                 {{ row.bootstrap?.finished_at ? 'Перезалить' : 'Залить' }}
-              </button>
-              <button
-                v-if="source === 'glmf'"
-                class="btn-ghost small"
-                :disabled="actionPending[row.company_id]"
-                title="Залить договоры (dim_contract) из субконто Premaster"
-                @click="startBootstrap(row.company_id, true, 'contract')">
-                + договоры
               </button>
             </td>
           </tr>
           <tr v-if="!loading && companies.length === 0">
-            <td colspan="6" class="muted center">Нет данных</td>
+            <td :colspan="source === 'glmf' ? 7 : 6" class="muted center">Нет данных</td>
           </tr>
         </tbody>
       </table>
@@ -165,6 +160,7 @@ interface CompanyRow {
   name?: string;
   country?: string;
   ch_rows?: number;
+  doc_rows?: number;
   running: boolean;
   bootstrap?: {
     rows_loaded: number;
@@ -216,8 +212,8 @@ const authHeader = () => {
   return t ? { Authorization: `Bearer ${t}` } : {};
 };
 
-// Источник прогресса/заливки: premaster (fact_premaster) | glmf (fact_glmf).
-const source = ref<"premaster" | "glmf">("premaster");
+// Источник прогресса/заливки: glmf (fact_glmf, дефолт) | premaster (fact_premaster).
+const source = ref<"premaster" | "glmf">("glmf");
 
 const fetchStatus = async () => {
   const data = await $fetch<{ items: CompanyRow[]; ch_error?: string }>(
@@ -272,17 +268,26 @@ const saveSettings = async (patch: Partial<Settings>) => {
   }
 };
 
-const startBootstrap = async (inn: string, isReload: boolean, src: "premaster" | "glmf" | "contract") => {
+const postBootstrap = (inn: string, src: "premaster" | "glmf" | "contract") =>
+  $fetch(`${apiBase}/api/admin/etl/debt/bootstrap`, {
+    method: "POST",
+    body: { company_id: inn, source: src },
+    headers: authHeader()
+  });
+
+// Одна кнопка: в режиме GLMF грузит И данные (fact_glmf), И договоры (dim_contract).
+const onLoad = async (inn: string, isReload: boolean) => {
   const verb = isReload ? "перезалить" : "залить";
-  const what = src === "contract" ? "договоры (dim_contract)" : `данные (${src})`;
+  const what = source.value === "glmf" ? "данные + договоры" : "данные (premaster)";
   if (!confirm(`Точно ${verb} ${what} для ${inn}? Это перельёт строки в CH заново.`)) return;
   actionPending[inn] = true;
   try {
-    await $fetch(`${apiBase}/api/admin/etl/debt/bootstrap`, {
-      method: "POST",
-      body: { company_id: inn, source: src },
-      headers: authHeader()
-    });
+    if (source.value === "glmf") {
+      await postBootstrap(inn, "glmf");
+      await postBootstrap(inn, "contract"); // договоры отдельным потоком, параллельно
+    } else {
+      await postBootstrap(inn, "premaster");
+    }
     await fetchStatus();
   } catch (e: any) {
     alert(`Не удалось запустить: ${e?.data?.error || e?.message || "ошибка"}`);
