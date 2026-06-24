@@ -52,27 +52,31 @@ func extractGLMFSelectFrom() string {
 	    WHEN 'BY' THEN N'РБ' WHEN 'RU' THEN N'РФ'
 	    WHEN 'KZ' THEN N'КЗ' WHEN 'UZ' THEN N'УЗ'
 	    ELSE ISNULL(p.Country,'') END`
+	// ВСЕ колонки обёрнуты в ISNULL: scan идёт в не-nullable Go-типы (string/uint8),
+	// а у GLMF nullable почти всё (Month/DateOfLoad/DrAcc/CrAcc/суммы при NULL-курсе)
+	// → любой NULL роняет scan. ICO (bit) кастим в TINYINT (иначе bool→uint8 ошибка).
 	return `
 SELECT
-    p.CompanyID,
+    ISNULL(p.CompanyID, ''),
     ISNULL(p.CounterpartyID, ''),
-    CONVERT(NVARCHAR(MAX), p.DocID),
-    p.Num,
-    CONVERT(CHAR(10), p.[Date], 23),
-    CONVERT(CHAR(10), p.[Month], 23),
-    p.DrAcc, p.CrAcc,
-    ` + accRootSQL("p.DrAcc") + `,
-    ` + accRootSQL("p.CrAcc") + `,
+    ISNULL(CONVERT(NVARCHAR(MAX), p.DocID), ''),
+    ISNULL(p.Num, 0),
+    ISNULL(CONVERT(CHAR(10), p.[Date], 23), '1970-01-01'),
+    ISNULL(CONVERT(CHAR(10), p.[Month], 23), ISNULL(CONVERT(CHAR(10), p.[Date], 23), '1970-01-01')),
+    ISNULL(p.DrAcc, ''), ISNULL(p.CrAcc, ''),
+    ISNULL(` + accRootSQL("ISNULL(p.DrAcc,'')") + `, ''),
+    ISNULL(` + accRootSQL("ISNULL(p.CrAcc,'')") + `, ''),
     ISNULL(p.CodePL, ''),
     ISNULL(p.GroupPL, ''),
-    CONVERT(TINYINT, ISNULL(p.ICO, 0)),  -- GLMF.ICO = bit; драйвер отдаёт bool, scan в uint8 падает
+    CONVERT(TINYINT, ISNULL(p.ICO, 0)),
     ` + country + `,
-    CONVERT(VARCHAR(40), p.AmountWOVATBelRubFact),
-    CONVERT(VARCHAR(40), p.AmountWithVATBelRubFact),
+    CONVERT(VARCHAR(40), ISNULL(p.AmountWOVATBelRubFact, 0)),
+    CONVERT(VARCHAR(40), ISNULL(p.AmountWithVATBelRubFact, 0)),
     '' , '' ,
     ISNULL(p.DocName1C, ''),
     ISNULL(p.OperationDescription, ''),
-    CONVERT(CHAR(10), p.DateOfLoad, 23)
+    -- DateOfLoad бывает NULL → фолбэк на дату проводки (валидная Date для CH + watermark)
+    ISNULL(CONVERT(CHAR(10), p.DateOfLoad, 23), ISNULL(CONVERT(CHAR(10), p.[Date], 23), '1970-01-01'))
 FROM [FinDWH].[dbo].[GLMF] AS p WITH (NOLOCK)`
 }
 
