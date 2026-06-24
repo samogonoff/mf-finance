@@ -93,3 +93,75 @@ func TestOurINNs_includesPTIR(t *testing.T) {
 	}
 	t.Fatalf("OurINNs() не содержит ИНН ПТИР %q", ptir)
 }
+
+// T1: справочник код→ИНН. Table_Fin_PL.Компания хранит короткий код, ИНН там нет —
+// резолвим через этот map. Коды и ИНН сняты с OLAP (vGLMFAddUSD).
+func TestINNByCode(t *testing.T) {
+	want := map[string]string{
+		// ЮЛ из ТЗ, фигурирующие в PL-данных как Компания
+		"MF":    "690591512",
+		"F":     "690719790",
+		"TDMF":  "6950135110",
+		"MFTex": "5031159833",
+		"MFT":   "9909349268",
+		"PTIR":  "9731039708",
+		"MFKaz": "141240004842",
+		"MFUz":  "305554644",
+		"BR":    "310170662",
+		// ВГО-компании сверх 15 (нет в seed-списке, есть во флаге [ВГО]=1)
+		"DR":  "692221084",
+		"DR2": "693335015",
+		"GP":  "190465888",
+	}
+	for code, inn := range want {
+		got, ok := INNByCode(code)
+		if !ok {
+			t.Errorf("INNByCode(%q): код не найден в справочнике", code)
+			continue
+		}
+		if got != inn {
+			t.Errorf("INNByCode(%q) = %q, ожидался %q", code, got, inn)
+		}
+	}
+	if _, ok := INNByCode("НЕТ_ТАКОГО"); ok {
+		t.Errorf("INNByCode(неизвестный) должен вернуть ok=false")
+	}
+	if _, ok := INNByCode(""); ok {
+		t.Errorf("INNByCode(\"\") должен вернуть ok=false")
+	}
+}
+
+// EntityByCode даёт страну/имя/код — нужно finpl-репо для заполнения DebtRow по коду.
+func TestEntityByCode(t *testing.T) {
+	dr, ok := EntityByCode("DR")
+	if !ok {
+		t.Fatalf("EntityByCode(\"DR\"): не найдено")
+	}
+	if dr.Country != CountryRB {
+		t.Errorf("DR.Country = %q, ожидалась %q (Дримдом — РБ)", dr.Country, CountryRB)
+	}
+	if dr.INN != "692221084" {
+		t.Errorf("DR.INN = %q, ожидался 692221084", dr.INN)
+	}
+	mf, ok := EntityByCode("MF")
+	if !ok || mf.Code != "MF" || mf.INN != "690591512" {
+		t.Errorf("EntityByCode(\"MF\") = %+v, ok=%v", mf, ok)
+	}
+}
+
+// Фаза 0 — без смены поведения: ВГО-компании сверх 15 (DR/DR2/GP) НЕ должны
+// протекать в Entities()/OurINNs()/Level1, чтобы не расширить ВГО-фильтр текущего
+// mssql-бэкенда и UI-фильтр до cutover (T9).
+func TestExtraVGONotInSeedLists(t *testing.T) {
+	extra := map[string]bool{"692221084": true, "693335015": true, "190465888": true}
+	for _, inn := range OurINNs() {
+		if extra[inn] {
+			t.Errorf("OurINNs() не должен содержать ВГО-extra %q до cutover", inn)
+		}
+	}
+	for _, e := range EntitiesLevel1() {
+		if e.Code == "DR" || e.Code == "DR2" || e.Code == "GP" {
+			t.Errorf("EntitiesLevel1() не должен содержать %q до cutover", e.Code)
+		}
+	}
+}
