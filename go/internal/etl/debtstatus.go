@@ -219,6 +219,8 @@ func (h *AdminHandler) StartBootstrap(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		CompanyID string `json:"company_id"`
 		BatchSize int    `json:"batch_size,omitempty"`
+		// Source: premaster (default) | glmf | contract. См. bootstrapRunnerFor.
+		Source string `json:"source,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
@@ -228,29 +230,34 @@ func (h *AdminHandler) StartBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "company_id required")
 		return
 	}
-	if _, busy := h.running.LoadOrStore(body.CompanyID, struct{}{}); busy {
-		writeErr(w, http.StatusConflict, "bootstrap already in progress for "+body.CompanyID)
+	runner, ok := bootstrapRunnerFor(body.Source)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unknown source (premaster|glmf|contract): "+body.Source)
+		return
+	}
+	// Ключ блокировки включает source — bootstrap разных источников одного ЮЛ не мешают.
+	runKey := body.Source + ":" + body.CompanyID
+	if _, busy := h.running.LoadOrStore(runKey, struct{}{}); busy {
+		writeErr(w, http.StatusConflict, "bootstrap already in progress for "+runKey)
 		return
 	}
 
 	go func(inn string, batch int) {
-		defer h.running.Delete(inn)
-		// Отдельный фоновый контекст — http-request context закончится сразу
-		// после ответа 202, а bootstrap может занимать десятки минут.
+		defer h.running.Delete(runKey)
 		bgCtx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 		defer cancel()
-		if _, err := RunBootstrap(bgCtx, h.deps, BootstrapOpts{
+		if _, err := runner(bgCtx, h.deps, BootstrapOpts{
 			CompanyID:   inn,
 			BatchSize:   batch,
 			TriggeredBy: "admin-ui",
 		}); err != nil {
-			// Ошибка уже отражена в checkpoint + run_log, здесь только лог.
-			fmt.Printf("admin-ui bootstrap %s: %v\n", inn, err)
+			fmt.Printf("admin-ui bootstrap %s %s: %v\n", body.Source, inn, err)
 		}
 	}(body.CompanyID, body.BatchSize)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"company_id": body.CompanyID,
+		"source":     body.Source,
 		"status":     "accepted",
 	})
 }

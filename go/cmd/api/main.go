@@ -236,7 +236,8 @@ func main() {
 
 		// Инкрементальный воркер. Сам читает debt_etl_settings каждый тик —
 		// вкл/выкл и интервал управляются через PUT /api/admin/etl/debt/settings.
-		etl.NewIncrementalWorker(etlDeps).Start(context.Background())
+		// При DEBT_CH_SOURCE=glmf вдобавок тянет дельту fact_glmf по DateOfLoad.
+		etl.NewIncrementalWorkerWithGLMF(etlDeps, cfg.DebtCHSource == "glmf").Start(context.Background())
 	}
 
 	srv := &http.Server{
