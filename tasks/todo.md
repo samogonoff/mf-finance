@@ -60,7 +60,7 @@ sum(amt_wovat_byn) FROM finance.fact_glmf WHERE company_id='6950135110' AND mont
 
 ## Фаза C — Договоры (второй поток)
 
-### [ ] T4. CH-таблица `dim_contract` + extract + bootstrap
+### [x] T4. ✅ CH-таблица `dim_contract` + extract + bootstrap
 **Файлы:** `clickhouse/migrations/005_dim_contract.{up,down}.sql`,
 `go/internal/etl/extract_contract.go`, `bootstrap.go` (ветка dim_contract)
 - Миграция `dim_contract` (ReplacingMergeTree, ORDER BY doc_id):
