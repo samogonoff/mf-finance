@@ -7,7 +7,7 @@
 
 ## Фаза 0 — Фундамент (без смены поведения)
 
-### [ ] T1. Справочник юрлиц: код → {ИНН, Name, Country}
+### [x] T1. Справочник юрлиц: код → {ИНН, Name, Country} ✅ (commit 9dc39c2)
 **Файлы:** `go/internal/reports/debt/seed.go`, `model.go`
 - Добавить поле `Code string` в `Entity` (`model.go`).
 - Заполнить коды для 15 ЮЛ; **добавить новые** записи: `DR`/692221084, `DR2`/693335015,
@@ -24,7 +24,7 @@
 
 ---
 
-### [ ] T2. Config + env-ключи (дефолт пока не меняем)
+### [x] T2. Config + env-ключи (дефолт пока не меняем) ✅ (commit 385a297)
 **Файлы:** `go/internal/config/config.go`, `.env.example`
 - Добавить `DebtFinPLTable` (`MSSQL_FINPL_TABLE`, default `Table_Fin_PL`),
   `DebtFinPLMinMonth` (`DEBT_FINPL_MIN_MONTH`, default `2025-01-01`).
@@ -39,7 +39,7 @@
 
 ## Фаза 1 — Чтение из Table_Fin_PL (revenue-срез)
 
-### [ ] T3. ВГО-фильтр и period-helpers для finpl
+### [x] T3. ВГО-фильтр и period-helpers для finpl ✅ (commit 627f5aa)
 **Файлы:** `go/internal/reports/debt/vgo_report_filter.go` (или новый `finpl_filter.go`)
 - `vgoFinPLClause()` → `AND [ВГО] = 1` (без списка ИНН).
 - Month-нормализация: `monthFloor(date_from, minMonth)`, `monthCeil(date_to)` —
@@ -51,7 +51,7 @@
 
 ---
 
-### [ ] T4. `repo_finpl.go` — Report() выручки из Table_Fin_PL
+### [x] T4. ✅ 2ac8bec `repo_finpl.go` — Report() выручки из Table_Fin_PL
 **Файлы:** `go/internal/reports/debt/repo_finpl.go` (НОВЫЙ)
 - `finPLRepo` реализует `PremasterRepo` (как `clickhouseRepo`): MSSQL-коннект к
   `Table_Fin_PL` (переиспользовать `NewPremasterRepo` DSN или отдельный конструктор).
@@ -67,7 +67,7 @@
 
 ---
 
-### [ ] T5. Mock-фикстуры finpl (снэпшот пуст)
+### [x] T5. ✅ (bc45b35) Mock-фикстуры finpl (снэпшот пуст)
 **Файлы:** `go/internal/reports/debt/mocks.go`
 - Фикстуры, отражающие месячную ОПУ-структуру (revenue-строки, 2025 г., мультивалюта,
   включая ВГО-пару с DR/Дримдом для проверки нового справочника).
@@ -77,7 +77,7 @@
 
 ---
 
-### [ ] T6. Wiring: `DEBT_BACKEND=finpl` (opt-in)
+### [x] T6. ✅ (bc45b35) Wiring: `DEBT_BACKEND=finpl` (opt-in)
 **Файлы:** `go/cmd/api/main.go`
 - В блоке выбора бэкенда добавить ветку `cfg.DebtBackend == "finpl"`:
   `finPLRepo` для Report, Premaster — для drilldown/fallback (по образцу `compositeRepo`).
@@ -96,7 +96,7 @@
 
 ## Фаза 2 — Premaster fallback (ДЗ/КЗ + договор + просрочка)
 
-### [ ] T7. Merge: finpl-выручка ⋈ premaster ДЗ/КЗ  ⚠ РИСК §11.2
+### [x] T7. ✅ d01e58e Merge: finpl-выручка ⋈ premaster ДЗ/КЗ  ⚠ РИСК §11.2
 **Файлы:** `go/internal/reports/debt/repo_finpl.go`, дизайн-заметка в `docs/reports/debt/`
 - Реализовать композицию: revenue-строки (Table_Fin_PL) + ДЗ/КЗ-сальдо, договор,
   срок/просрочку, PartnerINN/менеджер/канал (Premaster `Report`).
@@ -117,7 +117,7 @@
 
 ## Фаза 3 — Drilldown и переключение дефолта
 
-### [ ] T8. Drilldown «согласно PL» (месячная PL-детализация)
+### [x] T8. ✅ aab4a35 Drilldown «согласно PL» (месячная PL-детализация)
 **Файлы:** `go/internal/reports/debt/repo_finpl.go`, `model.go` (при необходимости)
 - `Drilldown()` из `Table_Fin_PL`: строки месяца — `DocName1C, OperationDescription,
   CodePL/GroupPL, Dr_Cr, Amount*`. Дневной premaster-drilldown в finpl не используется.
@@ -129,7 +129,7 @@
 
 ---
 
-### [ ] T9. Cutover: дефолт `finpl` + filter-options + доки  ⚠ затрагивает prod
+### [x] T9. ✅ bad4163 Cutover: дефолт `finpl` + filter-options + доки  ⚠ затрагивает prod
 **Файлы:** `config.go`, `.env.example`, `go/cmd/api/main.go`, `seed.go`/`service.go`
 (filter-options), `CLAUDE.md`, `docs/reports/debt/*`, `SPEC.md` (статус → landed)
 - Сменить default `DEBT_BACKEND` → `finpl`; обновить комментарии config.
