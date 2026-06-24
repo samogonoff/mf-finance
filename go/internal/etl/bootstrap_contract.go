@@ -79,7 +79,7 @@ func streamContract(ctx context.Context, deps Deps, ch *chClient, opts Bootstrap
 	for rows.Next() {
 		var r contractRow
 		var ref, kind sql.NullString
-		if err := rows.Scan(&r.DocID, &ref, &r.ContractName, &kind); err != nil {
+		if err := rows.Scan(&r.DocID, &r.CompanyID, &ref, &r.ContractName, &kind); err != nil {
 			return total, fmt.Errorf("scan: %w", err)
 		}
 		// Эвристика-фильтр: оставляем только похожее на договор.

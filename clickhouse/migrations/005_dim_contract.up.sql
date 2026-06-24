@@ -13,6 +13,7 @@ CREATE DATABASE IF NOT EXISTS finance;
 CREATE TABLE IF NOT EXISTS finance.dim_contract
 (
     doc_id        String,                    -- = fact_glmf.doc_id (1С-ссылка `{"#",...}`)
+    company_id    LowCardinality(String) DEFAULT '', -- ИНН ЮЛ (для счётчика договоров per-company)
     contract_ref  String,                    -- сырая 1С-ссылка субконто-договора
     contract_name String,                    -- Objects.Name (отфильтровано эвристикой)
     account_kind  LowCardinality(String),    -- '62' | '60' | '76' (по какому счёту резолвлен)

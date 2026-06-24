@@ -18,9 +18,10 @@ import (
 // contractRow — строка dim_contract (JSONEachRow).
 type contractRow struct {
 	DocID        string `json:"doc_id"`
+	CompanyID    string `json:"company_id"` // ИНН ЮЛ — для счётчика договоров per-company
 	ContractRef  string `json:"contract_ref"`
 	ContractName string `json:"contract_name"`
-	AccountKind  string `json:"account_kind"` // '62' | '60' | '76'
+	AccountKind  string `json:"account_kind"` // '62' | '60' | '76' | КЗ/УЗ-счёт
 }
 
 // reContractKeep/reContractDrop — эвристика «название похоже на договор».
@@ -69,10 +70,11 @@ func extractContractSelectFrom(table string) string {
 	  END`, dr, cr, sub1)
 	return `
 SELECT DISTINCT
-    CONVERT(NVARCHAR(MAX), p.DocID) AS doc_id,
-    cc.ref                          AS contract_ref,
-    ISNULL(o.[Name], '')            AS contract_name,
-    cc.kind                         AS account_kind
+    ISNULL(CONVERT(NVARCHAR(MAX), p.DocID), '') AS doc_id,
+    ISNULL(p.CompanyID, '')                     AS company_id,
+    cc.ref                                       AS contract_ref,
+    ISNULL(o.[Name], '')                         AS contract_name,
+    cc.kind                                      AS account_kind
 FROM ` + table + ` AS p WITH (NOLOCK)
 CROSS APPLY (SELECT ` + ref + ` AS ref, ` + kind + ` AS kind) cc
 LEFT JOIN [FinDWH].[dbo].[Objects] AS o WITH (NOLOCK) ON o.ID = cc.ref
