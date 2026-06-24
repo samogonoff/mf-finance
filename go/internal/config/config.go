@@ -49,15 +49,24 @@ type Config struct {
 	PremasterCompaniesTable string
 
 	// DEBT_BACKEND — какой источник дёргает отчёт «Задолженность ВГО».
-	//   "finpl" (default) → repo_finpl.go, каноническая ОПУ-витрина Table_Fin_PL
+	//   "mssql" (default) → repo_premaster.go, ходит в Premaster1C напрямую.
+	//   "finpl"           → repo_finpl.go, каноническая ОПУ-витрина Table_Fin_PL
 	//                       (выручка/ВГО) + Premaster для ДЗ/КЗ/договора/просрочки.
-	//   "mssql"           → repo_premaster.go, ходит в Premaster1C напрямую (откат).
+	//                       Реализован, но не дефолт: ждёт сверки на наполненной
+	//                       витрине (CHECKPOINT C). Включается явно finpl.
 	//   "ch"              → repo_clickhouse.go, ходит в локальный CH-снэпшот.
 	// Drilldown в ch-режиме пока не реализован — falls back to mssql.
 	DebtBackend       string
 	ClickHouseHTTPURL string
 	ClickHouseUser    string
 	ClickHousePass    string
+
+	// DEBT_CH_SOURCE — какую CH-таблицу читает ch-бэкенд отчёта «Задолженность ВГО».
+	//   "premaster" (default) → finance.fact_premaster (текущий, из Premaster1C).
+	//   "glmf"                → finance.fact_glmf + dim_contract (поток GLMF, полнее,
+	//                           каноничная классификация, договоры отдельным потоком).
+	// glmf — opt-in до сверки чисел на наполненном CH (CHECKPOINT B/D, SPEC §10).
+	DebtCHSource string
 
 	// Table_Fin_PL — каноническая месячная ОПУ-витрина на том же OLAP (FinDWH.dbo),
 	// первоисточник отчёта при DEBT_BACKEND=finpl. Имя таблицы вынесено в env,
@@ -94,13 +103,15 @@ func Load() Config {
 		PremasterCodePLTable:    env("MSSQL_PREMASTER_CODEPL_TABLE", "002 CodePL"),
 		PremasterCompaniesTable: env("MSSQL_PREMASTER_COMPANIES_TABLE", "CompaniesMF"),
 
-		DebtBackend:       strings.ToLower(env("DEBT_BACKEND", "finpl")),
+		DebtBackend:       strings.ToLower(env("DEBT_BACKEND", "mssql")),
 		ClickHouseHTTPURL: env("CLICKHOUSE_HTTP_URL", "http://clickhouse:8123"),
 		ClickHouseUser:    env("CLICKHOUSE_USER", "finance"),
 		ClickHousePass:    env("CLICKHOUSE_PASSWORD", "finance"),
 
 		DebtFinPLTable:    env("MSSQL_FINPL_TABLE", "Table_Fin_PL"),
 		DebtFinPLMinMonth: env("DEBT_FINPL_MIN_MONTH", "2025-01-01"),
+
+		DebtCHSource: strings.ToLower(env("DEBT_CH_SOURCE", "premaster")),
 	}
 }
 

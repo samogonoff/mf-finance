@@ -17,10 +17,17 @@ import (
 // с завершённым bootstrap'ом, тянет дельту по DateOfChange.
 type IncrementalWorker struct {
 	deps Deps
+	glmf bool // также гнать дельту fact_glmf по DateOfLoad (когда DEBT_CH_SOURCE=glmf)
 }
 
 func NewIncrementalWorker(deps Deps) *IncrementalWorker {
 	return &IncrementalWorker{deps: deps}
+}
+
+// NewIncrementalWorkerWithGLMF — воркер, который вдобавок к premaster тянет дельту
+// fact_glmf (по DateOfLoad). Включается при DEBT_CH_SOURCE=glmf.
+func NewIncrementalWorkerWithGLMF(deps Deps, glmf bool) *IncrementalWorker {
+	return &IncrementalWorker{deps: deps, glmf: glmf}
 }
 
 // Start запускает loop в отдельной goroutine.
@@ -73,6 +80,18 @@ func (w *IncrementalWorker) tick(ctx context.Context) {
 			log.Printf("etl tick: incremental %s: %v", inn, err)
 			if firstErr == "" {
 				firstErr = inn + ": " + err.Error()
+			}
+		}
+	}
+
+	// Поток GLMF: дельта fact_glmf по DateOfLoad для ЮЛ с завершённым glmf-bootstrap.
+	if w.glmf {
+		for _, inn := range w.listActiveGLMFCompanies(ctx) {
+			if _, err := RunIncrementalGLMF(ctx, w.deps, inn); err != nil {
+				log.Printf("etl tick: incremental-glmf %s: %v", inn, err)
+				if firstErr == "" {
+					firstErr = "glmf " + inn + ": " + err.Error()
+				}
 			}
 		}
 	}
@@ -233,6 +252,27 @@ func (w *IncrementalWorker) listActiveCompanies(ctx context.Context) ([]string, 
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// listActiveGLMFCompanies — ЮЛ с завершённым glmf-bootstrap (source='glmf').
+func (w *IncrementalWorker) listActiveGLMFCompanies(ctx context.Context) []string {
+	rows, err := w.deps.PG.Query(ctx, `
+		SELECT company_id FROM debt_etl_checkpoint
+		 WHERE source='glmf' AND phase='bootstrap' AND finished_at IS NOT NULL
+		 ORDER BY company_id`)
+	if err != nil {
+		log.Printf("etl tick: listActiveGLMFCompanies: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err == nil {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func (w *IncrementalWorker) readEnabled(ctx context.Context) bool {

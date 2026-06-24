@@ -90,20 +90,29 @@ func main() {
 		CHPass: envOr("CLICKHOUSE_PASSWORD", "finance"),
 	}
 
+	// BOOTSTRAP_SOURCE: premaster (default, fact_premaster) | glmf (fact_glmf).
+	source := strings.ToLower(envOr("BOOTSTRAP_SOURCE", "premaster"))
+
 	for _, inn := range strings.Split(companiesRaw, ",") {
 		inn = strings.TrimSpace(inn)
 		if inn == "" {
 			continue
 		}
-		if _, err := etl.RunBootstrap(ctx, deps, etl.BootstrapOpts{
-			CompanyID:   inn,
-			BatchSize:   batchSize,
-			TriggeredBy: "manual",
-		}); err != nil {
-			log.Fatalf("company %s: %v", inn, err)
+		opts := etl.BootstrapOpts{CompanyID: inn, BatchSize: batchSize, TriggeredBy: "manual"}
+		var err error
+		switch source {
+		case "glmf":
+			_, err = etl.RunBootstrapGLMF(ctx, deps, opts)
+		case "contract":
+			_, err = etl.RunBootstrapContract(ctx, deps, opts)
+		default:
+			_, err = etl.RunBootstrap(ctx, deps, opts)
+		}
+		if err != nil {
+			log.Fatalf("company %s (source=%s): %v", inn, source, err)
 		}
 	}
-	log.Println("bootstrap done")
+	log.Printf("bootstrap done (source=%s)", source)
 }
 
 func openMSSQL() *sql.DB {

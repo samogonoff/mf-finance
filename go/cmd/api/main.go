@@ -136,6 +136,20 @@ func main() {
 
 		switch cfg.DebtBackend {
 		case "ch", "clickhouse":
+			if cfg.DebtCHSource == "glmf" {
+				// Поток GLMF: fact_glmf (выручка/ДЗ/КЗ) + dim_contract (договоры),
+				// всё в CH — drilldown тоже из CH (отдельный mssql не нужен).
+				gRepo, err := debt.NewGLMFCHRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
+				if err != nil {
+					log.Fatalf("debt: glmf-ch init: %v", err)
+				}
+				if gRepo == nil {
+					log.Fatalf("debt: DEBT_CH_SOURCE=glmf but CLICKHOUSE_HTTP_URL/USER not set")
+				}
+				premasterRepo = gRepo
+				log.Printf("debt: backend=ch source=glmf (fact_glmf + dim_contract)")
+				break
+			}
 			chRepo, err := debt.NewClickHouseRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
 			if err != nil {
 				log.Fatalf("debt: clickhouse init: %v", err)
@@ -144,7 +158,7 @@ func main() {
 				log.Fatalf("debt: DEBT_BACKEND=ch but CLICKHOUSE_HTTP_URL/USER not set")
 			}
 			premasterRepo = debt.NewCompositeRepo(chRepo, mssqlRepo)
-			log.Printf("debt: backend=ch (report→clickhouse, drilldown→mssql)")
+			log.Printf("debt: backend=ch source=premaster (report→clickhouse, drilldown→mssql)")
 		case "finpl":
 			// Каноническая ОПУ-витрина Table_Fin_PL (выручка/ВГО) для Report,
 			// Premaster — для Drilldown и (T7) ДЗ/КЗ-сальдо/договора/просрочки.
@@ -222,7 +236,8 @@ func main() {
 
 		// Инкрементальный воркер. Сам читает debt_etl_settings каждый тик —
 		// вкл/выкл и интервал управляются через PUT /api/admin/etl/debt/settings.
-		etl.NewIncrementalWorker(etlDeps).Start(context.Background())
+		// При DEBT_CH_SOURCE=glmf вдобавок тянет дельту fact_glmf по DateOfLoad.
+		etl.NewIncrementalWorkerWithGLMF(etlDeps, cfg.DebtCHSource == "glmf").Start(context.Background())
 	}
 
 	srv := &http.Server{

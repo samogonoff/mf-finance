@@ -1,155 +1,141 @@
-# TODO — ВГО-отчёт на `Table_Fin_PL`
+# TODO — ВГО-отчёт: GLMF → ClickHouse (два потока)
 
 Источник: `SPEC.md` + `tasks/plan.md`. Отмечай `[x]` по мере выполнения.
-Базовая проверка для всех Go-задач: `cd go && go build ./... && go vet ./...`.
+База для всех Go-задач: `cd go && go build ./... && go vet ./... && go test ./...`.
+CH-миграции: `swarm/migrate-clickhouse.sh` (по одному statement'у).
+Разведка OLAP: `cmd/mssql-probe` (`PROBE_SQL=...`) или временный `go/cmd/<tmp>` (удалять).
+
+> Прежний finpl/Table_Fin_PL-план — в git (commit `8e21daf`). Этот заменяет его.
 
 ---
 
-## Фаза 0 — Фундамент (без смены поведения)
+## Фаза A — Поток GLMF → CH (один ЮЛ)
 
-### [x] T1. Справочник юрлиц: код → {ИНН, Name, Country} ✅ (commit 9dc39c2)
-**Файлы:** `go/internal/reports/debt/seed.go`, `model.go`
-- Добавить поле `Code string` в `Entity` (`model.go`).
-- Заполнить коды для 15 ЮЛ; **добавить новые** записи: `DR`/692221084, `DR2`/693335015,
-  `GP`/190465888 (имя GP — уточнить, временно плейсхолдер).
-- Helper `INNByCode(code string) (string, bool)` и/или `EntityByCode`.
-- Не ломать `Entities()`, `OurINNs()`, `EntitiesLevel1()`.
+### [x] T1. ✅ 35793c5 CH-таблица `fact_glmf` + extract + bootstrap (1 ЮЛ)
+**Файлы:** `clickhouse/migrations/004_fact_glmf.{up,down}.sql`,
+`go/internal/etl/extract_glmf.go`, `bootstrap.go` (ветка fact_glmf), `ch.go` (при необходимости)
+- Миграция `fact_glmf` (ReplacingMergeTree(date_of_load), PARTITION toYYYYMM(month),
+  ORDER BY company_id, month, counterparty_id, dr_acc, cr_acc, doc_id, num):
+  company_id, counterparty_id, doc_id, num, date, month, dr_acc, cr_acc, dr_acc_root,
+  cr_acc_root, code_pl, group_pl, ico, country, amt_wovat_byn, amt_withvat_byn,
+  amt_wovat_usd, amt_withvat_usd, doc_name_1c, operation_description, date_of_load.
+- `extract_glmf.go`: SELECT из `[FinDWH].[dbo].[vGLMFAddUSD]` (все поля выше), ВГО-фильтр.
+- `bootstrap`: залить один ЮЛ (напр. TDMF `6950135110`) в `fact_glmf`, идемпотентно.
 
-**Acceptance:**
-- Все 12 кодов из SPEC §4.2 резолвятся в корректный ИНН.
-- Существующие функции возвращают прежние данные (новые поля не ломают JSON).
+**Acceptance:** `fact_glmf` содержит строки ЮЛ; `count` и `sum(amt_wovat_byn)` за месяц
+совпадают с прямым запросом к GLMF.
+**Verify:** `swarm/migrate-clickhouse.sh`; bootstrap (admin/cmd); CH `SELECT count(),
+sum(amt_wovat_byn) FROM finance.fact_glmf WHERE company_id='6950135110' AND month='2026-01-01'`
+≈ GLMF тот же срез.
 
-**Verify:** `cd go && go build ./... && go vet ./...`; точечный `go run` или временный
-`_test.go` рядом, проверяющий `INNByCode("MF")=="690591512"`, `INNByCode("DR")` ок.
-
----
-
-### [x] T2. Config + env-ключи (дефолт пока не меняем) ✅ (commit 385a297)
-**Файлы:** `go/internal/config/config.go`, `.env.example`
-- Добавить `DebtFinPLTable` (`MSSQL_FINPL_TABLE`, default `Table_Fin_PL`),
-  `DebtFinPLMinMonth` (`DEBT_FINPL_MIN_MONTH`, default `2025-01-01`).
-- `DEBT_BACKEND` пока остаётся default `mssql` (флип — в T9).
-- **`.env.example`** — описать обе переменные (что управляет, дефолт, пустое поведение)
-  в **том же коммите** (правило проекта, [[feedback-env-example-must-document]]).
-
-**Acceptance:** конфиг компилируется и читает env; `.env.example` содержит обе записи.
-**Verify:** `cd go && go build ./...`; `grep -E 'MSSQL_FINPL_TABLE|DEBT_FINPL_MIN_MONTH' .env.example`.
+> **===== CHECKPOINT A =====** Данные одного ЮЛ в `fact_glmf` сходятся с GLMF.
 
 ---
 
-## Фаза 1 — Чтение из Table_Fin_PL (revenue-срез)
+## Фаза B — Отчёт из `fact_glmf`
 
-### [x] T3. ВГО-фильтр и period-helpers для finpl ✅ (commit 627f5aa)
-**Файлы:** `go/internal/reports/debt/vgo_report_filter.go` (или новый `finpl_filter.go`)
-- `vgoFinPLClause()` → `AND [ВГО] = 1` (без списка ИНН).
-- Month-нормализация: `monthFloor(date_from, minMonth)`, `monthCeil(date_to)` —
-  округление к границам месяца + клампинг нижней границы (2025-01).
+### [x] T2. ✅ repo_clickhouse — выручка (точные Дт/Кт)
+**Файлы:** `go/internal/reports/debt/repo_clickhouse.go`, `chart_of_accounts.go`
+- Выручка по корреспонденциям ТЗ (per country): РБ `Дт 62.1 Кт 90.1.1`; РФ `Дт 62 Кт 90.01`
+  + `Дт 76.09 Кт 90.01`; КЗ `Дт 1210 Кт 6010`; УЗ `Дт 4015 Кт 9010`. WOVAT, только ВГО.
+- RevenueLastMonth — последний календарный месяц периода.
+- Источник — `fact_glmf` (не fact_premaster).
 
-**Acceptance:** хелперы покрыты точечным тестом (граничные месяцы, период < 2025-01).
-**Verify:** `cd go && go test ./internal/reports/debt/ 2>/dev/null || go build ./...`
-(раннера нет — допускается локальный `_test.go`).
+**Acceptance:** `/report` (ch на fact_glmf) отдаёт выручку по парам для залитого ЮЛ.
+**Verify:** `go test`; сравнить выручку пары с прямым GLMF-запросом (по Дт/Кт и по `group_pl`).
 
----
+### [x] T3. ✅ repo_clickhouse — ДЗ/КЗ-сальдо (субсчёт)
+**Файлы:** `repo_clickhouse.go`, `chart_of_accounts.go`
+- signed-сальдо (opening/turnover/closing) по 62/60/76/1210/3310 на **уровне субсчёта**
+  (полный `dr_acc/cr_acc`), WithVAT. Разворот в DZ/KZ через `ClassifyAccount` (учесть КЗ/УЗ счета).
+- Субсчёт + наименование в `DebtRow` (поля Subaccount/SubaccountName).
 
-### [x] T4. ✅ 2ac8bec `repo_finpl.go` — Report() выручки из Table_Fin_PL
-**Файлы:** `go/internal/reports/debt/repo_finpl.go` (НОВЫЙ)
-- `finPLRepo` реализует `PremasterRepo` (как `clickhouseRepo`): MSSQL-коннект к
-  `Table_Fin_PL` (переиспользовать `NewPremasterRepo` DSN или отдельный конструктор).
-- `Report()`: `SELECT ... WHERE [ВГО]=1 AND [Month] BETWEEN @from AND @to`,
-  GROUP BY компания/контрагент/валюта; `Компания`→ИНН/Name через T1.
-- Выручка из `Amount*` по продажным `GroupPL/CodePL`; мультивалюта (дизайн-решение §4.3 плана).
-- `Drilldown()` — заглушка/делегирование (полноценно в T8).
-- На этом срезе ДЗ/КЗ = 0 (добавит T7).
+**Acceptance:** `/report` содержит выручку + ДЗ/КЗ-сальдо по субсчетам залитого ЮЛ.
+**Verify:** `go test`; сальдо сверить с оборотно-сальдовой по ЮЛ (gate).
 
-**Acceptance:** против непустой `Table_Fin_PL` (или фикстуры из T5) возвращает строки
-выручки с корректными компанией/контрагентом/валютой.
-**Verify:** `go build ./...`; ручной прогон через mock (T5) — см. CHECKPOINT A.
+> **===== CHECKPOINT B =====** Сверка ЧИСЕЛ (выручка точные Дт/Кт vs group_pl; ДЗ/КЗ-сальдо)
+> на 1–2 ЮЛ × месяц против GLMF и офиц. ОПУ/оборотки. Главный gate качества.
 
 ---
 
-### [x] T5. ✅ (bc45b35) Mock-фикстуры finpl (снэпшот пуст)
-**Файлы:** `go/internal/reports/debt/mocks.go`
-- Фикстуры, отражающие месячную ОПУ-структуру (revenue-строки, 2025 г., мультивалюта,
-  включая ВГО-пару с DR/Дримдом для проверки нового справочника).
+## Фаза C — Договоры (второй поток)
 
-**Acceptance:** `DEBT_MOCK=1` отдаёт осмысленные revenue-строки нового формата.
-**Verify:** `go build ./...`; запрос `/report` под finance-admin сессией возвращает фикстуры.
+### [x] T4. ✅ CH-таблица `dim_contract` + extract + bootstrap
+**Файлы:** `clickhouse/migrations/005_dim_contract.{up,down}.sql`,
+`go/internal/etl/extract_contract.go`, `bootstrap.go` (ветка dim_contract)
+- Миграция `dim_contract` (ReplacingMergeTree, ORDER BY doc_id):
+  doc_id, contract_ref, contract_name, account_kind (62/60/76).
+- `extract_contract.go`: `SELECT DISTINCT DocID, <субконто по счёту>, Objects.Name`
+  из `Premaster1C`(+`Premaster1CHistory`); 62→`DrSubconto2`, 60/76→`CrSubconto1`;
+  **эвристика-фильтр** имени (Договор|Соглашен|Оферт|Контракт|№|\d+/\d+|от ДД.ММ.ГГГГ;
+  отсечь 00БС|ТДБП|Оказание|Реализаци|Поступлени).
+- bootstrap `dim_contract` отдельным потоком.
 
----
+**Acceptance:** `dim_contract` заполнена; 1 договор на `doc_id`; имена чистые (эвристика).
+**Verify:** CH `SELECT count(), uniq(doc_id) FROM finance.dim_contract`; выборка имён глазами.
 
-### [x] T6. ✅ (bc45b35) Wiring: `DEBT_BACKEND=finpl` (opt-in)
-**Файлы:** `go/cmd/api/main.go`
-- В блоке выбора бэкенда добавить ветку `cfg.DebtBackend == "finpl"`:
-  `finPLRepo` для Report, Premaster — для drilldown/fallback (по образцу `compositeRepo`).
-- Логировать `debt: backend=finpl`.
+### [x] T5. ✅ repo_clickhouse — JOIN `dim_contract` + drilldown
+**Файлы:** `repo_clickhouse.go`
+- `LEFT JOIN finance.dim_contract USING(doc_id)` (или `dictGet`) → `contract_name/ref` в DebtRow.
+- Drilldown («Документ операции») — из `fact_glmf` по doc_id + договор.
 
-**Acceptance:** `DEBT_BACKEND=finpl` стартует, `/report` идёт в Table_Fin_PL;
-`DEBT_BACKEND=mssql` — прежнее поведение (без регрессий).
-**Verify:** `cd swarm && make restart-go-api && make logs-go` → строка `backend=finpl`;
-запрос `/api/reports/debt/report` отдаёт revenue-строки.
+**Acceptance:** `/report` показывает названия договоров; нет договора → «без договора».
+**Verify:** `go test`; запрос `/report`/`/drilldown` с договорами для залитого ЮЛ.
 
-> **===== CHECKPOINT A =====**
-> Revenue-путь из Table_Fin_PL работает (opt-in). Ревью формы строк, классификации
-> выручки и мультивалюты на 1–2 месяцах. Согласовать перед merge ДЗ/КЗ.
-
----
-
-## Фаза 2 — Premaster fallback (ДЗ/КЗ + договор + просрочка)
-
-### [x] T7. ✅ d01e58e Merge: finpl-выручка ⋈ premaster ДЗ/КЗ  ⚠ РИСК §11.2
-**Файлы:** `go/internal/reports/debt/repo_finpl.go`, дизайн-заметка в `docs/reports/debt/`
-- Реализовать композицию: revenue-строки (Table_Fin_PL) + ДЗ/КЗ-сальдо, договор,
-  срок/просрочку, PartnerINN/менеджер/канал (Premaster `Report`).
-- **Зафиксировать правило слияния по гранулярности** (отдельные строки vs агрегат на
-  пару Компания×Контрагент×Валюта) — см. CHECKPOINT B.
-- Граничные: контрагент с ИНН=NULL (Летникова) не роняет; ненайденный код компании.
-
-**Acceptance:** итоговый `/report` содержит и выручку (finpl), и ДЗ/КЗ-сальдо (premaster);
-правило слияния задокументировано.
-**Verify:** `go build ./...`; сравнить выдачу с `DEBT_BACKEND=mssql` (ДЗ/КЗ совпадают,
-выручка берётся из finpl).
-
-> **===== CHECKPOINT B =====**
-> Ревью грануляр-merge (риск §11.2): отдельные строки vs агрегат, дата closing-сальдо.
-> Согласовать с заказчиком до cutover.
+> **===== CHECKPOINT C =====** Покрытие договоров по 62/60/76 (%); чистота эвристики.
 
 ---
 
-## Фаза 3 — Drilldown и переключение дефолта
+## Фаза D — Масштаб + инкремент + wiring
 
-### [x] T8. ✅ aab4a35 Drilldown «согласно PL» (месячная PL-детализация)
-**Файлы:** `go/internal/reports/debt/repo_finpl.go`, `model.go` (при необходимости)
-- `Drilldown()` из `Table_Fin_PL`: строки месяца — `DocName1C, OperationDescription,
-  CodePL/GroupPL, Dr_Cr, Amount*`. Дневной premaster-drilldown в finpl не используется.
-- `DocumentRow` переосмыслить как PL-строку месяца (§5.1 SPEC); не ломать JSON-контракт.
+### [x] T6. ✅ Инкремент (watermark `DateOfLoad`) + все ЮЛ + admin
+**Файлы:** `incremental.go`, `bootstrap.go`, `CountryByINN` (extract/bootstrap), admin-эндпоинты
+- Инкремент `fact_glmf` по `DateOfLoad > last` (вместо DateOfChange); чекпоинты
+  `source='glmf'`. Периодический re-bootstrap dim_contract.
+- Расширить `CountryByINN` на КЗ/УЗ (+ DR/DR2/GP при необходимости).
+- Bootstrap всех 15+ ЮЛ; admin-управление (как для fact_premaster).
 
-**Acceptance:** drilldown под finpl возвращает месячные PL-строки; `DEBT_BACKEND=mssql`
-сохраняет дневной drilldown.
-**Verify:** `go build ./...`; запрос `/drilldown` под finpl отдаёт месячную детализацию.
+**Acceptance:** все ЮЛ налиты; инкремент тянет дельту по DateOfLoad без дублей (Replacing).
+**Verify:** `make logs-go`; CH counts по всем company_id; повторный тик не растит дубли (FINAL).
 
----
+### [x] T7. ✅ config/env + wiring `DEBT_BACKEND=ch`→`fact_glmf`
+**Файлы:** `config.go`, `cmd/api/main.go`, `.env.example`
+- ch-бэкенд читает `fact_glmf` (+dim_contract). Env: `MSSQL_GLMF_VIEW=vGLMFAddUSD`,
+  watermark-настройки. **Все новые env — в `.env.example` тем же коммитом.**
+- Дефолт `DEBT_BACKEND` пока `mssql` (флип — T9).
 
-### [x] T9. ✅ bad4163 Cutover: дефолт `finpl` + filter-options + доки  ⚠ затрагивает prod
-**Файлы:** `config.go`, `.env.example`, `go/cmd/api/main.go`, `seed.go`/`service.go`
-(filter-options), `CLAUDE.md`, `docs/reports/debt/*`, `SPEC.md` (статус → landed)
-- Сменить default `DEBT_BACKEND` → `finpl`; обновить комментарии config.
-- `FilterOptions`: решить, расширять ли список юрлиц новыми ВГО-ЮЛ (DR/DR2/GP) —
-  согласно решению заказчика.
-- Обновить `.env.example` (новый дефолт) + `CLAUDE.md` (блок про источник debt) + доки.
-- Чек-лист prod-готовности: `Table_Fin_PL` наполнена (`Update_Table_Fin_PL` по расписанию).
-
-**Acceptance:** дефолтный старт использует finpl; докуменация и `.env.example` согласованы;
-есть путь отката (`DEBT_BACKEND=mssql`).
-**Verify:** `cd swarm && make restart-go-api && make logs-go` без явного env → `backend=finpl`.
-
-> **===== CHECKPOINT C =====**
-> Финальная сверка сумм ВГО с официальным PL-файлом (финотдел). Подтвердить prod-готовность
-> и смену дефолта. Только после этого мёржить в master.
+**Acceptance:** `DEBT_BACKEND=ch` отдаёт полный отчёт из fact_glmf+dim_contract; `mssql` — без регрессий.
+**Verify:** `make restart-go-api && make logs-go`; запрос `/report`.
 
 ---
 
-## Связанные памятки
-- [[debt-table-fin-pl-source]] — что за витрина, справочник код→ИНН, ограничения.
-- [[feedback-env-example-must-document]] — env обязана попасть в `.env.example`.
+## Фаза E — КЗ/УЗ договоры + cutover
+
+### [x] T8. ✅ Разведка субконто КЗ/УЗ → договоры КЗ/УЗ
+**Файлы:** `extract_contract.go`, `docs/reports/debt/probe-contracts.md`
+- Разведка: какое субконто = договор для КЗ (1210/3310/6000) и УЗ-счетов (gate prod-verification §C).
+- Расширить `extract_contract` на КЗ/УЗ; обновить карту субконто.
+
+**Acceptance:** договоры резолвятся и для КЗ/УЗ (где есть); карта субконто задокументирована.
+**Verify:** CH покрытие договоров по КЗ/УЗ-счетам.
+
+### [x] T9. ✅ (дефолт-флип отложен до CHECKPOINT D) Cutover: дефолт `ch` + ретайр `fact_premaster` + docs  ⚠ прод
+**Файлы:** `config.go`, `.env.example`, `CLAUDE.md`, `docs/reports/debt/*`, `SPEC.md`
+- Сменить дефолт `DEBT_BACKEND` → `ch` (на `fact_glmf`). Ретайр `fact_premaster`
+  (после подтверждения). Обновить доки/CLAUDE.md/SPEC статус.
+- Чек-лист prod-готовности: `fact_glmf` налит по всем ЮЛ, инкремент идёт.
+
+**Acceptance:** дефолт — ch на fact_glmf; откат `mssql` доступен; доки согласованы.
+**Verify:** `make restart-go-api` без env → `backend=ch`; полный `/report`.
+
+> **===== CHECKPOINT D =====** Полная сверка всех ЮЛ + prod-готовность перед merge в master.
+
+---
+
+## Связанные памятки / доки
+- `SPEC.md`, `docs/reports/debt/{tz-requirements,prod-verification,finpl-merge,clickhouse-design}.md`
+- [[debt-table-fin-pl-source]] — источники, GLMF, валюта (вне скоупа).
+- [[feedback-env-example-must-document]] — env в `.env.example` тем же коммитом.
+- [[infra-clickhouse-http-multistatement]] — CH-миграции по одному statement'у.
 - [[infra-olap-mssql-tds-handshake]] — `10.10.6.15` EOF на handshake → ретраи.
-- [[debt-docid-bridge]] — мост DocID Premaster↔Docs (для просрочки в fallback).
+- [[debt-docid-bridge]] — мост DocID Premaster↔Docs (для срока/просрочки).
