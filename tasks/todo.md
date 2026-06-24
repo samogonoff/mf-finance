@@ -34,7 +34,7 @@ sum(amt_wovat_byn) FROM finance.fact_glmf WHERE company_id='6950135110' AND mont
 
 ## Фаза B — Отчёт из `fact_glmf`
 
-### [ ] T2. repo_clickhouse — выручка (точные Дт/Кт)
+### [x] T2. ✅ repo_clickhouse — выручка (точные Дт/Кт)
 **Файлы:** `go/internal/reports/debt/repo_clickhouse.go`, `chart_of_accounts.go`
 - Выручка по корреспонденциям ТЗ (per country): РБ `Дт 62.1 Кт 90.1.1`; РФ `Дт 62 Кт 90.01`
   + `Дт 76.09 Кт 90.01`; КЗ `Дт 1210 Кт 6010`; УЗ `Дт 4015 Кт 9010`. WOVAT, только ВГО.
@@ -44,7 +44,7 @@ sum(amt_wovat_byn) FROM finance.fact_glmf WHERE company_id='6950135110' AND mont
 **Acceptance:** `/report` (ch на fact_glmf) отдаёт выручку по парам для залитого ЮЛ.
 **Verify:** `go test`; сравнить выручку пары с прямым GLMF-запросом (по Дт/Кт и по `group_pl`).
 
-### [ ] T3. repo_clickhouse — ДЗ/КЗ-сальдо (субсчёт)
+### [x] T3. ✅ repo_clickhouse — ДЗ/КЗ-сальдо (субсчёт)
 **Файлы:** `repo_clickhouse.go`, `chart_of_accounts.go`
 - signed-сальдо (opening/turnover/closing) по 62/60/76/1210/3310 на **уровне субсчёта**
   (полный `dr_acc/cr_acc`), WithVAT. Разворот в DZ/KZ через `ClassifyAccount` (учесть КЗ/УЗ счета).
