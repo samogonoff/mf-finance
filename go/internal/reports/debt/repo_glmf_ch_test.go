@@ -12,10 +12,21 @@ func TestGLMFSaldoQuery(t *testing.T) {
 		"finance.fact_glmf", "amt_withvat_byn", "dr_acc", "cr_acc",
 		"sumIf", "company_id IN ('6950135110')",
 		"dr_acc_root IN", "cr_acc_root IN", // фильтр только ДЗ/КЗ-счетов
+		"finance.dim_contract", "contract_name", // договор = уровень группировки (T5)
 		"GROUP BY", "FORMAT JSONEachRow",
 	} {
 		if !strings.Contains(q, frag) {
 			t.Errorf("glmfSaldoQuery не содержит %q", frag)
+		}
+	}
+}
+
+func TestGLMFDrilldownQuery(t *testing.T) {
+	q := glmfDrilldownQuery("6950135110", "141240004842", "62", "ДП-1 от 01.01", "2026-01-31")
+	for _, frag := range []string{"finance.fact_glmf", "finance.dim_contract",
+		"company_id = '6950135110'", "counterparty_id = '141240004842'", "doc_id", "FORMAT JSONEachRow"} {
+		if !strings.Contains(q, frag) {
+			t.Errorf("glmfDrilldownQuery не содержит %q", frag)
 		}
 	}
 }

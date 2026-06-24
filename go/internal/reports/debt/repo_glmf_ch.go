@@ -64,33 +64,62 @@ func quoteList(vals []string) string {
 	return strings.Join(q, ",")
 }
 
-// glmfSaldoQuery — signed-сальдо ДЗ/КЗ по (company, counterparty, субсчёт).
+// glmfSaldoQuery — signed-сальдо ДЗ/КЗ по (company, counterparty, субсчёт, ДОГОВОР).
 // amt_withvat_byn (долг с НДС). opening (date<from), turnover (from..to), closing(<=to).
+// Договор (уровень группировки ТЗ) — LEFT JOIN dim_contract по doc_id.
 func glmfSaldoQuery(inns []string, from, to string) string {
 	in := quoteList(inns)
 	roots := quoteList(debtAccountRoots())
 	return fmt.Sprintf(`
 WITH src AS (
-    SELECT company_id, counterparty_id, dr_acc AS acc, dr_acc_root AS root,
+    SELECT company_id, counterparty_id, dr_acc AS acc, dr_acc_root AS root, doc_id,
            amt_withvat_byn AS amt, CAST(1 AS Int8) AS sgn, date
     FROM finance.fact_glmf FINAL
     WHERE company_id IN (%[1]s) AND date <= toDate('%[3]s') AND dr_acc_root IN (%[4]s)
     UNION ALL
-    SELECT company_id, counterparty_id, cr_acc AS acc, cr_acc_root AS root,
+    SELECT company_id, counterparty_id, cr_acc AS acc, cr_acc_root AS root, doc_id,
            amt_withvat_byn, CAST(-1 AS Int8) AS sgn, date
     FROM finance.fact_glmf FINAL
     WHERE company_id IN (%[1]s) AND date <= toDate('%[3]s') AND cr_acc_root IN (%[4]s)
 )
-SELECT company_id, counterparty_id, acc, any(root) AS root,
+SELECT src.company_id, src.counterparty_id, src.acc, any(src.root) AS root,
+    dc.contract_ref  AS contract_ref,
+    dc.contract_name AS contract_name,
     toString(sumIf(amt * sgn, date <  toDate('%[2]s')))                              AS opening,
     toString(sumIf(amt * sgn, date >= toDate('%[2]s') AND date <= toDate('%[3]s')))  AS turnover,
     toString(sum(amt * sgn))                                                         AS closing
 FROM src
-GROUP BY company_id, counterparty_id, acc
+LEFT JOIN finance.dim_contract dc FINAL ON dc.doc_id = src.doc_id
+GROUP BY src.company_id, src.counterparty_id, src.acc, dc.contract_ref, dc.contract_name
 HAVING abs(sum(amt * sgn)) > 0.005
     OR abs(sumIf(amt * sgn, date <  toDate('%[2]s'))) > 0.005
     OR abs(sumIf(amt * sgn, date >= toDate('%[2]s') AND date <= toDate('%[3]s'))) > 0.005
 FORMAT JSONEachRow`, in, from, to, roots)
+}
+
+// glmfDrilldownQuery — детализация «Документ операции»: документы внутри
+// (company, partner, счёт-корень, договор) из fact_glmf ⋈ dim_contract.
+func glmfDrilldownQuery(companyINN, partnerINN, accountRoot, contract, to string) string {
+	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
+	contractClause := ""
+	if strings.TrimSpace(contract) != "" {
+		contractClause = " AND dc.contract_name = '" + esc(contract) + "'"
+	}
+	return fmt.Sprintf(`
+SELECT f.doc_id AS doc_id,
+    toString(min(f.date))            AS doc_date,
+    any(f.doc_name_1c)               AS doc_name,
+    any(f.operation_description)     AS op_desc,
+    any(dc.contract_name)            AS contract_name,
+    toString(sum(f.amt_withvat_byn)) AS amount
+FROM finance.fact_glmf f FINAL
+LEFT JOIN finance.dim_contract dc FINAL ON dc.doc_id = f.doc_id
+WHERE f.company_id = '%[1]s' AND f.counterparty_id = '%[2]s'
+  AND (f.dr_acc_root = '%[3]s' OR f.cr_acc_root = '%[3]s')
+  AND f.date <= toDate('%[4]s')%[5]s
+GROUP BY f.doc_id
+ORDER BY doc_date
+FORMAT JSONEachRow`, esc(companyINN), esc(partnerINN), esc(accountRoot), esc(to), contractClause)
 }
 
 // glmfRevenueQuery — выручка по корреспонденциям ТЗ (revenueCHClause), per пара.
@@ -157,6 +186,8 @@ func (r *glmfCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error) {
 			CounterpartyID string `json:"counterparty_id"`
 			Acc            string `json:"acc"`
 			Root           string `json:"root"`
+			ContractRef    string `json:"contract_ref"`
+			ContractName   string `json:"contract_name"`
 			Opening        string `json:"opening"`
 			Turnover       string `json:"turnover"`
 			Closing        string `json:"closing"`
@@ -180,6 +211,7 @@ func (r *glmfCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error) {
 			PartnerINN: jr.CounterpartyID, Currency: "BYN",
 			Account: jr.Root, AccountName: accountNameFor(ent.Country, jr.Root),
 			Subaccount: jr.Acc, SubaccountName: accountNameFor(ent.Country, jr.Root),
+			Contract: strings.TrimSpace(jr.ContractName), ContractRef: strings.TrimSpace(jr.ContractRef),
 		}
 		if p := partnerByINN[jr.CounterpartyID]; p != "" {
 			row.Partner = p
@@ -233,7 +265,43 @@ func (r *glmfCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error) {
 	return out, nil
 }
 
-// Drilldown — месячная PL-детализация из fact_glmf (T5). Пока заглушка.
+// Drilldown — документы внутри (company, partner, счёт, договор) из fact_glmf.
 func (r *glmfCHRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]DocumentRow, error) {
-	return nil, errors.New("debt.glmf-ch.Drilldown: not implemented (T5)")
+	if q.CompanyINN == "" {
+		return nil, errors.New("debt.glmf-ch.Drilldown: company_inn required")
+	}
+	to := asDate(q.DateTo)
+	body, err := r.post(ctx, glmfDrilldownQuery(q.CompanyINN, q.PartnerINN, AccountRoot(q.Account), q.Contract, to))
+	if err != nil {
+		return nil, err
+	}
+	out := []DocumentRow{}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	for dec.More() {
+		var jr struct {
+			DocID    string `json:"doc_id"`
+			DocDate  string `json:"doc_date"`
+			DocName  string `json:"doc_name"`
+			OpDesc   string `json:"op_desc"`
+			Contract string `json:"contract_name"`
+			Amount   string `json:"amount"`
+		}
+		if err := dec.Decode(&jr); err != nil {
+			return nil, fmt.Errorf("debt.glmf-ch.Drilldown: decode: %w", err)
+		}
+		amt, _ := strconv.ParseFloat(jr.Amount, 64)
+		num := strings.TrimSpace(jr.DocName)
+		if num == "" {
+			num = jr.DocID
+		}
+		dr := DocumentRow{
+			DocNumber: num, DocKind: "Документ", Amount: amt,
+			Description: strings.TrimSpace(jr.OpDesc),
+		}
+		if t, err := time.Parse("2006-01-02", jr.DocDate); err == nil {
+			dr.DocDate = t
+		}
+		out = append(out, dr)
+	}
+	return out, nil
 }
