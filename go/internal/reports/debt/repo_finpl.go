@@ -41,7 +41,7 @@ func finPLRevenueCurrency() string { return "USD" }
 // NewFinPLRepo строит репо поверх уже открытого MSSQL-пула к OLAP (тот же *sql.DB,
 // что и premaster — БД одна). Валидирует идентификаторы (анти-инъекция через env).
 // db==nil → (nil, nil): сигнал, что live-источник не настроен (как у premaster).
-func NewFinPLRepo(db *sql.DB, database, schema, table, minMonth string) (*finPLRepo, error) {
+func NewFinPLRepo(db *sql.DB, database, schema, table, minMonth string) (PremasterRepo, error) {
 	if db == nil {
 		return nil, nil
 	}

@@ -14,6 +14,10 @@ import (
 type Service struct {
 	mock bool
 	repo PremasterRepo // может быть nil, если mock=true
+	// mockData — провайдер фикстур в mock-режиме. Зависит от выбранного источника:
+	// для finpl это revenue-строки (mockFinPLRows), иначе — премастер-фикстуры
+	// (mockRows). nil → дефолт mockRows.
+	mockData func() []DebtRow
 }
 
 // PremasterRepo описывает интерфейс live-источника данных (Premaster1C).
@@ -35,8 +39,14 @@ type DrilldownQuery struct {
 }
 
 // NewService — конструктор. Если mock=true, repo может быть nil.
-func NewService(mock bool, repo PremasterRepo) *Service {
-	return &Service{mock: mock, repo: repo}
+// backend (DEBT_BACKEND) выбирает формат mock-фикстур: "finpl" → revenue-строки
+// нового источника (mockFinPLRows), иначе — премастер-фикстуры (mockRows).
+func NewService(mock bool, repo PremasterRepo, backend string) *Service {
+	mockData := mockRows
+	if backend == "finpl" {
+		mockData = mockFinPLRows
+	}
+	return &Service{mock: mock, repo: repo, mockData: mockData}
 }
 
 // FilterOptions — справочные значения для UI.
@@ -68,7 +78,7 @@ func (s *Service) Report(ctx context.Context, f Filters) (ReportResponse, error)
 
 	var rows []DebtRow
 	if s.mock {
-		rows = applyFilters(mockRows(), f)
+		rows = applyFilters(s.mockData(), f)
 	} else {
 		if s.repo == nil {
 			return ReportResponse{}, errors.New("debt: premaster repo not configured (set DEBT_MOCK=1 or MSSQL_PREMASTER_* env)")

@@ -1,8 +1,46 @@
 package debt
 
 import (
+	"context"
 	"testing"
+	"time"
 )
+
+// T5/T6: в mock-режиме с finpl-провайдером сервис отдаёт revenue-строки нового
+// формата (USD, ДЗ/КЗ=0), а не старые premaster-фикстуры.
+func TestService_FinPLMock(t *testing.T) {
+	s := NewService(true, nil, "finpl")
+	resp, err := s.Report(context.Background(), Filters{DateTo: time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if len(resp.Rows) == 0 {
+		t.Fatal("finpl mock пуст")
+	}
+	for _, r := range resp.Rows {
+		if r.Currency != "USD" {
+			t.Errorf("строка не USD: %+v", r)
+		}
+		if r.RevenuePeriod == 0 {
+			t.Errorf("revenue=0 в finpl-фикстуре: %+v", r)
+		}
+		if r.OpeningDZ != 0 || r.ClosingKZ != 0 {
+			t.Errorf("ДЗ/КЗ должны быть 0 в revenue-фикстуре: %+v", r)
+		}
+	}
+}
+
+// Дефолтный (nil) провайдер сохраняет старые premaster-фикстуры (ДЗ/КЗ).
+func TestService_DefaultMockUnchanged(t *testing.T) {
+	s := NewService(true, nil, "mssql")
+	resp, err := s.Report(context.Background(), Filters{DateTo: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if len(resp.Rows) != len(mockRows()) {
+		t.Errorf("дефолтный mock = %d строк, want %d", len(resp.Rows), len(mockRows()))
+	}
+}
 
 // T4: маппинг сырой свёртки выручки Table_Fin_PL → DebtRow.
 // Решения: выручка = GroupPL='ПРОДАЖИ'; валюта = USD-консолидация (AmountUSD).

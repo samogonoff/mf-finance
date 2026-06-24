@@ -134,7 +134,8 @@ func main() {
 			defer mssqlDB.Close()
 		}
 
-		if cfg.DebtBackend == "ch" || cfg.DebtBackend == "clickhouse" {
+		switch cfg.DebtBackend {
+		case "ch", "clickhouse":
 			chRepo, err := debt.NewClickHouseRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
 			if err != nil {
 				log.Fatalf("debt: clickhouse init: %v", err)
@@ -144,7 +145,19 @@ func main() {
 			}
 			premasterRepo = debt.NewCompositeRepo(chRepo, mssqlRepo)
 			log.Printf("debt: backend=ch (report→clickhouse, drilldown→mssql)")
-		} else {
+		case "finpl":
+			// Каноническая ОПУ-витрина Table_Fin_PL (выручка/ВГО) для Report,
+			// Premaster — для Drilldown и (T7) ДЗ/КЗ-сальдо/договора/просрочки.
+			finRepo, err := debt.NewFinPLRepo(mssqlDB, cfg.PremasterDatabase, cfg.PremasterSchema, cfg.DebtFinPLTable, cfg.DebtFinPLMinMonth)
+			if err != nil {
+				log.Fatalf("debt: finpl init: %v", err)
+			}
+			if finRepo == nil {
+				log.Fatalf("debt: DEBT_BACKEND=finpl but MSSQL_PREMASTER_* not set")
+			}
+			premasterRepo = debt.NewCompositeRepo(finRepo, mssqlRepo)
+			log.Printf("debt: backend=finpl (report→Table_Fin_PL, drilldown→mssql)")
+		default:
 			premasterRepo = mssqlRepo
 			log.Printf("debt: backend=mssql")
 		}
@@ -170,7 +183,7 @@ func main() {
 			}
 		}
 	}
-	debtSvc := debt.NewService(cfg.DebtMock, premasterRepo)
+	debtSvc := debt.NewService(cfg.DebtMock, premasterRepo, cfg.DebtBackend)
 	debtFilters := debt.NewFiltersRepo(pool)
 	debtH := debt.NewHandler(debtSvc, debtFilters, func(r *http.Request) (int64, bool) {
 		u, ok := auth.UserFromCtx(r.Context())
