@@ -111,7 +111,7 @@ sum(amt_wovat_byn) FROM finance.fact_glmf WHERE company_id='6950135110' AND mont
 
 ## Фаза E — КЗ/УЗ договоры + cutover
 
-### [ ] T8. Разведка субконто КЗ/УЗ → договоры КЗ/УЗ
+### [x] T8. ✅ Разведка субконто КЗ/УЗ → договоры КЗ/УЗ
 **Файлы:** `extract_contract.go`, `docs/reports/debt/probe-contracts.md`
 - Разведка: какое субконто = договор для КЗ (1210/3310/6000) и УЗ-счетов (gate prod-verification §C).
 - Расширить `extract_contract` на КЗ/УЗ; обновить карту субконто.
