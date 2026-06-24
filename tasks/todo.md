@@ -11,7 +11,7 @@ CH-миграции: `swarm/migrate-clickhouse.sh` (по одному statement'
 
 ## Фаза A — Поток GLMF → CH (один ЮЛ)
 
-### [ ] T1. CH-таблица `fact_glmf` + extract + bootstrap (1 ЮЛ)
+### [x] T1. ✅ 35793c5 CH-таблица `fact_glmf` + extract + bootstrap (1 ЮЛ)
 **Файлы:** `clickhouse/migrations/004_fact_glmf.{up,down}.sql`,
 `go/internal/etl/extract_glmf.go`, `bootstrap.go` (ветка fact_glmf), `ch.go` (при необходимости)
 - Миграция `fact_glmf` (ReplacingMergeTree(date_of_load), PARTITION toYYYYMM(month),
