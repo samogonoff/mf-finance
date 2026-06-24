@@ -129,10 +129,78 @@ HAVING ABS(SUM(%[1]s)) > 0.005`,
 	return buildFinPLReport(raw), nil
 }
 
-// Drilldown — полноценная месячная PL-детализация будет в T8. Пока не реализована
-// (в композиции с Premaster drilldown идёт через mssql-репо — см. wiring T6).
+// Drilldown — месячная PL-детализация выручки из Table_Fin_PL «согласно PL»
+// (SPEC §5.1): строки месяца за период по компании (и контрагенту, если ИНН
+// резолвится в имя витрины). Возвращает DocumentRow как PL-строку месяца
+// (DocDate=Month, DocKind=GroupPL, Description=OperationDescription, Amount=USD).
+// Дневной premaster-drilldown здесь НЕ используется — это путь для ДЗ/КЗ-строк.
 func (r *finPLRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]DocumentRow, error) {
-	return nil, errors.New("debt.finpl.Drilldown: not implemented (use composite/mssql backend)")
+	code, ok := codeByINN(q.CompanyINN)
+	if !ok {
+		return nil, fmt.Errorf("debt.finpl.Drilldown: unknown company_inn %q", q.CompanyINN)
+	}
+	from := finPLMonthFrom(q.DateFrom, r.minMonth)
+	to := finPLMonthTo(q.DateTo)
+	args := []any{
+		sql.Named("code", code),
+		sql.Named("from", from),
+		sql.Named("to", to),
+	}
+	// Контрагент опционален: если partner_inn резолвится в имя витрины — фильтруем,
+	// иначе отдаём PL-детализацию на уровне компании.
+	partnerClause := ""
+	if name, ok := vgoNameByINN(q.PartnerINN); ok {
+		partnerClause = " AND CounterpartyName = @partner"
+		args = append(args, sql.Named("partner", name))
+	}
+
+	query := fmt.Sprintf(`
+SELECT [Month], DocName1C, OperationDescription, GroupPL, Dr_Cr, SUM(%[1]s) AS amt
+FROM %[2]s
+WHERE [ВГО] = 1
+  AND GroupPL = N'ПРОДАЖИ'
+  AND [Компания] = @code
+  AND [Month] BETWEEN @from AND @to%[3]s
+GROUP BY [Month], DocName1C, OperationDescription, GroupPL, Dr_Cr
+HAVING ABS(SUM(%[1]s)) > 0.005
+ORDER BY [Month]`,
+		finPLRevenueColumn, r.tableFQN, partnerClause)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("debt.finpl.Drilldown: query: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]DocumentRow, 0, 64)
+	for rows.Next() {
+		var month time.Time
+		var docName, opDesc, groupPL, drCr sql.NullString
+		var amt float64
+		if err := rows.Scan(&month, &docName, &opDesc, &groupPL, &drCr, &amt); err != nil {
+			return nil, fmt.Errorf("debt.finpl.Drilldown: scan: %w", err)
+		}
+		out = append(out, DocumentRow{
+			DocDate:     month,
+			DocNumber:   nz(docName),
+			DocKind:     nz(groupPL),
+			TransGroup:  nz(drCr),
+			Amount:      amt,
+			Description: nz(opDesc),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("debt.finpl.Drilldown: rows: %w", err)
+	}
+	return out, nil
+}
+
+// nz — строка из NullString или "".
+func nz(s sql.NullString) string {
+	if s.Valid {
+		return strings.TrimSpace(s.String)
+	}
+	return ""
 }
 
 // buildFinPLReport раскладывает сырую свёртку выручки в DebtRow: резолвит код
@@ -153,6 +221,11 @@ func buildFinPLReport(raw []finplRevRow) []DebtRow {
 		}
 		if rr.PartnerName.Valid {
 			row.Partner = strings.TrimSpace(rr.PartnerName.String)
+			// Резолвим ИНН контрагента по имени — чтобы revenue-строка
+			// группировалась с ДЗ/КЗ той же пары и была адресуема в drilldown.
+			if inn, ok := vgoCounterpartyINNByName(row.Partner); ok {
+				row.PartnerINN = inn
+			}
 		}
 		row.RevenuePeriod = rr.RevenuePeriod
 		row.RevenueLastMonth = rr.RevenueLastMonth
@@ -193,7 +266,13 @@ func (c *finplComposite) Report(ctx context.Context, f Filters) ([]DebtRow, erro
 	return mergeFinPLPremaster(revRows, debtRows), nil
 }
 
+// Drilldown маршрутизирует по наличию счёта: revenue-строка finpl приходит без
+// счёта (Account=="") → месячная PL-детализация из Table_Fin_PL; ДЗ/КЗ-строка
+// (Account задан) → premaster (документная детализация по договору).
 func (c *finplComposite) Drilldown(ctx context.Context, q DrilldownQuery) ([]DocumentRow, error) {
+	if strings.TrimSpace(q.Account) == "" {
+		return c.rev.Drilldown(ctx, q)
+	}
 	if c.debt == nil {
 		return nil, errors.New("debt.finpl.Drilldown: no premaster backend configured")
 	}
