@@ -1,7 +1,8 @@
 # SPEC — ВГО-отчёт: переход источника на `Table_Fin_PL`
 
-> Статус: реализовано T1–T9 (ветка `add-action`, opt-in→дефолт finpl). Осталось:
-> сверка сумм на наполненной витрине (CHECKPOINT C) до merge в master. Дата: 2026-06-24.
+> Статус: finpl реализован (T1–T8) как **opt-in** `DEBT_BACKEND=finpl`; дефолт
+> возвращён на `mssql` (Premaster) до сверки сумм на наполненной витрине. Ветка
+> `add-action`. Дата: 2026-06-24.
 > Скоуп: отчёт «Задолженность ВГО» (`/api/reports/debt/*`), Go-слой `go/internal/reports/debt/`.
 
 ---
