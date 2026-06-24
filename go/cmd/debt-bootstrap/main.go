@@ -103,6 +103,8 @@ func main() {
 		switch source {
 		case "glmf":
 			_, err = etl.RunBootstrapGLMF(ctx, deps, opts)
+		case "contract":
+			_, err = etl.RunBootstrapContract(ctx, deps, opts)
 		default:
 			_, err = etl.RunBootstrap(ctx, deps, opts)
 		}
