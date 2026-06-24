@@ -39,7 +39,8 @@ func TestExtractGLMFSelectFrom(t *testing.T) {
 	for _, frag := range []string{
 		"[FinDWH].[dbo].[GLMF]", "GroupPL", "CodePL",
 		"AmountWOVATBelRubFact", "AmountWithVATBelRubFact", "DateOfLoad",
-		"p.DocID", "p.Num", "p.ICO",
+		"p.DocID", "p.Num",
+		"CONVERT(TINYINT", // GLMF.ICO — bit; кастим в tinyint, иначе bool→uint8 scan error
 		"РБ", "РФ", "КЗ", "УЗ", // маппинг страны витрины → доменной
 	} {
 		if !strings.Contains(q, frag) {

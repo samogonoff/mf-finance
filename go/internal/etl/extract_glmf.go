@@ -65,7 +65,7 @@ SELECT
     ` + accRootSQL("p.CrAcc") + `,
     ISNULL(p.CodePL, ''),
     ISNULL(p.GroupPL, ''),
-    ISNULL(p.ICO, 0),
+    CONVERT(TINYINT, ISNULL(p.ICO, 0)),  -- GLMF.ICO = bit; драйвер отдаёт bool, scan в uint8 падает
     ` + country + `,
     CONVERT(VARCHAR(40), p.AmountWOVATBelRubFact),
     CONVERT(VARCHAR(40), p.AmountWithVATBelRubFact),
