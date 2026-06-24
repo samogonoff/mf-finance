@@ -74,7 +74,7 @@ sum(amt_wovat_byn) FROM finance.fact_glmf WHERE company_id='6950135110' AND mont
 **Acceptance:** `dim_contract` заполнена; 1 договор на `doc_id`; имена чистые (эвристика).
 **Verify:** CH `SELECT count(), uniq(doc_id) FROM finance.dim_contract`; выборка имён глазами.
 
-### [ ] T5. repo_clickhouse — JOIN `dim_contract` + drilldown
+### [x] T5. ✅ repo_clickhouse — JOIN `dim_contract` + drilldown
 **Файлы:** `repo_clickhouse.go`
 - `LEFT JOIN finance.dim_contract USING(doc_id)` (или `dictGet`) → `contract_name/ref` в DebtRow.
 - Drilldown («Документ операции») — из `fact_glmf` по doc_id + договор.
