@@ -61,6 +61,13 @@ type Config struct {
 	ClickHouseUser    string
 	ClickHousePass    string
 
+	// DEBT_CH_SOURCE — какую CH-таблицу читает ch-бэкенд отчёта «Задолженность ВГО».
+	//   "premaster" (default) → finance.fact_premaster (текущий, из Premaster1C).
+	//   "glmf"                → finance.fact_glmf + dim_contract (поток GLMF, полнее,
+	//                           каноничная классификация, договоры отдельным потоком).
+	// glmf — opt-in до сверки чисел на наполненном CH (CHECKPOINT B/D, SPEC §10).
+	DebtCHSource string
+
 	// Table_Fin_PL — каноническая месячная ОПУ-витрина на том же OLAP (FinDWH.dbo),
 	// первоисточник отчёта при DEBT_BACKEND=finpl. Имя таблицы вынесено в env,
 	// чтобы переключаться на тестовую копию без правки кода. DebtFinPLMinMonth —
@@ -103,6 +110,8 @@ func Load() Config {
 
 		DebtFinPLTable:    env("MSSQL_FINPL_TABLE", "Table_Fin_PL"),
 		DebtFinPLMinMonth: env("DEBT_FINPL_MIN_MONTH", "2025-01-01"),
+
+		DebtCHSource: strings.ToLower(env("DEBT_CH_SOURCE", "premaster")),
 	}
 }
 

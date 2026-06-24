@@ -22,6 +22,9 @@ func TestLoad_FinPLDefaults(t *testing.T) {
 	if cfg.DebtBackend != "mssql" {
 		t.Errorf("DebtBackend default = %q, want mssql (finpl — opt-in до сверки)", cfg.DebtBackend)
 	}
+	if cfg.DebtCHSource != "premaster" {
+		t.Errorf("DebtCHSource default = %q, want premaster (glmf — opt-in до сверки)", cfg.DebtCHSource)
+	}
 }
 
 // Явно заданные значения переопределяют дефолты.
