@@ -88,7 +88,7 @@ sum(amt_wovat_byn) FROM finance.fact_glmf WHERE company_id='6950135110' AND mont
 
 ## Фаза D — Масштаб + инкремент + wiring
 
-### [ ] T6. Инкремент (watermark `DateOfLoad`) + все ЮЛ + admin
+### [x] T6. ✅ Инкремент (watermark `DateOfLoad`) + все ЮЛ + admin
 **Файлы:** `incremental.go`, `bootstrap.go`, `CountryByINN` (extract/bootstrap), admin-эндпоинты
 - Инкремент `fact_glmf` по `DateOfLoad > last` (вместо DateOfChange); чекпоинты
   `source='glmf'`. Периодический re-bootstrap dim_contract.
