@@ -18,10 +18,16 @@ const (
 )
 
 // Entity — юрлицо ГК «Марк Формэль» из ТЗ-приложения.
+//
+// Code — короткий код компании из Table_Fin_PL.Компания (MF/F/TDMF/…). В финальной
+// PL-витрине ИНН нет, только код — он и резолвится в ИНН/страну через EntityByCode
+// (см. seed.go, справочник codeIndex). Пусто для ЮЛ, не встречающихся в PL-данных
+// (зарубежные ЮЛ, ИП).
 type Entity struct {
 	INN     string  `json:"inn"`
 	Name    string  `json:"name"`
 	Country Country `json:"country"`
+	Code    string  `json:"code,omitempty"`
 }
 
 // Account — счёт БУ из ТЗ-приложения (sheet «счета БУ»).
