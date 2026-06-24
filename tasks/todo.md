@@ -119,7 +119,7 @@ sum(amt_wovat_byn) FROM finance.fact_glmf WHERE company_id='6950135110' AND mont
 **Acceptance:** договоры резолвятся и для КЗ/УЗ (где есть); карта субконто задокументирована.
 **Verify:** CH покрытие договоров по КЗ/УЗ-счетам.
 
-### [ ] T9. Cutover: дефолт `ch` + ретайр `fact_premaster` + docs  ⚠ прод
+### [x] T9. ✅ (дефолт-флип отложен до CHECKPOINT D) Cutover: дефолт `ch` + ретайр `fact_premaster` + docs  ⚠ прод
 **Файлы:** `config.go`, `.env.example`, `CLAUDE.md`, `docs/reports/debt/*`, `SPEC.md`
 - Сменить дефолт `DEBT_BACKEND` → `ch` (на `fact_glmf`). Ретайр `fact_premaster`
   (после подтверждения). Обновить доки/CLAUDE.md/SPEC статус.

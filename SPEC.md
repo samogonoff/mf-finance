@@ -1,6 +1,8 @@
 # SPEC — ВГО-отчёт на GLMF → ClickHouse (два потока)
 
-> Статус: на согласование. Дата: 2026-06-24. Ветка: `add-action`.
+> Статус: реализовано T1–T8 + admin/worker (opt-in `DEBT_BACKEND=ch`+`DEBT_CH_SOURCE=glmf`).
+> Дефолт остаётся `mssql` до сверки чисел на наполненном CH (CHECKPOINT B/D, §10).
+> Дата: 2026-06-24. Ветка: `add-action`.
 > Заменяет направление finpl/Table_Fin_PL (тот SPEC — в git, commit `4c9ece3`;
 > finpl-код остаётся opt-in, см. решение #G). Источник истины по фактам разведки:
 > `docs/reports/debt/prod-verification.md`, `finpl-merge.md`, memory
