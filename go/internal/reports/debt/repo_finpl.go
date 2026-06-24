@@ -161,6 +161,70 @@ func buildFinPLReport(raw []finplRevRow) []DebtRow {
 	return out
 }
 
+// finplComposite — источник DEBT_BACKEND=finpl целиком: Report сливает выручку из
+// Table_Fin_PL (rev) с ДЗ/КЗ-сальдо/договором/просрочкой из Premaster (debt).
+// Drilldown идёт в Premaster (mssql) — до T8. См. SPEC §5, docs/reports/debt/finpl-merge.md.
+//
+// Closing-сальдо ДЗ/КЗ берётся premaster'ом на конец периода (f.DateTo) — как в
+// текущем mssql-отчёте; finpl даёт месячную выручку за тот же период.
+type finplComposite struct {
+	rev  PremasterRepo // finpl (Table_Fin_PL) — выручка
+	debt PremasterRepo // premaster (Premaster1C) — ДЗ/КЗ, договор, просрочка, drilldown
+}
+
+// NewFinPLComposite собирает полный finpl-источник. debt может быть nil (тогда
+// отчёт будет только выручочный, без ДЗ/КЗ; drilldown вернёт ошибку).
+func NewFinPLComposite(rev, debt PremasterRepo) PremasterRepo {
+	return &finplComposite{rev: rev, debt: debt}
+}
+
+func (c *finplComposite) Report(ctx context.Context, f Filters) ([]DebtRow, error) {
+	revRows, err := c.rev.Report(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	var debtRows []DebtRow
+	if c.debt != nil {
+		debtRows, err = c.debt.Report(ctx, f)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return mergeFinPLPremaster(revRows, debtRows), nil
+}
+
+func (c *finplComposite) Drilldown(ctx context.Context, q DrilldownQuery) ([]DocumentRow, error) {
+	if c.debt == nil {
+		return nil, errors.New("debt.finpl.Drilldown: no premaster backend configured")
+	}
+	return c.debt.Drilldown(ctx, q)
+}
+
+// mergeFinPLPremaster сливает выручку finpl и ДЗ/КЗ premaster без двойного счёта:
+//   - у premaster-строк обнуляем выручку (её канонический источник теперь finpl) и
+//     оставляем только те, где есть ДЗ/КЗ-сальдо (чисто-выручочные строки выкидываем);
+//   - добавляем revenue-строки finpl как есть.
+// Строки остаются плоскими — UI группирует по (Компания→Контрагент→Счёт→Договор→Валюта).
+func mergeFinPLPremaster(rev, debt []DebtRow) []DebtRow {
+	out := make([]DebtRow, 0, len(rev)+len(debt))
+	for _, r := range debt {
+		r.RevenuePeriod = 0
+		r.RevenueLastMonth = 0
+		if hasBalance(r) {
+			out = append(out, r)
+		}
+	}
+	out = append(out, rev...)
+	return out
+}
+
+// hasBalance — есть ли в строке ненулевое ДЗ/КЗ-сальдо (вход/оборот/исход).
+func hasBalance(r DebtRow) bool {
+	return r.OpeningDZ != 0 || r.OpeningKZ != 0 ||
+		r.TurnoverDZ != 0 || r.TurnoverKZ != 0 ||
+		r.ClosingDZ != 0 || r.ClosingKZ != 0
+}
+
 // countryFromFinPL — витринный код страны ('BY'/'RU'/…) → доменный Country (РБ/РФ/…).
 func countryFromFinPL(c string) Country {
 	switch strings.ToUpper(strings.TrimSpace(c)) {

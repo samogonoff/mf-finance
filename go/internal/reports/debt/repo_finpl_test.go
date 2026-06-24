@@ -94,6 +94,59 @@ func TestBuildFinPLReport_unknownCode(t *testing.T) {
 	}
 }
 
+// T7: слияние выручки (finpl) и ДЗ/КЗ (premaster). Выручка из premaster-строк
+// обнуляется (источник — finpl), чисто-выручочные premaster-строки выкидываются,
+// finpl revenue-строки добавляются. Двойного счёта выручки нет.
+func TestMergeFinPLPremaster(t *testing.T) {
+	rev := []DebtRow{
+		{Company: "ООО «Марк Формэль»", CompanyINN: "690591512", Partner: "ООО «Формэль»",
+			Currency: "USD", RevenuePeriod: 1_000_000, RevenueLastMonth: 300_000},
+	}
+	prem := []DebtRow{
+		// ДЗ-строка с собственной (премастерской) выручкой — выручку обнулить, строку оставить.
+		{Company: "ООО «Марк Формэль»", CompanyINN: "690591512", Partner: "ООО «Формэль»",
+			Account: "62", Currency: "BYN", ClosingDZ: 500_000, RevenuePeriod: 777_000},
+		// Чисто-выручочная premaster-строка (без ДЗ/КЗ) — должна быть выкинута.
+		{Company: "ООО «Марк Формэль»", CompanyINN: "690591512", Partner: "ООО «Формэль»",
+			Account: "90", Currency: "BYN", RevenuePeriod: 999_000},
+	}
+	got := mergeFinPLPremaster(rev, prem)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (1 ДЗ premaster + 1 revenue finpl)", len(got))
+	}
+	// Premaster ДЗ-строка: выручка обнулена, сальдо сохранено.
+	var dz, finRev *DebtRow
+	for i := range got {
+		switch got[i].Account {
+		case "62":
+			dz = &got[i]
+		case "":
+			finRev = &got[i]
+		}
+	}
+	if dz == nil || dz.ClosingDZ != 500_000 {
+		t.Fatalf("ДЗ-строка потеряна/искажена: %+v", dz)
+	}
+	if dz.RevenuePeriod != 0 {
+		t.Errorf("выручка premaster не обнулена: %v", dz.RevenuePeriod)
+	}
+	if finRev == nil || finRev.RevenuePeriod != 1_000_000 || finRev.Currency != "USD" {
+		t.Errorf("finpl revenue-строка отсутствует/искажена: %+v", finRev)
+	}
+}
+
+func TestHasBalance(t *testing.T) {
+	if hasBalance(DebtRow{RevenuePeriod: 100}) {
+		t.Error("строка только с выручкой не должна считаться балансовой")
+	}
+	if !hasBalance(DebtRow{ClosingKZ: 1}) {
+		t.Error("строка с ClosingKZ должна быть балансовой")
+	}
+	if !hasBalance(DebtRow{OpeningDZ: -5}) {
+		t.Error("строка с OpeningDZ должна быть балансовой")
+	}
+}
+
 func TestCountryFromFinPL(t *testing.T) {
 	cases := map[string]Country{"BY": CountryRB, "RU": CountryRF, "KZ": CountryKZ, "UZ": CountryUZ}
 	for in, want := range cases {

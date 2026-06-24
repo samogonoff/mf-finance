@@ -155,8 +155,8 @@ func main() {
 			if finRepo == nil {
 				log.Fatalf("debt: DEBT_BACKEND=finpl but MSSQL_PREMASTER_* not set")
 			}
-			premasterRepo = debt.NewCompositeRepo(finRepo, mssqlRepo)
-			log.Printf("debt: backend=finpl (report→Table_Fin_PL, drilldown→mssql)")
+			premasterRepo = debt.NewFinPLComposite(finRepo, mssqlRepo)
+			log.Printf("debt: backend=finpl (revenue→Table_Fin_PL, ДЗ/КЗ+drilldown→mssql)")
 		default:
 			premasterRepo = mssqlRepo
 			log.Printf("debt: backend=mssql")
