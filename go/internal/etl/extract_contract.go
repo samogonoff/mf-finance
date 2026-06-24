@@ -26,7 +26,9 @@ type contractRow struct {
 // reContractKeep/reContractDrop — эвристика «название похоже на договор».
 var (
 	reContractKeep = regexp.MustCompile(`(?i)договор|соглашен|оферт|контракт|№|\d+/\d+|от \d{2}\.\d{2}\.\d{4}`)
-	reContractDrop = regexp.MustCompile(`(?i)00БС|ТДБП|оказание|реализаци|поступлени|накладн`)
+	// «без догов» (КЗ-литерал «Без Договора») отсекаем ПЕРВЫМ, иначе reContractKeep
+	// поймает слово «договор» в нём.
+	reContractDrop = regexp.MustCompile(`(?i)без догов|00БС|ТДБП|оказание|реализаци|поступлени|накладн`)
 )
 
 // isContractName — эвристика: оставлять ли резолвленное имя субконто как договор.
@@ -50,18 +52,21 @@ func isContractName(name string) bool {
 func extractContractSelectFrom(table string) string {
 	dr := accRootSQL("p.DrAcc")
 	cr := accRootSQL("p.CrAcc")
-	// ref/kind: 62→DrSubconto2/CrSubconto2; 60/76→CrSubconto1/DrSubconto1.
+	// sub1Roots — счета, у которых договор в Subconto1 на стороне счёта:
+	// 60/76 (РФ/РБ КЗ), 1210 (КЗ ДЗ), 3310/3510 (КЗ КЗ), 4000/4010/4090/4300/4800 (УЗ ДЗ),
+	// 6000/6300/6910 (УЗ КЗ). 62 — ИСКЛЮЧЕНИЕ (договор в Subconto2; Subconto1=контрагент).
+	sub1 := "'60','76','1210','3310','3510','4000','4010','4090','4300','4800','6000','6300','6910'"
 	ref := fmt.Sprintf(`CASE
 	    WHEN %[1]s = '62' THEN NULLIF(p.DrSubconto2,'')
 	    WHEN %[2]s = '62' THEN NULLIF(p.CrSubconto2,'')
-	    WHEN %[2]s IN ('60','76') THEN NULLIF(p.CrSubconto1,'')
-	    WHEN %[1]s IN ('60','76') THEN NULLIF(p.DrSubconto1,'')
-	  END`, dr, cr)
+	    WHEN %[1]s IN (%[3]s) THEN NULLIF(p.DrSubconto1,'')
+	    WHEN %[2]s IN (%[3]s) THEN NULLIF(p.CrSubconto1,'')
+	  END`, dr, cr, sub1)
 	kind := fmt.Sprintf(`CASE
 	    WHEN %[1]s = '62' OR %[2]s = '62' THEN '62'
-	    WHEN %[2]s = '60' OR %[1]s = '60' THEN '60'
-	    WHEN %[2]s = '76' OR %[1]s = '76' THEN '76'
-	  END`, dr, cr)
+	    WHEN %[1]s IN (%[3]s) THEN %[1]s
+	    WHEN %[2]s IN (%[3]s) THEN %[2]s
+	  END`, dr, cr, sub1)
 	return `
 SELECT DISTINCT
     CONVERT(NVARCHAR(MAX), p.DocID) AS doc_id,
