@@ -105,10 +105,12 @@ Env: любая новая переменная — сразу в `.env.example`
 - [x] `service.ComputeMp` + `GET /api/plans/mp/compute`; UI-превью каскада
 - [x] Формулы провизорные (Q4b) — как данные, переопределяемы
 
-### [ ] VS9. pl_formula_override — per-срез переопределение формулы (D11)
-- [ ] store: FormulaOverrides(plID)/UpsertOverride (pgx + mem)
-- [ ] `ComputeMp` мёржит override поверх seed; `PUT /api/plans/mp/formula` (с причиной)
-- [ ] Тесты: override меняет расчёт; обязательная причина
+### [x] VS9. pl_formula_override — per-срез переопределение формулы (D11) — `e076a47`
+- [x] store: FormulaOverrides(plID)/UpsertOverride (pgx + mem)
+- [x] `ComputeMp` мёржит override поверх seed; `PUT /api/plans/mp/formula` (причина + проверка компиляции)
+- [x] Тесты: override меняет расчёт; обязательная причина; битая формула отклонена
+- [x] UI: override-редактор на странице формы
+- [ ] ⏳ накат `0014` + UI-smoke — при `make up`
 
 ### Дальше (вне текущего прохода)
 Workflow 1.2–4 + календари р.д. по странам · своды 1.6/2.4 (TPL-08) · прочие
