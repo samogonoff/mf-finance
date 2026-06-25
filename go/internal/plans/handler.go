@@ -156,6 +156,32 @@ func (h *Handler) MpFormSave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int64{"pl_id": plID})
 }
 
+// MpCompute — GET /api/plans/mp/compute?year&month&segment&currency. Превью каскада
+// CALC (производные показатели по площадкам).
+func (h *Handler) MpCompute(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	year, err := atoiPositive(q.Get("year"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid year")
+		return
+	}
+	month, err := atoiPositive(q.Get("month"))
+	if err != nil || month < 1 || month > 12 {
+		writeErr(w, http.StatusBadRequest, "invalid month")
+		return
+	}
+	segment := q.Get("segment")
+	if segment == "" {
+		segment = "large"
+	}
+	rows, err := h.form.ComputeMp(r.Context(), h.prin(r), year, month, segment, q.Get("currency"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
 // MpExport — GET /api/plans/mp/export?year&month&segment&currency. Снимок формы в .xlsx.
 func (h *Handler) MpExport(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

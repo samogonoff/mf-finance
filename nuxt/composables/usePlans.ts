@@ -68,6 +68,12 @@ export interface SaveMpFormPayload {
   rows: SaveMpRow[];
 }
 
+export interface ComputedRow {
+  code_cfo: number;
+  name_cfo: string;
+  values: Record<string, number>;
+}
+
 const authHeader = (): Record<string, string> => {
   if (!process.client) return {};
   const t = localStorage.getItem("auth_token");
@@ -92,6 +98,12 @@ export const usePlans = () => {
 
   const mpForm = (q: MpFactQuery & { currency?: string }): Promise<MpFormData> =>
     $fetch<MpFormData>(`${base}/api/plans/mp/form`, {
+      params: { year: q.year, month: q.month, segment: q.segment, currency: q.currency ?? "" },
+      headers: authHeader()
+    });
+
+  const mpCompute = (q: MpFactQuery & { currency?: string }): Promise<ComputedRow[]> =>
+    $fetch<ComputedRow[]>(`${base}/api/plans/mp/compute`, {
       params: { year: q.year, month: q.month, segment: q.segment, currency: q.currency ?? "" },
       headers: authHeader()
     });
@@ -133,5 +145,5 @@ export const usePlans = () => {
     return data as { pl_id: number };
   };
 
-  return { directories, directoryRows, mpFact, mpForm, saveMpForm, mpExport, mpImport };
+  return { directories, directoryRows, mpFact, mpForm, mpCompute, saveMpForm, mpExport, mpImport };
 };

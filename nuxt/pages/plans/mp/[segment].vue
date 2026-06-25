@@ -52,14 +52,23 @@
 
     <p v-if="error" class="error-banner">{{ error }}</p>
     <p v-else-if="loading">Загрузка…</p>
-    <MpForm v-else-if="form" :form="form" />
+    <template v-else-if="form">
+      <MpForm :form="form" />
+      <div class="compute-actions">
+        <button class="btn btn-ghost" @click="runCompute">
+          <Icon name="lucide:calculator" /> Рассчитать каскад
+        </button>
+      </div>
+      <MpComputePreview :rows="computed" />
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
 import MpForm from "~/components/plans/MpForm.vue";
+import MpComputePreview from "~/components/plans/MpComputePreview.vue";
 import { usePlanForm } from "~/composables/usePlanForm";
-import { usePlans } from "~/composables/usePlans";
+import { usePlans, type ComputedRow } from "~/composables/usePlans";
 
 definePageMeta({ middleware: "scope-guard" });
 
@@ -71,7 +80,16 @@ const month = ref(5);
 const currency = ref<"RUB" | "BYN" | "USD">("RUB");
 
 const { form, loading, saving, error, savedAt, reason, load, save } = usePlanForm(segment, year, month, currency);
-const { mpExport, mpImport } = usePlans();
+const { mpExport, mpImport, mpCompute } = usePlans();
+
+const computed = ref<ComputedRow[]>([]);
+const runCompute = async () => {
+  try {
+    computed.value = await mpCompute({ year: year.value, month: month.value, segment: segment.value, currency: currency.value });
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : "Ошибка расчёта";
+  }
+};
 
 const setCurrency = (c: "RUB" | "BYN" | "USD") => {
   currency.value = c;

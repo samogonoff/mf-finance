@@ -118,3 +118,10 @@ type Comment struct {
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
 }
+
+// ComputedRow — расчётные показатели каскада по площадке (CALC, превью).
+type ComputedRow struct {
+	CodeCFO int                `json:"code_cfo"`
+	NameCFO string             `json:"name_cfo"`
+	Values  map[string]float64 `json:"values"` // sales_net|gross_margin|markup_pct|…
+}

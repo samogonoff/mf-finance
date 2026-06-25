@@ -96,6 +96,56 @@ func (s *Service) SaveMpForm(ctx context.Context, p Principal, req SaveMpFormReq
 	return plID, nil
 }
 
+// vatDefault — провизорная ставка НДС каскада (Q4b: уточнить по странам/разрезу).
+const vatDefault = 0.20
+
+// ComputeMp — превью каскада CALC (D11): по каждой площадке считает производные
+// показатели из тактики (или факта) через формулы calc_rule. Override per-срез —
+// следующий срез; здесь overrides пуст (только дефолтные формулы).
+func (s *Service) ComputeMp(ctx context.Context, p Principal, year, month int, segment, currency string) ([]ComputedRow, error) {
+	form, err := s.MpForm(ctx, p, year, month, segment, currency)
+	if err != nil {
+		return nil, err
+	}
+	// Собрать sales (1046) и cost (8006) по площадке: тактика, иначе факт.
+	type sc struct{ sales, cost float64 }
+	byCFO := map[int]*sc{}
+	name := map[int]string{}
+	for _, b := range form.Blocks {
+		for _, r := range b.Rows {
+			if _, ok := byCFO[r.CodeCFO]; !ok {
+				byCFO[r.CodeCFO] = &sc{}
+				name[r.CodeCFO] = r.NameCFO
+			}
+			val := r.Fact
+			if r.Tactic != nil {
+				val = *r.Tactic
+			}
+			switch b.CodePL {
+			case 1046:
+				byCFO[r.CodeCFO].sales = val
+			case 8006:
+				byCFO[r.CodeCFO].cost = val
+			}
+		}
+	}
+	formulas := resolveFormulas(CalcRuleSeed(), nil)
+	out := make([]ComputedRow, 0, len(byCFO))
+	for _, p := range form.Platforms {
+		v := byCFO[p.CodeCFO]
+		if v == nil {
+			continue
+		}
+		vars := map[string]float64{"sales": v.sales, "cost": v.cost, "vat": vatDefault}
+		out = append(out, ComputedRow{
+			CodeCFO: p.CodeCFO,
+			NameCFO: name[p.CodeCFO],
+			Values:  computeCascade(vars, formulas),
+		})
+	}
+	return out, nil
+}
+
 // AddComment — комментарий к экземпляру PL по id (COM-01).
 func (s *Service) AddComment(ctx context.Context, plID int64, c CommentInput) (int64, error) {
 	return s.store.AddComment(ctx, plID, c)
