@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS finance.dim_contract
     contract_ref  String,                    -- сырая 1С-ссылка субконто-договора
     contract_name String,                    -- Objects.Name (отфильтровано эвристикой)
     account_kind  LowCardinality(String),    -- '62' | '60' | '76' (по какому счёту резолвлен)
+    payment_delay String DEFAULT '',         -- Payments.Docs.Delay — отсрочка в днях ('' = нет)
     inserted_at   DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(inserted_at)

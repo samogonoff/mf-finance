@@ -83,8 +83,9 @@ WITH src AS (
     WHERE company_id IN (%[1]s) AND date <= toDate('%[3]s') AND cr_acc_root IN (%[4]s)
 )
 SELECT src.company_id, src.counterparty_id, src.acc, any(src.root) AS root,
-    dc.contract_ref  AS contract_ref,
-    dc.contract_name AS contract_name,
+    dc.contract_ref       AS contract_ref,
+    dc.contract_name      AS contract_name,
+    any(dc.payment_delay) AS payment_delay,
     toString(sumIf(amt * sgn, date <  toDate('%[2]s')))                              AS opening,
     toString(sumIf(amt * sgn, date >= toDate('%[2]s') AND date <= toDate('%[3]s')))  AS turnover,
     toString(sum(amt * sgn))                                                         AS closing
@@ -111,6 +112,7 @@ SELECT f.doc_id AS doc_id,
     any(f.doc_name_1c)               AS doc_name,
     any(f.operation_description)     AS op_desc,
     any(dc.contract_name)            AS contract_name,
+    any(dc.payment_delay)            AS payment_delay,
     toString(sum(f.amt_withvat_byn)) AS amount
 FROM finance.fact_glmf f FINAL
 LEFT JOIN finance.dim_contract dc FINAL ON dc.doc_id = f.doc_id
@@ -188,6 +190,7 @@ func (r *glmfCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error) {
 			Root           string `json:"root"`
 			ContractRef    string `json:"contract_ref"`
 			ContractName   string `json:"contract_name"`
+			PaymentDelay   string `json:"payment_delay"`
 			Opening        string `json:"opening"`
 			Turnover       string `json:"turnover"`
 			Closing        string `json:"closing"`
@@ -212,6 +215,9 @@ func (r *glmfCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error) {
 			Account: jr.Root, AccountName: accountNameFor(ent.Country, jr.Root),
 			Subaccount: jr.Acc, SubaccountName: accountNameFor(ent.Country, jr.Root),
 			Contract: strings.TrimSpace(jr.ContractName), ContractRef: strings.TrimSpace(jr.ContractRef),
+		}
+		if d, err := strconv.Atoi(strings.TrimSpace(jr.PaymentDelay)); err == nil {
+			row.PaymentTermDays = d
 		}
 		if p := partnerByINN[jr.CounterpartyID]; p != "" {
 			row.Partner = p
@@ -279,12 +285,13 @@ func (r *glmfCHRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Documen
 	dec := json.NewDecoder(bytes.NewReader(body))
 	for dec.More() {
 		var jr struct {
-			DocID    string `json:"doc_id"`
-			DocDate  string `json:"doc_date"`
-			DocName  string `json:"doc_name"`
-			OpDesc   string `json:"op_desc"`
-			Contract string `json:"contract_name"`
-			Amount   string `json:"amount"`
+			DocID        string `json:"doc_id"`
+			DocDate      string `json:"doc_date"`
+			DocName      string `json:"doc_name"`
+			OpDesc       string `json:"op_desc"`
+			Contract     string `json:"contract_name"`
+			PaymentDelay string `json:"payment_delay"`
+			Amount       string `json:"amount"`
 		}
 		if err := dec.Decode(&jr); err != nil {
 			return nil, fmt.Errorf("debt.glmf-ch.Drilldown: decode: %w", err)
@@ -300,6 +307,12 @@ func (r *glmfCHRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Documen
 		}
 		if t, err := time.Parse("2006-01-02", jr.DocDate); err == nil {
 			dr.DocDate = t
+			// Дата оплаты по договору = дата операции + отсрочка; просрочка — от неё до отчётной даты.
+			if d, err := strconv.Atoi(strings.TrimSpace(jr.PaymentDelay)); err == nil && d > 0 {
+				due := t.AddDate(0, 0, d)
+				dr.PaymentDueDate = due
+				dr.OverdueDays = daysOverdue(due, q.DateTo)
+			}
 		}
 		out = append(out, dr)
 	}
