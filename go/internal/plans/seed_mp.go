@@ -136,6 +136,7 @@ func (s *SeedSource) Directories() []Directory {
 		{Code: "dir_marketplace", Source: "manual", SyncStatus: "seed", RowCount: len(MarketplaceSeed())},
 		{Code: "dir_pl_line", Source: "manual", SyncStatus: "seed", RowCount: len(PLLineSeed())},
 		{Code: "dir_cfo", Source: "manual", SyncStatus: "seed", RowCount: len(CFOSeed())},
+		{Code: "dir_fx_rate", Source: "manual", SyncStatus: "seed", RowCount: len(FxRateSeed())},
 	}
 }
 
@@ -148,6 +149,8 @@ func (s *SeedSource) Rows(code string) (any, error) {
 		return PLLineSeed(), nil
 	case "dir_cfo":
 		return CFOSeed(), nil
+	case "dir_fx_rate":
+		return FxRateSeed(), nil
 	default:
 		return nil, ErrUnknownDirectory
 	}

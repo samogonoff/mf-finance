@@ -59,7 +59,10 @@ func (s *Service) MpForm(ctx context.Context, p Principal, year, month int, segm
 	if err != nil {
 		return MpForm{}, err
 	}
-	form := buildMpForm(segment, year, month, currency, factToMetrics(factRows), tactic)
+	// Пересчёт в валюту шапки (факт mock — RUB; тактика — в своей валюте).
+	factM := convertMetrics(factToMetrics(factRows), currency)
+	tac := convertMetrics(tactic, currency)
+	form := buildMpForm(segment, year, month, currency, factM, tac)
 	return applyScope(form, allowed, p.PlansAdmin), nil
 }
 

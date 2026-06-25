@@ -29,6 +29,21 @@
         <label class="filter-label">Месяц</label>
         <input v-model.number="month" type="number" class="select" min="1" max="12" @change="load" />
       </div>
+      <div class="filter">
+        <label class="filter-label">Валюта</label>
+        <div class="chip-row">
+          <button
+            v-for="c in (['RUB', 'BYN', 'USD'] as const)"
+            :key="c"
+            type="button"
+            class="chip"
+            :class="{ active: currency === c }"
+            @click="setCurrency(c)"
+          >
+            {{ c }}
+          </button>
+        </div>
+      </div>
       <div class="filter filter-grow">
         <label class="filter-label">Причина корректировки (обязательна при правке)</label>
         <input v-model="reason" type="text" class="select" placeholder="напр. корректировка на акцию" />
@@ -53,15 +68,21 @@ const segment = computed<"large" | "small">(() => (route.params.segment === "sma
 
 const year = ref(2026);
 const month = ref(5);
+const currency = ref<"RUB" | "BYN" | "USD">("RUB");
 
-const { form, loading, saving, error, savedAt, reason, load, save } = usePlanForm(segment, year, month);
+const { form, loading, saving, error, savedAt, reason, load, save } = usePlanForm(segment, year, month, currency);
 const { mpExport, mpImport } = usePlans();
+
+const setCurrency = (c: "RUB" | "BYN" | "USD") => {
+  currency.value = c;
+  load();
+};
 
 const importInput = ref<HTMLInputElement | null>(null);
 
 const exportXlsx = async () => {
   try {
-    const blob = await mpExport({ year: year.value, month: month.value, segment: segment.value });
+    const blob = await mpExport({ year: year.value, month: month.value, segment: segment.value, currency: currency.value });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;

@@ -7,7 +7,8 @@ import { usePlans, type MpFormData, type SaveMpRow } from "~/composables/usePlan
 export const usePlanForm = (
   segment: Ref<"large" | "small">,
   year: Ref<number>,
-  month: Ref<number>
+  month: Ref<number>,
+  currency: Ref<string>
 ) => {
   const { mpForm, saveMpForm } = usePlans();
 
@@ -35,7 +36,12 @@ export const usePlanForm = (
     loading.value = true;
     error.value = "";
     try {
-      form.value = await mpForm({ year: year.value, month: month.value, segment: segment.value });
+      form.value = await mpForm({
+        year: year.value,
+        month: month.value,
+        segment: segment.value,
+        currency: currency.value
+      });
       snapshot();
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : "Ошибка загрузки формы";
