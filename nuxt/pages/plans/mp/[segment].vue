@@ -22,6 +22,10 @@
         <label class="filter-label">Месяц</label>
         <input v-model.number="month" type="number" class="select" min="1" max="12" @change="load" />
       </div>
+      <div class="filter filter-grow">
+        <label class="filter-label">Причина корректировки (обязательна при правке)</label>
+        <input v-model="reason" type="text" class="select" placeholder="напр. корректировка на акцию" />
+      </div>
     </div>
 
     <p v-if="error" class="error-banner">{{ error }}</p>
@@ -42,7 +46,7 @@ const segment = computed<"large" | "small">(() => (route.params.segment === "sma
 const year = ref(2026);
 const month = ref(5);
 
-const { form, loading, saving, error, savedAt, load, save } = usePlanForm(segment, year, month);
+const { form, loading, saving, error, savedAt, reason, load, save } = usePlanForm(segment, year, month);
 
 watch(segment, load);
 onMounted(load);

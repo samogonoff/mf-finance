@@ -49,6 +49,7 @@ func buildMpForm(segment string, year, month int, currency string, fact, tactic 
 			if m, ok := tacticIdx[lineCFO{b.CodePL, p.CodeCFO}]; ok {
 				v := m.Amount
 				fr.Tactic = &v
+				fr.Manual = m.IsManual
 			}
 			rows = append(rows, fr)
 		}
@@ -113,6 +114,10 @@ func metricsFromRequest(req SaveMpFormRequest) ([]MetricRow, error) {
 		if !editable[r.BlockType] {
 			return nil, errors.New("блок не редактируется: " + r.BlockType)
 		}
+		// ADJ-02 / COM-01: ручная корректировка требует обязательного основания.
+		if r.IsManual && r.Comment == "" {
+			return nil, errors.New("причина корректировки обязательна (ADJ-02)")
+		}
 		out = append(out, MetricRow{
 			LineCode:     r.CodePL,
 			BlockType:    r.BlockType,
@@ -127,4 +132,29 @@ func metricsFromRequest(req SaveMpFormRequest) ([]MetricRow, error) {
 		})
 	}
 	return out, nil
+}
+
+// adjustmentsFromRequest собирает аудит ручных корректировок (ADJ-03) из payload.
+func adjustmentsFromRequest(req SaveMpFormRequest) []AdjustmentRow {
+	currency := req.Header.Currency
+	if currency == "" {
+		currency = "RUB"
+	}
+	out := make([]AdjustmentRow, 0)
+	for _, r := range req.Rows {
+		if !r.IsManual {
+			continue
+		}
+		out = append(out, AdjustmentRow{
+			ProfitCenter:  r.CodeCFO,
+			LineCode:      r.CodePL,
+			BlockType:     r.BlockType,
+			Year:          req.Period.Year,
+			Month:         req.Period.Month,
+			Currency:      currency,
+			AdjustedValue: r.Amount,
+			Reason:        r.Comment,
+		})
+	}
+	return out
 }

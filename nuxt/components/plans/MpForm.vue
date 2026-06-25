@@ -18,14 +18,17 @@
           <tr v-for="row in block.rows" :key="row.code_cfo">
             <td class="col-sticky">{{ row.name_cfo }}</td>
             <td class="col-num fact">{{ money(row.fact, { currency: "" }) }}</td>
-            <td class="col-num">
-              <input
-                v-model.number="row.tactic"
-                type="number"
-                class="tactic-input"
-                :disabled="!block.editable"
-                placeholder="—"
-              />
+            <td class="col-num" :class="{ 'cell-manual': row.manual }">
+              <div class="tactic-cell">
+                <input
+                  v-model.number="row.tactic"
+                  type="number"
+                  class="tactic-input"
+                  :disabled="!block.editable"
+                  placeholder="—"
+                />
+                <CellComment :manual="row.manual" />
+              </div>
             </td>
           </tr>
         </tbody>
@@ -37,6 +40,7 @@
 
 <script setup lang="ts">
 import { money } from "~/utils/format";
+import CellComment from "~/components/plans/CellComment.vue";
 import type { MpFormData } from "~/composables/usePlans";
 
 defineProps<{ form: MpFormData }>();
@@ -83,6 +87,16 @@ defineProps<{ form: MpFormData }>();
 .tactic-input:disabled {
   background: var(--bg-muted, #f3f4f6);
   color: var(--fg-muted, #6b7280);
+}
+.tactic-cell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+.cell-manual .tactic-input {
+  border-color: var(--accent, #4338ca);
+  background: var(--accent-soft, #eef2ff);
 }
 .hint {
   font-size: var(--fs-sm, 12px);

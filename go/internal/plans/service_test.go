@@ -7,10 +7,13 @@ import (
 
 // memStore — in-memory MetricStore для round-trip тестов без БД.
 type memStore struct {
-	nextID    int64
-	instances map[[2]int]int64
-	metrics   map[int64][]storedMetric
-	subs      map[int64][][]byte
+	nextID        int64
+	nextCommentID int64
+	instances     map[[2]int]int64
+	metrics       map[int64][]storedMetric
+	subs          map[int64][][]byte
+	adjustments   map[int64][]AdjustmentRow
+	comments      map[int64][]Comment
 }
 
 type storedMetric struct {
@@ -20,9 +23,11 @@ type storedMetric struct {
 
 func newMemStore() *memStore {
 	return &memStore{
-		instances: map[[2]int]int64{},
-		metrics:   map[int64][]storedMetric{},
-		subs:      map[int64][][]byte{},
+		instances:   map[[2]int]int64{},
+		metrics:     map[int64][]storedMetric{},
+		subs:        map[int64][][]byte{},
+		adjustments: map[int64][]AdjustmentRow{},
+		comments:    map[int64][]Comment{},
 	}
 }
 
@@ -73,6 +78,23 @@ func (m *memStore) SaveSubmission(_ context.Context, plID int64, payload []byte)
 	return nil
 }
 
+func (m *memStore) SaveAdjustments(_ context.Context, plID int64, adj []AdjustmentRow) error {
+	m.adjustments[plID] = append(m.adjustments[plID], adj...)
+	return nil
+}
+
+func (m *memStore) AddComment(_ context.Context, plID int64, c CommentInput) (int64, error) {
+	m.nextCommentID++
+	m.comments[plID] = append(m.comments[plID], Comment{
+		ID: m.nextCommentID, MetricRef: c.MetricRef, Body: c.Body, Status: "open",
+	})
+	return m.nextCommentID, nil
+}
+
+func (m *memStore) Comments(_ context.Context, plID int64) ([]Comment, error) {
+	return m.comments[plID], nil
+}
+
 // memScopeStore — in-memory ScopeStore для ABAC-тестов.
 type memScopeStore struct{ codes map[int64][]int }
 
@@ -100,7 +122,7 @@ func TestService_SaveAndLoad_RoundTrip(t *testing.T) {
 		Period:  PeriodRef{Year: 2026, Month: 5},
 		Header:  SaveHeader{Currency: "RUB", Scenario: ScenarioTactic},
 		Rows: []SaveRow{
-			{CodeCFO: 335, CodePL: 1046, BlockType: "sales_manager_price", Amount: 999000, IsManual: true},
+			{CodeCFO: 335, CodePL: 1046, BlockType: "sales_manager_price", Amount: 999000, IsManual: true, Comment: "round-trip"},
 		},
 	}
 	raw := []byte(`{"template_code":"TPL-MP"}`)
@@ -206,6 +228,66 @@ func TestSaveMpForm_ABAC_AllowsOwnPlatform(t *testing.T) {
 	}
 	if _, err := svc.SaveMpForm(context.Background(), Principal{UserID: 7}, req, []byte(`{}`)); err != nil {
 		t.Errorf("запись в свою площадку (335) должна проходить: %v", err)
+	}
+}
+
+func TestSaveMpForm_ManualRequiresReason(t *testing.T) {
+	svc := NewService(newMemStore(), NewMockFactSource(), newMemScope())
+	req := SaveMpFormRequest{
+		Segment: "large",
+		Period:  PeriodRef{Year: 2026, Month: 5},
+		Rows:    []SaveRow{{CodeCFO: 335, CodePL: 1046, BlockType: "sales_manager_price", Amount: 1, IsManual: true}}, // без Comment
+	}
+	if _, err := svc.SaveMpForm(context.Background(), adminP, req, []byte(`{}`)); err == nil {
+		t.Error("ожидалась ошибка: причина корректировки обязательна (ADJ-02)")
+	}
+}
+
+func TestSaveMpForm_ManualWithReason_PersistsAdjustment(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, NewMockFactSource(), newMemScope())
+	req := SaveMpFormRequest{
+		Segment: "large",
+		Period:  PeriodRef{Year: 2026, Month: 5},
+		Rows: []SaveRow{{
+			CodeCFO: 335, CodePL: 1046, BlockType: "sales_manager_price",
+			Amount: 123, IsManual: true, Comment: "акция",
+		}},
+	}
+	plID, err := svc.SaveMpForm(context.Background(), adminP, req, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("SaveMpForm: %v", err)
+	}
+	adj := store.adjustments[plID]
+	if len(adj) != 1 || adj[0].Reason != "акция" || adj[0].AdjustedValue != 123 {
+		t.Errorf("корректировка не записана: %+v", adj)
+	}
+	// ADJ-04: ячейка помечена Manual в форме.
+	form, _ := svc.MpForm(context.Background(), adminP, 2026, 5, "large", "RUB")
+	for _, b := range form.Blocks {
+		for _, r := range b.Rows {
+			if b.CodePL == 1046 && r.CodeCFO == 335 && !r.Manual {
+				t.Error("ячейка корректировки должна быть помечена Manual (ADJ-04)")
+			}
+		}
+	}
+}
+
+func TestComments_AddAndList(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, NewMockFactSource(), newMemScope())
+	ctx := context.Background()
+	plID, _ := store.EnsureInstance(ctx, 2026, 5)
+
+	if _, err := svc.AddComment(ctx, plID, CommentInput{MetricRef: "335:1046", Body: "проверить"}); err != nil {
+		t.Fatalf("AddComment: %v", err)
+	}
+	list, err := svc.Comments(ctx, plID)
+	if err != nil {
+		t.Fatalf("Comments: %v", err)
+	}
+	if len(list) != 1 || list[0].Body != "проверить" || list[0].Status != "open" {
+		t.Errorf("комментарий не сохранился: %+v", list)
 	}
 }
 

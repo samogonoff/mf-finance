@@ -2,6 +2,7 @@ package plans
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -17,6 +18,12 @@ type MetricStore interface {
 	UpsertMetrics(ctx context.Context, plID int64, segment string, rows []MetricRow) error
 	// SaveSubmission — полный снимок формы (json_payload).
 	SaveSubmission(ctx context.Context, plID int64, payload []byte) error
+	// SaveAdjustments — аудит ручных корректировок (ADJ-03).
+	SaveAdjustments(ctx context.Context, plID int64, adj []AdjustmentRow) error
+	// AddComment — комментарий к экземпляру PL (COM-01).
+	AddComment(ctx context.Context, plID int64, c CommentInput) (int64, error)
+	// Comments — комментарии экземпляра PL.
+	Comments(ctx context.Context, plID int64) ([]Comment, error)
 }
 
 // pgStore — pgx-реализация MetricStore.
@@ -90,4 +97,55 @@ func (s *pgStore) SaveSubmission(ctx context.Context, plID int64, payload []byte
 		INSERT INTO form_submission (pl_id, template_code, json_payload)
 		VALUES ($1, $2, $3)`, plID, TemplateMP, payload)
 	return err
+}
+
+func (s *pgStore) SaveAdjustments(ctx context.Context, plID int64, adj []AdjustmentRow) error {
+	if len(adj) == 0 {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for _, a := range adj {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO pl_adjustment (pl_id, profit_center, line_code, block_type,
+			    period_year, period_month, currency, adjusted_value, reason)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			plID, a.ProfitCenter, a.LineCode, a.BlockType, a.Year, a.Month,
+			a.Currency, a.AdjustedValue, a.Reason); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) AddComment(ctx context.Context, plID int64, c CommentInput) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO pl_comment (pl_id, metric_ref, body)
+		VALUES ($1, $2, $3) RETURNING id`, plID, c.MetricRef, c.Body).Scan(&id)
+	return id, err
+}
+
+func (s *pgStore) Comments(ctx context.Context, plID int64) ([]Comment, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, metric_ref, body, status, created_at
+		FROM pl_comment WHERE pl_id = $1 ORDER BY created_at DESC`, plID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Comment, 0)
+	for rows.Next() {
+		var c Comment
+		var ts time.Time
+		if err := rows.Scan(&c.ID, &c.MetricRef, &c.Body, &c.Status, &ts); err != nil {
+			return nil, err
+		}
+		c.CreatedAt = ts.Format(time.RFC3339)
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }

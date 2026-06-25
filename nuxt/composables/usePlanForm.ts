@@ -16,12 +16,27 @@ export const usePlanForm = (
   const saving = ref(false);
   const error = ref("");
   const savedAt = ref<string>("");
+  // Причина корректировки (ADJ-02) — обязательна, если есть изменения тактики.
+  const reason = ref("");
+  // Снимок исходных значений тактики для детекции ручных правок.
+  const baseline = ref<Record<string, number | null>>({});
+
+  const cellKey = (codePl: number, codeCfo: number) => `${codePl}:${codeCfo}`;
+
+  const snapshot = () => {
+    const snap: Record<string, number | null> = {};
+    for (const b of form.value?.blocks ?? []) {
+      for (const r of b.rows) snap[cellKey(b.code_pl, r.code_cfo)] = r.tactic ?? null;
+    }
+    baseline.value = snap;
+  };
 
   const load = async () => {
     loading.value = true;
     error.value = "";
     try {
       form.value = await mpForm({ year: year.value, month: month.value, segment: segment.value });
+      snapshot();
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : "Ошибка загрузки формы";
       form.value = null;
@@ -36,19 +51,26 @@ export const usePlanForm = (
     error.value = "";
     try {
       const rows: SaveMpRow[] = [];
+      let hasChanges = false;
       for (const b of form.value.blocks) {
         if (!b.editable) continue;
         for (const r of b.rows) {
-          if (r.tactic !== null && r.tactic !== undefined) {
-            rows.push({
-              code_cfo: r.code_cfo,
-              code_pl: b.code_pl,
-              block_type: b.block_type,
-              amount: Number(r.tactic),
-              is_manual: true
-            });
-          }
+          if (r.tactic === null || r.tactic === undefined) continue;
+          const changed = Number(r.tactic) !== (baseline.value[cellKey(b.code_pl, r.code_cfo)] ?? null);
+          if (changed) hasChanges = true;
+          rows.push({
+            code_cfo: r.code_cfo,
+            code_pl: b.code_pl,
+            block_type: b.block_type,
+            amount: Number(r.tactic),
+            is_manual: changed,
+            comment: changed ? reason.value : undefined
+          });
         }
+      }
+      if (hasChanges && !reason.value.trim()) {
+        error.value = "Укажите причину корректировки (ADJ-02)";
+        return;
       }
       await saveMpForm({
         template_code: "TPL-MP",
@@ -58,6 +80,7 @@ export const usePlanForm = (
         rows
       });
       savedAt.value = new Date().toLocaleTimeString("ru-RU");
+      reason.value = "";
       await load();
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : "Ошибка сохранения";
@@ -66,5 +89,5 @@ export const usePlanForm = (
     }
   };
 
-  return { form, loading, saving, error, savedAt, load, save };
+  return { form, loading, saving, error, savedAt, reason, load, save };
 };

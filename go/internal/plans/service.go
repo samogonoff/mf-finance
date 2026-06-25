@@ -84,10 +84,23 @@ func (s *Service) SaveMpForm(ctx context.Context, p Principal, req SaveMpFormReq
 	if err := s.store.UpsertMetrics(ctx, plID, req.Segment, metrics); err != nil {
 		return 0, err
 	}
+	if err := s.store.SaveAdjustments(ctx, plID, adjustmentsFromRequest(req)); err != nil {
+		return 0, err
+	}
 	if err := s.store.SaveSubmission(ctx, plID, rawPayload); err != nil {
 		return 0, err
 	}
 	return plID, nil
+}
+
+// AddComment — комментарий к экземпляру PL по id (COM-01).
+func (s *Service) AddComment(ctx context.Context, plID int64, c CommentInput) (int64, error) {
+	return s.store.AddComment(ctx, plID, c)
+}
+
+// Comments — комментарии экземпляра PL по id.
+func (s *Service) Comments(ctx context.Context, plID int64) ([]Comment, error) {
+	return s.store.Comments(ctx, plID)
 }
 
 // factToMetrics приводит read-only факт к MetricRow для сборки формы.

@@ -119,7 +119,7 @@ func TestMpForm_PutThenGet_RoundTrip(t *testing.T) {
 
 	body := `{"segment":"large","period":{"year":2026,"month":5},
 		"header":{"currency":"RUB","scenario":"Тактика бюджет (таргеты)"},
-		"rows":[{"code_cfo":335,"code_pl":1046,"block_type":"sales_manager_price","amount":777000,"is_manual":true}]}`
+		"rows":[{"code_cfo":335,"code_pl":1046,"block_type":"sales_manager_price","amount":777000,"is_manual":true,"comment":"round-trip"}]}`
 	put := httptest.NewRequest(http.MethodPut, "/api/plans/mp/form", strings.NewReader(body))
 	putRec := httptest.NewRecorder()
 	h.MpFormSave(putRec, put)

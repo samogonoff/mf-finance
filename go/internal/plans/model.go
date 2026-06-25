@@ -51,11 +51,13 @@ type FormBlock struct {
 }
 
 // FormRow — площадка в блоке: факт (read-only) + тактика (editable, nil если не задана).
+// Manual — тактика введена ручной корректировкой (ADJ-04, для подсветки в UI).
 type FormRow struct {
 	CodeCFO int      `json:"code_cfo"`
 	NameCFO string   `json:"name_cfo"`
 	Fact    float64  `json:"fact"`
 	Tactic  *float64 `json:"tactic"`
+	Manual  bool     `json:"manual"`
 }
 
 // SaveMpFormRequest — payload PUT /api/plans/mp/form (снимок editable-ячеек,
@@ -88,4 +90,31 @@ type SaveRow struct {
 	Amount    float64 `json:"amount"`
 	Comment   string  `json:"comment"`
 	IsManual  bool    `json:"is_manual"`
+}
+
+// AdjustmentRow — аудит ручной корректировки (ADJ-02/03).
+type AdjustmentRow struct {
+	ProfitCenter int     `json:"profit_center"`
+	LineCode     int     `json:"line_code"`
+	BlockType    string  `json:"block_type"`
+	Year         int     `json:"period_year"`
+	Month        int     `json:"period_month"`
+	Currency     string  `json:"currency"`
+	AdjustedValue float64 `json:"adjusted_value"`
+	Reason        string  `json:"reason"`
+}
+
+// CommentInput — новый комментарий к экземпляру PL (COM-01).
+type CommentInput struct {
+	MetricRef string `json:"metric_ref"`
+	Body      string `json:"body"`
+}
+
+// Comment — комментарий из БД.
+type Comment struct {
+	ID        int64  `json:"id"`
+	MetricRef string `json:"metric_ref"`
+	Body      string `json:"body"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
 }

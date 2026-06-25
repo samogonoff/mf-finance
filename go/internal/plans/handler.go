@@ -155,6 +155,45 @@ func (h *Handler) MpFormSave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int64{"pl_id": plID})
 }
 
+// CommentsList — GET /api/plans/instances/{id}/comments.
+func (h *Handler) CommentsList(w http.ResponseWriter, r *http.Request) {
+	plID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || plID <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	list, err := h.form.Comments(r.Context(), plID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// CommentCreate — POST /api/plans/instances/{id}/comments. Тело: {metric_ref, body}.
+func (h *Handler) CommentCreate(w http.ResponseWriter, r *http.Request) {
+	plID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || plID <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var c CommentInput
+	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if c.Body == "" {
+		writeErr(w, http.StatusBadRequest, "body required")
+		return
+	}
+	id, err := h.form.AddComment(r.Context(), plID, c)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"id": id})
+}
+
 // ScopeUpsert — PUT /api/plans/scope/{user_id}. Назначение ABAC-среза
 // пользователю (роль ROLE_PLANS_ADMIN). Тело: role, code_cfo[], опц. stage/страна/ЮЛ.
 func (h *Handler) ScopeUpsert(w http.ResponseWriter, r *http.Request) {
