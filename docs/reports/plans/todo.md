@@ -78,15 +78,22 @@ Env: любая новая переменная — сразу в `.env.example`
 - [x] CHECKPOINT B: round-trip кодека без расхождений (значение сохраняется через xlsx)
 - [ ] ⏳ UI-smoke export/import — при `make up`
 
-### [ ] VS7. Валюта (dir_fx_rate) + сегмент small — **CHECKPOINT D**
-- [ ] `dir_fx_rate` (month/rate/currency); `plans/currency.go` пересчёт BYN/RUB/USD
-- [ ] Переключатель валюты в `MpForm.vue`; включить `segment=small` (группа 480, RU/KZ/UZ)
-- [ ] Приёмка: переключение валюты согласовано с курсами; форма small открывается для своего среза
-- [ ] CHECKPOINT D: BYN/RUB/USD == H/I/J × курсы
+### [x] VS7. Валюта (dir_fx_rate) + сегмент small — `730df13`
+- [x] `dir_fx_rate` (seed BYN-база) в реестре; `plans/currency.go` пересчёт BYN/RUB/USD через BYN
+- [x] Переключатель валюты на странице формы; `segment=small` (группа 480, RU/KZ/UZ) + demo-факт small
+- [x] Приёмка: переключение валюты согласовано с курсами; small-форма показывает Kaspi/Uzmarket — покрыто тестами
+- [x] `go test ./internal/plans/...` зелёные (конвертация + small)
+- [x] CHECKPOINT D: пересчёт через курсы dir_fx_rate (помесячные курсы из источника — этап 2)
+- [ ] ⏳ UI-smoke переключения валюты/small — при `make up`
 
-### [ ] T-DOC. Финализация документации
-- [ ] Сверить `.env.example` со всеми введёнными переменными
-- [ ] Обновить SPEC статусы T/VS; зафиксировать результаты чекпоинтов A–D
+### [x] T-DOC. Финализация документации
+- [x] `.env.example`: `PLANS_MOCK`, `PLANS_MP_FACT_VIEW` (читаются config), `PLANS_MP_PENALTIES_VIEW`/`PLANS_AUDIT_ENABLED` (forward, этап 2)
+- [x] SPEC статус MVP-вертикалей VS0–VS7; чекпоинты B/D — на mock-уровне, A/C — на проде
+- [ ] ⏳ При `make up`: накат миграций 0010–0013, CHECKPOINT A (live FinDWH) + UI-smoke всех экранов
+
+---
+
+## Статус MVP: backend+frontend VS0–VS7 готовы (TDD, зелёные). Осталось — прогон на поднятом стеке.
 
 ---
 
