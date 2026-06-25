@@ -31,13 +31,15 @@ Env: любая новая переменная — сразу в `.env.example`
 - [x] `go test ./internal/plans/...` зелёные (TDD: RED→GREEN)
 - [ ] ⏳ накат миграции `make migrate` + psql-сверка — при поднятом стеке (PG сейчас down)
 
-### [ ] VS2. Факт МП (online FinDWH + PLANS_MOCK) — **CHECKPOINT A**
-- [ ] `plans/sources/{source.go,olap_mp.go,mock_mp.go}` (ключи SUMIFS month+code_cfo+scenario+CodePL; BYN/RUB/USD)
-- [ ] Online через креды FinDWH (переиспользуем `MSSQL_PREMASTER_*`/`PLANS_OLAP_*`), `PLANS_MOCK=1` → фикстуры
-- [ ] `GET /api/plans/mp/fact?year&month&segment`; `usePlans.ts`; `components/plans/MpFactTable.vue`
-- [ ] `.env.example`: `PLANS_MOCK`, OLAP-креды (FinDWH)
-- [ ] Приёмка: mock → WB/335/1046/2026-05 = 357034569.85; UI рисует read-only факт
-- [ ] CHECKPOINT A: live-суммы == прототип (иначе держать `PLANS_MOCK=1`)
+### [x] VS2. Факт МП (online FinDWH + PLANS_MOCK) — `160ed09`
+- [x] `plans/{fact.go,olap_mp.go,mock_mp.go}` (в пакете plans, не подпакет — иначе цикл импорта с MarketplaceSeed)
+- [x] Online через FinDWH (переиспользуем `mssqlDB` ВГО / `MSSQL_PREMASTER_*`), `PLANS_MOCK=1` → фикстуры; nil MSSQL → fallback mock
+- [x] `GET /api/plans/mp/fact?year&month&segment` за `RequireRole(PlansUser)`; `usePlans.ts`; `MpFactTable.vue`; `pages/plans/mp.vue`
+- [x] `.env.example`: `PLANS_MOCK`, `PLANS_MP_FACT_VIEW` (заведены в VS0, config их читает)
+- [x] Приёмка: mock → WB/335/1046/2026-05 = 357034569.85; UI read-only — покрыто тестами
+- [x] `go test ./internal/plans/...` зелёные (TDD: RED→GREEN)
+- [ ] ⏳ CHECKPOINT A: live-сверка сумм с прототипом — при поднятом FinDWH (`PLANS_MOCK=0`); до сверки держать mock
+- [ ] ⏳ UI-smoke `/plans/mp` — при `make up` (фронт-typecheck/раннер локально недоступен)
 
 ## Фаза B — Write-path (ввод тактики)
 
