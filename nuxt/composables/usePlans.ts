@@ -30,6 +30,44 @@ export interface MpFactQuery {
   segment: "large" | "small";
 }
 
+export interface MpFormRow {
+  code_cfo: number;
+  name_cfo: string;
+  fact: number;
+  tactic: number | null;
+}
+
+export interface MpFormBlock {
+  block_type: string;
+  code_pl: number;
+  name: string;
+  editable: boolean;
+  rows: MpFormRow[];
+}
+
+export interface MpFormData {
+  header: { year: number; month: number; segment: string; currency: string; scenario: string };
+  platforms: Array<{ code_cfo: number; name_cfo: string; country: string }>;
+  blocks: MpFormBlock[];
+}
+
+export interface SaveMpRow {
+  code_cfo: number;
+  code_pl: number;
+  block_type: string;
+  amount: number;
+  comment?: string;
+  is_manual?: boolean;
+}
+
+export interface SaveMpFormPayload {
+  template_code?: string;
+  segment: "large" | "small";
+  period: { year: number; month: number };
+  header: { currency: string; scenario: string };
+  rows: SaveMpRow[];
+}
+
 const authHeader = (): Record<string, string> => {
   if (!process.client) return {};
   const t = localStorage.getItem("auth_token");
@@ -52,5 +90,18 @@ export const usePlans = () => {
       headers: authHeader()
     });
 
-  return { directories, directoryRows, mpFact };
+  const mpForm = (q: MpFactQuery & { currency?: string }): Promise<MpFormData> =>
+    $fetch<MpFormData>(`${base}/api/plans/mp/form`, {
+      params: { year: q.year, month: q.month, segment: q.segment, currency: q.currency ?? "" },
+      headers: authHeader()
+    });
+
+  const saveMpForm = (payload: SaveMpFormPayload): Promise<{ pl_id: number }> =>
+    $fetch<{ pl_id: number }>(`${base}/api/plans/mp/form`, {
+      method: "PUT",
+      body: payload,
+      headers: authHeader()
+    });
+
+  return { directories, directoryRows, mpFact, mpForm, saveMpForm };
 };

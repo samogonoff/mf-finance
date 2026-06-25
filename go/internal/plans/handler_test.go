@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
-func newTestHandler() *Handler { return NewHandler(NewSeedSource(), NewMockFactSource()) }
+func newTestHandler() *Handler {
+	fact := NewMockFactSource()
+	return NewHandler(NewSeedSource(), fact, NewService(newMemStore(), fact))
+}
 
 func TestHealth_ReturnsOK(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/plans/health", nil)
@@ -105,6 +109,60 @@ func TestMpFact_Endpoint_BadMonth(t *testing.T) {
 	newTestHandler().MpFact(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("month=0 должен дать 400, got %d", rec.Code)
+	}
+}
+
+func TestMpForm_PutThenGet_RoundTrip(t *testing.T) {
+	h := newTestHandler()
+
+	body := `{"segment":"large","period":{"year":2026,"month":5},
+		"header":{"currency":"RUB","scenario":"Тактика бюджет (таргеты)"},
+		"rows":[{"code_cfo":335,"code_pl":1046,"block_type":"sales_manager_price","amount":777000,"is_manual":true}]}`
+	put := httptest.NewRequest(http.MethodPut, "/api/plans/mp/form", strings.NewReader(body))
+	putRec := httptest.NewRecorder()
+	h.MpFormSave(putRec, put)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d (%q)", putRec.Code, putRec.Body.String())
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/api/plans/mp/form?year=2026&month=5&segment=large", nil)
+	getRec := httptest.NewRecorder()
+	h.MpFormGet(getRec, get)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d (%q)", getRec.Code, getRec.Body.String())
+	}
+	var form MpForm
+	if err := json.Unmarshal(getRec.Body.Bytes(), &form); err != nil {
+		t.Fatalf("form not JSON: %v", err)
+	}
+	var ok bool
+	for _, b := range form.Blocks {
+		if b.CodePL != 1046 {
+			continue
+		}
+		for _, r := range b.Rows {
+			if r.CodeCFO == 335 {
+				ok = true
+				if r.Tactic == nil || *r.Tactic != 777000 {
+					t.Errorf("тактика не сохранилась round-trip через HTTP: %v", r.Tactic)
+				}
+			}
+		}
+	}
+	if !ok {
+		t.Error("WB(335)/1046 не найден в форме")
+	}
+}
+
+func TestMpFormSave_RejectsForeignCFO(t *testing.T) {
+	h := newTestHandler()
+	body := `{"segment":"large","period":{"year":2026,"month":5},
+		"rows":[{"code_cfo":338,"code_pl":1046,"block_type":"sales_manager_price","amount":1}]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/plans/mp/form", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.MpFormSave(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("чужой code_cfo должен дать 400, got %d", rec.Code)
 	}
 }
 

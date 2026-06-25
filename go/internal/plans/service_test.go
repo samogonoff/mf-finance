@@ -1,0 +1,167 @@
+package plans
+
+import (
+	"context"
+	"testing"
+)
+
+// memStore — in-memory MetricStore для round-trip тестов без БД.
+type memStore struct {
+	nextID    int64
+	instances map[[2]int]int64
+	metrics   map[int64][]storedMetric
+	subs      map[int64][][]byte
+}
+
+type storedMetric struct {
+	segment string
+	row     MetricRow
+}
+
+func newMemStore() *memStore {
+	return &memStore{
+		instances: map[[2]int]int64{},
+		metrics:   map[int64][]storedMetric{},
+		subs:      map[int64][][]byte{},
+	}
+}
+
+func (m *memStore) EnsureInstance(_ context.Context, year, month int) (int64, error) {
+	k := [2]int{year, month}
+	if id, ok := m.instances[k]; ok {
+		return id, nil
+	}
+	m.nextID++
+	m.instances[k] = m.nextID
+	return m.nextID, nil
+}
+
+func (m *memStore) Metrics(_ context.Context, plID int64, segment string, year, month int) ([]MetricRow, error) {
+	var out []MetricRow
+	for _, s := range m.metrics[plID] {
+		if s.segment == segment && s.row.Year == year && s.row.Month == month && s.row.Scenario == ScenarioTactic {
+			out = append(out, s.row)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) UpsertMetrics(_ context.Context, plID int64, segment string, rows []MetricRow) error {
+	key := func(s string, r MetricRow) string {
+		return s + "|" + r.Scenario + "|" + r.Currency
+	}
+	for _, r := range rows {
+		replaced := false
+		for i, ex := range m.metrics[plID] {
+			if ex.row.LineCode == r.LineCode && ex.row.BlockType == r.BlockType &&
+				ex.row.ProfitCenter == r.ProfitCenter && ex.row.Year == r.Year &&
+				ex.row.Month == r.Month && key(ex.segment, ex.row) == key(segment, r) {
+				m.metrics[plID][i] = storedMetric{segment, r}
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			m.metrics[plID] = append(m.metrics[plID], storedMetric{segment, r})
+		}
+	}
+	return nil
+}
+
+func (m *memStore) SaveSubmission(_ context.Context, plID int64, payload []byte) error {
+	m.subs[plID] = append(m.subs[plID], payload)
+	return nil
+}
+
+func TestService_SaveAndLoad_RoundTrip(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, NewMockFactSource())
+	ctx := context.Background()
+
+	req := SaveMpFormRequest{
+		Segment: "large",
+		Period:  PeriodRef{Year: 2026, Month: 5},
+		Header:  SaveHeader{Currency: "RUB", Scenario: ScenarioTactic},
+		Rows: []SaveRow{
+			{CodeCFO: 335, CodePL: 1046, BlockType: "sales_manager_price", Amount: 999000, IsManual: true},
+		},
+	}
+	raw := []byte(`{"template_code":"TPL-MP"}`)
+	plID, err := svc.SaveMpForm(ctx, req, raw)
+	if err != nil {
+		t.Fatalf("SaveMpForm: %v", err)
+	}
+	if plID == 0 {
+		t.Fatal("plID == 0")
+	}
+	if len(store.subs[plID]) != 1 {
+		t.Errorf("снимок form_submission не сохранён: %d", len(store.subs[plID]))
+	}
+
+	form, err := svc.MpForm(ctx, 2026, 5, "large", "RUB")
+	if err != nil {
+		t.Fatalf("MpForm: %v", err)
+	}
+	var checked bool
+	for _, b := range form.Blocks {
+		if b.CodePL != 1046 {
+			continue
+		}
+		if !b.Editable {
+			t.Errorf("блок 1046 должен быть editable")
+		}
+		for _, r := range b.Rows {
+			if r.CodeCFO != 335 {
+				continue
+			}
+			checked = true
+			if r.Tactic == nil || *r.Tactic != 999000 {
+				t.Errorf("тактика WB не сохранилась round-trip: %v", r.Tactic)
+			}
+			if r.Fact < 357034569 || r.Fact > 357034571 {
+				t.Errorf("факт WB должен подтянуться read-only: %.2f", r.Fact)
+			}
+		}
+	}
+	if !checked {
+		t.Fatal("строка WB(335) в блоке 1046 не найдена")
+	}
+}
+
+func TestMetricsFromRequest_RejectsForeignCFO(t *testing.T) {
+	req := SaveMpFormRequest{
+		Segment: "large",
+		Period:  PeriodRef{Year: 2026, Month: 5},
+		Rows:    []SaveRow{{CodeCFO: 338, CodePL: 1046, BlockType: "sales_manager_price", Amount: 1}}, // 338 — small (Kaspi)
+	}
+	if _, err := metricsFromRequest(req); err == nil {
+		t.Error("ожидалась ошибка: code_cfo вне сегмента")
+	}
+}
+
+func TestMetricsFromRequest_RejectsNonEditableBlock(t *testing.T) {
+	req := SaveMpFormRequest{
+		Segment: "large",
+		Period:  PeriodRef{Year: 2026, Month: 5},
+		Rows:    []SaveRow{{CodeCFO: 335, CodePL: 1045, BlockType: "sales_manager_price_net", Amount: 1}},
+	}
+	if _, err := metricsFromRequest(req); err == nil {
+		t.Error("ожидалась ошибка: блок не редактируется (расчётный)")
+	}
+}
+
+func TestMetricsFromRequest_ForcesTacticScenario(t *testing.T) {
+	req := SaveMpFormRequest{
+		Segment: "large",
+		Period:  PeriodRef{Year: 2026, Month: 5},
+		Header:  SaveHeader{Scenario: "Факт"}, // попытка подменить сценарий
+		Rows:    []SaveRow{{CodeCFO: 335, CodePL: 1046, BlockType: "sales_manager_price", Amount: 5}},
+	}
+	rows, err := metricsFromRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if rows[0].Scenario != ScenarioTactic {
+		t.Errorf("сценарий должен быть зафиксирован тактикой, got %q", rows[0].Scenario)
+	}
+}

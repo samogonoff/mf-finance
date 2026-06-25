@@ -245,11 +245,15 @@ func main() {
 	// docs/reports/plans/SPEC.md. Факт: PLANS_MOCK=1 → фикстуры; иначе online
 	// FinDWH (переиспользуем mssqlDB ВГО-отчёта; при nil — fallback на mock).
 	plansFact := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactView)
-	plansH := plans.NewHandler(plans.NewSeedSource(), plansFact)
+	plansSvc := plans.NewService(plans.NewPgStore(pool), plansFact)
+	plansH := plans.NewHandler(plans.NewSeedSource(), plansFact, plansSvc)
 	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
 	mux.HandleFunc("GET /api/plans/directories", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Directories))
 	mux.HandleFunc("GET /api/plans/directories/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirectoryRows))
 	mux.HandleFunc("GET /api/plans/mp/fact", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpFact))
+	mux.HandleFunc("GET /api/plans/mp/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpFormGet))
+	mux.HandleFunc("PUT /api/plans/mp/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpFormSave))
+	mux.HandleFunc("POST /api/plans/instances", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.CreateInstance))
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

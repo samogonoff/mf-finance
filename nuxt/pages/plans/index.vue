@@ -14,9 +14,14 @@
     <section class="card placeholder">
       <Icon name="lucide:clipboard-list" class="placeholder-icon" />
       <p>Раздел в разработке. Скоро здесь появятся формы ввода и согласование планов.</p>
-      <NuxtLink to="/plans/mp" class="btn btn-primary">
-        <Icon name="lucide:store" /> Маркетплейсы — факт
-      </NuxtLink>
+      <div class="placeholder-actions">
+        <NuxtLink to="/plans/mp" class="btn btn-ghost">
+          <Icon name="lucide:store" /> Маркетплейсы — факт
+        </NuxtLink>
+        <NuxtLink to="/plans/mp/large" class="btn btn-primary">
+          <Icon name="lucide:pencil" /> Маркетплейсы — ввод тактики
+        </NuxtLink>
+      </div>
     </section>
   </div>
 </template>
