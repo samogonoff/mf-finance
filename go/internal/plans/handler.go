@@ -48,20 +48,21 @@ func atoiPositive(s string) (int, error) {
 // Handler — HTTP-ручки модуля тактических планов.
 type Handler struct {
 	dir       DirSource
+	dirRepo   *DirRepo
 	fact      MpFactSource
 	form      *Service
 	principal PrincipalFunc
 	audit     Auditor
 }
 
-// NewHandler — конструктор. dir — справочники (SeedSource в MVP), fact —
-// read-only факт МП, form — сервис формы TPL-MP, principal — извлечение
-// пользователя из запроса для ABAC, audit — журнал аудита (no-op при выключенном).
-func NewHandler(dir DirSource, fact MpFactSource, form *Service, principal PrincipalFunc, audit Auditor) *Handler {
+// NewHandler — конструктор. dir — seed-справочники, dirRepo — редактируемые НСИ
+// в БД (nil в тестах), fact — read-only факт МП, form — сервис формы,
+// principal — пользователь для ABAC, audit — журнал (no-op при выключенном).
+func NewHandler(dir DirSource, dirRepo *DirRepo, fact MpFactSource, form *Service, principal PrincipalFunc, audit Auditor) *Handler {
 	if audit == nil {
 		audit = noopAuditor{}
 	}
-	return &Handler{dir: dir, fact: fact, form: form, principal: principal, audit: audit}
+	return &Handler{dir: dir, dirRepo: dirRepo, fact: fact, form: form, principal: principal, audit: audit}
 }
 
 // rec — fire-and-forget запись аудита (ошибки не валят операцию).
@@ -409,6 +410,115 @@ func (h *Handler) ScopeUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.rec(r, "scope", "user", userID)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// --- Редактируемые справочники (НСИ) ---
+
+// DirList — GET /api/plans/dir. Реестр справочников (manual editable + lisa/1c read-only).
+func (h *Handler) DirList(w http.ResponseWriter, r *http.Request) {
+	if h.dirRepo == nil {
+		writeJSON(w, http.StatusOK, []DirMeta{})
+		return
+	}
+	list, err := h.dirRepo.Directories(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// DirRowsDB — GET /api/plans/dir/{code}/rows. Строки справочника с id.
+func (h *Handler) DirRowsDB(w http.ResponseWriter, r *http.Request) {
+	if h.dirRepo == nil {
+		writeJSON(w, http.StatusOK, []DirRow{})
+		return
+	}
+	rows, err := h.dirRepo.Rows(r.Context(), r.PathValue("code"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// DirRowUpsert — PUT /api/plans/dir/{code}/rows. Тело: {id?, payload}. Только manual.
+func (h *Handler) DirRowUpsert(w http.ResponseWriter, r *http.Request) {
+	code := r.PathValue("code")
+	if !dirEditable(code) {
+		writeErr(w, http.StatusForbidden, "справочник не редактируется (источник lisa/1c)")
+		return
+	}
+	var body struct {
+		ID      int64          `json:"id"`
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	id, err := h.dirRepo.UpsertRow(r.Context(), code, body.ID, body.Payload)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.rec(r, "dir_edit", "directory", id)
+	writeJSON(w, http.StatusOK, map[string]int64{"id": id})
+}
+
+// DirRowDelete — DELETE /api/plans/dir/{code}/rows/{id}.
+func (h *Handler) DirRowDelete(w http.ResponseWriter, r *http.Request) {
+	code := r.PathValue("code")
+	if !dirEditable(code) {
+		writeErr(w, http.StatusForbidden, "справочник не редактируется")
+		return
+	}
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err := h.dirRepo.DeleteRow(r.Context(), code, id); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.rec(r, "dir_delete", "directory", id)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func dirEditable(code string) bool {
+	for _, c := range editableDirs {
+		if c == code {
+			return true
+		}
+	}
+	return false
+}
+
+// --- Маршрут процесса (ответственные по этапам) ---
+
+// RouteList — GET /api/plans/route. Этапы схемы + ответственные.
+func (h *Handler) RouteList(w http.ResponseWriter, r *http.Request) {
+	list, err := h.form.Route(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// RouteUpsert — PUT /api/plans/route/{code}. Тело: {responsible}. Админ процессов.
+func (h *Handler) RouteUpsert(w http.ResponseWriter, r *http.Request) {
+	code := r.PathValue("code")
+	var body struct {
+		Responsible string `json:"responsible"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := h.form.SetRoute(r.Context(), code, body.Responsible); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.rec(r, "route_edit", "stage", 0)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

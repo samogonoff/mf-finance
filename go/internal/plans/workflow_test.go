@@ -12,7 +12,7 @@ func findStage(stages []StageState, code string) *StageState {
 }
 
 func TestInitStages_AllStagesPendingWithDue(t *testing.T) {
-	stages := initStages(2026, 6, "RU", CalendarSeed())
+	stages := initStages(2026, 6, "RU", CalendarSeed(), nil)
 	if len(stages) != len(stageDefs()) {
 		t.Fatalf("ожидалось %d этапов, got %d", len(stageDefs()), len(stages))
 	}
@@ -27,7 +27,7 @@ func TestInitStages_AllStagesPendingWithDue(t *testing.T) {
 }
 
 func TestApplyAction_SubmitNoDeps(t *testing.T) {
-	stages := initStages(2026, 6, "RU", CalendarSeed())
+	stages := initStages(2026, 6, "RU", CalendarSeed(), nil)
 	out, err := applyStageAction(stages, "1.1", "submit", "")
 	if err != nil {
 		t.Fatalf("submit 1.1: %v", err)
@@ -38,7 +38,7 @@ func TestApplyAction_SubmitNoDeps(t *testing.T) {
 }
 
 func TestApplyAction_DependencyBlocks16Until24(t *testing.T) {
-	stages := initStages(2026, 6, "RU", CalendarSeed())
+	stages := initStages(2026, 6, "RU", CalendarSeed(), nil)
 	// 1.6 зависит от 1.5 и 2.4 (WF-DEP-01) — пока не завершены, submit нельзя.
 	if _, err := applyStageAction(stages, "1.6", "submit", ""); err == nil {
 		t.Error("ожидалась ошибка зависимости: 1.6 до 2.4/1.5")
@@ -61,7 +61,7 @@ func TestApplyAction_DependencyBlocks16Until24(t *testing.T) {
 }
 
 func TestApplyAction_ReturnSetsTarget(t *testing.T) {
-	stages := initStages(2026, 6, "RU", CalendarSeed())
+	stages := initStages(2026, 6, "RU", CalendarSeed(), nil)
 	stages, _ = applyStageAction(stages, "1.1", "submit", "")
 	out, err := applyStageAction(stages, "1.2", "return", "1.1")
 	if err != nil {
@@ -76,7 +76,7 @@ func TestApplyAction_ReturnSetsTarget(t *testing.T) {
 }
 
 func TestApplyAction_UnknownStage(t *testing.T) {
-	stages := initStages(2026, 6, "RU", CalendarSeed())
+	stages := initStages(2026, 6, "RU", CalendarSeed(), nil)
 	if _, err := applyStageAction(stages, "9.9", "submit", ""); err == nil {
 		t.Error("ожидалась ошибка: неизвестный этап")
 	}

@@ -41,6 +41,10 @@ type MetricStore interface {
 	StagesSave(ctx context.Context, plID int64, stages []StageState) error
 	// RecordApproval — лист согласования (pl_approval).
 	RecordApproval(ctx context.Context, plID int64, code string, userID int64, decision, legalEntity string) error
+	// RouteConfig — ответственные по этапам (stage_code → метка).
+	RouteConfig(ctx context.Context) (map[string]string, error)
+	// UpsertRouteConfig — назначить ответственных этапа (админ процессов).
+	UpsertRouteConfig(ctx context.Context, code, responsible string) error
 }
 
 // pgStore — pgx-реализация MetricStore.
@@ -284,6 +288,32 @@ func (s *pgStore) RecordApproval(ctx context.Context, plID int64, code string, u
 		INSERT INTO pl_approval (pl_id, stage_id, legal_entity, user_id, decision)
 		VALUES ($1, (SELECT id FROM pl_stage_instance WHERE pl_id = $1 AND stage_code = $2), $3, $4, $5)`,
 		plID, code, legalEntity, uid, decision)
+	return err
+}
+
+func (s *pgStore) RouteConfig(ctx context.Context) (map[string]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT stage_code, responsible FROM plans_route_config`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var code, resp string
+		if err := rows.Scan(&code, &resp); err != nil {
+			return nil, err
+		}
+		out[code] = resp
+	}
+	return out, rows.Err()
+}
+
+func (s *pgStore) UpsertRouteConfig(ctx context.Context, code, responsible string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO plans_route_config (stage_code, responsible, updated_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (stage_code) DO UPDATE SET responsible = EXCLUDED.responsible, updated_at = NOW()`,
+		code, responsible)
 	return err
 }
 

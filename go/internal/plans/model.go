@@ -119,6 +119,16 @@ type Comment struct {
 	CreatedAt string `json:"created_at"`
 }
 
+// StageRoute — этап маршрута с ответственными (для настройки/просмотра).
+type StageRoute struct {
+	StageCode   string `json:"stage_code"`
+	Name        string `json:"name"`
+	Track       string `json:"track"`
+	Responsible string `json:"responsible"`
+	DueRD       int    `json:"due_rd"`
+	Prev25      bool   `json:"prev25"`
+}
+
 // SvodRow — строка свода TPL-08 (ЮЛ × канал, агрегат товарооборота).
 type SvodRow struct {
 	LegalEntity string  `json:"legal_entity"`

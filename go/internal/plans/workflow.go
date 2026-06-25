@@ -50,17 +50,40 @@ func stageDefByCode(code string) (StageDef, bool) {
 
 // StageState — состояние этапа экземпляра PL.
 type StageState struct {
-	Code      string   `json:"stage_code"`
-	Track     string   `json:"track"`
-	Name      string   `json:"name"`
-	Status    string   `json:"status"` // pending|in_progress|completed|returned|blocked
-	DueDate   string   `json:"due_at"`
-	DependsOn []string `json:"depends_on"`
+	Code        string   `json:"stage_code"`
+	Track       string   `json:"track"`
+	Name        string   `json:"name"`
+	Status      string   `json:"status"` // pending|in_progress|completed|returned|blocked
+	DueDate     string   `json:"due_at"`
+	DependsOn   []string `json:"depends_on"`
+	Responsible string   `json:"responsible"` // ответственные/согласующие (из маршрута)
 }
 
-// initStages — стартовые этапы периода со сроками по календарю страны.
-func initStages(year, month int, country string, seed []CountryCalendar) []StageState {
+// RouteSeed — ответственные по схеме ТЗ (fallback, если plans_route_config пуст).
+func RouteSeed() map[string]string {
+	return map[string]string{
+		"1.1": "Смолер, Ткачева, Галькевич, Бединская, Мурашко (МП large), Левин/Качановская (МП small), Пистоленко, Сипаров Ю.Г.",
+		"1.2": "Руководители ЦП: Смолер, Ворончук, Левин",
+		"1.3": "Дегтерева Е.В.",
+		"1.4": "Сипаров С.Г.",
+		"1.5": "Антипова О.В. + статьи (Маркетинг, IT, HR, Логистика)",
+		"1.6": "Антипова О.В.",
+		"2.1": "Планирование производства",
+		"2.2": "Захарченко Н.М.",
+		"2.3": "Сериков, Счастная, Сипаров В.Ю. (по странам)",
+		"2.4": "Антипова О.В. (зам. Осипович)",
+		"3":   "Согласующие ЮЛ: Захарченко, Дегтерева, Мавлянов, Командиров, Левин, Сметанин, Акаева",
+		"4":   "Сипарова С.Г., Сериков А.Г.",
+	}
+}
+
+// initStages — стартовые этапы периода со сроками по календарю страны и
+// ответственными из маршрута (resp; при пустом — RouteSeed).
+func initStages(year, month int, country string, seed []CountryCalendar, resp map[string]string) []StageState {
 	cal := calendarFor(country, seed)
+	if len(resp) == 0 {
+		resp = RouteSeed()
+	}
 	out := make([]StageState, 0, len(stageDefs()))
 	for _, d := range stageDefs() {
 		due := ""
@@ -79,6 +102,7 @@ func initStages(year, month int, country string, seed []CountryCalendar) []Stage
 		out = append(out, StageState{
 			Code: d.Code, Track: d.Track, Name: d.Name,
 			Status: "pending", DueDate: due, DependsOn: d.DependsOn,
+			Responsible: resp[d.Code],
 		})
 	}
 	return out

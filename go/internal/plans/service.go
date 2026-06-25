@@ -89,12 +89,51 @@ func (s *Service) Stages(ctx context.Context, plID int64, year, month int, count
 		return nil, err
 	}
 	if len(stages) == 0 {
-		stages = initStages(year, month, country, CalendarSeed())
+		resp, _ := s.store.RouteConfig(ctx)
+		stages = initStages(year, month, country, CalendarSeed(), resp)
 		if err := s.store.StagesInit(ctx, plID, stages); err != nil {
 			return nil, err
 		}
+	} else {
+		// Подмешать актуальных ответственных из маршрута (не хранятся в этапе).
+		if resp, err := s.store.RouteConfig(ctx); err == nil {
+			if len(resp) == 0 {
+				resp = RouteSeed()
+			}
+			for i := range stages {
+				stages[i].Responsible = resp[stages[i].Code]
+			}
+		}
 	}
 	return stages, nil
+}
+
+// Route — маршрут процесса (этапы схемы + ответственные + срок) для настройки.
+func (s *Service) Route(ctx context.Context) ([]StageRoute, error) {
+	resp, _ := s.store.RouteConfig(ctx)
+	if len(resp) == 0 {
+		resp = RouteSeed()
+	}
+	out := make([]StageRoute, 0, len(stageDefs()))
+	for _, d := range stageDefs() {
+		due := 0
+		if d.DueRD > 0 {
+			due = d.DueRD
+		}
+		out = append(out, StageRoute{
+			StageCode: d.Code, Name: d.Name, Track: d.Track,
+			Responsible: resp[d.Code], DueRD: due, Prev25: d.DuePrev25,
+		})
+	}
+	return out, nil
+}
+
+// SetRoute — назначить ответственных этапа (админ процессов).
+func (s *Service) SetRoute(ctx context.Context, code, responsible string) error {
+	if _, ok := stageDefByCode(code); !ok {
+		return errors.New("неизвестный этап")
+	}
+	return s.store.UpsertRouteConfig(ctx, code, responsible)
 }
 
 // StageAction — действие WF-03 (start/submit/approve/return) с проверкой

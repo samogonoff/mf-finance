@@ -15,6 +15,9 @@
         <NuxtLink to="/plans/directories" class="btn btn-ghost">
           <Icon name="lucide:book" /> Справочники
         </NuxtLink>
+        <NuxtLink v-if="canAudit" to="/plans/admin/route" class="btn btn-ghost">
+          <Icon name="lucide:git-branch" /> Маршрут
+        </NuxtLink>
         <NuxtLink v-if="canAudit" to="/plans/audit" class="btn btn-ghost">
           <Icon name="lucide:scroll-text" /> Аудит
         </NuxtLink>

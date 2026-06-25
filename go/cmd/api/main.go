@@ -255,7 +255,11 @@ func main() {
 		return plans.Principal{UserID: u.ID, PlansAdmin: auth.HasRole(u, auth.RolePlansAdmin)}, true
 	}
 	plansAudit := plans.NewAuditor(cfg.PlansAuditEnabled, pool)
-	plansH := plans.NewHandler(plans.NewSeedSource(), plansFact, plansSvc, plansPrincipal, plansAudit)
+	plansDir := plans.NewDirRepo(pool)
+	if err := plansDir.EnsureSeed(context.Background()); err != nil {
+		log.Printf("plans: dir seed: %v", err) // не фатально
+	}
+	plansH := plans.NewHandler(plans.NewSeedSource(), plansDir, plansFact, plansSvc, plansPrincipal, plansAudit)
 	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
 	mux.HandleFunc("GET /api/plans/directories", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Directories))
 	mux.HandleFunc("GET /api/plans/directories/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirectoryRows))
@@ -277,6 +281,14 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/scope/{user_id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.ScopeUpsert))
 	// Журнал аудита — просмотр только админ процессов (view_audit).
 	mux.HandleFunc("GET /api/plans/audit", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.AuditList))
+	// Редактируемые справочники (НСИ): чтение — любой участник, правка — админ процессов.
+	mux.HandleFunc("GET /api/plans/dir", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirList))
+	mux.HandleFunc("GET /api/plans/dir/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirRowsDB))
+	mux.HandleFunc("PUT /api/plans/dir/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.DirRowUpsert))
+	mux.HandleFunc("DELETE /api/plans/dir/{code}/rows/{id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.DirRowDelete))
+	// Маршрут процесса (ответственные по этапам): чтение — участник, правка — админ.
+	mux.HandleFunc("GET /api/plans/route", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.RouteList))
+	mux.HandleFunc("PUT /api/plans/route/{code}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.RouteUpsert))
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

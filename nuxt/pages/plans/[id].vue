@@ -61,6 +61,9 @@
                   <span class="badge" :class="statusBadge(st.status)">{{ statusLabel(st.status) }}</span>
                 </div>
                 <div class="sc-name">{{ st.name }}</div>
+                <div v-if="st.responsible" class="sc-resp" :title="st.responsible">
+                  <Icon name="lucide:user-round" /> {{ st.responsible }}
+                </div>
                 <div class="sc-meta">
                   <span v-if="depHint(st)" class="sc-dep"><Icon name="lucide:lock" /> {{ depHint(st) }}</span>
                   <span v-else-if="st.due_at" class="sc-due"><Icon name="lucide:calendar" /> {{ st.due_at }}</span>
@@ -83,6 +86,14 @@
                     class="btn btn-sm btn-ghost"
                     @click="openReturn(st.stage_code)"
                   >Вернуть</button>
+                </div>
+                <div v-if="stageForms(st.stage_code).length" class="sc-forms">
+                  <NuxtLink
+                    v-for="f in stageForms(st.stage_code)"
+                    :key="f.to"
+                    :to="f.to"
+                    class="sc-formlink"
+                  ><Icon name="lucide:file-input" /> {{ f.label }}</NuxtLink>
                 </div>
               </article>
             </div>
@@ -220,6 +231,18 @@ const statusBadge = (s: string) =>
   ({ completed: "badge-pos", in_progress: "badge-accent", returned: "badge-neg", blocked: "badge-warn", pending: "badge-dot" } as Record<string, string>)[s] || "badge-dot";
 
 const returnTargets = (from: string) => list.value.filter((s) => s.stage_code !== from).map((s) => ({ code: s.stage_code, name: s.name }));
+
+// Формы ввода, привязанные к этапу (пока реализован канал МП на этапе 1.1).
+const stageForms = (code: string): Array<{ label: string; to: string }> => {
+  const q = `?year=${year.value}&month=${month.value}`;
+  if (code === "1.1") {
+    return [
+      { label: "МП large", to: `/plans/mp/large${q}` },
+      { label: "МП small", to: `/plans/mp/small${q}` }
+    ];
+  }
+  return [];
+};
 
 const load = async () => {
   error.value = "";
@@ -437,6 +460,16 @@ onMounted(load);
   color: var(--text-strong);
   line-height: var(--lh-tight);
 }
+.sc-resp {
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .sc-meta {
   font-size: var(--fs-2xs);
   color: var(--text-muted);
@@ -458,6 +491,20 @@ onMounted(load);
 .sc-actions {
   display: flex;
   gap: var(--sp-3);
+}
+.sc-forms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  padding-top: var(--sp-2);
+  border-top: 1px dashed var(--border);
+}
+.sc-formlink {
+  font-size: var(--fs-2xs);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 .tl-legend {
   display: flex;

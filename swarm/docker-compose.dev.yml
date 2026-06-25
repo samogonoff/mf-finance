@@ -120,6 +120,10 @@ services:
       - SITE_API_NOTIFY_URL=${SITE_API_NOTIFY_URL:-}
       - SITE_API_NOTIFY_USER=${SITE_API_NOTIFY_USER:-}
       - SITE_API_NOTIFY_PASSWORD=${SITE_API_NOTIFY_PASSWORD:-}
+      # Тактические планы. PLANS_MOCK=1 в dev: факт МП из фикстур (витрина
+      # ALL_view_МП пока не заведена в Budgeting/FinDWH — см. mp-source-investigation.md).
+      - PLANS_MOCK=${PLANS_MOCK:-1}
+      - PLANS_AUDIT_ENABLED=${PLANS_AUDIT_ENABLED:-1}
     restart: on-failure
     depends_on:
       - postgres

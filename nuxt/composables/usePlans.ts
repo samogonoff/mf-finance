@@ -11,6 +11,21 @@ export interface PlanDirectory {
   source: string;
   sync_status: string;
   row_count: number;
+  editable?: boolean;
+}
+
+export interface DirRow {
+  id: number;
+  payload: Record<string, unknown>;
+}
+
+export interface StageRoute {
+  stage_code: string;
+  name: string;
+  track: string;
+  responsible: string;
+  due_rd: number;
+  prev25: boolean;
 }
 
 export interface SvodRow {
@@ -190,7 +205,33 @@ export const usePlans = () => {
     });
 
   const directories = (): Promise<PlanDirectory[]> =>
-    $fetch<PlanDirectory[]>(`${base}/api/plans/directories`, { headers: authHeader() });
+    $fetch<PlanDirectory[]>(`${base}/api/plans/dir`, { headers: authHeader() });
+
+  const dirRows = (code: string): Promise<DirRow[]> =>
+    $fetch<DirRow[]>(`${base}/api/plans/dir/${code}/rows`, { headers: authHeader() });
+
+  const dirUpsert = (code: string, id: number, payload: Record<string, unknown>): Promise<{ id: number }> =>
+    $fetch<{ id: number }>(`${base}/api/plans/dir/${code}/rows`, {
+      method: "PUT",
+      body: { id, payload },
+      headers: authHeader()
+    });
+
+  const dirDelete = (code: string, id: number): Promise<{ ok: boolean }> =>
+    $fetch<{ ok: boolean }>(`${base}/api/plans/dir/${code}/rows/${id}`, {
+      method: "DELETE",
+      headers: authHeader()
+    });
+
+  const route = (): Promise<StageRoute[]> =>
+    $fetch<StageRoute[]>(`${base}/api/plans/route`, { headers: authHeader() });
+
+  const setRoute = (code: string, responsible: string): Promise<{ ok: boolean }> =>
+    $fetch<{ ok: boolean }>(`${base}/api/plans/route/${code}`, {
+      method: "PUT",
+      body: { responsible },
+      headers: authHeader()
+    });
 
   const directoryRows = <T = Record<string, unknown>>(code: string): Promise<T[]> =>
     $fetch<T[]>(`${base}/api/plans/directories/${code}/rows`, { headers: authHeader() });
@@ -276,6 +317,11 @@ export const usePlans = () => {
     auditCsv,
     directories,
     directoryRows,
+    dirRows,
+    dirUpsert,
+    dirDelete,
+    route,
+    setRoute,
     mpFact,
     mpForm,
     mpCompute,

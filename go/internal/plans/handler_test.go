@@ -26,7 +26,7 @@ func newTestHandlerWithAudit(a Auditor) *Handler {
 	fact := NewMockFactSource()
 	svc := NewService(newMemStore(), fact, newMemScope())
 	adminPrincipal := func(*http.Request) (Principal, bool) { return Principal{UserID: 1, PlansAdmin: true}, true }
-	return NewHandler(NewSeedSource(), fact, svc, adminPrincipal, a)
+	return NewHandler(NewSeedSource(), nil, fact, svc, adminPrincipal, a)
 }
 
 func newTestHandler() *Handler { return newTestHandlerWithAudit(&memAuditor{enabled: true}) }

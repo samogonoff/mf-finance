@@ -17,6 +17,7 @@ type memStore struct {
 	overrides     map[int64]map[string]string
 	stages        map[int64][]StageState
 	approvals     map[int64][]string
+	route         map[string]string
 }
 
 type storedMetric struct {
@@ -34,6 +35,7 @@ func newMemStore() *memStore {
 		overrides:   map[int64]map[string]string{},
 		stages:      map[int64][]StageState{},
 		approvals:   map[int64][]string{},
+		route:       map[string]string{},
 	}
 }
 
@@ -155,6 +157,18 @@ func (m *memStore) StagesSave(_ context.Context, plID int64, stages []StageState
 
 func (m *memStore) RecordApproval(_ context.Context, plID int64, code string, userID int64, decision, le string) error {
 	m.approvals[plID] = append(m.approvals[plID], code+":"+decision)
+	return nil
+}
+
+func (m *memStore) RouteConfig(_ context.Context) (map[string]string, error) {
+	return m.route, nil
+}
+
+func (m *memStore) UpsertRouteConfig(_ context.Context, code, responsible string) error {
+	if m.route == nil {
+		m.route = map[string]string{}
+	}
+	m.route[code] = responsible
 	return nil
 }
 
