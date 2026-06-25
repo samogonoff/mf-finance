@@ -97,7 +97,24 @@ Env: любая новая переменная — сразу в `.env.example`
 
 ---
 
-## Этап 2 (вне MVP, не начинать без отдельного плана)
+## Этап 2 — прогресс
+
+### [x] VS8. CALC-движок: вычислитель + calc_rule + каскад — `f4937e7`
+- [x] `eval.go` безопасный вычислитель (TDD); `calc.go` CalcRuleSeed/resolveFormulas/computeCascade
+- [x] `migrations/0014_plans_calc` (calc_rule + pl_formula_override + seed формул)
+- [x] `service.ComputeMp` + `GET /api/plans/mp/compute`; UI-превью каскада
+- [x] Формулы провизорные (Q4b) — как данные, переопределяемы
+
+### [ ] VS9. pl_formula_override — per-срез переопределение формулы (D11)
+- [ ] store: FormulaOverrides(plID)/UpsertOverride (pgx + mem)
+- [ ] `ComputeMp` мёржит override поверх seed; `PUT /api/plans/mp/formula` (с причиной)
+- [ ] Тесты: override меняет расчёт; обязательная причина
+
+### Дальше (вне текущего прохода)
+Workflow 1.2–4 + календари р.д. по странам · своды 1.6/2.4 (TPL-08) · прочие
+шаблоны · аудит · список экземпляров/дашборд · cron-синхронизация справочников.
+
+## Этап 2 (полный объём — не начинать без отдельного плана)
 CALC-движок (гибрид формул D11: `calc_rule` + `pl_formula_override` + безопасный
 вычислитель, drill-down «в формулу») · workflow 1.2–4 + календари р.д. по странам
 (`plans_country_calendar`, глоб. настройки; дедлайн по стране ответственного) ·
