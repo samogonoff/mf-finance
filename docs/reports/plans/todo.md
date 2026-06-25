@@ -11,15 +11,15 @@ Env: любая новая переменная — сразу в `.env.example`
 
 ## Фаза 0 — Каркас
 
-### [ ] VS0. Каркас раздела (роли + scope + меню + /plans + health)
-- [ ] `auth/roles.go`: `RolePlansAdmin`, `RolePlansUser`; в `Allowed`; иерархия `ROLE_ADMIN ⊇ ROLE_PLANS_ADMIN ⊇ ROLE_PLANS_USER`
-- [ ] `useScope.ts`: scope `plans`; `scope-guard.ts`: ветка `/plans` → `hasScope('plans')`
-- [ ] `app.vue`: пункт меню «Тактические планы» (виден при `hasScope('plans')`)
-- [ ] `go/internal/plans/handler.go`: `GET /api/plans/health` за `RequireRole(PlansUser)`
-- [ ] `pages/plans/index.vue`: заглушка дашборда
-- [ ] `.env.example`: блок «Тактические планы»
-- [ ] Приёмка: меню видно плановому юзеру; `/plans` открывается; health 200/403/401
-- [ ] `go test ./internal/auth/...`
+### [x] VS0. Каркас раздела (роли + scope + меню + /plans + health) — `cae4fc4`
+- [x] `auth/roles.go`: `RolePlansAdmin`, `RolePlansUser`; в `Allowed`; иерархия `ROLE_ADMIN ⊇ ROLE_PLANS_ADMIN ⊇ ROLE_PLANS_USER`
+- [x] `useScope.ts`: scope `plans`; `scope-guard.ts`: ветка `/plans` → `hasScope('plans')`
+- [x] `app.vue`: пункт меню «Тактические планы» (виден при `hasScope('plans')`)
+- [x] `go/internal/plans/handler.go`: `GET /api/plans/health` за `RequireRole(PlansUser)`
+- [x] `pages/plans/index.vue`: заглушка дашборда
+- [x] `.env.example`: блок «Тактические планы»
+- [x] Приёмка: меню видно плановому юзеру; `/plans` открывается; health 200/403/401
+- [x] `go test ./internal/auth/... ./internal/plans/...` — зелёные (TDD: RED→GREEN)
 
 ## Фаза A — Read-path (факт)
 
