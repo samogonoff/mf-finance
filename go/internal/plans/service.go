@@ -1,6 +1,9 @@
 package plans
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Service — бизнес-логика формы TPL-MP (VS3): сборка матрицы (факт + тактика)
 // и сохранение тактики с полным снимком. См. docs/reports/plans/SPEC.md §9, §13.
@@ -103,6 +106,14 @@ const vatDefault = 0.20
 // показатели из тактики (или факта) через формулы calc_rule. Override per-срез —
 // следующий срез; здесь overrides пуст (только дефолтные формулы).
 func (s *Service) ComputeMp(ctx context.Context, p Principal, year, month int, segment, currency string) ([]ComputedRow, error) {
+	plID, err := s.store.EnsureInstance(ctx, year, month)
+	if err != nil {
+		return nil, err
+	}
+	overrides, err := s.store.FormulaOverrides(ctx, plID)
+	if err != nil {
+		return nil, err
+	}
 	form, err := s.MpForm(ctx, p, year, month, segment, currency)
 	if err != nil {
 		return nil, err
@@ -129,7 +140,7 @@ func (s *Service) ComputeMp(ctx context.Context, p Principal, year, month int, s
 			}
 		}
 	}
-	formulas := resolveFormulas(CalcRuleSeed(), nil)
+	formulas := resolveFormulas(CalcRuleSeed(), overrides)
 	out := make([]ComputedRow, 0, len(byCFO))
 	for _, p := range form.Platforms {
 		v := byCFO[p.CodeCFO]
@@ -144,6 +155,27 @@ func (s *Service) ComputeMp(ctx context.Context, p Principal, year, month int, s
 		})
 	}
 	return out, nil
+}
+
+// SaveFormulaOverride — переопределение формулы каскада per-срез (D11). Требует
+// причину (как ADJ-02) и компилируемое выражение (проверяется пробным Eval).
+func (s *Service) SaveFormulaOverride(ctx context.Context, year, month int, ov FormulaOverride) (int64, error) {
+	if ov.Code == "" {
+		return 0, errors.New("code обязателен")
+	}
+	if ov.Reason == "" {
+		return 0, errors.New("причина обязательна (D11/ADJ-02)")
+	}
+	// Проверка компиляции формулы на пробных переменных каскада.
+	probe := map[string]float64{"sales": 1, "cost": 1, "vat": vatDefault}
+	if _, err := Eval(ov.FormulaExpr, probe); err != nil {
+		return 0, errors.New("формула не компилируется: " + err.Error())
+	}
+	plID, err := s.store.EnsureInstance(ctx, year, month)
+	if err != nil {
+		return 0, err
+	}
+	return plID, s.store.UpsertOverride(ctx, plID, ov)
 }
 
 // AddComment — комментарий к экземпляру PL по id (COM-01).

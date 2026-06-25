@@ -182,6 +182,35 @@ func (h *Handler) MpCompute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rows)
 }
 
+// FormulaOverride — PUT /api/plans/mp/formula. Переопределение формулы каскада
+// per-срез (D11). Тело: {year, month, code, block_type, formula_expr, reason}.
+func (h *Handler) FormulaOverride(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Year        int    `json:"year"`
+		Month       int    `json:"month"`
+		Code        string `json:"code"`
+		BlockType   string `json:"block_type"`
+		FormulaExpr string `json:"formula_expr"`
+		Reason      string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Year <= 0 || body.Month < 1 || body.Month > 12 {
+		writeErr(w, http.StatusBadRequest, "invalid period")
+		return
+	}
+	plID, err := h.form.SaveFormulaOverride(r.Context(), body.Year, body.Month, FormulaOverride{
+		Code: body.Code, BlockType: body.BlockType, FormulaExpr: body.FormulaExpr, Reason: body.Reason,
+	})
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"pl_id": plID})
+}
+
 // MpExport — GET /api/plans/mp/export?year&month&segment&currency. Снимок формы в .xlsx.
 func (h *Handler) MpExport(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

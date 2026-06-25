@@ -14,6 +14,7 @@ type memStore struct {
 	subs          map[int64][][]byte
 	adjustments   map[int64][]AdjustmentRow
 	comments      map[int64][]Comment
+	overrides     map[int64]map[string]string
 }
 
 type storedMetric struct {
@@ -28,6 +29,7 @@ func newMemStore() *memStore {
 		subs:        map[int64][][]byte{},
 		adjustments: map[int64][]AdjustmentRow{},
 		comments:    map[int64][]Comment{},
+		overrides:   map[int64]map[string]string{},
 	}
 }
 
@@ -93,6 +95,21 @@ func (m *memStore) AddComment(_ context.Context, plID int64, c CommentInput) (in
 
 func (m *memStore) Comments(_ context.Context, plID int64) ([]Comment, error) {
 	return m.comments[plID], nil
+}
+
+func (m *memStore) FormulaOverrides(_ context.Context, plID int64) (map[string]string, error) {
+	if m.overrides[plID] == nil {
+		return map[string]string{}, nil
+	}
+	return m.overrides[plID], nil
+}
+
+func (m *memStore) UpsertOverride(_ context.Context, plID int64, ov FormulaOverride) error {
+	if m.overrides[plID] == nil {
+		m.overrides[plID] = map[string]string{}
+	}
+	m.overrides[plID][ov.Code] = ov.FormulaExpr
+	return nil
 }
 
 // memScopeStore — in-memory ScopeStore для ABAC-тестов.

@@ -5,6 +5,15 @@ package plans
 // override > seed. Значения вычисляет безопасный Eval. Точные выражения каскада
 // — провизорные (Q4b: снять у автора прототипа); правятся конфигом, не кодом.
 
+// FormulaOverride — per-срез переопределение формулы финансистом (D11).
+type FormulaOverride struct {
+	Code         string `json:"code"`
+	BlockType    string `json:"block_type"`
+	FormulaExpr  string `json:"formula_expr"`
+	Reason       string `json:"reason"`
+	ScopeCodeCFO *int   `json:"scope_code_cfo,omitempty"`
+}
+
 // CalcRule — правило расчёта (строка calc_rule).
 type CalcRule struct {
 	Code        string `json:"code"`

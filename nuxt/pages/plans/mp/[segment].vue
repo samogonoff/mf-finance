@@ -58,6 +58,18 @@
         <button class="btn btn-ghost" @click="runCompute">
           <Icon name="lucide:calculator" /> Рассчитать каскад
         </button>
+        <div class="override-editor">
+          <select v-model="ovCode" class="select select-sm">
+            <option value="sales_net">sales_net</option>
+            <option value="gross_margin">gross_margin</option>
+            <option value="markup_pct">markup_pct</option>
+          </select>
+          <input v-model="ovExpr" class="select select-sm" placeholder="формула, напр. sales - 2 * cost" />
+          <input v-model="ovReason" class="select select-sm" placeholder="причина" />
+          <button class="btn btn-ghost" :disabled="!ovExpr || !ovReason" @click="saveOverride">
+            <Icon name="lucide:function-square" /> Override
+          </button>
+        </div>
       </div>
       <MpComputePreview :rows="computed" />
     </template>
@@ -80,7 +92,7 @@ const month = ref(5);
 const currency = ref<"RUB" | "BYN" | "USD">("RUB");
 
 const { form, loading, saving, error, savedAt, reason, load, save } = usePlanForm(segment, year, month, currency);
-const { mpExport, mpImport, mpCompute } = usePlans();
+const { mpExport, mpImport, mpCompute, saveFormula } = usePlans();
 
 const computed = ref<ComputedRow[]>([]);
 const runCompute = async () => {
@@ -88,6 +100,27 @@ const runCompute = async () => {
     computed.value = await mpCompute({ year: year.value, month: month.value, segment: segment.value, currency: currency.value });
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : "Ошибка расчёта";
+  }
+};
+
+const ovCode = ref("gross_margin");
+const ovExpr = ref("");
+const ovReason = ref("");
+const saveOverride = async () => {
+  error.value = "";
+  try {
+    await saveFormula({
+      year: year.value,
+      month: month.value,
+      code: ovCode.value,
+      formula_expr: ovExpr.value,
+      reason: ovReason.value
+    });
+    ovExpr.value = "";
+    ovReason.value = "";
+    await runCompute();
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : "Ошибка override формулы";
   }
 };
 
@@ -149,5 +182,22 @@ onMounted(load);
 }
 .hidden-input {
   display: none;
+}
+.compute-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+  margin: var(--sp-5) 0;
+}
+.override-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3, 6px);
+}
+.select-sm {
+  height: 28px;
+  font-size: var(--fs-sm, 12px);
 }
 </style>

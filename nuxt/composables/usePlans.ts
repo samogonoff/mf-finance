@@ -108,6 +108,21 @@ export const usePlans = () => {
       headers: authHeader()
     });
 
+  // Переопределение формулы каскада per-срез (D11) — с обязательной причиной.
+  const saveFormula = (payload: {
+    year: number;
+    month: number;
+    code: string;
+    block_type?: string;
+    formula_expr: string;
+    reason: string;
+  }): Promise<{ pl_id: number }> =>
+    $fetch<{ pl_id: number }>(`${base}/api/plans/mp/formula`, {
+      method: "PUT",
+      body: payload,
+      headers: authHeader()
+    });
+
   const saveMpForm = (payload: SaveMpFormPayload): Promise<{ pl_id: number }> =>
     $fetch<{ pl_id: number }>(`${base}/api/plans/mp/form`, {
       method: "PUT",
@@ -145,5 +160,5 @@ export const usePlans = () => {
     return data as { pl_id: number };
   };
 
-  return { directories, directoryRows, mpFact, mpForm, mpCompute, saveMpForm, mpExport, mpImport };
+  return { directories, directoryRows, mpFact, mpForm, mpCompute, saveFormula, saveMpForm, mpExport, mpImport };
 };

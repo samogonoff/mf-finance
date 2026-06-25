@@ -85,6 +85,56 @@ func TestComputeMp_DerivesMarginFromTactic(t *testing.T) {
 	}
 }
 
+func TestSaveFormulaOverride_ChangesCompute(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, NewMockFactSource(), newMemScope())
+	ctx := context.Background()
+
+	// Тактика WB: sales=1000000, cost=600000 → дефолтная маржа 400000.
+	req := SaveMpFormRequest{
+		Segment: "large", Period: PeriodRef{Year: 2026, Month: 5},
+		Rows: []SaveRow{
+			{CodeCFO: 335, CodePL: 1046, BlockType: "sales_manager_price", Amount: 1000000, IsManual: true, Comment: "c"},
+			{CodeCFO: 335, CodePL: 8006, BlockType: "shipments", Amount: 600000, IsManual: true, Comment: "c"},
+		},
+	}
+	if _, err := svc.SaveMpForm(ctx, adminP, req, []byte(`{}`)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Override: маржа = sales - 2*cost → 1000000 - 1200000 = -200000.
+	if _, err := svc.SaveFormulaOverride(ctx, 2026, 5, FormulaOverride{
+		Code: "gross_margin", FormulaExpr: "sales - 2 * cost", Reason: "учёт пошива",
+	}); err != nil {
+		t.Fatalf("SaveFormulaOverride: %v", err)
+	}
+	rows, _ := svc.ComputeMp(ctx, adminP, 2026, 5, "large", "RUB")
+	for _, r := range rows {
+		if r.CodeCFO == 335 && math.Abs(r.Values["gross_margin"]-(-200000)) > 1e-6 {
+			t.Errorf("override не применился: маржа = %v, want -200000", r.Values["gross_margin"])
+		}
+	}
+}
+
+func TestSaveFormulaOverride_RequiresReason(t *testing.T) {
+	svc := NewService(newMemStore(), NewMockFactSource(), newMemScope())
+	_, err := svc.SaveFormulaOverride(context.Background(), 2026, 5, FormulaOverride{
+		Code: "gross_margin", FormulaExpr: "sales - cost", Reason: "",
+	})
+	if err == nil {
+		t.Error("ожидалась ошибка: причина обязательна (D11)")
+	}
+}
+
+func TestSaveFormulaOverride_RejectsBadFormula(t *testing.T) {
+	svc := NewService(newMemStore(), NewMockFactSource(), newMemScope())
+	_, err := svc.SaveFormulaOverride(context.Background(), 2026, 5, FormulaOverride{
+		Code: "gross_margin", FormulaExpr: "sales - (cost", Reason: "x",
+	})
+	if err == nil {
+		t.Error("ожидалась ошибка: формула не компилируется")
+	}
+}
+
 func TestResolveFormulas_OverrideWins(t *testing.T) {
 	overrides := map[string]string{"markup_pct": "sales / cost"}
 	formulas := resolveFormulas(CalcRuleSeed(), overrides)

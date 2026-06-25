@@ -24,6 +24,10 @@ type MetricStore interface {
 	AddComment(ctx context.Context, plID int64, c CommentInput) (int64, error)
 	// Comments — комментарии экземпляра PL.
 	Comments(ctx context.Context, plID int64) ([]Comment, error)
+	// FormulaOverrides — актуальные override формул экземпляра (code → выражение).
+	FormulaOverrides(ctx context.Context, plID int64) (map[string]string, error)
+	// UpsertOverride — добавить переопределение формулы (версионируется, D11).
+	UpsertOverride(ctx context.Context, plID int64, ov FormulaOverride) error
 }
 
 // pgStore — pgx-реализация MetricStore.
@@ -119,6 +123,34 @@ func (s *pgStore) SaveAdjustments(ctx context.Context, plID int64, adj []Adjustm
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func (s *pgStore) FormulaOverrides(ctx context.Context, plID int64) (map[string]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT ON (code) code, formula_expr
+		FROM pl_formula_override WHERE pl_id = $1
+		ORDER BY code, created_at DESC, id DESC`, plID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var code, expr string
+		if err := rows.Scan(&code, &expr); err != nil {
+			return nil, err
+		}
+		out[code] = expr
+	}
+	return out, rows.Err()
+}
+
+func (s *pgStore) UpsertOverride(ctx context.Context, plID int64, ov FormulaOverride) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO pl_formula_override (pl_id, scope_code_cfo, code, block_type, formula_expr, reason)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		plID, ov.ScopeCodeCFO, ov.Code, ov.BlockType, ov.FormulaExpr, ov.Reason)
+	return err
 }
 
 func (s *pgStore) AddComment(ctx context.Context, plID int64, c CommentInput) (int64, error) {
