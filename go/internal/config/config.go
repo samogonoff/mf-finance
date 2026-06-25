@@ -74,6 +74,14 @@ type Config struct {
 	// нижняя граница периода (раньше неё данных нет): фильтр клампится к ней.
 	DebtFinPLTable    string
 	DebtFinPLMinMonth string
+
+	// Модуль «Тактические планы» (docs/reports/plans/SPEC.md §10).
+	// PlansMock=1 → факт МП из фикстур (sources/mock_mp.go), как DEBT_MOCK.
+	// Онлайн-источник факта — тот же сервер FinDWH, что у ВГО-отчёта
+	// (переиспользуем MSSQL_PREMASTER_*); PlansMpFactView — имя вьюхи/таблицы
+	// факта МП (Источник_МП → ALL_view_МП), уточняется через cmd/mssql-probe.
+	PlansMock       bool
+	PlansMpFactView string
 }
 
 func Load() Config {
@@ -112,6 +120,9 @@ func Load() Config {
 		DebtFinPLMinMonth: env("DEBT_FINPL_MIN_MONTH", "2025-01-01"),
 
 		DebtCHSource: strings.ToLower(env("DEBT_CH_SOURCE", "premaster")),
+
+		PlansMock:       env("PLANS_MOCK", "0") == "1",
+		PlansMpFactView: env("PLANS_MP_FACT_VIEW", "ALL_view_МП"),
 	}
 }
 

@@ -8,16 +8,34 @@ package plans
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
 )
+
+// atoiPositive парсит положительное целое из query-параметра.
+func atoiPositive(s string) (int, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, err
+	}
+	if n <= 0 {
+		return 0, errors.New("must be positive")
+	}
+	return n, nil
+}
 
 // Handler — HTTP-ручки модуля тактических планов.
 type Handler struct {
-	dir DirSource
+	dir  DirSource
+	fact MpFactSource
 }
 
-// NewHandler — конструктор. dir отдаёт справочники (SeedSource в MVP).
-func NewHandler(dir DirSource) *Handler { return &Handler{dir: dir} }
+// NewHandler — конструктор. dir отдаёт справочники (SeedSource в MVP),
+// fact — read-only факт МП (mock или online FinDWH).
+func NewHandler(dir DirSource, fact MpFactSource) *Handler {
+	return &Handler{dir: dir, fact: fact}
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -46,6 +64,32 @@ func (h *Handler) DirectoryRows(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.dir.Rows(code)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// MpFact — GET /api/plans/mp/fact?year&month&segment. Read-only факт МП
+// (mock или online FinDWH). Дефолт сегмента — large.
+func (h *Handler) MpFact(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	year, err := atoiPositive(q.Get("year"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid year")
+		return
+	}
+	month, err := atoiPositive(q.Get("month"))
+	if err != nil || month < 1 || month > 12 {
+		writeErr(w, http.StatusBadRequest, "invalid month")
+		return
+	}
+	segment := q.Get("segment")
+	if segment == "" {
+		segment = "large"
+	}
+	rows, err := h.fact.MpFact(r.Context(), year, month, segment)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, rows)

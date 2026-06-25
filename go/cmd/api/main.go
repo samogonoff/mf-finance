@@ -106,12 +106,6 @@ func main() {
 	// Скриншоты — открытая раздача (только по UUID-имени).
 	mux.HandleFunc("GET /uploads/bugtracker/", bugH.ServeUpload)
 
-	// Тактические планы (VS0 каркас + VS1 справочники). docs/reports/plans/SPEC.md.
-	plansH := plans.NewHandler(plans.NewSeedSource())
-	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
-	mux.HandleFunc("GET /api/plans/directories", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Directories))
-	mux.HandleFunc("GET /api/plans/directories/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirectoryRows))
-
 	// Reports — Задолженность ВГО.
 	// DEBT_MOCK=1 → фикстуры. DEBT_BACKEND=ch → CH-снэпшот для свёртки + MSSQL для drill-down.
 	// По умолчанию (DEBT_BACKEND=mssql) — live из [FinDWH].[dbo].[Premaster1C].
@@ -246,6 +240,16 @@ func main() {
 		// При DEBT_CH_SOURCE=glmf вдобавок тянет дельту fact_glmf по DateOfLoad.
 		etl.NewIncrementalWorkerWithGLMF(etlDeps, cfg.DebtCHSource == "glmf").Start(context.Background())
 	}
+
+	// Тактические планы (VS0 каркас + VS1 справочники + VS2 факт МП).
+	// docs/reports/plans/SPEC.md. Факт: PLANS_MOCK=1 → фикстуры; иначе online
+	// FinDWH (переиспользуем mssqlDB ВГО-отчёта; при nil — fallback на mock).
+	plansFact := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactView)
+	plansH := plans.NewHandler(plans.NewSeedSource(), plansFact)
+	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
+	mux.HandleFunc("GET /api/plans/directories", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Directories))
+	mux.HandleFunc("GET /api/plans/directories/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirectoryRows))
+	mux.HandleFunc("GET /api/plans/mp/fact", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpFact))
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

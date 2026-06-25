@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func newTestHandler() *Handler { return NewHandler(NewSeedSource()) }
+func newTestHandler() *Handler { return NewHandler(NewSeedSource(), NewMockFactSource()) }
 
 func TestHealth_ReturnsOK(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/plans/health", nil)
@@ -69,6 +69,42 @@ func TestDirectoryRows_UnknownReturns404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("неизвестный справочник должен дать 404, got %d", rec.Code)
+	}
+}
+
+func TestMpFact_Endpoint_LargeMay2026(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/plans/mp/fact?year=2026&month=5&segment=large", nil)
+	rec := httptest.NewRecorder()
+
+	newTestHandler().MpFact(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("MpFact status = %d, want 200 (%q)", rec.Code, rec.Body.String())
+	}
+	var rows []FactRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("rows not JSON: %v", err)
+	}
+	var found bool
+	for _, r := range rows {
+		if r.CodeCFO == 335 && r.CodePL == 1046 {
+			found = true
+			if r.Amount < 357034569 || r.Amount > 357034571 {
+				t.Errorf("WB 1046 = %.2f, want ≈357034569.85", r.Amount)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("в ответе нет WB(335)/1046")
+	}
+}
+
+func TestMpFact_Endpoint_BadMonth(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/plans/mp/fact?year=2026&month=0&segment=large", nil)
+	rec := httptest.NewRecorder()
+	newTestHandler().MpFact(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("month=0 должен дать 400, got %d", rec.Code)
 	}
 }
 
