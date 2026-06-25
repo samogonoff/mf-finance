@@ -3,7 +3,7 @@
     <header class="page-header">
       <div>
         <h1 class="page-title">Маркетплейсы — факт</h1>
-        <p class="page-subtitle">TPL-MP, этап 1.1 · read-only факт (VS2). Ввод тактики — VS3.</p>
+        <p class="page-subtitle">Бюджет продаж, этап 1.1 · фактические данные по площадкам (read-only)</p>
       </div>
     </header>
 

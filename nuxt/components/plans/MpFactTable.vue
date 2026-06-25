@@ -21,7 +21,7 @@
         </tr>
       </tbody>
     </table>
-    <p class="note">Факт — read-only (источник: OLAP/FinDWH). Редактирование тактики — в форме ввода (VS3).</p>
+    <p class="note">Факт — read-only (источник: OLAP/FinDWH). Ввод тактики — на странице формы.</p>
   </div>
 </template>
 

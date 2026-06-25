@@ -64,8 +64,8 @@
             <td colspan="4" class="empty">Нет экземпляров. Создайте период.</td>
           </tr>
           <tr v-for="it in list" :key="it.id">
-            <td>{{ it.period_year }}-{{ String(it.period_month).padStart(2, "0") }}</td>
-            <td><span class="status-chip">{{ it.status }}</span></td>
+            <td class="period-cell">{{ it.period_year }}-{{ String(it.period_month).padStart(2, "0") }}</td>
+            <td><span class="badge" :class="statusBadge(it.status)">{{ statusLabel(it.status) }}</span></td>
             <td class="col-num">{{ it.metric_count }}</td>
             <td class="row-links">
               <NuxtLink
@@ -92,6 +92,11 @@ definePageMeta({ middleware: "scope-guard" });
 const { instances, createInstance } = usePlans();
 const { hasRole, isAdmin } = useScope();
 const canAudit = computed(() => isAdmin.value || hasRole("ROLE_PLANS_ADMIN"));
+
+const statusLabel = (s: string) =>
+  ({ draft: "черновик", in_progress: "в работе", returned: "возврат", waiting_dependency: "ожидание", approved: "утверждён", archived: "архив" } as Record<string, string>)[s] || s;
+const statusBadge = (s: string) =>
+  ({ approved: "badge-pos", in_progress: "badge-accent", returned: "badge-neg", waiting_dependency: "badge-warn", archived: "badge-dot" } as Record<string, string>)[s] || "badge-dot";
 
 const list = ref<PlanInstance[]>([]);
 const error = ref("");

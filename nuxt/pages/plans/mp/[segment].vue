@@ -3,7 +3,7 @@
     <header class="page-header">
       <div>
         <h1 class="page-title">Маркетплейсы — {{ segment }}</h1>
-        <p class="page-subtitle">TPL-MP, этап 1.1 · ввод тактики (VS3)</p>
+        <p class="page-subtitle">Бюджет продаж, этап 1.1 · ввод тактики по площадкам</p>
       </div>
       <div class="page-actions">
         <span v-if="savedAt" class="saved-note">Сохранено в {{ savedAt }}</span>
@@ -50,35 +50,59 @@
       </div>
     </div>
 
-    <p v-if="error" class="error-banner">{{ error }}</p>
-    <p v-else-if="loading">Загрузка…</p>
+    <p v-if="error" class="banner banner-neg">{{ error }}</p>
+    <p v-else-if="loading" class="loading">Загрузка…</p>
     <template v-else-if="form">
       <MpForm :form="form" />
       <div class="compute-actions">
         <button class="btn btn-ghost" @click="runCompute">
           <Icon name="lucide:calculator" /> Рассчитать каскад
         </button>
-        <div class="override-editor">
-          <select v-model="ovCode" class="select select-sm">
-            <option value="sales_net">sales_net</option>
-            <option value="gross_margin">gross_margin</option>
-            <option value="markup_pct">markup_pct</option>
-          </select>
-          <input v-model="ovExpr" class="select select-sm" placeholder="формула, напр. sales - 2 * cost" />
-          <input v-model="ovReason" class="select select-sm" placeholder="причина" />
-          <button class="btn btn-ghost" :disabled="!ovExpr || !ovReason" @click="saveOverride">
-            <Icon name="lucide:function-square" /> Override
-          </button>
-        </div>
+        <button class="btn btn-ghost" @click="ov.open = true">
+          <Icon name="lucide:function-square" /> Формула каскада…
+        </button>
       </div>
       <MpComputePreview :rows="computed" />
     </template>
+
+    <!-- Переопределение формулы каскада (D11) -->
+    <PlansModal
+      :open="ov.open"
+      title="Переопределить формулу каскада"
+      subtitle="Действует на этот срез; требует причину"
+      width="520px"
+      @close="ov.open = false"
+    >
+      <label class="field">
+        <span class="field-label">Показатель</span>
+        <select v-model="ov.code" class="select">
+          <option value="sales_net">sales_net — продажи без НДС</option>
+          <option value="gross_margin">gross_margin — маржа (gross)</option>
+          <option value="markup_pct">markup_pct — наценка, %</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Формула (переменные: sales, cost, vat)</span>
+        <input v-model="ov.expr" class="select mono" placeholder="напр. sales - 2 * cost" />
+      </label>
+      <label class="field">
+        <span class="field-label">Причина</span>
+        <input v-model="ov.reason" class="select" placeholder="напр. учёт пошива в себестоимости" />
+      </label>
+      <template #footer>
+        <button class="btn btn-ghost" @click="ov.open = false">Отмена</button>
+        <button class="btn btn-primary" :disabled="!ov.expr || !ov.reason" @click="saveOverride">
+          <Icon name="lucide:check" /> Применить
+        </button>
+      </template>
+    </PlansModal>
   </div>
 </template>
 
 <script setup lang="ts">
 import MpForm from "~/components/plans/MpForm.vue";
 import MpComputePreview from "~/components/plans/MpComputePreview.vue";
+import PlansModal from "~/components/plans/PlansModal.vue";
 import { usePlanForm } from "~/composables/usePlanForm";
 import { usePlans, type ComputedRow } from "~/composables/usePlans";
 
@@ -87,8 +111,8 @@ definePageMeta({ middleware: "scope-guard" });
 const route = useRoute();
 const segment = computed<"large" | "small">(() => (route.params.segment === "small" ? "small" : "large"));
 
-const year = ref(2026);
-const month = ref(5);
+const year = ref(Number(route.query.year) || 2026);
+const month = ref(Number(route.query.month) || 5);
 const currency = ref<"RUB" | "BYN" | "USD">("RUB");
 
 const { form, loading, saving, error, savedAt, reason, load, save } = usePlanForm(segment, year, month, currency);
@@ -103,21 +127,20 @@ const runCompute = async () => {
   }
 };
 
-const ovCode = ref("gross_margin");
-const ovExpr = ref("");
-const ovReason = ref("");
+const ov = reactive({ open: false, code: "gross_margin", expr: "", reason: "" });
 const saveOverride = async () => {
   error.value = "";
   try {
     await saveFormula({
       year: year.value,
       month: month.value,
-      code: ovCode.value,
-      formula_expr: ovExpr.value,
-      reason: ovReason.value
+      code: ov.code,
+      formula_expr: ov.expr,
+      reason: ov.reason
     });
-    ovExpr.value = "";
-    ovReason.value = "";
+    ov.expr = "";
+    ov.reason = "";
+    ov.open = false;
     await runCompute();
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : "Ошибка override формулы";
@@ -176,9 +199,19 @@ onMounted(load);
   font-size: var(--fs-sm, 12px);
   margin-right: var(--sp-4);
 }
-.error-banner {
-  color: var(--neg, #b42318);
-  padding: var(--sp-4);
+.banner {
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--rd-4, 6px);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--sp-5);
+}
+.banner-neg {
+  background: var(--neg-soft);
+  color: var(--neg-strong);
+}
+.loading {
+  color: var(--text-muted);
+  padding: var(--sp-5) 0;
 }
 .hidden-input {
   display: none;
@@ -190,14 +223,20 @@ onMounted(load);
   gap: var(--sp-4);
   margin: var(--sp-5) 0;
 }
-.override-editor {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-3, 6px);
+.field {
+  display: block;
+  margin-bottom: var(--sp-5);
 }
-.select-sm {
-  height: 28px;
-  font-size: var(--fs-sm, 12px);
+.field-label {
+  display: block;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-3);
+}
+.field .select {
+  width: 100%;
+}
+.mono {
+  font-family: var(--font-mono);
 }
 </style>

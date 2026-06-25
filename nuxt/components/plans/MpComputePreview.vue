@@ -2,7 +2,7 @@
   <section class="compute-preview">
     <div class="preview-head">
       <span class="preview-title">Расчёт каскада (превью)</span>
-      <span class="badge badge-calc">CALC · этап 2</span>
+      <span class="badge badge-info">расчёт</span>
     </div>
     <table class="data-table report-table">
       <thead>
@@ -25,7 +25,7 @@
         </tr>
       </tbody>
     </table>
-    <p class="note">Формулы провизорные (calc_rule), переопределяемы per-срез (D11). Уточняются у автора прототипа (Q4b).</p>
+    <p class="note">Производные показатели по формулам каскада; формулу можно переопределить для этого среза (кнопка «Формула каскада…»).</p>
   </section>
 </template>
 

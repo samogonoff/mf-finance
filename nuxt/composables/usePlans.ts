@@ -152,6 +152,13 @@ export const usePlans = () => {
       headers: authHeader()
     });
 
+  const addComment = (id: number, body: string, metricRef = ""): Promise<{ id: number }> =>
+    $fetch<{ id: number }>(`${base}/api/plans/instances/${id}/comments`, {
+      method: "POST",
+      body: { body, metric_ref: metricRef },
+      headers: authHeader()
+    });
+
   const audit = (f: AuditFilter = {}): Promise<AuditEvent[]> =>
     $fetch<AuditEvent[]>(`${base}/api/plans/audit`, {
       params: {
@@ -264,6 +271,7 @@ export const usePlans = () => {
     mpSvod,
     stages,
     stageAction,
+    addComment,
     audit,
     auditCsv,
     directories,
