@@ -36,4 +36,9 @@ export default defineNuxtRouteMiddleware(async (to) => {
     if (!hasScope("cost")) return navigateTo("/", { replace: true });
     return;
   }
+  if (path.startsWith("/plans")) {
+    // Тактические планы — для ROLE_PLANS_USER/ADMIN (или ROLE_ADMIN через иерархию).
+    if (!hasScope("plans")) return navigateTo("/", { replace: true });
+    return;
+  }
 });

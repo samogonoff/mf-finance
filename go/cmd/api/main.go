@@ -17,6 +17,7 @@ import (
 	"github.com/company/finance-api/internal/etl"
 	"github.com/company/finance-api/internal/internalapi"
 	"github.com/company/finance-api/internal/notifications"
+	"github.com/company/finance-api/internal/plans"
 	"github.com/company/finance-api/internal/redisx"
 	"github.com/company/finance-api/internal/reports/debt"
 	"github.com/company/finance-api/internal/users"
@@ -104,6 +105,10 @@ func main() {
 	mux.HandleFunc("PATCH /api/bugtracker/sources/{id}", auth.RequireRole(authSvc, auth.RoleAdmin, bugH.SourcesPatch))
 	// Скриншоты — открытая раздача (только по UUID-имени).
 	mux.HandleFunc("GET /uploads/bugtracker/", bugH.ServeUpload)
+
+	// Тактические планы (VS0 — каркас). docs/reports/plans/SPEC.md.
+	plansH := plans.NewHandler()
+	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
 
 	// Reports — Задолженность ВГО.
 	// DEBT_MOCK=1 → фикстуры. DEBT_BACKEND=ch → CH-снэпшот для свёртки + MSSQL для drill-down.
