@@ -9,6 +9,7 @@ package plans
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -148,6 +149,65 @@ func (h *Handler) MpFormSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plID, err := h.form.SaveMpForm(r.Context(), h.prin(r), req, raw)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"pl_id": plID})
+}
+
+// MpExport — GET /api/plans/mp/export?year&month&segment&currency. Снимок формы в .xlsx.
+func (h *Handler) MpExport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	year, err := atoiPositive(q.Get("year"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid year")
+		return
+	}
+	month, err := atoiPositive(q.Get("month"))
+	if err != nil || month < 1 || month > 12 {
+		writeErr(w, http.StatusBadRequest, "invalid month")
+		return
+	}
+	segment := q.Get("segment")
+	if segment == "" {
+		segment = "large"
+	}
+	data, err := h.form.ExportMpForm(r.Context(), h.prin(r), year, month, segment, q.Get("currency"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	fname := fmt.Sprintf("TPL-MP_%s_%d-%02d.xlsx", segment, year, month)
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+fname+"\"")
+	_, _ = w.Write(data)
+}
+
+// MpImport — POST /api/plans/mp/import?year&month&segment. Тело — .xlsx (editable
+// колонки). Чужой ABAC/неизвестный код/пустая причина → отказ.
+func (h *Handler) MpImport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	year, err := atoiPositive(q.Get("year"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid year")
+		return
+	}
+	month, err := atoiPositive(q.Get("month"))
+	if err != nil || month < 1 || month > 12 {
+		writeErr(w, http.StatusBadRequest, "invalid month")
+		return
+	}
+	segment := q.Get("segment")
+	if segment == "" {
+		segment = "large"
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "read body")
+		return
+	}
+	plID, err := h.form.ImportMpForm(r.Context(), h.prin(r), segment, year, month, raw)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

@@ -103,5 +103,35 @@ export const usePlans = () => {
       headers: authHeader()
     });
 
-  return { directories, directoryRows, mpFact, mpForm, saveMpForm };
+  // Экспорт .xlsx (TPL-06) — нативный fetch для blob.
+  const mpExport = async (q: MpFactQuery & { currency?: string }): Promise<Blob> => {
+    const params = new URLSearchParams({
+      year: String(q.year),
+      month: String(q.month),
+      segment: q.segment,
+      currency: q.currency ?? ""
+    });
+    const res = await fetch(`${base}/api/plans/mp/export?${params}`, { headers: authHeader() });
+    if (!res.ok) throw new Error(`Экспорт: ${res.status}`);
+    return res.blob();
+  };
+
+  // Импорт .xlsx (тело — файл); ошибка строки/ABAC/причины → текст ошибки.
+  const mpImport = async (q: MpFactQuery, file: File | Blob): Promise<{ pl_id: number }> => {
+    const params = new URLSearchParams({
+      year: String(q.year),
+      month: String(q.month),
+      segment: q.segment
+    });
+    const res = await fetch(`${base}/api/plans/mp/import?${params}`, {
+      method: "POST",
+      headers: authHeader(),
+      body: file
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data as { error?: string }).error || `Импорт: ${res.status}`);
+    return data as { pl_id: number };
+  };
+
+  return { directories, directoryRows, mpFact, mpForm, saveMpForm, mpExport, mpImport };
 };

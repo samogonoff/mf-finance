@@ -7,6 +7,13 @@
       </div>
       <div class="page-actions">
         <span v-if="savedAt" class="saved-note">Сохранено в {{ savedAt }}</span>
+        <button class="btn btn-ghost" :disabled="!form" @click="exportXlsx">
+          <Icon name="lucide:download" /> Excel
+        </button>
+        <button class="btn btn-ghost" @click="importInput?.click()">
+          <Icon name="lucide:upload" /> Импорт
+        </button>
+        <input ref="importInput" type="file" accept=".xlsx" class="hidden-input" @change="onImport" />
         <button class="btn btn-primary" :disabled="saving || !form" @click="save">
           <Icon name="lucide:save" /> {{ saving ? "Сохранение…" : "Сохранить" }}
         </button>
@@ -37,6 +44,7 @@
 <script setup lang="ts">
 import MpForm from "~/components/plans/MpForm.vue";
 import { usePlanForm } from "~/composables/usePlanForm";
+import { usePlans } from "~/composables/usePlans";
 
 definePageMeta({ middleware: "scope-guard" });
 
@@ -47,6 +55,38 @@ const year = ref(2026);
 const month = ref(5);
 
 const { form, loading, saving, error, savedAt, reason, load, save } = usePlanForm(segment, year, month);
+const { mpExport, mpImport } = usePlans();
+
+const importInput = ref<HTMLInputElement | null>(null);
+
+const exportXlsx = async () => {
+  try {
+    const blob = await mpExport({ year: year.value, month: month.value, segment: segment.value });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `TPL-MP_${segment.value}_${year.value}-${String(month.value).padStart(2, "0")}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : "Ошибка экспорта";
+  }
+};
+
+const onImport = async (ev: Event) => {
+  const input = ev.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  error.value = "";
+  try {
+    await mpImport({ year: year.value, month: month.value, segment: segment.value }, file);
+    await load();
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : "Ошибка импорта";
+  } finally {
+    input.value = "";
+  }
+};
 
 watch(segment, load);
 onMounted(load);
@@ -67,5 +107,8 @@ onMounted(load);
 .error-banner {
   color: var(--neg, #b42318);
   padding: var(--sp-4);
+}
+.hidden-input {
+  display: none;
 }
 </style>
