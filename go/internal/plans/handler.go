@@ -343,6 +343,16 @@ func (h *Handler) ScopeUpsert(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// InstancesList — GET /api/plans/instances. Список экземпляров PL.
+func (h *Handler) InstancesList(w http.ResponseWriter, r *http.Request) {
+	list, err := h.form.Instances(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
 // CreateInstance — POST /api/plans/instances. Создаёт/возвращает экземпляр PL
 // на период. Тело: {"year":2026,"month":6}.
 func (h *Handler) CreateInstance(w http.ResponseWriter, r *http.Request) {

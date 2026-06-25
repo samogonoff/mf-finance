@@ -43,6 +43,17 @@ func (m *memStore) EnsureInstance(_ context.Context, year, month int) (int64, er
 	return m.nextID, nil
 }
 
+func (m *memStore) ListInstances(_ context.Context) ([]InstanceSummary, error) {
+	out := make([]InstanceSummary, 0, len(m.instances))
+	for k, id := range m.instances {
+		out = append(out, InstanceSummary{
+			ID: id, PeriodYear: k[0], PeriodMonth: k[1],
+			Status: "in_progress", MetricCount: len(m.metrics[id]),
+		})
+	}
+	return out, nil
+}
+
 func (m *memStore) Metrics(_ context.Context, plID int64, segment string, year, month int) ([]MetricRow, error) {
 	var out []MetricRow
 	for _, s := range m.metrics[plID] {
@@ -287,6 +298,36 @@ func TestSaveMpForm_ManualWithReason_PersistsAdjustment(t *testing.T) {
 				t.Error("ячейка корректировки должна быть помечена Manual (ADJ-04)")
 			}
 		}
+	}
+}
+
+func TestInstances_ListAfterSave(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, NewMockFactSource(), newMemScope())
+	ctx := context.Background()
+
+	req := SaveMpFormRequest{
+		Segment: "large", Period: PeriodRef{Year: 2026, Month: 6},
+		Rows: []SaveRow{{CodeCFO: 335, CodePL: 1046, BlockType: "sales_manager_price", Amount: 10, IsManual: true, Comment: "c"}},
+	}
+	if _, err := svc.SaveMpForm(ctx, adminP, req, []byte(`{}`)); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	list, err := svc.Instances(ctx)
+	if err != nil {
+		t.Fatalf("Instances: %v", err)
+	}
+	var found bool
+	for _, s := range list {
+		if s.PeriodYear == 2026 && s.PeriodMonth == 6 {
+			found = true
+			if s.MetricCount < 1 {
+				t.Errorf("ожидался metric_count >= 1, got %d", s.MetricCount)
+			}
+		}
+	}
+	if !found {
+		t.Error("экземпляр 2026-06 не появился в списке")
 	}
 }
 

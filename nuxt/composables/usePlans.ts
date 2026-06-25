@@ -13,6 +13,14 @@ export interface PlanDirectory {
   row_count: number;
 }
 
+export interface PlanInstance {
+  id: number;
+  period_year: number;
+  period_month: number;
+  status: string;
+  metric_count: number;
+}
+
 export interface PlanFactRow {
   code_cfo: number;
   name_cfo: string;
@@ -83,6 +91,16 @@ const authHeader = (): Record<string, string> => {
 export const usePlans = () => {
   const config = useRuntimeConfig();
   const base = config.public.apiBase;
+
+  const instances = (): Promise<PlanInstance[]> =>
+    $fetch<PlanInstance[]>(`${base}/api/plans/instances`, { headers: authHeader() });
+
+  const createInstance = (year: number, month: number): Promise<{ id: number }> =>
+    $fetch<{ id: number }>(`${base}/api/plans/instances`, {
+      method: "POST",
+      body: { year, month },
+      headers: authHeader()
+    });
 
   const directories = (): Promise<PlanDirectory[]> =>
     $fetch<PlanDirectory[]>(`${base}/api/plans/directories`, { headers: authHeader() });
@@ -160,5 +178,17 @@ export const usePlans = () => {
     return data as { pl_id: number };
   };
 
-  return { directories, directoryRows, mpFact, mpForm, mpCompute, saveFormula, saveMpForm, mpExport, mpImport };
+  return {
+    instances,
+    createInstance,
+    directories,
+    directoryRows,
+    mpFact,
+    mpForm,
+    mpCompute,
+    saveFormula,
+    saveMpForm,
+    mpExport,
+    mpImport
+  };
 };

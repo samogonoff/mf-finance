@@ -12,6 +12,8 @@ import (
 type MetricStore interface {
 	// EnsureInstance возвращает id экземпляра PL на период (создаёт при отсутствии).
 	EnsureInstance(ctx context.Context, year, month int) (int64, error)
+	// ListInstances — все экземпляры PL с числом метрик (для списка/дашборда).
+	ListInstances(ctx context.Context) ([]InstanceSummary, error)
 	// Metrics — сохранённая тактика по сегменту/периоду.
 	Metrics(ctx context.Context, plID int64, segment string, year, month int) ([]MetricRow, error)
 	// UpsertMetrics — upsert editable-ячеек тактики.
@@ -45,6 +47,28 @@ func (s *pgStore) EnsureInstance(ctx context.Context, year, month int) (int64, e
 		DO UPDATE SET status = pl_instance.status
 		RETURNING id`, year, month).Scan(&id)
 	return id, err
+}
+
+func (s *pgStore) ListInstances(ctx context.Context) ([]InstanceSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT i.id, i.period_year, i.period_month, i.status, COUNT(m.id)
+		FROM pl_instance i
+		LEFT JOIN pl_metric m ON m.pl_id = i.id
+		GROUP BY i.id
+		ORDER BY i.period_year DESC, i.period_month DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]InstanceSummary, 0)
+	for rows.Next() {
+		var s InstanceSummary
+		if err := rows.Scan(&s.ID, &s.PeriodYear, &s.PeriodMonth, &s.Status, &s.MetricCount); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 func (s *pgStore) Metrics(ctx context.Context, plID int64, segment string, year, month int) ([]MetricRow, error) {

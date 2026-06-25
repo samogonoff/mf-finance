@@ -40,6 +40,11 @@ func (s *Service) EnsureInstance(ctx context.Context, year, month int) (int64, e
 	return s.store.EnsureInstance(ctx, year, month)
 }
 
+// Instances — список экземпляров PL (для списка/дашборда).
+func (s *Service) Instances(ctx context.Context) ([]InstanceSummary, error) {
+	return s.store.ListInstances(ctx)
+}
+
 // MpForm собирает форму: read-only факт (OLAP/FinDWH) + сохранённая тактика,
 // отфильтрованную по ABAC-срезу пользователя.
 func (s *Service) MpForm(ctx context.Context, p Principal, year, month int, segment, currency string) (MpForm, error) {

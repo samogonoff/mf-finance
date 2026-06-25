@@ -119,6 +119,15 @@ type Comment struct {
 	CreatedAt string `json:"created_at"`
 }
 
+// InstanceSummary — строка списка экземпляров PL (экран «Список тактических PL»).
+type InstanceSummary struct {
+	ID          int64  `json:"id"`
+	PeriodYear  int    `json:"period_year"`
+	PeriodMonth int    `json:"period_month"`
+	Status      string `json:"status"`
+	MetricCount int    `json:"metric_count"`
+}
+
 // ComputedRow — расчётные показатели каскада по площадке (CALC, превью).
 type ComputedRow struct {
 	CodeCFO int                `json:"code_cfo"`
