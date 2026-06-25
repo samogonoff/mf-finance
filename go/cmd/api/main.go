@@ -245,8 +245,16 @@ func main() {
 	// docs/reports/plans/SPEC.md. Факт: PLANS_MOCK=1 → фикстуры; иначе online
 	// FinDWH (переиспользуем mssqlDB ВГО-отчёта; при nil — fallback на mock).
 	plansFact := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactView)
-	plansSvc := plans.NewService(plans.NewPgStore(pool), plansFact)
-	plansH := plans.NewHandler(plans.NewSeedSource(), plansFact, plansSvc)
+	plansSvc := plans.NewService(plans.NewPgStore(pool), plansFact, plans.NewPgScopeStore(pool))
+	// Principal для ABAC: id пользователя + признак админа планов (обходит ABAC).
+	plansPrincipal := func(r *http.Request) (plans.Principal, bool) {
+		u := auth.CurrentUser(r)
+		if u == nil {
+			return plans.Principal{}, false
+		}
+		return plans.Principal{UserID: u.ID, PlansAdmin: auth.HasRole(u, auth.RolePlansAdmin)}, true
+	}
+	plansH := plans.NewHandler(plans.NewSeedSource(), plansFact, plansSvc, plansPrincipal)
 	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
 	mux.HandleFunc("GET /api/plans/directories", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Directories))
 	mux.HandleFunc("GET /api/plans/directories/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirectoryRows))
@@ -254,6 +262,8 @@ func main() {
 	mux.HandleFunc("GET /api/plans/mp/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpFormGet))
 	mux.HandleFunc("PUT /api/plans/mp/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpFormSave))
 	mux.HandleFunc("POST /api/plans/instances", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.CreateInstance))
+	// Назначение ABAC-среза — только админ процессов (ROLE_PLANS_ADMIN).
+	mux.HandleFunc("PUT /api/plans/scope/{user_id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.ScopeUpsert))
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

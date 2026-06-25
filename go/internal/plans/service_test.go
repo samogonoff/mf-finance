@@ -73,9 +73,26 @@ func (m *memStore) SaveSubmission(_ context.Context, plID int64, payload []byte)
 	return nil
 }
 
+// memScopeStore — in-memory ScopeStore для ABAC-тестов.
+type memScopeStore struct{ codes map[int64][]int }
+
+func newMemScope() *memScopeStore { return &memScopeStore{codes: map[int64][]int{}} }
+
+func (m *memScopeStore) UserCodeCFOs(_ context.Context, userID int64) ([]int, error) {
+	return m.codes[userID], nil
+}
+
+func (m *memScopeStore) UpsertScope(_ context.Context, sc UserScope) error {
+	m.codes[sc.UserID] = sc.CodeCFO
+	return nil
+}
+
+// adminP — Principal с обходом ABAC (для не-ABAC тестов).
+var adminP = Principal{PlansAdmin: true}
+
 func TestService_SaveAndLoad_RoundTrip(t *testing.T) {
 	store := newMemStore()
-	svc := NewService(store, NewMockFactSource())
+	svc := NewService(store, NewMockFactSource(), newMemScope())
 	ctx := context.Background()
 
 	req := SaveMpFormRequest{
@@ -87,7 +104,7 @@ func TestService_SaveAndLoad_RoundTrip(t *testing.T) {
 		},
 	}
 	raw := []byte(`{"template_code":"TPL-MP"}`)
-	plID, err := svc.SaveMpForm(ctx, req, raw)
+	plID, err := svc.SaveMpForm(ctx, adminP, req, raw)
 	if err != nil {
 		t.Fatalf("SaveMpForm: %v", err)
 	}
@@ -98,7 +115,7 @@ func TestService_SaveAndLoad_RoundTrip(t *testing.T) {
 		t.Errorf("снимок form_submission не сохранён: %d", len(store.subs[plID]))
 	}
 
-	form, err := svc.MpForm(ctx, 2026, 5, "large", "RUB")
+	form, err := svc.MpForm(ctx, adminP, 2026, 5, "large", "RUB")
 	if err != nil {
 		t.Fatalf("MpForm: %v", err)
 	}
@@ -125,6 +142,70 @@ func TestService_SaveAndLoad_RoundTrip(t *testing.T) {
 	}
 	if !checked {
 		t.Fatal("строка WB(335) в блоке 1046 не найдена")
+	}
+}
+
+func TestMpForm_ABAC_SmallUserCannotSeeLarge(t *testing.T) {
+	scope := newMemScope()
+	scope.codes[42] = []int{338, 339} // small-площадки (Kaspi, Uzmarket)
+	svc := NewService(newMemStore(), NewMockFactSource(), scope)
+	ctx := context.Background()
+
+	form, err := svc.MpForm(ctx, Principal{UserID: 42}, 2026, 5, "large", "RUB")
+	if err != nil {
+		t.Fatalf("MpForm: %v", err)
+	}
+	if len(form.Platforms) != 0 {
+		t.Errorf("small-юзер не должен видеть large-площадки, got %d", len(form.Platforms))
+	}
+	for _, b := range form.Blocks {
+		if len(b.Rows) != 0 {
+			t.Errorf("блок %d не должен содержать строк для чужого сегмента", b.CodePL)
+		}
+	}
+}
+
+func TestMpForm_ABAC_AllowedPlatformVisible(t *testing.T) {
+	scope := newMemScope()
+	scope.codes[7] = []int{335} // только Wildberries
+	svc := NewService(newMemStore(), NewMockFactSource(), scope)
+
+	form, err := svc.MpForm(context.Background(), Principal{UserID: 7}, 2026, 5, "large", "RUB")
+	if err != nil {
+		t.Fatalf("MpForm: %v", err)
+	}
+	if len(form.Platforms) != 1 || form.Platforms[0].CodeCFO != 335 {
+		t.Errorf("должна остаться только площадка 335, got %+v", form.Platforms)
+	}
+}
+
+func TestSaveMpForm_ABAC_RejectsForeignPlatform(t *testing.T) {
+	scope := newMemScope()
+	scope.codes[7] = []int{335} // разрешён только WB
+	svc := NewService(newMemStore(), NewMockFactSource(), scope)
+
+	req := SaveMpFormRequest{
+		Segment: "large",
+		Period:  PeriodRef{Year: 2026, Month: 5},
+		Rows:    []SaveRow{{CodeCFO: 337, CodePL: 1046, BlockType: "sales_manager_price", Amount: 1}}, // Ozon — чужой
+	}
+	if _, err := svc.SaveMpForm(context.Background(), Principal{UserID: 7}, req, []byte(`{}`)); err == nil {
+		t.Error("ожидалась ошибка: запись в чужую площадку (337) вне среза")
+	}
+}
+
+func TestSaveMpForm_ABAC_AllowsOwnPlatform(t *testing.T) {
+	scope := newMemScope()
+	scope.codes[7] = []int{335}
+	svc := NewService(newMemStore(), NewMockFactSource(), scope)
+
+	req := SaveMpFormRequest{
+		Segment: "large",
+		Period:  PeriodRef{Year: 2026, Month: 5},
+		Rows:    []SaveRow{{CodeCFO: 335, CodePL: 1046, BlockType: "sales_manager_price", Amount: 100}},
+	}
+	if _, err := svc.SaveMpForm(context.Background(), Principal{UserID: 7}, req, []byte(`{}`)); err != nil {
+		t.Errorf("запись в свою площадку (335) должна проходить: %v", err)
 	}
 }
 

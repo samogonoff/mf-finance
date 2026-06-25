@@ -10,7 +10,9 @@ import (
 
 func newTestHandler() *Handler {
 	fact := NewMockFactSource()
-	return NewHandler(NewSeedSource(), fact, NewService(newMemStore(), fact))
+	svc := NewService(newMemStore(), fact, newMemScope())
+	adminPrincipal := func(*http.Request) (Principal, bool) { return Principal{PlansAdmin: true}, true }
+	return NewHandler(NewSeedSource(), fact, svc, adminPrincipal)
 }
 
 func TestHealth_ReturnsOK(t *testing.T) {

@@ -7,11 +7,29 @@ import "context"
 type Service struct {
 	store MetricStore
 	fact  MpFactSource
+	scope ScopeStore
 }
 
 // NewService — конструктор.
-func NewService(store MetricStore, fact MpFactSource) *Service {
-	return &Service{store: store, fact: fact}
+func NewService(store MetricStore, fact MpFactSource, scope ScopeStore) *Service {
+	return &Service{store: store, fact: fact, scope: scope}
+}
+
+// allowedFor — ABAC-набор разрешённых code_cfo (nil для админа — без фильтра).
+func (s *Service) allowedFor(ctx context.Context, p Principal) (map[int]bool, error) {
+	if p.PlansAdmin {
+		return nil, nil
+	}
+	codes, err := s.scope.UserCodeCFOs(ctx, p.UserID)
+	if err != nil {
+		return nil, err
+	}
+	return allowedSet(codes), nil
+}
+
+// AssignScope — назначение ABAC-среза пользователю (админ процессов).
+func (s *Service) AssignScope(ctx context.Context, sc UserScope) error {
+	return s.scope.UpsertScope(ctx, sc)
 }
 
 // EnsureInstance — id экземпляра PL на период (создаёт при отсутствии).
@@ -19,10 +37,15 @@ func (s *Service) EnsureInstance(ctx context.Context, year, month int) (int64, e
 	return s.store.EnsureInstance(ctx, year, month)
 }
 
-// MpForm собирает форму: read-only факт (OLAP/FinDWH) + сохранённая тактика.
-func (s *Service) MpForm(ctx context.Context, year, month int, segment, currency string) (MpForm, error) {
+// MpForm собирает форму: read-only факт (OLAP/FinDWH) + сохранённая тактика,
+// отфильтрованную по ABAC-срезу пользователя.
+func (s *Service) MpForm(ctx context.Context, p Principal, year, month int, segment, currency string) (MpForm, error) {
 	if currency == "" {
 		currency = "RUB"
+	}
+	allowed, err := s.allowedFor(ctx, p)
+	if err != nil {
+		return MpForm{}, err
 	}
 	plID, err := s.store.EnsureInstance(ctx, year, month)
 	if err != nil {
@@ -36,12 +59,20 @@ func (s *Service) MpForm(ctx context.Context, year, month int, segment, currency
 	if err != nil {
 		return MpForm{}, err
 	}
-	return buildMpForm(segment, year, month, currency, factToMetrics(factRows), tactic), nil
+	form := buildMpForm(segment, year, month, currency, factToMetrics(factRows), tactic)
+	return applyScope(form, allowed, p.PlansAdmin), nil
 }
 
-// SaveMpForm валидирует и сохраняет editable-ячейки тактики + полный снимок формы.
+// SaveMpForm валидирует ABAC-срез + редактируемость, сохраняет тактику и снимок.
 // rawPayload — исходное тело запроса (для form_submission.json_payload).
-func (s *Service) SaveMpForm(ctx context.Context, req SaveMpFormRequest, rawPayload []byte) (int64, error) {
+func (s *Service) SaveMpForm(ctx context.Context, p Principal, req SaveMpFormRequest, rawPayload []byte) (int64, error) {
+	allowed, err := s.allowedFor(ctx, p)
+	if err != nil {
+		return 0, err
+	}
+	if err := checkScopeRows(req, allowed, p.PlansAdmin); err != nil {
+		return 0, err
+	}
 	metrics, err := metricsFromRequest(req)
 	if err != nil {
 		return 0, err

@@ -28,16 +28,26 @@ func atoiPositive(s string) (int, error) {
 
 // Handler — HTTP-ручки модуля тактических планов.
 type Handler struct {
-	dir  DirSource
-	fact MpFactSource
-	form *Service
+	dir       DirSource
+	fact      MpFactSource
+	form      *Service
+	principal PrincipalFunc
 }
 
 // NewHandler — конструктор. dir — справочники (SeedSource в MVP), fact —
-// read-only факт МП, form — сервис формы TPL-MP (запись тактики; nil в части
-// тестов, не задействующих форму).
-func NewHandler(dir DirSource, fact MpFactSource, form *Service) *Handler {
-	return &Handler{dir: dir, fact: fact, form: form}
+// read-only факт МП, form — сервис формы TPL-MP, principal — извлечение
+// пользователя из запроса для ABAC.
+func NewHandler(dir DirSource, fact MpFactSource, form *Service, principal PrincipalFunc) *Handler {
+	return &Handler{dir: dir, fact: fact, form: form, principal: principal}
+}
+
+// prin — Principal запроса; при отсутствии функции (часть юнит-тестов) — админ.
+func (h *Handler) prin(r *http.Request) Principal {
+	if h.principal == nil {
+		return Principal{PlansAdmin: true}
+	}
+	p, _ := h.principal(r)
+	return p
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -116,7 +126,7 @@ func (h *Handler) MpFormGet(w http.ResponseWriter, r *http.Request) {
 	if segment == "" {
 		segment = "large"
 	}
-	form, err := h.form.MpForm(r.Context(), year, month, segment, q.Get("currency"))
+	form, err := h.form.MpForm(r.Context(), h.prin(r), year, month, segment, q.Get("currency"))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -137,12 +147,46 @@ func (h *Handler) MpFormSave(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
-	plID, err := h.form.SaveMpForm(r.Context(), req, raw)
+	plID, err := h.form.SaveMpForm(r.Context(), h.prin(r), req, raw)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"pl_id": plID})
+}
+
+// ScopeUpsert — PUT /api/plans/scope/{user_id}. Назначение ABAC-среза
+// пользователю (роль ROLE_PLANS_ADMIN). Тело: role, code_cfo[], опц. stage/страна/ЮЛ.
+func (h *Handler) ScopeUpsert(w http.ResponseWriter, r *http.Request) {
+	userID, err := strconv.ParseInt(r.PathValue("user_id"), 10, 64)
+	if err != nil || userID <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid user_id")
+		return
+	}
+	var body struct {
+		Role        string `json:"role"`
+		StageCode   string `json:"stage_code"`
+		Country     string `json:"country"`
+		LegalEntity string `json:"legal_entity"`
+		CodeCFO     []int  `json:"code_cfo"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Role == "" {
+		writeErr(w, http.StatusBadRequest, "role required")
+		return
+	}
+	sc := UserScope{
+		UserID: userID, Role: body.Role, StageCode: body.StageCode,
+		Country: body.Country, LegalEntity: body.LegalEntity, CodeCFO: body.CodeCFO,
+	}
+	if err := h.form.AssignScope(r.Context(), sc); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // CreateInstance — POST /api/plans/instances. Создаёт/возвращает экземпляр PL
