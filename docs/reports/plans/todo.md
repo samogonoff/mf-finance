@@ -23,12 +23,13 @@ Env: любая новая переменная — сразу в `.env.example`
 
 ## Фаза A — Read-path (факт)
 
-### [ ] VS1. Справочники dir_marketplace / dir_cfo(MP) / dir_pl_line
-- [ ] `migrations/0010_plans_core.{up,down}.sql`, `0012_plans_directories.{up,down}.sql`
-- [ ] `plans/directories.go` + `seed_mp.go`: площадки large(335/336/337/954) + small(953…339), code_pl 10–98
-- [ ] `GET /api/plans/directories`, `/{code}/rows`
-- [ ] Приёмка: `dir_marketplace/rows` ≥4 large с `name_cfo/code_cfo/segment/country`; `dir_pl_line` содержит 1046/1045/1022/1006/8006
-- [ ] `go test ./internal/plans/...`
+### [x] VS1. Справочники dir_marketplace / dir_cfo(MP) / dir_pl_line — `7157aa6`
+- [x] `migrations/0010_plans_directories.{up,down}.sql` (ядро → 0011 в VS3)
+- [x] `plans/seed_mp.go` (`SeedSource`): площадки large(335/336/337/954) + small(953…339); блоки PL 1046/1045/1022/1006/8006 + статьи затрат
+- [x] `GET /api/plans/directories`, `/{code}/rows` (404 на неизвестный) за `RequireRole(PlansUser)`
+- [x] Приёмка: `dir_marketplace/rows` ≥4 large с `name_cfo/code_cfo/segment/country`; `dir_pl_line` содержит 1046/1045/1022/1006/8006 — покрыто тестами
+- [x] `go test ./internal/plans/...` зелёные (TDD: RED→GREEN)
+- [ ] ⏳ накат миграции `make migrate` + psql-сверка — при поднятом стеке (PG сейчас down)
 
 ### [ ] VS2. Факт МП (online FinDWH + PLANS_MOCK) — **CHECKPOINT A**
 - [ ] `plans/sources/{source.go,olap_mp.go,mock_mp.go}` (ключи SUMIFS month+code_cfo+scenario+CodePL; BYN/RUB/USD)

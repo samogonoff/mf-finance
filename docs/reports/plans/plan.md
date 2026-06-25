@@ -111,20 +111,23 @@ curl -H "Authorization: Bearer <token-без-роли>" .../api/plans/health    
 
 ---
 
-### VS1 — Справочники TPL-MP (`dir_marketplace`, `dir_cfo`, `dir_pl_line`)
+### VS1 — Справочники TPL-MP (`dir_marketplace`, `dir_cfo`, `dir_pl_line`) ✅
 **Зависит от:** VS0
-**Файлы:** `migrations/0010_plans_core.{up,down}.sql` (ядро, см. SPEC §7.1) +
-`migrations/0012_plans_directories.{up,down}.sql`; `go/internal/plans/directories.go`
-(репо + загрузчик из Excel-прототипов); `go/internal/plans/seed_mp.go` (первичные
-данные платформ/статей из прототипа — захардкоженный seed для MVP); `handler.go`
-(`GET /api/plans/directories`, `GET /api/plans/directories/{code}/rows`);
-`go/cmd/api/main.go` (роуты).
+**Реализация (миграции дробятся по VS, нумерация инкрементальная):**
+`migrations/0010_plans_directories.{up,down}.sql` (таблицы `plans_directory`,
+`plans_directory_row` + метаданные справочников). **Ядро** (`pl_instance`,
+`pl_metric`…) — отдельной миграцией `0011_plans_core` в VS3, НЕ здесь.
+`go/internal/plans/seed_mp.go` (seed-данные площадок/статей + `SeedSource`);
+`handler.go` (`GET /api/plans/directories`, `GET /api/plans/directories/{code}/rows`);
+`go/cmd/api/main.go` (роуты за `RequireRole(PlansUser)`).
 **Делаем:**
-- Таблицы `plans_directory`, `plans_directory_row` (SPEC §7.3).
+- Таблицы `plans_directory`, `plans_directory_row` (SPEC §7.3); строки MVP — из
+  seed в коде (статичная НСИ), таблицы — под будущую синхронизацию/ABAC.
 - Seed `dir_marketplace`: large 335/336/337/954, small 953/955/957/959/990/991/958/
   475/474/338/339 (+страна, сегмент, group code 250/480) — из SPEC §26-A.
-- Seed `dir_pl_line` из «Расходы Code PL» (коды 10–98); `dir_cfo` — MP-подмножество.
-- API чтения справочников с фильтром `source/status`.
+- Seed `dir_pl_line` (блоки продаж/себестоимости 1046/1045/1022/1006/8006/2006/6006 +
+  статьи затрат) и `dir_cfo` — MP-подмножество.
+- API чтения справочников (реестр + строки по коду; 404 на неизвестный).
 **Критерии приёмки:**
 - `GET /api/plans/directories/dir_marketplace/rows` отдаёт ≥4 площадки large с
   `name_cfo`, `code_cfo`, `segment`, `country`.
