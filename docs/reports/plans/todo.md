@@ -60,12 +60,13 @@ Env: любая новая переменная — сразу в `.env.example`
 - [x] CHECKPOINT C: изоляция разрезов на API воспроизведена (тесты large↔small, своя/чужая площадка)
 - [ ] ⏳ seed реальных ответственных (Мурашко/Левин) — нужны их user_id (B24); назначаются через `PUT /api/plans/scope/{user_id}`. Полный конфигуратор — этап 2
 
-### [ ] VS5. Комментарии + корректировки (COM-01/ADJ-02)
-- [ ] `migrations/0012_plans_workflow` (`pl_comment`, `pl_adjustment`)
-- [ ] Обязательная причина при `is_manual`; хранить `original_calculated/adjusted_value`
-- [ ] `GET/POST .../comments`, `POST .../adjust`; `components/plans/CellComment.vue`
-- [ ] Приёмка: PUT с `is_manual` без причины → 400; скорректированные ячейки помечены
-- [ ] `go test ./internal/plans/...`
+### [x] VS5. Комментарии + корректировки (COM-01/ADJ-02) — `d915b07`
+- [x] `migrations/0013_plans_workflow` (`pl_adjustment`, `pl_comment`) — 0012 занят scope
+- [x] Обязательная причина при `is_manual` (ADJ-02); `pl_adjustment` хранит `adjusted_value/reason`; `FormRow.Manual` для подсветки (ADJ-04)
+- [x] `GET/POST /api/plans/instances/{id}/comments`; корректировки пишутся в `SaveMpForm`; `CellComment.vue` + reason-поле
+- [x] Приёмка: PUT с `is_manual` без причины → 400; скорректированные ячейки помечены — покрыто тестами
+- [x] `go test ./internal/plans/...` зелёные (manual-без-причины, персист adjustment, comments add/list)
+- [ ] ⏳ накат `0013` `make migrate` + UI-smoke — при `make up`
 
 ## Фаза C — Excel + валюта
 
