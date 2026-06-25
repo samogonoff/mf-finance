@@ -522,6 +522,32 @@ func (h *Handler) RouteUpsert(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// MpCopy — POST /api/plans/mp/copy. Копирование тактики из периода в период
+// (TPL-09). Тело: {from_year, from_month, to_year, to_month}.
+func (h *Handler) MpCopy(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		FromYear  int `json:"from_year"`
+		FromMonth int `json:"from_month"`
+		ToYear    int `json:"to_year"`
+		ToMonth   int `json:"to_month"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if b.FromYear <= 0 || b.FromMonth < 1 || b.FromMonth > 12 || b.ToYear <= 0 || b.ToMonth < 1 || b.ToMonth > 12 {
+		writeErr(w, http.StatusBadRequest, "invalid period")
+		return
+	}
+	n, err := h.form.CopyMpTactic(r.Context(), h.prin(r), b.FromYear, b.FromMonth, b.ToYear, b.ToMonth)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.rec(r, "copy_tactic", "pl_instance", 0)
+	writeJSON(w, http.StatusOK, map[string]int{"copied": n})
+}
+
 // MpSvod — GET /api/plans/mp/svod?year&month. Свод ЮЛ × канал (TPL-08).
 func (h *Handler) MpSvod(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

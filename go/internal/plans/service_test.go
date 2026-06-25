@@ -102,6 +102,31 @@ func (m *memStore) UpsertMetrics(_ context.Context, plID int64, segment string, 
 	return nil
 }
 
+func (m *memStore) CopyTactic(_ context.Context, fromPlID, toPlID int64, fromY, fromM, toY, toM int, allowed []int, restrict bool) (int, error) {
+	if restrict && len(allowed) == 0 {
+		return 0, nil
+	}
+	allow := map[int]bool{}
+	for _, c := range allowed {
+		allow[c] = true
+	}
+	n := 0
+	for _, s := range m.metrics[fromPlID] {
+		r := s.row
+		if r.Year != fromY || r.Month != fromM || r.Scenario != ScenarioTactic {
+			continue
+		}
+		if restrict && !allow[r.ProfitCenter] {
+			continue
+		}
+		nr := r
+		nr.Year, nr.Month = toY, toM
+		_ = m.UpsertMetrics(context.Background(), toPlID, s.segment, []MetricRow{nr})
+		n++
+	}
+	return n, nil
+}
+
 func (m *memStore) SaveSubmission(_ context.Context, plID int64, payload []byte) error {
 	m.subs[plID] = append(m.subs[plID], payload)
 	return nil
@@ -347,6 +372,40 @@ func TestSaveMpForm_ManualWithReason_PersistsAdjustment(t *testing.T) {
 				t.Error("ячейка корректировки должна быть помечена Manual (ADJ-04)")
 			}
 		}
+	}
+}
+
+func TestCopyMpTactic_CopiesToNewPeriod(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, NewMockFactSource(), newMemScope())
+	ctx := context.Background()
+	// тактика за 2026-05
+	req := SaveMpFormRequest{
+		Segment: "large", Period: PeriodRef{Year: 2026, Month: 5},
+		Rows: []SaveRow{{CodeCFO: 335, CodePL: 1046, BlockType: "sales_manager_price", Amount: 777, IsManual: true, Comment: "c"}},
+	}
+	if _, err := svc.SaveMpForm(ctx, adminP, req, []byte(`{}`)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	n, err := svc.CopyMpTactic(ctx, adminP, 2026, 5, 2026, 6)
+	if err != nil {
+		t.Fatalf("CopyMpTactic: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("ожидалась 1 скопированная строка, got %d", n)
+	}
+	// проверяем, что в июне появилась тактика
+	toID, _ := store.EnsureInstance(ctx, 2026, 6)
+	got, _ := store.Metrics(ctx, toID, "large", 2026, 6)
+	if len(got) != 1 || got[0].Amount != 777 {
+		t.Errorf("тактика не скопировалась в 2026-06: %+v", got)
+	}
+}
+
+func TestCopyMpTactic_SamePeriodRejected(t *testing.T) {
+	svc := NewService(newMemStore(), NewMockFactSource(), newMemScope())
+	if _, err := svc.CopyMpTactic(context.Background(), adminP, 2026, 5, 2026, 5); err == nil {
+		t.Error("ожидалась ошибка: исходный и целевой период совпадают")
 	}
 }
 

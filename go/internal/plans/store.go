@@ -21,6 +21,9 @@ type MetricStore interface {
 	MetricsAll(ctx context.Context, plID int64, year, month int) ([]MetricRow, error)
 	// UpsertMetrics — upsert editable-ячеек тактики.
 	UpsertMetrics(ctx context.Context, plID int64, segment string, rows []MetricRow) error
+	// CopyTactic — копирование тактики из периода в период (TPL-09). При restrict
+	// копируются только profit_center из allowed. Возвращает число строк.
+	CopyTactic(ctx context.Context, fromPlID, toPlID int64, fromY, fromM, toY, toM int, allowed []int, restrict bool) (int, error)
 	// SaveSubmission — полный снимок формы (json_payload).
 	SaveSubmission(ctx context.Context, plID int64, payload []byte) error
 	// SaveAdjustments — аудит ручных корректировок (ADJ-03).
@@ -157,6 +160,36 @@ func (s *pgStore) UpsertMetrics(ctx context.Context, plID int64, segment string,
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func (s *pgStore) CopyTactic(ctx context.Context, fromPlID, toPlID int64, fromY, fromM, toY, toM int, allowed []int, restrict bool) (int, error) {
+	if restrict && len(allowed) == 0 {
+		return 0, nil
+	}
+	q := `
+		INSERT INTO pl_metric (pl_id, template_code, segment, line_code, block_type,
+		    profit_center, cost_center, country, legal_entity, channel, scenario,
+		    period_year, period_month, currency, amount, is_manual)
+		SELECT $1, template_code, segment, line_code, block_type,
+		       profit_center, cost_center, country, legal_entity, channel, scenario,
+		       $2, $3, currency, amount, is_manual
+		FROM pl_metric
+		WHERE pl_id = $4 AND template_code = $5 AND scenario = $6
+		  AND period_year = $7 AND period_month = $8`
+	args := []any{toPlID, toY, toM, fromPlID, TemplateMP, ScenarioTactic, fromY, fromM}
+	if restrict {
+		q += ` AND profit_center = ANY($9)`
+		args = append(args, allowed)
+	}
+	q += `
+		ON CONFLICT (pl_id, template_code, segment, line_code, block_type,
+		    profit_center, scenario, period_year, period_month, currency)
+		DO UPDATE SET amount = EXCLUDED.amount, is_manual = EXCLUDED.is_manual`
+	tag, err := s.pool.Exec(ctx, q, args...)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 func (s *pgStore) SaveSubmission(ctx context.Context, plID int64, payload []byte) error {

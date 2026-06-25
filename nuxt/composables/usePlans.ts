@@ -144,6 +144,13 @@ export const usePlans = () => {
   const instances = (): Promise<PlanInstance[]> =>
     $fetch<PlanInstance[]>(`${base}/api/plans/instances`, { headers: authHeader() });
 
+  const copyMp = (payload: { from_year: number; from_month: number; to_year: number; to_month: number }): Promise<{ copied: number }> =>
+    $fetch<{ copied: number }>(`${base}/api/plans/mp/copy`, {
+      method: "POST",
+      body: payload,
+      headers: authHeader()
+    });
+
   const mpSvod = (year: number, month: number): Promise<SvodRow[]> =>
     $fetch<SvodRow[]>(`${base}/api/plans/mp/svod`, {
       params: { year, month },
@@ -310,6 +317,7 @@ export const usePlans = () => {
     instances,
     createInstance,
     mpSvod,
+    copyMp,
     stages,
     stageAction,
     addComment,

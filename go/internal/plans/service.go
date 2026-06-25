@@ -36,6 +36,32 @@ func (s *Service) AssignScope(ctx context.Context, sc UserScope) error {
 	return s.scope.UpsertScope(ctx, sc)
 }
 
+// CopyMpTactic — копирование тактики МП из периода в период (TPL-09): прошлый
+// план как стартовая точка нового. Уважает ABAC-срез пользователя.
+func (s *Service) CopyMpTactic(ctx context.Context, p Principal, fromY, fromM, toY, toM int) (int, error) {
+	if fromY == toY && fromM == toM {
+		return 0, errors.New("исходный и целевой период совпадают")
+	}
+	allowedMap, err := s.allowedFor(ctx, p)
+	if err != nil {
+		return 0, err
+	}
+	var allowed []int
+	restrict := allowedMap != nil // admin → nil → без ограничения
+	for k := range allowedMap {
+		allowed = append(allowed, k)
+	}
+	fromID, err := s.store.EnsureInstance(ctx, fromY, fromM)
+	if err != nil {
+		return 0, err
+	}
+	toID, err := s.store.EnsureInstance(ctx, toY, toM)
+	if err != nil {
+		return 0, err
+	}
+	return s.store.CopyTactic(ctx, fromID, toID, fromY, fromM, toY, toM, allowed, restrict)
+}
+
 // EnsureInstance — id экземпляра PL на период (создаёт при отсутствии).
 func (s *Service) EnsureInstance(ctx context.Context, year, month int) (int64, error) {
 	return s.store.EnsureInstance(ctx, year, month)

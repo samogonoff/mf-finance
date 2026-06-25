@@ -7,6 +7,9 @@
       </div>
       <div class="page-actions">
         <span v-if="savedAt" class="saved-note">Сохранено в {{ savedAt }}</span>
+        <button class="btn btn-ghost" @click="cp.open = true">
+          <Icon name="lucide:copy" /> Копировать период
+        </button>
         <button class="btn btn-ghost" :disabled="!form" @click="exportXlsx">
           <Icon name="lucide:download" /> Excel
         </button>
@@ -65,6 +68,32 @@
       <MpComputePreview :rows="computed" />
     </template>
 
+    <!-- Копирование тактики из прошлого периода (TPL-09) -->
+    <PlansModal
+      :open="cp.open"
+      title="Скопировать план из периода"
+      :subtitle="`Тактика будет скопирована в текущий период ${year}-${String(month).padStart(2,'0')} как стартовая точка`"
+      @close="cp.open = false"
+    >
+      <div class="cp-period">
+        <label class="field">
+          <span class="field-label">Год-источник</span>
+          <input v-model.number="cp.year" type="number" class="select" min="2024" max="2030" />
+        </label>
+        <label class="field">
+          <span class="field-label">Месяц-источник</span>
+          <input v-model.number="cp.month" type="number" class="select" min="1" max="12" />
+        </label>
+      </div>
+      <p class="cp-hint">Скопируются ячейки тактики вашего ABAC-среза; существующие значения целевого периода перезапишутся.</p>
+      <template #footer>
+        <button class="btn btn-ghost" @click="cp.open = false">Отмена</button>
+        <button class="btn btn-primary" @click="doCopy">
+          <Icon name="lucide:copy" /> Скопировать
+        </button>
+      </template>
+    </PlansModal>
+
     <!-- Переопределение формулы каскада (D11) -->
     <PlansModal
       :open="ov.open"
@@ -116,7 +145,20 @@ const month = ref(Number(route.query.month) || 5);
 const currency = ref<"RUB" | "BYN" | "USD">("RUB");
 
 const { form, loading, saving, error, savedAt, reason, load, save } = usePlanForm(segment, year, month, currency);
-const { mpExport, mpImport, mpCompute, saveFormula } = usePlans();
+const { mpExport, mpImport, mpCompute, saveFormula, copyMp } = usePlans();
+
+const cp = reactive({ open: false, year: 2026, month: 4 });
+const doCopy = async () => {
+  error.value = "";
+  try {
+    const res = await copyMp({ from_year: cp.year, from_month: cp.month, to_year: year.value, to_month: month.value });
+    cp.open = false;
+    await load();
+    if (res.copied === 0) error.value = "Из выбранного периода нечего копировать (нет тактики в вашем срезе).";
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : "Ошибка копирования";
+  }
+};
 
 const computed = ref<ComputedRow[]>([]);
 const runCompute = async () => {
@@ -238,5 +280,13 @@ onMounted(load);
 }
 .mono {
   font-family: var(--font-mono);
+}
+.cp-period {
+  display: flex;
+  gap: var(--sp-5);
+}
+.cp-hint {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
 }
 </style>
