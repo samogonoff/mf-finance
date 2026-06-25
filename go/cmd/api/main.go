@@ -106,9 +106,11 @@ func main() {
 	// Скриншоты — открытая раздача (только по UUID-имени).
 	mux.HandleFunc("GET /uploads/bugtracker/", bugH.ServeUpload)
 
-	// Тактические планы (VS0 — каркас). docs/reports/plans/SPEC.md.
-	plansH := plans.NewHandler()
+	// Тактические планы (VS0 каркас + VS1 справочники). docs/reports/plans/SPEC.md.
+	plansH := plans.NewHandler(plans.NewSeedSource())
 	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
+	mux.HandleFunc("GET /api/plans/directories", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Directories))
+	mux.HandleFunc("GET /api/plans/directories/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirectoryRows))
 
 	// Reports — Задолженность ВГО.
 	// DEBT_MOCK=1 → фикстуры. DEBT_BACKEND=ch → CH-снэпшот для свёртки + MSSQL для drill-down.
