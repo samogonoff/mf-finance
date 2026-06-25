@@ -118,9 +118,15 @@ Env: любая новая переменная — сразу в `.env.example`
 - [x] Форма читает `?year&month`
 - [ ] ⏳ UI-smoke — при `make up`
 
+### [x] VS11. Аудит (AUD-01..05, PLANS_AUDIT_ENABLED) — `16a3d5c`
+- [x] `0015_plans_audit`; `audit.go` (Auditor: pgx + no-op); запись на мутациях; `GET /api/plans/audit` + CSV
+- [x] config `PlansAuditEnabled`; UI `/plans/audit` (фильтры, CSV); ссылка для plans-админа
+- [x] Тесты: запись save_form; no-op выключен
+- [ ] ⏳ накат `0015` + UI-smoke — при `make up`
+
 ### Дальше (вне текущего прохода)
 Workflow 1.2–4 + календари р.д. по странам · своды 1.6/2.4 (TPL-08) · прочие
-шаблоны · аудит · cron-синхронизация справочников.
+шаблоны · cron-синхронизация справочников.
 
 ## Этап 2 (полный объём — не начинать без отдельного плана)
 CALC-движок (гибрид формул D11: `calc_rule` + `pl_formula_override` + безопасный
