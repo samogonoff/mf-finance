@@ -35,13 +35,20 @@ func RunBootstrapContract(ctx context.Context, deps Deps, opts BootstrapOpts) (i
 	startedAt := time.Now()
 	log.Printf("=== bootstrap-contract company=%s START ===", opts.CompanyID)
 
-	loaded, err := streamContract(ctx, deps, ch, opts, contractTablePremaster)
-	if err != nil {
-		return loaded, err
+	// Заливаем из Premaster1C И Premaster1CHistory: Premaster1C неполон по части
+	// периодов, History покрывает старые. doc_id-дубли схлопывает ReplacingMergeTree.
+	var total int64
+	for _, table := range []string{contractTablePremaster, contractTableHistory} {
+		n, err := streamContract(ctx, deps, ch, opts, table)
+		if err != nil {
+			log.Printf("  warn: contract from %s for %s: %v (продолжаем)", table, opts.CompanyID, err)
+			continue
+		}
+		total += n
 	}
 	log.Printf("=== bootstrap-contract company=%s — DONE %d договоров in %.1fs ===",
-		opts.CompanyID, loaded, time.Since(startedAt).Seconds())
-	return loaded, nil
+		opts.CompanyID, total, time.Since(startedAt).Seconds())
+	return total, nil
 }
 
 // streamContract — SELECT субконто (62/60/76) → эвристика-фильтр → dim_contract.
@@ -78,8 +85,8 @@ func streamContract(ctx context.Context, deps Deps, ch *chClient, opts Bootstrap
 
 	for rows.Next() {
 		var r contractRow
-		var ref, kind sql.NullString
-		if err := rows.Scan(&r.DocID, &r.CompanyID, &ref, &r.ContractName, &kind); err != nil {
+		var ref, kind, delay sql.NullString
+		if err := rows.Scan(&r.DocID, &r.CompanyID, &ref, &r.ContractName, &kind, &delay); err != nil {
 			return total, fmt.Errorf("scan: %w", err)
 		}
 		// Эвристика-фильтр: оставляем только похожее на договор.
@@ -88,6 +95,7 @@ func streamContract(ctx context.Context, deps Deps, ch *chClient, opts Bootstrap
 		}
 		r.ContractRef = strings.TrimSpace(ref.String)
 		r.AccountKind = strings.TrimSpace(kind.String)
+		r.PaymentDelay = strings.TrimSpace(delay.String)
 		batch = append(batch, r)
 		if len(batch) >= opts.BatchSize {
 			if err := flush(); err != nil {

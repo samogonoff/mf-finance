@@ -21,7 +21,8 @@ type contractRow struct {
 	CompanyID    string `json:"company_id"` // ИНН ЮЛ — для счётчика договоров per-company
 	ContractRef  string `json:"contract_ref"`
 	ContractName string `json:"contract_name"`
-	AccountKind  string `json:"account_kind"` // '62' | '60' | '76' | КЗ/УЗ-счёт
+	AccountKind  string `json:"account_kind"`  // '62' | '60' | '76' | КЗ/УЗ-счёт
+	PaymentDelay string `json:"payment_delay"` // Docs.Delay — отсрочка в днях ('' = нет)
 }
 
 // reContractKeep/reContractDrop — эвристика «название похоже на договор».
@@ -68,16 +69,21 @@ func extractContractSelectFrom(table string) string {
 	    WHEN %[1]s IN (%[3]s) THEN %[1]s
 	    WHEN %[2]s IN (%[3]s) THEN %[2]s
 	  END`, dr, cr, sub1)
+	// Отсрочка по договору: Payments.Docs.Delay по мосту субконто→GUID договора
+	// (idrrefSQLToGUID(ref) = Docs.ID — тот же мост, что в premaster-пути).
 	return `
 SELECT DISTINCT
-    ISNULL(CONVERT(NVARCHAR(MAX), p.DocID), '') AS doc_id,
-    ISNULL(p.CompanyID, '')                     AS company_id,
-    cc.ref                                       AS contract_ref,
-    ISNULL(o.[Name], '')                         AS contract_name,
-    cc.kind                                      AS account_kind
+    ISNULL(CONVERT(NVARCHAR(MAX), p.DocID), '')     AS doc_id,
+    ISNULL(p.CompanyID, '')                         AS company_id,
+    cc.ref                                           AS contract_ref,
+    ISNULL(o.[Name], '')                             AS contract_name,
+    cc.kind                                          AS account_kind,
+    ISNULL(CONVERT(VARCHAR(10), dc.Delay), '')       AS payment_delay
 FROM ` + table + ` AS p WITH (NOLOCK)
 CROSS APPLY (SELECT ` + ref + ` AS ref, ` + kind + ` AS kind) cc
 LEFT JOIN [FinDWH].[dbo].[Objects] AS o WITH (NOLOCK) ON o.ID = cc.ref
+LEFT JOIN [Payments].[dbo].[Docs] AS dc WITH (NOLOCK)
+       ON dc.ID = ` + idrrefSQLToGUID("cc.ref") + ` COLLATE DATABASE_DEFAULT
 WHERE cc.ref IS NOT NULL
   AND ISNULL(o.[Name],'') <> ''
   AND o.[Name] NOT LIKE '%00БС%' AND o.[Name] NOT LIKE '%ТДБП%'

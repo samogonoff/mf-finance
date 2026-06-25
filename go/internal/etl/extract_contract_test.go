@@ -50,6 +50,7 @@ func TestExtractContractSelectFrom(t *testing.T) {
 		"[FinDWH].[dbo].[Premaster1C]", "DocID", "DrSubconto2", "CrSubconto1",
 		"DrSubconto1", "1210", "3310", // КЗ/УЗ: договор в Subconto1 (T8)
 		"[Objects]", "account_kind", "DISTINCT",
+		"[Payments].[dbo].[Docs]", "Delay", // отсрочка по договору (#3)
 	} {
 		if !strings.Contains(q, frag) {
 			t.Errorf("extractContractSelectFrom не содержит %q", frag)
@@ -59,7 +60,7 @@ func TestExtractContractSelectFrom(t *testing.T) {
 
 // contractRow → JSON-ключи = колонки dim_contract.
 func TestContractRowJSONKeys(t *testing.T) {
-	want := []string{"doc_id", "company_id", "contract_ref", "contract_name", "account_kind"}
+	want := []string{"doc_id", "company_id", "contract_ref", "contract_name", "account_kind", "payment_delay"}
 	raw, _ := json.Marshal(contractRow{})
 	b := string(raw)
 	for _, k := range want {
