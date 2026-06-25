@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,12 +9,27 @@ import (
 	"testing"
 )
 
-func newTestHandler() *Handler {
+// memAuditor — in-memory Auditor для тестов.
+type memAuditor struct {
+	enabled bool
+	events  []AuditEvent
+}
+
+func (m *memAuditor) Record(_ context.Context, e AuditEvent) error {
+	m.events = append(m.events, e)
+	return nil
+}
+func (m *memAuditor) List(_ context.Context, _ AuditFilter) ([]AuditEvent, error) { return m.events, nil }
+func (m *memAuditor) Enabled() bool                                               { return m.enabled }
+
+func newTestHandlerWithAudit(a Auditor) *Handler {
 	fact := NewMockFactSource()
 	svc := NewService(newMemStore(), fact, newMemScope())
-	adminPrincipal := func(*http.Request) (Principal, bool) { return Principal{PlansAdmin: true}, true }
-	return NewHandler(NewSeedSource(), fact, svc, adminPrincipal)
+	adminPrincipal := func(*http.Request) (Principal, bool) { return Principal{UserID: 1, PlansAdmin: true}, true }
+	return NewHandler(NewSeedSource(), fact, svc, adminPrincipal, a)
 }
+
+func newTestHandler() *Handler { return newTestHandlerWithAudit(&memAuditor{enabled: true}) }
 
 func TestHealth_ReturnsOK(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/plans/health", nil)
@@ -153,6 +169,36 @@ func TestMpForm_PutThenGet_RoundTrip(t *testing.T) {
 	}
 	if !ok {
 		t.Error("WB(335)/1046 не найден в форме")
+	}
+}
+
+func TestAudit_RecordsOnSave(t *testing.T) {
+	a := &memAuditor{enabled: true}
+	h := newTestHandlerWithAudit(a)
+	body := `{"segment":"large","period":{"year":2026,"month":5},
+		"rows":[{"code_cfo":335,"code_pl":1046,"block_type":"sales_manager_price","amount":1,"is_manual":true,"comment":"c"}]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/plans/mp/form", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.MpFormSave(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save: %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(a.events) != 1 || a.events[0].Action != "save_form" || a.events[0].UserID != 1 {
+		t.Errorf("ожидалось событие save_form user=1, got %+v", a.events)
+	}
+}
+
+func TestAudit_NoopWritesNothing(t *testing.T) {
+	noop := noopAuditor{}
+	if err := noop.Record(context.Background(), AuditEvent{Action: "x"}); err != nil {
+		t.Fatalf("noop Record: %v", err)
+	}
+	list, _ := noop.List(context.Background(), AuditFilter{})
+	if len(list) != 0 {
+		t.Errorf("no-op аудит не должен ничего отдавать, got %d", len(list))
+	}
+	if noop.Enabled() {
+		t.Error("no-op аудит должен быть Enabled()=false")
 	}
 }
 

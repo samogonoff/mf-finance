@@ -254,7 +254,8 @@ func main() {
 		}
 		return plans.Principal{UserID: u.ID, PlansAdmin: auth.HasRole(u, auth.RolePlansAdmin)}, true
 	}
-	plansH := plans.NewHandler(plans.NewSeedSource(), plansFact, plansSvc, plansPrincipal)
+	plansAudit := plans.NewAuditor(cfg.PlansAuditEnabled, pool)
+	plansH := plans.NewHandler(plans.NewSeedSource(), plansFact, plansSvc, plansPrincipal, plansAudit)
 	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
 	mux.HandleFunc("GET /api/plans/directories", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Directories))
 	mux.HandleFunc("GET /api/plans/directories/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirectoryRows))
@@ -271,6 +272,8 @@ func main() {
 	mux.HandleFunc("POST /api/plans/instances/{id}/comments", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.CommentCreate))
 	// Назначение ABAC-среза — только админ процессов (ROLE_PLANS_ADMIN).
 	mux.HandleFunc("PUT /api/plans/scope/{user_id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.ScopeUpsert))
+	// Журнал аудита — просмотр только админ процессов (view_audit).
+	mux.HandleFunc("GET /api/plans/audit", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.AuditList))
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

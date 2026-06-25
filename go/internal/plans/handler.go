@@ -13,7 +13,25 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 )
+
+// parseInt64 — мягкий парсинг (0 при ошибке/пусто).
+func parseInt64(s string) int64 {
+	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
+}
+
+// auditCSV — сериализация событий аудита в CSV (AUD-04).
+func auditCSV(events []AuditEvent) string {
+	var b strings.Builder
+	b.WriteString("ts,user_id,action,entity_type,entity_id,ip,correlation_id\n")
+	for _, e := range events {
+		fmt.Fprintf(&b, "%s,%d,%s,%s,%d,%s,%s\n",
+			e.TS, e.UserID, e.Action, e.EntityType, e.EntityID, e.IP, e.CorrelationID)
+	}
+	return b.String()
+}
 
 // atoiPositive парсит положительное целое из query-параметра.
 func atoiPositive(s string) (int, error) {
@@ -33,13 +51,35 @@ type Handler struct {
 	fact      MpFactSource
 	form      *Service
 	principal PrincipalFunc
+	audit     Auditor
 }
 
 // NewHandler — конструктор. dir — справочники (SeedSource в MVP), fact —
 // read-only факт МП, form — сервис формы TPL-MP, principal — извлечение
-// пользователя из запроса для ABAC.
-func NewHandler(dir DirSource, fact MpFactSource, form *Service, principal PrincipalFunc) *Handler {
-	return &Handler{dir: dir, fact: fact, form: form, principal: principal}
+// пользователя из запроса для ABAC, audit — журнал аудита (no-op при выключенном).
+func NewHandler(dir DirSource, fact MpFactSource, form *Service, principal PrincipalFunc, audit Auditor) *Handler {
+	if audit == nil {
+		audit = noopAuditor{}
+	}
+	return &Handler{dir: dir, fact: fact, form: form, principal: principal, audit: audit}
+}
+
+// rec — fire-and-forget запись аудита (ошибки не валят операцию).
+func (h *Handler) rec(r *http.Request, action, entityType string, entityID int64) {
+	_ = h.audit.Record(r.Context(), AuditEvent{
+		UserID:     h.prin(r).UserID,
+		Action:     action,
+		EntityType: entityType,
+		EntityID:   entityID,
+		IP:         clientIP(r),
+	})
+}
+
+func clientIP(r *http.Request) string {
+	if xf := r.Header.Get("X-Forwarded-For"); xf != "" {
+		return xf
+	}
+	return r.RemoteAddr
 }
 
 // prin — Principal запроса; при отсутствии функции (часть юнит-тестов) — админ.
@@ -153,6 +193,7 @@ func (h *Handler) MpFormSave(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.rec(r, "save_form", "pl_instance", plID)
 	writeJSON(w, http.StatusOK, map[string]int64{"pl_id": plID})
 }
 
@@ -208,7 +249,32 @@ func (h *Handler) FormulaOverride(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.rec(r, "formula_override", "pl_instance", plID)
 	writeJSON(w, http.StatusOK, map[string]int64{"pl_id": plID})
+}
+
+// AuditList — GET /api/plans/audit?user_id&entity_id&from&to&format=csv. Журнал
+// аудита (роль ROLE_PLANS_ADMIN). format=csv → выгрузка CSV (AUD-04).
+func (h *Handler) AuditList(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := AuditFilter{
+		UserID:   parseInt64(q.Get("user_id")),
+		EntityID: parseInt64(q.Get("entity_id")),
+		From:     q.Get("from"),
+		To:       q.Get("to"),
+	}
+	events, err := h.audit.List(r.Context(), f)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if q.Get("format") == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", "attachment; filename=\"plans-audit.csv\"")
+		_, _ = w.Write([]byte(auditCSV(events)))
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
 }
 
 // MpExport — GET /api/plans/mp/export?year&month&segment&currency. Снимок формы в .xlsx.
@@ -267,6 +333,7 @@ func (h *Handler) MpImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.rec(r, "import", "pl_instance", plID)
 	writeJSON(w, http.StatusOK, map[string]int64{"pl_id": plID})
 }
 
@@ -306,6 +373,7 @@ func (h *Handler) CommentCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.rec(r, "comment", "pl_instance", plID)
 	writeJSON(w, http.StatusOK, map[string]int64{"id": id})
 }
 
@@ -340,6 +408,7 @@ func (h *Handler) ScopeUpsert(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.rec(r, "scope", "user", userID)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -373,5 +442,6 @@ func (h *Handler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.rec(r, "create_instance", "pl_instance", id)
 	writeJSON(w, http.StatusOK, map[string]int64{"id": id})
 }

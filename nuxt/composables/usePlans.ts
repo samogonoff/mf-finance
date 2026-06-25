@@ -13,6 +13,24 @@ export interface PlanDirectory {
   row_count: number;
 }
 
+export interface AuditEvent {
+  id: number;
+  ts: string;
+  user_id: number;
+  action: string;
+  entity_type: string;
+  entity_id: number;
+  ip: string;
+  correlation_id: string;
+}
+
+export interface AuditFilter {
+  user_id?: number;
+  entity_id?: number;
+  from?: string;
+  to?: string;
+}
+
 export interface PlanInstance {
   id: number;
   period_year: number;
@@ -94,6 +112,29 @@ export const usePlans = () => {
 
   const instances = (): Promise<PlanInstance[]> =>
     $fetch<PlanInstance[]>(`${base}/api/plans/instances`, { headers: authHeader() });
+
+  const audit = (f: AuditFilter = {}): Promise<AuditEvent[]> =>
+    $fetch<AuditEvent[]>(`${base}/api/plans/audit`, {
+      params: {
+        user_id: f.user_id || "",
+        entity_id: f.entity_id || "",
+        from: f.from || "",
+        to: f.to || ""
+      },
+      headers: authHeader()
+    });
+
+  const auditCsv = async (f: AuditFilter = {}): Promise<Blob> => {
+    const params = new URLSearchParams({
+      user_id: String(f.user_id || ""),
+      from: f.from || "",
+      to: f.to || "",
+      format: "csv"
+    });
+    const res = await fetch(`${base}/api/plans/audit?${params}`, { headers: authHeader() });
+    if (!res.ok) throw new Error(`Аудит CSV: ${res.status}`);
+    return res.blob();
+  };
 
   const createInstance = (year: number, month: number): Promise<{ id: number }> =>
     $fetch<{ id: number }>(`${base}/api/plans/instances`, {
@@ -181,6 +222,8 @@ export const usePlans = () => {
   return {
     instances,
     createInstance,
+    audit,
+    auditCsv,
     directories,
     directoryRows,
     mpFact,

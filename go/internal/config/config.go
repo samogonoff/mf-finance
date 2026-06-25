@@ -80,8 +80,9 @@ type Config struct {
 	// Онлайн-источник факта — тот же сервер FinDWH, что у ВГО-отчёта
 	// (переиспользуем MSSQL_PREMASTER_*); PlansMpFactView — имя вьюхи/таблицы
 	// факта МП (Источник_МП → ALL_view_МП), уточняется через cmd/mssql-probe.
-	PlansMock       bool
-	PlansMpFactView string
+	PlansMock        bool
+	PlansMpFactView  string
+	PlansAuditEnabled bool
 }
 
 func Load() Config {
@@ -121,8 +122,9 @@ func Load() Config {
 
 		DebtCHSource: strings.ToLower(env("DEBT_CH_SOURCE", "premaster")),
 
-		PlansMock:       env("PLANS_MOCK", "0") == "1",
-		PlansMpFactView: env("PLANS_MP_FACT_VIEW", "ALL_view_МП"),
+		PlansMock:         env("PLANS_MOCK", "0") == "1",
+		PlansMpFactView:   env("PLANS_MP_FACT_VIEW", "ALL_view_МП"),
+		PlansAuditEnabled: env("PLANS_AUDIT_ENABLED", "0") == "1",
 	}
 }
 

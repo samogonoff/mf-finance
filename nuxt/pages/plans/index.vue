@@ -15,6 +15,9 @@
         <NuxtLink to="/plans/directories" class="btn btn-ghost">
           <Icon name="lucide:book" /> Справочники
         </NuxtLink>
+        <NuxtLink v-if="canAudit" to="/plans/audit" class="btn btn-ghost">
+          <Icon name="lucide:scroll-text" /> Аудит
+        </NuxtLink>
       </div>
     </header>
 
@@ -83,6 +86,8 @@ import { usePlans, type PlanInstance } from "~/composables/usePlans";
 definePageMeta({ middleware: "scope-guard" });
 
 const { instances, createInstance } = usePlans();
+const { hasRole, isAdmin } = useScope();
+const canAudit = computed(() => isAdmin.value || hasRole("ROLE_PLANS_ADMIN"));
 
 const list = ref<PlanInstance[]>([]);
 const error = ref("");
