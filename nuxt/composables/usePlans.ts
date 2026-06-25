@@ -13,6 +13,13 @@ export interface PlanDirectory {
   row_count: number;
 }
 
+export interface SvodRow {
+  legal_entity: string;
+  channel: string;
+  currency: string;
+  amount: number;
+}
+
 export interface StageState {
   stage_code: string;
   track: string;
@@ -121,6 +128,12 @@ export const usePlans = () => {
 
   const instances = (): Promise<PlanInstance[]> =>
     $fetch<PlanInstance[]>(`${base}/api/plans/instances`, { headers: authHeader() });
+
+  const mpSvod = (year: number, month: number): Promise<SvodRow[]> =>
+    $fetch<SvodRow[]>(`${base}/api/plans/mp/svod`, {
+      params: { year, month },
+      headers: authHeader()
+    });
 
   const stages = (id: number, year: number, month: number, country = "RU"): Promise<StageState[]> =>
     $fetch<StageState[]>(`${base}/api/plans/instances/${id}/stages`, {
@@ -248,6 +261,7 @@ export const usePlans = () => {
   return {
     instances,
     createInstance,
+    mpSvod,
     stages,
     stageAction,
     audit,

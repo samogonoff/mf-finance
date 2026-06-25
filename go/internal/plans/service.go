@@ -3,6 +3,7 @@ package plans
 import (
 	"context"
 	"errors"
+	"sort"
 )
 
 // Service — бизнес-логика формы TPL-MP (VS3): сборка матрицы (факт + тактика)
@@ -43,6 +44,41 @@ func (s *Service) EnsureInstance(ctx context.Context, year, month int) (int64, e
 // Instances — список экземпляров PL (для списка/дашборда).
 func (s *Service) Instances(ctx context.Context) ([]InstanceSummary, error) {
 	return s.store.ListInstances(ctx)
+}
+
+// Svod — свод TPL-08 по ЮЛ × канал (этап 1.6): агрегат товарооборота (1046)
+// сохранённой тактики, площадка→ЮЛ из dir_marketplace. Канал — Marketplaces.
+func (s *Service) Svod(ctx context.Context, year, month int) ([]SvodRow, error) {
+	plID, err := s.store.EnsureInstance(ctx, year, month)
+	if err != nil {
+		return nil, err
+	}
+	metrics, err := s.store.MetricsAll(ctx, plID, year, month)
+	if err != nil {
+		return nil, err
+	}
+	le := map[int]string{}
+	for _, m := range MarketplaceSeed() {
+		le[m.CodeCFO] = m.LegalEntity
+	}
+	type key struct{ le, cur string }
+	agg := map[key]float64{}
+	for _, m := range metrics {
+		if m.LineCode != 1046 { // товарооборот
+			continue
+		}
+		agg[key{le[m.ProfitCenter], m.Currency}] += m.Amount
+	}
+	out := make([]SvodRow, 0, len(agg))
+	for k, v := range agg {
+		entity := k.le
+		if entity == "" {
+			entity = "(без ЮЛ)"
+		}
+		out = append(out, SvodRow{LegalEntity: entity, Channel: "Marketplaces", Currency: k.cur, Amount: v})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LegalEntity < out[j].LegalEntity })
+	return out, nil
 }
 
 // Stages — этапы экземпляра PL; при отсутствии инициализирует по маршруту схемы

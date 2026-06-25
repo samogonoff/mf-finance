@@ -119,6 +119,14 @@ type Comment struct {
 	CreatedAt string `json:"created_at"`
 }
 
+// SvodRow — строка свода TPL-08 (ЮЛ × канал, агрегат товарооборота).
+type SvodRow struct {
+	LegalEntity string  `json:"legal_entity"`
+	Channel     string  `json:"channel"`
+	Currency    string  `json:"currency"`
+	Amount      float64 `json:"amount"`
+}
+
 // InstanceSummary — строка списка экземпляров PL (экран «Список тактических PL»).
 type InstanceSummary struct {
 	ID          int64  `json:"id"`

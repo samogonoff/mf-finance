@@ -15,13 +15,17 @@ import "errors"
 var ErrUnknownDirectory = errors.New("unknown directory")
 
 // MarketplaceRow — строка dir_marketplace (площадка МП).
+// LegalEntity — провизорный маппинг площадка→ЮЛ для свода TPL-08 (Q-ЮЛ:
+// уточнить у аналитика; SPEC Приложение B — ЮЛ продаж: TD Mark Formelle,
+// Formelle, MF Kazakhstan, MF Tex).
 type MarketplaceRow struct {
-	CodeCFO  int    `json:"code_cfo"`
-	NameCFO  string `json:"name_cfo"`
-	Segment  string `json:"segment"`  // large | small
-	Country  string `json:"country"`  // RU | KZ | UZ
-	GroupCFO int    `json:"group_cfo"` // 250 (large) | 480 (small)
-	CodePL   int    `json:"code_pl"`  // 1046 — товарооборот
+	CodeCFO     int    `json:"code_cfo"`
+	NameCFO     string `json:"name_cfo"`
+	Segment     string `json:"segment"`  // large | small
+	Country     string `json:"country"`  // RU | KZ | UZ
+	GroupCFO    int    `json:"group_cfo"` // 250 (large) | 480 (small)
+	CodePL      int    `json:"code_pl"`  // 1046 — товарооборот
+	LegalEntity string `json:"legal_entity"`
 }
 
 // PLLineRow — строка dir_pl_line (статья PL).
@@ -43,24 +47,26 @@ type CFORow struct {
 // MarketplaceSeed — площадки large (группа 250) и small (группа 480).
 func MarketplaceSeed() []MarketplaceRow {
 	return []MarketplaceRow{
-		// large (RU)
-		{CodeCFO: 335, NameCFO: "Wildberries", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046},
-		{CodeCFO: 336, NameCFO: "Lamoda", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046},
-		{CodeCFO: 337, NameCFO: "Ozon", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046},
-		{CodeCFO: 954, NameCFO: "Yandex Market", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046},
-		// small (RU)
-		{CodeCFO: 953, NameCFO: "Детский мир", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046},
-		{CodeCFO: 955, NameCFO: "Золотое яблоко", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046},
-		{CodeCFO: 957, NameCFO: "Yandex Market ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046},
-		{CodeCFO: 959, NameCFO: "Детский мир ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046},
-		{CodeCFO: 990, NameCFO: "Wildberries ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046},
-		{CodeCFO: 991, NameCFO: "Ozon ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046},
-		{CodeCFO: 958, NameCFO: "Lamoda ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046},
-		// small (KZ/UZ)
-		{CodeCFO: 475, NameCFO: "Wildberries KZ", Segment: "small", Country: "KZ", GroupCFO: 480, CodePL: 1046},
-		{CodeCFO: 474, NameCFO: "Ozon KZ", Segment: "small", Country: "KZ", GroupCFO: 480, CodePL: 1046},
-		{CodeCFO: 338, NameCFO: "Kaspi", Segment: "small", Country: "KZ", GroupCFO: 480, CodePL: 1046},
-		{CodeCFO: 339, NameCFO: "Uzmarket", Segment: "small", Country: "UZ", GroupCFO: 480, CodePL: 1046},
+		// large (RU) → TD Mark Formelle
+		{CodeCFO: 335, NameCFO: "Wildberries", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
+		{CodeCFO: 336, NameCFO: "Lamoda", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
+		{CodeCFO: 337, NameCFO: "Ozon", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
+		{CodeCFO: 954, NameCFO: "Yandex Market", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
+		// small (RU) — общие площадки → TD Mark Formelle
+		{CodeCFO: 953, NameCFO: "Детский мир", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
+		{CodeCFO: 955, NameCFO: "Золотое яблоко", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
+		// small (RU) — ТЕКС-бренды → MF Tex
+		{CodeCFO: 957, NameCFO: "Yandex Market ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Tex"},
+		{CodeCFO: 959, NameCFO: "Детский мир ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Tex"},
+		{CodeCFO: 990, NameCFO: "Wildberries ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Tex"},
+		{CodeCFO: 991, NameCFO: "Ozon ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Tex"},
+		{CodeCFO: 958, NameCFO: "Lamoda ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Tex"},
+		// small (KZ) → MF Kazakhstan
+		{CodeCFO: 475, NameCFO: "Wildberries KZ", Segment: "small", Country: "KZ", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Kazakhstan"},
+		{CodeCFO: 474, NameCFO: "Ozon KZ", Segment: "small", Country: "KZ", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Kazakhstan"},
+		{CodeCFO: 338, NameCFO: "Kaspi", Segment: "small", Country: "KZ", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Kazakhstan"},
+		// small (UZ) → MF Kazakhstan (провизорно)
+		{CodeCFO: 339, NameCFO: "Uzmarket", Segment: "small", Country: "UZ", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Kazakhstan"},
 	}
 }
 

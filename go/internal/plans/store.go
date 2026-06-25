@@ -17,6 +17,8 @@ type MetricStore interface {
 	ListInstances(ctx context.Context) ([]InstanceSummary, error)
 	// Metrics — сохранённая тактика по сегменту/периоду.
 	Metrics(ctx context.Context, plID int64, segment string, year, month int) ([]MetricRow, error)
+	// MetricsAll — тактика по периоду без фильтра сегмента (для свода ЮЛ).
+	MetricsAll(ctx context.Context, plID int64, year, month int) ([]MetricRow, error)
 	// UpsertMetrics — upsert editable-ячеек тактики.
 	UpsertMetrics(ctx context.Context, plID int64, segment string, rows []MetricRow) error
 	// SaveSubmission — полный снимок формы (json_payload).
@@ -93,6 +95,30 @@ func (s *pgStore) Metrics(ctx context.Context, plID int64, segment string, year,
 	}
 	defer rows.Close()
 
+	out := make([]MetricRow, 0)
+	for rows.Next() {
+		var m MetricRow
+		if err := rows.Scan(&m.LineCode, &m.BlockType, &m.ProfitCenter, &m.Country, &m.Scenario,
+			&m.Year, &m.Month, &m.Currency, &m.Amount, &m.IsManual); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *pgStore) MetricsAll(ctx context.Context, plID int64, year, month int) ([]MetricRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT line_code, block_type, profit_center, country, scenario,
+		       period_year, period_month, currency, COALESCE(amount, 0), is_manual
+		FROM pl_metric
+		WHERE pl_id = $1 AND template_code = $2
+		  AND period_year = $3 AND period_month = $4 AND scenario = $5`,
+		plID, TemplateMP, year, month, ScenarioTactic)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	out := make([]MetricRow, 0)
 	for rows.Next() {
 		var m MetricRow

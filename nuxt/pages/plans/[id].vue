@@ -12,6 +12,25 @@
 
     <p v-if="error" class="error-banner">{{ error }}</p>
 
+    <section class="svod">
+      <h2 class="track-title">Свод по ЮЛ × каналам (TPL-08, товарооборот)</h2>
+      <table class="data-table report-table">
+        <thead>
+          <tr><th>ЮЛ</th><th>Канал</th><th class="col-num">Товарооборот</th><th>Вал.</th></tr>
+        </thead>
+        <tbody>
+          <tr v-if="!svod.length"><td colspan="4" class="empty">Нет данных тактики за период.</td></tr>
+          <tr v-for="(s, i) in svod" :key="i">
+            <td>{{ s.legal_entity }}</td>
+            <td>{{ s.channel }}</td>
+            <td class="col-num">{{ money(s.amount, { currency: "" }) }}</td>
+            <td>{{ s.currency }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="prov-note">Маппинг площадка→ЮЛ провизорный (уточнить у аналитика).</p>
+    </section>
+
     <div v-for="track in tracks" :key="track.key" class="track">
       <h2 class="track-title">{{ track.label }}</h2>
       <div class="stage-list">
@@ -41,7 +60,8 @@
 </template>
 
 <script setup lang="ts">
-import { usePlans, type StageState } from "~/composables/usePlans";
+import { money } from "~/utils/format";
+import { usePlans, type StageState, type SvodRow } from "~/composables/usePlans";
 
 definePageMeta({ middleware: "scope-guard" });
 
@@ -50,8 +70,9 @@ const id = Number(route.params.id);
 const year = ref(Number(route.query.year) || 2026);
 const month = ref(Number(route.query.month) || 6);
 
-const { stages, stageAction } = usePlans();
+const { stages, stageAction, mpSvod } = usePlans();
 const list = ref<StageState[]>([]);
+const svod = ref<SvodRow[]>([]);
 const error = ref("");
 
 const tracks = [
@@ -65,8 +86,9 @@ const load = async () => {
   error.value = "";
   try {
     list.value = await stages(id, year.value, month.value);
+    svod.value = await mpSvod(year.value, month.value);
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка загрузки этапов";
+    error.value = e instanceof Error ? e.message : "Ошибка загрузки";
   }
 };
 

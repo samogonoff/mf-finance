@@ -412,6 +412,27 @@ func (h *Handler) ScopeUpsert(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// MpSvod — GET /api/plans/mp/svod?year&month. Свод ЮЛ × канал (TPL-08).
+func (h *Handler) MpSvod(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	year, err := atoiPositive(q.Get("year"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid year")
+		return
+	}
+	month, err := atoiPositive(q.Get("month"))
+	if err != nil || month < 1 || month > 12 {
+		writeErr(w, http.StatusBadRequest, "invalid month")
+		return
+	}
+	rows, err := h.form.Svod(r.Context(), year, month)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
 // StagesList — GET /api/plans/instances/{id}/stages?year&month&country.
 func (h *Handler) StagesList(w http.ResponseWriter, r *http.Request) {
 	plID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)

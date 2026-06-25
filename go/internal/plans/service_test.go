@@ -58,6 +58,16 @@ func (m *memStore) ListInstances(_ context.Context) ([]InstanceSummary, error) {
 	return out, nil
 }
 
+func (m *memStore) MetricsAll(_ context.Context, plID int64, year, month int) ([]MetricRow, error) {
+	var out []MetricRow
+	for _, s := range m.metrics[plID] {
+		if s.row.Year == year && s.row.Month == month && s.row.Scenario == ScenarioTactic {
+			out = append(out, s.row)
+		}
+	}
+	return out, nil
+}
+
 func (m *memStore) Metrics(_ context.Context, plID int64, segment string, year, month int) ([]MetricRow, error) {
 	var out []MetricRow
 	for _, s := range m.metrics[plID] {
@@ -323,6 +333,38 @@ func TestSaveMpForm_ManualWithReason_PersistsAdjustment(t *testing.T) {
 				t.Error("ячейка корректировки должна быть помечена Manual (ADJ-04)")
 			}
 		}
+	}
+}
+
+func TestSvod_AggregatesByLegalEntity(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, NewMockFactSource(), newMemScope())
+	ctx := context.Background()
+	// WB(335)→TD Mark Formelle, Kaspi(338)→MF Kazakhstan.
+	for _, r := range []SaveRow{
+		{CodeCFO: 335, CodePL: 1046, BlockType: "sales_manager_price", Amount: 1000, IsManual: true, Comment: "c"},
+		{CodeCFO: 337, CodePL: 1046, BlockType: "sales_manager_price", Amount: 500, IsManual: true, Comment: "c"},
+	} {
+		req := SaveMpFormRequest{Segment: "large", Period: PeriodRef{Year: 2026, Month: 5}, Rows: []SaveRow{r}}
+		if _, err := svc.SaveMpForm(ctx, adminP, req, []byte(`{}`)); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+	rows, err := svc.Svod(ctx, 2026, 5)
+	if err != nil {
+		t.Fatalf("Svod: %v", err)
+	}
+	var tdmf float64
+	for _, r := range rows {
+		if r.LegalEntity == "TD Mark Formelle" {
+			tdmf = r.Amount
+		}
+		if r.Channel != "Marketplaces" {
+			t.Errorf("канал должен быть Marketplaces, got %q", r.Channel)
+		}
+	}
+	if tdmf != 1500 {
+		t.Errorf("свод TD Mark Formelle = %v, want 1500 (335+337)", tdmf)
 	}
 }
 
