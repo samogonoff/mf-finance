@@ -42,7 +42,7 @@ Env: любая новая переменная — сразу в `.env.example`
 ## Фаза B — Write-path (ввод тактики)
 
 ### [ ] VS3. Ядро записи: pl_instance + pl_metric + форма GET/PUT (round-trip)
-- [ ] Таблицы `pl_instance/pl_stage_instance/pl_metric/form_submission` (0010)
+- [ ] Таблицы `pl_instance/pl_stage_instance/pl_metric/form_submission` (`0011_plans_core`)
 - [ ] `plans/repo.go`+`service.go`: сборка матрицы формы, upsert тактики, снимок
 - [ ] `GET/PUT /api/plans/mp/form`; `POST /api/plans/instances`
 - [ ] `usePlanForm.ts`; `components/plans/MpForm.vue`; `pages/plans/[id]/mp/[segment].vue`
@@ -57,7 +57,7 @@ Env: любая новая переменная — сразу в `.env.example`
 - [ ] CHECKPOINT C: матрица доступа SPEC §5 воспроизведена
 
 ### [ ] VS5. Комментарии + корректировки (COM-01/ADJ-02)
-- [ ] `migrations/0011_plans_workflow` (`pl_comment`, `pl_adjustment`)
+- [ ] `migrations/0012_plans_workflow` (`pl_comment`, `pl_adjustment`)
 - [ ] Обязательная причина при `is_manual`; хранить `original_calculated/adjusted_value`
 - [ ] `GET/POST .../comments`, `POST .../adjust`; `components/plans/CellComment.vue`
 - [ ] Приёмка: PUT с `is_manual` без причины → 400; скорректированные ячейки помечены
