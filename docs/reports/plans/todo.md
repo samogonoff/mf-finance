@@ -43,13 +43,14 @@ Env: любая новая переменная — сразу в `.env.example`
 
 ## Фаза B — Write-path (ввод тактики)
 
-### [ ] VS3. Ядро записи: pl_instance + pl_metric + форма GET/PUT (round-trip)
-- [ ] Таблицы `pl_instance/pl_stage_instance/pl_metric/form_submission` (`0011_plans_core`)
-- [ ] `plans/repo.go`+`service.go`: сборка матрицы формы, upsert тактики, снимок
-- [ ] `GET/PUT /api/plans/mp/form`; `POST /api/plans/instances`
-- [ ] `usePlanForm.ts`; `components/plans/MpForm.vue`; `pages/plans/[id]/mp/[segment].vue`
-- [ ] Приёмка: ввод→PUT→GET тот же; строка в `pl_metric`; снимок в `form_submission`; факт/стратегия read-only
-- [ ] `go test ./internal/plans/...`
+### [x] VS3. Ядро записи: pl_instance + pl_metric + форма GET/PUT (round-trip) — `d108798`
+- [x] Таблицы `pl_instance/pl_stage_instance/pl_metric/form_submission` (`0011_plans_core`)
+- [x] `store.go` (MetricStore: pgx + in-memory для тестов) + `service.go` (сборка матрицы, upsert тактики, снимок) + `form.go` (чистые buildMpForm/metricsFromRequest)
+- [x] `GET/PUT /api/plans/mp/form`; `POST /api/plans/instances` за `RequireRole(PlansUser)`
+- [x] `usePlanForm.ts`; `components/plans/MpForm.vue`; `pages/plans/mp/[segment].vue` (route `[id]` отложен — форма по year/month/segment)
+- [x] Приёмка: ввод→PUT→GET тот же; строка `pl_metric`; снимок `form_submission`; факт read-only — покрыто round-trip тестами (сервис + HTTP)
+- [x] `go test ./internal/plans/...` зелёные (round-trip через in-memory store)
+- [ ] ⏳ накат `0011` `make migrate` + UI-smoke ввода тактики — при `make up`
 
 ### [ ] VS4. ABAC-срез (plans_user_scope) — **CHECKPOINT C**
 - [ ] Таблица `plans_user_scope` (user_id, role, stage_code, country, legal_entity, code_cfo[])
