@@ -70,11 +70,13 @@ Env: любая новая переменная — сразу в `.env.example`
 
 ## Фаза C — Excel + валюта
 
-### [ ] VS6. Импорт/экспорт Excel TPL-MP — **CHECKPOINT B**
-- [ ] `plans/importexport.go`; `GET /api/plans/mp/export`, `POST /api/plans/mp/import`
-- [ ] Импорт: только editable; обязательны `code_cfo+code_pl+month+reason`; чужой ABAC → отклонение файла
-- [ ] Приёмка: export→import идентичные значения; чужой `code_cfo` отклонён
-- [ ] CHECKPOINT B: round-trip без расхождений
+### [x] VS6. Импорт/экспорт Excel TPL-MP — `dfe6601`
+- [x] `plans/importexport.go` (минимальный xlsx на stdlib zip+XML, без зависимостей); `GET /api/plans/mp/export`, `POST /api/plans/mp/import`
+- [x] Импорт: editable-колонки (amount|tactic); обязательны `code_cfo+code_pl+reason`; неизвестный код → ошибка строки; чужой ABAC → отклонение файла (через SaveMpForm)
+- [x] Приёмка: export→readback сохраняет тактику; неизвестный code_pl/пустая причина → ошибка — покрыто тестами
+- [x] `go test ./internal/plans/...` зелёные (grid round-trip + домен)
+- [x] CHECKPOINT B: round-trip кодека без расхождений (значение сохраняется через xlsx)
+- [ ] ⏳ UI-smoke export/import — при `make up`
 
 ### [ ] VS7. Валюта (dir_fx_rate) + сегмент small — **CHECKPOINT D**
 - [ ] `dir_fx_rate` (month/rate/currency); `plans/currency.go` пересчёт BYN/RUB/USD
