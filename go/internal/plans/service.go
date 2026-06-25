@@ -95,10 +95,10 @@ func (s *Service) MpForm(ctx context.Context, p Principal, year, month int, segm
 	if err != nil {
 		return MpForm{}, err
 	}
-	factRows, err := s.fact.MpFact(ctx, year, month, segment)
-	if err != nil {
-		return MpForm{}, err
-	}
+	// Факт — read-only обогащение из OLAP/FinDWH. Его недоступность (вьюха не
+	// заведена, VPN недоступен и т.п.) НЕ должна блокировать ввод тактики:
+	// деградируем до пустого факта. Ошибку видно на выделенном /mp/fact.
+	factRows, _ := s.fact.MpFact(ctx, year, month, segment)
 	tactic, err := s.store.Metrics(ctx, plID, segment, year, month)
 	if err != nil {
 		return MpForm{}, err
