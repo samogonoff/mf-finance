@@ -268,6 +268,8 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/mp/formula", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.FormulaOverride))
 	mux.HandleFunc("GET /api/plans/mp/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpExport))
 	mux.HandleFunc("POST /api/plans/mp/import", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpImport))
+	mux.HandleFunc("GET /api/plans/instances/{id}/stages", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.StagesList))
+	mux.HandleFunc("POST /api/plans/instances/{id}/stages/{code}/action", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.StageAction))
 	mux.HandleFunc("GET /api/plans/instances/{id}/comments", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.CommentsList))
 	mux.HandleFunc("POST /api/plans/instances/{id}/comments", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.CommentCreate))
 	// Назначение ABAC-среза — только админ процессов (ROLE_PLANS_ADMIN).

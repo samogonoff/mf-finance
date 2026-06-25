@@ -412,6 +412,60 @@ func (h *Handler) ScopeUpsert(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// StagesList — GET /api/plans/instances/{id}/stages?year&month&country.
+func (h *Handler) StagesList(w http.ResponseWriter, r *http.Request) {
+	plID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || plID <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	q := r.URL.Query()
+	year, _ := atoiPositive(q.Get("year"))
+	month, _ := atoiPositive(q.Get("month"))
+	country := q.Get("country")
+	if country == "" {
+		country = "RU"
+	}
+	stages, err := h.form.Stages(r.Context(), plID, year, month, country)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stages)
+}
+
+// StageAction — POST /api/plans/instances/{id}/stages/{code}/action.
+// Тело: {action, target, year, month, country}.
+func (h *Handler) StageAction(w http.ResponseWriter, r *http.Request) {
+	plID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || plID <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	code := r.PathValue("code")
+	var body struct {
+		Action  string `json:"action"`
+		Target  string `json:"target"`
+		Year    int    `json:"year"`
+		Month   int    `json:"month"`
+		Country string `json:"country"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Country == "" {
+		body.Country = "RU"
+	}
+	stages, err := h.form.StageAction(r.Context(), h.prin(r), plID, body.Year, body.Month, body.Country, code, body.Action, body.Target)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.rec(r, "stage_"+body.Action, "pl_instance", plID)
+	writeJSON(w, http.StatusOK, stages)
+}
+
 // InstancesList — GET /api/plans/instances. Список экземпляров PL.
 func (h *Handler) InstancesList(w http.ResponseWriter, r *http.Request) {
 	list, err := h.form.Instances(r.Context())

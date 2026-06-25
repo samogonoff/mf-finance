@@ -13,6 +13,15 @@ export interface PlanDirectory {
   row_count: number;
 }
 
+export interface StageState {
+  stage_code: string;
+  track: string;
+  name: string;
+  status: string;
+  due_at: string;
+  depends_on: string[];
+}
+
 export interface AuditEvent {
   id: number;
   ts: string;
@@ -112,6 +121,23 @@ export const usePlans = () => {
 
   const instances = (): Promise<PlanInstance[]> =>
     $fetch<PlanInstance[]>(`${base}/api/plans/instances`, { headers: authHeader() });
+
+  const stages = (id: number, year: number, month: number, country = "RU"): Promise<StageState[]> =>
+    $fetch<StageState[]>(`${base}/api/plans/instances/${id}/stages`, {
+      params: { year, month, country },
+      headers: authHeader()
+    });
+
+  const stageAction = (
+    id: number,
+    code: string,
+    payload: { action: string; target?: string; year: number; month: number; country?: string }
+  ): Promise<StageState[]> =>
+    $fetch<StageState[]>(`${base}/api/plans/instances/${id}/stages/${code}/action`, {
+      method: "POST",
+      body: payload,
+      headers: authHeader()
+    });
 
   const audit = (f: AuditFilter = {}): Promise<AuditEvent[]> =>
     $fetch<AuditEvent[]>(`${base}/api/plans/audit`, {
@@ -222,6 +248,8 @@ export const usePlans = () => {
   return {
     instances,
     createInstance,
+    stages,
+    stageAction,
     audit,
     auditCsv,
     directories,

@@ -45,6 +45,42 @@ func (s *Service) Instances(ctx context.Context) ([]InstanceSummary, error) {
 	return s.store.ListInstances(ctx)
 }
 
+// Stages — этапы экземпляра PL; при отсутствии инициализирует по маршруту схемы
+// со сроками по календарю страны.
+func (s *Service) Stages(ctx context.Context, plID int64, year, month int, country string) ([]StageState, error) {
+	stages, err := s.store.Stages(ctx, plID)
+	if err != nil {
+		return nil, err
+	}
+	if len(stages) == 0 {
+		stages = initStages(year, month, country, CalendarSeed())
+		if err := s.store.StagesInit(ctx, plID, stages); err != nil {
+			return nil, err
+		}
+	}
+	return stages, nil
+}
+
+// StageAction — действие WF-03 (start/submit/approve/return) с проверкой
+// зависимостей (WF-DEP); согласование пишет лист (pl_approval).
+func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year, month int, country, code, action, target string) ([]StageState, error) {
+	stages, err := s.Stages(ctx, plID, year, month, country)
+	if err != nil {
+		return nil, err
+	}
+	next, err := applyStageAction(stages, code, action, target)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.StagesSave(ctx, plID, next); err != nil {
+		return nil, err
+	}
+	if action == "approve" || action == "return" {
+		_ = s.store.RecordApproval(ctx, plID, code, p.UserID, action, "")
+	}
+	return next, nil
+}
+
 // MpForm собирает форму: read-only факт (OLAP/FinDWH) + сохранённая тактика,
 // отфильтрованную по ABAC-срезу пользователя.
 func (s *Service) MpForm(ctx context.Context, p Principal, year, month int, segment, currency string) (MpForm, error) {

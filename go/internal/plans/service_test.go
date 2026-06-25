@@ -15,6 +15,8 @@ type memStore struct {
 	adjustments   map[int64][]AdjustmentRow
 	comments      map[int64][]Comment
 	overrides     map[int64]map[string]string
+	stages        map[int64][]StageState
+	approvals     map[int64][]string
 }
 
 type storedMetric struct {
@@ -30,6 +32,8 @@ func newMemStore() *memStore {
 		adjustments: map[int64][]AdjustmentRow{},
 		comments:    map[int64][]Comment{},
 		overrides:   map[int64]map[string]string{},
+		stages:      map[int64][]StageState{},
+		approvals:   map[int64][]string{},
 	}
 }
 
@@ -120,6 +124,27 @@ func (m *memStore) UpsertOverride(_ context.Context, plID int64, ov FormulaOverr
 		m.overrides[plID] = map[string]string{}
 	}
 	m.overrides[plID][ov.Code] = ov.FormulaExpr
+	return nil
+}
+
+func (m *memStore) StagesInit(_ context.Context, plID int64, stages []StageState) error {
+	if m.stages[plID] == nil {
+		m.stages[plID] = append([]StageState(nil), stages...)
+	}
+	return nil
+}
+
+func (m *memStore) Stages(_ context.Context, plID int64) ([]StageState, error) {
+	return m.stages[plID], nil
+}
+
+func (m *memStore) StagesSave(_ context.Context, plID int64, stages []StageState) error {
+	m.stages[plID] = append([]StageState(nil), stages...)
+	return nil
+}
+
+func (m *memStore) RecordApproval(_ context.Context, plID int64, code string, userID int64, decision, le string) error {
+	m.approvals[plID] = append(m.approvals[plID], code+":"+decision)
 	return nil
 }
 
@@ -298,6 +323,50 @@ func TestSaveMpForm_ManualWithReason_PersistsAdjustment(t *testing.T) {
 				t.Error("ячейка корректировки должна быть помечена Manual (ADJ-04)")
 			}
 		}
+	}
+}
+
+func TestStages_LazyInitAndAction(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, NewMockFactSource(), newMemScope())
+	ctx := context.Background()
+	plID, _ := store.EnsureInstance(ctx, 2026, 6)
+
+	// Первый запрос инициализирует этапы.
+	stages, err := svc.Stages(ctx, plID, 2026, 6, "RU")
+	if err != nil {
+		t.Fatalf("Stages: %v", err)
+	}
+	if len(stages) != len(stageDefs()) {
+		t.Fatalf("ожидалось %d этапов", len(stageDefs()))
+	}
+	// Действие submit на 1.1 сохраняется.
+	next, err := svc.StageAction(ctx, adminP, plID, 2026, 6, "RU", "1.1", "submit", "")
+	if err != nil {
+		t.Fatalf("StageAction: %v", err)
+	}
+	if findStage(next, "1.1").Status != "completed" {
+		t.Error("1.1 должен стать completed")
+	}
+	// Перезагрузка возвращает сохранённый статус.
+	reload, _ := svc.Stages(ctx, plID, 2026, 6, "RU")
+	if findStage(reload, "1.1").Status != "completed" {
+		t.Error("статус 1.1 должен сохраниться")
+	}
+}
+
+func TestStageAction_ApprovalRecorded(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, NewMockFactSource(), newMemScope())
+	ctx := context.Background()
+	plID, _ := store.EnsureInstance(ctx, 2026, 6)
+	_, _ = svc.Stages(ctx, plID, 2026, 6, "RU")
+	_, _ = svc.StageAction(ctx, adminP, plID, 2026, 6, "RU", "1.1", "submit", "")
+	if _, err := svc.StageAction(ctx, adminP, plID, 2026, 6, "RU", "1.2", "approve", ""); err != nil {
+		t.Fatalf("approve 1.2: %v", err)
+	}
+	if len(store.approvals[plID]) == 0 {
+		t.Error("согласование должно попасть в лист (pl_approval)")
 	}
 }
 

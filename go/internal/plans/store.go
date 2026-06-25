@@ -2,6 +2,7 @@ package plans
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,6 +31,14 @@ type MetricStore interface {
 	FormulaOverrides(ctx context.Context, plID int64) (map[string]string, error)
 	// UpsertOverride — добавить переопределение формулы (версионируется, D11).
 	UpsertOverride(ctx context.Context, plID int64, ov FormulaOverride) error
+	// StagesInit — создать этапы экземпляра при отсутствии (идемпотентно).
+	StagesInit(ctx context.Context, plID int64, stages []StageState) error
+	// Stages — этапы экземпляра.
+	Stages(ctx context.Context, plID int64) ([]StageState, error)
+	// StagesSave — сохранить статусы этапов.
+	StagesSave(ctx context.Context, plID int64, stages []StageState) error
+	// RecordApproval — лист согласования (pl_approval).
+	RecordApproval(ctx context.Context, plID int64, code string, userID int64, decision, legalEntity string) error
 }
 
 // pgStore — pgx-реализация MetricStore.
@@ -174,6 +183,81 @@ func (s *pgStore) UpsertOverride(ctx context.Context, plID int64, ov FormulaOver
 		INSERT INTO pl_formula_override (pl_id, scope_code_cfo, code, block_type, formula_expr, reason)
 		VALUES ($1, $2, $3, $4, $5, $6)`,
 		plID, ov.ScopeCodeCFO, ov.Code, ov.BlockType, ov.FormulaExpr, ov.Reason)
+	return err
+}
+
+func (s *pgStore) StagesInit(ctx context.Context, plID int64, stages []StageState) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for _, st := range stages {
+		dep, _ := json.Marshal(st.DependsOn)
+		var due any
+		if st.DueDate != "" {
+			due = st.DueDate
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO pl_stage_instance (pl_id, stage_code, track, status, due_at, depends_on)
+			VALUES ($1, $2, $3, $4, $5::date, $6)
+			ON CONFLICT (pl_id, stage_code) DO NOTHING`,
+			plID, st.Code, st.Track, st.Status, due, dep); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) Stages(ctx context.Context, plID int64) ([]StageState, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT stage_code, track, status, COALESCE(to_char(due_at, 'YYYY-MM-DD'), ''), depends_on
+		FROM pl_stage_instance WHERE pl_id = $1`, plID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]StageState, 0)
+	for rows.Next() {
+		var st StageState
+		var dep []byte
+		if err := rows.Scan(&st.Code, &st.Track, &st.Status, &st.DueDate, &dep); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(dep, &st.DependsOn)
+		if d, ok := stageDefByCode(st.Code); ok {
+			st.Name = d.Name
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+func (s *pgStore) StagesSave(ctx context.Context, plID int64, stages []StageState) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for _, st := range stages {
+		if _, err := tx.Exec(ctx, `
+			UPDATE pl_stage_instance SET status = $3
+			WHERE pl_id = $1 AND stage_code = $2`, plID, st.Code, st.Status); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *pgStore) RecordApproval(ctx context.Context, plID int64, code string, userID int64, decision, legalEntity string) error {
+	var uid any
+	if userID != 0 {
+		uid = userID
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO pl_approval (pl_id, stage_id, legal_entity, user_id, decision)
+		VALUES ($1, (SELECT id FROM pl_stage_instance WHERE pl_id = $1 AND stage_code = $2), $3, $4, $5)`,
+		plID, code, legalEntity, uid, decision)
 	return err
 }
 

@@ -67,7 +67,11 @@
             <td>{{ it.period_year }}-{{ String(it.period_month).padStart(2, "0") }}</td>
             <td><span class="status-chip">{{ it.status }}</span></td>
             <td class="col-num">{{ it.metric_count }}</td>
-            <td>
+            <td class="row-links">
+              <NuxtLink
+                :to="`/plans/${it.id}?year=${it.period_year}&month=${it.period_month}`"
+                class="link"
+              >Карточка</NuxtLink>
               <NuxtLink
                 :to="`/plans/mp/large?year=${it.period_year}&month=${it.period_month}`"
                 class="link"
@@ -176,6 +180,10 @@ onMounted(load);
 }
 .link {
   color: var(--accent, #4338ca);
+}
+.row-links {
+  display: flex;
+  gap: var(--sp-4);
 }
 .empty {
   text-align: center;
