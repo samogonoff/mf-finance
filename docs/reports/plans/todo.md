@@ -52,12 +52,13 @@ Env: любая новая переменная — сразу в `.env.example`
 - [x] `go test ./internal/plans/...` зелёные (round-trip через in-memory store)
 - [ ] ⏳ накат `0011` `make migrate` + UI-smoke ввода тактики — при `make up`
 
-### [ ] VS4. ABAC-срез (plans_user_scope) — **CHECKPOINT C**
-- [ ] Таблица `plans_user_scope` (user_id, role, stage_code, country, legal_entity, code_cfo[])
-- [ ] `plans/abac.go`: резолв среза; фильтр в `MpForm`/`SaveMpForm`; отклонение чужих ячеек
-- [ ] `PUT /api/plans/scope/{user_id}` (роль `ROLE_PLANS_ADMIN`) + seed ответственных (Мурашко large / Левин small)
-- [ ] Приёмка: small-юзер не видит large на API; площадка 335 не пишет в 337; в UI — `name_cfo`
-- [ ] CHECKPOINT C: матрица доступа SPEC §5 воспроизведена
+### [x] VS4. ABAC-срез (plans_user_scope) — `9051b80`
+- [x] Таблица `plans_user_scope` (`0012`, user_id, role, stage_code, country, legal_entity, code_cfo[])
+- [x] `abac.go`: Principal (+admin-обход), `applyScope`/`checkScopeRows` (чистые); `scope_store.go` (pgx); резолв в `MpForm`/`SaveMpForm`
+- [x] `PUT /api/plans/scope/{user_id}` (роль `ROLE_PLANS_ADMIN`); principal из `auth.CurrentUser`+`HasRole`
+- [x] Приёмка: small-юзер не видит large на API; площадка 335 не пишет в 337; `name_cfo` (из VS3) — покрыто тестами
+- [x] CHECKPOINT C: изоляция разрезов на API воспроизведена (тесты large↔small, своя/чужая площадка)
+- [ ] ⏳ seed реальных ответственных (Мурашко/Левин) — нужны их user_id (B24); назначаются через `PUT /api/plans/scope/{user_id}`. Полный конфигуратор — этап 2
 
 ### [ ] VS5. Комментарии + корректировки (COM-01/ADJ-02)
 - [ ] `migrations/0012_plans_workflow` (`pl_comment`, `pl_adjustment`)
