@@ -77,6 +77,8 @@ publish_prod:
     - export MIGRATE_IMAGE="$CI_REGISTRY_IMAGE/migrations-$reg_tag:$CI_COMMIT_SHORT_SHA"
     - printf "%b" "$ENV_FILE" > .env
     - docker pull "$MIGRATE_IMAGE"
+    # Dirty database workaround: version 13 (T-SQL → no-op migration) needs force
+    - docker run --rm --network host --env-file .env "$MIGRATE_IMAGE" force-cost 13 || true
     - docker run --rm --network host --env-file .env "$MIGRATE_IMAGE" up
   after_script:
     - rm -f .env
