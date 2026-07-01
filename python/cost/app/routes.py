@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, clear_pending_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch)
+from app.db import (apply_pending_changes, clear_pending_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
 from app.notify import notify_admins
 
 router = APIRouter()
@@ -151,12 +151,26 @@ async def load_data(payload: dict) -> dict:
             params.extend(values)
 
     where = " AND ".join(where_parts) if where_parts else "TRUE"
+    join = (
+        'LEFT JOIN cost_calc_approvals ca'
+        '  ON TRIM(cd."Модель") = ca.model'
+        '  AND TRIM(cd."Артикул") = ca.articul'
+        '  AND TRIM(cd."Признак калькуляции") = ca.calc_sign'
+        '  AND TRIM(cd."PLAN_ID") = ca.plan_id'
+    )
 
     async with pool().acquire() as conn:
-        total = await conn.fetchval(f"SELECT COUNT(*) FROM cost_data_cache WHERE {where}", *params) or 0
+        total = await conn.fetchval(
+            f"SELECT COUNT(*) FROM cost_data_cache cd {join} WHERE {where}", *params
+        ) or 0
 
         paginated_params = params + [limit, offset]
-        query = f"SELECT * FROM cost_data_cache WHERE {where} ORDER BY id LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}"
+        query = (
+            f'SELECT cd.*, ca.status AS peo_status, ca.approved_by AS peo_approved_by,'
+            f'  ca.approved_at AS peo_approved_at'
+            f' FROM cost_data_cache cd {join} WHERE {where}'
+            f' ORDER BY cd.id LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}'
+        )
         rows = await conn.fetch(query, *paginated_params)
         data = [dict(row) for row in rows]
 
@@ -258,7 +272,15 @@ async def get_aggregated(payload: dict) -> dict:
             params.extend(values)
 
     where = " AND ".join(where_parts) if where_parts else "TRUE"
-    query = f"SELECT {', '.join(select_parts)} FROM cost_data_cache WHERE {where} GROUP BY {', '.join(f'"{f}"' for f in AGG_GROUP_FIELDS)}"
+    join = (
+        'LEFT JOIN cost_calc_approvals ca'
+        '  ON TRIM(cd."Модель") = ca.model'
+        '  AND TRIM(cd."Артикул") = ca.articul'
+        '  AND TRIM(cd."Признак калькуляции") = ca.calc_sign'
+        '  AND TRIM(cd."PLAN_ID") = ca.plan_id'
+    )
+    select_parts.append("MAX(CASE WHEN ca.status = 'approved' THEN 'approved' WHEN ca.status = 'rejected' THEN 'rejected' ELSE NULL END) AS peo_status")
+    query = f"SELECT {', '.join(select_parts)} FROM cost_data_cache cd {join} WHERE {where} GROUP BY {', '.join(f'cd."{f}"' for f in AGG_GROUP_FIELDS)}"
 
     async with pool().acquire() as conn:
         rows = await conn.fetch(query, *params)
@@ -283,6 +305,43 @@ async def get_aggregated(payload: dict) -> dict:
             row["target_margin_pct"] = target_map.get(l1)
     except Exception:
         pass  # no targets yet — leave field empty
+
+    # Inject draft/pending version status indicator
+    try:
+        pairs = set()
+        for row in data:
+            model = str(row.get("Модель", "") or "").strip()
+            articul = str(row.get("Артикул", "") or "").strip()
+            if model and articul:
+                pairs.add((model, articul))
+        if pairs:
+            pair_list = list(pairs)
+            conditions = " OR ".join(
+                f"(cv.model = ${i*2+1} AND cv.articul = ${i*2+2})"
+                for i in range(len(pair_list))
+            )
+            flat_params = [v for pair in pair_list for v in pair]
+            async with pool().acquire() as conn:
+                ver_rows = await conn.fetch(
+                    f"""SELECT DISTINCT cv.model, cv.articul, cv.status
+                        FROM cost_calc_versions cv
+                        WHERE ({conditions})
+                          AND cv.status IN ('draft', 'pending')""",
+                    *flat_params,
+                )
+            version_map: dict[tuple[str, str], str | None] = {}
+            for vr in ver_rows:
+                key = (str(vr["model"]).strip(), str(vr["articul"]).strip())
+                if key not in version_map:
+                    version_map[key] = vr["status"]
+            for row in data:
+                model = str(row.get("Модель", "") or "").strip()
+                articul = str(row.get("Артикул", "") or "").strip()
+                status = version_map.get((model, articul))
+                if status:
+                    row["version_status"] = status
+    except Exception:
+        pass  # draft indicator is cosmetic — don't break the page
 
     return {"data": data, "count": len(data)}
 
@@ -383,13 +442,14 @@ async def get_raw_rows(payload: dict) -> dict:
 
     params: list[Any] = []
     where_parts: list[str] = []
+    parsed_date = None
 
     for field in AGG_GROUP_FIELDS:
         value = payload.get(field)
         if value is not None and value != "" and value != "—":
-            # дата расчета — TIMESTAMPTZ, asyncpg не принимает строку
             if field == "дата расчета" and isinstance(value, str):
-                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                value = date.fromisoformat(value.split("T")[0])
+                parsed_date = value
             where_parts.append(f'"{field}" = ${len(params) + 1}')
             params.append(value)
 
@@ -400,6 +460,20 @@ async def get_raw_rows(payload: dict) -> dict:
         async with pool().acquire() as conn:
             rows = await conn.fetch(query, *params)
             data = [dict(row) for row in rows]
+            version = await get_active_version(
+                payload.get("Модель"), payload.get("Артикул"),
+                payload.get("Признак калькуляции") or None,
+                payload.get("PLAN_ID") or None,
+                parsed_date or payload.get("дата расчета"),
+            )
+            if version:
+                ver_rows = await conn.fetch(
+                    "SELECT * FROM cost_calc_version_rows WHERE version_id=$1 ORDER BY sort_order",
+                    version["version"]["id"],
+                )
+                if ver_rows:
+                    data = [dict(r) for r in ver_rows]
+                    return {"data": data, "count": len(data), "version_id": version["version"]["id"], "version_status": version["version"]["status"]}
         return {"data": data, "count": len(data)}
     except Exception as e:
         import traceback
@@ -422,13 +496,16 @@ def get_price_levels() -> list[dict]:
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "SELECT NAME, PRICE_TYPE1, PRICE_TYPE3 FROM [dbo].[s_price_level] ORDER BY NAME"
+            "SELECT NAME, PRICE_TYPE1, PRICE_TYPE3, PRICE_TYPE4, PRICE_TYPE5, PRICE_TYPE6 FROM [dbo].[s_price_level] ORDER BY NAME"
         )
         return [
             {
                 "name": (row[0] or "").strip(),
                 "price_type1": float(row[1] or 0),
                 "price_type3": float(row[2] or 0),
+                "price_type4": float(row[3] or 0),
+                "price_type5": float(row[4] or 0),
+                "price_type6": float(row[5] or 0),
             }
             for row in cursor.fetchall()
         ]
@@ -490,6 +567,10 @@ async def save_price_changes(payload: dict) -> dict:
         "Вязание, USD.": payload.get("knitting_usd"),
         "Себестоимость, руб.": payload.get("cost_rub"),
         "Себестоимость, USD.": payload.get("cost_usd"),
+        "Цена РФ": payload.get("price_rf"),
+        "Цена КЗ": payload.get("price_kz"),
+        "Цена УЗ": payload.get("price_uz"),
+        "Комментарий": payload.get("comment") or "",
     }
 
     if _is_mock():
@@ -544,6 +625,10 @@ def _row_data_from_payload(c: dict) -> dict:
         "Вязание, USD.": c.get("knitting_usd"),
         "Себестоимость, руб.": c.get("cost_rub"),
         "Себестоимость, USD.": c.get("cost_usd"),
+        "Цена РФ": c.get("price_rf"),
+        "Цена КЗ": c.get("price_kz"),
+        "Цена УЗ": c.get("price_uz"),
+        "Комментарий": c.get("comment") or "",
     }
 
 
@@ -631,6 +716,140 @@ async def clear_changes() -> dict:
     """Delete ALL rows from cost_price_pending."""
     count = await clear_pending_changes()
     return {"success": True, "deleted": count}
+
+
+# ── Versioned calculation editing (Stream G) ────────────────────────────────
+
+
+@router.get("/checkout-calculation")
+async def checkout_calculation_endpoint(request: Request) -> dict:
+    model = request.query_params.get("model")
+    articul = request.query_params.get("articul")
+    calc_sign = request.query_params.get("calc_sign") or None
+    plan_id = request.query_params.get("plan_id") or None
+    date_str = request.query_params.get("date")
+    username = request.query_params.get("username", "system")
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    if isinstance(date_str, str) and date_str:
+        parsed_date = date.fromisoformat(date_str.replace("T00:00:00Z", "").replace("T00:00:00", ""))
+    else:
+        parsed_date = date_str
+    if _is_mock():
+        return mocks.checkout_calculation(model, articul, calc_sign, plan_id, parsed_date, username)
+    return await checkout_calculation(model, articul, calc_sign, plan_id, parsed_date, username)
+
+
+@router.post("/save-calculation-draft")
+async def save_calculation_draft(payload: dict) -> dict:
+    version_id = payload.get("version_id")
+    rows = payload.get("rows", [])
+    if not version_id:
+        raise HTTPException(400, "version_id required")
+    if _is_mock():
+        return mocks.save_version_draft(version_id, rows)
+    await save_version_draft(version_id, rows)
+    return {"success": True}
+
+
+@router.post("/submit-calculation-draft")
+async def submit_calculation_draft(payload: dict) -> dict:
+    version_id = payload.get("version_id")
+    if not version_id:
+        raise HTTPException(400, "version_id required")
+    comment = payload.get("comment")
+    if _is_mock():
+        return mocks.submit_version(version_id, comment)
+    await submit_version(version_id, comment)
+    return {"success": True}
+
+
+@router.post("/approve-calculation-version")
+async def approve_calculation_version(payload: dict) -> dict:
+    version_id = payload.get("version_id")
+    action = payload.get("action")
+    approved_by = payload.get("approved_by", "system")
+    comment = payload.get("comment")
+    if not version_id or not action:
+        raise HTTPException(400, "version_id and action required")
+    if _is_mock():
+        if action == "approve":
+            return mocks.approve_version(version_id, approved_by)
+        return mocks.reject_version(version_id, approved_by, comment)
+    if action == "approve":
+        await approve_version(version_id, approved_by)
+    elif action == "reject":
+        await reject_version(version_id, approved_by, comment)
+    else:
+        raise HTTPException(400, "action must be 'approve' or 'reject'")
+    return {"success": True}
+
+
+@router.get("/calculation-draft-status")
+async def calculation_draft_status(request: Request) -> dict:
+    model = request.query_params.get("model")
+    articul = request.query_params.get("articul")
+    calc_sign = request.query_params.get("calc_sign") or None
+    plan_id = request.query_params.get("plan_id") or None
+    date_str = request.query_params.get("date")
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    if isinstance(date_str, str) and date_str:
+        parsed_date = date.fromisoformat(date_str.replace("T00:00:00Z", "").replace("T00:00:00", ""))
+    else:
+        parsed_date = date_str
+    if _is_mock():
+        return mocks.get_active_version(model, articul, calc_sign, plan_id, parsed_date)
+    version = await get_active_version(model, articul, calc_sign, plan_id, parsed_date)
+    if version:
+        return {"has_draft": True, "version_id": version["version"]["id"], "status": version["version"]["status"], "rows": version.get("rows", [])}
+    return {"has_draft": False}
+
+
+# ── PEO approval (Stream H) ────────────────────────────────────────────────
+
+
+@router.post("/approve-calculation")
+async def approve_calculation(payload: dict) -> dict:
+    approvals = payload.get("approvals", [])
+    approved_by = payload.get("approved_by", "system")
+    if not approvals:
+        raise HTTPException(400, "approvals list required")
+    for a in approvals:
+        a.setdefault("approved_by", approved_by)
+    if _is_mock():
+        return mocks.save_approvals_batch(approvals)
+    result = await save_approvals_batch(approvals)
+    return {"success": True, "count": len(result)}
+
+
+@router.post("/revoke-approval")
+async def revoke_approval_endpoint(payload: dict) -> dict:
+    model = payload.get("model")
+    articul = payload.get("articul")
+    calc_sign = payload.get("calc_sign")
+    plan_id = payload.get("plan_id")
+    if not model or not articul:
+        raise HTTPException(400, "model and articul required")
+    if _is_mock():
+        return mocks.revoke_approval(model, articul, calc_sign, plan_id)
+    await revoke_approval(model, articul, calc_sign, plan_id)
+    return {"success": True}
+
+
+@router.get("/approval-status")
+async def approval_status(request: Request) -> dict:
+    filters: dict[str, Any] = {}
+    for key in ("model", "articul", "calc_sign", "plan_id", "status"):
+        vals = request.query_params.getlist(key)
+        if len(vals) == 1:
+            filters[key] = vals[0]
+        elif len(vals) > 1:
+            filters[key] = vals
+    if _is_mock():
+        return mocks.get_approval_status(filters)
+    data = await get_approval_status(filters)
+    return {"data": data}
 
 
 # ── Margin targets ──────────────────────────────────────────────────────────

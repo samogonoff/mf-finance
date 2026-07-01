@@ -313,11 +313,11 @@ def _match_filters(row: dict, payload: dict) -> bool:
 FILTER_OPTIONS: dict[str, Any] = get_filter_options({})
 
 PRICE_LEVELS: list[dict[str, Any]] = [
-    {"name": "Базовый розничный",  "price_type1": 1850.00, "price_type3": 2470.00},
-    {"name": "Премиум розничный",  "price_type1": 2280.00, "price_type3": 3150.00},
-    {"name": "Партнёрский",        "price_type1": 1620.00, "price_type3": 2120.00},
-    {"name": "Опт",                "price_type1": 1450.00, "price_type3": 1880.00},
-    {"name": "Распродажа",         "price_type1": 1290.00, "price_type3": 1690.00},
+    {"name": "Базовый розничный",  "price_type1": 1850.00, "price_type3": 2470.00, "price_type4": 2800.00, "price_type5": 2500.00, "price_type6": 2300.00},
+    {"name": "Премиум розничный",  "price_type1": 2280.00, "price_type3": 3150.00, "price_type4": 3500.00, "price_type5": 3200.00, "price_type6": 2900.00},
+    {"name": "Партнёрский",        "price_type1": 1620.00, "price_type3": 2120.00, "price_type4": 2400.00, "price_type5": 2100.00, "price_type6": 1900.00},
+    {"name": "Опт",                "price_type1": 1450.00, "price_type3": 1880.00, "price_type4": 2100.00, "price_type5": 1900.00, "price_type6": 1700.00},
+    {"name": "Распродажа",         "price_type1": 1290.00, "price_type3": 1690.00, "price_type4": 1900.00, "price_type5": 1700.00, "price_type6": 1500.00},
 ]
 
 
@@ -350,6 +350,12 @@ def aggregated(payload: dict | None = None) -> dict:
     for row in rows:
         l1 = (row.get("Level 01") or "").strip()
         row["target_margin_pct"] = _mock_margin_targets.get(l1)
+    # Inject mock version_status for first few rows to test UI indicator
+    for i, row in enumerate(rows):
+        if i == 0:
+            row["version_status"] = "draft"
+        elif i == 1:
+            row["version_status"] = "pending"
     return {"data": rows, "count": len(rows)}
 
 
@@ -475,3 +481,71 @@ def details(model: str) -> dict:
         },
     ]
     return {"data": rows, "count": len(rows)}
+
+
+# ── Mock versioning (Stream G) ─────────────────────────────────────────────
+
+_mock_approvals_store: dict[tuple[str, str, str | None, str | None], str] = {}
+
+
+def checkout_calculation(model, articul, calc_sign, plan_id, date, username) -> dict:
+    rows = _all_rows()
+    filtered = [
+        r for r in rows
+        if r.get("Модель") == model and r.get("Артикул") == articul
+    ]
+    for r in filtered:
+        r["change_type"] = "original"
+    return {"version_id": 1, "rows": filtered}
+
+
+def save_version_draft(version_id, rows) -> dict:
+    return {"success": True, "mock": True}
+
+
+def submit_version(version_id, comment=None) -> dict:
+    return {"success": True, "mock": True}
+
+
+def approve_version(version_id, approved_by) -> dict:
+    return {"success": True, "mock": True}
+
+
+def reject_version(version_id, approved_by, comment=None) -> dict:
+    return {"success": True, "mock": True}
+
+
+def get_active_version(model, articul, calc_sign, plan_id, date) -> dict:
+    return {"has_draft": False}
+
+
+def delete_version(version_id) -> dict:
+    return {"success": True, "mock": True}
+
+
+# ── Mock PEO approvals (Stream H) ──────────────────────────────────────────
+
+
+def save_approvals_batch(approvals: list[dict]) -> dict:
+    for a in approvals:
+        key = (a.get("model", ""), a.get("articul", ""), a.get("calc_sign"), a.get("plan_id"))
+        _mock_approvals_store[key] = a.get("status", "pending")
+    return {"success": True, "mock": True, "count": len(approvals)}
+
+
+def revoke_approval(model, articul, calc_sign, plan_id) -> dict:
+    key = (model, articul, calc_sign, plan_id)
+    _mock_approvals_store.pop(key, None)
+    return {"success": True, "mock": True}
+
+
+def get_approval_status(filters: dict | None = None) -> dict:
+    result = []
+    for (m, a, cs, pid), status in _mock_approvals_store.items():
+        if filters:
+            if filters.get("model") and m != filters["model"]:
+                continue
+            if filters.get("articul") and a != filters["articul"]:
+                continue
+        result.append({"model": m, "articul": a, "calc_sign": cs, "plan_id": pid, "status": status})
+    return {"data": result, "mock": True}
