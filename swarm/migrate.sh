@@ -8,6 +8,24 @@ fi
 : "${POSTGRES_URL:?POSTGRES_URL is required}"
 : "${COST_DATABASE_URL:?COST_DATABASE_URL is required}"
 
+# Single-database force commands (to fix dirty state without affecting other DBs).
+case "${1:-}" in
+  force-cost)
+    /usr/local/bin/migrate \
+      -path=/migrations/cost \
+      -database "$COST_DATABASE_URL" \
+      force "${2:?usage: $0 force-cost <version>}"
+    exit $?
+    ;;
+  force-finance)
+    /usr/local/bin/migrate \
+      -path=/migrations/finance \
+      -database "$POSTGRES_URL" \
+      force "${2:?usage: $0 force-finance <version>}"
+    exit $?
+    ;;
+esac
+
 echo "==> migrate finance"
 /usr/local/bin/migrate \
   -path=/migrations/finance \

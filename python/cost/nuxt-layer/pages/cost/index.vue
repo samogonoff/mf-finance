@@ -3357,6 +3357,39 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   white-space: nowrap;
 }
 
+/* Sticky/frozen columns for the main aggregated table (cols 1-8) */
+#cost-table-1.data-table th:nth-child(-n+8),
+#cost-table-1.data-table td:nth-child(-n+8) {
+  position: sticky;
+  background: var(--bg-surface);
+}
+#cost-table-1.data-table th:nth-child(1),
+#cost-table-1.data-table td:nth-child(1) { left: 0; width: 70px; min-width: 70px; max-width: 70px; z-index: 4; }
+#cost-table-1.data-table th:nth-child(2),
+#cost-table-1.data-table td:nth-child(2) { left: 70px; width: 32px; min-width: 32px; max-width: 32px; z-index: 4; }
+#cost-table-1.data-table th:nth-child(3),
+#cost-table-1.data-table td:nth-child(3) { left: 102px; width: 160px; min-width: 160px; z-index: 4; }
+#cost-table-1.data-table th:nth-child(4),
+#cost-table-1.data-table td:nth-child(4) { left: 262px; width: 110px; min-width: 110px; z-index: 4; }
+#cost-table-1.data-table th:nth-child(5),
+#cost-table-1.data-table td:nth-child(5) { left: 372px; width: 90px; min-width: 90px; z-index: 4; }
+#cost-table-1.data-table th:nth-child(6),
+#cost-table-1.data-table td:nth-child(6) { left: 462px; width: 200px; min-width: 200px; z-index: 4; }
+#cost-table-1.data-table th:nth-child(7),
+#cost-table-1.data-table td:nth-child(7) { left: 662px; width: 120px; min-width: 120px; z-index: 4; }
+#cost-table-1.data-table th:nth-child(8),
+#cost-table-1.data-table td:nth-child(8) { left: 782px; width: 90px; min-width: 90px; z-index: 4; box-shadow: 3px 0 6px rgba(0,0,0,0.06); }
+/* Restore selected/hover/sorted backgrounds on sticky cells */
+#cost-table-1.data-table tr.selected td:nth-child(-n+8) {
+  background: var(--bg-surface-3);
+}
+#cost-table-1.data-table th:nth-child(-n+8):hover {
+  background: var(--bg-surface-3);
+}
+#cost-table-1.data-table th.sorted:nth-child(-n+8) {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
+}
+
 .loader {
   width: 24px;
   height: 24px;
