@@ -57,6 +57,13 @@
           <span>Только строки без оптовой цены</span>
         </label>
 
+        <select v-model="peoFilter" class="peo-filter-select" @change="loadData">
+          <option value="all">Все статусы ПЭО</option>
+          <option value="approved">Согласовано</option>
+          <option value="none">Не согласовано</option>
+          <option value="rejected">Отклонено</option>
+        </select>
+
         <div v-if="cascadeBusy" class="filters-overlay">
           <div class="loader"></div>
           <span>Обновление фильтров…</span>
@@ -227,6 +234,10 @@
               <th class="col-num">
                 Розничная наценка
               </th>
+              <th class="col-num">Цена РФ</th>
+              <th class="col-num">Цена КЗ</th>
+              <th class="col-num">Цена УЗ</th>
+              <th>Комментарий</th>
               <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
                 Сред. опт (руб)<span v-if="sortField === 'avg_Отпускная цена по уровню, руб'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
@@ -282,10 +293,10 @@
                 Себест. ($)<span v-if="sortField === 'sum_Себестоимость, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th class="col-num" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
-                Наценка <template v-if="showUSD">($)</template><template v-else>(руб)</template><span v-if="sortField === 'calc_markup_rub'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                Рентабельность <template v-if="showUSD">($)</template><template v-else>(руб)</template><span v-if="sortField === 'calc_markup_rub'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th class="col-num" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
-                Наценка (%)<span v-if="sortField === 'calc_markup_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                Рентабельность (%)<span v-if="sortField === 'calc_markup_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th class="col-num" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
                 Маржа (%)<span v-if="sortField === 'calc_margin_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
@@ -293,16 +304,17 @@
               <th class="col-num" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
                 Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
+              <th class="col-peo">ПЭО</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="30" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="34" class="muted" style="text-align: center; padding: 24px">
                 Загрузка данных…
               </td>
             </tr>
             <tr v-else-if="!pageRows.length">
-              <td colspan="30" class="muted" style="text-align: center; padding: 24px">
+              <td colspan="34" class="muted" style="text-align: center; padding: 24px">
                 Нет данных. Загрузите данные кнопкой выше.
               </td>
             </tr>
@@ -312,7 +324,12 @@
               :class="{ selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
               @click="selectRow(getOriginalIndex(row))"
             >
-              <td><button class="btn-details" @click.stop="openDetails(row)">🔍</button></td>
+              <td>
+                <span v-if="row.version_status === 'draft'" class="draft-badge draft-badge--draft" title="Черновик">✎</span>
+                <span v-if="row.version_status === 'pending'" class="draft-badge draft-badge--pending" title="Ожидает утверждения">⏳</span>
+                <button class="btn-details" @click.stop="openDetails(row)">🔍</button>
+                <button class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">✎</button>
+              </td>
               <td><button class="btn-details" @click.stop="openRawRows(row)" title="Исходные строки">📋</button></td>
               <td>{{ row['Бренд-менеджер'] || '—' }}</td>
               <td>{{ row['Модель'] || '—' }}</td>
@@ -353,6 +370,38 @@
                   </option>
                 </select>
               </td>
+              <td>
+                <input class="price-input" type="number"
+                  :value="priceRF[getOriginalIndex(row)] ?? ''"
+                  placeholder="Цена РФ"
+                  @click.stop
+                  @input="onPriceRFInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
+                />
+              </td>
+              <td>
+                <input class="price-input" type="number"
+                  :value="priceKZ[getOriginalIndex(row)] ?? ''"
+                  placeholder="Цена КЗ"
+                  @click.stop
+                  @input="onPriceKZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
+                />
+              </td>
+              <td>
+                <input class="price-input" type="number"
+                  :value="priceUZ[getOriginalIndex(row)] ?? ''"
+                  placeholder="Цена УЗ"
+                  @click.stop
+                  @input="onPriceUZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
+                />
+              </td>
+              <td>
+                <input class="comment-input" type="text"
+                  :value="comments[getOriginalIndex(row)] ?? ''"
+                  placeholder="..."
+                  @click.stop
+                  @input="onCommentInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
+                />
+              </td>
               <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
               <td>{{ row['Уровень цен'] || '—' }}</td>
               <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
@@ -377,6 +426,11 @@
               </td>
               <td class="col-num num">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
               <td class="col-num num" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
+              <td class="col-peo">
+                <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="openApprovalPopup(row)">🟢</span>
+                <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" @click.stop="openApprovalPopup(row)">🔴</span>
+                <span v-else class="peo-badge peo-none" @click.stop="openApprovalPopup(row)">⚪</span>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -444,8 +498,8 @@
                 <th class="col-num">Декор</th>
                 <th class="col-num">Вязание</th>
                 <th class="col-num">Себест.</th>
-                <th class="col-num">Наценка</th>
-                <th class="col-num">Наценка %</th>
+                <th class="col-num">Рентабельность</th>
+                <th class="col-num">Рентабельность %</th>
                 <th class="col-num">Маржа %</th>
               </tr>
             </thead>
@@ -614,8 +668,12 @@
                   <th>Уровень цен</th>
                   <th class="col-num">Розн., руб</th>
                   <th class="col-num">Опт., руб</th>
-                  <th class="col-num">Наценка, руб</th>
-                  <th class="col-num">Наценка, %</th>
+                  <th class="col-num">Цена РФ</th>
+                  <th class="col-num">Цена КЗ</th>
+                  <th class="col-num">Цена УЗ</th>
+                  <th>Комментарий</th>
+                  <th class="col-num">Рентабельность, руб</th>
+                  <th class="col-num">Рентабельность, %</th>
                   <th class="col-num">Маржа, %</th>
                   <th class="col-num">Откл. %</th>
                   <th>Признак калькуляции</th>
@@ -632,6 +690,10 @@
                   <td>{{ pc['Уровень цен'] || pc.price_level || '—' }}</td>
                   <td class="col-num num">{{ fmt(pc['Розничная цена по уровню, руб.'] || pc.retail_rub) }}</td>
                   <td class="col-num num">{{ fmt(pc['Отпускная цена по уровню, руб'] || pc.wholesale_rub) }}</td>
+                  <td class="col-num num">{{ fmt(pc['Цена РФ']) }}</td>
+                  <td class="col-num num">{{ fmt(pc['Цена КЗ']) }}</td>
+                  <td class="col-num num">{{ fmt(pc['Цена УЗ']) }}</td>
+                  <td>{{ pc['Комментарий'] || '—' }}</td>
                   <td class="col-num num">{{ fmt(calcApprovalModal(pc).markupRub) }}</td>
                   <td class="col-num num">{{ calcApprovalModal(pc).markupPct.toFixed(1) }}%</td>
                   <td class="col-num num">{{ calcApprovalModal(pc).marginPct.toFixed(1) }}%</td>
@@ -660,13 +722,106 @@
         </div>
       </div>
     </div>
+
+    <!-- Version editor modal -->
+    <Teleport to="body">
+      <div v-if="editingVersion" class="modal-overlay modal-overlay--solid" @click.self="closeVersionEditor">
+        <div class="modal-content modal-wide" @click.stop>
+          <div class="modal-header">
+            <h2>Редактирование расчёта: {{ editingVersion.model }} / {{ editingVersion.articul }}</h2>
+            <div class="modal-header-actions">
+              <button class="modal-close" @click="closeVersionEditor">×</button>
+            </div>
+          </div>
+          <div class="version-editor-toolbar">
+            <button class="btn btn-sm" @click="addVersionRow">+ Добавить строку</button>
+            <button class="btn btn-sm btn-danger" @click="deleteSelectedRows">✕ Удалить</button>
+            <span class="spacer"></span>
+            <button class="btn btn-sm" :disabled="savingDraft" @click="saveDraft">{{ savingDraft ? 'Сохранение…' : '💾 Сохранить' }}</button>
+            <button class="btn btn-sm btn-primary" :disabled="submittingDraft" @click="submitDraft">{{ submittingDraft ? 'Отправка…' : '📨 Отправить на утверждение' }}</button>
+          </div>
+          <div class="version-editor-table-wrap">
+            <table class="version-editor-table">
+              <thead>
+                <tr>
+                  <th class="col-chk"><input type="checkbox" @change="(e: any) => editingVersion?.rows.forEach(r => r._selected = (e.target as HTMLInputElement).checked)" /></th>
+                  <th>Материал/операция</th>
+                  <th>Наименование</th>
+                  <th>Артикул материала</th>
+                  <th class="col-num">Норма</th>
+                  <th class="col-num">Цена, руб.</th>
+                  <th class="col-num">Цена, USD</th>
+                  <th class="col-num">Курс</th>
+                  <th class="col-num">Сумма, руб.</th>
+                  <th>Комментарий</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(vr, vi) in editingVersion.rows" :key="vi"
+                  :class="{ 'row-added': vr.change_type === 'added', 'row-modified': vr.change_type === 'modified' }">
+                  <td><input type="checkbox" v-model="vr._selected" /></td>
+                  <td>
+                    <select :value="vr['Материал/операция/декор(призн)']" class="editor-select" @change="onVersionRowEdit(vr, $event, 'Материал/операция/декор(призн)')">
+                      <option value="материал">материал</option>
+                      <option value="техоперация">техоперация</option>
+                      <option value="декор">декор</option>
+                    </select>
+                  </td>
+                  <td><input :value="vr['Наименование']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /></td>
+                  <td><input :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /></td>
+                  <td><input :value="vr['Норма']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /></td>
+                  <td><input :value="vr['цена материала, руб.']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /></td>
+                  <td><input :value="vr['цена материала, USD.']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /></td>
+                  <td><input :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /></td>
+                  <td class="col-num">{{ ((vr['Норма'] || 0) * (vr['цена материала, руб.'] || 0)).toLocaleString('ru-RU', {minimumFractionDigits:2}) }}</td>
+                  <td><input :value="vr.row_comment" class="editor-input" placeholder="..." @input="onVersionRowEdit(vr, $event, 'row_comment')" /></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- PEO approval popup modal -->
+    <Teleport to="body">
+      <div v-if="approvalTarget" class="modal-overlay" @click.self="closeApprovalPopup">
+        <div class="modal approval-modal">
+          <div class="modal-header">
+            <span>Согласование расчёта</span>
+            <span class="modal-subtitle">{{ approvalTarget['Модель'] || '—' }} / {{ approvalTarget['Артикул'] || '—' }}</span>
+            <button class="modal-close" @click="closeApprovalPopup">✕</button>
+          </div>
+          <div class="approval-body">
+            <div class="approval-status-row">
+              <span class="approval-label">Статус ПЭО:</span>
+              <span v-if="approvalTarget.peo_status === 'approved'" class="peo-badge peo-approved">🟢 Согласовано</span>
+              <span v-else-if="approvalTarget.peo_status === 'rejected'" class="peo-badge peo-rejected">🔴 Отклонено</span>
+              <span v-else class="peo-badge peo-none">⚪ Нет статуса</span>
+            </div>
+            <div v-if="approvalTarget.peo_approved_by" class="approval-info-row">
+              <span class="approval-label">Кто:</span>
+              <span>{{ approvalTarget.peo_approved_by }}</span>
+            </div>
+            <div class="approval-actions">
+              <button class="btn btn-sm btn-primary" :disabled="approving" @click="setApproval('approved')">✓ Согласовать</button>
+              <button class="btn btn-sm btn-danger" :disabled="approving" @click="setApproval('rejected')">✗ Отклонить</button>
+            </div>
+            <div v-if="approvalTarget.peo_status === 'rejected' || approvalTarget.peo_status === 'pending' || !approvalTarget.peo_status" class="approval-comment-row">
+              <label>Комментарий:</label>
+              <textarea v-model="approvalComment" class="approval-comment" rows="2" placeholder="Причина отклонения…"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 
-interface PriceLevel { name: string; price_type1: number; price_type3: number }
+interface PriceLevel { name: string; price_type1: number; price_type3: number; price_type4: number; price_type5: number; price_type6: number }
 interface FilterOption { id: string; text: string }
 type FilterKey =
   | "brand_manager" | "level01" | "level02" | "level03" | "level04" | "level05"
@@ -684,12 +839,12 @@ const filterConfig: { key: FilterKey; label: string }[] = [
 
 const LEVEL_KEYS = ["level01", "level02", "level03", "level04", "level05"];
 
-/** Расшифровки признаков калькуляции — при необходимости уточнить у бухгалтерии */
+/** Расшифровки признаков калькуляции */
 const CALC_SIGN_DESCRIPTIONS: Record<string, string> = {
-  'ПКПСС': 'Плановая калькуляция по прямым статьям себестоимости',
-  'КПСС': 'Коммерческая калькуляция по статьям себестоимости',
-  'ПФКСС': 'Прямая фактическая калькуляция себестоимости',
-  'ФКСС': 'Фактическая калькуляция себестоимости (только чтение)',
+  'ПКПСС': 'новая разработка',
+  'КПСС': 'плановая калькуляция',
+  'ПФКСС': 'фактическая расценка ассортимента',
+  'ФКСС': 'история себестоимости',
 };
 
 /** Обогатить плоский список опций расшифровками для calc_sign */
@@ -709,6 +864,7 @@ const apiHostLabel = computed(() => apiBase.value || "локального API")
 
 const mockMode = ref(false);
 const showUSD = ref(true);
+const username = 'system';
 
 // ── Margin targets state ─────────────────────────────────────────────────────
 
@@ -884,6 +1040,11 @@ function buildFilters(): Record<string, any> {
 const fetchHeaders = computed(() => ({}));
 const noWholesaleOnly = ref(false);
 
+const approvalTarget = ref<any>(null);
+const approvalComment = ref('');
+const approving = ref(false);
+const peoFilter = ref<string>('all');
+
 // ── Data loading ────────────────────────────────────────────────────────────
 
 const allAggregated = ref<any[]>([]);
@@ -1050,9 +1211,11 @@ const pageRange = computed(() => {
 async function loadData() {
   loading.value = true;
   try {
+    const payload = buildFilters();
+    if (peoFilter.value !== 'all') payload.peo_filter = peoFilter.value;
     const result = await $fetch<{ data: any[]; count: number }>(
       `${apiBase.value}/api/cost/aggregated`,
-      { method: "POST", body: buildFilters(), headers: fetchHeaders.value }
+      { method: "POST", body: payload, headers: fetchHeaders.value }
     );
     allAggregated.value = result.data || [];
     totalAllRecords.value = result.count || 0;
@@ -1123,7 +1286,6 @@ async function saveMarginTargets() {
   marginSaving.value = true;
   marginSaveStatus.value = '';
   try {
-    const username = 'system';
     const result = await $fetch<{ success: boolean; count: number }>(
       `${apiBase.value}/api/cost/margin-targets`,
       {
@@ -1589,12 +1751,11 @@ function ap(){
 (function(){
   var dd=document.getElementById("msd_api_cs");
   if(dd){
-    var CS_DESC={
-      "\\u041F\\u041A\\u041F\\u0421\\u0421":"\\u041F\\u043B\\u0430\\u043D\\u043E\\u0432\\u0430\\u044F \\u043A\\u0430\\u043B\\u044C\\u043A\\u0443\\u043B\\u044F\\u0446\\u0438\\u044F \\u043F\\u043E \\u043F\\u0440\\u044F\\u043C\\u044B\\u043C \\u0441\\u0442\\u0430\\u0442\\u044C\\u044F\\u043C \\u0441\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u0438",
-      "\\u041A\\u041F\\u0421\\u0421":"\\u041A\\u043E\\u043C\\u043C\\u0435\\u0440\\u0447\\u0435\\u0441\\u043A\\u0430\\u044F \\u043A\\u0430\\u043B\\u044C\\u043A\\u0443\\u043B\\u044F\\u0446\\u0438\\u044F \\u043F\\u043E \\u0441\\u0442\\u0430\\u0442\\u044C\\u044F\\u043C \\u0441\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u0438",
-      "\\u041F\\u0424\\u041A\\u0421\\u0421":"\\u041F\\u0440\\u044F\\u043C\\u0430\\u044F \\u0444\\u0430\\u043A\\u0442\\u0438\\u0447\\u0435\\u0441\\u043A\\u0430\\u044F \\u043A\\u0430\\u043B\\u044C\\u043A\\u0443\\u043B\\u044F\\u0446\\u0438\\u044F \\u0441\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u0438",
-      "\\u0424\\u041A\\u0421\\u0421":"\\u0424\\u0430\\u043A\\u0442\\u0438\\u0447\\u0435\\u0441\\u043A\\u0430\\u044F \\u043A\\u0430\\u043B\\u044C\\u043A\\u0443\\u043B\\u044F\\u0446\\u0438\\u044F \\u0441\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u0438 (\\u0442\\u043E\\u043B\\u044C\\u043A\\u043E \\u0447\\u0442\\u0435\\u043D\\u0438\\u0435)"
-    };
+    var CS_DESC={};
+    CS_DESC["\\u041F\\u041A\\u041F\\u0421\\u0421"]="\\u043D\\u043E\\u0432\\u0430\\u044F \\u0440\\u0430\\u0437\\u0440\\u0430\\u0431\\u043E\\u0442\\u043A\\u0430";
+    CS_DESC["\\u041A\\u041F\\u0421\\u0421"]="\\u043F\\u043B\\u0430\\u043D\\u043E\\u0432\\u0430\\u044F \\u043A\\u0430\\u043B\\u044C\\u043A\\u0443\\u043B\\u044F\\u0446\\u0438\\u044F";
+    CS_DESC["\\u041F\\u0424\\u041A\\u0421\\u0421"]="\\u0444\\u0430\\u043A\\u0442\\u0438\\u0447\\u0435\\u0441\\u043A\\u0430\\u044F \\u0440\\u0430\\u0441\\u0446\\u0435\\u043D\\u043A\\u0430 \\u0430\\u0441\\u0441\\u043E\\u0440\\u0442\\u0438\\u043C\\u0435\\u043D\\u0442\\u0430";
+    CS_DESC["\\u0424\\u041A\\u0421\\u0421"]="\\u0438\\u0441\\u0442\\u043E\\u0440\\u0438\\u044F \\u0441\\u0435\\u0431\\u0435\\u0441\\u0442\\u043E\\u0438\\u043C\\u043E\\u0441\\u0442\\u0438";
     var csOpts=["\\u041F\\u041A\\u041F\\u0421\\u0421","\\u041A\\u041F\\u0421\\u0421","\\u041F\\u0424\\u041A\\u0421\\u0421","\\u0424\\u041A\\u0421\\u0421"];
     var h="";
     for(var oi=0;oi<csOpts.length;oi++){
@@ -1845,6 +2006,18 @@ const uniqueRetailPrices = computed(() => {
 /** Выбранное значение «Розничная наценка» по строке (индекс → value). */
 const markupSelections = reactive<Record<number, string>>({});
 
+/** Реактивные значения цен РФ, КЗ, УЗ по строке (индекс → value). Заполняются из price_type4/5/6 при выборе наценки, переопределяются пользователем. */
+const priceRF = reactive<Record<number, number>>({});
+const priceKZ = reactive<Record<number, number>>({});
+const priceUZ = reactive<Record<number, number>>({});
+
+const editingVersion = ref<{version_id: number | null, rows: any[], model: string, articul: string} | null>(null);
+const savingDraft = ref(false);
+const submittingDraft = ref(false);
+
+/** Реактивные значения комментариев по строке (индекс → строка). */
+const comments = reactive<Record<number, string>>({});
+
 async function loadPriceLevels() {
   try {
     priceLevels.value = await $fetch<PriceLevel[]>(
@@ -1885,6 +2058,192 @@ function getMarkupOptions(row: any): { value: string; label: string }[] {
   }
   return results;
 }
+
+/** Обработчики ввода цен РФ, КЗ, УЗ. */
+const onPriceRFInput = (absoluteIdx: number, value: string) => {
+  const v = parseFloat(value);
+  priceRF[absoluteIdx] = isNaN(v) ? 0 : v;
+  changedRows.add(absoluteIdx);
+};
+const onPriceKZInput = (absoluteIdx: number, value: string) => {
+  const v = parseFloat(value);
+  priceKZ[absoluteIdx] = isNaN(v) ? 0 : v;
+  changedRows.add(absoluteIdx);
+};
+const onPriceUZInput = (absoluteIdx: number, value: string) => {
+  const v = parseFloat(value);
+  priceUZ[absoluteIdx] = isNaN(v) ? 0 : v;
+  changedRows.add(absoluteIdx);
+};
+
+const onCommentInput = (absoluteIdx: number, value: string) => {
+  comments[absoluteIdx] = value || "";
+  changedRows.add(absoluteIdx);
+};
+
+const openVersionEditor = async (row: any) => {
+  const idx = getOriginalIndex(row);
+  const r = allAggregated.value[idx];
+  if (!r) return;
+  try {
+    const params = new URLSearchParams({
+      model: r['Модель'] || '',
+      articul: r['Артикул'] || '',
+      calc_sign: r['Признак калькуляции'] || '',
+      plan_id: r['PLAN_ID'] || '',
+      date: r['дата расчета'] || '',
+      username: username || 'system',
+    });
+    const data = await $fetch<{ version_id: number; rows: any[] }>(
+      `${apiBase.value}/api/cost/checkout-calculation?${params}`,
+      { headers: fetchHeaders.value }
+    );
+    editingVersion.value = {
+      version_id: data.version_id,
+      rows: (data.rows || []).map((rr: any) => ({...rr, _selected: false})),
+      model: r['Модель'],
+      articul: r['Артикул'],
+    };
+  } catch (e: any) {
+    console.error('[cost] checkout failed', e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  }
+};
+
+const saveDraft = async () => {
+  if (!editingVersion.value) return;
+  savingDraft.value = true;
+  try {
+    const resp = await fetch(`${apiBase.value}/api/cost/save-calculation-draft`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        version_id: editingVersion.value.version_id,
+        rows: editingVersion.value.rows,
+      }),
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData?.detail || `HTTP ${resp.status}`);
+    }
+    alert('Черновик сохранён');
+  } catch (e) {
+    alert('Ошибка при сохранении: ' + (e?.message || String(e)));
+  } finally {
+    savingDraft.value = false;
+  }
+};
+
+const submitDraft = async () => {
+  if (!editingVersion.value) return;
+  if (!confirm('Отправить расчёт на утверждение?')) return;
+  submittingDraft.value = true;
+  try {
+    const resp = await fetch(`${apiBase.value}/api/cost/submit-calculation-draft`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({version_id: editingVersion.value.version_id}),
+    });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData?.detail || `HTTP ${resp.status}`);
+    }
+    alert('Расчёт отправлен на утверждение');
+    editingVersion.value = null;
+  } catch (e) {
+    alert('Ошибка при отправке: ' + (e?.message || String(e)));
+  } finally {
+    submittingDraft.value = false;
+  }
+};
+
+const closeVersionEditor = () => { editingVersion.value = null; };
+
+const addVersionRow = () => {
+  if (!editingVersion.value) return;
+  const template: any = {};
+  if (editingVersion.value.rows.length > 0) {
+    const first = editingVersion.value.rows[0];
+    for (const key of Object.keys(first)) {
+      if (key !== 'id' && key !== 'version_id' && key !== 'sort_order' && key !== '_selected') {
+        template[key] = first[key];
+      }
+    }
+    // Reset only user-editable material fields — preserve dates, model info, prices, etc.
+    template['Материал/операция/декор(призн)'] = 'материал';
+    template['Наименование'] = '';
+    template['артикул материала'] = '';
+    template['Норма'] = 0;
+    template['цена материала, руб.'] = 0;
+    template['цена материала, USD.'] = 0;
+    template['row_comment'] = '';
+    // Zero out cost components — user fills norm + price, these get recalculated on save
+    template['Основные материалы, руб.'] = 0;
+    template['Основные материалы, USD.'] = 0;
+    template['Вспомогательные материалы, руб.'] = 0;
+    template['Вспомогательные материалы, USD.'] = 0;
+    template['Пошив, руб.'] = 0;
+    template['Пошив, USD.'] = 0;
+    template['Раскрой, руб.'] = 0;
+    template['Раскрой, USD.'] = 0;
+    template['Декоры, руб.'] = 0;
+    template['Декоры, USD.'] = 0;
+    template['Вязание, руб.'] = 0;
+    template['Вязание, USD.'] = 0;
+  }
+  template.change_type = 'added';
+  template._selected = false;
+  editingVersion.value.rows.push(template);
+};
+
+const deleteSelectedRows = () => {
+  if (!editingVersion.value) return;
+  editingVersion.value.rows = editingVersion.value.rows.filter((r: any) => !r._selected);
+};
+
+const onVersionRowEdit = (row: any, event: Event, field: string) => {
+  const target = event.target as HTMLInputElement | HTMLSelectElement;
+  let val: any = target.value;
+  // Parse numeric fields
+  if (field === 'Норма' || field === 'цена материала, руб.' || field === 'цена материала, USD.' || field === 'Курс на дату расчета') {
+    val = target.value === '' ? null : parseFloat(target.value);
+  }
+  row[field] = val;
+  // Mark row as modified (unless it's already 'added')
+  if (row.change_type === 'original') {
+    row.change_type = 'modified';
+  }
+  // Auto-convert RUB ↔ USD via exchange rate
+  const rate = Number(row['Курс на дату расчета'] || 0);
+  if (rate > 0) {
+    if (field === 'цена материала, USD.') {
+      // USD changed → recalc RUB
+      const usd = Number(val || 0);
+      row['цена материала, руб.'] = usd * rate;
+    } else if (field === 'цена материала, руб.') {
+      // RUB changed → recalc USD
+      const rub = Number(val || 0);
+      row['цена материала, USD.'] = rub / rate;
+    } else if (field === 'Курс на дату расчета') {
+      // Rate changed → recalc RUB from USD (if USD set), or USD from RUB (if RUB set)
+      const usd = Number(row['цена материала, USD.'] || 0);
+      const rub = Number(row['цена материала, руб.'] || 0);
+      if (usd > 0) {
+        row['цена материала, руб.'] = usd * rate;
+      } else if (rub > 0) {
+        row['цена материала, USD.'] = rub / rate;
+      }
+    }
+  }
+  // Recalculate Основные материалы from Норма × цена материала
+  if (field === 'Норма' || field === 'цена материала, руб.' || field === 'цена материала, USD.' || field === 'Курс на дату расчета') {
+    const norm = row['Норма'] || 0;
+    const priceRub = row['цена материала, руб.'] || 0;
+    const priceUsd = row['цена материала, USD.'] || 0;
+    row['Основные материалы, руб.'] = norm * priceRub;
+    row['Основные материалы, USD.'] = norm * priceUsd;
+  }
+};
 
 /** Ввод розничной цены: очищаем зависимые поля, при единственном варианте наценки выбираем его автоматически. */
 const onRetailPriceInput = (absoluteIdx: number, value: string) => {
@@ -1953,6 +2312,10 @@ const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
   row["Уровень цен"] = matchedLevel.name;
   row["avg_Розничная цена по уровню, USD."] = retailUsd;
   row["avg_Отпускная цена по уровню, USD."] = wholesaleUsd;
+  // Pre-populate Цена РФ/КЗ/УЗ from selected price level (PRICE_TYPE4/5/6)
+  priceRF[absoluteIdx] = matchedLevel.price_type4;
+  priceKZ[absoluteIdx] = matchedLevel.price_type5;
+  priceUZ[absoluteIdx] = matchedLevel.price_type6;
   markupSelections[absoluteIdx] = markupValue;
   changedRows.add(absoluteIdx);
 
@@ -1995,6 +2358,10 @@ const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
         knitting_usd: row["sum_Вязание, USD."],
         cost_rub: row["sum_Себестоимость, руб."],
         cost_usd: row["sum_Себестоимость, USD."],
+        price_rf: priceRF[absoluteIdx] || 0,
+        price_kz: priceKZ[absoluteIdx] || 0,
+        price_uz: priceUZ[absoluteIdx] || 0,
+        comment: comments[absoluteIdx] || "",
       },
       headers: fetchHeaders.value,
     });
@@ -2047,6 +2414,10 @@ const saveAllChanges = async () => {
         knitting_usd: row["sum_Вязание, USD."],
         cost_rub: row["sum_Себестоимость, руб."],
         cost_usd: row["sum_Себестоимость, USD."],
+        price_rf: priceRF[idx] || 0,
+        price_kz: priceKZ[idx] || 0,
+        price_uz: priceUZ[idx] || 0,
+        comment: comments[idx] || "",
       };
     });
     const result = await $fetch<{ success: boolean; count: number; error?: string; mock?: boolean }>(
@@ -2134,11 +2505,42 @@ const marginRowClass = (row: any): Record<string, boolean> => {
   return { 'row-margin-ok': dev >= 0, 'row-margin-bad': dev < 0 };
 };
 
+const openApprovalPopup = (row: any) => { approvalTarget.value = row; approvalComment.value = ''; };
+const closeApprovalPopup = () => { approvalTarget.value = null; };
+
+const setApproval = async (status: 'approved' | 'rejected') => {
+  if (!approvalTarget.value) return;
+  approving.value = true;
+  try {
+    const idx = getOriginalIndex(approvalTarget.value);
+    const r = allAggregated.value[idx];
+    await fetch(`${apiBase.value}/api/cost/approve-calculation`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        approvals: [{
+          model: r['Модель'], articul: r['Артикул'],
+          calc_sign: r['Признак калькуляции'], plan_id: r['PLAN_ID'],
+          status, comment: status === 'rejected' ? approvalComment.value : '',
+        }],
+      }),
+    });
+    if (approvalTarget.value) approvalTarget.value.peo_status = status;
+    closeApprovalPopup();
+  } catch (e) {
+    alert('Ошибка при сохранении статуса ПЭО');
+  } finally {
+    approving.value = false;
+  }
+};
+
 // ── Excel export ────────────────────────────────────────────────────────────
 
 const headers = [
   "", "Бренд-менеджер", "Модель", "Артикул", "Наименование модели", "Номер задания производства", "PLAN_ID", "Страна", "Семья", "Сезон",
   "Дата", "Пр.кальк", "Уровень цен",
+  "Цена РФ", "Цена КЗ", "Цена УЗ",
+  "Комментарий",
   "Сред. розница (руб)", "Сред. опт (руб)", "Сред. розница ($)", "Сред. опт ($)",
   "Осн. материалы (руб)", "Осн. материалы ($)",
   "Вспом. материалы (руб)", "Вспом. материалы ($)",
@@ -2146,7 +2548,7 @@ const headers = [
   "Декоры (руб)", "Декоры ($)",
   "Вязание (руб)", "Вязание ($)",
   "Себест. (руб)", "Себест. ($)",
-  "Наценка (руб)", "Наценка (%)", "Маржа (%)", "Откл. маржи (%)",
+  "Рентабельность (руб)", "Рентабельность (%)", "Маржа (%)", "Откл. маржи (%)",
 ];
 
 const exportToExcel = () => {
@@ -2154,7 +2556,8 @@ const exportToExcel = () => {
   let html = '<table border="1"><tr>';
   headers.forEach((h) => (html += `<th>${h}</th>`));
   html += "</tr>";
-  for (const row of allAggregated.value) {
+  for (let ei = 0; ei < allAggregated.value.length; ei++) {
+    const row = allAggregated.value[ei];
     const c = calc(row);
     const cells = [
       "",
@@ -2170,6 +2573,10 @@ const exportToExcel = () => {
       formatDate(row["дата расчета"]),
       row["Признак калькуляции"] || "",
       row["Уровень цен"] || "",
+      fmt(priceRF[ei] ?? ''),
+      fmt(priceKZ[ei] ?? ''),
+      fmt(priceUZ[ei] ?? ''),
+      comments[ei] || "",
       fmt(row["avg_Розничная цена по уровню, руб."]),
       fmt(row["avg_Отпускная цена по уровню, руб"]),
       fmt(row["avg_Розничная цена по уровню, USD."]),
@@ -2782,6 +3189,9 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   justify-content: center;
   align-items: center;
 }
+.modal-overlay--solid {
+  background: rgba(30, 30, 30, 0.92);
+}
 .modal-content {
   background: var(--bg-surface);
   border-radius: var(--rd-3);
@@ -3224,5 +3634,35 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   overflow: auto;
   flex: 1;
 }
+
+.btn-edit { cursor:pointer; background:none; border:none; font-size:16px; padding:2px 4px; opacity:0.6; }
+.btn-edit:hover { opacity:1; }
+.draft-badge { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:50%; font-size:11px; margin-right:2px; vertical-align:middle; }
+.draft-badge--draft { background:#dbeafe; color:#1d4ed8; }
+.draft-badge--pending { background:#fef3c7; color:#b45309; animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+.version-editor-toolbar { display:flex; gap:8px; align-items:center; padding:8px 16px; border-bottom:1px solid var(--border-color, #e5e7eb); }
+.version-editor-toolbar .spacer { flex:1; }
+.version-editor-table-wrap { flex:1; overflow:auto; padding:0 16px 16px; }
+.version-editor-table { width:100%; border-collapse:collapse; font-size:13px; }
+.version-editor-table th, .version-editor-table td { padding:4px 6px; border:1px solid var(--border-color, #e5e7eb); text-align:left; white-space:nowrap; }
+.version-editor-table .col-chk { width:32px; text-align:center; }
+.version-editor-table .col-num { text-align:right; }
+.editor-input { width:100%; border:1px solid transparent; padding:2px 4px; font-size:13px; background:transparent; }
+.editor-input:focus { border-color:var(--accent-color, #4338ca); outline:none; background:#fff; }
+.editor-select { width:100%; border:1px solid transparent; padding:2px 4px; font-size:13px; background:transparent; }
+.editor-select:focus { border-color:var(--accent-color, #4338ca); outline:none; }
+.row-added { background:#ecfdf5; }
+.row-modified { background:#fefce8; }
+.col-peo { width:48px; text-align:center; }
+.peo-badge { cursor:pointer; font-size:16px; }
+.peo-filter-select { padding:4px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; }
+.approval-modal { width:400px; }
+.approval-body { padding:16px; display:flex; flex-direction:column; gap:12px; }
+.approval-status-row, .approval-info-row { display:flex; gap:8px; align-items:center; }
+.approval-label { font-weight:500; color:#374151; min-width:80px; }
+.approval-actions { display:flex; gap:8px; margin-top:4px; }
+.approval-comment-row { display:flex; flex-direction:column; gap:4px; }
+.approval-comment { width:100%; padding:6px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; resize:vertical; font-family:inherit; }
 
 </style>

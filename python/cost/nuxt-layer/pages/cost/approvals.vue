@@ -62,7 +62,7 @@
               <th colspan="7" class="group-header">Основное</th>
               <th colspan="6" class="group-header">Иерархия</th>
               <th colspan="2" class="group-header">Параметры</th>
-              <th colspan="6" class="group-header">Цены</th>
+              <th colspan="11" class="group-header">Цены</th>
               <th colspan="7" class="group-header">Себестоимость, руб.</th>
               <th colspan="7" class="group-header">Себестоимость, USD</th>
               <th colspan="4" class="group-header">Маржа / Отклонение</th>
@@ -94,6 +94,10 @@
               <th class="col-num">Себест., руб</th>
               <th class="col-num">Розн., USD</th>
               <th class="col-num">Опт., USD</th>
+              <th class="col-num">Цена РФ</th>
+              <th class="col-num">Цена КЗ</th>
+              <th class="col-num">Цена УЗ</th>
+              <th>Комментарий</th>
 
               <th class="col-num">Осн. мат.</th>
               <th class="col-num">Всп. мат.</th>
@@ -111,8 +115,8 @@
               <th class="col-num">Вязание</th>
               <th class="col-num">Себест.</th>
 
-              <th class="col-num">Наценка, руб</th>
-              <th class="col-num">Наценка, %</th>
+              <th class="col-num">Рентабельность, руб</th>
+              <th class="col-num">Рентабельность, %</th>
               <th class="col-num">Маржа, %</th>
               <th class="col-num">Откл. %</th>
 
@@ -122,10 +126,10 @@
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="42" class="muted" style="text-align:center;padding:24px">Загрузка…</td>
+              <td colspan="46" class="muted" style="text-align:center;padding:24px">Загрузка…</td>
             </tr>
             <tr v-else-if="!pendingChanges.length">
-              <td colspan="42" class="muted" style="text-align:center;padding:24px">Нет ожидающих согласования изменений</td>
+              <td colspan="46" class="muted" style="text-align:center;padding:24px">Нет ожидающих согласования изменений</td>
             </tr>
             <tr v-for="pc in pendingChanges" :key="pc.id" :class="approvalRowClass(pc)">
               <td class="chk-col"><input type="checkbox" :value="pc.id" v-model="selectedIds" /></td>
@@ -153,6 +157,10 @@
               <td class="col-num num num-strong">{{ fmt(pc['Себестоимость, руб.']) }}</td>
               <td class="col-num num">{{ fmt(pc['Розничная цена по уровню, USD.']) }}</td>
               <td class="col-num num">{{ fmt(pc['Отпускная цена по уровню, USD.']) }}</td>
+              <td class="col-num num">{{ fmt(pc['Цена РФ']) }}</td>
+              <td class="col-num num">{{ fmt(pc['Цена КЗ']) }}</td>
+              <td class="col-num num">{{ fmt(pc['Цена УЗ']) }}</td>
+              <td>{{ pc['Комментарий'] || '—' }}</td>
 
               <td class="col-num num">{{ fmt(pc['Основные материалы, руб.']) }}</td>
               <td class="col-num num">{{ fmt(pc['Вспомогательные материалы, руб.']) }}</td>
@@ -213,10 +221,10 @@ const APPROVAL_LEVEL_KEYS = ["level01", "level02", "level03", "level04", "level0
 
 /** Расшифровки признаков калькуляции */
 const CALC_SIGN_DESCRIPTIONS: Record<string, string> = {
-  'ПКПСС': 'Плановая калькуляция по прямым статьям себестоимости',
-  'КПСС': 'Коммерческая калькуляция по статьям себестоимости',
-  'ПФКСС': 'Прямая фактическая калькуляция себестоимости',
-  'ФКСС': 'Фактическая калькуляция себестоимости (только чтение)',
+  'ПКПСС': 'новая разработка',
+  'КПСС': 'плановая калькуляция',
+  'ПФКСС': 'фактическая расценка ассортимента',
+  'ФКСС': 'история себестоимости',
 };
 
 /** Обогатить плоский список опций расшифровками для calc_sign */
