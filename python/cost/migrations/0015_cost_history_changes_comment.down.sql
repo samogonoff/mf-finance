@@ -1,5 +1,4 @@
-IF EXISTS (SELECT 1 FROM sys.columns
-    WHERE object_id = OBJECT_ID('[FinSandBox].[dbo].[CostHistory_Changes]')
-    AND name = 'comment')
-    ALTER TABLE [FinSandBox].[dbo].[CostHistory_Changes] DROP COLUMN comment;
-GO
+-- 0015 down — MSSQL-only: откат добавления comment
+-- Для Postgres — no-op. Реальный скрипт в mssql/0015_cost_history_changes_comment.down.sql
+
+SELECT 1;
