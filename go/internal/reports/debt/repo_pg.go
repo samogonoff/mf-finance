@@ -81,4 +81,3 @@ func (r *FiltersRepo) Delete(ctx context.Context, userID, id int64) error {
 	}
 	return nil
 }
-

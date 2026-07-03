@@ -4,8 +4,14 @@ package auth
 // (PUT /api/admin/users/{id}/roles) — валидируется по белому списку Allowed.
 //
 // Иерархия:
-//   ROLE_ADMIN        ⊇ ROLE_COST_ADMIN, ROLE_FINANCE_ADMIN
+//   ROLE_ADMIN        ⊇ ROLE_COST_ADMIN, ROLE_FINANCE_ADMIN, ROLE_PLANS_ADMIN
 //   ROLE_COST_ADMIN   ⊇ ROLE_COST_USER
+//   ROLE_PLANS_ADMIN  ⊇ ROLE_PLANS_USER
+//
+// PLANS-роли — гейт доступа к модулю «Тактические планы» (docs/reports/plans/SPEC.md §5.1).
+// PLANS_ADMIN — конфигуратор (НСИ, маршруты, назначение ответственных);
+// PLANS_USER — участник процесса. Функциональные роли процесса (filler, approver…)
+// и привязка к объекту — НЕ здесь, а в данных (plans_user_scope), см. SPEC §5.1.
 //
 // ROLE_USER — техническая, всегда добавляется в выпускаемый набор; задавать
 // её снаружи нельзя (фильтруется в Allowed).
@@ -16,15 +22,18 @@ const (
 	RoleCostAdmin    = "ROLE_COST_ADMIN"
 	RoleCostUser     = "ROLE_COST_USER"
 	RoleFinanceAdmin = "ROLE_FINANCE_ADMIN"
+	RolePlansAdmin   = "ROLE_PLANS_ADMIN"
+	RolePlansUser    = "ROLE_PLANS_USER"
 )
 
 // Allowed — роли, которые админ может присваивать через API.
 // ROLE_USER сюда не входит — она ставится автоматически.
-var Allowed = []string{RoleAdmin, RoleCostAdmin, RoleCostUser, RoleFinanceAdmin}
+var Allowed = []string{RoleAdmin, RoleCostAdmin, RoleCostUser, RoleFinanceAdmin, RolePlansAdmin, RolePlansUser}
 
 var hierarchy = map[string][]string{
-	RoleAdmin:     {RoleCostAdmin, RoleFinanceAdmin},
-	RoleCostAdmin: {RoleCostUser},
+	RoleAdmin:      {RoleCostAdmin, RoleFinanceAdmin, RolePlansAdmin},
+	RoleCostAdmin:  {RoleCostUser},
+	RolePlansAdmin: {RolePlansUser},
 }
 
 // ExpandRoles разворачивает прямые роли по иерархии и всегда добавляет

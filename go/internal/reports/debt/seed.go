@@ -26,57 +26,6 @@ var entities = []Entity{
 	{INN: "315362-3301-000", Name: "ООО «МАРК ФОРМЭЛЬ КЕЙДЖИ»", Country: CountryKG},
 }
 
-// vgoExtraEntities — внутригрупповые компании, которые есть в Table_Fin_PL под
-// флагом [ВГО]=1, но отсутствуют в seed-списке 15 ЮЛ из ТЗ. Держим ОТДЕЛЬНО:
-// они не должны протекать в Entities()/OurINNs()/EntitiesLevel1() (это изменило бы
-// ВГО-фильтр текущего mssql-бэкенда и UI-фильтр) — нужны только для резолва
-// Table_Fin_PL.Компания (код) → ИНН/страна в finpl-репо. См. SPEC §4.2–4.3.
-var vgoExtraEntities = []Entity{
-	{INN: "692221084", Name: "ООО «Дримдом»", Country: CountryRB, Code: "DR"},
-	{INN: "693335015", Name: "ООО «Дримдом 2»", Country: CountryRB, Code: "DR2"},
-	// TODO(GP): уточнить наименование у заказчика — в PL-данных только код (190465888),
-	// ~20 строк. Страна РБ по УНП. См. SPEC §11.1.
-	{INN: "190465888", Name: "GP (190465888)", Country: CountryRB, Code: "GP"},
-}
-
-// codeIndex — справочник Table_Fin_PL.Компания (код) → юрлицо. Покрывает и seed-15,
-// и vgoExtraEntities. Строится один раз при инициализации пакета.
-var codeIndex = buildCodeIndex()
-
-func buildCodeIndex() map[string]Entity {
-	idx := make(map[string]Entity, len(entities)+len(vgoExtraEntities))
-	for _, e := range entities {
-		if e.Code != "" {
-			idx[e.Code] = e
-		}
-	}
-	for _, e := range vgoExtraEntities {
-		if e.Code != "" {
-			idx[e.Code] = e
-		}
-	}
-	return idx
-}
-
-// EntityByCode резолвит код компании из Table_Fin_PL.Компания в юрлицо (ИНН, имя,
-// страна). ok=false для пустого/неизвестного кода.
-func EntityByCode(code string) (Entity, bool) {
-	if code == "" {
-		return Entity{}, false
-	}
-	e, ok := codeIndex[strings.TrimSpace(code)]
-	return e, ok
-}
-
-// INNByCode — тонкая обёртка над EntityByCode: код → ИНН/УНП.
-func INNByCode(code string) (string, bool) {
-	e, ok := EntityByCode(code)
-	if !ok {
-		return "", false
-	}
-	return e.INN, true
-}
-
 // Счета БУ из ТЗ-приложения (sheet «счета БУ»). Каждый счёт привязан к стране,
 // чтобы UI мог фильтровать «только КЗ-счета», и Go-слой мог применить правильные
 // правила свёртки выручки (Дт/Кт корреспонденция отличается по странам).

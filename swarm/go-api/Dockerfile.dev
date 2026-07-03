@@ -4,16 +4,35 @@ WORKDIR /var/www/finance/go
 
 # Базовые утилиты. Разнесли с установкой air по разным RUN, чтобы
 # проблема с air не валила всю сборку.
-RUN apk add --no-cache git bash curl ca-certificates
+#
+# Кумулятивные ретраи с персистентным --cache-dir. За корп-VPN apk-загрузки
+# с внешнего Alpine-CDN интермиттентно рвутся и виснут (не TLS/не IPv6/не
+# зеркало — проверено перебором; чувствителен именно apk-fetch). timeout 35
+# убивает повисшее соединение, а --cache-dir копит уже скачанные пакеты между
+# попытками, поэтому сборка сходится даже на рваном канале. Без --no-cache:
+# иначе каждая попытка качала бы всё заново. fail-hard в конце — чтобы битый
+# образ (без git/bash/curl) не собирался молча.
+RUN mkdir -p /etc/apk/cache; ok=0; \
+    for i in $(seq 1 15); do \
+      timeout 35 apk add --cache-dir=/etc/apk/cache git bash curl ca-certificates && { ok=1; break; }; \
+      echo "[warn] apk add attempt $i failed (flaky VPN), retrying with cache..."; sleep 1; \
+    done; \
+    rm -rf /etc/apk/cache; \
+    [ "$ok" = 1 ] || { echo "[error] apk add failed after 15 retries"; exit 1; }
 
 # air — hot-reload для Go. Ставим через официальный install.sh
 # (он качает бинарь, а не собирает через go install — это надёжнее
-# в локальной среде, где go-модули могут не резолвиться). Если
-# установка не удалась — контейнер всё равно поднимется через `go run`
-# (см. CMD ниже).
-RUN curl -sSfL https://raw.githubusercontent.com/air-verse/air/master/install.sh \
-      | sh -s -- -b /usr/local/bin \
-    || echo "[warn] air install failed, will fallback to plain 'go run'"
+# в локальной среде, где go-модули могут не резолвиться).
+# Ретраи: бинарь air тянется из GitHub-релизов тем же рваным VPN, что и apk.
+# timeout 60 обёрнут вокруг ВСЕГО пайпа (sh -c), а не только curl, иначе
+# скачивание самого бинаря не ограничено по времени и шаг виснет. Не fail-hard:
+# если air так и не встал — контейнер поднимется через `go run` (см. CMD ниже).
+RUN ok=0; \
+    for i in $(seq 1 8); do \
+      timeout 60 sh -c 'curl -sSfL https://raw.githubusercontent.com/air-verse/air/master/install.sh | sh -s -- -b /usr/local/bin' && { ok=1; break; }; \
+      echo "[warn] air install attempt $i failed (flaky VPN), retrying..."; sleep 1; \
+    done; \
+    [ "$ok" = 1 ] || echo "[warn] air install failed after retries, will fallback to plain 'go run'"
 
 ENV PATH=/usr/local/bin:/go/bin:$PATH \
     GOFLAGS=-mod=mod

@@ -92,36 +92,6 @@ func mockRows() []DebtRow {
 	}
 }
 
-// mockFinPLRows — фикстуры источника DEBT_BACKEND=finpl (Table_Fin_PL): месячная
-// ВГО-выручка по парам компания→контрагент в USD-консолидации. ДЗ/КЗ/договор пусты
-// (их в этом источнике нет — дотянет Premaster в композиции, см. SPEC §5/T7).
-// Включает пару с Дримдом (DR, ВГО-ЮЛ сверх 15) для проверки нового справочника.
-func mockFinPLRows() []DebtRow {
-	return []DebtRow{
-		{
-			Country: CountryRB, Company: "ООО «Марк Формэль»", CompanyINN: "690591512",
-			Partner: "ООО «Формэль»", Currency: "USD",
-			RevenuePeriod: 1_240_000.00, RevenueLastMonth: 410_000.00,
-		},
-		{
-			Country: CountryRF, Company: "ООО ТД «Марк Формэль»", CompanyINN: "6950135110",
-			Partner: "ТОО «Mark Formelle Kazakhstan»", Currency: "USD",
-			RevenuePeriod: 880_500.00, RevenueLastMonth: 295_000.00,
-		},
-		{
-			Country: CountryUZ, Company: "ООО «MARK FORMELLE IT» МЧЖ", CompanyINN: "305554644",
-			Partner: "ООО ТД «Марк Формэль»", Currency: "USD",
-			RevenuePeriod: 132_000.00, RevenueLastMonth: 44_000.00,
-		},
-		// ВГО-компания сверх 15 ЮЛ (Дримдом) — резолвится через vgoExtraEntities.
-		{
-			Country: CountryRB, Company: "ООО «Дримдом»", CompanyINN: "692221084",
-			Partner: "ООО «Марк Формэль»", Currency: "USD",
-			RevenuePeriod: 36_700.00, RevenueLastMonth: 12_300.00,
-		},
-	}
-}
-
 // mockDrilldown возвращает фикстурный набор документов для (company, partner, account, contract, currency).
 // Содержит как просроченные документы (overdue_days > 0), так и в пределах срока (overdue_days = 0).
 func mockDrilldown(contract, currency string, reportDate time.Time) []DocumentRow {

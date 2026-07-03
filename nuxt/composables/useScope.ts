@@ -10,13 +10,16 @@
  * проверки сводятся к простому includes().
  */
 
-type Scope = "finance" | "cost" | "analytics" | "admin";
+type Scope = "finance" | "cost" | "analytics" | "admin" | "plans";
 
 const SCOPE_ROLES: Record<Scope, string[]> = {
   admin: ["ROLE_ADMIN"],
   cost: ["ROLE_ADMIN", "ROLE_COST_ADMIN", "ROLE_COST_USER"],
   finance: ["ROLE_ADMIN", "ROLE_FINANCE_ADMIN"],
-  analytics: ["ROLE_ADMIN", "ROLE_FINANCE_ADMIN"]
+  analytics: ["ROLE_ADMIN", "ROLE_FINANCE_ADMIN"],
+  // Тактические планы — отдельный гейт; ROLE_PLANS_ADMIN ⊇ ROLE_PLANS_USER
+  // разворачивается на бэке (auth.ExpandRoles), /api/auth/me отдаёт эффективный набор.
+  plans: ["ROLE_ADMIN", "ROLE_PLANS_ADMIN", "ROLE_PLANS_USER"]
 };
 
 export const useScope = () => {

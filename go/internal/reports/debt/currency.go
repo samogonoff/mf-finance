@@ -9,8 +9,10 @@ package debt
 // добавим override-карту по INN.
 //
 // Подтверждённое из ETL-процедур MSSQL (см. docs/reports/debt/schema-draft.md §8.3):
-//   CurrID=1 = BYN (из IIF(B.CurrID=1, 1, ...) в GLMF_exec)
-//   CurrID=3 = USD (из комментария в spExRates)
+//
+//	CurrID=1 = BYN (из IIF(B.CurrID=1, 1, ...) в GLMF_exec)
+//	CurrID=3 = USD (из комментария в spExRates)
+//
 // Остальные коды — гипотезы по странам (требуют сверки с [srv-sql].Gpartner.dbo.valuta1).
 func CurrencyForCountry(c Country) string {
 	switch c {

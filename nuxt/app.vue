@@ -23,6 +23,10 @@
           <Icon name="lucide:file-bar-chart-2" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Отчёты</span>
         </NuxtLink>
+        <NuxtLink v-if="!isCostOnly && hasScope('plans')" to="/plans" class="nav-item">
+          <Icon name="lucide:clipboard-list" class="nav-item-icon" />
+          <span v-if="!sidebarCollapsed">Тактические планы</span>
+        </NuxtLink>
         <NuxtLink v-if="!isCostOnly" to="/counterparties" class="nav-item">
           <Icon name="lucide:users" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Контрагенты</span>
@@ -46,10 +50,6 @@
           <NuxtLink to="/admin/bugtracker" class="nav-item">
             <Icon name="lucide:bug" class="nav-item-icon" />
             <span v-if="!sidebarCollapsed">Баг-трекер</span>
-          </NuxtLink>
-          <NuxtLink to="/admin/etl/debt" class="nav-item">
-            <Icon name="lucide:database" class="nav-item-icon" />
-            <span v-if="!sidebarCollapsed">ETL задолженности</span>
           </NuxtLink>
         </template>
       </nav>
@@ -231,7 +231,6 @@ const titleByPath: Record<string, string> = {
   "/analytics": "Аналитика",
   "/account": "Профиль",
   "/admin/users": "Пользователи",
-  "/admin/etl/debt": "ETL задолженности",
   "/cost": "Себестоимость"
 };
 const currentPageTitle = computed(() => {

@@ -13,10 +13,10 @@ RUN go mod download
 COPY go/. .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /server ./cmd/api
-# Bootstrap-утилита заливки Premaster1C → ClickHouse. На проде запускается
-# через `docker exec <task> /debt-bootstrap` под нужный BOOTSTRAP_COMPANIES.
-# См. docs/reports/debt/etl-runbook.md.
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /debt-bootstrap ./cmd/debt-bootstrap
+# ETL-утилита заливки FinDebt-вьюх (Payments.report.FinDebt1/3) → ClickHouse
+# finance.fact_findebt/_docs. Запуск: `docker exec <task> /findebt-etl`
+# (MODE=bootstrap|incremental). См. docs/reports/debt/findebt-verification.md.
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /findebt-etl ./cmd/findebt-etl
 
 
 # -------- Runtime --------
@@ -27,7 +27,7 @@ RUN apk add --no-cache ca-certificates tzdata wget && update-ca-certificates
 WORKDIR /app
 
 COPY --from=builder /server /server
-COPY --from=builder /debt-bootstrap /debt-bootstrap
+COPY --from=builder /findebt-etl /findebt-etl
 COPY swarm/go-api/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
