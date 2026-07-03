@@ -110,7 +110,10 @@ func main() {
 func openMSSQL() *sql.DB {
 	host := mustEnv("MSSQL_PREMASTER_SERVER")
 	port := envOr("MSSQL_PREMASTER_PORT", "1433")
-	db := mustEnv("MSSQL_PREMASTER_DB")
+	// DB дефолтится в FinDWH (как в config.go): прод-конфиг его часто не задаёт,
+	// полагаясь на дефолт. FinDebt-вьюхи адресуются трёхчастным именем через
+	// MSSQL_PAYMENTS_DB, а к какой БД коннектимся — не важно, лишь бы на том сервере.
+	db := envOr("MSSQL_PREMASTER_DB", "FinDWH")
 	user := mustEnv("MSSQL_PREMASTER_USER")
 	pass := mustEnv("MSSQL_PREMASTER_PASSWORD")
 	if !strings.Contains(host, ":") {
