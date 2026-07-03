@@ -6,11 +6,8 @@
         <p class="page-subtitle">Формирование тактических планов Profit &amp; Loss — согласование по схеме</p>
       </div>
       <div class="page-actions">
-        <NuxtLink :to="`/plans/mp/large?year=${year}&month=${month}`" class="btn btn-ghost">
-          <Icon name="lucide:store" /> МП large
-        </NuxtLink>
-        <NuxtLink :to="`/plans/mp/small?year=${year}&month=${month}`" class="btn btn-ghost">
-          <Icon name="lucide:store" /> МП small
+        <NuxtLink :to="`/plans/process/${id}`" class="btn btn-primary">
+          <Icon name="lucide:list-checks" /> Процесс · задания
         </NuxtLink>
       </div>
     </header>
@@ -25,6 +22,7 @@
 
     <div class="segmented" role="tablist">
       <button class="seg" :class="{ active: tab === 'process' }" @click="tab = 'process'">Процесс</button>
+      <button class="seg" :class="{ active: tab === 'pnl' }" @click="openPnl">План · Тактика</button>
       <button class="seg" :class="{ active: tab === 'svod' }" @click="tab = 'svod'">Свод по ЮЛ</button>
     </div>
 
@@ -61,9 +59,14 @@
                   <span class="badge" :class="statusBadge(st.status)">{{ statusLabel(st.status) }}</span>
                 </div>
                 <div class="sc-name">{{ st.name }}</div>
-                <div v-if="st.responsible" class="sc-resp" :title="st.responsible">
-                  <Icon name="lucide:user-round" /> {{ st.responsible }}
-                </div>
+                <button type="button" class="sc-tasks" :title="`Открыть задания этапа ${st.stage_code}`" @click="stageModal = st">
+                  <span class="sct-count" :class="{ ok: stageTasks(st.stage_code).length && stageDone(st.stage_code) === stageTasks(st.stage_code).length }">
+                    <Icon name="lucide:list-checks" /> {{ stageDone(st.stage_code) }}/{{ stageTasks(st.stage_code).length }} заданий
+                  </span>
+                  <span class="sct-people" :title="stageAssignees(st.stage_code).join(', ')">
+                    <Icon name="lucide:users" /> {{ peopleLabel(st.stage_code) }}
+                  </span>
+                </button>
                 <div class="sc-meta">
                   <span v-if="depHint(st)" class="sc-dep"><Icon name="lucide:lock" /> {{ depHint(st) }}</span>
                   <span v-else-if="st.due_at" class="sc-due"><Icon name="lucide:calendar" /> {{ st.due_at }}</span>
@@ -107,6 +110,44 @@
         <span><i class="dot s-completed"></i> завершён</span>
         <span><i class="dot s-returned"></i> возвращён</span>
       </div>
+    </section>
+
+    <!-- ===== СВОДНОЕ ОКНО: План · Тактика · Стратегия ===== -->
+    <section v-show="tab === 'pnl'" class="card">
+      <div class="card-header pnl-head">
+        <span class="card-title">Сводный P&amp;L — единое окно (read-only)</span>
+        <div class="pnl-actions">
+          <span v-if="pnl" class="pnl-prev">сравнение с {{ pnl.prev_year ? `${pnl.prev_year}-${String(pnl.prev_month).padStart(2, "0")}` : "—" }}</span>
+          <button v-if="canAdmin" class="btn btn-sm btn-ghost" @click="stratInput?.click()"><Icon name="lucide:upload" /> Импорт стратегии</button>
+          <input ref="stratInput" type="file" accept=".xlsx" class="hidden-file" @change="doStrategyImport" />
+        </div>
+      </div>
+      <p v-if="pnlNote" class="banner banner-pos">{{ pnlNote }}</p>
+      <div class="table-wrap">
+        <table class="data-table pnl-table">
+          <thead>
+            <tr>
+              <th>ЦФО</th><th>Статья</th>
+              <th class="num">Факт</th><th class="num">Стратегия</th><th class="num">Тактика</th>
+              <th class="num">Расчёт</th><th class="num">Δ такт−страт</th><th class="num">Прошл. период</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="pnl && !pnl.rows.length"><td colspan="8" class="empty-cell">Нет данных. Заполните формы заданий (тактика) и импортируйте стратегию.</td></tr>
+            <tr v-for="(r, i) in pnl?.rows || []" :key="i" :class="{ adj: r.is_manual }">
+              <td>{{ r.name_cfo || r.code_cfo }}</td>
+              <td class="exp">{{ r.expense_name || r.line_code }}</td>
+              <td class="num">{{ pf(r.fact) }}</td>
+              <td class="num strat">{{ pf(r.strategy) }}</td>
+              <td class="num tac">{{ pf(r.tactic) }}</td>
+              <td class="num">{{ pf(r.calc) }}</td>
+              <td class="num" :class="deltaCls(r)">{{ deltaTS(r) }}</td>
+              <td class="num prev">{{ pf(r.prev_tactic) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="prov-note">Тактику наполняют задания этапов; стратегия — импорт «МП_стратегия_26»; факт — источник МП; Δ = тактика − стратегия.</p>
     </section>
 
     <!-- ===== СВОД ===== -->
@@ -156,13 +197,51 @@
         </button>
       </template>
     </PlansModal>
+
+    <!-- ===== Попап этапа: полная информация ===== -->
+    <PlansModal
+      :open="!!stageModal"
+      :title="stageModal ? `Этап ${stageModal.stage_code} · ${stageModal.name}` : ''"
+      :subtitle="stageModal ? `${stageDone(stageModal.stage_code)} из ${stageTasks(stageModal.stage_code).length} заданий выполнено · статус: ${statusLabel(stageModal.status)}` : ''"
+      @close="stageModal = null"
+    >
+      <div v-if="stageModal" class="sm-body">
+        <p v-if="!stageTasks(stageModal.stage_code).length" class="sm-empty">
+          Задания не сгенерированы.
+          <NuxtLink :to="`/plans/process/${id}`" class="link">Открыть кокпит</NuxtLink> и нажать «Генерировать задания».
+        </p>
+        <div v-else class="sm-tasks">
+          <div v-for="t in stageTasks(stageModal.stage_code)" :key="t.id" class="sm-task" :class="`st-${t.status}`">
+            <div class="smt-head">
+              <span class="badge" :class="t.task_role === 'approve' ? 'badge-accent' : 'badge-info'">{{ t.task_role === "approve" ? "согл." : "ввод" }}</span>
+              <b class="smt-title">{{ t.title }}</b>
+              <span class="badge badge-dot" :class="taskStTone(t.status)">{{ taskStLabel(t.status) }}</span>
+            </div>
+            <div class="smt-meta">
+              <span class="smt-asg"><Icon name="lucide:user-round" /> отв.: {{ t.assignee_name || "не назначен" }}</span>
+              <span v-if="t.delegate_name" class="smt-del"><Icon name="lucide:share" /> делегат: {{ t.delegate_name }}</span>
+              <span v-if="filledBy(t)" class="smt-filled"><Icon name="lucide:check" /> заполнил: {{ filledBy(t) }}</span>
+              <span v-if="t.cfo_count" class="smt-cfo">{{ t.cfo_count }} ЦФО</span>
+              <span class="smt-form">{{ t.form_code }}</span>
+            </div>
+            <div class="smt-act">
+              <NuxtLink v-if="t.form_code === 'TPL-MP'" :to="`/plans/mp-form/${t.id}`" class="btn btn-sm btn-ghost"><Icon name="lucide:pencil" /> Форма</NuxtLink>
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <NuxtLink :to="`/plans/process/${id}`" class="btn btn-primary"><Icon name="lucide:list-checks" /> В кокпит процесса</NuxtLink>
+      </template>
+    </PlansModal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { money } from "~/utils/format";
+import { money, num } from "~/utils/format";
 import PlansModal from "~/components/plans/PlansModal.vue";
 import { usePlans, type StageState, type SvodRow } from "~/composables/usePlans";
+import { useTasks, type Task, type PnlSummary, type PnlRow } from "~/composables/useTasks";
 
 definePageMeta({ middleware: "scope-guard" });
 
@@ -172,13 +251,62 @@ const year = ref(Number(route.query.year) || 2026);
 const month = ref(Number(route.query.month) || 6);
 
 const { stages, stageAction, mpSvod, addComment } = usePlans();
+const { byInstance, pnl: loadPnl, importStrategy } = useTasks();
+const { hasRole, isAdmin } = useScope();
+const canAdmin = computed(() => isAdmin.value || hasRole("ROLE_PLANS_ADMIN"));
+
+const pnl = ref<PnlSummary | null>(null);
+const pnlNote = ref("");
+const stratInput = ref<HTMLInputElement | null>(null);
+const pf = (v: number | null) => (v === null || v === undefined ? "—" : num(v, 0));
+const deltaTS = (r: PnlRow) => (r.tactic != null && r.strategy != null ? num(r.tactic - r.strategy, 0) : "—");
+const deltaCls = (r: PnlRow) => {
+  if (r.tactic == null || r.strategy == null) return "";
+  const d = r.tactic - r.strategy;
+  return d > 0 ? "d-pos" : d < 0 ? "d-neg" : "";
+};
+const openPnl = async () => {
+  tab.value = "pnl";
+  try { pnl.value = await loadPnl(id); } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка свода"; }
+};
+const doStrategyImport = async (ev: Event) => {
+  const f = (ev.target as HTMLInputElement).files?.[0];
+  if (!f) return;
+  pnlNote.value = ""; error.value = "";
+  try {
+    const r = await importStrategy(id, f);
+    pnlNote.value = `Импортировано стратегии: ${r.imported} строк`;
+    pnl.value = await loadPnl(id);
+  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка импорта стратегии"; }
+  finally { if (stratInput.value) stratInput.value.value = ""; }
+};
 
 const list = ref<StageState[]>([]);
+const tasks = ref<Task[]>([]);
 const svod = ref<SvodRow[]>([]);
 const error = ref("");
 const busy = ref(false);
-const tab = ref<"process" | "svod">("process");
+const tab = ref<"process" | "pnl" | "svod">("process");
 const ret = reactive({ open: false, from: "", target: "", reason: "" });
+const stageModal = ref<StageState | null>(null);
+
+// Реальные задания этапа (из движка), а не статичные имена маршрута.
+const TASK_ST: Record<string, { l: string; t: string }> = {
+  pending: { l: "не начато", t: "badge-dot" }, in_progress: { l: "в работе", t: "badge-info" },
+  review: { l: "на проверке", t: "badge-warn" }, done: { l: "сделано", t: "badge-pos" }, returned: { l: "возвращено", t: "badge-neg" }
+};
+const taskStLabel = (s: string) => TASK_ST[s]?.l ?? s;
+const taskStTone = (s: string) => TASK_ST[s]?.t ?? "badge-dot";
+const stageTasks = (code: string) => tasks.value.filter((t) => t.stage_code === code);
+const stageAssignees = (code: string) => [...new Set(stageTasks(code).map((t) => t.assignee_name).filter(Boolean))];
+const stageDone = (code: string) => stageTasks(code).filter((t) => t.status === "done").length;
+const peopleLabel = (code: string) => {
+  const a = stageAssignees(code);
+  if (!a.length) return "исполнители не назначены";
+  return a.slice(0, 3).join(", ") + (a.length > 3 ? ` +${a.length - 3}` : "");
+};
+// Кто реально заполнил: делегат (если делегировано) или исполнитель — для сдано/проверки/готово.
+const filledBy = (t: Task) => (["review", "done"].includes(t.status) ? (t.delegate_name || t.assignee_name) : "");
 
 const COLS = [
   { key: "prev25", label: "25-е число", sub: "месяц М−1", codes: ["2.1", "2.2"] },
@@ -232,14 +360,11 @@ const statusBadge = (s: string) =>
 
 const returnTargets = (from: string) => list.value.filter((s) => s.stage_code !== from).map((s) => ({ code: s.stage_code, name: s.name }));
 
-// Формы ввода, привязанные к этапу (пока реализован канал МП на этапе 1.1).
+// Формы/задания этапа — теперь через движок процесса (task-driven), а не старую
+// segment-форму. Кнопка ведёт в кокпит процесса с заданиями этапа.
 const stageForms = (code: string): Array<{ label: string; to: string }> => {
-  const q = `?year=${year.value}&month=${month.value}`;
   if (code === "1.1") {
-    return [
-      { label: "МП large", to: `/plans/mp/large${q}` },
-      { label: "МП small", to: `/plans/mp/small${q}` }
-    ];
+    return [{ label: "Задания этапа", to: `/plans/process/${id}` }];
   }
   return [];
 };
@@ -248,7 +373,10 @@ const load = async () => {
   error.value = "";
   try {
     list.value = await stages(id, year.value, month.value);
-    svod.value = await mpSvod(year.value, month.value);
+    [svod.value, tasks.value] = await Promise.all([
+      mpSvod(year.value, month.value),
+      byInstance(id).catch(() => [])
+    ]);
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : "Ошибка загрузки";
   }
@@ -460,16 +588,65 @@ onMounted(load);
   color: var(--text-strong);
   line-height: var(--lh-tight);
 }
-.sc-resp {
-  font-size: var(--fs-2xs);
-  color: var(--text-secondary);
+.sc-tasks {
   display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: var(--rd-3);
+  background: var(--bg-surface-2);
+  padding: 4px var(--sp-3);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.sc-tasks:hover { border-color: var(--accent); }
+.sct-count {
+  font-size: var(--fs-2xs);
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
+}
+.sct-count.ok { color: var(--pos-strong); }
+.sct-people {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* попап этапа */
+.sm-body { display: flex; flex-direction: column; gap: var(--sp-3); }
+.sm-empty { color: var(--text-muted); padding: var(--sp-4); text-align: center; }
+.sm-tasks { display: flex; flex-direction: column; gap: var(--sp-3); max-height: 60vh; overflow-y: auto; }
+.sm-task {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--rd-4, 6px);
+  padding: var(--sp-3) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.sm-task.st-in_progress { border-left-color: var(--info); }
+.sm-task.st-review { border-left-color: var(--warn); }
+.sm-task.st-done { border-left-color: var(--pos-strong); }
+.sm-task.st-returned { border-left-color: var(--neg-strong); }
+.smt-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.smt-title { font-size: var(--fs-sm); }
+.smt-meta { display: flex; flex-wrap: wrap; gap: var(--sp-3); font-size: var(--fs-2xs); color: var(--text-secondary); }
+.smt-meta > span { display: inline-flex; align-items: center; gap: 3px; }
+.smt-filled { color: var(--pos-strong); }
+.smt-form { font-family: var(--font-mono); color: var(--text-muted); }
+.smt-act { display: flex; gap: var(--sp-2); }
+.link { color: var(--accent); }
 .sc-meta {
   font-size: var(--fs-2xs);
   color: var(--text-muted);
@@ -548,6 +725,19 @@ onMounted(load);
   color: var(--text-muted);
   margin-top: var(--sp-4);
 }
+.pnl-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); flex-wrap: wrap; }
+.pnl-actions { display: flex; align-items: center; gap: var(--sp-3); }
+.pnl-prev { font-size: var(--fs-xs); color: var(--text-muted); font-family: var(--font-mono); }
+.hidden-file { display: none; }
+.banner-pos { background: var(--pos-soft); color: var(--pos-strong); }
+.pnl-table .num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.pnl-table .exp { color: var(--text-secondary); }
+.pnl-table .strat { color: var(--accent); }
+.pnl-table .tac { font-weight: var(--fw-semibold); }
+.pnl-table .prev { color: var(--text-muted); }
+.pnl-table tr.adj .tac { background: var(--warn-soft); }
+.pnl-table .d-pos { color: var(--pos-strong); }
+.pnl-table .d-neg { color: var(--neg-strong); }
 
 /* ── модалка поля ── */
 .field {

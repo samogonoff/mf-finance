@@ -3,16 +3,19 @@
     <table class="data-table report-table debt-table">
       <thead>
         <!--
-          Level 1 MVP (см. docs/reports/debt/open-questions.md §E): скрыты колонки
-          «Отсрочка, дн.», «Дата оплаты по договору», «Выручка», «Просрочка, дн.» —
-          для них пока нет источника данных / подтверждённой формулы.
-          После ответов автора ТЗ (B3, C3) — вернуть колонки и пересчитать colspan.
+          «Договор» отдельной колонкой не выводим — он теперь уровень группировки
+          (лейбл строки-договора = номер + дата / название из FinDebt).
+          «Отсрочка, дн.» = срок оплаты из 1С (FinDebt.Delay, на уровне договора);
+          «Дата оплаты» + «Просрочка, дн.» = FinDebt.Payment_Date / DAY_DELAY
+          (по ТЗ — на уровне документа, в drill-down).
         -->
         <tr>
           <th class="col-sticky col-article" rowspan="2">Группировка</th>
           <th rowspan="2">Счёт</th>
           <th rowspan="2">Субсчёт</th>
-          <th rowspan="2">Договор</th>
+          <th rowspan="2">Отсрочка, дн.</th>
+          <th rowspan="2">Дата оплаты</th>
+          <th rowspan="2">Просрочка, дн.</th>
           <th rowspan="2">Валюта</th>
           <th class="col-num group-th" colspan="2">На начало</th>
           <th class="col-num group-th" colspan="2">Обороты</th>
@@ -29,7 +32,7 @@
       </thead>
       <tbody>
         <template v-for="node in flat" :key="node.key">
-          <!-- Группы Уровень 1..4 -->
+          <!-- Группы Уровень 1..4 (последний — договор) -->
           <tr
             v-if="node.kind === 'group'"
             class="row-group"
@@ -49,7 +52,9 @@
             </td>
             <td>{{ node.aggCols.account }}</td>
             <td>{{ node.aggCols.subaccount }}</td>
-            <td>{{ node.aggCols.contract }}</td>
+            <td>{{ node.aggCols.paymentTerm }}</td>
+            <td>—</td>
+            <td>—</td>
             <td>{{ node.aggCols.currency }}</td>
             <td class="col-num">{{ moneyAuto(node.sums.opening_dz, node.currency) }}</td>
             <td class="col-num">{{ moneyAuto(node.sums.opening_kz, node.currency) }}</td>
@@ -69,7 +74,9 @@
             </td>
             <td>{{ node.row.account }}</td>
             <td>{{ node.row.subaccount }}</td>
-            <td :title="node.row.contract">{{ node.row.contract }}</td>
+            <td>{{ node.row.payment_term_days || "—" }}</td>
+            <td>—</td>
+            <td>—</td>
             <td>{{ node.row.currency }}</td>
             <td class="col-num">{{ moneyFmt(node.row.opening_dz, node.row.currency) }}</td>
             <td class="col-num">{{ moneyFmt(node.row.opening_kz, node.row.currency) }}</td>
@@ -79,7 +86,7 @@
             <td class="col-num">{{ moneyFmt(node.row.closing_kz, node.row.currency) }}</td>
           </tr>
 
-          <!-- Подгруппа документов по trans_description (M5) -->
+          <!-- Подгруппа документов по типу операции -->
           <tr v-else-if="node.kind === 'trans-group'" class="row-leaf row-trans-group">
             <td class="col-sticky col-article">
               <span class="lvl-indent" :style="{ paddingLeft: `${node.level * 14}px` }">
@@ -88,6 +95,8 @@
                 <span class="trans-count">×{{ node.count }}</span>
               </span>
             </td>
+            <td>—</td>
+            <td>—</td>
             <td>—</td>
             <td>—</td>
             <td>—</td>
@@ -102,37 +111,39 @@
 
           <!-- Документы drilldown -->
           <tr v-else-if="node.kind === 'doc-loading'" class="row-leaf">
-            <td colspan="11" class="docs-loading">Загружаем документы…</td>
+            <td colspan="13" class="docs-loading">Загружаем документы…</td>
           </tr>
           <tr v-else-if="node.kind === 'doc-error'" class="row-leaf">
-            <td colspan="11" class="docs-error">{{ node.message }}</td>
+            <td colspan="13" class="docs-error">{{ node.message }}</td>
           </tr>
           <tr v-else-if="node.kind === 'doc'" class="row-leaf row-doc">
             <td class="col-sticky col-article">
               <span class="lvl-indent" :style="{ paddingLeft: `${node.level * 14}px` }">
                 <span class="row-chevron-spacer" />
-                <span class="row-group-label">{{ node.doc.doc_kind }} № {{ node.doc.doc_number }}</span>
+                <span class="row-group-label">
+                  {{ node.doc.doc_kind }} № {{ node.doc.doc_number }} от {{ formatDate(node.doc.doc_date) }}
+                </span>
               </span>
             </td>
-            <!-- 2 пустые группировочные колонки + дата + валюта + сумма -->
             <td>—</td>
             <td>—</td>
-            <td>{{ formatDate(node.doc.doc_date) }}</td>
+            <td>—</td>
+            <!-- Дата оплаты по договору + просрочка (по ТЗ — на уровне документа) -->
+            <td>{{ formatDate(node.doc.payment_due_date) }}</td>
+            <td>{{ node.doc.overdue_days || "—" }}</td>
             <td>{{ node.currency }}</td>
-            <!-- Сумма по документу (модуль проводок) — основной "вес" -->
-            <td class="col-num">{{ node.doc.amount ? moneyFmt(node.doc.amount, node.currency) : "—" }}</td>
-            <!-- Дельты ДЗ/КЗ — заполнены только для DZ/KZ-счетов, для счёта 90 (выручка) и др. — нули -->
+            <td class="col-num">—</td>
+            <td class="col-num">—</td>
+            <td class="col-num">—</td>
+            <td class="col-num">—</td>
+            <!-- ДЗ/КЗ документа формируют сальдо на конец -->
             <td class="col-num">{{ node.doc.dz_change ? moneyFmt(node.doc.dz_change, node.currency) : "—" }}</td>
             <td class="col-num">{{ node.doc.kz_change ? moneyFmt(node.doc.kz_change, node.currency) : "—" }}</td>
-            <!-- Описание операции — длинный текстовый слот через colspan на оставшиеся 3 числовые колонки -->
-            <td colspan="3" class="col-desc" :title="node.doc.description || ''">
-              {{ node.doc.description || "—" }}
-            </td>
           </tr>
         </template>
 
         <tr v-if="!rows.length" class="row-leaf">
-          <td colspan="11" class="empty-row">Нет данных по выбранным фильтрам.</td>
+          <td colspan="13" class="empty-row">Нет данных по выбранным фильтрам.</td>
         </tr>
       </tbody>
     </table>
@@ -556,6 +567,8 @@ const formatDate = (s: string): string => {
   if (!s) return "—";
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return s;
+  // Go сериализует нулевой time.Time как "0001-01-01..." (срок не заведён) — не дата.
+  if (d.getFullYear() < 1970) return "—";
   return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" }).format(d);
 };
 </script>

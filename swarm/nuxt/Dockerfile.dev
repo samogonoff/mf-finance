@@ -3,7 +3,20 @@ FROM node:20-alpine
 WORKDIR /var/www/nuxt_app
 
 # Дополнительные пакеты для нативных deps (chokidar и пр.)
-RUN apk add --no-cache python3 make g++ bash wget
+#
+# Кумулятивные ретраи с персистентным --cache-dir. За корп-VPN apk-загрузки
+# с внешнего Alpine-CDN интермиттентно рвутся и виснут (не TLS/не IPv6/не
+# зеркало — проверено перебором; чувствителен именно apk-fetch). timeout 35
+# убивает повисшее соединение, а --cache-dir копит уже скачанные пакеты между
+# попытками, поэтому сборка сходится даже на рваном канале. fail-hard в конце —
+# чтобы битый образ не собирался молча.
+RUN mkdir -p /etc/apk/cache; ok=0; \
+    for i in $(seq 1 15); do \
+      timeout 35 apk add --cache-dir=/etc/apk/cache python3 make g++ bash wget && { ok=1; break; }; \
+      echo "[warn] apk add attempt $i failed (flaky VPN), retrying with cache..."; sleep 1; \
+    done; \
+    rm -rf /etc/apk/cache; \
+    [ "$ok" = 1 ] || { echo "[error] apk add failed after 15 retries"; exit 1; }
 
 ENV NUXT_HOST=0.0.0.0 \
     NUXT_PORT=3000

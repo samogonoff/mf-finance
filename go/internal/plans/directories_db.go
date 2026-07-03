@@ -27,7 +27,10 @@ type DirRepo struct{ pool *pgxpool.Pool }
 func NewDirRepo(pool *pgxpool.Pool) *DirRepo { return &DirRepo{pool: pool} }
 
 // editableDirs — справочники, доступные для ручного редактирования (manual).
-var editableDirs = []string{"dir_marketplace", "dir_pl_line", "dir_cfo", "dir_fx_rate"}
+var editableDirs = []string{
+	"dir_marketplace", "dir_pl_line", "dir_cfo", "dir_fx_rate",
+	"dir_cfo_group", "dir_cfo_subgroup", "dir_cfo_type", "dir_legal_entity",
+}
 
 func seedRowsAsMaps(code string) []map[string]any {
 	var v any

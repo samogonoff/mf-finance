@@ -91,21 +91,25 @@ services:
       - POSTGRES_URL=postgres://finance:finance@postgres:5432/finance?sslmode=disable
       - REDIS_ADDR=redis:6379
       - CORS_ORIGINS=http://finance.local,http://finance.local:3001,http://localhost:3001,http://localhost
-      # «Задолженность ВГО» — таблица [FinDWH].[dbo].[Premaster1C] на OLAP 10.10.6.15.
-      # В dev по умолчанию DEBT_MOCK=1; для live-режима задать MSSQL_PREMASTER_{SERVER,USER,PASSWORD}.
-      # Имена БД/схемы/таблиц вынесены в env, чтобы переключаться на снэпшоты без правки кода.
+      # «Задолженность ВГО» — источник FinDebt (вьюхи [Payments].[report].[FinDebt1/3]
+      # на OLAP 10.10.6.15). В dev по умолчанию DEBT_MOCK=1; для live задать
+      # MSSQL_PREMASTER_{SERVER,USER,PASSWORD}. DEBT_BACKEND=findebt → отчёт из CH
+      # (залито cmd/findebt-etl); findebt-live → прямое чтение вьюх из MSSQL.
       - DEBT_MOCK=${DEBT_MOCK:-1}
+      - DEBT_BACKEND=${DEBT_BACKEND:-findebt}
       - MSSQL_PREMASTER_SERVER=${MSSQL_PREMASTER_SERVER:-}
       - MSSQL_PREMASTER_PORT=${MSSQL_PREMASTER_PORT:-1433}
       - MSSQL_PREMASTER_DB=${MSSQL_PREMASTER_DB:-FinDWH}
-      - MSSQL_PREMASTER_SCHEMA=${MSSQL_PREMASTER_SCHEMA:-dbo}
-      - MSSQL_PREMASTER_TABLE=${MSSQL_PREMASTER_TABLE:-Premaster1C}
-      - MSSQL_PREMASTER_OBJECTS_TABLE=${MSSQL_PREMASTER_OBJECTS_TABLE:-Objects}
       - MSSQL_PREMASTER_USER=${MSSQL_PREMASTER_USER:-}
       - MSSQL_PREMASTER_PASSWORD=${MSSQL_PREMASTER_PASSWORD:-}
-      # ClickHouse — аналитический слой (см. clickhouse-design.md, cmd/debt-bootstrap).
-      # DEBT_BACKEND=mssql (default) | ch — переключает источник свёртки отчёта.
-      - DEBT_BACKEND=${DEBT_BACKEND:-mssql}
+      # БД Payments с вьюхами FinDebt (схема report).
+      - MSSQL_PAYMENTS_DB=${MSSQL_PAYMENTS_DB:-Payments}
+      - MSSQL_FINDEBT_SCHEMA=${MSSQL_FINDEBT_SCHEMA:-report}
+      - MSSQL_FINDEBT1_TABLE=${MSSQL_FINDEBT1_TABLE:-FinDebt1}
+      - MSSQL_FINDEBT3_TABLE=${MSSQL_FINDEBT3_TABLE:-FinDebt3}
+      # Фоновый инкремент FinDebt → CH (секунды). 0 = выключен (dev льём вручную).
+      - FINDEBT_SYNC_INTERVAL=${FINDEBT_SYNC_INTERVAL:-0}
+      # ClickHouse — слой ускорения отчёта (cmd/findebt-etl заливает fact_findebt).
       - CLICKHOUSE_HTTP_URL=${CLICKHOUSE_HTTP_URL:-http://clickhouse:8123}
       - CLICKHOUSE_USER=${CLICKHOUSE_USER:-finance}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-finance}
@@ -124,6 +128,16 @@ services:
       # ALL_view_МП пока не заведена в Budgeting/FinDWH — см. mp-source-investigation.md).
       - PLANS_MOCK=${PLANS_MOCK:-1}
       - PLANS_AUDIT_ENABLED=${PLANS_AUDIT_ENABLED:-1}
+      # Справочники Лисы (MSSQL Gpartner). Пусто/LISA_MOCK=1 → синхронизация из фикстур.
+      - FOX_HOST=${FOX_HOST:-}
+      - FOX_PORT=${FOX_PORT:-1433}
+      - FOX_DB=${FOX_DB:-}
+      - FOX_USER=${FOX_USER:-}
+      - FOX_PASSWORD=${FOX_PASSWORD:-}
+      - LISA_MOCK=${LISA_MOCK:-0}
+      - PLANS_SYNC_INTERVAL=${PLANS_SYNC_INTERVAL:-3600}
+      - PLANS_DIR_CACHE_TTL=${PLANS_DIR_CACHE_TTL:-3600}
+      - B24_USERGET_WEBHOOK=${B24_USERGET_WEBHOOK:-}
     restart: on-failure
     depends_on:
       - postgres

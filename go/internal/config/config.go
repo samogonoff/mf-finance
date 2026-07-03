@@ -11,78 +11,65 @@ type Config struct {
 	RedisAddr   string
 	CORSOrigins []string
 
-	// Premaster1C — MSSQL-витрина для отчёта «Задолженность ВГО».
-	// На OLAP-сервере 10.10.6.15 это ТАБЛИЦА [FinDWH].[dbo].[Premaster1C]
-	// (а не отдельная БД). PremasterDatabase = "FinDWH", PremasterTable = "Premaster1C".
-	// Имена вынесены в env, чтобы можно было быстро переключиться на снэпшот
-	// (например, [FinDWH].[dbo].[Premaster1C_20260514]) без правки кода.
-	PremasterServer        string
-	PremasterPort          string
-	PremasterDatabase      string
-	PremasterSchema        string
-	PremasterTable         string
-	PremasterObjectsTable  string
-	// Counterparty1C — обогащение отчёта именем/каналом/менеджером контрагента.
-	// Пусто → не джойнить (имя падает на seed/ИНН как раньше).
-	PremasterCounterpartyTable string
-	PremasterUser              string
-	PremasterPassword          string
-	DebtMock                   bool
+	// OLAP-сервер (10.10.6.15): на нём живут и FinDWH (Premaster — для модуля
+	// «Тактические планы»), и БД Payments с вьюхами FinDebt (отчёт «Задолженность
+	// ВГО»). Учётки одни на весь сервер. PremasterDatabase = "FinDWH".
+	PremasterServer   string
+	PremasterPort     string
+	PremasterDatabase string
+	PremasterUser     string
+	PremasterPassword string
+	DebtMock          bool
 
-	// Payments-витрина (опционально) — отдельная БД [Payments] на ТОМ ЖЕ OLAP-сервере.
-	// Таблица Docs несёт PaymentDate/Delay → даёт просрочку в drill-down
-	// (мост FinDWH↔Payments: Premaster1C.DocID = Payments.dbo.Docs.ID,
-	// подтверждён аналитиком, см. docs/reports/debt/payments-source-map.md §5).
-	// Джойн опциональный и LEFT: если PaymentsDatabase пуст — drill-down работает
-	// как раньше, поля payment_due_date/overdue_days остаются пустыми.
+	// БД Payments на том же OLAP — там лежат вьюхи FinDebt (схема report).
 	PremasterPaymentsDatabase string
-	PremasterDocsSchema       string
-	PremasterDocsTable        string
 
-	// Revenue-оверлей из P&L-матриц (опционально, opt-in). Если включён, при старте
-	// читаем [001 Mapping PL by BK] ⋈ [002 CodePL] и дозаполняем классификацию
-	// revenue-счетами (GroupPL='ПРОДАЖИ') — закрывает «какие субсчета = выручка»
-	// (analyst-handoff §4). При любой ошибке загрузки — фолбэк на хардкод-chart.
-	DebtRevenueOverlay      bool
-	PremasterMappingPLTable string
-	PremasterCodePLTable    string
-	PremasterCompaniesTable string
-
-	// DEBT_BACKEND — какой источник дёргает отчёт «Задолженность ВГО».
-	//   "mssql" (default) → repo_premaster.go, ходит в Premaster1C напрямую.
-	//   "finpl"           → repo_finpl.go, каноническая ОПУ-витрина Table_Fin_PL
-	//                       (выручка/ВГО) + Premaster для ДЗ/КЗ/договора/просрочки.
-	//                       Реализован, но не дефолт: ждёт сверки на наполненной
-	//                       витрине (CHECKPOINT C). Включается явно finpl.
-	//   "ch"              → repo_clickhouse.go, ходит в локальный CH-снэпшот.
-	// Drilldown в ch-режиме пока не реализован — falls back to mssql.
+	// DEBT_BACKEND — источник отчёта «Задолженность ВГО». Единственный поток —
+	// готовый расчётный слой FinDebt (Payments.report.FinDebt1/3), сверенный с 1С
+	// копейка-в-копейку (docs/reports/debt/findebt-verification.md).
+	//   "findebt" (default) → отчёт читает CH finance.fact_findebt/_docs
+	//                         (залито cmd/findebt-etl из FinDebt-вьюх).
+	//   "findebt-live"      → прямое чтение FinDebt-вьюх из MSSQL (фолбэк/дебаг).
 	DebtBackend       string
 	ClickHouseHTTPURL string
 	ClickHouseUser    string
 	ClickHousePass    string
 
-	// DEBT_CH_SOURCE — какую CH-таблицу читает ch-бэкенд отчёта «Задолженность ВГО».
-	//   "premaster" (default) → finance.fact_premaster (текущий, из Premaster1C).
-	//   "glmf"                → finance.fact_glmf + dim_contract (поток GLMF, полнее,
-	//                           каноничная классификация, договоры отдельным потоком).
-	// glmf — opt-in до сверки чисел на наполненном CH (CHECKPOINT B/D, SPEC §10).
-	DebtCHSource string
-
-	// Table_Fin_PL — каноническая месячная ОПУ-витрина на том же OLAP (FinDWH.dbo),
-	// первоисточник отчёта при DEBT_BACKEND=finpl. Имя таблицы вынесено в env,
-	// чтобы переключаться на тестовую копию без правки кода. DebtFinPLMinMonth —
-	// нижняя граница периода (раньше неё данных нет): фильтр клампится к ней.
-	DebtFinPLTable    string
-	DebtFinPLMinMonth string
+	// FinDebt-вьюхи в БД Payments (PremasterPaymentsDatabase), схема report.
+	// FinDebt1 — свод остатков ДЗ/КЗ, FinDebt3 — документная детализация с
+	// просрочкой. Имена в env, чтобы переключаться на копию без правки кода.
+	DebtFinDebtSchema string
+	DebtFinDebt1Table string
+	DebtFinDebt3Table string
+	// FINDEBT_SYNC_INTERVAL — период фонового инкремента FinDebt → CH (секунды).
+	// 0 → воркер выключен (dev). Прод: несколько часов (вьюхи суточные).
+	DebtFinDebtSyncInterval int
 
 	// Модуль «Тактические планы» (docs/reports/plans/SPEC.md §10).
 	// PlansMock=1 → факт МП из фикстур (sources/mock_mp.go), как DEBT_MOCK.
 	// Онлайн-источник факта — тот же сервер FinDWH, что у ВГО-отчёта
 	// (переиспользуем MSSQL_PREMASTER_*); PlansMpFactView — имя вьюхи/таблицы
 	// факта МП (Источник_МП → ALL_view_МП), уточняется через cmd/mssql-probe.
-	PlansMock        bool
-	PlansMpFactView  string
+	PlansMock         bool
+	PlansMpFactView   string
 	PlansAuditEnabled bool
+
+	// Справочники Лисы (ТЗ §«Справочники из Лисы»): MSSQL-БД Gpartner (FOX_*).
+	// LisaMock=1 → синхронизация из фикстур (как PLANS_MOCK), без сети к FOX.
+	// PlansSyncInterval — период cron-синхронизации; PlansDirCacheTTL — дефолтный
+	// TTL Redis-кэша строк справочника (переопределяется per-dir в БД).
+	LisaHost          string
+	LisaPort          string
+	LisaDB            string
+	LisaUser          string
+	LisaPassword      string
+	LisaMock          bool
+	PlansSyncInterval int // секунды
+	PlansDirCacheTTL  int // секунды
+
+	// B24 inbound-вебхук с правом user.get — для админ-импорта пользователей по ID
+	// (догрузка сотрудников, ещё не заходивших). Пусто → импорт отдаёт 503.
+	B24UserGetWebhook string
 }
 
 func Load() Config {
@@ -92,40 +79,54 @@ func Load() Config {
 		RedisAddr:   env("REDIS_ADDR", "redis:6379"),
 		CORSOrigins: splitCSV(env("CORS_ORIGINS", "*")),
 
-		PremasterServer:       env("MSSQL_PREMASTER_SERVER", ""),
-		PremasterPort:         env("MSSQL_PREMASTER_PORT", "1433"),
-		PremasterDatabase:     env("MSSQL_PREMASTER_DB", "FinDWH"),
-		PremasterSchema:       env("MSSQL_PREMASTER_SCHEMA", "dbo"),
-		PremasterTable:        env("MSSQL_PREMASTER_TABLE", "Premaster1C"),
-		PremasterObjectsTable:      env("MSSQL_PREMASTER_OBJECTS_TABLE", "Objects"),
-		PremasterCounterpartyTable: env("MSSQL_PREMASTER_COUNTERPARTY_TABLE", "Counterparty1C"),
-		PremasterUser:              env("MSSQL_PREMASTER_USER", ""),
-		PremasterPassword:          env("MSSQL_PREMASTER_PASSWORD", ""),
-		DebtMock:                   env("DEBT_MOCK", "0") == "1",
+		PremasterServer:   env("MSSQL_PREMASTER_SERVER", ""),
+		PremasterPort:     env("MSSQL_PREMASTER_PORT", "1433"),
+		PremasterDatabase: env("MSSQL_PREMASTER_DB", "FinDWH"),
+		PremasterUser:     env("MSSQL_PREMASTER_USER", ""),
+		PremasterPassword: env("MSSQL_PREMASTER_PASSWORD", ""),
+		DebtMock:          env("DEBT_MOCK", "0") == "1",
 
 		PremasterPaymentsDatabase: env("MSSQL_PAYMENTS_DB", "Payments"),
-		PremasterDocsSchema:       env("MSSQL_PAYMENTS_DOCS_SCHEMA", "dbo"),
-		PremasterDocsTable:        env("MSSQL_PAYMENTS_DOCS_TABLE", "Docs"),
 
-		DebtRevenueOverlay:      env("DEBT_REVENUE_OVERLAY", "0") == "1",
-		PremasterMappingPLTable: env("MSSQL_PREMASTER_MAPPING_PL_TABLE", "001 Mapping PL by BK"),
-		PremasterCodePLTable:    env("MSSQL_PREMASTER_CODEPL_TABLE", "002 CodePL"),
-		PremasterCompaniesTable: env("MSSQL_PREMASTER_COMPANIES_TABLE", "CompaniesMF"),
-
-		DebtBackend:       strings.ToLower(env("DEBT_BACKEND", "mssql")),
+		DebtBackend:       strings.ToLower(env("DEBT_BACKEND", "findebt")),
 		ClickHouseHTTPURL: env("CLICKHOUSE_HTTP_URL", "http://clickhouse:8123"),
 		ClickHouseUser:    env("CLICKHOUSE_USER", "finance"),
 		ClickHousePass:    env("CLICKHOUSE_PASSWORD", "finance"),
 
-		DebtFinPLTable:    env("MSSQL_FINPL_TABLE", "Table_Fin_PL"),
-		DebtFinPLMinMonth: env("DEBT_FINPL_MIN_MONTH", "2025-01-01"),
-
-		DebtCHSource: strings.ToLower(env("DEBT_CH_SOURCE", "premaster")),
+		DebtFinDebtSchema:       env("MSSQL_FINDEBT_SCHEMA", "report"),
+		DebtFinDebt1Table:       env("MSSQL_FINDEBT1_TABLE", "FinDebt1"),
+		DebtFinDebt3Table:       env("MSSQL_FINDEBT3_TABLE", "FinDebt3"),
+		DebtFinDebtSyncInterval: atoiDef(env("FINDEBT_SYNC_INTERVAL", "0"), 0),
 
 		PlansMock:         env("PLANS_MOCK", "0") == "1",
 		PlansMpFactView:   env("PLANS_MP_FACT_VIEW", "ALL_view_МП"),
 		PlansAuditEnabled: env("PLANS_AUDIT_ENABLED", "0") == "1",
+
+		LisaHost:          env("FOX_HOST", ""),
+		LisaPort:          env("FOX_PORT", "1433"),
+		LisaDB:            env("FOX_DB", ""),
+		LisaUser:          env("FOX_USER", ""),
+		LisaPassword:      env("FOX_PASSWORD", ""),
+		LisaMock:          env("LISA_MOCK", "0") == "1",
+		PlansSyncInterval: atoiDef(env("PLANS_SYNC_INTERVAL", "3600"), 3600),
+		PlansDirCacheTTL:  atoiDef(env("PLANS_DIR_CACHE_TTL", "3600"), 3600),
+
+		B24UserGetWebhook: env("B24_USERGET_WEBHOOK", ""),
 	}
+}
+
+func atoiDef(s string, def int) int {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return def
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n == 0 {
+		return def
+	}
+	return n
 }
 
 func env(k, def string) string {

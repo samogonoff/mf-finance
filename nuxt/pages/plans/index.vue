@@ -6,17 +6,23 @@
         <p class="page-subtitle">Формирование и согласование тактических планов P&amp;L</p>
       </div>
       <div class="page-actions">
-        <NuxtLink to="/plans/mp/large" class="btn btn-ghost">
-          <Icon name="lucide:store" /> МП large
-        </NuxtLink>
-        <NuxtLink to="/plans/mp/small" class="btn btn-ghost">
-          <Icon name="lucide:store" /> МП small
+        <NuxtLink to="/plans/tasks" class="btn btn-ghost">
+          <Icon name="lucide:list-checks" /> Мои задания
         </NuxtLink>
         <NuxtLink to="/plans/directories" class="btn btn-ghost">
           <Icon name="lucide:book" /> Справочники
         </NuxtLink>
         <NuxtLink v-if="canAudit" to="/plans/admin/route" class="btn btn-ghost">
           <Icon name="lucide:git-branch" /> Маршрут
+        </NuxtLink>
+        <NuxtLink v-if="canAudit" to="/plans/admin/positions" class="btn btn-ghost">
+          <Icon name="lucide:briefcase" /> Должности
+        </NuxtLink>
+        <NuxtLink v-if="canAudit" to="/plans/admin/task-templates" class="btn btn-ghost">
+          <Icon name="lucide:wrench" /> Конструктор заданий
+        </NuxtLink>
+        <NuxtLink v-if="canAudit" to="/plans/admin/users" class="btn btn-ghost">
+          <Icon name="lucide:users" /> Пользователи и права
         </NuxtLink>
         <NuxtLink v-if="canAudit" to="/plans/audit" class="btn btn-ghost">
           <Icon name="lucide:scroll-text" /> Аудит
@@ -75,10 +81,7 @@
                 :to="`/plans/${it.id}?year=${it.period_year}&month=${it.period_month}`"
                 class="link"
               >Карточка</NuxtLink>
-              <NuxtLink
-                :to="`/plans/mp/large?year=${it.period_year}&month=${it.period_month}`"
-                class="link"
-              >МП large</NuxtLink>
+              <NuxtLink :to="`/plans/process/${it.id}`" class="link">Процесс</NuxtLink>
             </td>
           </tr>
         </tbody>

@@ -106,99 +106,50 @@ func main() {
 	// Скриншоты — открытая раздача (только по UUID-имени).
 	mux.HandleFunc("GET /uploads/bugtracker/", bugH.ServeUpload)
 
-	// Reports — Задолженность ВГО.
-	// DEBT_MOCK=1 → фикстуры. DEBT_BACKEND=ch → CH-снэпшот для свёртки + MSSQL для drill-down.
-	// По умолчанию (DEBT_BACKEND=mssql) — live из [FinDWH].[dbo].[Premaster1C].
+	// Reports — Задолженность ВГО. Единственный источник — готовый расчётный слой
+	// FinDebt (Payments.report.FinDebt1/3), сверенный с 1С копейка-в-копейку.
+	//   DEBT_MOCK=1        → фикстуры (dev без OLAP).
+	//   DEBT_BACKEND=findebt (default) → отчёт читает CH finance.fact_findebt/_docs
+	//                        (залито cmd/findebt-etl). Развязывает отчёт с живым OLAP.
+	//   DEBT_BACKEND=findebt-live → прямое чтение FinDebt-вьюх из MSSQL (фолбэк/дебаг).
 	var premasterRepo debt.PremasterRepo
-	var mssqlDB *sql.DB // нужен и для debt-репо, и для ETL admin/worker
+	var mssqlDB *sql.DB // OLAP-пул: нужен findebt-live и модулю «Тактические планы»
 	if !cfg.DebtMock {
-		// MSSQL-репо: нужен и для DEBT_BACKEND=mssql (всё), и для DEBT_BACKEND=ch (drill-down).
-		mssqlDB, err = debt.NewPremasterRepo(cfg.PremasterServer, cfg.PremasterPort, cfg.PremasterDatabase, cfg.PremasterUser, cfg.PremasterPassword)
+		mssqlDB, err = debt.NewOLAPPool(cfg.PremasterServer, cfg.PremasterPort, cfg.PremasterDatabase, cfg.PremasterUser, cfg.PremasterPassword)
 		if err != nil {
 			log.Fatalf("debt: mssql open: %v", err)
-		}
-		tables := debt.PremasterTables{
-			Database:          cfg.PremasterDatabase,
-			Schema:            cfg.PremasterSchema,
-			Main:              cfg.PremasterTable,
-			ObjectsTable:      cfg.PremasterObjectsTable,
-			CounterpartyTable: cfg.PremasterCounterpartyTable,
-			PaymentsDatabase:  cfg.PremasterPaymentsDatabase,
-			DocsSchema:        cfg.PremasterDocsSchema,
-			DocsTable:         cfg.PremasterDocsTable,
-		}
-		mssqlRepo, err := debt.WrapPremasterRepo(mssqlDB, tables)
-		if err != nil {
-			log.Fatalf("debt: wrap premaster: %v", err)
 		}
 		if mssqlDB != nil {
 			defer mssqlDB.Close()
 		}
 
 		switch cfg.DebtBackend {
-		case "ch", "clickhouse":
-			if cfg.DebtCHSource == "glmf" {
-				// Поток GLMF: fact_glmf (выручка/ДЗ/КЗ) + dim_contract (договоры),
-				// всё в CH — drilldown тоже из CH (отдельный mssql не нужен).
-				gRepo, err := debt.NewGLMFCHRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
-				if err != nil {
-					log.Fatalf("debt: glmf-ch init: %v", err)
-				}
-				if gRepo == nil {
-					log.Fatalf("debt: DEBT_CH_SOURCE=glmf but CLICKHOUSE_HTTP_URL/USER not set")
-				}
-				premasterRepo = gRepo
-				log.Printf("debt: backend=ch source=glmf (fact_glmf + dim_contract)")
-				break
+		case "findebt-live":
+			// Прямое чтение вьюх Payments.report.FinDebt1/3 из MSSQL (без CH).
+			fdRepo, ferr := debt.NewFinDebtRepo(mssqlDB, cfg.PremasterPaymentsDatabase,
+				cfg.DebtFinDebtSchema, cfg.DebtFinDebt1Table, cfg.DebtFinDebt3Table)
+			if ferr != nil {
+				log.Fatalf("debt: findebt-live init: %v", ferr)
 			}
-			chRepo, err := debt.NewClickHouseRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
-			if err != nil {
-				log.Fatalf("debt: clickhouse init: %v", err)
+			if fdRepo == nil {
+				log.Fatalf("debt: DEBT_BACKEND=findebt-live but MSSQL_PREMASTER_* not set")
 			}
-			if chRepo == nil {
-				log.Fatalf("debt: DEBT_BACKEND=ch but CLICKHOUSE_HTTP_URL/USER not set")
-			}
-			premasterRepo = debt.NewCompositeRepo(chRepo, mssqlRepo)
-			log.Printf("debt: backend=ch source=premaster (report→clickhouse, drilldown→mssql)")
-		case "finpl":
-			// Каноническая ОПУ-витрина Table_Fin_PL (выручка/ВГО) для Report,
-			// Premaster — для Drilldown и (T7) ДЗ/КЗ-сальдо/договора/просрочки.
-			finRepo, err := debt.NewFinPLRepo(mssqlDB, cfg.PremasterDatabase, cfg.PremasterSchema, cfg.DebtFinPLTable, cfg.DebtFinPLMinMonth)
-			if err != nil {
-				log.Fatalf("debt: finpl init: %v", err)
-			}
-			if finRepo == nil {
-				log.Fatalf("debt: DEBT_BACKEND=finpl but MSSQL_PREMASTER_* not set")
-			}
-			premasterRepo = debt.NewFinPLComposite(finRepo, mssqlRepo)
-			log.Printf("debt: backend=finpl (revenue→Table_Fin_PL, ДЗ/КЗ+drilldown→mssql)")
+			premasterRepo = fdRepo
+			log.Printf("debt: backend=findebt-live (MSSQL Payments.report.FinDebt1/3)")
 		default:
-			premasterRepo = mssqlRepo
-			log.Printf("debt: backend=mssql")
-		}
-
-		// Revenue-оверлей из P&L-матриц (opt-in). Закрывает «какие субсчета = выручка»
-		// для всех стран матрицы. Любая ошибка → фолбэк на хардкод-классификацию,
-		// сервис стартует как обычно. Один раз при старте, до приёма запросов.
-		if cfg.DebtRevenueOverlay && mssqlDB != nil {
-			loadCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			overlay, lerr := debt.LoadRevenueOverlay(loadCtx, mssqlDB, debt.MatrixTables{
-				Database:  cfg.PremasterDatabase,
-				Schema:    cfg.PremasterSchema,
-				MappingPL: cfg.PremasterMappingPLTable,
-				CodePL:    cfg.PremasterCodePLTable,
-				Companies: cfg.PremasterCompaniesTable,
-			})
-			cancel()
-			if lerr != nil {
-				log.Printf("debt: revenue overlay load failed, keeping hardcoded chart: %v", lerr)
-			} else {
-				debt.InstallRevenueOverlay(overlay)
-				log.Printf("debt: revenue overlay installed for %d countries", len(overlay))
+			// findebt (default): отчёт читает CH-снэпшот finance.fact_findebt/_docs.
+			fdRepo, ferr := debt.NewFinDebtCHRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
+			if ferr != nil {
+				log.Fatalf("debt: findebt-ch init: %v", ferr)
 			}
+			if fdRepo == nil {
+				log.Fatalf("debt: DEBT_BACKEND=findebt but CLICKHOUSE_HTTP_URL/USER not set")
+			}
+			premasterRepo = fdRepo
+			log.Printf("debt: backend=findebt (ClickHouse finance.fact_findebt)")
 		}
 	}
-	debtSvc := debt.NewService(cfg.DebtMock, premasterRepo, cfg.DebtBackend)
+	debtSvc := debt.NewService(cfg.DebtMock, premasterRepo)
 	debtFilters := debt.NewFiltersRepo(pool)
 	debtH := debt.NewHandler(debtSvc, debtFilters, func(r *http.Request) (int64, bool) {
 		u, ok := auth.UserFromCtx(r.Context())
@@ -217,35 +168,28 @@ func main() {
 	mux.HandleFunc("POST /api/reports/debt/saved-filters", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.CreateSavedFilter))
 	mux.HandleFunc("DELETE /api/reports/debt/saved-filters", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.DeleteSavedFilter))
 
-	// ETL — admin-управление заливкой Premaster1C → ClickHouse и инкрементальный
-	// pull-воркер. Требует MSSQL-коннект (для bootstrap'а из источника), поэтому
-	// активен только при !DEBT_MOCK.
-	if mssqlDB != nil {
-		etlDeps := etl.Deps{
+	// Фоновый инкремент FinDebt → CH (finance.fact_findebt). Активен только в
+	// live-режиме (нужен MSSQL-пул) и при FINDEBT_SYNC_INTERVAL>0. Инкремент сам
+	// берёт watermark из CH; на findebt-live (без CH) воркер бессмысленен.
+	if mssqlDB != nil && cfg.DebtBackend != "findebt-live" {
+		fdTables := etl.FinDebtTables{
+			Fin3FQN: "[" + cfg.PremasterPaymentsDatabase + "].[" + cfg.DebtFinDebtSchema + "].[" + cfg.DebtFinDebt3Table + "]",
+		}
+		etl.NewFinDebtWorker(etl.Deps{
 			MSSQL:  mssqlDB,
-			PG:     pool,
 			CHURL:  cfg.ClickHouseHTTPURL,
 			CHUser: cfg.ClickHouseUser,
 			CHPass: cfg.ClickHousePass,
-		}
-		adminH := etl.NewAdminHandler(etlDeps)
-		mux.HandleFunc("GET /api/admin/etl/debt/status", auth.RequireRole(authSvc, auth.RoleAdmin, adminH.Status))
-		mux.HandleFunc("GET /api/admin/etl/debt/settings", auth.RequireRole(authSvc, auth.RoleAdmin, adminH.Settings))
-		mux.HandleFunc("PUT /api/admin/etl/debt/settings", auth.RequireRole(authSvc, auth.RoleAdmin, adminH.UpdateSettings))
-		mux.HandleFunc("POST /api/admin/etl/debt/bootstrap", auth.RequireRole(authSvc, auth.RoleAdmin, adminH.StartBootstrap))
-		mux.HandleFunc("GET /api/admin/etl/debt/log", auth.RequireRole(authSvc, auth.RoleAdmin, adminH.Log))
-
-		// Инкрементальный воркер. Сам читает debt_etl_settings каждый тик —
-		// вкл/выкл и интервал управляются через PUT /api/admin/etl/debt/settings.
-		// При DEBT_CH_SOURCE=glmf вдобавок тянет дельту fact_glmf по DateOfLoad.
-		etl.NewIncrementalWorkerWithGLMF(etlDeps, cfg.DebtCHSource == "glmf").Start(context.Background())
+		}, etl.FinDebtOpts{Tables: fdTables}).
+			Start(context.Background(), time.Duration(cfg.DebtFinDebtSyncInterval)*time.Second)
 	}
 
 	// Тактические планы (VS0 каркас + VS1 справочники + VS2 факт МП).
 	// docs/reports/plans/SPEC.md. Факт: PLANS_MOCK=1 → фикстуры; иначе online
 	// FinDWH (переиспользуем mssqlDB ВГО-отчёта; при nil — fallback на mock).
 	plansFact := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactView)
-	plansSvc := plans.NewService(plans.NewPgStore(pool), plansFact, plans.NewPgScopeStore(pool))
+	plansScope := plans.NewPgScopeStore(pool)
+	plansSvc := plans.NewService(plans.NewPgStore(pool), plansFact, plansScope)
 	// Principal для ABAC: id пользователя + признак админа планов (обходит ABAC).
 	plansPrincipal := func(r *http.Request) (plans.Principal, bool) {
 		u := auth.CurrentUser(r)
@@ -259,7 +203,31 @@ func main() {
 	if err := plansDir.EnsureSeed(context.Background()); err != nil {
 		log.Printf("plans: dir seed: %v", err) // не фатально
 	}
+	// Под-справочники ЦФО (Группа/Подгруппа/Тип) из загруженного dir_cfo (если пусты).
+	_ = plans.SeedCFOSubdirs(context.Background(), pool, false)
 	plansH := plans.NewHandler(plans.NewSeedSource(), plansDir, plansFact, plansSvc, plansPrincipal, plansAudit)
+
+	// Справочники Лиса/1С: коннектор + кэш + движок синхронизации + каталог должностей.
+	var lisa *plans.LisaDB
+	if !cfg.LisaMock {
+		lisa, err = plans.OpenLisa(cfg.LisaHost, cfg.LisaPort, cfg.LisaDB, cfg.LisaUser, cfg.LisaPassword)
+		if err != nil {
+			log.Printf("plans: Lisa connect: %v (синхронизация Лисы недоступна)", err)
+		}
+	}
+	plansCache := plans.NewDirCache(rdb, pool, time.Duration(cfg.PlansDirCacheTTL)*time.Second)
+	plansSyncer := plans.NewSyncer(pool, plans.BuildProviders(cfg.LisaMock, lisa), plansCache)
+	plansPositions := plans.NewPositionStore(pool)
+	plansUsers := plans.NewUsersStore(pool)
+	plansDeputies := plans.NewDeputyStore(pool)
+	plansH.SetDirSubsystems(plansSyncer, plansCache, plansPositions, plansScope, plansUsers, plansDeputies)
+	plansH.SetB24Importer(plans.NewB24Importer(cfg.B24UserGetWebhook, plansUsers))
+	plansH.SetOrgStore(plans.NewOrgStore(pool))
+	plansH.SetJobPositions(plans.NewJobPositionStore(pool))
+	plansH.SetTaskStore(plans.NewTaskStore(pool, plansFact))
+	// Фоновая синхронизация + прогрев кэша (DIR-03). Интервал из PLANS_SYNC_INTERVAL.
+	plansSyncer.Start(context.Background(), time.Duration(cfg.PlansSyncInterval)*time.Second)
+
 	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
 	mux.HandleFunc("GET /api/plans/directories", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Directories))
 	mux.HandleFunc("GET /api/plans/directories/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirectoryRows))
@@ -274,6 +242,27 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/mp/formula", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.FormulaOverride))
 	mux.HandleFunc("GET /api/plans/mp/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpExport))
 	mux.HandleFunc("POST /api/plans/mp/import", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpImport))
+	// Движок заданий процесса: список/генерация/действия/владелец этапа.
+	mux.HandleFunc("GET /api/plans/instances/{id}/tasks", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.TasksList))
+	mux.HandleFunc("POST /api/plans/instances/{id}/tasks/generate", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.TasksGenerate))
+	mux.HandleFunc("GET /api/plans/tasks/mine", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MyTasks))
+	mux.HandleFunc("GET /api/plans/tasks/all", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.AllTasks))
+	mux.HandleFunc("GET /api/plans/instances/{id}/pnl", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.PnlView))
+	mux.HandleFunc("POST /api/plans/instances/{id}/strategy/import", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.StrategyImport))
+	mux.HandleFunc("GET /api/plans/tasks/{taskId}/data", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.TaskDataView))
+	mux.HandleFunc("PUT /api/plans/tasks/{taskId}/assignee", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.TaskAssign))
+	mux.HandleFunc("GET /api/plans/tasks/{taskId}/mp-form", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormGet))
+	mux.HandleFunc("PUT /api/plans/tasks/{taskId}/mp-form", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormSave))
+	mux.HandleFunc("GET /api/plans/tasks/{taskId}/mp-form/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormExport))
+	mux.HandleFunc("POST /api/plans/tasks/{taskId}/mp-form/import", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormImport))
+	mux.HandleFunc("POST /api/plans/tasks/{taskId}/action", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.TaskAction))
+	mux.HandleFunc("GET /api/plans/instances/{id}/stage-owners", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.StageOwnersList))
+	mux.HandleFunc("PUT /api/plans/instances/{id}/stages/{code}/owner", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.StageOwnerSet))
+	mux.HandleFunc("GET /api/plans/instances/{id}/stages/{code}/readiness", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.StageReadiness))
+	// Конструктор шаблонов заданий (админ процессов).
+	mux.HandleFunc("GET /api/plans/task-templates", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.TaskTemplatesList))
+	mux.HandleFunc("PUT /api/plans/task-templates", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.TaskTemplateUpsert))
+	mux.HandleFunc("DELETE /api/plans/task-templates/{id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.TaskTemplateDelete))
 	mux.HandleFunc("GET /api/plans/instances/{id}/stages", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.StagesList))
 	mux.HandleFunc("POST /api/plans/instances/{id}/stages/{code}/action", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.StageAction))
 	mux.HandleFunc("GET /api/plans/instances/{id}/comments", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.CommentsList))
@@ -282,11 +271,44 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/scope/{user_id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.ScopeUpsert))
 	// Журнал аудита — просмотр только админ процессов (view_audit).
 	mux.HandleFunc("GET /api/plans/audit", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.AuditList))
-	// Редактируемые справочники (НСИ): чтение — любой участник, правка — админ процессов.
-	mux.HandleFunc("GET /api/plans/dir", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirList))
-	mux.HandleFunc("GET /api/plans/dir/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirRowsDB))
+	// Справочники: реестр+схема (чтение — участник), правка/синхронизация — админ.
+	mux.HandleFunc("GET /api/plans/dir", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirRegistry))
+	mux.HandleFunc("GET /api/plans/dir/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirRowsCached))
+	mux.HandleFunc("GET /api/plans/dir/{code}/log", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirSyncLog))
+	mux.HandleFunc("GET /api/plans/dir/{code}/versions", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.DirVersions))
 	mux.HandleFunc("PUT /api/plans/dir/{code}/rows", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.DirRowUpsert))
 	mux.HandleFunc("DELETE /api/plans/dir/{code}/rows/{id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.DirRowDelete))
+	mux.HandleFunc("POST /api/plans/dir/{code}/sync", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.DirSync))
+	mux.HandleFunc("POST /api/plans/dir/{code}/warm", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.DirWarm))
+	mux.HandleFunc("PUT /api/plans/dir/{code}/settings", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.DirSettings))
+	// Каталог должностей + назначения (страница «Пользователи и права»): админ процессов.
+	mux.HandleFunc("GET /api/plans/positions", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.PositionsList))
+	mux.HandleFunc("PUT /api/plans/positions/{code}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.PositionUpsert))
+	mux.HandleFunc("PUT /api/plans/positions/{code}/stages", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.PositionStages))
+	mux.HandleFunc("DELETE /api/plans/positions/{code}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.PositionDelete))
+	// Заместители (глобально + по этапу) и метка отсутствия пользователя.
+	mux.HandleFunc("GET /api/plans/deputies", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.DeputiesList))
+	mux.HandleFunc("PUT /api/plans/deputies", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.DeputyUpsert))
+	mux.HandleFunc("DELETE /api/plans/deputies/{id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.DeputyDelete))
+	mux.HandleFunc("PUT /api/plans/users/{id}/absence", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.UserAbsence))
+	mux.HandleFunc("POST /api/plans/users/import-b24", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.PlanUsersImportB24))
+	mux.HandleFunc("GET /api/plans/users/search", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.PlanUsersSearch))
+	// Структура компании (ответственность по направлениям + учредители).
+	mux.HandleFunc("GET /api/plans/org", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.OrgTree))
+	mux.HandleFunc("PUT /api/plans/org/responsible", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.OrgSetResponsible))
+	// Должности (job positions): носитель + покрытие ЦФО (ТОП).
+	mux.HandleFunc("GET /api/plans/jobpos", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.JobPositionsList))
+	mux.HandleFunc("PUT /api/plans/jobpos", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.JobPositionUpsert))
+	mux.HandleFunc("DELETE /api/plans/jobpos/{id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.JobPositionDelete))
+	mux.HandleFunc("GET /api/plans/jobpos/{id}/cfo", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.JobPositionCfo))
+	mux.HandleFunc("PUT /api/plans/jobpos/{id}/cfo", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.JobPositionAssignCfo))
+	mux.HandleFunc("DELETE /api/plans/jobpos/cfo/{code}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.JobPositionUnassignCfo))
+	mux.HandleFunc("POST /api/plans/users/upsert", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.PlanUserUpsert))
+	mux.HandleFunc("GET /api/plans/assignments", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.AssignmentsList))
+	mux.HandleFunc("DELETE /api/plans/assignments/{id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.AssignmentDelete))
+	// Пользователи модуля + их системные ТП-роли (страница «Пользователи и права»).
+	mux.HandleFunc("GET /api/plans/users", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.PlanUsersList))
+	mux.HandleFunc("PUT /api/plans/users/{id}/roles", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.PlanUserRoles))
 	// Маршрут процесса (ответственные по этапам): чтение — участник, правка — админ.
 	mux.HandleFunc("GET /api/plans/route", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.RouteList))
 	mux.HandleFunc("PUT /api/plans/route/{code}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.RouteUpsert))

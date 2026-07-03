@@ -7,6 +7,7 @@
 package plans
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +54,42 @@ type Handler struct {
 	form      *Service
 	principal PrincipalFunc
 	audit     Auditor
+
+	// Подсистемы справочников/прав (ставятся через SetDirSubsystems; nil в тестах).
+	syncer     *Syncer
+	cache      *DirCache
+	positions  *PositionStore
+	scopeAdmin scopeAdmin
+	users      *UsersStore
+	deputies   *DeputyStore
+	b24        *B24Importer
+	org        *OrgStore
+	jobpos     *JobPositionStore
+	tasks      *TaskStore
+}
+
+// SetOrgStore подключает структуру компании (nil — недоступна).
+func (h *Handler) SetOrgStore(o *OrgStore) { h.org = o }
+
+// SetTaskStore подключает движок заданий процесса (nil — недоступен).
+func (h *Handler) SetTaskStore(t *TaskStore) { h.tasks = t }
+
+// SetJobPositions подключает должности (nil — недоступны).
+func (h *Handler) SetJobPositions(j *JobPositionStore) { h.jobpos = j }
+
+// SetB24Importer подключает импорт пользователей из B24 (nil — импорт недоступен).
+func (h *Handler) SetB24Importer(b *B24Importer) { h.b24 = b }
+
+// scopeAdmin — листинг/удаление назначений должностей (для страницы прав).
+type scopeAdmin interface {
+	ListAssignments(ctx context.Context) ([]ScopeAssignment, error)
+	DeleteAssignment(ctx context.Context, id int64) error
+}
+
+// SetDirSubsystems подключает движок синхронизации, кэш, каталог должностей и
+// админ-доступ к назначениям (вызывается из main.go после NewHandler).
+func (h *Handler) SetDirSubsystems(s *Syncer, c *DirCache, p *PositionStore, sa scopeAdmin, u *UsersStore, d *DeputyStore) {
+	h.syncer, h.cache, h.positions, h.scopeAdmin, h.users, h.deputies = s, c, p, sa, u, d
 }
 
 // NewHandler — конструктор. dir — seed-справочники, dirRepo — редактируемые НСИ
@@ -463,6 +500,14 @@ func (h *Handler) DirRowUpsert(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	op := "edit"
+	if body.ID == 0 {
+		op = "add"
+	}
+	_ = h.dirRepo.RecordManualVersion(r.Context(), code, h.prin(r).UserID, op, dirRowLabel(body.Payload, id))
+	if h.cache != nil {
+		_ = h.cache.Invalidate(r.Context(), code)
+	}
 	h.rec(r, "dir_edit", "directory", id)
 	writeJSON(w, http.StatusOK, map[string]int64{"id": id})
 }
@@ -479,8 +524,24 @@ func (h *Handler) DirRowDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = h.dirRepo.RecordManualVersion(r.Context(), code, h.prin(r).UserID, "delete", strconv.FormatInt(id, 10))
+	if h.cache != nil {
+		_ = h.cache.Invalidate(r.Context(), code)
+	}
 	h.rec(r, "dir_delete", "directory", id)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// dirRowLabel — человекочитаемая метка строки для истории версий.
+func dirRowLabel(payload map[string]any, id int64) string {
+	for _, k := range []string{"code", "name", "code_cfo", "name_cfo", "currency"} {
+		if v, ok := payload[k]; ok {
+			if s := fmt.Sprintf("%v", v); s != "" && s != "<nil>" {
+				return s
+			}
+		}
+	}
+	return "#" + strconv.FormatInt(id, 10)
 }
 
 func dirEditable(code string) bool {
@@ -613,6 +674,28 @@ func (h *Handler) StageAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Country == "" {
 		body.Country = "RU"
+	}
+	// Завершение этапа двигает ВЛАДЕЛЕЦ этапа (финансист) и только когда ВСЕ
+	// задания этапа done. submit/approve → completed; гейтим их по задачам+праву.
+	if (body.Action == "submit" || body.Action == "approve") && h.tasks != nil {
+		ready, done, total, e := h.tasks.StageAllDone(r.Context(), plID, code)
+		if e == nil && total > 0 {
+			if !ready {
+				msg := fmt.Sprintf("этап нельзя двигать: выполнено %d из %d заданий", done, total)
+				if un := h.tasks.StageUnassigned(r.Context(), plID, code); un > 0 {
+					msg += fmt.Sprintf(" (%d без исполнителя — назначьте ТОПа на ЦФО)", un)
+				}
+				writeErr(w, http.StatusConflict, msg)
+				return
+			}
+			prin := h.prin(r)
+			owner, _ := h.tasks.StageOwner(r.Context(), plID, code)
+			isOwner := owner != nil && *owner == prin.UserID
+			if !prin.PlansAdmin && !isOwner {
+				writeErr(w, http.StatusForbidden, "этап двигает владелец этапа или администратор")
+				return
+			}
+		}
 	}
 	stages, err := h.form.StageAction(r.Context(), h.prin(r), plID, body.Year, body.Month, body.Country, code, body.Action, body.Target)
 	if err != nil {
