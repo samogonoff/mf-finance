@@ -61,17 +61,27 @@ export interface TaskData {
   has_data: boolean;
 }
 
-export interface MpFormPlatform { code_cfo: number; name: string }
-export interface MpFormBlockDef { block_type: string; code_pl: number; name: string }
-export interface MpFormCell { code_cfo: number; block_type: string; fact: number | null; strategy: number | null; tactic: number | null; is_manual: boolean; reason: string }
+export interface MpFormPlatform { code_cfo: number; name: string; country: string }
+export interface MpLine {
+  block_type: string; code_pl: number; name: string; section: string;
+  kind: "input" | "calc" | "calc_editable" | "header";
+  value_kind: "money" | "pct"; scope: "platform" | "total";
+  formula: string; editable: boolean; cost_line: boolean;
+}
+export interface MpFormCell {
+  code_cfo: number; block_type: string; value: number;
+  fact: number | null; strategy: number | null; tactic: number | null;
+  is_manual: boolean; reason: string;
+}
 export interface MpTaskForm {
   task: Task;
   segment: string;
   year: number;
   month: number;
   currency: string;
+  vat: number;
   platforms: MpFormPlatform[];
-  blocks: MpFormBlockDef[];
+  lines: MpLine[];
   cells: MpFormCell[];
 }
 export interface MpSaveRow { code_cfo: number; block_type: string; code_pl: number; amount: number; is_manual: boolean; comment: string }

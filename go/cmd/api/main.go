@@ -187,7 +187,7 @@ func main() {
 	// Тактические планы (VS0 каркас + VS1 справочники + VS2 факт МП).
 	// docs/reports/plans/SPEC.md. Факт: PLANS_MOCK=1 → фикстуры; иначе online
 	// FinDWH (переиспользуем mssqlDB ВГО-отчёта; при nil — fallback на mock).
-	plansFact := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactView)
+	plansFact := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactTable, cfg.PlansMpPlanTable, cfg.PlansMpPenaltyView)
 	plansScope := plans.NewPgScopeStore(pool)
 	plansSvc := plans.NewService(plans.NewPgStore(pool), plansFact, plansScope)
 	// Principal для ABAC: id пользователя + признак админа планов (обходит ABAC).

@@ -47,12 +47,14 @@ type Config struct {
 
 	// Модуль «Тактические планы» (docs/reports/plans/SPEC.md §10).
 	// PlansMock=1 → факт МП из фикстур (sources/mock_mp.go), как DEBT_MOCK.
-	// Онлайн-источник факта — тот же сервер FinDWH, что у ВГО-отчёта
-	// (переиспользуем MSSQL_PREMASTER_*); PlansMpFactView — имя вьюхи/таблицы
-	// факта МП (Источник_МП → ALL_view_МП), уточняется через cmd/mssql-probe.
-	PlansMock         bool
-	PlansMpFactView   string
-	PlansAuditEnabled bool
+	// Онлайн-источник — тот же сервер FinDWH (переиспользуем MSSQL_PREMASTER_*).
+	// Факт/план МП живут в БД Budgeting (плоские таблицы FormToLoad*, значения в BYN);
+	// штрафы — в FinDWH.dbo.FINDWHACCESSGROUP. Подтверждено probe'ом 2026-07-05.
+	PlansMock          bool
+	PlansMpFactTable   string // факт МП: Budgeting.dbo.FormToLoadFact (КодЦФО/КодPL/Дата/Значение, BYN)
+	PlansMpPlanTable   string // план/стратегия МП: Budgeting.dbo.FormToLoadPlan
+	PlansMpPenaltyView string // вью штрафов МП (FINDWHACCESSGROUP, Наименование LIKE '%Штраф%')
+	PlansAuditEnabled  bool
 
 	// Справочники Лисы (ТЗ §«Справочники из Лисы»): MSSQL-БД Gpartner (FOX_*).
 	// LisaMock=1 → синхронизация из фикстур (как PLANS_MOCK), без сети к FOX.
@@ -98,9 +100,11 @@ func Load() Config {
 		DebtFinDebt3Table:       env("MSSQL_FINDEBT3_TABLE", "FinDebt3"),
 		DebtFinDebtSyncInterval: atoiDef(env("FINDEBT_SYNC_INTERVAL", "0"), 0),
 
-		PlansMock:         env("PLANS_MOCK", "0") == "1",
-		PlansMpFactView:   env("PLANS_MP_FACT_VIEW", "ALL_view_МП"),
-		PlansAuditEnabled: env("PLANS_AUDIT_ENABLED", "0") == "1",
+		PlansMock:          env("PLANS_MOCK", "0") == "1",
+		PlansMpFactTable:   env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),
+		PlansMpPlanTable:   env("PLANS_MP_PLAN_TABLE", "Budgeting.dbo.FormToLoadPlan"),
+		PlansMpPenaltyView: env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
+		PlansAuditEnabled:  env("PLANS_AUDIT_ENABLED", "0") == "1",
 
 		LisaHost:          env("FOX_HOST", ""),
 		LisaPort:          env("FOX_PORT", "1433"),
