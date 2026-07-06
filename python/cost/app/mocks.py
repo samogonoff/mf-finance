@@ -213,6 +213,9 @@ def get_filter_options(params: dict[str, list[str]]) -> dict[str, Any]:
     # 3. calc_sign — статический
     result["calc_sign"] = list(CALC_SIGNS)
 
+    # 4. plan_id — статический список
+    result["plan_id"] = ["ПЛАН-A", "ПЛАН-B", "ПЛАН-C"]
+
     return result
 
 
@@ -242,6 +245,7 @@ def _make_row(i: int, overrides: dict | None = None) -> dict[str, Any]:
         "Страна пр-ва": ["Беларусь", "Россия", "Турция", "Китай"][i % 4],
         "Семья": ["AURORA", "BOREAL", "CRAFT", "LINEA"][i % 4],
         "Сезон": ["Осень-Зима 2025", "Весна-Лето 2026", "Осень-Зима 2026"][i % 3],
+        "PLAN_ID": ["ПЛАН-A", "ПЛАН-B", "ПЛАН-C"][i % 3],
         # Level поля — для фильтрации
         "Level 01": _LEVELS["level01"][i % 3]["text"],
         "Level 02": _LEVELS["level02"][i % 3]["text"],
@@ -294,6 +298,7 @@ def _match_filters(row: dict, payload: dict) -> bool:
         "brand_manager": "Бренд-менеджер", "country": "Страна пр-ва",
         "family": "Семья", "season": "Сезон",
         "calc_sign": "Признак калькуляции", "model": "Модель", "articul": "Артикул",
+        "plan_id": "PLAN_ID",
     }
     for key, col in col_map.items():
         vals = payload.get(key) or []
@@ -356,6 +361,34 @@ def aggregated(payload: dict | None = None) -> dict:
             row["version_status"] = "draft"
         elif i == 1:
             row["version_status"] = "pending"
+    # Inject price_rf/kz/uz from price levels
+    pl_map = {pl["name"]: pl for pl in PRICE_LEVELS}
+    for row in rows:
+        pl_name = str(row.get("Уровень цен", "") or "").strip()
+        matched = pl_map.get(pl_name)
+        if matched:
+            row["price_rf"] = matched.get("price_type4")
+            row["price_kz"] = matched.get("price_type5")
+            row["price_uz"] = matched.get("price_type6")
+    # Inject planned_retail/planned_wholesale (mock: ПКПСС→null, КПСС→ПКПСС, ПФКСС→КПСС, ФКСС→ПФКСС)
+    chain_map: dict[str, str] = {"КПСС": "ПКПСС", "ПФКСС": "КПСС", "ФКСС": "ПФКСС"}
+    for row in rows:
+        cs = str(row.get("Признак калькуляции", "") or "").strip()
+        if cs in chain_map:
+            src_cs = chain_map[cs]
+            # Find first row with matching source calc_sign for same model+articul (+plan_id for ПФКСС/ФКСС)
+            for src in rows:
+                if src.get("Признак калькуляции") != src_cs:
+                    continue
+                if src.get("Модель") != row.get("Модель"):
+                    continue
+                if src.get("Артикул") != row.get("Артикул"):
+                    continue
+                if cs != "КПСС" and src.get("PLAN_ID") != row.get("PLAN_ID"):
+                    continue
+                row["planned_retail"] = src.get("avg_Розничная цена по уровню, руб.")
+                row["planned_wholesale"] = src.get("avg_Отпускная цена по уровню, руб")
+                break
     return {"data": rows, "count": len(rows)}
 
 

@@ -35,18 +35,8 @@ LEVEL_KEYS = ["level01", "level02", "level03", "level04", "level05"]
 # ── Фильтр-options (DWH.dim.groups) ─────────────────────────────────────────
 
 
-@router.get("/filter-options")
-def get_filter_options(request: Request) -> dict:
-    """Возвращает значения фильтров из DWH.dim.groups с каскадом."""
-    selected: dict[str, list[str]] = {}
-    for key in CASCADE_KEYS:
-        values = request.query_params.getlist(key)
-        if values:
-            selected[key] = values
-
-    if _is_mock():
-        return mocks.get_filter_options(selected)
-
+def _get_dwh_filter_options(selected: dict[str, list[str]]) -> dict:
+    """Синхронный запрос к DWH для brand_manager и level01-05 (запускается в executor)."""
     conn = get_dwh_conn()
     cursor = conn.cursor()
     try:
@@ -98,12 +88,44 @@ def get_filter_options(request: Request) -> dict:
                 for row in rows
             ]
 
-        # 3. Признак калькуляции (статический список)
-        result["calc_sign"] = ["ПКПСС", "КПСС", "ПФКСС", "ФКСС"]
-
         return result
     finally:
         conn.close()
+
+
+@router.get("/filter-options")
+async def get_filter_options(request: Request) -> dict:
+    """Возвращает значения фильтров из DWH.dim.groups с каскадом и plan_id из кеша."""
+    selected: dict[str, list[str]] = {}
+    for key in CASCADE_KEYS:
+        values = request.query_params.getlist(key)
+        if values:
+            selected[key] = values
+
+    if _is_mock():
+        return mocks.get_filter_options(selected)
+
+    # DWH-запросы (brand_manager, level01-05) — в threadpool, т.к. pyodbc синхронный
+    loop = asyncio.get_event_loop()
+    dwh_result = await loop.run_in_executor(None, _get_dwh_filter_options, selected)
+
+    result: dict[str, Any] = {**dwh_result}
+
+    # 3. Признак калькуляции (статический список)
+    result["calc_sign"] = ["ПКПСС", "КПСС", "ПФКСС", "ФКСС"]
+
+    # 4. PLAN_ID — distinct значения из cost_data_cache (postgres, надёжнее чем прямой MSSQL)
+    try:
+        async with pool().acquire() as conn:
+            rows = await conn.fetch(
+                'SELECT DISTINCT TRIM("PLAN_ID") AS val FROM cost_data_cache'
+                ' WHERE "PLAN_ID" IS NOT NULL AND "PLAN_ID" != \'\' ORDER BY val'
+            )
+            result["plan_id"] = [row["val"] for row in rows if row["val"]]
+    except Exception:
+        result["plan_id"] = []
+
+    return result
 
 
 # ── Load data (сырые данные с пагинацией) ────────────────────────────────────
@@ -121,6 +143,7 @@ MULTI_FILTER_COLUMNS: dict[str, str] = {
     "calc_sign": "Признак калькуляции",
     "model": "Модель",
     "articul": "Артикул",
+    "plan_id": "PLAN_ID",
 }
 
 
@@ -343,6 +366,193 @@ async def get_aggregated(payload: dict) -> dict:
     except Exception:
         pass  # draft indicator is cosmetic — don't break the page
 
+    # ── Price levels → price_rf/kz/uz (Task 1) ───────────────────────────
+    try:
+        loop = asyncio.get_event_loop()
+        price_levels = await loop.run_in_executor(None, _get_price_levels_sync)
+        pl_map: dict[str, dict] = {pl["name"]: pl for pl in price_levels}
+        for row in data:
+            pl_name = str(row.get("Уровень цен", "") or "").strip()
+            matched = pl_map.get(pl_name)
+            if matched:
+                row["price_rf"] = matched.get("price_type4")
+                row["price_kz"] = matched.get("price_type5")
+                row["price_uz"] = matched.get("price_type6")
+    except Exception:
+        pass
+
+    # ── Плановые цены (planned_retail/planned_wholesale) — read-only (Task 3) ──
+    try:
+        # Collect distinct (model, articul, plan_id, calc_sign) that need lookups
+        need_chain: list[tuple[str, str, str, str]] = []
+        for row in data:
+            cs = str(row.get("Признак калькуляции", "") or "").strip()
+            if cs in ("КПСС", "ПФКСС", "ФКСС"):
+                m = str(row.get("Модель", "") or "").strip()
+                a = str(row.get("Артикул", "") or "").strip()
+                p = str(row.get("PLAN_ID", "") or "").strip()
+                if m and a:
+                    need_chain.append((m, a, p, cs))
+
+        if need_chain:
+            # Pre-fetch latest retail/wholesale for each source calc_sign
+            source_signs: dict[str, str] = {"КПСС": "ПКПСС", "ПФКСС": "КПСС", "ФКСС": "ПФКСС"}
+            lookup_cache: dict[tuple[str, str, str], tuple[float | None, float | None]] = {}
+
+            for target_cs, source_cs in source_signs.items():
+                pairs = [(m, a, p) for (m, a, p, cs) in need_chain if cs == target_cs]
+                if not pairs:
+                    continue
+
+                async with pool().acquire() as conn:
+                    if target_cs == "КПСС":
+                        # КПСС → ПКПСС: match by model+articul only (no plan_id)
+                        values_list = ", ".join(
+                            f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(pairs))
+                        )
+                        flat_params: list[str] = []
+                        for m, a, _ in pairs:
+                            flat_params.extend([m, a])
+
+                        rows = await conn.fetch(
+                            f"""SELECT DISTINCT ON (cd."Модель", cd."Артикул")
+                                cd."Модель", cd."Артикул",
+                                cd."Розничная цена по уровню, руб.",
+                                cd."Отпускная цена по уровню, руб"
+                                FROM cost_data_cache cd
+                                WHERE cd."Признак калькуляции" = $1
+                                  AND (cd."Модель", cd."Артикул") IN (VALUES {values_list})
+                                ORDER BY cd."Модель", cd."Артикул", cd."дата расчета" DESC
+                            """,
+                            source_cs,
+                            *flat_params,
+                        )
+                        for r in rows:
+                            key = (str(r["Модель"]).strip(), str(r["Артикул"]).strip(), "")
+                            lookup_cache[key] = (
+                                r["Розничная цена по уровню, руб."],
+                                r["Отпускная цена по уровню, руб"],
+                            )
+                    else:
+                        # ПФКСС → КПСС / ФКСС → ПФКСС: match by model+articul+plan_id
+                        values_list = ", ".join(
+                            f"(${i*3+1}::text, ${i*3+2}::text, ${i*3+3}::text)" for i in range(len(pairs))
+                        )
+                        flat_params = []
+                        for m, a, p in pairs:
+                            flat_params.extend([m, a, p])
+
+                        rows = await conn.fetch(
+                            f"""SELECT DISTINCT ON (cd."Модель", cd."Артикул", cd."PLAN_ID")
+                                cd."Модель", cd."Артикул", cd."PLAN_ID",
+                                cd."Розничная цена по уровню, руб.",
+                                cd."Отпускная цена по уровню, руб"
+                                FROM cost_data_cache cd
+                                WHERE cd."Признак калькуляции" = $1
+                                  AND (cd."Модель", cd."Артикул", cd."PLAN_ID") IN (VALUES {values_list})
+                                ORDER BY cd."Модель", cd."Артикул", cd."PLAN_ID", cd."дата расчета" DESC
+                            """,
+                            source_cs,
+                            *flat_params,
+                        )
+                        for r in rows:
+                            key = (str(r["Модель"]).strip(), str(r["Артикул"]).strip(), str(r["PLAN_ID"]).strip())
+                            lookup_cache[key] = (
+                                r["Розничная цена по уровню, руб."],
+                                r["Отпускная цена по уровню, руб"],
+                            )
+
+            # Assign planned prices
+            for row in data:
+                cs = str(row.get("Признак калькуляции", "") or "").strip()
+                if cs not in source_signs:
+                    continue
+                m = str(row.get("Модель", "") or "").strip()
+                a = str(row.get("Артикул", "") or "").strip()
+                p = str(row.get("PLAN_ID", "") or "").strip()
+
+                if cs == "КПСС":
+                    key = (m, a, "")
+                else:
+                    key = (m, a, p)
+
+                prices = lookup_cache.get(key)
+                if prices:
+                    row["planned_retail"] = prices[0]
+                    row["planned_wholesale"] = prices[1]
+    except Exception:
+        pass
+
+    # ── Fallback: если цены NULL/0 — подставить из cost_price_* (Task 2) ──
+    try:
+        fallback_rows = [row for row in data if not (float(row.get("avg_Розничная цена по уровню, руб.") or 0) > 0)]
+        if fallback_rows:
+            pairs_fb: list[tuple[str, str]] = []
+            for row in fallback_rows:
+                m = str(row.get("Модель", "") or "").strip()
+                a = str(row.get("Артикул", "") or "").strip()
+                if m and a:
+                    pairs_fb.append((m, a))
+
+            if pairs_fb:
+                fb_params: list[str] = []
+                values_list_fb = ", ".join(
+                    f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(pairs_fb))
+                )
+                for m, a in pairs_fb:
+                    fb_params.extend([m, a])
+
+                async with pool().acquire() as conn:
+                    # 1. Check cost_price_pending (unapproved changes)
+                    pending_rows = await conn.fetch(
+                        f"""SELECT DISTINCT ON ("Модель", "Артикул")
+                            "Модель", "Артикул",
+                            "Розничная цена по уровню, руб.",
+                            "Отпускная цена по уровню, руб"
+                            FROM cost_price_pending
+                            WHERE ("Модель", "Артикул") IN (VALUES {values_list_fb})
+                            ORDER BY "Модель", "Артикул", created_at DESC
+                        """,
+                        *fb_params,
+                    )
+
+                    fb_map: dict[tuple[str, str], tuple[float | None, float | None]] = {}
+                    for r in pending_rows:
+                        key = (str(r["Модель"]).strip(), str(r["Артикул"]).strip())
+                        if key not in fb_map:  # DISTINCT ON handles this, but be safe
+                            fb_map[key] = (
+                                r["Розничная цена по уровню, руб."],
+                                r["Отпускная цена по уровню, руб"],
+                            )
+
+                    # 2. If not found in pending, check audit (approved changes)
+                    audit_rows = await conn.fetch(
+                        f"""SELECT DISTINCT ON (model, articul)
+                            model, articul, retail_rub, wholesale_rub
+                            FROM cost_price_changes_audit
+                            WHERE (model, articul) IN (VALUES {values_list_fb})
+                            ORDER BY model, articul, changed_at DESC
+                        """,
+                        *fb_params,
+                    )
+                    for r in audit_rows:
+                        key = (str(r["model"]).strip(), str(r["articul"]).strip())
+                        if key not in fb_map:
+                            fb_map[key] = (r["retail_rub"], r["wholesale_rub"])
+
+                    # Apply fallback values
+                    for row in fallback_rows:
+                        m = str(row.get("Модель", "") or "").strip()
+                        a = str(row.get("Артикул", "") or "").strip()
+                        prices = fb_map.get((m, a))
+                        if prices and (prices[0] is not None or prices[1] is not None):
+                            if not (float(row.get("avg_Розничная цена по уровню, руб.") or 0) > 0):
+                                row["avg_Розничная цена по уровню, руб."] = prices[0]
+                            if not (float(row.get("avg_Отпускная цена по уровню, руб") or 0) > 0):
+                                row["avg_Отпускная цена по уровню, руб"] = prices[1]
+    except Exception:
+        pass
+
     return {"data": data, "count": len(data)}
 
 
@@ -487,11 +697,8 @@ async def get_raw_rows(payload: dict) -> dict:
 # ── Price levels ─────────────────────────────────────────────────────────────
 
 
-@router.get("/price-levels")
-def get_price_levels() -> list[dict]:
-    if _is_mock():
-        return mocks.PRICE_LEVELS
-
+def _get_price_levels_sync() -> list[dict]:
+    """Синхронный запрос справочника уровней цен из Gpartner."""
     conn = get_gpartner_conn()
     cursor = conn.cursor()
     try:
@@ -511,6 +718,13 @@ def get_price_levels() -> list[dict]:
         ]
     finally:
         conn.close()
+
+
+@router.get("/price-levels")
+def get_price_levels() -> list[dict]:
+    if _is_mock():
+        return mocks.PRICE_LEVELS
+    return _get_price_levels_sync()
 
 
 # ── Save changes ─────────────────────────────────────────────────────────────

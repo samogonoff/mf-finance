@@ -228,6 +228,8 @@
               <th :class="{ sorted: sortField === 'Признак калькуляции' }" @click="toggleSort('Признак калькуляции')">
                 Пр.кальк<span v-if="sortField === 'Признак калькуляции'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
+              <th class="col-num">План. розница</th>
+              <th class="col-num">План. опт</th>
               <th class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
                 Сред. розница (руб)<span v-if="sortField === 'avg_Розничная цена по уровню, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
@@ -342,6 +344,8 @@
               <td>{{ row['Сезон'] || '—' }}</td>
               <td class="num">{{ formatDate(row['дата расчета']) }}</td>
               <td>{{ row['Признак калькуляции'] || '—' }}</td>
+              <td class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
+              <td class="col-num num">{{ row.planned_wholesale != null ? fmt(row.planned_wholesale) : '—' }}</td>
               <td>
                 <input
                   class="price-input"
@@ -825,7 +829,7 @@ interface PriceLevel { name: string; price_type1: number; price_type3: number; p
 interface FilterOption { id: string; text: string }
 type FilterKey =
   | "brand_manager" | "level01" | "level02" | "level03" | "level04" | "level05"
-  | "calc_sign";
+  | "calc_sign" | "plan_id";
 
 const filterConfig: { key: FilterKey; label: string }[] = [
   { key: "brand_manager", label: "Бренд-менеджер" },
@@ -835,6 +839,7 @@ const filterConfig: { key: FilterKey; label: string }[] = [
   { key: "level04", label: "Level 04" },
   { key: "level05", label: "Level 05" },
   { key: "calc_sign", label: "Признак калькуляции" },
+  { key: "plan_id", label: "План" },
 ];
 
 const LEVEL_KEYS = ["level01", "level02", "level03", "level04", "level05"];
@@ -1223,6 +1228,13 @@ async function loadData() {
     selectedRowIndex.value = -1;
     changedRows.clear();
     lastError.value = "";
+    // Populate price_rf/kz/uz from response (Task 1)
+    for (let i = 0; i < allAggregated.value.length; i++) {
+      const r = allAggregated.value[i];
+      if (r.price_rf != null) priceRF[i] = r.price_rf;
+      if (r.price_kz != null) priceKZ[i] = r.price_kz;
+      if (r.price_uz != null) priceUZ[i] = r.price_uz;
+    }
   } catch (e: any) {
     console.error("[cost] aggregated load failed", e);
     lastError.value = e?.data?.detail || e?.message || String(e);
@@ -2870,8 +2882,40 @@ async function resetApprovalFilters() {
   await loadApprovalPendingChanges();
 }
 
+/** Применить фильтры из URL-параметров (?calc_sign=...&plan_id=...) */
+async function applyUrlFilters() {
+  const route = useRoute();
+  const calcSignParam = route.query.calc_sign;
+  const planIdParam = route.query.plan_id;
+
+  let hasUrlFilters = false;
+
+  if (calcSignParam) {
+    const vals = Array.isArray(calcSignParam) ? calcSignParam : [calcSignParam];
+    const valid = vals.filter((v: string) => (filterOptions.value.calc_sign || []).includes(v));
+    if (valid.length > 0) {
+      selected.calc_sign = valid;
+      hasUrlFilters = true;
+    }
+  }
+
+  if (planIdParam) {
+    const vals = Array.isArray(planIdParam) ? planIdParam : [planIdParam];
+    const valid = vals.filter((v: string) => (filterOptions.value.plan_id || []).includes(v));
+    if (valid.length > 0) {
+      selected.plan_id = valid;
+      hasUrlFilters = true;
+    }
+  }
+
+  if (hasUrlFilters) {
+    await loadData();
+  }
+}
+
 onMounted(async () => {
   await Promise.all([loadFilters(), loadPriceLevels(), loadCacheStatus()]);
+  await applyUrlFilters();
 });
 
 // ── Raw rows helpers ────────────────────────────────────────────────────────
