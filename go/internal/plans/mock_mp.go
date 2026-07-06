@@ -2,6 +2,7 @@ package plans
 
 import (
 	"context"
+	"math"
 	"sort"
 )
 
@@ -33,12 +34,38 @@ var mockMpFact = map[mpFactKey]float64{
 	{954, 1046, 2026, 1}: 7507116.53, {954, 1046, 2026, 2}: 8783300.34,
 	{954, 1046, 2026, 3}: 8875922.47, {954, 1046, 2026, 4}: 7957978.43,
 	{954, 1046, 2026, 5}: 21179713.09,
+	// large — план на июнь/июль 2026 (демо, ≈ уровень мая)
+	{335, 1046, 2026, 6}: 361000000.00, {336, 1046, 2026, 6}: 138000000.00,
+	{337, 1046, 2026, 6}: 275000000.00, {954, 1046, 2026, 6}: 21500000.00,
+	{335, 1046, 2026, 7}: 365000000.00, {336, 1046, 2026, 7}: 140000000.00,
+	{337, 1046, 2026, 7}: 278000000.00, {954, 1046, 2026, 7}: 22000000.00,
 	// small-площадки (демо-факт 2026-05, RUB) — для наполнения формы small
 	{953, 1046, 2026, 5}: 18500000.00, // Детский мир
 	{955, 1046, 2026, 5}: 12300000.00, // Золотое яблоко
 	{338, 1046, 2026, 5}: 9800000.00,  // Kaspi (KZ)
 	{475, 1046, 2026, 5}: 7600000.00,  // Wildberries KZ
 	{339, 1046, 2026, 5}: 4200000.00,  // Uzmarket (UZ)
+	// small — план на июнь 2026 (демо)
+	{953, 1046, 2026, 6}: 19000000.00, {955, 1046, 2026, 6}: 12500000.00,
+	{338, 1046, 2026, 6}: 10000000.00, {474, 1046, 2026, 6}: 6800000.00,
+	{475, 1046, 2026, 6}: 7800000.00, {339, 1046, 2026, 6}: 4300000.00,
+	{990, 1046, 2026, 6}: 5400000.00, {991, 1046, 2026, 6}: 4100000.00,
+	{958, 1046, 2026, 6}: 3600000.00, {957, 1046, 2026, 6}: 2900000.00,
+	{959, 1046, 2026, 6}: 2400000.00,
+}
+
+// mockLineRatios — доли строк каскада от 1046 (демо). Цена площадки ≈ 0.83×1046
+// (СПП ~17%), себестоимость ~0.50, COGS осн+пошив ~0.30+0.28, статьи затрат — %%.
+// 6600 — синтетический код штрафов (реально из FINDWH «%Штраф%»).
+var mockLineRatios = map[int]float64{
+	1045: 1.0 / 1.2,          // менеджер без НДС
+	1022: 0.83,               // площадка с НДС
+	1006: 0.83 / 1.2,         // площадка без НДС
+	8006: 0.50,               // себестоимость отпускная
+	2006: 0.30, 6006: 0.28,   // COGS осн+пошив
+	64: 0.020, 51: 0.015, 52: 0.010, 54: 0.020, // агентское/грузо/лог.транс/лог.склад
+	13: 0.050, 15: 0.020, 45: 0.008, 58: 0.018, // реклама/соц.сети/упаковка/эквайринг
+	48: 0.003, 66: 0.005, 6600: 0.002,           // IT/прочие/штрафы
 }
 
 // MockFactSource отдаёт факт из фикстур, без БД.
@@ -47,6 +74,11 @@ type MockFactSource struct{}
 // NewMockFactSource — конструктор.
 func NewMockFactSource() *MockFactSource { return &MockFactSource{} }
 
+// MpStrategy — в mock-режиме стратегия не подтягивается (online-only, FormToLoadPlan).
+func (s *MockFactSource) MpStrategy(_ context.Context, _, _ int, _ string) ([]FactRow, error) {
+	return []FactRow{}, nil
+}
+
 // MpFact — факт сегмента за период из фикстур. Неизвестный сегмент → пусто.
 func (s *MockFactSource) MpFact(_ context.Context, year, month int, segment string) ([]FactRow, error) {
 	platforms := segmentPlatforms(segment)
@@ -54,24 +86,28 @@ func (s *MockFactSource) MpFact(_ context.Context, year, month int, segment stri
 		return []FactRow{}, nil
 	}
 	out := make([]FactRow, 0, len(platforms))
+	emit := func(cfo, pl int, amt float64) {
+		out = append(out, FactRow{
+			CodeCFO: cfo, NameCFO: platforms[cfo], CodePL: pl,
+			Year: year, Month: month, Scenario: "Факт", Currency: "RUB", Amount: amt,
+		})
+	}
 	for key, amount := range mockMpFact {
 		if key.year != year || key.month != month {
 			continue
 		}
-		name, ok := platforms[key.codeCFO]
-		if !ok {
+		if _, ok := platforms[key.codeCFO]; !ok {
 			continue
 		}
-		out = append(out, FactRow{
-			CodeCFO:  key.codeCFO,
-			NameCFO:  name,
-			CodePL:   key.codePL,
-			Year:     year,
-			Month:    month,
-			Scenario: "Факт",
-			Currency: "RUB",
-			Amount:   amount,
-		})
+		emit(key.codeCFO, key.codePL, amount)
+		// Синтез остальных строк каскада как доли от 1046 (демо-факт, пока PLANS_MOCK=1;
+		// online-источник ALL_view_МП/штрафы вернёт их напрямую). Проценты правдоподобные.
+		if key.codePL == 1046 {
+			g := amount
+			for pl, ratio := range mockLineRatios {
+				emit(key.codeCFO, pl, math.Round(g*ratio*100)/100) // до копеек — без float-артефактов
+			}
+		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CodeCFO != out[j].CodeCFO {

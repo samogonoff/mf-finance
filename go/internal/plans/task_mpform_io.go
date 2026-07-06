@@ -26,7 +26,7 @@ func (s *TaskStore) MpFormExport(ctx context.Context, taskID int64) ([]byte, err
 	}
 	blockName := map[string]string{}
 	blockPL := map[string]int{}
-	for _, b := range f.Blocks {
+	for _, b := range f.Lines {
 		blockName[b.BlockType] = b.Name
 		blockPL[b.BlockType] = b.CodePL
 	}
@@ -82,8 +82,10 @@ func (s *TaskStore) MpFormImport(ctx context.Context, taskID, actorID int64, isA
 	}
 	// code_pl → block_type.
 	plToBlock := map[int]string{}
-	for _, b := range mpEditableBlocks() {
-		plToBlock[b.CodePL] = b.BlockType
+	for _, l := range mpFormSpec() {
+		if l.Editable && l.CodePL > 0 {
+			plToBlock[l.CodePL] = l.BlockType
+		}
 	}
 	at := func(r []string, i int) string {
 		if i >= 0 && i < len(r) {
@@ -173,8 +175,10 @@ func (s *TaskStore) ImportStrategy(ctx context.Context, plID int64, data []byte)
 		return 0, fmt.Errorf("нет колонок «Код ЦФО»/«КодPL»/«Стратегия»")
 	}
 	plToBlock := map[int]string{}
-	for _, b := range mpEditableBlocks() {
-		plToBlock[b.CodePL] = b.BlockType
+	for _, l := range mpFormSpec() {
+		if l.Editable && l.CodePL > 0 {
+			plToBlock[l.CodePL] = l.BlockType
+		}
 	}
 	at := func(r []string, i int) string {
 		if i >= 0 && i < len(r) {

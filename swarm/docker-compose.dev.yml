@@ -127,6 +127,11 @@ services:
       # Тактические планы. PLANS_MOCK=1 в dev: факт МП из фикстур (витрина
       # ALL_view_МП пока не заведена в Budgeting/FinDWH — см. mp-source-investigation.md).
       - PLANS_MOCK=${PLANS_MOCK:-1}
+      # Источник МП в FinDWH (подтверждён probe'ом): факт/план — БД Budgeting (BYN),
+      # штрафы — FINDWHACCESSGROUP. Тянутся при PLANS_MOCK=0.
+      - PLANS_MP_FACT_TABLE=${PLANS_MP_FACT_TABLE:-Budgeting.dbo.FormToLoadFact}
+      - PLANS_MP_PLAN_TABLE=${PLANS_MP_PLAN_TABLE:-Budgeting.dbo.FormToLoadPlan}
+      - PLANS_MP_PENALTIES_VIEW=${PLANS_MP_PENALTIES_VIEW:-FINDWHACCESSGROUP}
       - PLANS_AUDIT_ENABLED=${PLANS_AUDIT_ENABLED:-1}
       # Справочники Лисы (MSSQL Gpartner). Пусто/LISA_MOCK=1 → синхронизация из фикстур.
       - FOX_HOST=${FOX_HOST:-}
