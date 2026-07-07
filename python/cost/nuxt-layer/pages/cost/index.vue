@@ -363,18 +363,16 @@
               <td v-if="isVisible('planned_retail')" class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
               <td v-if="isVisible('planned_wholesale')" class="col-num num">{{ row.planned_wholesale != null ? fmt(row.planned_wholesale) : '—' }}</td>
               <td v-if="isVisible('avg_retail_rub')">
-                <input
-                  class="price-input"
-                  type="number"
-                  :value="row['avg_Розничная цена по уровню, руб.'] != null ? Number(row['avg_Розничная цена по уровню, руб.']).toFixed(2) : ''"
+                <select
+                  class="price-select"
+                  :value="row['avg_Розничная цена по уровню, руб.'] || ''"
                   :disabled="row['Признак калькуляции'] === 'ФКСС' || !can('cost:edit_price')"
                   @click.stop
-                  @input="onRetailPriceInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
-                  list="retail-price-list"
-                />
-                <datalist id="retail-price-list">
-                  <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp"></option>
-                </datalist>
+                  @change="onRetailPriceSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="">—</option>
+                  <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp">{{ fmt(rp) }}</option>
+                </select>
               </td>
               <td v-if="isVisible('avg_rate')" class="col-num num">{{ row['avg_Курс на дату расчета'] != null ? fmt(row['avg_Курс на дату расчета']) : '—' }}</td>
               <td v-if="isVisible('retail_markup')">
@@ -2529,29 +2527,59 @@ const onVersionRowEdit = (row: any, event: Event, field: string) => {
   }
 };
 
-/** Ввод розничной цены: очищаем зависимые поля, при единственном варианте наценки выбираем его автоматически. */
-const onRetailPriceInput = (absoluteIdx: number, value: string) => {
+/** Найти индексы строк с тем же Модель+Артикул+PLAN_ID+Признак калькуляции (исключая excludeIdx). */
+function findSiblingIndices(row: any, excludeIdx: number): number[] {
+  const model = row['Модель'];
+  const articul = row['Артикул'];
+  const planId = row['PLAN_ID'];
+  const calcSign = row['Признак калькуляции'];
+  if (!model || !articul || !planId || !calcSign) return [];
+  const key = `${model}|${articul}|${planId}|${calcSign}`;
+  return allAggregated.value.reduce<number[]>((acc, r, i) => {
+    if (i === excludeIdx) return acc;
+    if (`${r['Модель']}|${r['Артикул']}|${r['PLAN_ID']}|${r['Признак калькуляции']}` === key) {
+      acc.push(i);
+    }
+    return acc;
+  }, []);
+}
+
+/** Выбор розничной цены из выпадающего списка: синхронизируем по всем строкам с тем же model+articul+plan_id+calc_sign. */
+const onRetailPriceSelect = (absoluteIdx: number, value: string) => {
   const row = allAggregated.value[absoluteIdx];
   if (!row) return;
+  const siblings = findSiblingIndices(row, absoluteIdx);
+  const allIndices = [absoluteIdx, ...siblings];
   const numVal = parseFloat(value);
+
+  const clearRow = (idx: number) => {
+    const r = allAggregated.value[idx];
+    r["avg_Розничная цена по уровню, руб."] = 0;
+    r["avg_Отпускная цена по уровню, руб"] = 0;
+    r["Уровень цен"] = "";
+    r["avg_Розничная цена по уровню, USD."] = 0;
+    r["avg_Отпускная цена по уровню, USD."] = 0;
+    markupSelections[idx] = "";
+    changedRows.add(idx);
+  };
+  const updateRow = (idx: number, val: number) => {
+    const r = allAggregated.value[idx];
+    r["avg_Розничная цена по уровню, руб."] = val;
+    r["avg_Отпускная цена по уровню, руб"] = 0;
+    r["Уровень цен"] = "";
+    r["avg_Розничная цена по уровню, USD."] = 0;
+    r["avg_Отпускная цена по уровню, USD."] = 0;
+    markupSelections[idx] = "";
+    changedRows.add(idx);
+  };
+
   if (isNaN(numVal) || numVal <= 0) {
-    row["avg_Розничная цена по уровню, руб."] = 0;
-    row["avg_Отпускная цена по уровню, руб"] = 0;
-    row["Уровень цен"] = "";
-    row["avg_Розничная цена по уровню, USD."] = 0;
-    row["avg_Отпускная цена по уровню, USD."] = 0;
-    markupSelections[absoluteIdx] = "";
-    changedRows.add(absoluteIdx);
+    allIndices.forEach(i => clearRow(i));
     return;
   }
-  row["avg_Розничная цена по уровню, руб."] = numVal;
-  row["avg_Отпускная цена по уровню, руб"] = 0;
-  row["Уровень цен"] = "";
-  row["avg_Розничная цена по уровню, USD."] = 0;
-  row["avg_Отпускная цена по уровню, USD."] = 0;
-  markupSelections[absoluteIdx] = "";
-  changedRows.add(absoluteIdx);
-  // Автовыбор если ровно один вариант наценки
+  allIndices.forEach(i => updateRow(i, numVal));
+
+  // Автовыбор если ровно один вариант наценки (только для текущей строки, onMarkupSelect синхронизирует сам)
   const options = getMarkupOptions(row);
   if (options.length === 1) {
     onMarkupSelect(absoluteIdx, options[0].value);
@@ -2593,17 +2621,22 @@ const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
   const retailUsd = r2(matchedLevel.price_type3 / rate);
   const wholesaleUsd = r2(matchedLevel.price_type1 / rate);
 
-  row["avg_Розничная цена по уровню, руб."] = matchedLevel.price_type3;
-  row["avg_Отпускная цена по уровню, руб"] = matchedLevel.price_type1;
-  row["Уровень цен"] = matchedLevel.name;
-  row["avg_Розничная цена по уровню, USD."] = retailUsd;
-  row["avg_Отпускная цена по уровню, USD."] = wholesaleUsd;
-  // Pre-populate Цена РФ/КЗ/УЗ from selected price level (PRICE_TYPE4/5/6)
-  priceRF[absoluteIdx] = matchedLevel.price_type4;
-  priceKZ[absoluteIdx] = matchedLevel.price_type5;
-  priceUZ[absoluteIdx] = matchedLevel.price_type6;
-  markupSelections[absoluteIdx] = markupValue;
-  changedRows.add(absoluteIdx);
+  // Синхронизируем все строки с тем же model+articul+plan_id+calc_sign
+  const siblings = findSiblingIndices(row, absoluteIdx);
+  const allIndices = [absoluteIdx, ...siblings];
+  for (const idx of allIndices) {
+    const r = allAggregated.value[idx];
+    r["avg_Розничная цена по уровню, руб."] = matchedLevel.price_type3;
+    r["avg_Отпускная цена по уровню, руб"] = matchedLevel.price_type1;
+    r["Уровень цен"] = matchedLevel.name;
+    r["avg_Розничная цена по уровню, USD."] = retailUsd;
+    r["avg_Отпускная цена по уровню, USD."] = wholesaleUsd;
+    priceRF[idx] = matchedLevel.price_type4;
+    priceKZ[idx] = matchedLevel.price_type5;
+    priceUZ[idx] = matchedLevel.price_type6;
+    markupSelections[idx] = markupValue;
+    changedRows.add(idx);
+  }
 
   try {
     const r = await $fetch<{ mock?: boolean }>(`${apiBase.value}/api/cost/save-changes`, {
