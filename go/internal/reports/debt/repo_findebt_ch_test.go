@@ -24,7 +24,7 @@ func approx(a, b float64) bool {
 // Регрессия бага 500 (ILLEGAL_AGGREGATION): acc_root должен быть обычной колонкой
 // в GROUP BY, а не any(acc_root) — иначе WHERE acc_root IN (...) падает.
 func TestFinDebtReportQuery_AccRootInGroupBy(t *testing.T) {
-	q := findebtReportQuery([]string{"690591512"}, []string{"60"}, "2026-05-01", "2026-05-31")
+	q := findebtReportQuery([]string{"690591512"}, []string{"60"}, "2026-05-01", "2026-05-31", LensContract)
 	if !strings.Contains(q, "GROUP BY company_id, counterparty_id, acc, acc_root, doc_number") {
 		t.Errorf("acc_root должен быть в GROUP BY:\n%s", q)
 	}
@@ -37,10 +37,17 @@ func TestFinDebtReportQuery_AccRootInGroupBy(t *testing.T) {
 	if !strings.Contains(q, "acc_root IN ('60')") {
 		t.Errorf("фильтр по счёту отсутствует:\n%s", q)
 	}
+	// Линза обязана быть в WHERE (иначе задвоение ×3), суммы — из sum_d/sum_k.
+	if !strings.Contains(q, "cur_filter = 'В валюте договора'") {
+		t.Errorf("фильтр линзы отсутствует:\n%s", q)
+	}
+	if !strings.Contains(q, "finance.fact_findebt_ccy") || strings.Contains(q, "sum_d_byn") {
+		t.Errorf("должна читаться fact_findebt_ccy по sum_d/sum_k:\n%s", q)
+	}
 }
 
 func TestFinDebtReportQuery_NoFilters(t *testing.T) {
-	q := findebtReportQuery(nil, nil, "2026-05-01", "2026-05-31")
+	q := findebtReportQuery(nil, nil, "2026-05-01", "2026-05-31", LensBYN)
 	// snapshot_date IN (...) остаётся всегда; пользовательских фильтров быть не должно.
 	if strings.Contains(q, "company_id IN (") {
 		t.Errorf("без фильтров не должно быть company_id IN:\n%s", q)
@@ -48,12 +55,15 @@ func TestFinDebtReportQuery_NoFilters(t *testing.T) {
 	if strings.Contains(q, "acc_root IN (") {
 		t.Errorf("без фильтров не должно быть acc_root IN:\n%s", q)
 	}
+	if !strings.Contains(q, "cur_filter = 'В бел. рублях'") {
+		t.Errorf("линза BYN должна быть в WHERE:\n%s", q)
+	}
 }
 
 // Маппинг свода: КЗ во вьюхе отрицательна → репо переворачивает в положительный
 // долг; договор/отсрочка/оборот считаются корректно.
 func TestFinDebtReport_Mapping(t *testing.T) {
-	body := `{"company_id":"690591512","company":"ООО Марк Формэль","counterparty_id":"690719790","counterparty":"Формэль","acc":"60.01","acc_root":"60","doc_number":"1.18.","description":"1.18. от 20.01.2025","delay":30,"close_dz":"0","close_kz":"-155491.53","open_dz":"0","open_kz":"-150000"}` + "\n"
+	body := `{"company_id":"690591512","company":"ООО Марк Формэль","counterparty_id":"690719790","counterparty":"Формэль","acc":"60.01","acc_root":"60","doc_number":"1.18.","description":"1.18. от 20.01.2025","currency":"BYN","delay":30,"close_dz":"0","close_kz":"-155491.53","open_dz":"0","open_kz":"-150000"}` + "\n"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(body))
 	}))
@@ -89,6 +99,7 @@ func TestFinDebtReport_Mapping(t *testing.T) {
 	if r.PaymentTermDays != 30 {
 		t.Errorf("PaymentTermDays (отсрочка) = %d, ожид. 30", r.PaymentTermDays)
 	}
+	// Дефолтная линза «В валюте договора» → подпись = native-валюта строки (BYN).
 	if r.Currency != "BYN" {
 		t.Errorf("Currency = %q, ожид. BYN", r.Currency)
 	}
@@ -99,13 +110,19 @@ func TestFinDebtReport_Mapping(t *testing.T) {
 }
 
 func TestFinDebtDrilldownQuery_DocFilter(t *testing.T) {
-	with := findebtDrilldownQuery("a", "b", "60.01", "1.18.", "2026-05-31")
+	with := findebtDrilldownQuery("a", "b", "60.01", "1.18.", "2026-05-31", LensContract)
 	if !strings.Contains(with, "doc_number = '1.18.'") {
 		t.Errorf("фильтр по № договора отсутствует:\n%s", with)
 	}
-	without := findebtDrilldownQuery("a", "b", "60.01", "", "2026-05-31")
+	if !strings.Contains(with, "cur_filter = 'В валюте договора'") {
+		t.Errorf("фильтр линзы отсутствует в drilldown:\n%s", with)
+	}
+	without := findebtDrilldownQuery("a", "b", "60.01", "", "2026-05-31", LensUSD)
 	if strings.Contains(without, "doc_number =") {
 		t.Errorf("без договора не должно быть фильтра по номеру:\n%s", without)
+	}
+	if !strings.Contains(without, "cur_filter = 'В долларах США'") {
+		t.Errorf("линза USD должна быть в drilldown:\n%s", without)
 	}
 }
 

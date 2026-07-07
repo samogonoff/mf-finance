@@ -29,16 +29,19 @@
       </div>
 
       <div class="filter">
-        <label class="filter-label">Валюты</label>
-        <div class="chip-row">
+        <label class="filter-label">Валюта</label>
+        <div class="chip-row" role="radiogroup" aria-label="Линза представления суммы">
           <button
-            v-for="c in options?.currencies || []"
-            :key="c"
+            v-for="l in options?.lenses || []"
+            :key="l"
             type="button"
+            role="radio"
+            :aria-checked="filters.lens === l"
             class="chip"
-            :class="{ active: filters.currencies.includes(c) }"
-            @click="toggleCurrency(c)"
-          >{{ c }}</button>
+            :class="{ active: filters.lens === l }"
+            :title="l"
+            @click="filters.lens = l"
+          >{{ lensLabel(l) }}</button>
         </div>
       </div>
     </div>
@@ -82,7 +85,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref, computed } from "vue";
-import { useDebtReport, type DebtFilterOptions, type DebtReportResponse, type DebtReportFilters } from "~/composables/useDebtReport";
+import { useDebtReport, DEBT_LENS_DEFAULT, type DebtFilterOptions, type DebtReportResponse, type DebtReportFilters } from "~/composables/useDebtReport";
 import { useDebtFilters, type DebtSavedFilter } from "~/composables/useDebtFilters";
 import DebtTable from "~/components/reports/DebtTable.vue";
 import DebtMultiSelect from "~/components/reports/DebtMultiSelect.vue";
@@ -111,12 +114,23 @@ const filters = reactive<DebtReportFilters>({
   date_to: dateTo.value,
   entity_inns: [],
   accounts: [],
-  currencies: [],
+  // lens — линза представления суммы; дефолт «В валюте договора» (native).
+  lens: DEBT_LENS_DEFAULT,
   // Отчёт всегда ВГО — ВГО-фильтр теперь безусловный на бэке (vgoMSSQLClause/
   // vgoCHClause), галки в UI нет. Поле оставлено для совместимости API/пресетов
   // и бэком игнорируется.
   only_ico: true
 });
+
+// Короткие подписи для кнопок линзы (в источнике строки длинные).
+const lensLabel = (l: string): string => {
+  switch (l) {
+    case "В валюте договора": return "Валюта договора";
+    case "В бел. рублях": return "BYN";
+    case "В долларах США": return "USD";
+    default: return l;
+  }
+};
 
 const options = ref<DebtFilterOptions | null>(null);
 const entityOptions = computed(() =>
@@ -147,7 +161,7 @@ const systemPresets = [
       date_to: dateTo.value,
       entity_inns: ["9731039708", "5031159833"],
       accounts: [] as string[],
-      currencies: [] as string[],
+      lens: DEBT_LENS_DEFAULT,
       only_ico: true
     }
   }
@@ -157,14 +171,6 @@ const isSystemPreset = computed(() => Number(selectedPreset.value) < 0);
 const report = ref<DebtReportResponse | null>(null);
 const loading = ref(false);
 const errorMessage = ref<string>("");
-
-const toggleCurrency = (c: string) => {
-  if (filters.currencies.includes(c)) {
-    filters.currencies = filters.currencies.filter((x) => x !== c);
-  } else {
-    filters.currencies = [...filters.currencies, c];
-  }
-};
 
 const syncDates = () => {
   filters.date_from = dateFrom.value;
@@ -187,7 +193,7 @@ const hydrateFromQuery = (): boolean => {
   syncDates();
   if ("entities" in q) filters.entity_inns = csv(q.entities);
   if ("accounts" in q) filters.accounts = csv(q.accounts);
-  if ("currencies" in q) filters.currencies = csv(q.currencies);
+  if (typeof q.lens === "string" && q.lens) filters.lens = q.lens;
   return true;
 };
 
@@ -202,7 +208,7 @@ const writeQuery = (keepExpansion: boolean) => {
   };
   if (filters.entity_inns.length) q.entities = filters.entity_inns.join(",");
   if (filters.accounts.length) q.accounts = filters.accounts.join(",");
-  if (filters.currencies.length) q.currencies = filters.currencies.join(",");
+  if (filters.lens && filters.lens !== DEBT_LENS_DEFAULT) q.lens = filters.lens;
   if (keepExpansion && typeof route.query.exp === "string") q.exp = route.query.exp;
   // duplicate-navigation отвергается роутером — гасим, это не ошибка.
   router.replace({ query: q }).catch(() => {});
@@ -225,7 +231,8 @@ const runReport = async (opts?: { keepExpansion?: boolean }) => {
   }
 };
 
-const drilldownFn = (q: any) => drilldown(q);
+// Документы drill-down тянем в той же линзе, что и свод — иначе суммы разъедутся.
+const drilldownFn = (q: any) => drilldown({ ...q, lens: filters.lens });
 
 const refreshPresets = async () => {
   try {
@@ -246,7 +253,8 @@ const applyPreset = () => {
   filters.date_to = p.payload.date_to;
   filters.entity_inns = [...(p.payload.entity_inns || [])];
   filters.accounts = [...(p.payload.accounts || [])];
-  filters.currencies = [...(p.payload.currencies || [])];
+  // Старые пресеты не имеют lens (был мультивыбор currencies) — дефолтим.
+  filters.lens = (p.payload as { lens?: string }).lens || DEBT_LENS_DEFAULT;
   // Старые пресеты могут не иметь only_ico — подставляем Level 1 дефолт true.
   filters.only_ico = typeof p.payload.only_ico === "boolean" ? p.payload.only_ico : true;
 };

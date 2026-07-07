@@ -66,8 +66,11 @@ func (r *findebtCHRepo) post(ctx context.Context, q string) ([]byte, error) {
 //	open_dt  = max(snapshot_date < from)  — остаток до начала периода
 //
 // Опциональные фильтры (инлайн): по ЮЛ (company_id) и корню счёта (acc_root).
-// Значения из seed/справочника, не пользовательский ввод.
-func findebtReportQuery(inns, accRoots []string, from, to string) string {
+// Значения из seed/справочника, не пользовательский ввод. lens (нормализованная,
+// закрытый набор) фильтрует линзу CUR_FILTER — ОБЯЗАТЕЛЬНА, иначе три линзы одной
+// суммы сложатся (×3). currency — native-валюта строки; в зерне договора она
+// единственна, берём any().
+func findebtReportQuery(inns, accRoots []string, from, to, lens string) string {
 	orgClause := ""
 	if len(inns) > 0 {
 		orgClause = " AND company_id IN (" + quoteList(inns) + ")"
@@ -76,10 +79,11 @@ func findebtReportQuery(inns, accRoots []string, from, to string) string {
 	if len(accRoots) > 0 {
 		accClause = " AND acc_root IN (" + quoteList(accRoots) + ")"
 	}
+	lensClause := " AND cur_filter = '" + strings.ReplaceAll(lens, "'", "''") + "'"
 	return fmt.Sprintf(`
 WITH
-  (SELECT max(snapshot_date) FROM finance.fact_findebt WHERE snapshot_date <= toDate('%[2]s')) AS close_dt,
-  (SELECT max(snapshot_date) FROM finance.fact_findebt WHERE snapshot_date <  toDate('%[1]s')) AS open_dt
+  (SELECT max(snapshot_date) FROM finance.fact_findebt_ccy WHERE snapshot_date <= toDate('%[2]s')) AS close_dt,
+  (SELECT max(snapshot_date) FROM finance.fact_findebt_ccy WHERE snapshot_date <  toDate('%[1]s')) AS open_dt
 SELECT company_id,
        any(company)         AS company,
        counterparty_id,
@@ -88,20 +92,21 @@ SELECT company_id,
        acc_root,
        doc_number,
        any(description)     AS description,
+       any(currency)        AS currency,
        max(delay)           AS delay,
-       toString(sumIf(sum_d_byn, snapshot_date = close_dt)) AS close_dz,
-       toString(sumIf(sum_k_byn, snapshot_date = close_dt)) AS close_kz,
-       toString(sumIf(sum_d_byn, snapshot_date = open_dt))  AS open_dz,
-       toString(sumIf(sum_k_byn, snapshot_date = open_dt))  AS open_kz
-FROM finance.fact_findebt FINAL
-WHERE snapshot_date IN (close_dt, open_dt)%[3]s%[4]s
+       toString(sumIf(sum_d, snapshot_date = close_dt)) AS close_dz,
+       toString(sumIf(sum_k, snapshot_date = close_dt)) AS close_kz,
+       toString(sumIf(sum_d, snapshot_date = open_dt))  AS open_dz,
+       toString(sumIf(sum_k, snapshot_date = open_dt))  AS open_kz
+FROM finance.fact_findebt_ccy FINAL
+WHERE snapshot_date IN (close_dt, open_dt)%[5]s%[3]s%[4]s
 GROUP BY company_id, counterparty_id, acc, acc_root, doc_number
-HAVING abs(sumIf(sum_d_byn, snapshot_date = close_dt)) > 0.005
-    OR abs(sumIf(sum_k_byn, snapshot_date = close_dt)) > 0.005
-    OR abs(sumIf(sum_d_byn, snapshot_date = open_dt)) > 0.005
-    OR abs(sumIf(sum_k_byn, snapshot_date = open_dt)) > 0.005
+HAVING abs(sumIf(sum_d, snapshot_date = close_dt)) > 0.005
+    OR abs(sumIf(sum_k, snapshot_date = close_dt)) > 0.005
+    OR abs(sumIf(sum_d, snapshot_date = open_dt)) > 0.005
+    OR abs(sumIf(sum_k, snapshot_date = open_dt)) > 0.005
 ORDER BY company, counterparty, acc, doc_number
-FORMAT JSONEachRow`, from, to, orgClause, accClause)
+FORMAT JSONEachRow`, from, to, orgClause, accClause, lensClause)
 }
 
 // Report — остатки ДЗ/КЗ по договорам. КЗ во вьюхе отрицательна → в
@@ -112,7 +117,8 @@ func (r *findebtCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 	if f.DateTo.IsZero() {
 		return nil, errors.New("debt.findebt-ch.Report: date_to required")
 	}
-	body, err := r.post(ctx, findebtReportQuery(f.EntityINNs, f.Accounts, asDate(f.DateFrom), asDate(f.DateTo)))
+	lens := normLens(f.Lens)
+	body, err := r.post(ctx, findebtReportQuery(f.EntityINNs, f.Accounts, asDate(f.DateFrom), asDate(f.DateTo), lens))
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +134,7 @@ func (r *findebtCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 			AccRoot        string `json:"acc_root"`
 			DocNumber      string `json:"doc_number"`
 			Description    string `json:"description"`
+			Currency       string `json:"currency"`
 			Delay          int    `json:"delay"`
 			CloseDZ        string `json:"close_dz"`
 			CloseKZ        string `json:"close_kz"`
@@ -158,7 +165,7 @@ func (r *findebtCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 			Contract:        contract,
 			ContractRef:     strings.TrimSpace(jr.DocNumber),
 			PaymentTermDays: jr.Delay,
-			Currency:        "BYN",
+			Currency:        lensCurrency(lens, jr.Currency),
 			OpeningDZ:       openDZ,
 			OpeningKZ:       -openKZ,
 			ClosingDZ:       closeDZ,
@@ -174,7 +181,7 @@ func (r *findebtCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 // findebtDrilldownQuery — документы договора (fact_findebt) на снэпшот закрытия
 // для (ЮЛ, контрагент, счёт, № договора). Срок оплаты (payment_date) и просрочка
 // (day_delay) — по ТЗ показываются именно здесь, на уровне документа.
-func findebtDrilldownQuery(companyINN, partnerINN, acc, docNumber, to string) string {
+func findebtDrilldownQuery(companyINN, partnerINN, acc, docNumber, to, lens string) string {
 	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
 	docClause := ""
 	if strings.TrimSpace(docNumber) != "" {
@@ -187,13 +194,14 @@ SELECT doc_number,
        ifNull(toString(payment_date), '') AS payment_date,
        day_delay,
        delay,
-       toString(sum_d_byn)                AS sum_d,
-       toString(sum_k_byn)                AS sum_k
-FROM finance.fact_findebt FINAL
-WHERE snapshot_date = (SELECT max(snapshot_date) FROM finance.fact_findebt WHERE snapshot_date <= toDate('%[4]s'))
+       toString(sum_d)                    AS sum_d,
+       toString(sum_k)                    AS sum_k
+FROM finance.fact_findebt_ccy FINAL
+WHERE snapshot_date = (SELECT max(snapshot_date) FROM finance.fact_findebt_ccy WHERE snapshot_date <= toDate('%[4]s'))
+  AND cur_filter = '%[6]s'
   AND company_id = '%[1]s' AND counterparty_id = '%[2]s' AND acc = '%[3]s'%[5]s
 ORDER BY doc_date, doc_number
-FORMAT JSONEachRow`, esc(companyINN), esc(partnerINN), esc(acc), esc(to), docClause)
+FORMAT JSONEachRow`, esc(companyINN), esc(partnerINN), esc(acc), esc(to), docClause, esc(lens))
 }
 
 // Drilldown — документная детализация договора. Дата оплаты и просрочка приходят
@@ -207,7 +215,7 @@ func (r *findebtCHRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Docu
 	}
 	body, err := r.post(ctx, findebtDrilldownQuery(
 		strings.TrimSpace(q.CompanyINN), strings.TrimSpace(q.PartnerINN),
-		strings.TrimSpace(q.Account), strings.TrimSpace(q.Contract), asDate(q.DateTo)))
+		strings.TrimSpace(q.Account), strings.TrimSpace(q.Contract), asDate(q.DateTo), normLens(q.Lens)))
 	if err != nil {
 		return nil, err
 	}

@@ -560,8 +560,10 @@ const moneyFmt = (v: number, ccy: string): string => {
 const moneyAuto = (v: number, ccy: string | ""): string => {
   if (!v) return "—";
   if (ccy) return money(v, { currency: ccy as any });
-  // multi-currency aggregate — без символа валюты
-  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(v);
+  // Разные валюты в группе — единого итога нет (сумма разных валют бессмысленна).
+  // Показываем «—»; разбивка видна при раскрытии до строк-валют (ТЗ: подытоги по
+  // валютам). В линзах BYN/USD все строки одновалютны → сюда не попадаем.
+  return "—";
 };
 const formatDate = (s: string): string => {
   if (!s) return "—";

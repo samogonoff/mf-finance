@@ -22,8 +22,14 @@ export interface DebtAccount {
 export interface DebtFilterOptions {
   entities: DebtEntity[];
   accounts: DebtAccount[];
-  currencies: string[];
+  // Линзы представления суммы (CUR_FILTER): «В валюте договора» / «В бел. рублях»
+  // / «В долларах США». Это НЕ фильтр валют, а способ пересчёта одной суммы.
+  lenses: string[];
 }
+
+// DEBT_LENS_DEFAULT — дефолтная линза (native-валюта договора). Совпадает с
+// LensDefault на бэке (go/internal/reports/debt/lens.go).
+export const DEBT_LENS_DEFAULT = "В валюте договора";
 
 export interface DebtRow {
   country: Country;
@@ -77,7 +83,11 @@ export interface DebtReportFilters {
   date_to: string;
   entity_inns: string[];
   accounts: string[];
-  currencies: string[];
+  // lens — линза представления суммы (см. DebtFilterOptions.lenses). Ровно одна.
+  lens: string;
+  // currencies — устаревший мультивыбор валют; оставлен для совместимости старых
+  // пресетов, в запрос больше не уходит.
+  currencies?: string[];
   // only_ico — фильтр «только внутригрупповые операции» (Premaster.ICO=1).
   // По дефолту true в UI Level 1 MVP (см. docs/reports/debt/open-questions.md §A3).
   only_ico: boolean;
@@ -107,7 +117,7 @@ export const useDebtReport = () => {
     };
     if (f.entity_inns.length) params.entity_inns = csv(f.entity_inns);
     if (f.accounts.length) params.accounts = csv(f.accounts);
-    if (f.currencies.length) params.currencies = csv(f.currencies);
+    if (f.lens) params.lens = f.lens;
     params.only_ico = f.only_ico ? "1" : "0";
     return $fetch<DebtReportResponse>(`${base}/api/reports/debt/report`, {
       params,
@@ -121,6 +131,7 @@ export const useDebtReport = () => {
     account: string;
     contract: string;
     currency: string;
+    lens?: string;
     date_from: string;
     date_to: string;
   }): Promise<DebtDocumentRow[]> =>

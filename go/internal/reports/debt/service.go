@@ -32,8 +32,11 @@ type DrilldownQuery struct {
 	Account    string
 	Contract   string
 	Currency   string
-	DateFrom   time.Time
-	DateTo     time.Time
+	// Lens — линза представления суммы (см. Filters.Lens); документы drill-down
+	// должны прийти в той же линзе, что и свод. Пусто → LensDefault.
+	Lens     string
+	DateFrom time.Time
+	DateTo   time.Time
 }
 
 // NewService — конструктор. Если mock=true, repo может быть nil.
@@ -46,9 +49,9 @@ func NewService(mock bool, repo PremasterRepo) *Service {
 // Level 1 MVP: только юрлица/счета стран из MVP_LEVEL1_COUNTRIES (РФ+РБ).
 func (s *Service) FilterOptions() FilterOptions {
 	return FilterOptions{
-		Entities:   EntitiesLevel1(),
-		Accounts:   AccountsLevel1(),
-		Currencies: append([]string{}, Currencies...),
+		Entities: EntitiesLevel1(),
+		Accounts: AccountsLevel1(),
+		Lenses:   append([]string{}, Lenses...),
 	}
 }
 
@@ -67,7 +70,7 @@ func (s *Service) Report(ctx context.Context, f Filters) (ReportResponse, error)
 
 	var rows []DebtRow
 	if s.mock {
-		rows = applyFilters(mockRows(), f)
+		rows = applyLens(applyFilters(mockRows(), f), normLens(f.Lens))
 	} else {
 		if s.repo == nil {
 			return ReportResponse{}, errors.New("debt: repo not configured (set DEBT_MOCK=1 or configure DEBT_BACKEND source)")

@@ -44,6 +44,9 @@ type Filters struct {
 	EntityINNs []string
 	Accounts   []string
 	Currencies []string
+	// Lens — линза представления суммы (CUR_FILTER): «В валюте договора» (дефолт),
+	// «В бел. рублях» или «В долларах США». Пусто → LensDefault. См. lens.go.
+	Lens string
 	// OnlyICO — фильтр «только внутригрупповые операции» (Premaster.ICO = 1).
 	// По дефолту true в handler: см. open-questions.md §A3 (ВГО-сценарий по
 	// умолчанию до подтверждения от автора ТЗ).
@@ -133,15 +136,20 @@ type FilterPayload struct {
 	DateTo     string   `json:"date_to"`
 	EntityINNs []string `json:"entity_inns"`
 	Accounts   []string `json:"accounts"`
-	Currencies []string `json:"currencies"`
-	OnlyICO    *bool    `json:"only_ico,omitempty"`
+	// Currencies — устаревший мультивыбор валют (до перехода на линзы). Оставлен
+	// для round-trip старых пресетов, бэком игнорируется.
+	Currencies []string `json:"currencies,omitempty"`
+	// Lens — линза представления суммы (CUR_FILTER). Пусто в старых пресетах → дефолт.
+	Lens    string `json:"lens,omitempty"`
+	OnlyICO *bool  `json:"only_ico,omitempty"`
 }
 
 // FilterOptions — ответ /filter-options.
 type FilterOptions struct {
-	Entities   []Entity  `json:"entities"`
-	Accounts   []Account `json:"accounts"`
-	Currencies []string  `json:"currencies"`
+	Entities []Entity  `json:"entities"`
+	Accounts []Account `json:"accounts"`
+	// Lenses — доступные линзы представления суммы (переключатель «Валюта» в UI).
+	Lenses []string `json:"lenses"`
 }
 
 // ReportResponse — ответ /report.
@@ -150,6 +158,3 @@ type ReportResponse struct {
 	GeneratedAt time.Time `json:"generated_at"`
 	ReportDate  time.Time `json:"report_date"`
 }
-
-// Currencies — закрытый перечень валют, который видит UI.
-var Currencies = []string{"BYN", "RUB", "USD", "EUR", "CNY"}
