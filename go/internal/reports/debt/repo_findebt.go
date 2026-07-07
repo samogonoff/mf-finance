@@ -38,12 +38,10 @@ type findebtRepo struct {
 // отчётного движка, не пользовательский ввод — держим константой, не env.
 const findebtVGOChannel = "ГРУППА КОМПАНИЙ"
 
-// findebtCurFilter — «линза» суммы. Пинним «В бел. рублях»: движок сам
-// консолидирует все валюты долга в BYN (одна строка на долг), без задвоения ×2.
-// Родная валюта тогда теряется — для разреза по валютам нужен «В валюте» +
-// свой пересчёт через CurrencyDaily (см. записку аналитика §10). Рекомендация
-// заказчика — белрубли.
-const findebtCurFilter = "В бел. рублях"
+// Линза суммы (CUR_FILTER) больше НЕ пиннится — выбирается фильтром (f.Lens,
+// нормализуется normLens, дефолт «В валюте договора»). CUR_FILTER даёт три
+// представления одной суммы; фильтр по одной линзе снимает задвоение ×3. См.
+// lens.go и docs/reports/debt/findebt-verification.md.
 
 // findebtSkipFilter — служебное значение DEBT_FILTER, которое НЕ баланс, а строки
 // оборотов «оплаты и отгрузки»; отсекаем явно.
@@ -78,6 +76,7 @@ type findebtRow struct {
 	Partner    string
 	PartnerINN string
 	Acc        string
+	Currency   string // native-валюта строки (FinDebt1.Currency)
 	OpenDZ     float64
 	OpenKZ     float64
 	CloseDZ    float64
@@ -99,12 +98,21 @@ func (r *findebtRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error) 
 		return nil, errors.New("debt.findebt.Report: date_to required")
 	}
 
+	lens := normLens(f.Lens)
 	args := []any{
 		sql.Named("grp", findebtVGOChannel),
-		sql.Named("cur", findebtCurFilter),
+		sql.Named("cur", lens),
 		sql.Named("skip", findebtSkipFilter),
 		sql.Named("dfrom", asMSSQLDate(f.DateFrom)),
 		sql.Named("dto", asMSSQLDate(f.DateTo)),
+	}
+
+	// В линзе «В валюте договора» суммы в native-валюте — группируем ПО валюте, иначе
+	// смешали бы валюты в одном итоге. В линзах BYN/USD сумма уже пересчитана —
+	// валюту в ключ не берём (агрегируем через неё), подпись ставит lensCurrency.
+	curGroupClause := ""
+	if lens == LensContract {
+		curGroupClause = ", LTRIM(RTRIM(f.Currency))"
 	}
 
 	// Фильтр организаций (по УНП нашего ЮЛ). Опционален.
@@ -139,6 +147,7 @@ SELECT
     MAX(f.Contragent)                                                            AS partner,
     LTRIM(RTRIM(f.UNP))                                                          AS partner_inn,
     LTRIM(RTRIM(f.Acc))                                                          AS acc,
+    MAX(LTRIM(RTRIM(f.Currency)))                                                AS native_currency,
     SUM(CASE WHEN f.[Date] = b.open_dt  AND f.DEBT_FILTER = N'Дебиторская'  THEN f.[SUM] ELSE 0 END) AS open_dz,
     SUM(CASE WHEN f.[Date] = b.open_dt  AND f.DEBT_FILTER = N'Кредиторская' THEN f.[SUM] ELSE 0 END) AS open_kz,
     SUM(CASE WHEN f.[Date] = b.close_dt AND f.DEBT_FILTER = N'Дебиторская'  THEN f.[SUM] ELSE 0 END) AS close_dz,
@@ -149,12 +158,12 @@ WHERE f.[Date] IN (b.close_dt, b.open_dt)
   AND f.Channel = @grp
   AND f.CUR_FILTER = @cur
   AND f.DEBT_FILTER <> @skip%[2]s%[3]s
-GROUP BY LTRIM(RTRIM(f.UNPOrg)), LTRIM(RTRIM(f.UNP)), LTRIM(RTRIM(f.Acc))
+GROUP BY LTRIM(RTRIM(f.UNPOrg)), LTRIM(RTRIM(f.UNP)), LTRIM(RTRIM(f.Acc))%[4]s
 HAVING ABS(SUM(CASE WHEN f.[Date] = b.close_dt AND f.DEBT_FILTER = N'Дебиторская'  THEN f.[SUM] ELSE 0 END)) > 0.005
     OR ABS(SUM(CASE WHEN f.[Date] = b.close_dt AND f.DEBT_FILTER = N'Кредиторская' THEN f.[SUM] ELSE 0 END)) > 0.005
     OR ABS(SUM(CASE WHEN f.[Date] = b.open_dt  AND f.DEBT_FILTER = N'Дебиторская'  THEN f.[SUM] ELSE 0 END)) > 0.005
     OR ABS(SUM(CASE WHEN f.[Date] = b.open_dt  AND f.DEBT_FILTER = N'Кредиторская' THEN f.[SUM] ELSE 0 END)) > 0.005
-ORDER BY company, partner, acc`, r.fin1FQN, orgClause, accClause)
+ORDER BY company, partner, acc`, r.fin1FQN, orgClause, accClause, curGroupClause)
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -166,7 +175,7 @@ ORDER BY company, partner, acc`, r.fin1FQN, orgClause, accClause)
 	for rows.Next() {
 		var rr findebtRow
 		if err := rows.Scan(&rr.Company, &rr.CompanyINN, &rr.Partner, &rr.PartnerINN, &rr.Acc,
-			&rr.OpenDZ, &rr.OpenKZ, &rr.CloseDZ, &rr.CloseKZ); err != nil {
+			&rr.Currency, &rr.OpenDZ, &rr.OpenKZ, &rr.CloseDZ, &rr.CloseKZ); err != nil {
 			return nil, fmt.Errorf("debt.findebt.Report: scan: %w", err)
 		}
 		raw = append(raw, rr)
@@ -174,13 +183,13 @@ ORDER BY company, partner, acc`, r.fin1FQN, orgClause, accClause)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("debt.findebt.Report: rows: %w", err)
 	}
-	return buildFinDebtReport(raw), nil
+	return buildFinDebtReport(raw, lens), nil
 }
 
 // buildFinDebtReport разворачивает сырые остатки FinDebt в DebtRow.
 // КЗ во вьюхе отрицательна → переворачиваем в «положительный долг» (наша конвенция).
 // Account несёт ПОЛНЫЙ субсчёт (напр. «62.4.1») — он же ключ drill-down в FinDebt3.
-func buildFinDebtReport(raw []findebtRow) []DebtRow {
+func buildFinDebtReport(raw []findebtRow, lens string) []DebtRow {
 	out := make([]DebtRow, 0, len(raw))
 	for _, rr := range raw {
 		country := countryOfINN(rr.CompanyINN) // "" для незнакомого УНП — не теряем строку
@@ -194,7 +203,7 @@ func buildFinDebtReport(raw []findebtRow) []DebtRow {
 			Account:     rr.Acc, // полный субсчёт = ключ drilldown
 			AccountName: accountNameFor(country, root),
 			Subaccount:  rr.Acc,
-			Currency:    "BYN", // CUR_FILTER='В бел. рублях' → суммы уже в BYN
+			Currency:    lensCurrency(lens, rr.Currency),
 			OpeningDZ:   rr.OpenDZ,
 			OpeningKZ:   -rr.OpenKZ,
 			ClosingDZ:   rr.CloseDZ,
@@ -221,7 +230,7 @@ func (r *findebtRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Docume
 
 	args := []any{
 		sql.Named("grp", findebtVGOChannel),
-		sql.Named("cur", findebtCurFilter),
+		sql.Named("cur", normLens(q.Lens)),
 		sql.Named("company", strings.TrimSpace(q.CompanyINN)),
 		sql.Named("partner", strings.TrimSpace(q.PartnerINN)),
 		sql.Named("acc", strings.TrimSpace(q.Account)),

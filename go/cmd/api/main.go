@@ -146,7 +146,7 @@ func main() {
 				log.Fatalf("debt: DEBT_BACKEND=findebt but CLICKHOUSE_HTTP_URL/USER not set")
 			}
 			premasterRepo = fdRepo
-			log.Printf("debt: backend=findebt (ClickHouse finance.fact_findebt)")
+			log.Printf("debt: backend=findebt (ClickHouse finance.fact_findebt_ccy)")
 		}
 	}
 	debtSvc := debt.NewService(cfg.DebtMock, premasterRepo)

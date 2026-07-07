@@ -92,6 +92,22 @@ func mockRows() []DebtRow {
 	}
 }
 
+// applyLens перекрашивает валюту mock-строк под выбранную линзу: BYN/USD дают
+// фиксированную подпись (суммы в моке не пересчитываем — это фикстура), линза
+// «В валюте договора» оставляет native-валюту как есть. Демонстрирует поведение
+// переключателя линзы без выхода в источник.
+func applyLens(rows []DebtRow, lens string) []DebtRow {
+	if lens == LensContract {
+		return rows
+	}
+	out := make([]DebtRow, len(rows))
+	for i, r := range rows {
+		r.Currency = lensCurrency(lens, r.Currency)
+		out[i] = r
+	}
+	return out
+}
+
 // mockDrilldown возвращает фикстурный набор документов для (company, partner, account, contract, currency).
 // Содержит как просроченные документы (overdue_days > 0), так и в пределах срока (overdue_days = 0).
 func mockDrilldown(contract, currency string, reportDate time.Time) []DocumentRow {

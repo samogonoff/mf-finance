@@ -16,9 +16,12 @@ func sqlEscape(s string) string { return strings.ReplaceAll(s, "'", "''") }
 // проводки, а уже свёрнутый суточный снэпшот на уровне договора/документа.
 //
 // Extract пре-агрегирует на стороне MSSQL до бизнес-ключа (снэпшот × ЮЛ ×
-// контрагент × счёт × № документа × дата документа), пиннит ВГО-контур
-// (Folder='ГРУППА КОМПАНИЙ') и белрублёвую линзу (CUR_FILTER='В бел. рублях') —
-// те же фильтры, на которых сошлась сверка.
+// контрагент × счёт × № документа × дата документа × линза CUR_FILTER × валюта),
+// пиннит ВГО-контур (Folder='ГРУППА КОМПАНИЙ'). Линзу CUR_FILTER БОЛЬШЕ НЕ
+// пиннит: тащим все три представления суммы ({В валюте договора, В бел. рублях,
+// В долларах США}) как отдельное измерение, отчёт выбирает нужную линзу. Каждая
+// задолженность приходит в 3 экземплярах — cur_filter в ключе дедупа не даёт им
+// схлопнуться, а любой SUM в отчёте обязан фильтровать одну линзу (иначе ×3).
 
 // FinDebtTables — трёхчастные имена вьюх FinDebt на OLAP (БД Payments, схема report).
 // Fin1FQN оставлен для совместимости конфигурации, extract использует только Fin3FQN.
@@ -27,10 +30,7 @@ type FinDebtTables struct {
 	Fin3FQN string // [Payments].[report].[FinDebt3] — источник
 }
 
-const (
-	finDebtVGOFolder = "ГРУППА КОМПАНИЙ"
-	finDebtCurFilter = "В бел. рублях"
-)
+const finDebtVGOFolder = "ГРУППА КОМПАНИЙ"
 
 // factFinDebtRow — строка для CH insert'а в finance.fact_findebt (JSONEachRow).
 // PaymentDate — указатель: NULL (срок не заведён) шлём как json null в Nullable(Date).
@@ -48,19 +48,23 @@ type factFinDebtRow struct {
 	Delay          int32   `json:"delay"`
 	PaymentDate    *string `json:"payment_date"`
 	DayDelay       int32   `json:"day_delay"`
-	SumDByn        string  `json:"sum_d_byn"`
-	SumKByn        string  `json:"sum_k_byn"`
+	CurFilter      string  `json:"cur_filter"`
+	Currency       string  `json:"currency"`
+	SumD           string  `json:"sum_d"`
+	SumK           string  `json:"sum_k"`
 }
 
 // extractFinDebtSQL — документная детализация по снэпшотам >= @min.
 //
 // GROUP BY совпадает С ТОЧНОСТЬЮ до колонок с ключом дедупликации
-// ReplacingMergeTree fact_findebt — (snapshot, company, counterparty, acc,
-// doc_number, doc_date). Имена/срок/просрочку/описание берём MAX() (а не в ключ):
-// иначе два документа с одинаковым номером+датой, но разным сроком дали бы две
-// строки на один ключ, и ReplacingMergeTree выкинул бы одну — потеря суммы
-// (баг: −33.6М вместо −53.2М). Суммы SUM_D/SUM_K схлопываются сложением →
-// итог сохраняется даже при коллизии номеров.
+// ReplacingMergeTree fact_findebt_ccy — (snapshot, company, counterparty, acc,
+// doc_number, doc_date, cur_filter, currency). Линза cur_filter и валюта currency
+// — измерения (в ключе), а не MAX: три линзы одной задолженности должны остаться
+// тремя строками. Имена/срок/просрочку/описание берём MAX() (а не в ключ): иначе
+// два документа с одинаковым номером+датой, но разным сроком дали бы две строки
+// на один ключ, и ReplacingMergeTree выкинул бы одну — потеря суммы (баг: −33.6М
+// вместо −53.2М). Суммы SUM_D/SUM_K схлопываются сложением → итог сохраняется
+// даже при коллизии номеров.
 func extractFinDebtSQL(t FinDebtTables) string {
 	root := accRootSQL("LTRIM(RTRIM(d.Acc))")
 	return `
@@ -78,27 +82,29 @@ SELECT
     MAX(CONVERT(INT, ISNULL(d.Delay, 0)))               AS delay,
     MAX(CONVERT(CHAR(10), d.Payment_Date, 23))           AS payment_date,
     MAX(CONVERT(INT, ISNULL(d.DAY_DELAY, 0)))            AS day_delay,
-    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM_D, 0)))        AS sum_d_byn,
-    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM_K, 0)))        AS sum_k_byn
+    LTRIM(RTRIM(d.CUR_FILTER))                            AS cur_filter,
+    LTRIM(RTRIM(ISNULL(d.Currency, '')))                 AS currency,
+    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM_D, 0)))        AS sum_d,
+    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM_K, 0)))        AS sum_k
 FROM ` + t.Fin3FQN + ` d WITH (NOLOCK)
 WHERE d.Folder = @grp
-  AND d.CUR_FILTER = @cur
   AND (d.SUM_D <> 0 OR d.SUM_K <> 0)
   AND d.[Date] >= @min
 GROUP BY CONVERT(CHAR(10), d.[Date], 23), LTRIM(RTRIM(d.UNPOrg)),
          LTRIM(RTRIM(d.UNP)), LTRIM(RTRIM(d.Acc)), ` + root + `,
          ISNULL(d.Doc_Number, ''),
-         ISNULL(CONVERT(CHAR(10), d.Doc_Date, 23), '1970-01-01')`
+         ISNULL(CONVERT(CHAR(10), d.Doc_Date, 23), '1970-01-01'),
+         LTRIM(RTRIM(d.CUR_FILTER)), LTRIM(RTRIM(ISNULL(d.Currency, '')))`
 }
 
-// scanFinDebtRow — Scan строки extractFinDebtSQL (15 колонок).
+// scanFinDebtRow — Scan строки extractFinDebtSQL (17 колонок).
 func scanFinDebtRow(rows *sql.Rows) (factFinDebtRow, error) {
 	var r factFinDebtRow
 	var payDate sql.NullString
 	if err := rows.Scan(
 		&r.SnapshotDate, &r.CompanyID, &r.Company, &r.CounterpartyID, &r.Counterparty,
 		&r.Acc, &r.AccRoot, &r.DocNumber, &r.DocDate, &r.Description,
-		&r.Delay, &payDate, &r.DayDelay, &r.SumDByn, &r.SumKByn,
+		&r.Delay, &payDate, &r.DayDelay, &r.CurFilter, &r.Currency, &r.SumD, &r.SumK,
 	); err != nil {
 		return r, fmt.Errorf("scan findebt: %w", err)
 	}

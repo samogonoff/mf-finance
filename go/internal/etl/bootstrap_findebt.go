@@ -45,9 +45,9 @@ func RunBootstrapFinDebt(ctx context.Context, deps Deps, opts FinDebtOpts) (int6
 		opts.MinDate, opts.BatchSize, opts.TriggeredBy)
 
 	// Идемпотентность: сносим снэпшоты >= MinDate (повторная заливка).
-	del := fmt.Sprintf("ALTER TABLE finance.fact_findebt DELETE WHERE snapshot_date >= toDate('%s')", sqlEscape(opts.MinDate))
+	del := fmt.Sprintf("ALTER TABLE finance.fact_findebt_ccy DELETE WHERE snapshot_date >= toDate('%s')", sqlEscape(opts.MinDate))
 	if err := ch.exec(ctx, del); err != nil {
-		log.Printf("  warn: cleanup fact_findebt: %v (продолжаем)", err)
+		log.Printf("  warn: cleanup fact_findebt_ccy: %v (продолжаем)", err)
 	}
 
 	n, err := streamFinDebt(ctx, deps, ch, opts)
@@ -67,7 +67,7 @@ func RunIncrementalFinDebt(ctx context.Context, deps Deps, opts FinDebtOpts) (in
 		return 0, fmt.Errorf("incremental-findebt: ch client: %w", err)
 	}
 	last, err := ch.queryString(ctx,
-		"SELECT ifNull(toString(max(snapshot_date)), '') FROM finance.fact_findebt")
+		"SELECT ifNull(toString(max(snapshot_date)), '') FROM finance.fact_findebt_ccy")
 	if err != nil {
 		return 0, fmt.Errorf("incremental-findebt: watermark: %w", err)
 	}
@@ -75,9 +75,9 @@ func RunIncrementalFinDebt(ctx context.Context, deps Deps, opts FinDebtOpts) (in
 		last = "2021-01-01" // CH пуст → полный догон
 	}
 	opts.MinDate = last
-	del := fmt.Sprintf("ALTER TABLE finance.fact_findebt DELETE WHERE snapshot_date >= toDate('%s')", sqlEscape(last))
+	del := fmt.Sprintf("ALTER TABLE finance.fact_findebt_ccy DELETE WHERE snapshot_date >= toDate('%s')", sqlEscape(last))
 	if err := ch.exec(ctx, del); err != nil {
-		log.Printf("  warn: incr cleanup fact_findebt: %v", err)
+		log.Printf("  warn: incr cleanup fact_findebt_ccy: %v", err)
 	}
 	n, err := streamFinDebt(ctx, deps, ch, opts)
 	if err != nil {
@@ -92,7 +92,7 @@ func RunIncrementalFinDebt(ctx context.Context, deps Deps, opts FinDebtOpts) (in
 // streamFinDebt — курсор FinDebt3 → батчи → finance.fact_findebt.
 func streamFinDebt(ctx context.Context, deps Deps, ch *chClient, opts FinDebtOpts) (int64, error) {
 	rows, err := deps.MSSQL.QueryContext(ctx, extractFinDebtSQL(opts.Tables),
-		sql.Named("grp", finDebtVGOFolder), sql.Named("cur", finDebtCurFilter), sql.Named("min", opts.MinDate))
+		sql.Named("grp", finDebtVGOFolder), sql.Named("min", opts.MinDate))
 	if err != nil {
 		return 0, fmt.Errorf("mssql query: %w", err)
 	}
@@ -111,7 +111,7 @@ func streamFinDebt(ctx context.Context, deps Deps, ch *chClient, opts FinDebtOpt
 				return fmt.Errorf("encode: %w", err)
 			}
 		}
-		if err := ch.insertJSON(ctx, "finance.fact_findebt", &buf); err != nil {
+		if err := ch.insertJSON(ctx, "finance.fact_findebt_ccy", &buf); err != nil {
 			return err
 		}
 		total += int64(len(batch))
