@@ -93,3 +93,19 @@ func TestOurINNs_includesPTIR(t *testing.T) {
 	}
 	t.Fatalf("OurINNs() не содержит ИНН ПТИР %q", ptir)
 }
+
+// ВГО-компании сверх 15 ЮЛ (DR/DR2/GP) не должны протекать в
+// Entities()/OurINNs()/Level1 (ВГО-контур определяется в FinDebt по Channel).
+func TestExtraVGONotInSeedLists(t *testing.T) {
+	extra := map[string]bool{"692221084": true, "693335015": true, "190465888": true}
+	for _, inn := range OurINNs() {
+		if extra[inn] {
+			t.Errorf("OurINNs() не должен содержать ВГО-extra %q", inn)
+		}
+	}
+	for _, e := range EntitiesLevel1() {
+		if e.Code == "DR" || e.Code == "DR2" || e.Code == "GP" {
+			t.Errorf("EntitiesLevel1() не должен содержать %q", e.Code)
+		}
+	}
+}

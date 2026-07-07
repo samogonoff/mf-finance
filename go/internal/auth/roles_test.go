@@ -24,11 +24,44 @@ func TestExpandRoles_AlwaysIncludesUser(t *testing.T) {
 
 func TestExpandRoles_AdminExpandsFullTree(t *testing.T) {
 	got := ExpandRoles([]string{RoleAdmin})
-	want := []string{RoleAdmin, RoleCostAdmin, RoleCostUser, RoleFinanceAdmin, RoleUser}
+	want := []string{
+		RoleAdmin, RoleCostAdmin, RoleCostUser, RoleFinanceAdmin,
+		RolePlansAdmin, RolePlansUser, RoleUser,
+	}
 	sort.Strings(want)
 
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ROLE_ADMIN should expand to all descendants + ROLE_USER\n want %v\n  got %v", want, got)
+	}
+}
+
+func TestExpandRoles_PlansAdminExpandsToPlansUser(t *testing.T) {
+	got := ExpandRoles([]string{RolePlansAdmin})
+	want := []string{RolePlansAdmin, RolePlansUser, RoleUser}
+	sort.Strings(want)
+
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ROLE_PLANS_ADMIN should expand to ROLE_PLANS_USER + ROLE_USER\n want %v\n  got %v", want, got)
+	}
+}
+
+func TestExpandRoles_PlansUserStandalone(t *testing.T) {
+	got := ExpandRoles([]string{RolePlansUser})
+	want := []string{RolePlansUser, RoleUser}
+	sort.Strings(want)
+
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ROLE_PLANS_USER should expand to itself + ROLE_USER\n want %v\n  got %v", want, got)
+	}
+	if contains(got, RolePlansAdmin) {
+		t.Errorf("ROLE_PLANS_USER must NOT expand upward to ROLE_PLANS_ADMIN, got %v", got)
+	}
+}
+
+func TestExpandRoles_FinanceAdminDoesNotImplyPlans(t *testing.T) {
+	got := ExpandRoles([]string{RoleFinanceAdmin})
+	if contains(got, RolePlansAdmin) || contains(got, RolePlansUser) {
+		t.Errorf("ROLE_FINANCE_ADMIN must NOT expand to any plans roles, got %v", got)
 	}
 }
 
@@ -122,6 +155,13 @@ func TestFilterAllowed_RejectsRoleUserAndUnknown(t *testing.T) {
 	}
 	if !contains(got, RoleAdmin) || !contains(got, RoleCostUser) {
 		t.Errorf("FilterAllowed must keep ROLE_ADMIN and ROLE_COST_USER, got %v", got)
+	}
+}
+
+func TestFilterAllowed_KeepsPlansRoles(t *testing.T) {
+	got := FilterAllowed([]string{RolePlansAdmin, RolePlansUser})
+	if !contains(got, RolePlansAdmin) || !contains(got, RolePlansUser) {
+		t.Errorf("FilterAllowed must keep ROLE_PLANS_ADMIN and ROLE_PLANS_USER, got %v", got)
 	}
 }
 

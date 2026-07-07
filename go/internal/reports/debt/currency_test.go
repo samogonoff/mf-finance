@@ -16,8 +16,8 @@ func TestCurrencyForCountry(t *testing.T) {
 		{CountryGB, "GBP"},
 		{CountryCN, "CNY"},
 		{CountryKG, "KGS"},
-		{"", ""},                // пустая страна
-		{Country("XX"), ""},      // неизвестная страна
+		{"", ""},            // пустая страна
+		{Country("XX"), ""}, // неизвестная страна
 	}
 	for _, tc := range cases {
 		if got := CurrencyForCountry(tc.c); got != tc.want {

@@ -60,6 +60,7 @@ func (h *Handler) Report(w http.ResponseWriter, r *http.Request) {
 		EntityINNs: collectList(q, "entity_inns"),
 		Accounts:   collectList(q, "accounts"),
 		Currencies: collectList(q, "currencies"),
+		Lens:       q.Get("lens"),
 		OnlyICO:    parseBoolDefault(q.Get("only_ico"), true),
 	}
 	resp, err := h.svc.Report(r.Context(), f)
@@ -89,13 +90,16 @@ func (h *Handler) Drilldown(w http.ResponseWriter, r *http.Request) {
 		Account:    q.Get("account"),
 		Contract:   q.Get("contract"),
 		Currency:   q.Get("currency"),
+		Lens:       q.Get("lens"),
 		DateFrom:   from,
 		DateTo:     to,
 	}
-	// Contract и Currency пока не обязательны (M5: resolver субконто и валют).
-	// company_inn + partner_inn + account — минимально достаточно для M2.
-	if dq.CompanyINN == "" || dq.PartnerINN == "" || dq.Account == "" {
-		writeErr(w, http.StatusBadRequest, "company_inn, partner_inn, account are required")
+	// Обязателен company_inn. partner_inn/account опциональны: ДЗ/КЗ-строки
+	// (premaster) всегда несут оба, а revenue-строки finpl приходят без счёта
+	// (Account="") и иногда без распознанного контрагента — для них композит
+	// отдаёт месячную PL-детализацию (см. finplComposite.Drilldown).
+	if dq.CompanyINN == "" {
+		writeErr(w, http.StatusBadRequest, "company_inn is required")
 		return
 	}
 	docs, err := h.svc.Drilldown(r.Context(), dq)

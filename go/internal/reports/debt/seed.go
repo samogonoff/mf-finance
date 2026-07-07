@@ -6,17 +6,19 @@ import "strings"
 // var/fin/Приложение_к_ТЗ_задолженность_ВГО.xlsx).
 // Используется для /filter-options и в качестве справочника при свёртке
 // строк из Premaster1C — фильтр на стороне SQL идёт по ИНН/УНП.
+// Code заполнен у тех ЮЛ, что встречаются в Table_Fin_PL.Компания (PL-данные);
+// у зарубежных ЮЛ и ИП кода в PL нет → пусто.
 var entities = []Entity{
-	{INN: "690591512", Name: "ООО «Марк Формэль»", Country: CountryRB},
-	{INN: "690719790", Name: "ООО «Формэль»", Country: CountryRB},
-	{INN: "6950135110", Name: "ООО ТД «Марк Формэль»", Country: CountryRF},
-	{INN: "5031159833", Name: "ООО «МАРК ФОРМЭЛЬ ТЕКС»", Country: CountryRF},
-	{INN: "9909349268", Name: "Филиал ООО «Марк Формэль»", Country: CountryRF},
-	{INN: "9731039708", Name: "ООО «ПТИР»", Country: CountryRF},
+	{INN: "690591512", Name: "ООО «Марк Формэль»", Country: CountryRB, Code: "MF"},
+	{INN: "690719790", Name: "ООО «Формэль»", Country: CountryRB, Code: "F"},
+	{INN: "6950135110", Name: "ООО ТД «Марк Формэль»", Country: CountryRF, Code: "TDMF"},
+	{INN: "5031159833", Name: "ООО «МАРК ФОРМЭЛЬ ТЕКС»", Country: CountryRF, Code: "MFTex"},
+	{INN: "9909349268", Name: "Филиал ООО «Марк Формэль»", Country: CountryRF, Code: "MFT"},
+	{INN: "9731039708", Name: "ООО «ПТИР»", Country: CountryRF, Code: "PTIR"},
 	{INN: "695018688905", Name: "ИП Сипарова Светлана Геннадьевна", Country: CountryRF},
-	{INN: "141240004842", Name: "ТОО «Mark Formelle Kazakhstan» (Марк Формэль Казахстан)", Country: CountryKZ},
-	{INN: "305554644", Name: "ООО «MARK FORMELLE IT» МЧЖ", Country: CountryUZ},
-	{INN: "310170662", Name: "«BARREIROS SOFT» MCHJ", Country: CountryUZ},
+	{INN: "141240004842", Name: "ТОО «Mark Formelle Kazakhstan» (Марк Формэль Казахстан)", Country: CountryKZ, Code: "MFKaz"},
+	{INN: "305554644", Name: "ООО «MARK FORMELLE IT» МЧЖ", Country: CountryUZ, Code: "MFUz"},
+	{INN: "310170662", Name: "«BARREIROS SOFT» MCHJ", Country: CountryUZ, Code: "BR"},
 	{INN: "6201029158", Name: "MF FASHION TEKSTIL SANAYI VE TICARET ANONIM SIRKETI", Country: CountryTR},
 	{INN: "CZ08373159", Name: "Mark Formelle EU s.r.o", Country: CountryCZ},
 	{INN: "40003074497", Name: "Hutchison Trading LP", Country: CountryGB},

@@ -119,6 +119,21 @@ export default defineEventHandler(async (event) => {
 
   setCookie(event, "b24_oauth_state", "", { httpOnly: true, maxAge: 0 });
 
+  // Сохраняем B24-токен админа, чтобы переиспользовать тот же OAuth-app для
+  // поиска сотрудников (user.get/user.search) при догрузке пользователей.
+  // httpOnly — токен не виден JS; читается только серверными nitro-роутами.
+  const secure = (getHeader(event, "x-forwarded-proto") || "http") === "https";
+  const cookieBase = { httpOnly: true, sameSite: "lax" as const, secure, path: "/" };
+  if (response.access_token) {
+    setCookie(event, "b24_access_token", response.access_token, { ...cookieBase, maxAge: response.expires_in || 3600 });
+  }
+  if (response.refresh_token) {
+    setCookie(event, "b24_refresh_token", response.refresh_token, { ...cookieBase, maxAge: 60 * 60 * 24 * 30 });
+  }
+  if (domainToSave) {
+    setCookie(event, "b24_domain", domainToSave, { ...cookieBase, maxAge: 60 * 60 * 24 * 30 });
+  }
+
   const host =
     getHeader(event, "host") || getHeader(event, "x-forwarded-host") || "nuxt.local:3000";
   const protocol = getHeader(event, "x-forwarded-proto") || "http";
