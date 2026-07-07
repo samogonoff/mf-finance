@@ -5,17 +5,53 @@ import os
 from datetime import date, datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
 from app.db import (apply_pending_changes, clear_pending_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
+from app.middleware import require_perm
 from app.notify import notify_admins
+from app.permissions import COST_PERMISSIONS
+from app.roles import (
+    assign_role,
+    create_role,
+    delete_role,
+    get_roles,
+    get_user_permissions,
+    get_user_roles,
+    remove_user_role,
+    update_role,
+)
 
 router = APIRouter()
 
 
 def _is_mock() -> bool:
     return os.environ.get("COST_MOCK", "").strip() == "1"
+
+
+def _require_perm(permission: str):
+    """Skip permission check in mock mode."""
+    if _is_mock():
+        return lambda: None
+    return require_perm(permission)
+
+
+def _require_any_perm(*permissions: str):
+    """Skip permission check in mock mode. User needs ANY of the given permissions."""
+    if _is_mock():
+        return lambda: None
+    async def _check(request: Request) -> str:
+        email = request.headers.get("X-Cost-User", "")
+        if not email:
+            raise HTTPException(401, "Не передан заголовок X-Cost-User")
+        perms = await get_user_permissions(email)
+        for perm in permissions:
+            if perm in perms:
+                return email
+        joined = ", ".join(permissions)
+        raise HTTPException(403, f"Недостаточно прав: требуется одно из ({joined})")
+    return _check
 
 
 # ── Фильтр-конфиг (DWH.dim.groups) ──────────────────────────────────────────
@@ -148,7 +184,7 @@ MULTI_FILTER_COLUMNS: dict[str, str] = {
 
 
 @router.post("/load-data")
-async def load_data(payload: dict) -> dict:
+async def load_data(payload: dict, _: str = Depends(_require_perm("cost:view"))) -> dict:
     """Загружает сырые отфильтрованные данные из кеша с пагинацией."""
     if _is_mock():
         return mocks.load_data(payload)
@@ -268,7 +304,7 @@ SEBEST_COMPONENTS_USD = [
 
 
 @router.post("/aggregated")
-async def get_aggregated(payload: dict) -> dict:
+async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:view"))) -> dict:
     if _is_mock():
         return mocks.aggregated(payload)
 
@@ -733,7 +769,7 @@ def get_price_levels() -> list[dict]:
 
 
 @router.post("/save-changes")
-async def save_price_changes(payload: dict) -> dict:
+async def save_price_changes(payload: dict, _: str = Depends(_require_perm("cost:edit_price"))) -> dict:
     username = "system"
 
     calc_sign = payload.get("calc_sign") or payload.get("Признак калькуляции")
@@ -849,7 +885,7 @@ def _row_data_from_payload(c: dict) -> dict:
 
 
 @router.post("/save-batch")
-async def save_batch_changes(payload: dict) -> dict:
+async def save_batch_changes(payload: dict, _: str = Depends(_require_perm("cost:edit_price"))) -> dict:
     username = "system"
     changes = payload.get("changes") or []
 
@@ -957,7 +993,7 @@ async def checkout_calculation_endpoint(request: Request) -> dict:
 
 
 @router.post("/save-calculation-draft")
-async def save_calculation_draft(payload: dict) -> dict:
+async def save_calculation_draft(payload: dict, _: str = Depends(_require_perm("cost:edit_materials"))) -> dict:
     version_id = payload.get("version_id")
     rows = payload.get("rows", [])
     if not version_id:
@@ -969,7 +1005,7 @@ async def save_calculation_draft(payload: dict) -> dict:
 
 
 @router.post("/submit-calculation-draft")
-async def submit_calculation_draft(payload: dict) -> dict:
+async def submit_calculation_draft(payload: dict, _: str = Depends(_require_perm("cost:edit_materials"))) -> dict:
     version_id = payload.get("version_id")
     if not version_id:
         raise HTTPException(400, "version_id required")
@@ -981,7 +1017,7 @@ async def submit_calculation_draft(payload: dict) -> dict:
 
 
 @router.post("/approve-calculation-version")
-async def approve_calculation_version(payload: dict) -> dict:
+async def approve_calculation_version(payload: dict, _: str = Depends(_require_perm("cost:approve"))) -> dict:
     version_id = payload.get("version_id")
     action = payload.get("action")
     approved_by = payload.get("approved_by", "system")
@@ -1026,7 +1062,7 @@ async def calculation_draft_status(request: Request) -> dict:
 
 
 @router.post("/approve-calculation")
-async def approve_calculation(payload: dict) -> dict:
+async def approve_calculation(payload: dict, _: str = Depends(_require_any_perm("cost:approve", "cost:peo_mark"))) -> dict:
     approvals = payload.get("approvals", [])
     approved_by = payload.get("approved_by", "system")
     if not approvals:
@@ -1040,7 +1076,7 @@ async def approve_calculation(payload: dict) -> dict:
 
 
 @router.post("/revoke-approval")
-async def revoke_approval_endpoint(payload: dict) -> dict:
+async def revoke_approval_endpoint(payload: dict, _: str = Depends(_require_any_perm("cost:approve", "cost:peo_mark"))) -> dict:
     model = payload.get("model")
     articul = payload.get("articul")
     calc_sign = payload.get("calc_sign")
@@ -1110,6 +1146,88 @@ async def update_margin_targets(payload: dict) -> dict:
         return mocks.save_margin_targets(targets, username)
     await save_margin_targets(targets, username)
     return {"success": True, "count": len(targets)}
+
+
+# ── Role-based permissions ────────────────────────────────────────────────────
+
+
+@router.get("/permissions")
+async def list_permissions() -> dict:
+    return {"permissions": COST_PERMISSIONS}
+
+
+@router.get("/roles")
+async def list_roles_endpoint() -> dict:
+    if _is_mock():
+        return {"roles": mocks.list_roles()}
+    return {"roles": await get_roles()}
+
+
+@router.post("/roles")
+async def create_role_endpoint(payload: dict, _: str = Depends(_require_perm("cost:admin"))) -> dict:
+    name = payload.get("name", "").strip()
+    perms = payload.get("permissions") or []
+    if not name:
+        raise HTTPException(400, "Role name required")
+    return await create_role(name, perms)
+
+
+@router.put("/roles/{role_id}")
+async def update_role_endpoint(role_id: int, payload: dict, _: str = Depends(_require_perm("cost:admin"))) -> dict:
+    name = payload.get("name", "").strip() or None
+    perms = payload.get("permissions")
+    result = await update_role(role_id, name, perms)
+    if not result:
+        raise HTTPException(404, "Role not found")
+    return result
+
+
+@router.delete("/roles/{role_id}")
+async def delete_role_endpoint(role_id: int, _: str = Depends(_require_perm("cost:admin"))) -> dict:
+    deleted = await delete_role(role_id)
+    if not deleted:
+        raise HTTPException(400, "Role not found or is system role")
+    return {"success": True}
+
+
+@router.get("/roles/users")
+async def list_user_roles_endpoint(email: str | None = None) -> dict:
+    if _is_mock():
+        return {"assignments": mocks.list_user_roles()}
+    return {"assignments": await get_user_roles(email)}
+
+
+@router.post("/roles/users")
+async def assign_role_endpoint(payload: dict, _: str = Depends(_require_perm("cost:admin"))) -> dict:
+    email = payload.get("email", "").strip()
+    role_id = payload.get("role_id")
+    granted_by = payload.get("granted_by", "")
+    if not email or not role_id:
+        raise HTTPException(400, "email and role_id required")
+    try:
+        return await assign_role(email, role_id, granted_by)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@router.delete("/roles/users/{assignment_id}")
+async def remove_user_role_endpoint(assignment_id: int, _: str = Depends(_require_perm("cost:admin"))) -> dict:
+    deleted = await remove_user_role(assignment_id)
+    if not deleted:
+        raise HTTPException(404, "Assignment not found")
+    return {"success": True}
+
+
+@router.get("/roles/my")
+async def my_roles_permissions(request: Request) -> dict:
+    email = request.headers.get("X-Cost-User", "")
+    if not email:
+        raise HTTPException(401, "Не передан заголовок X-Cost-User")
+    if _is_mock():
+        return mocks.my_roles_permissions(email)
+    roles = await get_user_roles(email)
+    permissions = await get_user_permissions(email)
+    return {"email": email, "roles": roles, "permissions": permissions}
 
 
 # ── Cache refresh & status ──────────────────────────────────────────────────

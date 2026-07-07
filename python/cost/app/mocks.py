@@ -585,3 +585,34 @@ def get_approval_status(filters: dict | None = None) -> dict:
                 continue
         result.append({"model": m, "articul": a, "calc_sign": cs, "plan_id": pid, "status": status})
     return {"data": result, "mock": True}
+
+
+# ── Roles mocks ────────────────────────────────────────────────────────────────
+
+_MOCK_ROLES = [
+    {"id": 1, "name": "ПЭО", "permissions": ["cost:view", "cost:approve", "cost:export"], "is_system": True},
+    {"id": 2, "name": "Бренд-менеджер", "permissions": ["cost:view", "cost:edit_price", "cost:export"], "is_system": True},
+    {"id": 3, "name": "Калькулятор", "permissions": ["cost:view", "cost:edit_price", "cost:edit_materials", "cost:export"], "is_system": True},
+    {"id": 4, "name": "Администратор", "permissions": ["cost:view", "cost:edit_price", "cost:approve", "cost:edit_materials", "cost:export", "cost:admin"], "is_system": False},
+]
+
+_MOCK_USER_ROLES = [
+    {"id": 1, "email": "ivanova@mf.ru", "role_id": 1, "role_name": "ПЭО", "permissions": ["cost:view", "cost:approve", "cost:export"]},
+    {"id": 2, "email": "petrov@mf.ru", "role_id": 2, "role_name": "Бренд-менеджер", "permissions": ["cost:view", "cost:edit_price", "cost:export"]},
+]
+
+
+def list_roles() -> list[dict]:
+    return _MOCK_ROLES
+
+
+def list_user_roles() -> list[dict]:
+    return _MOCK_USER_ROLES
+
+
+def my_roles_permissions(email: str) -> dict:
+    user_roles = [r for r in _MOCK_USER_ROLES if r["email"] == email]
+    permissions = set()
+    for r in user_roles:
+        permissions.update(r.get("permissions", []))
+    return {"email": email, "roles": user_roles, "permissions": sorted(permissions)}
