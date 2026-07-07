@@ -270,6 +270,9 @@ def _make_row(i: int, overrides: dict | None = None) -> dict[str, Any]:
         "sum_Вязание, руб.":     round(cost * 0.02, 2),
         "sum_Вязание, USD.":     round(cost * 0.02 / 92, 2),
         "avg_Ставка НДС": [20, 20, 20, 20, 10, 20, 20, 20, 0, 20][i % 10],
+        "avg_Пошив, минуты": round(15 + (i % 20) * 2.5, 1),
+        "avg_Раскрой, минуты": round(8 + (i % 15) * 1.8, 1),
+        "avg_Курс на дату расчета": round(90 + (i % 11) * 0.5, 2),
     }
     if overrides:
         row.update(overrides)

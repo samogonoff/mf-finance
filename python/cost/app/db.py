@@ -129,7 +129,9 @@ _CACHE_NON_TEXT: set[str] = {
     "Отпускная цена по уровню, USD.",
     "Основные материалы, руб.", "Основные материалы, USD.",
     "Вспомогательные материалы, руб.", "Вспомогательные материалы, USD.",
+    "Пошив, минуты",
     "Пошив, руб.", "Пошив, USD.",
+    "Раскрой, минуты",
     "Раскрой, руб.", "Раскрой, USD.",
     "Декоры, руб.", "Декоры, USD.",
     "Вязание, руб.", "Вязание, USD.",
@@ -177,7 +179,9 @@ CACHE_COLUMNS: list[str] = [
     "Отпускная цена по уровню, USD.",
     "Основные материалы, руб.", "Основные материалы, USD.",
     "Вспомогательные материалы, руб.", "Вспомогательные материалы, USD.",
+    "Пошив, минуты",
     "Пошив, руб.", "Пошив, USD.",
+    "Раскрой, минуты",
     "Раскрой, руб.", "Раскрой, USD.",
     "Декоры, руб.", "Декоры, USD.",
     "Вязание, руб.", "Вязание, USD.",
@@ -310,7 +314,7 @@ def _convert_mssql_row(row: tuple, col_indices: list[int], cache_columns: list[s
 
 
 async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
-    """Fetch from MSSQL v_CostHistory_MatchedOrLatest and bulk insert into cache.
+    """Fetch from MSSQL [Checks].[dbo].[CostHistory] and bulk insert into cache.
 
     Batches of BATCH_SIZE rows — never loads the full dataset into Python memory.
     Uses a producer thread (MSSQL fetch) + async consumer (PG copy) with a
@@ -340,9 +344,9 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
         cursor = conn.cursor()
         try:
             if cutoff_date is not None:
-                cursor.execute("SELECT * FROM [v_CostHistory_MatchedOrLatest] WHERE [дата расчета] >= ?", cutoff_date)
+                cursor.execute("SELECT * FROM [Checks].[dbo].[CostHistory] WHERE [дата расчета] >= ?", cutoff_date)
             else:
-                cursor.execute("SELECT * FROM [v_CostHistory_MatchedOrLatest]")
+                cursor.execute("SELECT * FROM [Checks].[dbo].[CostHistory]")
             mssql_columns = [desc[0] for desc in cursor.description]
             # Для колонок, чьи PG-имена короче MSSQL-оригиналов,
             # ищем по полному MSSQL-имени через CACHE_COLUMN_MSSQL_MAP.

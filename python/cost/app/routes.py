@@ -229,6 +229,8 @@ AGG_AVG_FIELDS = [
     "Отпускная цена по уровню, USD.",
     "Курс на дату расчета",
     "Ставка НДС",
+    "Пошив, минуты",
+    "Раскрой, минуты",
 ]
 
 AGG_SUM_FIELDS = [
@@ -1118,7 +1120,7 @@ REFRESH_TIMEOUT_MINUTES = 10
 
 @router.post("/refresh-cache")
 async def refresh_cache() -> dict:
-    """Принудительное обновление кеша из MSSQL v_CostHistory_MatchedOrLatest."""
+    """Принудительное обновление кеша из MSSQL [Checks].[dbo].[CostHistory]."""
     if _is_mock():
         return mocks.refresh_cache()
 

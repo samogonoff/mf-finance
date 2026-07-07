@@ -1,6 +1,6 @@
 -- 0002 — кеш данных себестоимости для ускорения работы.
--- Источник: [Checks].[dbo].[v_CostHistory_MatchedOrLatest] (MSSQL) — тяжёлое
--- представление, поэтому данные кешируются в локальный postgres-cost.
+-- Источник: [Checks].[dbo].[CostHistory] (MSSQL) — тяжёлая
+-- таблица, поэтому данные кешируются в локальный postgres-cost.
 -- Кеш обновляется раз в 3 часа (планово) и по кнопке на фронте (принудительно).
 
 CREATE TABLE IF NOT EXISTS cost_data_cache (
