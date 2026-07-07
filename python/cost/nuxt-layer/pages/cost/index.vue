@@ -118,16 +118,20 @@
         <button class="btn btn-ghost" @click="openMarginModal">
           <Icon name="lucide:target" /> Таргеты маржинальности
         </button>
-        <button class="btn btn-ghost" @click="openApprovalModal">
+        <button v-if="can('cost:approve')" class="btn btn-ghost" @click="openApprovalModal">
           <Icon name="lucide:check-square" /> Согласование
         </button>
-        <button class="btn btn-ghost" @click="navigateTo('/cost/approvals')">
+        <button v-if="can('cost:approve')" class="btn btn-ghost" @click="navigateTo('/cost/approvals')">
           <Icon name="lucide:clipboard-check" /> Страница согласования
         </button>
-        <button class="btn btn-ghost" :disabled="!totalAllRecords" @click="exportToExcel">
+        <button v-if="can('cost:export')" class="btn btn-ghost" :disabled="!totalAllRecords" @click="exportToExcel">
           <Icon name="lucide:download" /> Экспорт в Excel
         </button>
+        <button v-if="can('cost:admin')" class="btn btn-ghost" @click="navigateTo('/cost/admin/roles')">
+          <Icon name="lucide:settings" /> Администрирование
+        </button>
         <button
+          v-if="can('cost:approve') || can('cost:peo_mark') || can('cost:edit_price')"
           class="btn btn-primary"
           :disabled="!changedRows.size || saving"
           @click="saveAllChanges"
@@ -318,7 +322,7 @@
               <th v-if="isVisible('calc_margin_deviation')" class="col-num" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
                 Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('peo')" class="col-peo">ПЭО</th>
+              <th v-if="(can('cost:approve') || can('cost:peo_mark')) && isVisible('peo')" class="col-peo">ПЭО</th>
             </tr>
           </thead>
           <tbody>
@@ -363,7 +367,7 @@
                   class="price-input"
                   type="number"
                   :value="row['avg_Розничная цена по уровню, руб.'] != null ? Number(row['avg_Розничная цена по уровню, руб.']).toFixed(2) : ''"
-                  :disabled="row['Признак калькуляции'] === 'ФКСС'"
+                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !can('cost:edit_price')"
                   @click.stop
                   @input="onRetailPriceInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                   list="retail-price-list"
@@ -377,7 +381,7 @@
                 <select
                   class="price-select"
                   :value="markupSelections[getOriginalIndex(row)] || ''"
-                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !row['avg_Розничная цена по уровню, руб.']"
+                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !row['avg_Розничная цена по уровню, руб.'] || !can('cost:edit_price')"
                   @click.stop
                   @change="onMarkupSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
                 >
@@ -388,25 +392,28 @@
                 </select>
               </td>
               <td v-if="isVisible('price_rf')">
-                <input class="price-input" type="number"
+                 <input class="price-input" type="number"
                   :value="priceRF[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена РФ"
+                  :disabled="!can('cost:edit_price')"
                   @click.stop
                   @input="onPriceRFInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
               </td>
               <td v-if="isVisible('price_kz')">
-                <input class="price-input" type="number"
+                 <input class="price-input" type="number"
                   :value="priceKZ[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена КЗ"
+                  :disabled="!can('cost:edit_price')"
                   @click.stop
                   @input="onPriceKZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
               </td>
               <td v-if="isVisible('price_uz')">
-                <input class="price-input" type="number"
+                 <input class="price-input" type="number"
                   :value="priceUZ[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена УЗ"
+                  :disabled="!can('cost:edit_price')"
                   @click.stop
                   @input="onPriceUZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
@@ -445,7 +452,7 @@
               </td>
               <td v-if="isVisible('calc_margin_pct')" class="col-num num">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
               <td v-if="isVisible('calc_margin_deviation')" class="col-num num" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
-              <td v-if="isVisible('peo')" class="col-peo">
+              <td v-if="(can('cost:approve') || can('cost:peo_mark')) && isVisible('peo')" class="col-peo">
                 <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="openApprovalPopup(row)">🟢</span>
                 <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" @click.stop="openApprovalPopup(row)">🔴</span>
                 <span v-else class="peo-badge peo-none" @click.stop="openApprovalPopup(row)">⚪</span>
@@ -906,6 +913,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { useCostPermission } from "~/composables/useCostPermission";
 
 interface PriceLevel { name: string; price_type1: number; price_type3: number; price_type4: number; price_type5: number; price_type6: number }
 interface FilterOption { id: string; text: string }
@@ -948,6 +956,9 @@ const apiBase = computed(() =>
   config.public.costOnly ? "" : ((config.public.apiBase as string) || "")
 );
 const apiHostLabel = computed(() => apiBase.value || "локального API");
+
+const { can, loading: permLoading } = useCostPermission();
+const user = useState<any>("auth-user");
 
 const pageTitle = computed(() => {
   const base = 'Установка цен';
@@ -1151,7 +1162,6 @@ const loading = ref(false);
 const lastError = ref("");
 
 
-
 // ── Helper: normalize level options ─────────────────────────────────────────
 // API returns {id, text} for levels; CostMultiSelect needs string[]
 // We store text values; cascade sends id values
@@ -1301,7 +1311,10 @@ function buildFilters(): Record<string, any> {
   return f;
 }
 
-const fetchHeaders = computed(() => ({}));
+const fetchHeaders = computed(() => {
+  const email = user.value?.email || "";
+  return email ? { "X-Cost-User": email } : {};
+});
 const noWholesaleOnly = ref(false);
 
 const approvalTarget = ref<any>(null);
@@ -2387,7 +2400,7 @@ const saveDraft = async () => {
   try {
     const resp = await fetch(`${apiBase.value}/api/cost/save-calculation-draft`, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
       body: JSON.stringify({
         version_id: editingVersion.value.version_id,
         rows: editingVersion.value.rows,
@@ -2412,7 +2425,7 @@ const submitDraft = async () => {
   try {
     const resp = await fetch(`${apiBase.value}/api/cost/submit-calculation-draft`, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
       body: JSON.stringify({version_id: editingVersion.value.version_id}),
     });
     if (!resp.ok) {
@@ -2528,6 +2541,7 @@ const onRetailPriceInput = (absoluteIdx: number, value: string) => {
     row["avg_Розничная цена по уровню, USD."] = 0;
     row["avg_Отпускная цена по уровню, USD."] = 0;
     markupSelections[absoluteIdx] = "";
+    changedRows.add(absoluteIdx);
     return;
   }
   row["avg_Розничная цена по уровню, руб."] = numVal;
@@ -2536,6 +2550,7 @@ const onRetailPriceInput = (absoluteIdx: number, value: string) => {
   row["avg_Розничная цена по уровню, USD."] = 0;
   row["avg_Отпускная цена по уровню, USD."] = 0;
   markupSelections[absoluteIdx] = "";
+  changedRows.add(absoluteIdx);
   // Автовыбор если ровно один вариант наценки
   const options = getMarkupOptions(row);
   if (options.length === 1) {
@@ -2776,7 +2791,7 @@ const marginRowClass = (row: any): Record<string, boolean> => {
   return { 'row-margin-ok': dev >= 0, 'row-margin-bad': dev < 0 };
 };
 
-const openApprovalPopup = (row: any) => { approvalTarget.value = row; approvalComment.value = ''; };
+const openApprovalPopup = (row: any) => { if (!can('cost:approve') && !can('cost:peo_mark')) return; approvalTarget.value = row; approvalComment.value = ''; };
 const closeApprovalPopup = () => { approvalTarget.value = null; };
 
 const setApproval = async (status: 'approved' | 'rejected') => {
@@ -2787,7 +2802,7 @@ const setApproval = async (status: 'approved' | 'rejected') => {
     const r = allAggregated.value[idx];
     await fetch(`${apiBase.value}/api/cost/approve-calculation`, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
       body: JSON.stringify({
         approvals: [{
           model: r['Модель'], articul: r['Артикул'],
