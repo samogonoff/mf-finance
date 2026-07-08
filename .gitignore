@@ -6,6 +6,7 @@ python/cost/.env
 # Node
 node_modules/
 .nuxt/
+.nuxt-root-bak/
 .output/
 dist/
 

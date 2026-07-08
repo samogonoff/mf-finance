@@ -2,9 +2,9 @@
   <div class="page-cost">
     <header class="page-header">
       <div>
-        <h1 class="page-title">Себестоимость</h1>
+        <h1 class="page-title">{{ pageTitle }}</h1>
         <p class="page-subtitle">
-          <span>Cost History · агрегаты с {{ apiHostLabel }}</span>
+          <span>{{ pageSubtitle }}</span>
           <span v-if="mockMode" class="ctx-sep">·</span>
           <span v-if="mockMode" class="mock-pill">MOCK данные</span>
         </p>
@@ -93,6 +93,9 @@
           <span class="usd-toggle-thumb">$</span>
         </span>
       </label>
+      <button class="btn btn-ghost btn-sm" @click="openColumnSettings" title="Настройка видимости колонок">
+        <Icon name="lucide:settings" /> Колонки
+      </button>
       <div class="cost-cache-status">
         <button class="btn btn-ghost btn-sm" :disabled="cacheRefreshing" @click="refreshCache">
           <Icon name="lucide:refresh-cw" />
@@ -115,16 +118,20 @@
         <button class="btn btn-ghost" @click="openMarginModal">
           <Icon name="lucide:target" /> Таргеты маржинальности
         </button>
-        <button class="btn btn-ghost" @click="openApprovalModal">
+        <button v-if="can('cost:approve')" class="btn btn-ghost" @click="openApprovalModal">
           <Icon name="lucide:check-square" /> Согласование
         </button>
-        <button class="btn btn-ghost" @click="navigateTo('/cost/approvals')">
+        <button v-if="can('cost:approve')" class="btn btn-ghost" @click="navigateTo('/cost/approvals')">
           <Icon name="lucide:clipboard-check" /> Страница согласования
         </button>
-        <button class="btn btn-ghost" :disabled="!totalAllRecords" @click="exportToExcel">
+        <button v-if="can('cost:export')" class="btn btn-ghost" :disabled="!totalAllRecords" @click="exportToExcel">
           <Icon name="lucide:download" /> Экспорт в Excel
         </button>
+        <button v-if="can('cost:admin')" class="btn btn-ghost" @click="navigateTo('/cost/admin/roles')">
+          <Icon name="lucide:settings" /> Администрирование
+        </button>
         <button
+          v-if="can('cost:approve') || can('cost:peo_mark') || can('cost:edit_price')"
           class="btn btn-primary"
           :disabled="!changedRows.size || saving"
           @click="saveAllChanges"
@@ -195,128 +202,137 @@
             <tr>
               <th></th>
               <th></th>
-              <th :class="{ sorted: sortField === 'Бренд-менеджер' }" @click="toggleSort('Бренд-менеджер')">
+              <th v-if="isVisible('bm')" :class="{ sorted: sortField === 'Бренд-менеджер' }" @click="toggleSort('Бренд-менеджер')">
                 Бренд-менеджер<span v-if="sortField === 'Бренд-менеджер'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'Модель' }" @click="toggleSort('Модель')">
+              <th v-if="isVisible('model')" :class="{ sorted: sortField === 'Модель' }" @click="toggleSort('Модель')">
                 Модель<span v-if="sortField === 'Модель'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'Артикул' }" @click="toggleSort('Артикул')">
+              <th v-if="isVisible('articul')" :class="{ sorted: sortField === 'Артикул' }" @click="toggleSort('Артикул')">
                 Артикул<span v-if="sortField === 'Артикул'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'Наименование модели' }" @click="toggleSort('Наименование модели')">
+              <th v-if="isVisible('model_name')" :class="{ sorted: sortField === 'Наименование модели' }" @click="toggleSort('Наименование модели')">
                 Наименование модели<span v-if="sortField === 'Наименование модели'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'Номер задания производства' }" @click="toggleSort('Номер задания производства')">
+              <th v-if="isVisible('task_num')" :class="{ sorted: sortField === 'Номер задания производства' }" @click="toggleSort('Номер задания производства')">
                 № задания<span v-if="sortField === 'Номер задания производства'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'PLAN_ID' }" @click="toggleSort('PLAN_ID')">
+              <th v-if="isVisible('plan_id')" :class="{ sorted: sortField === 'PLAN_ID' }" @click="toggleSort('PLAN_ID')">
                 PLAN_ID<span v-if="sortField === 'PLAN_ID'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'Страна пр-ва' }" @click="toggleSort('Страна пр-ва')">
+              <th v-if="isVisible('country')" :class="{ sorted: sortField === 'Страна пр-ва' }" @click="toggleSort('Страна пр-ва')">
                 Страна<span v-if="sortField === 'Страна пр-ва'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'Семья' }" @click="toggleSort('Семья')">
+              <th v-if="isVisible('family')" :class="{ sorted: sortField === 'Семья' }" @click="toggleSort('Семья')">
                 Семья<span v-if="sortField === 'Семья'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'Сезон' }" @click="toggleSort('Сезон')">
+              <th v-if="isVisible('season')" :class="{ sorted: sortField === 'Сезон' }" @click="toggleSort('Сезон')">
                 Сезон<span v-if="sortField === 'Сезон'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'дата расчета' }" @click="toggleSort('дата расчета')">
+              <th v-if="isVisible('date')" :class="{ sorted: sortField === 'дата расчета' }" @click="toggleSort('дата расчета')">
                 Дата<span v-if="sortField === 'дата расчета'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'Признак калькуляции' }" @click="toggleSort('Признак калькуляции')">
+              <th v-if="isVisible('calc_sign')" :class="{ sorted: sortField === 'Признак калькуляции' }" @click="toggleSort('Признак калькуляции')">
                 Пр.кальк<span v-if="sortField === 'Признак калькуляции'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num">План. розница</th>
-              <th class="col-num">План. опт</th>
-              <th class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
+              <th v-if="isVisible('planned_retail')" class="col-num">План. розница</th>
+              <th v-if="isVisible('planned_wholesale')" class="col-num">План. опт</th>
+              <th v-if="isVisible('avg_retail_rub')" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
                 Сред. розница (руб)<span v-if="sortField === 'avg_Розничная цена по уровню, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num">
+              <th v-if="isVisible('avg_rate')" class="col-num" :class="{ sorted: sortField === 'avg_Курс на дату расчета' }" @click="toggleSort('avg_Курс на дату расчета')">
+                Курс (руб)<span v-if="sortField === 'avg_Курс на дату расчета'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="isVisible('retail_markup')" class="col-num">
                 Розничная наценка
               </th>
-              <th class="col-num">Цена РФ</th>
-              <th class="col-num">Цена КЗ</th>
-              <th class="col-num">Цена УЗ</th>
-              <th>Комментарий</th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
+              <th v-if="isVisible('price_rf')" class="col-num">Цена РФ</th>
+              <th v-if="isVisible('price_kz')" class="col-num">Цена КЗ</th>
+              <th v-if="isVisible('price_uz')" class="col-num">Цена УЗ</th>
+              <th v-if="isVisible('comment')">Комментарий</th>
+              <th v-if="isVisible('avg_wholesale') && !showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
                 Сред. опт (руб)<span v-if="sortField === 'avg_Отпускная цена по уровню, руб'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th :class="{ sorted: sortField === 'Уровень цен' }" @click="toggleSort('Уровень цен')">
+              <th v-if="isVisible('price_level')" :class="{ sorted: sortField === 'Уровень цен' }" @click="toggleSort('Уровень цен')">
                 Уровень цен<span v-if="sortField === 'Уровень цен'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, USD.' }" @click="toggleSort('avg_Розничная цена по уровню, USD.')">
+              <th v-if="isVisible('avg_retail_usd') && showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, USD.' }" @click="toggleSort('avg_Розничная цена по уровню, USD.')">
                 Сред. розница ($)<span v-if="sortField === 'avg_Розничная цена по уровню, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, USD.' }" @click="toggleSort('avg_Отпускная цена по уровню, USD.')">
+              <th v-if="isVisible('avg_retail_usd') && showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, USD.' }" @click="toggleSort('avg_Отпускная цена по уровню, USD.')">
                 Сред. опт ($)<span v-if="sortField === 'avg_Отпускная цена по уровню, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, руб.' }" @click="toggleSort('sum_Основные материалы, руб.')">
+              <th v-if="isVisible('sum_materials') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, руб.' }" @click="toggleSort('sum_Основные материалы, руб.')">
                 Осн. материалы (руб)<span v-if="sortField === 'sum_Основные материалы, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, USD.' }" @click="toggleSort('sum_Основные материалы, USD.')">
+              <th v-if="isVisible('sum_materials') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, USD.' }" @click="toggleSort('sum_Основные материалы, USD.')">
                 Осн. материалы ($)<span v-if="sortField === 'sum_Основные материалы, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, руб.' }" @click="toggleSort('sum_Вспомогательные материалы, руб.')">
+              <th v-if="isVisible('sum_aux_materials') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, руб.' }" @click="toggleSort('sum_Вспомогательные материалы, руб.')">
                 Вспом. (руб)<span v-if="sortField === 'sum_Вспомогательные материалы, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, USD.' }" @click="toggleSort('sum_Вспомогательные материалы, USD.')">
+              <th v-if="isVisible('sum_aux_materials') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, USD.' }" @click="toggleSort('sum_Вспомогательные материалы, USD.')">
                 Вспом. ($)<span v-if="sortField === 'sum_Вспомогательные материалы, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, руб.' }" @click="toggleSort('sum_Пошив, руб.')">
+              <th v-if="isVisible('avg_sewing_min')" class="col-num" :class="{ sorted: sortField === 'avg_Пошив, минуты' }" @click="toggleSort('avg_Пошив, минуты')">
+                Пошив (мин)<span v-if="sortField === 'avg_Пошив, минуты'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="isVisible('sum_sewing') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, руб.' }" @click="toggleSort('sum_Пошив, руб.')">
                 Пошив (руб)<span v-if="sortField === 'sum_Пошив, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, USD.' }" @click="toggleSort('sum_Пошив, USD.')">
+              <th v-if="isVisible('sum_sewing') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, USD.' }" @click="toggleSort('sum_Пошив, USD.')">
                 Пошив ($)<span v-if="sortField === 'sum_Пошив, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, руб.' }" @click="toggleSort('sum_Раскрой, руб.')">
+              <th v-if="isVisible('avg_cutting_min')" class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, минуты' }" @click="toggleSort('avg_Раскрой, минуты')">
+                Раскрой (мин)<span v-if="sortField === 'avg_Раскрой, минуты'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+              </th>
+              <th v-if="isVisible('sum_cutting') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, руб.' }" @click="toggleSort('sum_Раскрой, руб.')">
                 Раскрой (руб)<span v-if="sortField === 'sum_Раскрой, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, USD.' }" @click="toggleSort('sum_Раскрой, USD.')">
+              <th v-if="isVisible('sum_cutting') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, USD.' }" @click="toggleSort('sum_Раскрой, USD.')">
                 Раскрой ($)<span v-if="sortField === 'sum_Раскрой, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
+              <th v-if="isVisible('sum_decors') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
                 Декоры (руб)<span v-if="sortField === 'sum_Декоры, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, USD.' }" @click="toggleSort('sum_Декоры, USD.')">
+              <th v-if="isVisible('sum_decors') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, USD.' }" @click="toggleSort('sum_Декоры, USD.')">
                 Декоры ($)<span v-if="sortField === 'sum_Декоры, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, руб.' }" @click="toggleSort('sum_Вязание, руб.')">
+              <th v-if="isVisible('sum_knitting') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, руб.' }" @click="toggleSort('sum_Вязание, руб.')">
                 Вязание (руб)<span v-if="sortField === 'sum_Вязание, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, USD.' }" @click="toggleSort('sum_Вязание, USD.')">
+              <th v-if="isVisible('sum_knitting') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, USD.' }" @click="toggleSort('sum_Вязание, USD.')">
                 Вязание ($)<span v-if="sortField === 'sum_Вязание, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="!showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
+              <th v-if="isVisible('sum_cost') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
                 Себест. (руб)<span v-if="sortField === 'sum_Себестоимость, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, USD.' }" @click="toggleSort('sum_Себестоимость, USD.')">
+              <th v-if="isVisible('sum_cost') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, USD.' }" @click="toggleSort('sum_Себестоимость, USD.')">
                 Себест. ($)<span v-if="sortField === 'sum_Себестоимость, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
+              <th v-if="isVisible('calc_markup')" class="col-num" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
                 Рентабельность <template v-if="showUSD">($)</template><template v-else>(руб)</template><span v-if="sortField === 'calc_markup_rub'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
+              <th v-if="isVisible('calc_markup_pct')" class="col-num" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
                 Рентабельность (%)<span v-if="sortField === 'calc_markup_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
+              <th v-if="isVisible('calc_margin_pct')" class="col-num" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
                 Маржа (%)<span v-if="sortField === 'calc_margin_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-num" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
+              <th v-if="isVisible('calc_margin_deviation')" class="col-num" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
                 Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th class="col-peo">ПЭО</th>
+              <th v-if="(can('cost:approve') || can('cost:peo_mark')) && isVisible('peo')" class="col-peo">ПЭО</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="34" class="muted" style="text-align: center; padding: 24px">
+              <td :colspan="visibleColumnCount" class="muted" style="text-align: center; padding: 24px">
                 Загрузка данных…
               </td>
             </tr>
             <tr v-else-if="!pageRows.length">
-              <td colspan="34" class="muted" style="text-align: center; padding: 24px">
+              <td :colspan="visibleColumnCount" class="muted" style="text-align: center; padding: 24px">
                 Нет данных. Загрузите данные кнопкой выше.
               </td>
             </tr>
@@ -333,38 +349,37 @@
                 <button class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">✎</button>
               </td>
               <td><button class="btn-details" @click.stop="openRawRows(row)" title="Исходные строки">📋</button></td>
-              <td>{{ row['Бренд-менеджер'] || '—' }}</td>
-              <td>{{ row['Модель'] || '—' }}</td>
-              <td>{{ row['Артикул'] || '—' }}</td>
-              <td>{{ row['Наименование модели'] || '—' }}</td>
-              <td>{{ row['Номер задания производства'] || '—' }}</td>
-              <td>{{ row['PLAN_ID'] || '—' }}</td>
-              <td>{{ row['Страна пр-ва'] || '—' }}</td>
-              <td>{{ row['Семья'] || '—' }}</td>
-              <td>{{ row['Сезон'] || '—' }}</td>
-              <td class="num">{{ formatDate(row['дата расчета']) }}</td>
-              <td>{{ row['Признак калькуляции'] || '—' }}</td>
-              <td class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
-              <td class="col-num num">{{ row.planned_wholesale != null ? fmt(row.planned_wholesale) : '—' }}</td>
-              <td>
-                <input
-                  class="price-input"
-                  type="number"
-                  :value="row['avg_Розничная цена по уровню, руб.'] != null ? Number(row['avg_Розничная цена по уровню, руб.']).toFixed(2) : ''"
-                  :disabled="row['Признак калькуляции'] === 'ФКСС'"
+              <td v-if="isVisible('bm')">{{ row['Бренд-менеджер'] || '—' }}</td>
+              <td v-if="isVisible('model')">{{ row['Модель'] || '—' }}</td>
+              <td v-if="isVisible('articul')">{{ row['Артикул'] || '—' }}</td>
+              <td v-if="isVisible('model_name')">{{ row['Наименование модели'] || '—' }}</td>
+              <td v-if="isVisible('task_num')">{{ row['Номер задания производства'] || '—' }}</td>
+              <td v-if="isVisible('plan_id')">{{ row['PLAN_ID'] || '—' }}</td>
+              <td v-if="isVisible('country')">{{ row['Страна пр-ва'] || '—' }}</td>
+              <td v-if="isVisible('family')">{{ row['Семья'] || '—' }}</td>
+              <td v-if="isVisible('season')">{{ row['Сезон'] || '—' }}</td>
+              <td v-if="isVisible('date')" class="num">{{ formatDate(row['дата расчета']) }}</td>
+              <td v-if="isVisible('calc_sign')">{{ row['Признак калькуляции'] || '—' }}</td>
+              <td v-if="isVisible('planned_retail')" class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
+              <td v-if="isVisible('planned_wholesale')" class="col-num num">{{ row.planned_wholesale != null ? fmt(row.planned_wholesale) : '—' }}</td>
+              <td v-if="isVisible('avg_retail_rub')">
+                <select
+                  class="price-select"
+                  :value="row['avg_Розничная цена по уровню, руб.'] || ''"
+                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !can('cost:edit_price')"
                   @click.stop
-                  @input="onRetailPriceInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
-                  list="retail-price-list"
-                />
-                <datalist id="retail-price-list">
-                  <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp"></option>
-                </datalist>
+                  @change="onRetailPriceSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="">—</option>
+                  <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp">{{ fmt(rp) }}</option>
+                </select>
               </td>
-              <td>
+              <td v-if="isVisible('avg_rate')" class="col-num num">{{ row['avg_Курс на дату расчета'] != null ? fmt(row['avg_Курс на дату расчета']) : '—' }}</td>
+              <td v-if="isVisible('retail_markup')">
                 <select
                   class="price-select"
                   :value="markupSelections[getOriginalIndex(row)] || ''"
-                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !row['avg_Розничная цена по уровню, руб.']"
+                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !row['avg_Розничная цена по уровню, руб.'] || !can('cost:edit_price')"
                   @click.stop
                   @change="onMarkupSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
                 >
@@ -374,31 +389,34 @@
                   </option>
                 </select>
               </td>
-              <td>
-                <input class="price-input" type="number"
+              <td v-if="isVisible('price_rf')">
+                 <input class="price-input" type="number"
                   :value="priceRF[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена РФ"
+                  :disabled="!can('cost:edit_price')"
                   @click.stop
                   @input="onPriceRFInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td>
-                <input class="price-input" type="number"
+              <td v-if="isVisible('price_kz')">
+                 <input class="price-input" type="number"
                   :value="priceKZ[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена КЗ"
+                  :disabled="!can('cost:edit_price')"
                   @click.stop
                   @input="onPriceKZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td>
-                <input class="price-input" type="number"
+              <td v-if="isVisible('price_uz')">
+                 <input class="price-input" type="number"
                   :value="priceUZ[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена УЗ"
+                  :disabled="!can('cost:edit_price')"
                   @click.stop
                   @input="onPriceUZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td>
+              <td v-if="isVisible('comment')">
                 <input class="comment-input" type="text"
                   :value="comments[getOriginalIndex(row)] ?? ''"
                   placeholder="..."
@@ -406,31 +424,33 @@
                   @input="onCommentInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td v-if="!showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
-              <td>{{ row['Уровень цен'] || '—' }}</td>
-              <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
-              <td v-if="showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, USD.']) }}</td>
-              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, руб.']) }}</td>
-              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, USD.']) }}</td>
-              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, руб.']) }}</td>
-              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, USD.']) }}</td>
-              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Пошив, руб.']) }}</td>
-              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Пошив, USD.']) }}</td>
-              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, руб.']) }}</td>
-              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, USD.']) }}</td>
-              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
-              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
-              <td v-if="!showUSD" class="col-num num">{{ fmt(row['sum_Вязание, руб.']) }}</td>
-              <td v-if="showUSD" class="col-num num">{{ fmt(row['sum_Вязание, USD.']) }}</td>
-              <td v-if="!showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
-              <td v-if="showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
-              <td class="col-num num">{{ fmt(calc(row, showUSD).markupRub) }}</td>
-              <td class="col-num num" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
+              <td v-if="isVisible('avg_wholesale') && !showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
+              <td v-if="isVisible('price_level')">{{ row['Уровень цен'] || '—' }}</td>
+              <td v-if="isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
+              <td v-if="isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, USD.']) }}</td>
+              <td v-if="isVisible('sum_materials') && !showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, руб.']) }}</td>
+              <td v-if="isVisible('sum_materials') && showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, USD.']) }}</td>
+              <td v-if="isVisible('sum_aux_materials') && !showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, руб.']) }}</td>
+              <td v-if="isVisible('sum_aux_materials') && showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, USD.']) }}</td>
+              <td v-if="isVisible('avg_sewing_min')" class="col-num num">{{ fmt(row['avg_Пошив, минуты']) }}</td>
+              <td v-if="isVisible('sum_sewing') && !showUSD" class="col-num num">{{ fmt(row['sum_Пошив, руб.']) }}</td>
+              <td v-if="isVisible('sum_sewing') && showUSD" class="col-num num">{{ fmt(row['sum_Пошив, USD.']) }}</td>
+              <td v-if="isVisible('avg_cutting_min')" class="col-num num">{{ fmt(row['avg_Раскрой, минуты']) }}</td>
+              <td v-if="isVisible('sum_cutting') && !showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, руб.']) }}</td>
+              <td v-if="isVisible('sum_cutting') && showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, USD.']) }}</td>
+              <td v-if="isVisible('sum_decors') && !showUSD" class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
+              <td v-if="isVisible('sum_decors') && showUSD" class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
+              <td v-if="isVisible('sum_knitting') && !showUSD" class="col-num num">{{ fmt(row['sum_Вязание, руб.']) }}</td>
+              <td v-if="isVisible('sum_knitting') && showUSD" class="col-num num">{{ fmt(row['sum_Вязание, USD.']) }}</td>
+              <td v-if="isVisible('sum_cost') && !showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
+              <td v-if="isVisible('sum_cost') && showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
+              <td v-if="isVisible('calc_markup')" class="col-num num">{{ fmt(calc(row, showUSD).markupRub) }}</td>
+              <td v-if="isVisible('calc_markup_pct')" class="col-num num" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
                 {{ calc(row, showUSD).markupPct.toFixed(1) }}%
               </td>
-              <td class="col-num num">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
-              <td class="col-num num" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
-              <td class="col-peo">
+              <td v-if="isVisible('calc_margin_pct')" class="col-num num">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
+              <td v-if="isVisible('calc_margin_deviation')" class="col-num num" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
+              <td v-if="(can('cost:approve') || can('cost:peo_mark')) && isVisible('peo')" class="col-peo">
                 <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="openApprovalPopup(row)">🟢</span>
                 <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" @click.stop="openApprovalPopup(row)">🔴</span>
                 <span v-else class="peo-badge peo-none" @click.stop="openApprovalPopup(row)">⚪</span>
@@ -819,11 +839,79 @@
         </div>
       </div>
     </Teleport>
+
+    <!-- Column visibility settings modal -->
+    <Teleport to="body">
+      <div v-if="showColumnSettings" class="modal-overlay" @click.self="cancelColumnVisibility">
+        <div class="modal-content colvis-modal" @click.stop>
+          <div class="modal-header">
+            <h2>Настройка колонок</h2>
+            <button class="modal-close" @click="cancelColumnVisibility">×</button>
+          </div>
+          <div class="colvis-body">
+            <div class="colvis-group">
+              <div class="colvis-group-title">Основные</div>
+              <label v-for="c in mainColumns" :key="c.key" class="colvis-item">
+                <input type="checkbox" v-model="pendingVisibility[c.key]" />
+                <span>{{ c.label }}</span>
+              </label>
+            </div>
+            <div class="colvis-group">
+              <div class="colvis-group-title">Информационные колонки</div>
+              <label v-for="c in infoColumns" :key="c.key" class="colvis-item">
+                <input type="checkbox" v-model="pendingVisibility[c.key]" />
+                <span>{{ c.label }}</span>
+              </label>
+            </div>
+            <div class="colvis-group">
+              <div class="colvis-group-title">Цены (рубли)</div>
+              <label v-for="c in rubColumns" :key="c.key" class="colvis-item">
+                <input type="checkbox" v-model="pendingVisibility[c.key]" />
+                <span>{{ c.label }}</span>
+              </label>
+            </div>
+            <div class="colvis-group">
+              <div class="colvis-group-title">Цены (доллары)</div>
+              <label v-for="c in usdColumns" :key="c.key" class="colvis-item">
+                <input type="checkbox" v-model="pendingVisibility[c.key]" />
+                <span>{{ c.label }}</span>
+              </label>
+            </div>
+            <div class="colvis-group">
+              <div class="colvis-group-title">Затраты</div>
+              <label v-for="c in costColumns" :key="c.key" class="colvis-item">
+                <input type="checkbox" v-model="pendingVisibility[c.key]" />
+                <span>{{ c.label }}</span>
+              </label>
+            </div>
+            <div class="colvis-group">
+              <div class="colvis-group-title">Расчётные колонки</div>
+              <label v-for="c in calcColumns" :key="c.key" class="colvis-item">
+                <input type="checkbox" v-model="pendingVisibility[c.key]" />
+                <span>{{ c.label }}</span>
+              </label>
+            </div>
+          </div>
+          <div class="colvis-footer">
+            <div class="colvis-footer-actions">
+              <button class="btn btn-ghost btn-xs" @click="selectAllColumns">Все</button>
+              <button class="btn btn-ghost btn-xs" @click="deselectAllColumns">Снять все</button>
+              <button class="btn btn-ghost btn-xs" @click="resetColumnVisibility">Сбросить</button>
+            </div>
+            <div class="colvis-footer-buttons">
+              <button class="btn btn-ghost btn-sm" @click="cancelColumnVisibility">Отмена</button>
+              <button class="btn btn-primary btn-sm" @click="applyColumnVisibility">Применить</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { useCostPermission } from "~/composables/useCostPermission";
 
 interface PriceLevel { name: string; price_type1: number; price_type3: number; price_type4: number; price_type5: number; price_type6: number }
 interface FilterOption { id: string; text: string }
@@ -867,9 +955,189 @@ const apiBase = computed(() =>
 );
 const apiHostLabel = computed(() => apiBase.value || "локального API");
 
+const { can, loading: permLoading } = useCostPermission();
+const user = useState<any>("auth-user");
+
+const pageTitle = computed(() => {
+  const base = 'Установка цен';
+  const signs = selected.calc_sign as string[] | undefined;
+  if (signs && signs.length > 0) {
+    const descs = signs.map(s => CALC_SIGN_DESCRIPTIONS[s]).filter(Boolean);
+    if (descs.length > 0) {
+      return `${base} ${descs.join(', ')}`;
+    }
+  }
+  return base;
+});
+
+const pageSubtitle = computed(() => {
+  return `Cost History · агрегаты с ${apiHostLabel.value}`;
+});
+
 const mockMode = ref(false);
 const showUSD = ref(true);
 const username = 'system';
+
+// ── Column visibility ───────────────────────────────────────────────────────
+
+interface ColumnDef { key: string; label: string }
+
+const COLUMNS_CONFIG: ColumnDef[] = [
+  { key: 'bm', label: 'Бренд-менеджер' },
+  { key: 'model', label: 'Модель' },
+  { key: 'articul', label: 'Артикул' },
+  { key: 'model_name', label: 'Наименование модели' },
+  { key: 'task_num', label: '№ задания' },
+  { key: 'plan_id', label: 'PLAN_ID' },
+  { key: 'country', label: 'Страна' },
+  { key: 'family', label: 'Семья' },
+  { key: 'season', label: 'Сезон' },
+  { key: 'date', label: 'Дата' },
+  { key: 'calc_sign', label: 'Пр.кальк' },
+  { key: 'planned_retail', label: 'План. розница' },
+  { key: 'planned_wholesale', label: 'План. опт' },
+  { key: 'avg_retail_rub', label: 'Сред. розница (руб)' },
+  { key: 'avg_rate', label: 'Курс (руб)' },
+  { key: 'retail_markup', label: 'Розничная наценка' },
+  { key: 'price_rf', label: 'Цена РФ' },
+  { key: 'price_kz', label: 'Цена КЗ' },
+  { key: 'price_uz', label: 'Цена УЗ' },
+  { key: 'comment', label: 'Комментарий' },
+  { key: 'avg_wholesale', label: 'Сред. опт' },
+  { key: 'price_level', label: 'Уровень цен' },
+  { key: 'avg_retail_usd', label: 'Сред. розница ($)' },
+  { key: 'sum_materials', label: 'Осн. материалы' },
+  { key: 'sum_aux_materials', label: 'Вспом. материалы' },
+  { key: 'avg_sewing_min', label: 'Пошив (мин)' },
+  { key: 'sum_sewing', label: 'Пошив' },
+  { key: 'avg_cutting_min', label: 'Раскрой (мин)' },
+  { key: 'sum_cutting', label: 'Раскрой' },
+  { key: 'sum_decors', label: 'Декоры' },
+  { key: 'sum_knitting', label: 'Вязание' },
+  { key: 'sum_cost', label: 'Себестоимость' },
+  { key: 'calc_markup', label: 'Рентабельность' },
+  { key: 'calc_markup_pct', label: 'Рентабельность (%)' },
+  { key: 'calc_margin_pct', label: 'Маржа (%)' },
+  { key: 'calc_margin_deviation', label: 'Откл. маржи (%)' },
+  { key: 'peo', label: 'ПЭО' },
+];
+
+// Column groupings for the settings modal
+const mainColumnKeys = ['bm','model','articul','model_name','task_num','plan_id'];
+const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','comment'];
+const rubColumnKeys = ['avg_wholesale','price_level'];
+const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
+const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost'];
+const calcColumnKeys = ['calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
+
+const mainColumns = computed(() => COLUMNS_CONFIG.filter(c => mainColumnKeys.includes(c.key)));
+const infoColumns = computed(() => COLUMNS_CONFIG.filter(c => infoColumnKeys.includes(c.key)));
+const rubColumns = computed(() => COLUMNS_CONFIG.filter(c => rubColumnKeys.includes(c.key)));
+const usdColumns = computed(() => COLUMNS_CONFIG.filter(c => usdColumnKeys.includes(c.key)));
+const costColumns = computed(() => COLUMNS_CONFIG.filter(c => costColumnKeys.includes(c.key)));
+const calcColumns = computed(() => COLUMNS_CONFIG.filter(c => calcColumnKeys.includes(c.key)));
+
+const STICKY_COL_KEYS = ['actions','raw_rows','bm','model','articul','model_name','task_num','plan_id'];
+const STICKY_COL_WIDTHS = [70, 32, 160, 110, 90, 200, 120, 90];
+const STORAGE_KEY = 'cost_column_visibility';
+
+function loadColumnVisibility(): Record<string, boolean> {
+  const stored = localStorage.getItem(STORAGE_KEY);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      const valid: Record<string, boolean> = {};
+      for (const c of COLUMNS_CONFIG) {
+        valid[c.key] = parsed[c.key] !== false;
+      }
+      return valid;
+    } catch { /* fall through */ }
+  }
+  const defaults: Record<string, boolean> = {};
+  for (const c of COLUMNS_CONFIG) defaults[c.key] = true;
+  return defaults;
+}
+
+const columnVisibility = reactive<Record<string, boolean>>(loadColumnVisibility());
+const showColumnSettings = ref(false);
+const pendingVisibility = ref<Record<string, boolean>>({});
+
+function isVisible(key: string): boolean {
+  return columnVisibility[key] !== false;
+}
+
+function openColumnSettings() {
+  pendingVisibility.value = { ...columnVisibility };
+  showColumnSettings.value = true;
+}
+
+function applyColumnVisibility() {
+  Object.assign(columnVisibility, pendingVisibility.value);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(columnVisibility));
+  showColumnSettings.value = false;
+  nextTick(() => recalcStickyColumns());
+}
+
+function cancelColumnVisibility() {
+  showColumnSettings.value = false;
+}
+
+function resetColumnVisibility() {
+  for (const c of COLUMNS_CONFIG) pendingVisibility.value[c.key] = true;
+}
+
+function selectAllColumns() {
+  for (const c of COLUMNS_CONFIG) pendingVisibility.value[c.key] = true;
+}
+
+function deselectAllColumns() {
+  for (const c of COLUMNS_CONFIG) pendingVisibility.value[c.key] = false;
+}
+
+const visibleColumnCount = computed(() => {
+  let count = 2; // actions + raw_rows (always visible)
+  for (const c of COLUMNS_CONFIG) {
+    if (columnVisibility[c.key]) count++;
+  }
+  return count;
+});
+
+function recalcStickyColumns() {
+  const table = document.getElementById('cost-table-1');
+  if (!table) return;
+  const headers = table.querySelectorAll('thead tr th');
+  const rows = table.querySelectorAll('tbody tr');
+  let left = 0;
+  const positions: number[] = [];
+  for (let i = 0; i < STICKY_COL_KEYS.length; i++) {
+    const key = STICKY_COL_KEYS[i];
+    const th = headers[i] as HTMLElement;
+    if (!th) { positions.push(left); continue; }
+    if (isVisible(key)) {
+      positions.push(left);
+      left += STICKY_COL_WIDTHS[i];
+      th.style.left = positions[i] + 'px';
+    } else {
+      positions.push(-9999);
+      th.style.left = '-9999px';
+    }
+  }
+  for (const row of rows) {
+    const cells = row.querySelectorAll('td');
+    for (let i = 0; i < Math.min(cells.length, STICKY_COL_KEYS.length); i++) {
+      const td = cells[i] as HTMLElement;
+      if (isVisible(STICKY_COL_KEYS[i])) {
+        td.style.left = positions[i] + 'px';
+      } else {
+        td.style.left = '-9999px';
+      }
+    }
+  }
+}
+
+watch(showUSD, () => {
+  nextTick(() => recalcStickyColumns());
+});
 
 // ── Margin targets state ─────────────────────────────────────────────────────
 
@@ -890,7 +1158,6 @@ const dateTo = ref("");
 const cascadeBusy = ref(false);
 const loading = ref(false);
 const lastError = ref("");
-
 
 
 // ── Helper: normalize level options ─────────────────────────────────────────
@@ -1042,7 +1309,10 @@ function buildFilters(): Record<string, any> {
   return f;
 }
 
-const fetchHeaders = computed(() => ({}));
+const fetchHeaders = computed(() => {
+  const email = user.value?.email || "";
+  return email ? { "X-Cost-User": email } : {};
+});
 const noWholesaleOnly = ref(false);
 
 const approvalTarget = ref<any>(null);
@@ -2128,7 +2398,7 @@ const saveDraft = async () => {
   try {
     const resp = await fetch(`${apiBase.value}/api/cost/save-calculation-draft`, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
       body: JSON.stringify({
         version_id: editingVersion.value.version_id,
         rows: editingVersion.value.rows,
@@ -2153,7 +2423,7 @@ const submitDraft = async () => {
   try {
     const resp = await fetch(`${apiBase.value}/api/cost/submit-calculation-draft`, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
       body: JSON.stringify({version_id: editingVersion.value.version_id}),
     });
     if (!resp.ok) {
@@ -2257,27 +2527,59 @@ const onVersionRowEdit = (row: any, event: Event, field: string) => {
   }
 };
 
-/** Ввод розничной цены: очищаем зависимые поля, при единственном варианте наценки выбираем его автоматически. */
-const onRetailPriceInput = (absoluteIdx: number, value: string) => {
+/** Найти индексы строк с тем же Модель+Артикул+PLAN_ID+Признак калькуляции (исключая excludeIdx). */
+function findSiblingIndices(row: any, excludeIdx: number): number[] {
+  const model = row['Модель'];
+  const articul = row['Артикул'];
+  const planId = row['PLAN_ID'];
+  const calcSign = row['Признак калькуляции'];
+  if (!model || !articul || !planId || !calcSign) return [];
+  const key = `${model}|${articul}|${planId}|${calcSign}`;
+  return allAggregated.value.reduce<number[]>((acc, r, i) => {
+    if (i === excludeIdx) return acc;
+    if (`${r['Модель']}|${r['Артикул']}|${r['PLAN_ID']}|${r['Признак калькуляции']}` === key) {
+      acc.push(i);
+    }
+    return acc;
+  }, []);
+}
+
+/** Выбор розничной цены из выпадающего списка: синхронизируем по всем строкам с тем же model+articul+plan_id+calc_sign. */
+const onRetailPriceSelect = (absoluteIdx: number, value: string) => {
   const row = allAggregated.value[absoluteIdx];
   if (!row) return;
+  const siblings = findSiblingIndices(row, absoluteIdx);
+  const allIndices = [absoluteIdx, ...siblings];
   const numVal = parseFloat(value);
+
+  const clearRow = (idx: number) => {
+    const r = allAggregated.value[idx];
+    r["avg_Розничная цена по уровню, руб."] = 0;
+    r["avg_Отпускная цена по уровню, руб"] = 0;
+    r["Уровень цен"] = "";
+    r["avg_Розничная цена по уровню, USD."] = 0;
+    r["avg_Отпускная цена по уровню, USD."] = 0;
+    markupSelections[idx] = "";
+    changedRows.add(idx);
+  };
+  const updateRow = (idx: number, val: number) => {
+    const r = allAggregated.value[idx];
+    r["avg_Розничная цена по уровню, руб."] = val;
+    r["avg_Отпускная цена по уровню, руб"] = 0;
+    r["Уровень цен"] = "";
+    r["avg_Розничная цена по уровню, USD."] = 0;
+    r["avg_Отпускная цена по уровню, USD."] = 0;
+    markupSelections[idx] = "";
+    changedRows.add(idx);
+  };
+
   if (isNaN(numVal) || numVal <= 0) {
-    row["avg_Розничная цена по уровню, руб."] = 0;
-    row["avg_Отпускная цена по уровню, руб"] = 0;
-    row["Уровень цен"] = "";
-    row["avg_Розничная цена по уровню, USD."] = 0;
-    row["avg_Отпускная цена по уровню, USD."] = 0;
-    markupSelections[absoluteIdx] = "";
+    allIndices.forEach(i => clearRow(i));
     return;
   }
-  row["avg_Розничная цена по уровню, руб."] = numVal;
-  row["avg_Отпускная цена по уровню, руб"] = 0;
-  row["Уровень цен"] = "";
-  row["avg_Розничная цена по уровню, USD."] = 0;
-  row["avg_Отпускная цена по уровню, USD."] = 0;
-  markupSelections[absoluteIdx] = "";
-  // Автовыбор если ровно один вариант наценки
+  allIndices.forEach(i => updateRow(i, numVal));
+
+  // Автовыбор если ровно один вариант наценки (только для текущей строки, onMarkupSelect синхронизирует сам)
   const options = getMarkupOptions(row);
   if (options.length === 1) {
     onMarkupSelect(absoluteIdx, options[0].value);
@@ -2319,17 +2621,22 @@ const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
   const retailUsd = r2(matchedLevel.price_type3 / rate);
   const wholesaleUsd = r2(matchedLevel.price_type1 / rate);
 
-  row["avg_Розничная цена по уровню, руб."] = matchedLevel.price_type3;
-  row["avg_Отпускная цена по уровню, руб"] = matchedLevel.price_type1;
-  row["Уровень цен"] = matchedLevel.name;
-  row["avg_Розничная цена по уровню, USD."] = retailUsd;
-  row["avg_Отпускная цена по уровню, USD."] = wholesaleUsd;
-  // Pre-populate Цена РФ/КЗ/УЗ from selected price level (PRICE_TYPE4/5/6)
-  priceRF[absoluteIdx] = matchedLevel.price_type4;
-  priceKZ[absoluteIdx] = matchedLevel.price_type5;
-  priceUZ[absoluteIdx] = matchedLevel.price_type6;
-  markupSelections[absoluteIdx] = markupValue;
-  changedRows.add(absoluteIdx);
+  // Синхронизируем все строки с тем же model+articul+plan_id+calc_sign
+  const siblings = findSiblingIndices(row, absoluteIdx);
+  const allIndices = [absoluteIdx, ...siblings];
+  for (const idx of allIndices) {
+    const r = allAggregated.value[idx];
+    r["avg_Розничная цена по уровню, руб."] = matchedLevel.price_type3;
+    r["avg_Отпускная цена по уровню, руб"] = matchedLevel.price_type1;
+    r["Уровень цен"] = matchedLevel.name;
+    r["avg_Розничная цена по уровню, USD."] = retailUsd;
+    r["avg_Отпускная цена по уровню, USD."] = wholesaleUsd;
+    priceRF[idx] = matchedLevel.price_type4;
+    priceKZ[idx] = matchedLevel.price_type5;
+    priceUZ[idx] = matchedLevel.price_type6;
+    markupSelections[idx] = markupValue;
+    changedRows.add(idx);
+  }
 
   try {
     const r = await $fetch<{ mock?: boolean }>(`${apiBase.value}/api/cost/save-changes`, {
@@ -2517,7 +2824,7 @@ const marginRowClass = (row: any): Record<string, boolean> => {
   return { 'row-margin-ok': dev >= 0, 'row-margin-bad': dev < 0 };
 };
 
-const openApprovalPopup = (row: any) => { approvalTarget.value = row; approvalComment.value = ''; };
+const openApprovalPopup = (row: any) => { if (!can('cost:approve') && !can('cost:peo_mark')) return; approvalTarget.value = row; approvalComment.value = ''; };
 const closeApprovalPopup = () => { approvalTarget.value = null; };
 
 const setApproval = async (status: 'approved' | 'rejected') => {
@@ -2528,7 +2835,7 @@ const setApproval = async (status: 'approved' | 'rejected') => {
     const r = allAggregated.value[idx];
     await fetch(`${apiBase.value}/api/cost/approve-calculation`, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
       body: JSON.stringify({
         approvals: [{
           model: r['Модель'], articul: r['Артикул'],
@@ -3741,5 +4048,16 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .approval-actions { display:flex; gap:8px; margin-top:4px; }
 .approval-comment-row { display:flex; flex-direction:column; gap:4px; }
 .approval-comment { width:100%; padding:6px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; resize:vertical; font-family:inherit; }
+
+/* Column visibility settings modal */
+.colvis-modal { max-width: 640px; max-height: 80vh; display: flex; flex-direction: column; }
+.colvis-body { padding: var(--sp-3) var(--sp-5); overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: var(--sp-4); }
+.colvis-group { display: flex; flex-direction: column; gap: var(--sp-1); }
+.colvis-group-title { font-size: var(--fs-xs); font-weight: var(--fw-semibold, 600); color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: var(--sp-1); }
+.colvis-item { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); cursor: pointer; padding: 2px 0; }
+.colvis-item input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+.colvis-footer { padding: var(--sp-3) var(--sp-5); border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+.colvis-footer-actions { display: flex; gap: var(--sp-2); }
+.colvis-footer-buttons { display: flex; gap: var(--sp-3); }
 
 </style>
