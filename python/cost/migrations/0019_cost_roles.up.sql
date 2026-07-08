@@ -21,4 +21,5 @@ CREATE INDEX IF NOT EXISTS idx_user_roles_email ON cost_user_roles (email);
 INSERT INTO cost_roles (name, permissions, is_system) VALUES
     ('ПЭО', '["cost:view", "cost:approve", "cost:export"]'::jsonb, TRUE),
     ('Бренд-менеджер', '["cost:view", "cost:edit_price", "cost:export"]'::jsonb, TRUE),
-    ('Калькулятор', '["cost:view", "cost:edit_price", "cost:edit_materials", "cost:export"]'::jsonb, TRUE);
+    ('Калькулятор', '["cost:view", "cost:edit_price", "cost:edit_materials", "cost:export"]'::jsonb, TRUE)
+ON CONFLICT (name) DO NOTHING;
