@@ -168,7 +168,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from "vue";
+import { ref, reactive, computed, watch } from "vue";
 import { useCostPermission } from "~/composables/useCostPermission";
 
 interface Role {
@@ -371,8 +371,9 @@ async function removeUser(assignmentId: number) {
   }
 }
 
-onMounted(() => {
-  if (can("cost:admin")) {
+// Ждём загрузки permissions, и только тогда грузим список ролей
+watch(permLoading, (loading) => {
+  if (!loading && can("cost:admin")) {
     loadRoles();
   }
 });
