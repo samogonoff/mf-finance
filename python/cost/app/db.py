@@ -6,6 +6,8 @@
   • srv-sql / Checks (pyodbc) — основная база CostHistory (~13M строк, read-only).
   • srv-sql / Gpartner (pyodbc) — справочник уровней цен.
   • srv-olap / FinSandBox (pyodbc) — приёмник изменений (CostHistory_Changes).
+  • proc-db (pyodbc) — БД для вызова SQL-процедуры утверждения цен
+    (отдельный сервер, креды через PROC_DB_* env).
 
 pyodbc — синхронный драйвер; FastAPI запускает sync-эндпоинты в threadpool,
 поэтому мы не оборачиваем коннекты в run_in_executor вручную.
@@ -103,6 +105,128 @@ def get_olap_conn() -> pyodbc.Connection:
         password=os.environ["OLAP_PASSWORD"],
         readonly=False,
     )
+
+
+def get_proc_db_conn() -> pyodbc.Connection | None:
+    """БД для вызова SQL-процедуры утверждения цен.
+
+    Если креды (`PROC_DB_*`) не заданы — возвращает None.
+    """
+    server = os.environ.get("PROC_DB_SERVER_IP")
+    if not server:
+        return None
+    return _mssql_connect(
+        server=server,
+        database=os.environ.get("PROC_DB_DATABASE", "FinSandBox"),
+        user=os.environ.get("PROC_DB_USER", ""),
+        password=os.environ.get("PROC_DB_PASSWORD", ""),
+        readonly=False,
+    )
+
+
+def call_calc_sign_procedure(items: list[dict], price_type: int) -> None:
+    """Вызвать SQL-процедуру утверждения цен для одной группы calc_sign.
+
+    Пока заглушка — логирует payload и возвращает без вызова.
+    Когда появится имя процедуры — заменить EXEC proc @json = ?.
+
+    Формат вызова (опция A):
+        EXEC dbo.procedure_name @json = ?
+    с параметром-строкой JSON вида '[{...}, {...}]'.
+
+    Args:
+        items: список записей для одной calc_sign.
+        price_type: 3 для КПСС, 1 для ПФКСС.
+    """
+    import json as _json
+    proc_name = os.environ.get("PROC_DB_PROCEDURE", "")
+    conn = get_proc_db_conn()
+    if conn is None:
+        print(f"[cost] proc-db not configured — skipping {price_type=}, {len(items)} rows")
+        return
+
+    payload = []
+    for it in items:
+        payload.append({
+            "model": it.get("model", ""),
+            "articul": it.get("articul", ""),
+            "plan_id": it.get("plan_id", ""),
+            "wholesale_rub": it.get("wholesale_rub", 0),
+            "calc_sign": it.get("calc_sign", ""),
+            "price_type": price_type,
+            "author_name": it.get("author_name", "system"),
+        })
+
+    json_str = _json.dumps(payload, ensure_ascii=False, default=str)
+
+    if not proc_name:
+        print(f"[cost] PROC_DB_PROCEDURE not set — stub, would call with {len(items)} rows, json={json_str[:200]}…")
+        conn.close()
+        return
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"EXEC {proc_name} @json = ?", json_str)
+        conn.commit()
+        print(f"[cost] procedure {proc_name} ok, {len(items)} rows, price_type={price_type}")
+    except Exception as exc:
+        print(f"[cost] procedure {proc_name} failed: {exc}")
+        raise
+    finally:
+        conn.close()
+
+
+def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
+    """Запрос утверждённых изменений из FinSandBox.CostHistory_Changes (primary source).
+
+    keys: список (model, articul, calc_sign, plan_id).
+    Возвращает список записей — последнюю для каждой уникальной комбинации
+    (Модель, Артикул, calc_sign, plan_id), отсортированную по approved_at DESC.
+    """
+    if not keys:
+        return []
+    keys = list(set(keys))
+    olap = get_olap_conn()
+    cursor = olap.cursor()
+    try:
+        conditions = " OR ".join(
+            f"(Модель = ? AND Артикул = ? AND calc_sign = ? AND plan_id = ?)" for _ in keys
+        )
+        params: list[str | None] = []
+        for m, a, cs, pi in keys:
+            params.extend([m, a, cs or None, pi or None])
+
+        cursor.execute(f"""
+            SELECT Модель, Артикул, calc_sign, plan_id,
+                   Розничная_цена_руб, Отпускная_цена_руб,
+                   price_rf, price_kz, price_uz, comment,
+                   approved_at, Уровень_цен
+            FROM CostHistory_Changes
+            WHERE {conditions}
+            ORDER BY approved_at DESC
+        """, params)
+
+        cols = [d[0] for d in cursor.description]
+        seen: set[tuple[str, str, str, str]] = set()
+        result: list[dict] = []
+        for row in cursor.fetchall():
+            rec = dict(zip(cols, row))
+            key = (
+                str(rec.get("Модель") or "").strip(),
+                str(rec.get("Артикул") or "").strip(),
+                str(rec.get("calc_sign") or "").strip() if rec.get("calc_sign") else "",
+                str(rec.get("plan_id") or "").strip() if rec.get("plan_id") else "",
+            )
+            if key not in seen:
+                seen.add(key)
+                # Normalise column names to match cache convention
+                rec["retail_rub"] = rec.pop("Розничная_цена_руб")
+                rec["wholesale_rub"] = rec.pop("Отпускная_цена_руб")
+                rec["price_level"] = rec.pop("Уровень_цен")
+                result.append(rec)
+        return result
+    finally:
+        olap.close()
 
 
 def get_dwh_conn() -> pyodbc.Connection:
@@ -401,12 +525,108 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
         await prod_fut
 
         await set_cache_completed(total_rows)
+
+        # Синхронизация cost_price_changes_audit с CostHistory_Changes (OLAP)
+        await sync_audit_from_olap()
+
         return {"success": True, "row_count": total_rows}
 
     except Exception:
         err_msg = traceback.format_exc()
         await set_cache_error(err_msg)
         return {"success": False, "error": err_msg}
+
+
+# ── OLAP audit sync ────────────────────────────────────────────────────────────
+
+
+def _fetch_audit_from_olap() -> list[dict]:
+    """Синхронный запрос: получить последнюю запись из CostHistory_Changes для каждой (Модель, Артикул).
+
+    Выполняется в thread executor.  Возвращает список плоских dict-ов,
+    где ключи уже приведены к именам колонок cost_price_changes_audit.
+    """
+    olap = get_olap_conn()
+    cursor = olap.cursor()
+    try:
+        cursor.execute("""
+            SELECT
+                Модель,
+                Артикул,
+                Уровень_цен           AS price_level,
+                Розничная_цена_руб    AS retail_rub,
+                Отпускная_цена_руб    AS wholesale_rub,
+                changed_at,
+                Пользователь          AS username,
+                price_rf,
+                price_kz,
+                price_uz,
+                comment
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY Модель, Артикул
+                        ORDER BY approved_at DESC, changed_at DESC
+                    ) AS rn
+                FROM CostHistory_Changes
+            ) sub
+            WHERE rn = 1
+        """)
+        cols = [d[0] for d in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        olap.close()
+
+
+async def sync_audit_from_olap() -> None:
+    """Перезаписать cost_price_changes_audit данными из CostHistory_Changes (OLAP).
+
+    TRUNCATE + bulk insert с актуальными записями из OLAP.
+    Вызывается после каждого успешного обновления кэша.
+    Если OLAP недоступен или включён MOCK-режим — пропускается без ошибки.
+    """
+    if os.environ.get("COST_MOCK", "").strip() == "1":
+        return
+
+    try:
+        loop = asyncio.get_event_loop()
+        records: list[dict] = await loop.run_in_executor(None, _fetch_audit_from_olap)
+    except Exception:
+        return  # OLAP недоступен — sync пропускается, не ломаем кэш
+
+    if not records:
+        async with pool().acquire() as conn:
+            await conn.execute("TRUNCATE TABLE cost_price_changes_audit")
+        return
+
+    rows: list[tuple] = [
+        (
+            r.get("Модель") or r.get("model"),
+            r.get("Артикул") or r.get("articul"),
+            r.get("price_level"),
+            r.get("retail_rub"),
+            r.get("wholesale_rub"),
+            r.get("username") or "system",
+            r.get("changed_at") or datetime.datetime.now(),
+            r.get("price_rf"),
+            r.get("price_kz"),
+            r.get("price_uz"),
+            r.get("comment") or "",
+        )
+        for r in records
+    ]
+
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("TRUNCATE TABLE cost_price_changes_audit")
+            await conn.copy_records_to_table(
+                "cost_price_changes_audit",
+                records=rows,
+                columns=[
+                    "model", "articul", "price_level", "retail_rub", "wholesale_rub",
+                    "username", "changed_at", "price_rf", "price_kz", "price_uz", "comment",
+                ],
+            )
 
 
 # ── Price approval workflow ────────────────────────────────────────────────────
@@ -747,10 +967,10 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                         rec.get("Уровень цен"),
                         rec.get("Розничная цена по уровню, руб."),
                         rec.get("Отпускная цена по уровню, руб"),
-                        reviewed_by,
+                        rec.get("username") or reviewed_by,   # автор изменения
                         rec.get("Признак калькуляции"),
                         rec.get("PLAN_ID"),
-                        reviewed_by,
+                        reviewed_by,                          # кто утвердил
                         rec.get("Себестоимость, руб."),
                         rec.get("Себестоимость, USD."),
                         rec.get("Цена РФ"),
@@ -779,7 +999,7 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                     rec.get("Уровень цен"),
                     rec.get("Розничная цена по уровню, руб."),
                     rec.get("Отпускная цена по уровню, руб"),
-                    reviewed_by,
+                    rec.get("username") or reviewed_by,       # автор изменения
                     now,
                     rec.get("Цена РФ"),
                     rec.get("Цена КЗ"),

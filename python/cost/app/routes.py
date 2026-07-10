@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, clear_pending_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
+from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -521,75 +521,230 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     except Exception:
         pass
 
-    # ── Fallback: если цены NULL/0 — подставить из cost_price_* (Task 2) ──
+    # ── Override prices/comment from FinSandBox (OLAP, primary) + pending ──
     try:
-        fallback_rows = [row for row in data if not (float(row.get("avg_Розничная цена по уровню, руб.") or 0) > 0)]
-        if fallback_rows:
-            pairs_fb: list[tuple[str, str]] = []
-            for row in fallback_rows:
-                m = str(row.get("Модель", "") or "").strip()
-                a = str(row.get("Артикул", "") or "").strip()
-                if m and a:
-                    pairs_fb.append((m, a))
+        all_keys: list[tuple[str, str, str, str]] = []
+        for row in data:
+            m = str(row.get("Модель", "") or "").strip()
+            a = str(row.get("Артикул", "") or "").strip()
+            cs = str(row.get("Признак калькуляции", "") or "").strip()
+            pi = str(row.get("PLAN_ID", "") or "").strip()
+            if m and a:
+                all_keys.append((m, a, cs, pi))
 
-            if pairs_fb:
-                fb_params: list[str] = []
-                values_list_fb = ", ".join(
-                    f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(pairs_fb))
+        if all_keys:
+            keys = list(set(all_keys))
+            override_map: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+
+            # 1. PENDING (local, unapproved) — highest priority
+            async with pool().acquire() as conn:
+                pending_ph = ", ".join(
+                    f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
+                    for i in range(len(keys))
                 )
-                for m, a in pairs_fb:
-                    fb_params.extend([m, a])
+                pending_params: list[str] = []
+                for m, a, cs, pi in keys:
+                    pending_params.extend([m, a, cs, pi])
 
-                async with pool().acquire() as conn:
-                    # 1. Check cost_price_pending (unapproved changes)
-                    pending_rows = await conn.fetch(
-                        f"""SELECT DISTINCT ON ("Модель", "Артикул")
-                            "Модель", "Артикул",
-                            "Розничная цена по уровню, руб.",
-                            "Отпускная цена по уровню, руб"
-                            FROM cost_price_pending
-                            WHERE ("Модель", "Артикул") IN (VALUES {values_list_fb})
-                            ORDER BY "Модель", "Артикул", created_at DESC
-                        """,
-                        *fb_params,
+                pending_rows = await conn.fetch(
+                    f"""SELECT DISTINCT ON ("Модель", "Артикул", "PLAN_ID", "Признак калькуляции")
+                        "Модель", "Артикул", "PLAN_ID", "Признак калькуляции",
+                        "Уровень цен",
+                        "Розничная цена по уровню, руб.", "Отпускная цена по уровню, руб",
+                        "Цена РФ", "Цена КЗ", "Цена УЗ", "Комментарий"
+                        FROM cost_price_pending
+                        WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {pending_ph})
+                        ORDER BY "Модель", "Артикул", "PLAN_ID", "Признак калькуляции", created_at DESC
+                    """,
+                    *pending_params,
+                )
+                for r in pending_rows:
+                    key = (
+                        str(r["Модель"]).strip(), str(r["Артикул"]).strip(),
+                        str(r["Признак калькуляции"]).strip(), str(r["PLAN_ID"]).strip(),
                     )
+                    override_map[key] = {
+                        "price_level": str(r["Уровень цен"] or "").strip() or None,
+                        "retail_rub": r["Розничная цена по уровню, руб."],
+                        "wholesale_rub": r["Отпускная цена по уровню, руб"],
+                        "price_rf": r["Цена РФ"], "price_kz": r["Цена КЗ"], "price_uz": r["Цена УЗ"],
+                        "comment": r["Комментарий"] or "",
+                    }
 
-                    fb_map: dict[tuple[str, str], tuple[float | None, float | None]] = {}
-                    for r in pending_rows:
-                        key = (str(r["Модель"]).strip(), str(r["Артикул"]).strip())
-                        if key not in fb_map:  # DISTINCT ON handles this, but be safe
-                            fb_map[key] = (
-                                r["Розничная цена по уровню, руб."],
-                                r["Отпускная цена по уровню, руб"],
-                            )
+            # 2. FinSandBox.CostHistory_Changes (OLAP, primary approved source)
+            olap_ok = False
+            if os.environ.get("COST_MOCK", "").strip() != "1":
+                try:
+                    loop = asyncio.get_event_loop()
+                    olap_records = await loop.run_in_executor(None, fetch_olap_changes, keys)
+                    for rec in olap_records:
+                        key = (
+                            str(rec.get("Модель") or "").strip(),
+                            str(rec.get("Артикул") or "").strip(),
+                            str(rec.get("calc_sign") or "").strip(),
+                            str(rec.get("plan_id") or "").strip(),
+                        )
+                        if key not in override_map:
+                            override_map[key] = {
+                                "price_level": str(rec.get("price_level") or "").strip() or None,
+                                "retail_rub": rec.get("retail_rub"),
+                                "wholesale_rub": rec.get("wholesale_rub"),
+                                "price_rf": rec.get("price_rf"),
+                                "price_kz": rec.get("price_kz"),
+                                "price_uz": rec.get("price_uz"),
+                                "comment": str(rec.get("comment") or ""),
+                            }
+                    olap_ok = True
+                except Exception:
+                    pass
 
-                    # 2. If not found in pending, check audit (approved changes)
+            # 3. LOCAL AUDIT (fallback if OLAP unavailable)
+            if not olap_ok:
+                async with pool().acquire() as conn:
+                    audit_pairs = list(set((m, a) for m, a, _, _ in keys))
+                    audit_ph = ", ".join(
+                        f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(audit_pairs))
+                    )
+                    audit_params: list[str] = []
+                    for m, a in audit_pairs:
+                        audit_params.extend([m, a])
+
                     audit_rows = await conn.fetch(
                         f"""SELECT DISTINCT ON (model, articul)
-                            model, articul, retail_rub, wholesale_rub
+                            model, articul, retail_rub, wholesale_rub,
+                            price_rf, price_kz, price_uz, comment
                             FROM cost_price_changes_audit
-                            WHERE (model, articul) IN (VALUES {values_list_fb})
+                            WHERE (model, articul) IN (VALUES {audit_ph})
                             ORDER BY model, articul, changed_at DESC
                         """,
-                        *fb_params,
+                        *audit_params,
                     )
+                    audit_map: dict[tuple[str, str], dict] = {}
                     for r in audit_rows:
-                        key = (str(r["model"]).strip(), str(r["articul"]).strip())
-                        if key not in fb_map:
-                            fb_map[key] = (r["retail_rub"], r["wholesale_rub"])
+                        k = (str(r["model"]).strip(), str(r["articul"]).strip())
+                        if k not in audit_map:
+                            audit_map[k] = dict(r)
 
-                    # Apply fallback values
-                    for row in fallback_rows:
-                        m = str(row.get("Модель", "") or "").strip()
-                        a = str(row.get("Артикул", "") or "").strip()
-                        prices = fb_map.get((m, a))
-                        if prices and (prices[0] is not None or prices[1] is not None):
-                            if not (float(row.get("avg_Розничная цена по уровню, руб.") or 0) > 0):
-                                row["avg_Розничная цена по уровню, руб."] = prices[0]
-                            if not (float(row.get("avg_Отпускная цена по уровню, руб") or 0) > 0):
-                                row["avg_Отпускная цена по уровню, руб"] = prices[1]
+                    for m, a, cs, pi in keys:
+                        if (m, a, cs, pi) not in override_map:
+                            rec = audit_map.get((m, a))
+                            if rec:
+                                override_map[(m, a, cs, pi)] = {
+                                    "price_level": str(rec.get("price_level") or "").strip() or None,
+                                    "retail_rub": rec.get("retail_rub"),
+                                    "wholesale_rub": rec.get("wholesale_rub"),
+                                    "price_rf": rec.get("price_rf"),
+                                    "price_kz": rec.get("price_kz"),
+                                    "price_uz": rec.get("price_uz"),
+                                    "comment": str(rec.get("comment") or ""),
+                                }
+
+            # Apply overrides to ALL rows
+            for row in data:
+                m = str(row.get("Модель", "") or "").strip()
+                a = str(row.get("Артикул", "") or "").strip()
+                cs = str(row.get("Признак калькуляции", "") or "").strip()
+                pi = str(row.get("PLAN_ID", "") or "").strip()
+                ky = (m, a, cs, pi)
+                rec = override_map.get(ky)
+                if not rec:
+                    continue
+
+                if rec.get("price_level"):
+                    row["Уровень цен"] = rec["price_level"]
+                if rec.get("retail_rub") is not None:
+                    row["avg_Розничная цена по уровню, руб."] = rec["retail_rub"]
+                if rec.get("wholesale_rub") is not None:
+                    row["avg_Отпускная цена по уровню, руб"] = rec["wholesale_rub"]
+                if rec.get("price_rf") is not None:
+                    row["price_rf"] = rec["price_rf"]
+                if rec.get("price_kz") is not None:
+                    row["price_kz"] = rec["price_kz"]
+                if rec.get("price_uz") is not None:
+                    row["price_uz"] = rec["price_uz"]
+                if rec.get("comment"):
+                    row["comment"] = rec["comment"]
     except Exception:
         pass
+
+    # ── Lock state: _has_pending / _has_audit / _lock_reason ────────────────
+    try:
+        lock_keys = set()
+        for row in data:
+            m = str(row.get("Модель", "") or "").strip()
+            a = str(row.get("Артикул", "") or "").strip()
+            cs = str(row.get("Признак калькуляции", "") or "").strip()
+            pi = str(row.get("PLAN_ID", "") or "").strip()
+            if m and a:
+                lock_keys.add((m, a, cs, pi))
+
+        if lock_keys:
+            lock_list = list(lock_keys)
+
+            # 1. Pending changes — full tuple match
+            pend_ph = ", ".join(
+                f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
+                for i in range(len(lock_list))
+            )
+            pend_params: list[str] = []
+            for m, a, cs, pi in lock_list:
+                pend_params.extend([m, a, cs, pi])
+            async with pool().acquire() as conn:
+                pend_rows = await conn.fetch(
+                    f"""SELECT DISTINCT "Модель", "Артикул", "Признак калькуляции", "PLAN_ID"
+                        FROM cost_price_pending
+                        WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {pend_ph})""",
+                    *pend_params,
+                )
+            pending_set: set[tuple[str, str, str, str]] = set()
+            for r in pend_rows:
+                pending_set.add((
+                    str(r["Модель"]).strip(), str(r["Артикул"]).strip(),
+                    str(r["Признак калькуляции"]).strip(), str(r["PLAN_ID"]).strip(),
+                ))
+
+            # 2. Audit records — by (model, articul) only
+            audit_pairs = list(set((m, a) for m, a, _, _ in lock_list))
+            audit_ph = ", ".join(
+                f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(audit_pairs))
+            )
+            audit_params: list[str] = []
+            for m, a in audit_pairs:
+                audit_params.extend([m, a])
+            async with pool().acquire() as conn:
+                audit_rows = await conn.fetch(
+                    f"""SELECT DISTINCT model, articul
+                        FROM cost_price_changes_audit
+                        WHERE (model, articul) IN (VALUES {audit_ph})""",
+                    *audit_params,
+                )
+            audit_set: set[tuple[str, str]] = set()
+            for r in audit_rows:
+                audit_set.add((str(r["model"]).strip(), str(r["articul"]).strip()))
+
+            for row in data:
+                m = str(row.get("Модель", "") or "").strip()
+                a = str(row.get("Артикул", "") or "").strip()
+                cs = str(row.get("Признак калькуляции", "") or "").strip()
+                pi = str(row.get("PLAN_ID", "") or "").strip()
+
+                has_pending = (m, a, cs, pi) in pending_set
+                has_audit = (m, a) in audit_set
+
+                row["_has_pending"] = has_pending
+                row["_has_audit"] = has_audit
+
+                vs = row.get("version_status")
+                if vs in ("draft", "pending"):
+                    row["_lock_reason"] = "version"
+                elif has_pending:
+                    row["_lock_reason"] = "pending_changes"
+                elif has_audit:
+                    row["_lock_reason"] = "dwh_written"
+                else:
+                    row["_lock_reason"] = None
+    except Exception:
+        pass  # lock state is advisory — don't break the page
 
     return {"data": data, "count": len(data)}
 
@@ -768,13 +923,184 @@ def get_price_levels() -> list[dict]:
 # ── Save changes ─────────────────────────────────────────────────────────────
 
 
+async def _check_save_locks(
+    user_email: str,
+    rows: list[dict],
+) -> list[dict]:
+    """Check if any of the given rows are locked for this user.
+
+    Returns list of lock info dicts for locked rows.  Empty list = all clear.
+    Each lock info: {model, articul, calc_sign, plan_id, reason}
+    """
+    if user_email in ("cost-dev@local",):
+        return []
+
+    if not rows:
+        return []
+
+    lock_keys: set[tuple[str, str, str, str]] = set()
+    for r in rows:
+        m = str(r.get("model", "") or "").strip()
+        a = str(r.get("articul", "") or "").strip()
+        cs = str(r.get("calc_sign") or r.get("Признак калькуляции", "") or "").strip()
+        pi = str(r.get("plan_id", "") or "").strip()
+        if m and a:
+            lock_keys.add((m, a, cs, pi))
+    if not lock_keys:
+        return []
+
+    lock_list = list(lock_keys)
+    pair_list = list(set((m, a) for m, a, _, _ in lock_list))
+
+    ver_map: dict[tuple[str, str], str] = {}
+    if pair_list:
+        conditions = " OR ".join(
+            f"(model = ${i*2+1} AND articul = ${i*2+2})"
+            for i in range(len(pair_list))
+        )
+        flat_params = [v for pair in pair_list for v in pair]
+        async with pool().acquire() as conn:
+            ver_rows = await conn.fetch(
+                f"""SELECT DISTINCT model, articul, status
+                    FROM cost_calc_versions
+                    WHERE ({conditions})
+                      AND status IN ('draft', 'pending')""",
+                *flat_params,
+            )
+        for vr in ver_rows:
+            key = (str(vr["model"]).strip(), str(vr["articul"]).strip())
+            if key not in ver_map:
+                ver_map[key] = vr["status"]
+
+    pending_set: set[tuple[str, str, str, str]] = set()
+    if lock_list:
+        pend_ph = ", ".join(
+            f"($${i*4+1}::text, $${i*4+2}::text, $${i*4+3}::text, $${i*4+4}::text)"
+            for i in range(len(lock_list))
+        )
+        pend_params: list[str] = []
+        for m, a, cs, pi in lock_list:
+            pend_params.extend([m, a, cs, pi])
+        async with pool().acquire() as conn:
+            pend_rows = await conn.fetch(
+                f"""SELECT DISTINCT "Модель", "Артикул", "Признак калькуляции", "PLAN_ID"
+                    FROM cost_price_pending
+                    WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {pend_ph})""",
+                *pend_params,
+            )
+        for r in pend_rows:
+            pending_set.add((
+                str(r["Модель"]).strip(), str(r["Артикул"]).strip(),
+                str(r["Признак калькуляции"]).strip(), str(r["PLAN_ID"]).strip(),
+            ))
+
+    audit_set: set[tuple[str, str]] = set()
+    if pair_list:
+        audit_ph = ", ".join(
+            f"($${i*2+1}::text, $${i*2+2}::text)" for i in range(len(pair_list))
+        )
+        audit_params: list[str] = []
+        for m, a in pair_list:
+            audit_params.extend([m, a])
+        async with pool().acquire() as conn:
+            audit_rows = await conn.fetch(
+                f"""SELECT DISTINCT model, articul
+                    FROM cost_price_changes_audit
+                    WHERE (model, articul) IN (VALUES {audit_ph})""",
+                *audit_params,
+            )
+        for r in audit_rows:
+            audit_set.add((str(r["model"]).strip(), str(r["articul"]).strip()))
+
+    approval_map: dict[tuple[str, str, str, str], str] = {}
+    if lock_list:
+        appr_ph = ", ".join(
+            f"($${i*4+1}::text, $${i*4+2}::text, $${i*4+3}::text, $${i*4+4}::text)"
+            for i in range(len(lock_list))
+        )
+        appr_params: list[str] = []
+        for m, a, cs, pi in lock_list:
+            appr_params.extend([m, a, cs, pi])
+        async with pool().acquire() as conn:
+            appr_rows = await conn.fetch(
+                f"""SELECT DISTINCT model, articul, calc_sign, plan_id, status
+                    FROM cost_calc_approvals
+                    WHERE (model, articul, calc_sign, plan_id) IN (VALUES {appr_ph})""",
+                *appr_params,
+            )
+        for r in appr_rows:
+            key = (
+                str(r["model"]).strip(), str(r["articul"]).strip(),
+                str(r["calc_sign"] or "").strip(), str(r["plan_id"] or "").strip(),
+            )
+            approval_map[key] = r["status"]
+
+    locked_rows: list[dict] = []
+    for r in rows:
+        model = str(r.get("model", "") or "").strip()
+        articul = str(r.get("articul", "") or "").strip()
+        cs = str(r.get("calc_sign") or r.get("Признак калькуляции", "") or "").strip()
+        pi = str(r.get("plan_id", "") or "").strip()
+        bm = str(r.get("brand_manager") or r.get("Бренд-менеджер", "") or "").strip()
+
+        if not model or not articul:
+            continue
+
+        key4 = (model, articul, cs, pi)
+        key2 = (model, articul)
+
+        vs = ver_map.get(key2)
+        if vs in ("draft", "pending"):
+            locked_rows.append({
+                "model": model, "articul": articul,
+                "calc_sign": cs, "plan_id": pi,
+                "reason": f"Активна версия расчёта со статусом «{vs}»",
+            })
+            continue
+
+        if key4 in pending_set:
+            locked_rows.append({
+                "model": model, "articul": articul,
+                "calc_sign": cs, "plan_id": pi,
+                "reason": "Изменения уже ожидают согласования",
+            })
+            continue
+
+        if key2 in audit_set:
+            locked_rows.append({
+                "model": model, "articul": articul,
+                "calc_sign": cs, "plan_id": pi,
+                "reason": "Изменения уже переданы в DWH",
+            })
+            continue
+
+        if bm and user_email.lower() == bm.lower():
+            peo_status = approval_map.get(key4)
+            if peo_status != "approved":
+                locked_rows.append({
+                    "model": model, "articul": articul,
+                    "calc_sign": cs, "plan_id": pi,
+                    "reason": "Бренд-менеджер может редактировать только после согласования ПЭО",
+                })
+                continue
+
+    return locked_rows
+
+
 @router.post("/save-changes")
-async def save_price_changes(payload: dict, _: str = Depends(_require_perm("cost:edit_price"))) -> dict:
-    username = "system"
+async def save_price_changes(payload: dict, user_email: str | None = Depends(_require_perm("cost:edit_price"))) -> dict:
+    username = (payload.get("author_name") or "").strip() or user_email or "system"
 
     calc_sign = payload.get("calc_sign") or payload.get("Признак калькуляции")
     if calc_sign == "ФКСС":
         raise HTTPException(400, "Уровень цен запрещен для редактирования для признака калькуляции 'ФКСС'")
+
+    # Lock check (skip in mock mode where user_email is None)
+    if user_email:
+        locked = await _check_save_locks(user_email, [payload])
+        if locked:
+            l = locked[0]
+            raise HTTPException(403, f"Строка «{l['model']} / {l['articul']}» заблокирована: {l['reason']}")
 
     # Build full row data for upsert (pending table stores full snapshot)
     raw_date = payload.get("date")
@@ -885,8 +1211,8 @@ def _row_data_from_payload(c: dict) -> dict:
 
 
 @router.post("/save-batch")
-async def save_batch_changes(payload: dict, _: str = Depends(_require_perm("cost:edit_price"))) -> dict:
-    username = "system"
+async def save_batch_changes(payload: dict, user_email: str | None = Depends(_require_perm("cost:edit_price"))) -> dict:
+    username = (payload.get("author_name") or "").strip() or user_email or "system"
     changes = payload.get("changes") or []
 
     filtered = [
@@ -895,6 +1221,13 @@ async def save_batch_changes(payload: dict, _: str = Depends(_require_perm("cost
     ]
     if not filtered:
         return {"success": False, "error": "Нет изменений для сохранения после фильтрации ФКСС", "count": 0}
+
+    # Lock check (skip in mock mode where user_email is None)
+    if user_email:
+        locked = await _check_save_locks(user_email, filtered)
+        if locked:
+            details = "; ".join(f"«{l['model']} / {l['articul']}»: {l['reason']}" for l in locked)
+            raise HTTPException(403, f"Некоторые строки заблокированы: {details}")
 
     row_data_list = [_row_data_from_payload(c) for c in filtered]
 
@@ -950,17 +1283,39 @@ async def pending_filter_options(request: Request) -> dict:
 async def apply_changes(payload: dict) -> dict:
     """Apply (approve) a batch of pending changes.
 
-    Body: { "ids": [1, 2, 3] }
+    Body: { "ids": [1, 2, 3], "reviewed_by": "...", "proc_payload": [...] }
     - Записывает выбранные строки в OLAP CostHistory_Changes (с 4 новыми полями)
     - Дублирует в локальный audit
     - Удаляет строки из cost_price_pending
+    - Группирует proc_payload по calc_sign и вызывает SQL-процедуру для каждой
+      группы КПСС (price_type=3) и ПФКСС (price_type=1).
     """
     ids = payload.get("ids") or []
     if not ids:
         raise HTTPException(400, "ids list is required")
     reviewed_by = (payload.get("reviewed_by") or "system").strip()
+    proc_payload: list[dict] | None = payload.get("proc_payload")
     count = await apply_pending_changes(ids, reviewed_by)
-    return {"success": True, "applied": count}
+    result = {"success": True, "applied": count}
+
+    if proc_payload:
+        # Группировка по calc_sign
+        groups: dict[str, list[dict]] = {}
+        for item in proc_payload:
+            cs = (item.get("calc_sign") or "").strip()
+            if cs in ("КПСС", "ПФКСС"):
+                groups.setdefault(cs, []).append(item)
+
+        # Вызов процедуры для каждой группы (в threadpool, т.к. pyodbc)
+        for cs, items in groups.items():
+            price_type = items[0].get("price_type", 0)
+            asyncio.ensure_future(
+                asyncio.get_event_loop().run_in_executor(
+                    None, call_calc_sign_procedure, items, price_type
+                )
+            )
+
+    return result
 
 
 @router.post("/pending-changes/clear")
