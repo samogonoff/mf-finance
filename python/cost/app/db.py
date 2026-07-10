@@ -454,12 +454,108 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
         await prod_fut
 
         await set_cache_completed(total_rows)
+
+        # Синхронизация cost_price_changes_audit с CostHistory_Changes (OLAP)
+        await sync_audit_from_olap()
+
         return {"success": True, "row_count": total_rows}
 
     except Exception:
         err_msg = traceback.format_exc()
         await set_cache_error(err_msg)
         return {"success": False, "error": err_msg}
+
+
+# ── OLAP audit sync ────────────────────────────────────────────────────────────
+
+
+def _fetch_audit_from_olap() -> list[dict]:
+    """Синхронный запрос: получить последнюю запись из CostHistory_Changes для каждой (Модель, Артикул).
+
+    Выполняется в thread executor.  Возвращает список плоских dict-ов,
+    где ключи уже приведены к именам колонок cost_price_changes_audit.
+    """
+    olap = get_olap_conn()
+    cursor = olap.cursor()
+    try:
+        cursor.execute("""
+            SELECT
+                Модель,
+                Артикул,
+                Уровень_цен           AS price_level,
+                Розничная_цена_руб    AS retail_rub,
+                Отпускная_цена_руб    AS wholesale_rub,
+                changed_at,
+                Пользователь          AS username,
+                price_rf,
+                price_kz,
+                price_uz,
+                comment
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY Модель, Артикул
+                        ORDER BY approved_at DESC, changed_at DESC
+                    ) AS rn
+                FROM CostHistory_Changes
+            ) sub
+            WHERE rn = 1
+        """)
+        cols = [d[0] for d in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        olap.close()
+
+
+async def sync_audit_from_olap() -> None:
+    """Перезаписать cost_price_changes_audit данными из CostHistory_Changes (OLAP).
+
+    TRUNCATE + bulk insert с актуальными записями из OLAP.
+    Вызывается после каждого успешного обновления кэша.
+    Если OLAP недоступен или включён MOCK-режим — пропускается без ошибки.
+    """
+    if os.environ.get("COST_MOCK", "").strip() == "1":
+        return
+
+    try:
+        loop = asyncio.get_event_loop()
+        records: list[dict] = await loop.run_in_executor(None, _fetch_audit_from_olap)
+    except Exception:
+        return  # OLAP недоступен — sync пропускается, не ломаем кэш
+
+    if not records:
+        async with pool().acquire() as conn:
+            await conn.execute("TRUNCATE TABLE cost_price_changes_audit")
+        return
+
+    rows: list[tuple] = [
+        (
+            r.get("Модель") or r.get("model"),
+            r.get("Артикул") or r.get("articul"),
+            r.get("price_level"),
+            r.get("retail_rub"),
+            r.get("wholesale_rub"),
+            r.get("username") or "system",
+            r.get("changed_at") or datetime.datetime.now(),
+            r.get("price_rf"),
+            r.get("price_kz"),
+            r.get("price_uz"),
+            r.get("comment") or "",
+        )
+        for r in records
+    ]
+
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("TRUNCATE TABLE cost_price_changes_audit")
+            await conn.copy_records_to_table(
+                "cost_price_changes_audit",
+                records=rows,
+                columns=[
+                    "model", "articul", "price_level", "retail_rub", "wholesale_rub",
+                    "username", "changed_at", "price_rf", "price_kz", "price_uz", "comment",
+                ],
+            )
 
 
 # ── Price approval workflow ────────────────────────────────────────────────────
