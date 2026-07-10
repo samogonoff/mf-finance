@@ -6,6 +6,8 @@
   • srv-sql / Checks (pyodbc) — основная база CostHistory (~13M строк, read-only).
   • srv-sql / Gpartner (pyodbc) — справочник уровней цен.
   • srv-olap / FinSandBox (pyodbc) — приёмник изменений (CostHistory_Changes).
+  • proc-db (pyodbc) — БД для вызова SQL-процедуры утверждения цен
+    (отдельный сервер, креды через PROC_DB_* env).
 
 pyodbc — синхронный драйвер; FastAPI запускает sync-эндпоинты в threadpool,
 поэтому мы не оборачиваем коннекты в run_in_executor вручную.
@@ -103,6 +105,75 @@ def get_olap_conn() -> pyodbc.Connection:
         password=os.environ["OLAP_PASSWORD"],
         readonly=False,
     )
+
+
+def get_proc_db_conn() -> pyodbc.Connection | None:
+    """БД для вызова SQL-процедуры утверждения цен.
+
+    Если креды (`PROC_DB_*`) не заданы — возвращает None.
+    """
+    server = os.environ.get("PROC_DB_SERVER_IP")
+    if not server:
+        return None
+    return _mssql_connect(
+        server=server,
+        database=os.environ.get("PROC_DB_DATABASE", "FinSandBox"),
+        user=os.environ.get("PROC_DB_USER", ""),
+        password=os.environ.get("PROC_DB_PASSWORD", ""),
+        readonly=False,
+    )
+
+
+def call_calc_sign_procedure(items: list[dict], price_type: int) -> None:
+    """Вызвать SQL-процедуру утверждения цен для одной группы calc_sign.
+
+    Пока заглушка — логирует payload и возвращает без вызова.
+    Когда появится имя процедуры — заменить EXEC proc @json = ?.
+
+    Формат вызова (опция A):
+        EXEC dbo.procedure_name @json = ?
+    с параметром-строкой JSON вида '[{...}, {...}]'.
+
+    Args:
+        items: список записей для одной calc_sign.
+        price_type: 3 для КПСС, 1 для ПФКСС.
+    """
+    import json as _json
+    proc_name = os.environ.get("PROC_DB_PROCEDURE", "")
+    conn = get_proc_db_conn()
+    if conn is None:
+        print(f"[cost] proc-db not configured — skipping {price_type=}, {len(items)} rows")
+        return
+
+    payload = []
+    for it in items:
+        payload.append({
+            "model": it.get("model", ""),
+            "articul": it.get("articul", ""),
+            "plan_id": it.get("plan_id", ""),
+            "wholesale_rub": it.get("wholesale_rub", 0),
+            "calc_sign": it.get("calc_sign", ""),
+            "price_type": price_type,
+            "author_name": it.get("author_name", "system"),
+        })
+
+    json_str = _json.dumps(payload, ensure_ascii=False, default=str)
+
+    if not proc_name:
+        print(f"[cost] PROC_DB_PROCEDURE not set — stub, would call with {len(items)} rows, json={json_str[:200]}…")
+        conn.close()
+        return
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"EXEC {proc_name} @json = ?", json_str)
+        conn.commit()
+        print(f"[cost] procedure {proc_name} ok, {len(items)} rows, price_type={price_type}")
+    except Exception as exc:
+        print(f"[cost] procedure {proc_name} failed: {exc}")
+        raise
+    finally:
+        conn.close()
 
 
 def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:

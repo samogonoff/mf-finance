@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
+from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -1287,17 +1287,34 @@ async def apply_changes(payload: dict) -> dict:
     - Записывает выбранные строки в OLAP CostHistory_Changes (с 4 новыми полями)
     - Дублирует в локальный audit
     - Удаляет строки из cost_price_pending
-    - Принимает proc_payload для передачи в SQL-процедуру (пока только эхо)
+    - Группирует proc_payload по calc_sign и вызывает SQL-процедуру для каждой
+      группы КПСС (price_type=3) и ПФКСС (price_type=1).
     """
     ids = payload.get("ids") or []
     if not ids:
         raise HTTPException(400, "ids list is required")
     reviewed_by = (payload.get("reviewed_by") or "system").strip()
-    proc_payload = payload.get("proc_payload")
+    proc_payload: list[dict] | None = payload.get("proc_payload")
     count = await apply_pending_changes(ids, reviewed_by)
     result = {"success": True, "applied": count}
-    if proc_payload is not None:
-        result["procPayload"] = proc_payload
+
+    if proc_payload:
+        # Группировка по calc_sign
+        groups: dict[str, list[dict]] = {}
+        for item in proc_payload:
+            cs = (item.get("calc_sign") or "").strip()
+            if cs in ("КПСС", "ПФКСС"):
+                groups.setdefault(cs, []).append(item)
+
+        # Вызов процедуры для каждой группы (в threadpool, т.к. pyodbc)
+        for cs, items in groups.items():
+            price_type = items[0].get("price_type", 0)
+            asyncio.ensure_future(
+                asyncio.get_event_loop().run_in_executor(
+                    None, call_calc_sign_procedure, items, price_type
+                )
+            )
+
     return result
 
 

@@ -3128,14 +3128,24 @@ async function applyPendingChanges() {
     const selected = approvalPendingChanges.value.filter((pc: any) =>
       selectedPendingIds.value.includes(pc.id)
     );
-    const procPayload = selected.map((pc: any) => ({
-      model: pc['Модель'] ?? pc.model ?? '',
-      articul: pc['Артикул'] ?? pc.articul ?? '',
-      plan_id: String(pc['PLAN_ID'] ?? pc.plan_id ?? ''),
-      wholesale_rub: Number(pc['Отпускная цена по уровню, руб'] ?? pc.wholesale_rub ?? 0),
-      calc_sign: pc['Признак калькуляции'] ?? pc.calc_sign ?? '',
-      author_name: user.value?.name || 'system',
-    }));
+    const procPayload = selected
+      .map((pc: any) => {
+        const calcSign = pc['Признак калькуляции'] ?? pc.calc_sign ?? '';
+        let priceType = 0;
+        if (calcSign === 'КПСС') priceType = 3;
+        else if (calcSign === 'ПФКСС') priceType = 1;
+        if (!priceType) return null;
+        return {
+          model: pc['Модель'] ?? pc.model ?? '',
+          articul: pc['Артикул'] ?? pc.articul ?? '',
+          plan_id: String(pc['PLAN_ID'] ?? pc.plan_id ?? ''),
+          wholesale_rub: Number(pc['Отпускная цена по уровню, руб'] ?? pc.wholesale_rub ?? 0),
+          calc_sign: calcSign,
+          price_type: priceType,
+          author_name: user.value?.name || 'system',
+        };
+      })
+      .filter(Boolean);
     console.log('[cost] SQL procedure payload:', JSON.stringify(procPayload));
 
     const res = await $fetch<{ success: boolean; applied: number; procPayload?: any[] }>(
