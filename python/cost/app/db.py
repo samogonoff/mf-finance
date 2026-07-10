@@ -105,6 +105,59 @@ def get_olap_conn() -> pyodbc.Connection:
     )
 
 
+def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
+    """Запрос утверждённых изменений из FinSandBox.CostHistory_Changes (primary source).
+
+    keys: список (model, articul, calc_sign, plan_id).
+    Возвращает список записей — последнюю для каждой уникальной комбинации
+    (Модель, Артикул, calc_sign, plan_id), отсортированную по approved_at DESC.
+    """
+    if not keys:
+        return []
+    keys = list(set(keys))
+    olap = get_olap_conn()
+    cursor = olap.cursor()
+    try:
+        conditions = " OR ".join(
+            f"(Модель = ? AND Артикул = ? AND calc_sign = ? AND plan_id = ?)" for _ in keys
+        )
+        params: list[str | None] = []
+        for m, a, cs, pi in keys:
+            params.extend([m, a, cs or None, pi or None])
+
+        cursor.execute(f"""
+            SELECT Модель, Артикул, calc_sign, plan_id,
+                   Розничная_цена_руб, Отпускная_цена_руб,
+                   price_rf, price_kz, price_uz, comment,
+                   approved_at, Уровень_цен
+            FROM CostHistory_Changes
+            WHERE {conditions}
+            ORDER BY approved_at DESC
+        """, params)
+
+        cols = [d[0] for d in cursor.description]
+        seen: set[tuple[str, str, str, str]] = set()
+        result: list[dict] = []
+        for row in cursor.fetchall():
+            rec = dict(zip(cols, row))
+            key = (
+                str(rec.get("Модель") or "").strip(),
+                str(rec.get("Артикул") or "").strip(),
+                str(rec.get("calc_sign") or "").strip() if rec.get("calc_sign") else "",
+                str(rec.get("plan_id") or "").strip() if rec.get("plan_id") else "",
+            )
+            if key not in seen:
+                seen.add(key)
+                # Normalise column names to match cache convention
+                rec["retail_rub"] = rec.pop("Розничная_цена_руб")
+                rec["wholesale_rub"] = rec.pop("Отпускная_цена_руб")
+                rec["price_level"] = rec.pop("Уровень_цен")
+                result.append(rec)
+        return result
+    finally:
+        olap.close()
+
+
 def get_dwh_conn() -> pyodbc.Connection:
     """Чтение справочника групп (DWH.dim.groups) для каскадных фильтров."""
     return _mssql_connect(
@@ -747,10 +800,10 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                         rec.get("Уровень цен"),
                         rec.get("Розничная цена по уровню, руб."),
                         rec.get("Отпускная цена по уровню, руб"),
-                        reviewed_by,
+                        rec.get("username") or reviewed_by,   # автор изменения
                         rec.get("Признак калькуляции"),
                         rec.get("PLAN_ID"),
-                        reviewed_by,
+                        reviewed_by,                          # кто утвердил
                         rec.get("Себестоимость, руб."),
                         rec.get("Себестоимость, USD."),
                         rec.get("Цена РФ"),
@@ -779,7 +832,7 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                     rec.get("Уровень цен"),
                     rec.get("Розничная цена по уровню, руб."),
                     rec.get("Отпускная цена по уровню, руб"),
-                    reviewed_by,
+                    rec.get("username") or reviewed_by,       # автор изменения
                     now,
                     rec.get("Цена РФ"),
                     rec.get("Цена КЗ"),

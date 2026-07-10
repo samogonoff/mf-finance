@@ -339,14 +339,17 @@
             <tr
               v-for="(row, idx) in pageRows"
               :key="idx"
-              :class="{ selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
+              :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
               @click="selectRow(getOriginalIndex(row))"
             >
               <td>
+                <span v-if="isRowLocked(row) && !row._has_pending && !row._has_audit" class="lock-icon" title="Строка заблокирована">🔒</span>
+                <span v-if="row._has_pending" class="state-badge state-badge--pending" title="Ожидает согласования">⏳</span>
+                <span v-if="row._has_audit" class="state-badge state-badge--audit" title="Записано в DWH">📤</span>
                 <span v-if="row.version_status === 'draft'" class="draft-badge draft-badge--draft" title="Черновик">✎</span>
                 <span v-if="row.version_status === 'pending'" class="draft-badge draft-badge--pending" title="Ожидает утверждения">⏳</span>
                 <button class="btn-details" @click.stop="openDetails(row)">🔍</button>
-                <button class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">✎</button>
+                <button class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">🖊</button>
               </td>
               <td><button class="btn-details" @click.stop="openRawRows(row)" title="Исходные строки">📋</button></td>
               <td v-if="isVisible('bm')">{{ row['Бренд-менеджер'] || '—' }}</td>
@@ -366,7 +369,7 @@
                 <select
                   class="price-select"
                   :value="row['avg_Розничная цена по уровню, руб.'] || ''"
-                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !can('cost:edit_price')"
+                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !can('cost:edit_price') || isRowLocked(row)"
                   @click.stop
                   @change="onRetailPriceSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
                 >
@@ -379,7 +382,7 @@
                 <select
                   class="price-select"
                   :value="markupSelections[getOriginalIndex(row)] || ''"
-                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !row['avg_Розничная цена по уровню, руб.'] || !can('cost:edit_price')"
+                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !row['avg_Розничная цена по уровню, руб.'] || !can('cost:edit_price') || isRowLocked(row)"
                   @click.stop
                   @change="onMarkupSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
                 >
@@ -393,7 +396,7 @@
                  <input class="price-input" type="number"
                   :value="priceRF[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена РФ"
-                  :disabled="!can('cost:edit_price')"
+                  :disabled="!can('cost:edit_price') || isRowLocked(row)"
                   @click.stop
                   @input="onPriceRFInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
@@ -402,7 +405,7 @@
                  <input class="price-input" type="number"
                   :value="priceKZ[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена КЗ"
-                  :disabled="!can('cost:edit_price')"
+                  :disabled="!can('cost:edit_price') || isRowLocked(row)"
                   @click.stop
                   @input="onPriceKZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
@@ -411,7 +414,7 @@
                  <input class="price-input" type="number"
                   :value="priceUZ[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена УЗ"
-                  :disabled="!can('cost:edit_price')"
+                  :disabled="!can('cost:edit_price') || isRowLocked(row)"
                   @click.stop
                   @input="onPriceUZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
@@ -420,6 +423,7 @@
                 <input class="comment-input" type="text"
                   :value="comments[getOriginalIndex(row)] ?? ''"
                   placeholder="..."
+                  :disabled="isRowLocked(row)"
                   @click.stop
                   @input="onCommentInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
@@ -828,8 +832,13 @@
               <span>{{ approvalTarget.peo_approved_by }}</span>
             </div>
             <div class="approval-actions">
-              <button class="btn btn-sm btn-primary" :disabled="approving" @click="setApproval('approved')">✓ Согласовать</button>
-              <button class="btn btn-sm btn-danger" :disabled="approving" @click="setApproval('rejected')">✗ Отклонить</button>
+              <template v-if="approvalTarget.peo_status === 'approved' && (can('cost:approve') || can('cost:peo_mark'))">
+                <button class="btn btn-sm btn-ghost" :disabled="approving" @click="revokeApproval(approvalTarget)">↩ Снять согласование</button>
+              </template>
+              <template v-else>
+                <button class="btn btn-sm btn-primary" :disabled="approving" @click="setApproval('approved')">✓ Согласовать</button>
+                <button class="btn btn-sm btn-danger" :disabled="approving" @click="setApproval('rejected')">✗ Отклонить</button>
+              </template>
             </div>
             <div v-if="approvalTarget.peo_status === 'rejected' || approvalTarget.peo_status === 'pending' || !approvalTarget.peo_status" class="approval-comment-row">
               <label>Комментарий:</label>
@@ -1498,12 +1507,34 @@ async function loadData() {
     selectedRowIndex.value = -1;
     changedRows.clear();
     lastError.value = "";
-    // Populate price_rf/kz/uz from response (Task 1)
+    // Populate price_rf/kz/uz, comments and markup selections from response
     for (let i = 0; i < allAggregated.value.length; i++) {
       const r = allAggregated.value[i];
       if (r.price_rf != null) priceRF[i] = r.price_rf;
       if (r.price_kz != null) priceKZ[i] = r.price_kz;
       if (r.price_uz != null) priceUZ[i] = r.price_uz;
+      if (r.comment != null) comments[i] = r.comment;
+      // Авто-вычисляем наценку из розничной и оптовой цен строки
+      const markup = computeMarkupFromRow(r);
+      if (markup) markupSelections[i] = markup;
+    }
+    // Досчитываем USD-цены, если API вернуло их нулями
+    const r2 = (v: number) => Math.round(v * 100) / 100;
+    for (const r of allAggregated.value) {
+      const rubW = Number(r['avg_Отпускная цена по уровню, руб'] || 0);
+      const rubR = Number(r['avg_Розничная цена по уровню, руб.'] || 0);
+      const usdW = Number(r['avg_Отпускная цена по уровню, USD.'] || 0);
+      const usdR = Number(r['avg_Розничная цена по уровню, USD.'] || 0);
+      if (usdW > 0 && usdR > 0) continue; // оба USD уже есть — ничего не делаем
+      // Выбираем курс
+      let rate = Number(r['avg_Курс на дату расчета'] || 0);
+      if (rate <= 0) rate = _deriveRate(r);
+      if (rate <= 0) {
+        for (const rr of allAggregated.value) { rate = _deriveRate(rr); if (rate > 0) break; }
+      }
+      if (rate <= 0) rate = 92; // fallback
+      if (usdW <= 0 && rubW > 0) r['avg_Отпускная цена по уровню, USD.'] = r2(rubW / rate);
+      if (usdR <= 0 && rubR > 0) r['avg_Розничная цена по уровню, USD.'] = r2(rubR / rate);
     }
   } catch (e: any) {
     console.error("[cost] aggregated load failed", e);
@@ -2322,23 +2353,47 @@ function _deriveRate(row: any): number {
   return 0;
 }
 
+/** Вычислить «Розничная наценка» из собственных данных строки (retail / wholesale / НДС). */
+function computeMarkupFromRow(row: any): string {
+  const retailPrice = Number(row['avg_Розничная цена по уровню, руб.']);
+  const wholesalePrice = Number(row['avg_Отпускная цена по уровню, руб']);
+  const avgVat = Number(row['avg_Ставка НДС'] || 0);
+  if (!retailPrice || !wholesalePrice || !avgVat || wholesalePrice <= 0) return '';
+  const markupPct = ((retailPrice / (100 + avgVat) * 100) / wholesalePrice - 1) * 100;
+  return markupPct.toFixed(2);
+}
+
 /** Рассчитать варианты «Розничная наценка» для строки на основе выбранной розничной цены и средней ставки НДС. */
 function getMarkupOptions(row: any): { value: string; label: string }[] {
   const retailPrice = Number(row['avg_Розничная цена по уровню, руб.']);
   const avgVat = Number(row['avg_Ставка НДС'] || 0);
   if (!retailPrice || isNaN(retailPrice) || retailPrice <= 0) return [];
 
-  const results: { value: string; label: string }[] = [];
+  const resultsMap = new Map<string, { value: string; label: string }>();
   for (const level of priceLevels.value) {
-    if (level.price_type3 !== retailPrice) continue;
+    if (String(level.price_type3) !== String(retailPrice)) continue;
     if (!level.price_type1 || level.price_type1 <= 0) continue;
     const markupPct = ((retailPrice / (100 + avgVat) * 100) / level.price_type1 - 1) * 100;
-    results.push({
-      value: markupPct.toFixed(2),
-      label: `${markupPct.toFixed(1)}%`,
-    });
+    const value = markupPct.toFixed(2);
+    if (!resultsMap.has(value)) {
+      resultsMap.set(value, {
+        value,
+        label: `${markupPct.toFixed(1)}%`,
+      });
+    }
   }
-  return results;
+
+  // Если ни один уровень цен не совпал — вычисляем наценку из собственных данных строки
+  if (resultsMap.size === 0) {
+    const markup = computeMarkupFromRow(row);
+    if (markup && !resultsMap.has(markup)) {
+      resultsMap.set(markup, {
+        value: markup,
+        label: `${Number(markup).toFixed(1)}%`,
+      });
+    }
+  }
+  return Array.from(resultsMap.values());
 }
 
 /** Обработчики ввода цен РФ, КЗ, УЗ. */
@@ -2599,7 +2654,7 @@ const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
   // Ищем уровень цен, чья расчётная наценка совпадает с выбранной
   let matchedLevel: PriceLevel | null = null;
   for (const level of priceLevels.value) {
-    if (level.price_type3 !== retailPrice) continue;
+    if (String(level.price_type3) !== String(retailPrice)) continue;
     if (!level.price_type1 || level.price_type1 <= 0) continue;
     const computedPct = ((retailPrice / (100 + avgVat) * 100) / level.price_type1 - 1) * 100;
     if (computedPct.toFixed(2) === markupValue) {
@@ -2607,8 +2662,6 @@ const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
       break;
     }
   }
-  if (!matchedLevel) return;
-
   // Курс RUB→USD
   let rate = Number(row["avg_Курс на дату расчета"] || 0);
   if (rate === 0) rate = _deriveRate(row);
@@ -2618,76 +2671,93 @@ const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
   if (rate === 0) rate = 92;
 
   const r2 = (v: number) => Math.round(v * 100) / 100;
-  const retailUsd = r2(matchedLevel.price_type3 / rate);
-  const wholesaleUsd = r2(matchedLevel.price_type1 / rate);
+
+  let retailVal: number, wholesaleVal: number;
+  if (matchedLevel) {
+    // Используем цены из найденного уровня цен
+    retailVal = matchedLevel.price_type3;
+    wholesaleVal = matchedLevel.price_type1;
+  } else {
+    // Уровень цен не найден — вычисляем оптовую цену из наценки
+    const retailExclVat = retailPrice / (100 + avgVat) * 100;
+    wholesaleVal = r2(retailExclVat / (1 + Number(markupValue) / 100));
+    retailVal = retailPrice;
+  }
+  const retailUsd = r2(retailVal / rate);
+  const wholesaleUsd = r2(wholesaleVal / rate);
 
   // Синхронизируем все строки с тем же model+articul+plan_id+calc_sign
   const siblings = findSiblingIndices(row, absoluteIdx);
   const allIndices = [absoluteIdx, ...siblings];
   for (const idx of allIndices) {
     const r = allAggregated.value[idx];
-    r["avg_Розничная цена по уровню, руб."] = matchedLevel.price_type3;
-    r["avg_Отпускная цена по уровню, руб"] = matchedLevel.price_type1;
-    r["Уровень цен"] = matchedLevel.name;
+    r["avg_Розничная цена по уровню, руб."] = retailVal;
+    r["avg_Отпускная цена по уровню, руб"] = wholesaleVal;
+    r["Уровень цен"] = matchedLevel ? matchedLevel.name : "";
     r["avg_Розничная цена по уровню, USD."] = retailUsd;
     r["avg_Отпускная цена по уровню, USD."] = wholesaleUsd;
-    priceRF[idx] = matchedLevel.price_type4;
-    priceKZ[idx] = matchedLevel.price_type5;
-    priceUZ[idx] = matchedLevel.price_type6;
+    if (matchedLevel) {
+      priceRF[idx] = matchedLevel.price_type4;
+      priceKZ[idx] = matchedLevel.price_type5;
+      priceUZ[idx] = matchedLevel.price_type6;
+    }
     markupSelections[idx] = markupValue;
     changedRows.add(idx);
   }
 
-  try {
-    const r = await $fetch<{ mock?: boolean }>(`${apiBase.value}/api/cost/save-changes`, {
-      method: "POST",
-      body: {
-        model: row["Модель"],
-        articul: row["Артикул"],
-        price_level: matchedLevel.name,
-        retail_rub: matchedLevel.price_type3,
-        wholesale_rub: matchedLevel.price_type1,
-        retail_usd: retailUsd,
-        wholesale_usd: wholesaleUsd,
-        calc_sign: row["Признак калькуляции"],
-        plan_id: row["PLAN_ID"],
-        brand_manager: row["Бренд-менеджер"],
-        model_name: row["Наименование модели"],
-        task_number: row["Номер задания производства"],
-        date: row["дата расчета"],
-        country: row["Страна пр-ва"],
-        family: row["Семья"],
-        season: row["Сезон"],
-        level01: row["Level 01"],
-        level02: row["Level 02"],
-        level03: row["Level 03"],
-        level04: row["Level 04"],
-        level05: row["Level 05"],
-        materials_rub: row["sum_Основные материалы, руб."],
-        materials_usd: row["sum_Основные материалы, USD."],
-        aux_materials_rub: row["sum_Вспомогательные материалы, руб."],
-        aux_materials_usd: row["sum_Вспомогательные материалы, USD."],
-        sewing_rub: row["sum_Пошив, руб."],
-        sewing_usd: row["sum_Пошив, USD."],
-        cutting_rub: row["sum_Раскрой, руб."],
-        cutting_usd: row["sum_Раскрой, USD."],
-        decors_rub: row["sum_Декоры, руб."],
-        decors_usd: row["sum_Декоры, USD."],
-        knitting_rub: row["sum_Вязание, руб."],
-        knitting_usd: row["sum_Вязание, USD."],
-        cost_rub: row["sum_Себестоимость, руб."],
-        cost_usd: row["sum_Себестоимость, USD."],
-        price_rf: priceRF[absoluteIdx] || 0,
-        price_kz: priceKZ[absoluteIdx] || 0,
-        price_uz: priceUZ[absoluteIdx] || 0,
-        comment: comments[absoluteIdx] || "",
-      },
-      headers: fetchHeaders.value,
-    });
-    if (r?.mock) mockMode.value = true;
-  } catch (e: any) {
-    console.error("[cost] save-changes failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+  if (matchedLevel) {
+    try {
+      const r = await $fetch<{ mock?: boolean }>(`${apiBase.value}/api/cost/save-changes`, {
+        method: "POST",
+        body: {
+          model: row["Модель"],
+          articul: row["Артикул"],
+          price_level: matchedLevel.name,
+          retail_rub: matchedLevel.price_type3,
+          wholesale_rub: matchedLevel.price_type1,
+          retail_usd: retailUsd,
+          wholesale_usd: wholesaleUsd,
+          calc_sign: row["Признак калькуляции"],
+          plan_id: row["PLAN_ID"],
+          brand_manager: row["Бренд-менеджер"],
+          model_name: row["Наименование модели"],
+          task_number: row["Номер задания производства"],
+          date: row["дата расчета"],
+          country: row["Страна пр-ва"],
+          family: row["Семья"],
+          season: row["Сезон"],
+          level01: row["Level 01"],
+          level02: row["Level 02"],
+          level03: row["Level 03"],
+          level04: row["Level 04"],
+          level05: row["Level 05"],
+          materials_rub: row["sum_Основные материалы, руб."],
+          materials_usd: row["sum_Основные материалы, USD."],
+          aux_materials_rub: row["sum_Вспомогательные материалы, руб."],
+          aux_materials_usd: row["sum_Вспомогательные материалы, USD."],
+          sewing_rub: row["sum_Пошив, руб."],
+          sewing_usd: row["sum_Пошив, USD."],
+          cutting_rub: row["sum_Раскрой, руб."],
+          cutting_usd: row["sum_Раскрой, USD."],
+          decors_rub: row["sum_Декоры, руб."],
+          decors_usd: row["sum_Декоры, USD."],
+          knitting_rub: row["sum_Вязание, руб."],
+          knitting_usd: row["sum_Вязание, USD."],
+          cost_rub: row["sum_Себестоимость, руб."],
+          cost_usd: row["sum_Себестоимость, USD."],
+          price_rf: priceRF[absoluteIdx] || 0,
+          price_kz: priceKZ[absoluteIdx] || 0,
+          price_uz: priceUZ[absoluteIdx] || 0,
+          comment: comments[absoluteIdx] || "",
+          author_name: user.value?.name || '',
+        },
+        headers: fetchHeaders.value,
+      });
+      if (r?.mock) mockMode.value = true;
+    } catch (e: any) {
+      console.error("[cost] save-changes failed", e);
+      lastError.value = e?.data?.detail || e?.message || String(e);
+    }
   }
 };
 
@@ -2741,7 +2811,7 @@ const saveAllChanges = async () => {
     });
     const result = await $fetch<{ success: boolean; count: number; error?: string; mock?: boolean }>(
       `${apiBase.value}/api/cost/save-batch`,
-      { method: "POST", body: { changes }, headers: fetchHeaders.value }
+      { method: "POST", body: { changes, author_name: user.value?.name || '' }, headers: fetchHeaders.value }
     );
     if (result.mock) mockMode.value = true;
     if (result.success) {
@@ -2824,6 +2894,15 @@ const marginRowClass = (row: any): Record<string, boolean> => {
   return { 'row-margin-ok': dev >= 0, 'row-margin-bad': dev < 0 };
 };
 
+const isRowLocked = (row: any): boolean => {
+  if (user.value?.email === 'cost-dev@local') return false;
+  if (row._lock_reason) return true;
+  const bm = (row['Бренд-менеджер'] || '').trim().toLowerCase();
+  const email = (user.value?.email || '').trim().toLowerCase();
+  if (bm && email && bm === email && row.peo_status !== 'approved') return true;
+  return false;
+};
+
 const openApprovalPopup = (row: any) => { if (!can('cost:approve') && !can('cost:peo_mark')) return; approvalTarget.value = row; approvalComment.value = ''; };
 const closeApprovalPopup = () => { approvalTarget.value = null; };
 
@@ -2848,6 +2927,29 @@ const setApproval = async (status: 'approved' | 'rejected') => {
     closeApprovalPopup();
   } catch (e) {
     alert('Ошибка при сохранении статуса ПЭО');
+  } finally {
+    approving.value = false;
+  }
+};
+
+const revokeApproval = async (row: any) => {
+  if (!row) return;
+  approving.value = true;
+  try {
+    await $fetch(`${apiBase.value}/api/cost/revoke-approval`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+      body: {
+        model: row['Модель'],
+        articul: row['Артикул'],
+        calc_sign: row['Признак калькуляции'],
+        plan_id: row['PLAN_ID'],
+      },
+    });
+    if (approvalTarget.value) approvalTarget.value.peo_status = null;
+    closeApprovalPopup();
+  } catch (e: any) {
+    alert('Ошибка при снятии согласования: ' + (e?.data?.detail || e?.message || String(e)));
   } finally {
     approving.value = false;
   }
@@ -3022,11 +3124,32 @@ async function applyPendingChanges() {
   if (!selectedPendingIds.value.length) return;
   approvalApplying.value = true;
   try {
-    await $fetch(`${apiBase.value}/api/cost/pending-changes/apply`, {
-      method: "POST",
-      body: { ids: selectedPendingIds.value },
-      headers: fetchHeaders.value,
-    });
+    // Build JSON for selected rows → SQL procedure
+    const selected = approvalPendingChanges.value.filter((pc: any) =>
+      selectedPendingIds.value.includes(pc.id)
+    );
+    const procPayload = selected.map((pc: any) => ({
+      model: pc['Модель'] ?? pc.model ?? '',
+      articul: pc['Артикул'] ?? pc.articul ?? '',
+      plan_id: String(pc['PLAN_ID'] ?? pc.plan_id ?? ''),
+      wholesale_rub: Number(pc['Отпускная цена по уровню, руб'] ?? pc.wholesale_rub ?? 0),
+      calc_sign: pc['Признак калькуляции'] ?? pc.calc_sign ?? '',
+      author_name: user.value?.name || 'system',
+    }));
+    console.log('[cost] SQL procedure payload:', JSON.stringify(procPayload));
+
+    const res = await $fetch<{ success: boolean; applied: number; procPayload?: any[] }>(
+      `${apiBase.value}/api/cost/pending-changes/apply`,
+      {
+        method: "POST",
+        body: {
+          ids: selectedPendingIds.value,
+          reviewed_by: user.value?.name || 'system',
+          proc_payload: procPayload,
+        },
+        headers: fetchHeaders.value,
+      }
+    );
     await loadApprovalPendingChanges();
   } catch (e: any) {
     console.error("[cost] apply pending changes failed", e);
@@ -3595,6 +3718,10 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .details-count { padding: var(--sp-2) var(--sp-5); font-size: var(--fs-xs); color: var(--text-muted); border-top: 1px solid var(--border); flex-shrink: 0; }
 .btn-details { background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 12px; }
 .btn-details:hover { opacity: 0.7; }
+/* Кнопки строк не наезжают друг на друга */
+.data-table td:first-child { white-space: nowrap; }
+.btn-edit { cursor:pointer; background:none; border:none; font-size:16px; padding:2px 4px; opacity:0.6; vertical-align:middle; }
+.btn-edit:hover { opacity:1; }
 
 /* Error banner */
 .cost-error {
@@ -4019,6 +4146,13 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   flex: 1;
 }
 
+tr.locked { opacity:0.55; }
+tr.row-pending { background-color: color-mix(in srgb, #d97706 10%, transparent) !important; }
+tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !important; }
+.lock-icon { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; font-size:12px; margin-right:2px; vertical-align:middle; cursor:help; }
+.state-badge { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:4px; font-size:12px; margin-right:2px; vertical-align:middle; cursor:help; }
+.state-badge--pending { background:#fef3c7; color:#92400e; }
+.state-badge--audit { background:#d1fae5; color:#065f46; }
 .btn-edit { cursor:pointer; background:none; border:none; font-size:16px; padding:2px 4px; opacity:0.6; }
 .btn-edit:hover { opacity:1; }
 .draft-badge { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:50%; font-size:11px; margin-right:2px; vertical-align:middle; }
