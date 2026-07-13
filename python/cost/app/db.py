@@ -110,68 +110,66 @@ def get_olap_conn() -> pyodbc.Connection:
 def get_proc_db_conn() -> pyodbc.Connection | None:
     """БД для вызова SQL-процедуры утверждения цен.
 
-    Если креды (`PROC_DB_*`) не заданы — возвращает None.
+    Использует PROC_DB_* env.  Если PROC_DB_SERVER_IP не задан —
+    падает на MSSQL_SERVER_IP (тот же сервер srv-sql).
+    Если PROC_DB_USER не задан — падает на MSSQL_USER (аналогично пароль).
+    Если сервер всё равно пуст — возвращает None.
     """
-    server = os.environ.get("PROC_DB_SERVER_IP")
+    server = os.environ.get("PROC_DB_SERVER_IP") or os.environ.get("MSSQL_SERVER_IP")
     if not server:
         return None
+    user = os.environ.get("PROC_DB_USER") or os.environ.get("MSSQL_USER", "")
+    password = os.environ.get("PROC_DB_PASSWORD") or os.environ.get("MSSQL_PASSWORD", "")
     return _mssql_connect(
         server=server,
-        database=os.environ.get("PROC_DB_DATABASE", "FinSandBox"),
-        user=os.environ.get("PROC_DB_USER", ""),
-        password=os.environ.get("PROC_DB_PASSWORD", ""),
+        database=os.environ.get("PROC_DB_DATABASE", "Gpartner"),
+        user=user,
+        password=password,
         readonly=False,
     )
 
 
-def call_calc_sign_procedure(items: list[dict], price_type: int) -> None:
-    """Вызвать SQL-процедуру утверждения цен для одной группы calc_sign.
+def call_calc_sign_procedure(json_str: str) -> None:
+    """Вызвать SQL-процедуру [dbo].[create_priceList_inFox] с JSON-пакетом.
 
-    Пока заглушка — логирует payload и возвращает без вызова.
-    Когда появится имя процедуры — заменить EXEC proc @json = ?.
+    Принимает готовую JSON-строку (вложенный формат с массивами prices1),
+    отправляет один EXEC со всем пакетом.
 
-    Формат вызова (опция A):
-        EXEC dbo.procedure_name @json = ?
-    с параметром-строкой JSON вида '[{...}, {...}]'.
+    Формат JSON:
+        [
+          {
+            "plan_id": "9272",
+            "price_type": 3,
+            "calc_sign": "КПСС",
+            "author_name": "...",
+            "prices1": [
+              {"model": "411220", "articul": "26-5956П-5", "wholesale_rub": 2280.00},
+              ...
+            ]
+          },
+          ...
+        ]
 
-    Args:
-        items: список записей для одной calc_sign.
-        price_type: 3 для КПСС, 1 для ПФКСС.
+    Если PROC_DB_* env не заданы — логирует и пропускает.
     """
-    import json as _json
     proc_name = os.environ.get("PROC_DB_PROCEDURE", "")
     conn = get_proc_db_conn()
     if conn is None:
-        print(f"[cost] proc-db not configured — skipping {price_type=}, {len(items)} rows")
+        print(f"[cost] proc-db not configured — skipping, {len(json_str)} bytes", flush=True)
         return
 
-    payload = []
-    for it in items:
-        payload.append({
-            "model": it.get("model", ""),
-            "articul": it.get("articul", ""),
-            "plan_id": it.get("plan_id", ""),
-            "wholesale_rub": it.get("wholesale_rub", 0),
-            "calc_sign": it.get("calc_sign", ""),
-            "price_type": price_type,
-            "author_name": it.get("author_name", "system"),
-        })
-
-    json_str = _json.dumps(payload, ensure_ascii=False, default=str)
-
     if not proc_name:
-        print(f"[cost] PROC_DB_PROCEDURE not set — stub, would call with {len(items)} rows, json={json_str[:200]}…")
+        print(f"[cost] PROC_DB_PROCEDURE not set — stub, {len(json_str)} bytes", flush=True)
         conn.close()
         return
 
+    cursor = conn.cursor()
     try:
-        cursor = conn.cursor()
-        cursor.execute(f"EXEC {proc_name} @json = ?", json_str)
+        cursor.execute(f"EXEC {proc_name} @JSON_IN = ?", json_str)
         conn.commit()
-        print(f"[cost] procedure {proc_name} ok, {len(items)} rows, price_type={price_type}")
+        print(f"[cost] {proc_name} ok, {len(json_str)} bytes", flush=True)
     except Exception as exc:
-        print(f"[cost] procedure {proc_name} failed: {exc}")
-        raise
+        print(f"[cost] procedure failed: {exc}", flush=True)
     finally:
         conn.close()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -1279,6 +1280,18 @@ async def pending_filter_options(request: Request) -> dict:
     return await get_pending_filter_options(selected)
 
 
+def _run_proc_safe(json_str: str) -> None:
+    # Wrapper with exception logging — ensure_future swallows thread errors
+    try:
+        print(f"[cost] _run_proc_safe: calling proc with {len(json_str)} bytes", flush=True)
+        call_calc_sign_procedure(json_str)
+    except Exception as exc:
+        import traceback
+        print(f"[cost] _run_proc_safe FAILED: {exc}", flush=True)
+        traceback.print_exc()
+        sys.stdout.flush()
+
+
 @router.post("/pending-changes/apply")
 async def apply_changes(payload: dict) -> dict:
     """Apply (approve) a batch of pending changes.
@@ -1287,8 +1300,8 @@ async def apply_changes(payload: dict) -> dict:
     - Записывает выбранные строки в OLAP CostHistory_Changes (с 4 новыми полями)
     - Дублирует в локальный audit
     - Удаляет строки из cost_price_pending
-    - Группирует proc_payload по calc_sign и вызывает SQL-процедуру для каждой
-      группы КПСС (price_type=3) и ПФКСС (price_type=1).
+    - Группирует proc_payload: КПСС по (calc_sign, plan_id), ПФКСС — все в один пакет.
+      Каждая группа отправляется процедуре одним JSON-массивом.
     """
     ids = payload.get("ids") or []
     if not ids:
@@ -1299,21 +1312,50 @@ async def apply_changes(payload: dict) -> dict:
     result = {"success": True, "applied": count}
 
     if proc_payload:
-        # Группировка по calc_sign
-        groups: dict[str, list[dict]] = {}
+        import json as _json
+
+        # Группировка:
+        #   КПСС   — по (calc_sign, plan_id): отдельный прейскурант на план
+        #   ПФКСС  — только по calc_sign: все строки в один прейскурант
+        groups: dict[tuple[str, str], list[dict]] = {}
         for item in proc_payload:
             cs = (item.get("calc_sign") or "").strip()
-            if cs in ("КПСС", "ПФКСС"):
-                groups.setdefault(cs, []).append(item)
+            if cs == "КПСС":
+                pi = (item.get("plan_id") or "").strip()
+                groups.setdefault((cs, pi), []).append(item)
+            elif cs == "ПФКСС":
+                groups.setdefault((cs, ""), []).append(item)
 
-        # Вызов процедуры для каждой группы (в threadpool, т.к. pyodbc)
-        for cs, items in groups.items():
+        # Построить вложенный JSON: один документ на группу с prices1[]
+        docs = []
+        for (cs, pi), items in groups.items():
             price_type = items[0].get("price_type", 0)
-            asyncio.ensure_future(
-                asyncio.get_event_loop().run_in_executor(
-                    None, call_calc_sign_procedure, items, price_type
-                )
+            author_name = items[0].get("author_name", "system")
+
+            doc = {
+                "plan_id": pi,
+                "price_type": price_type,
+                "calc_sign": cs,
+                "author_name": author_name,
+                "prices1": [
+                    {
+                        "model": it.get("model", ""),
+                        "articul": it.get("articul", ""),
+                        "wholesale_rub": it.get("wholesale_rub", 0),
+                    }
+                    for it in items
+                ],
+            }
+            docs.append(doc)
+
+        json_str = _json.dumps(docs, ensure_ascii=False, default=str)
+
+        # Один вызов процедуры на все документы (в threadpool, т.к. pyodbc)
+        asyncio.ensure_future(
+            asyncio.get_event_loop().run_in_executor(
+                None, _run_proc_safe, json_str
             )
+        )
 
     return result
 
