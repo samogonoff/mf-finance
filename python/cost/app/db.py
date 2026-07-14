@@ -130,7 +130,7 @@ def get_proc_db_conn() -> pyodbc.Connection | None:
 
 
 def call_calc_sign_procedure(json_str: str) -> None:
-    """Вызвать SQL-процедуру [dbo].[create_priceList_inFox] с JSON-пакетом.
+    """Вызвать SQL-процедуру [dbo].[createPriceList_inFox] с JSON-пакетом.
 
     Принимает готовую JSON-строку (вложенный формат с массивами prices1),
     отправляет один EXEC со всем пакетом.
@@ -160,6 +160,45 @@ def call_calc_sign_procedure(json_str: str) -> None:
 
     if not proc_name:
         print(f"[cost] PROC_DB_PROCEDURE not set — stub, {len(json_str)} bytes", flush=True)
+        conn.close()
+        return
+
+    cursor = conn.cursor()
+    try:
+        # Процедура использует @JSON_OUT OUTPUT + PRINT, а не SELECT.
+        # Захватываем OUTPUT-параметр через DECLARE + SELECT.
+        cursor.execute(
+            f"DECLARE @out NVARCHAR(MAX); "
+            f"EXEC {proc_name} @JSON_IN = ?, @JSON_OUT = @out OUTPUT; "
+            f"SELECT @out AS result",
+            json_str,
+        )
+
+        result_val: str | None = None
+        # Procedure result может быть не в первом result set — перебираем все
+        while True:
+            try:
+                if cursor.description:
+                    cols = [c[0] for c in cursor.description]
+                    row = cursor.fetchone()
+                    # Нас интересует именно result set от SELECT @out AS result
+                    if row and row[0] and cols == ["result"]:
+                        result_val = str(row[0])
+                        break
+            except Exception:
+                pass
+            if not cursor.nextset():
+                break
+
+        conn.commit()
+
+        if result_val:
+            print(f"[cost] {proc_name} RETURN: {result_val}", flush=True)
+        else:
+            print(f"[cost] {proc_name} ok (no output), {len(json_str)} bytes", flush=True)
+    except Exception as exc:
+        print(f"[cost] procedure failed: {exc}", flush=True)
+    finally:
         conn.close()
         return
 

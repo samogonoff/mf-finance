@@ -1283,7 +1283,8 @@ async def pending_filter_options(request: Request) -> dict:
 def _run_proc_safe(json_str: str) -> None:
     # Wrapper with exception logging — ensure_future swallows thread errors
     try:
-        print(f"[cost] _run_proc_safe: calling proc with {len(json_str)} bytes", flush=True)
+        print(f"[cost] _run_proc_safe: {len(json_str)} bytes", flush=True)
+        print(f"[cost] _run_proc_safe PAYLOAD:\n{json_str}", flush=True)
         call_calc_sign_procedure(json_str)
     except Exception as exc:
         import traceback
@@ -1327,9 +1328,10 @@ async def apply_changes(payload: dict) -> dict:
                 groups.setdefault((cs, ""), []).append(item)
 
         # Построить вложенный JSON: один документ на группу с prices1[]
+        calc_sign_price_type = {"КПСС": 3, "ПФКСС": 1}
         docs = []
         for (cs, pi), items in groups.items():
-            price_type = items[0].get("price_type", 0)
+            price_type = calc_sign_price_type.get(cs, items[0].get("price_type", 0))
             author_name = items[0].get("author_name", "system")
 
             doc = {
