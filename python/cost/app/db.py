@@ -143,7 +143,7 @@ def call_calc_sign_procedure(json_str: str) -> None:
             "calc_sign": "КПСС",
             "author_name": "...",
             "prices1": [
-              {"model": "411220", "articul": "26-5956П-5", "wholesale_rub": 2280.00},
+              {"model": "411220", "articul": "26-5956П-5", "wholesale_rub": 2280.00, "plan_price": 4.12},
               ...
             ]
           },

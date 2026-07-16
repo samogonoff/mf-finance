@@ -1344,6 +1344,7 @@ async def apply_changes(payload: dict) -> dict:
                         "model": it.get("model", ""),
                         "articul": it.get("articul", ""),
                         "wholesale_rub": it.get("wholesale_rub", 0),
+                        "plan_price": it.get("cost_rub") or it.get("Себестоимость, руб.", 0),
                     }
                     for it in items
                 ],
