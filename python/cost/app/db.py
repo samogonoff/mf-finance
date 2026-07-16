@@ -1291,6 +1291,25 @@ async def delete_version(version_id) -> None:
         )
 
 
+async def archive_versions_by_key(model, articul, calc_sign, plan_id, raw_date) -> int:
+    if isinstance(raw_date, str) and raw_date:
+        d = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
+    else:
+        d = raw_date
+    async with pool().acquire() as conn:
+        result = await conn.execute(
+            """UPDATE cost_calc_versions
+               SET status = 'archived'
+               WHERE model = $1 AND articul = $2
+                 AND calc_sign IS NOT DISTINCT FROM $3
+                 AND plan_id IS NOT DISTINCT FROM $4
+                 AND "дата расчета" = $5
+                 AND status IN ('draft', 'pending')""",
+            model, articul, calc_sign, plan_id, d,
+        )
+        return int(result.split()[1]) if result.startswith("UPDATE") else 0
+
+
 # ── PEO approval (cost_calc_approvals) ─────────────────────────────────────
 
 

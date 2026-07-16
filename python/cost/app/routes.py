@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
+from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -1302,7 +1302,7 @@ def _run_proc_safe(json_str: str) -> None:
 
 
 @router.post("/pending-changes/apply")
-async def apply_changes(payload: dict) -> dict:
+async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:approve"))) -> dict:
     """Apply (approve) a batch of pending changes.
 
     Body: { "ids": [1, 2, 3], "reviewed_by": "...", "proc_payload": [...] }
@@ -1382,7 +1382,7 @@ async def clear_changes() -> dict:
 
 
 @router.get("/checkout-calculation")
-async def checkout_calculation_endpoint(request: Request) -> dict:
+async def checkout_calculation_endpoint(request: Request, _: str = Depends(_require_perm("cost:edit_materials"))) -> dict:
     model = request.query_params.get("model")
     articul = request.query_params.get("articul")
     calc_sign = request.query_params.get("calc_sign") or None
@@ -1446,7 +1446,7 @@ async def approve_calculation_version(payload: dict, _: str = Depends(_require_p
 
 
 @router.get("/calculation-draft-status")
-async def calculation_draft_status(request: Request) -> dict:
+async def calculation_draft_status(request: Request, _: str = Depends(_require_perm("cost:view"))) -> dict:
     model = request.query_params.get("model")
     articul = request.query_params.get("articul")
     calc_sign = request.query_params.get("calc_sign") or None
@@ -1464,6 +1464,36 @@ async def calculation_draft_status(request: Request) -> dict:
     if version:
         return {"has_draft": True, "version_id": version["version"]["id"], "status": version["version"]["status"], "rows": version.get("rows", [])}
     return {"has_draft": False}
+
+
+# ── Admin tools (version management) ───────────────────────────────────────
+
+
+@router.delete("/admin/versions/{version_id}")
+async def admin_delete_version(version_id: int, _: str = Depends(_require_perm("cost:admin"))) -> dict:
+    if _is_mock():
+        return {"success": True, "mock": True}
+    await delete_version(version_id)
+    return {"success": True}
+
+
+@router.post("/admin/unlock-row")
+async def admin_unlock_row(payload: dict, _: str = Depends(_require_perm("cost:admin"))) -> dict:
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    calc_sign = payload.get("calc_sign")
+    plan_id = payload.get("plan_id")
+    date_str = payload.get("date")
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    if isinstance(date_str, str) and date_str:
+        parsed_date = date.fromisoformat(date_str.replace("T00:00:00Z", "").replace("T00:00:00", ""))
+    else:
+        parsed_date = date_str
+    if _is_mock():
+        return {"success": True, "archived": 0, "mock": True}
+    count = await archive_versions_by_key(model, articul, calc_sign, plan_id, parsed_date)
+    return {"success": True, "archived": count}
 
 
 # ── PEO approval (Stream H) ────────────────────────────────────────────────
@@ -1510,28 +1540,6 @@ async def approval_status(request: Request) -> dict:
         return mocks.get_approval_status(filters)
     data = await get_approval_status(filters)
     return {"data": data}
-
-
-# ── Margin targets ──────────────────────────────────────────────────────────
-
-
-@router.get("/margin-targets")
-async def margin_targets() -> list[dict]:
-    """Return all saved margin targets keyed by level1."""
-    if _is_mock():
-        return mocks.margin_targets()
-    return await get_margin_targets()
-
-
-@router.post("/margin-targets")
-async def update_margin_targets(payload: dict) -> dict:
-    """Save margin targets (upsert by level1) with username tracking."""
-    targets = payload.get("targets") or []
-    username = (payload.get("username") or "system").strip()
-    if _is_mock():
-        return mocks.save_margin_targets(targets, username)
-    await save_margin_targets(targets, username)
-    return {"success": True, "count": len(targets)}
 
 
 # ── Margin targets ──────────────────────────────────────────────────────────
