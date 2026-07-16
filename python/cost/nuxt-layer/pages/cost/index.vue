@@ -2896,6 +2896,7 @@ const marginRowClass = (row: any): Record<string, boolean> => {
 
 const isRowLocked = (row: any): boolean => {
   if (user.value?.email === 'cost-dev@local') return false;
+  if (can('cost:admin')) return false;
   if (row._lock_reason) return true;
   const bm = (row['Бренд-менеджер'] || '').trim().toLowerCase();
   const email = (user.value?.email || '').trim().toLowerCase();

@@ -935,6 +935,14 @@ async def _check_save_locks(
     """
     if user_email in ("cost-dev@local",):
         return []
+    # Full Admin bypass — cost:admin permission can override all locks
+    if user_email:
+        try:
+            perms = await get_user_permissions(user_email)
+            if "cost:admin" in perms:
+                return []
+        except Exception:
+            pass  # fail-closed: on DB error, proceed with normal lock checks
 
     if not rows:
         return []
@@ -976,7 +984,7 @@ async def _check_save_locks(
     pending_set: set[tuple[str, str, str, str]] = set()
     if lock_list:
         pend_ph = ", ".join(
-            f"($${i*4+1}::text, $${i*4+2}::text, $${i*4+3}::text, $${i*4+4}::text)"
+            f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
             for i in range(len(lock_list))
         )
         pend_params: list[str] = []
@@ -998,7 +1006,7 @@ async def _check_save_locks(
     audit_set: set[tuple[str, str]] = set()
     if pair_list:
         audit_ph = ", ".join(
-            f"($${i*2+1}::text, $${i*2+2}::text)" for i in range(len(pair_list))
+            f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(pair_list))
         )
         audit_params: list[str] = []
         for m, a in pair_list:
@@ -1016,7 +1024,7 @@ async def _check_save_locks(
     approval_map: dict[tuple[str, str, str, str], str] = {}
     if lock_list:
         appr_ph = ", ".join(
-            f"($${i*4+1}::text, $${i*4+2}::text, $${i*4+3}::text, $${i*4+4}::text)"
+            f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
             for i in range(len(lock_list))
         )
         appr_params: list[str] = []
