@@ -3143,6 +3143,7 @@ async function applyPendingChanges() {
           calc_sign: calcSign,
           price_type: priceType,
           author_name: user.value?.name || 'system',
+          cost_rub: Number(pc['Себестоимость, руб.'] ?? pc.cost_rub ?? 0),
         };
       })
       .filter(Boolean);
