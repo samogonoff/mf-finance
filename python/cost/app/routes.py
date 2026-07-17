@@ -67,6 +67,20 @@ async def _is_cost_admin(user_email: str | None) -> bool:
         return False
 
 
+async def _can_approve_or_peo(user_email: str | None) -> bool:
+    """True if the user may approve (PEO) or mark PEO status — i.e. is NOT a 'pure' brand-manager."""
+    if not user_email:
+        return False
+    if user_email in ("cost-dev@local",):
+        # Test/dev super-user: behave as a non-approver to exercise brand-manager locks.
+        return False
+    try:
+        perms = await get_user_permissions(user_email)
+        return "cost:approve" in perms or "cost:peo_mark" in perms or "cost:admin" in perms
+    except Exception:
+        return False
+
+
 async def _check_calc_locks(user_email: str, model: str, articul: str, calc_sign, plan_id, date_str) -> None:
     """Raise 403 if the calculation is locked for this user."""
     if await _is_cost_admin(user_email):
@@ -956,9 +970,9 @@ async def _check_save_locks(
     Returns list of lock info dicts for locked rows.  Empty list = all clear.
     Each lock info: {model, articul, calc_sign, plan_id, reason}
     """
-    if user_email in ("cost-dev@local",):
-        return []
-    # Full Admin bypass — cost:admin permission can override all locks
+    # Full Admin bypass — cost:admin permission can override all locks.
+    # Note: cost-dev@local is intentionally NOT bypassed here anymore; it is a
+    # brand-manager test identity and must exercise brand-manager lock logic.
     if user_email:
         try:
             perms = await get_user_permissions(user_email)
@@ -1110,7 +1124,10 @@ async def _check_save_locks(
             })
             continue
 
-        if bm and user_email.lower() == bm.lower():
+        # PEO gate: brand-managers (users with cost:edit_price but NOT cost:approve/peo_mark/admin)
+        # may only save prices on calc-approvals with status='approved', regardless of who owns
+        # the calculation. Self-edit special case is folded in — own unapproved calc is also locked.
+        if not await _can_approve_or_peo(user_email):
             peo_status = approval_map.get(key4)
             if peo_status != "approved":
                 locked_rows.append({
