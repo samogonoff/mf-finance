@@ -1362,7 +1362,9 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
     reviewed_by = (payload.get("reviewed_by") or "system").strip()
     proc_payload: list[dict] | None = payload.get("proc_payload")
 
-    # PEO approval gate: verify each pending row has PEO approval before writing to DWH
+    # One-step flow: pressing «Установить цены» is itself the PEO approval action.
+    # Mark every pending row as approved in cost_calc_approvals BEFORE the DWH write.
+    # save_approval is an UPSERT — calling it for an already-approved row is a no-op.
     if not _is_mock():
         async with pool().acquire() as conn:
             pending_rows = await conn.fetch(
@@ -1370,14 +1372,10 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
                 ids,
             )
         for pr in pending_rows:
-            state = await get_calc_state(
-                pr["Модель"], pr["Артикул"], pr["Признак калькуляции"], pr["PLAN_ID"], None,
+            await save_approval(
+                pr["Модель"], pr["Артикул"], pr["Признак калькуляции"], pr["PLAN_ID"],
+                "approved", reviewed_by,
             )
-            if state["peo_status"] != "approved":
-                raise HTTPException(
-                    403,
-                    f"Запись в DWH возможна только после согласования ПЭО: {pr['Модель']} / {pr['Артикул']}",
-                )
 
     count = await apply_pending_changes(ids, reviewed_by)
     result = {"success": True, "applied": count}
