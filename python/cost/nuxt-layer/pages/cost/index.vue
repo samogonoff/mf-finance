@@ -743,6 +743,9 @@
             <button class="btn btn-ghost btn-sm" :disabled="!approvalPendingChanges.length || approvalClearing" @click="clearAllPendingChanges">
               <Icon name="lucide:trash-2" /> {{ approvalClearing ? 'Очистка…' : 'Очистить таблицу' }}
             </button>
+            <button class="btn btn-ghost btn-sm" :disabled="!selectedPendingIds.length || approvalRejecting" @click="rejectPendingChanges">
+              {{ approvalRejecting ? 'Отклонение…' : 'Отклонить выбранные' }}
+            </button>
             <button class="btn btn-primary btn-sm" :disabled="!selectedPendingIds.length || approvalApplying" @click="applyPendingChanges">
               {{ approvalApplying ? 'Установка…' : `Установить цены (${selectedPendingIds.length})` }}
             </button>
@@ -3084,6 +3087,7 @@ const selectedPendingIds = ref<number[]>([]);
 const approvalLoading = ref(false);
 const approvalApplying = ref(false);
 const approvalClearing = ref(false);
+const approvalRejecting = ref(false);
 
 async function openApprovalModal() {
   showApprovalModal.value = true;
@@ -3185,6 +3189,35 @@ async function clearAllPendingChanges() {
     lastError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     approvalClearing.value = false;
+  }
+}
+
+async function rejectPendingChanges() {
+  if (!selectedPendingIds.value.length) return;
+  approvalRejecting.value = true;
+  try {
+    const selected = approvalPendingChanges.value.filter((pc: any) =>
+      selectedPendingIds.value.includes(pc.id)
+    );
+    for (const pc of selected) {
+      await $fetch(`${apiBase.value}/api/cost/reject-price`, {
+        method: "POST",
+        body: {
+          model: pc['Модель'] ?? pc.model ?? '',
+          articul: pc['Артикул'] ?? pc.articul ?? '',
+          calc_sign: pc['Признак калькуляции'] ?? pc.calc_sign ?? null,
+          plan_id: pc['PLAN_ID'] ?? pc.plan_id ?? null,
+          date: pc['дата расчета'] ?? pc.date ?? null,
+        },
+        headers: fetchHeaders.value,
+      });
+    }
+    await loadApprovalPendingChanges();
+  } catch (e: any) {
+    console.error("[cost] reject pending changes failed", e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    approvalRejecting.value = false;
   }
 }
 

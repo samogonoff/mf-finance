@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
+from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -53,6 +53,29 @@ def _require_any_perm(*permissions: str):
         joined = ", ".join(permissions)
         raise HTTPException(403, f"Недостаточно прав: требуется одно из ({joined})")
     return _check
+
+
+async def _is_cost_admin(user_email: str | None) -> bool:
+    if not user_email:
+        return False
+    if user_email in ("cost-dev@local",):
+        return True
+    try:
+        perms = await get_user_permissions(user_email)
+        return "cost:admin" in perms
+    except Exception:
+        return False
+
+
+async def _check_calc_locks(user_email: str, model: str, articul: str, calc_sign, plan_id, date_str) -> None:
+    """Raise 403 if the calculation is locked for this user."""
+    if await _is_cost_admin(user_email):
+        return
+    state = await get_calc_state(model, articul, calc_sign, plan_id, date_str)
+    if state["has_dwh_record"]:
+        raise HTTPException(403, "Калькуляция заблокирована: цена передана в DWH")
+    if state["has_pending_price"]:
+        raise HTTPException(403, "Калькуляция заблокирована: цена отправлена на согласование бренд-менеджером")
 
 
 # ── Фильтр-конфиг (DWH.dim.groups) ──────────────────────────────────────────
@@ -1382,7 +1405,7 @@ async def clear_changes() -> dict:
 
 
 @router.get("/checkout-calculation")
-async def checkout_calculation_endpoint(request: Request, _: str = Depends(_require_perm("cost:edit_materials"))) -> dict:
+async def checkout_calculation_endpoint(request: Request, user_email: str = Depends(_require_perm("cost:edit_materials"))) -> dict:
     model = request.query_params.get("model")
     articul = request.query_params.get("articul")
     calc_sign = request.query_params.get("calc_sign") or None
@@ -1397,29 +1420,36 @@ async def checkout_calculation_endpoint(request: Request, _: str = Depends(_requ
         parsed_date = date_str
     if _is_mock():
         return mocks.checkout_calculation(model, articul, calc_sign, plan_id, parsed_date, username)
+    await _check_calc_locks(user_email, model, articul, calc_sign, plan_id, date_str)
     return await checkout_calculation(model, articul, calc_sign, plan_id, parsed_date, username)
 
 
 @router.post("/save-calculation-draft")
-async def save_calculation_draft(payload: dict, _: str = Depends(_require_perm("cost:edit_materials"))) -> dict:
+async def save_calculation_draft(payload: dict, user_email: str = Depends(_require_perm("cost:edit_materials"))) -> dict:
     version_id = payload.get("version_id")
     rows = payload.get("rows", [])
     if not version_id:
         raise HTTPException(400, "version_id required")
     if _is_mock():
         return mocks.save_version_draft(version_id, rows)
+    ver = await get_version_info(version_id)
+    if ver:
+        await _check_calc_locks(user_email, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], ver["дата расчета"])
     await save_version_draft(version_id, rows)
     return {"success": True}
 
 
 @router.post("/submit-calculation-draft")
-async def submit_calculation_draft(payload: dict, _: str = Depends(_require_perm("cost:edit_materials"))) -> dict:
+async def submit_calculation_draft(payload: dict, user_email: str = Depends(_require_perm("cost:edit_materials"))) -> dict:
     version_id = payload.get("version_id")
     if not version_id:
         raise HTTPException(400, "version_id required")
     comment = payload.get("comment")
     if _is_mock():
         return mocks.submit_version(version_id, comment)
+    ver = await get_version_info(version_id)
+    if ver:
+        await _check_calc_locks(user_email, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], ver["дата расчета"])
     await submit_version(version_id, comment)
     return {"success": True}
 
@@ -1494,6 +1524,25 @@ async def admin_unlock_row(payload: dict, _: str = Depends(_require_perm("cost:a
         return {"success": True, "archived": 0, "mock": True}
     count = await archive_versions_by_key(model, articul, calc_sign, plan_id, parsed_date)
     return {"success": True, "archived": count}
+
+
+@router.post("/reject-price")
+async def reject_price(payload: dict, user_email: str = Depends(_require_perm("cost:approve"))) -> dict:
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    calc_sign = payload.get("calc_sign")
+    plan_id = payload.get("plan_id")
+    date_str = payload.get("date")
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    if isinstance(date_str, str) and date_str:
+        parsed_date = date.fromisoformat(date_str.replace("T00:00:00Z", "").replace("T00:00:00", ""))
+    else:
+        parsed_date = date_str
+    if _is_mock():
+        return {"success": True, "mock": True}
+    await reset_price_fields(model, articul, calc_sign, plan_id, parsed_date)
+    return {"success": True, "reset_by": user_email or "system"}
 
 
 # ── PEO approval (Stream H) ────────────────────────────────────────────────
