@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
+from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -1026,23 +1026,27 @@ async def _check_save_locks(
                 str(r["Признак калькуляции"]).strip(), str(r["PLAN_ID"]).strip(),
             ))
 
-    audit_set: set[tuple[str, str]] = set()
-    if pair_list:
+    audit_set: set[tuple[str, str, str, str]] = set()
+    if lock_list:
         audit_ph = ", ".join(
-            f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(pair_list))
+            f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
+            for i in range(len(lock_list))
         )
         audit_params: list[str] = []
-        for m, a in pair_list:
-            audit_params.extend([m, a])
+        for m, a, cs, pi in lock_list:
+            audit_params.extend([m, a, cs, pi])
         async with pool().acquire() as conn:
             audit_rows = await conn.fetch(
-                f"""SELECT DISTINCT model, articul
+                f"""SELECT DISTINCT model, articul, calc_sign, plan_id
                     FROM cost_price_changes_audit
-                    WHERE (model, articul) IN (VALUES {audit_ph})""",
+                    WHERE (model, articul, calc_sign, plan_id) IN (VALUES {audit_ph})""",
                 *audit_params,
             )
         for r in audit_rows:
-            audit_set.add((str(r["model"]).strip(), str(r["articul"]).strip()))
+            audit_set.add((
+                str(r["model"]).strip(), str(r["articul"]).strip(),
+                str(r["calc_sign"] or "").strip(), str(r["plan_id"] or "").strip(),
+            ))
 
     approval_map: dict[tuple[str, str, str, str], str] = {}
     if lock_list:
@@ -1098,7 +1102,7 @@ async def _check_save_locks(
             })
             continue
 
-        if key2 in audit_set:
+        if key4 in audit_set:
             locked_rows.append({
                 "model": model, "articul": articul,
                 "calc_sign": cs, "plan_id": pi,
@@ -1340,6 +1344,24 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
         raise HTTPException(400, "ids list is required")
     reviewed_by = (payload.get("reviewed_by") or "system").strip()
     proc_payload: list[dict] | None = payload.get("proc_payload")
+
+    # PEO approval gate: verify each pending row has PEO approval before writing to DWH
+    if not _is_mock():
+        async with pool().acquire() as conn:
+            pending_rows = await conn.fetch(
+                "SELECT \"Модель\", \"Артикул\", \"Признак калькуляции\", \"PLAN_ID\" FROM cost_price_pending WHERE id = ANY($1::bigint[])",
+                ids,
+            )
+        for pr in pending_rows:
+            state = await get_calc_state(
+                pr["Модель"], pr["Артикул"], pr["Признак калькуляции"], pr["PLAN_ID"], None,
+            )
+            if state["peo_status"] != "approved":
+                raise HTTPException(
+                    403,
+                    f"Запись в DWH возможна только после согласования ПЭО: {pr['Модель']} / {pr['Артикул']}",
+                )
+
     count = await apply_pending_changes(ids, reviewed_by)
     result = {"success": True, "applied": count}
 
@@ -1543,6 +1565,20 @@ async def reject_price(payload: dict, user_email: str = Depends(_require_perm("c
         return {"success": True, "mock": True}
     await reset_price_fields(model, articul, calc_sign, plan_id, parsed_date)
     return {"success": True, "reset_by": user_email or "system"}
+
+
+@router.delete("/admin/dwh-record")
+async def admin_delete_dwh_record(payload: dict, _: str = Depends(_require_perm("cost:admin"))) -> dict:
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    calc_sign = payload.get("calc_sign")
+    plan_id = payload.get("plan_id")
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return {"success": True, "audit_deleted": 0, "olap_deleted": 0, "mock": True}
+    result = await delete_dwh_record(model, articul, calc_sign, plan_id)
+    return {"success": True, **result, "warning": "Цены уже переданы в Fox ERP и не могут быть откачены"}
 
 
 # ── PEO approval (Stream H) ────────────────────────────────────────────────
