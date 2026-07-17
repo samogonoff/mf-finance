@@ -355,9 +355,38 @@ async function applySelected() {
   applying.value = true
   error.value = ''
   try {
+    // Build JSON for SQL procedure [createPriceList_inFox]
+    const selected = pendingChanges.value.filter((pc: any) =>
+      selectedIds.value.includes(pc.id)
+    );
+    const procPayload = selected
+      .map((pc: any) => {
+        const calcSign = pc['Признак калькуляции'] ?? pc.calc_sign ?? '';
+        let priceType = 0;
+        if (calcSign === 'КПСС') priceType = 3;
+        else if (calcSign === 'ПФКСС') priceType = 1;
+        if (!priceType) return null;
+        return {
+          model: pc['Модель'] ?? pc.model ?? '',
+          articul: pc['Артикул'] ?? pc.articul ?? '',
+          plan_id: String(pc['PLAN_ID'] ?? pc.plan_id ?? ''),
+          wholesale_rub: Number(pc['Отпускная цена по уровню, руб'] ?? pc.wholesale_rub ?? 0),
+          calc_sign: calcSign,
+          price_type: priceType,
+          author_name: 'system',
+          cost_rub: Number(pc['Себестоимость, руб.'] ?? pc.cost_rub ?? 0),
+        };
+      })
+      .filter(Boolean);
+    console.log('[cost] SQL procedure payload:', JSON.stringify(procPayload));
+
     await $fetch(`${apiBase.value}/api/cost/pending-changes/apply`, {
       method: 'POST',
-      body: { ids: selectedIds.value },
+      body: {
+        ids: selectedIds.value,
+        reviewed_by: 'system',
+        proc_payload: procPayload,
+      },
     })
     await loadData()
   } catch (e: any) {

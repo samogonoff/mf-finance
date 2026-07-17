@@ -143,7 +143,7 @@ def call_calc_sign_procedure(json_str: str) -> None:
             "calc_sign": "КПСС",
             "author_name": "...",
             "prices1": [
-              {"model": "411220", "articul": "26-5956П-5", "wholesale_rub": 2280.00},
+              {"model": "411220", "articul": "26-5956П-5", "wholesale_rub": 2280.00, "plan_price": 4.12},
               ...
             ]
           },
@@ -1028,8 +1028,8 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                     """
                     INSERT INTO cost_price_changes_audit
                         (model, articul, price_level, retail_rub, wholesale_rub, username, changed_at,
-                         price_rf, price_kz, price_uz, comment)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                         price_rf, price_kz, price_uz, comment, calc_sign, plan_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                     """,
                     rec.get("Модель"),
                     rec.get("Артикул"),
@@ -1042,6 +1042,8 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                     rec.get("Цена КЗ"),
                     rec.get("Цена УЗ"),
                     comment_val,
+                    rec.get("Признак калькуляции"),
+                    rec.get("PLAN_ID"),
                 )
             await conn2.execute(
                 "DELETE FROM cost_price_pending WHERE id = ANY($1::bigint[])",
@@ -1291,6 +1293,155 @@ async def delete_version(version_id) -> None:
         )
 
 
+async def archive_versions_by_key(model, articul, calc_sign, plan_id, raw_date) -> int:
+    if isinstance(raw_date, str) and raw_date:
+        d = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
+    else:
+        d = raw_date
+    async with pool().acquire() as conn:
+        result = await conn.execute(
+            """UPDATE cost_calc_versions
+               SET status = 'archived'
+               WHERE model = $1 AND articul = $2
+                 AND calc_sign IS NOT DISTINCT FROM $3
+                 AND plan_id IS NOT DISTINCT FROM $4
+                 AND "дата расчета" = $5
+                 AND status IN ('draft', 'pending')""",
+            model, articul, calc_sign, plan_id, d,
+        )
+        return int(result.split()[1]) if result.startswith("UPDATE") else 0
+
+
+async def get_version_info(version_id) -> dict | None:
+    async with pool().acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT model, articul, calc_sign, plan_id, "дата расчета"::text
+               FROM cost_calc_versions WHERE id = $1""",
+            version_id,
+        )
+        return dict(row) if row else None
+
+
+_PRICE_FIELDS = [
+    '"Розничная цена по уровню, руб."',
+    '"Отпускная цена по уровню, руб"',
+    '"Розничная цена по уровню, USD."',
+    '"Отпускная цена по уровню, USD."',
+    '"Уровень цен"',
+]
+
+
+async def reset_price_fields(model, articul, calc_sign, plan_id, raw_date) -> None:
+    if isinstance(raw_date, str) and raw_date:
+        d = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
+    else:
+        d = raw_date
+    set_clause = ", ".join(f"{c} = NULL" for c in _PRICE_FIELDS)
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                f"""UPDATE cost_data_cache SET {set_clause}
+                    WHERE "Модель" = $1 AND "Артикул" = $2
+                      AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+                      AND "PLAN_ID" IS NOT DISTINCT FROM $4
+                      AND "дата расчета" = $5""",
+                model, articul, calc_sign, plan_id, d,
+            )
+            ver = await conn.fetchrow(
+                """SELECT id FROM cost_calc_versions
+                   WHERE model = $1 AND articul = $2
+                     AND calc_sign IS NOT DISTINCT FROM $3
+                     AND plan_id IS NOT DISTINCT FROM $4
+                     AND "дата расчета" = $5
+                     AND status = 'draft'
+                   ORDER BY created_at DESC LIMIT 1""",
+                model, articul, calc_sign, plan_id, d,
+            )
+            if ver:
+                await conn.execute(
+                    f"""UPDATE cost_calc_version_rows SET {set_clause}
+                        WHERE version_id = $1""",
+                    ver["id"],
+                )
+            await conn.execute(
+                """DELETE FROM cost_price_pending
+                   WHERE "Модель" = $1 AND "Артикул" = $2
+                     AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+                     AND "PLAN_ID" IS NOT DISTINCT FROM $4""",
+                model, articul, calc_sign, plan_id,
+            )
+            await conn.execute(
+                """DELETE FROM cost_calc_approvals
+                   WHERE model = $1 AND articul = $2
+                     AND calc_sign IS NOT DISTINCT FROM $3
+                     AND plan_id IS NOT DISTINCT FROM $4""",
+                model, articul, calc_sign, plan_id,
+            )
+
+
+async def delete_pending_by_key(model, articul, calc_sign, plan_id) -> int:
+    async with pool().acquire() as conn:
+        result = await conn.execute(
+            """DELETE FROM cost_price_pending
+               WHERE "Модель" = $1 AND "Артикул" = $2
+                 AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+                 AND "PLAN_ID" IS NOT DISTINCT FROM $4""",
+            model, articul, calc_sign, plan_id,
+        )
+        return int(result.split()[1]) if result.startswith("DELETE") else 0
+
+
+async def get_calc_state(model, articul, calc_sign, plan_id, raw_date) -> dict:
+    if isinstance(raw_date, str) and raw_date:
+        d = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
+    else:
+        d = raw_date
+    async with pool().acquire() as conn:
+        ver = await conn.fetchrow(
+            """SELECT id, status FROM cost_calc_versions
+               WHERE model = $1 AND articul = $2
+                 AND calc_sign IS NOT DISTINCT FROM $3
+                 AND plan_id IS NOT DISTINCT FROM $4
+                 AND "дата расчета" = $5
+                 AND status IN ('draft', 'pending')
+               ORDER BY created_at DESC LIMIT 1""",
+            model, articul, calc_sign, plan_id, d,
+        )
+        has_pending = await conn.fetchval(
+            """SELECT EXISTS (
+                  SELECT 1 FROM cost_price_pending
+                  WHERE "Модель" = $1 AND "Артикул" = $2
+                    AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+                    AND "PLAN_ID" IS NOT DISTINCT FROM $4
+               )""",
+            model, articul, calc_sign, plan_id,
+        )
+        has_dwh = await conn.fetchval(
+            """SELECT EXISTS (
+                  SELECT 1 FROM cost_price_changes_audit
+                  WHERE model = $1 AND articul = $2
+                    AND calc_sign IS NOT DISTINCT FROM $3
+                    AND plan_id IS NOT DISTINCT FROM $4
+               )""",
+            model, articul, calc_sign, plan_id,
+        )
+        peo = await conn.fetchrow(
+            """SELECT status FROM cost_calc_approvals
+               WHERE model = $1 AND articul = $2
+                 AND calc_sign IS NOT DISTINCT FROM $3
+                 AND plan_id IS NOT DISTINCT FROM $4
+               LIMIT 1""",
+            model, articul, calc_sign, plan_id,
+        )
+    return {
+        "version_status": ver["status"] if ver else None,
+        "version_id": ver["id"] if ver else None,
+        "has_pending_price": bool(has_pending),
+        "has_dwh_record": bool(has_dwh),
+        "peo_status": peo["status"] if peo else None,
+    }
+
+
 # ── PEO approval (cost_calc_approvals) ─────────────────────────────────────
 
 
@@ -1376,3 +1527,38 @@ async def get_approval_status(filters: dict | None = None) -> list[dict]:
     async with pool().acquire() as conn:
         rows = await conn.fetch(f"SELECT * FROM cost_calc_approvals{where} ORDER BY updated_at DESC", *params)
         return [dict(r) for r in rows]
+
+
+async def delete_dwh_record(model, articul, calc_sign, plan_id) -> dict:
+    """Delete DWH record from local audit and OLAP. Returns counts."""
+    # 1. Delete from local audit (postgres-cost)
+    async with pool().acquire() as conn:
+        audit_result = await conn.execute(
+            """DELETE FROM cost_price_changes_audit
+               WHERE model = $1 AND articul = $2
+                 AND calc_sign IS NOT DISTINCT FROM $3
+                 AND plan_id IS NOT DISTINCT FROM $4""",
+            model, articul, calc_sign, plan_id,
+        )
+        audit_deleted = int(audit_result.split()[1]) if audit_result.startswith("DELETE") else 0
+
+    # 2. Delete from OLAP (MSSQL)
+    olap_deleted = 0
+    proc_db = os.environ.get("PROC_DB_PROCEDURE")
+    if proc_db:
+        olap = get_olap_conn()
+        cursor = olap.cursor()
+        try:
+            cursor.execute(
+                f"""DELETE FROM CostHistory_Changes
+                    WHERE Модель = ? AND Артикул = ?
+                      AND calc_sign IS NOT DISTINCT FROM ?
+                      AND plan_id IS NOT DISTINCT FROM ?""",
+                model, articul, calc_sign, plan_id,
+            )
+            olap.commit()
+            olap_deleted = cursor.rowcount
+        finally:
+            olap.close()
+
+    return {"audit_deleted": audit_deleted, "olap_deleted": olap_deleted}

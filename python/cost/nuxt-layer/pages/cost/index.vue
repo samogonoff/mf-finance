@@ -322,7 +322,7 @@
               <th v-if="isVisible('calc_margin_deviation')" class="col-num" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
                 Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="(can('cost:approve') || can('cost:peo_mark')) && isVisible('peo')" class="col-peo">ПЭО</th>
+              <th v-if="isVisible('peo')" class="col-peo">ПЭО</th>
             </tr>
           </thead>
           <tbody>
@@ -454,7 +454,7 @@
               </td>
               <td v-if="isVisible('calc_margin_pct')" class="col-num num">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
               <td v-if="isVisible('calc_margin_deviation')" class="col-num num" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
-              <td v-if="(can('cost:approve') || can('cost:peo_mark')) && isVisible('peo')" class="col-peo">
+              <td v-if="isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark') }">
                 <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="openApprovalPopup(row)">🟢</span>
                 <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" @click.stop="openApprovalPopup(row)">🔴</span>
                 <span v-else class="peo-badge peo-none" @click.stop="openApprovalPopup(row)">⚪</span>
@@ -742,6 +742,9 @@
             <button class="btn btn-ghost btn-sm" @click="showApprovalModal = false">Закрыть</button>
             <button class="btn btn-ghost btn-sm" :disabled="!approvalPendingChanges.length || approvalClearing" @click="clearAllPendingChanges">
               <Icon name="lucide:trash-2" /> {{ approvalClearing ? 'Очистка…' : 'Очистить таблицу' }}
+            </button>
+            <button class="btn btn-ghost btn-sm" :disabled="!selectedPendingIds.length || approvalRejecting" @click="rejectPendingChanges">
+              {{ approvalRejecting ? 'Отклонение…' : 'Отклонить выбранные' }}
             </button>
             <button class="btn btn-primary btn-sm" :disabled="!selectedPendingIds.length || approvalApplying" @click="applyPendingChanges">
               {{ approvalApplying ? 'Установка…' : `Установить цены (${selectedPendingIds.length})` }}
@@ -2896,6 +2899,7 @@ const marginRowClass = (row: any): Record<string, boolean> => {
 
 const isRowLocked = (row: any): boolean => {
   if (user.value?.email === 'cost-dev@local') return false;
+  if (can('cost:admin')) return false;
   if (row._lock_reason) return true;
   const bm = (row['Бренд-менеджер'] || '').trim().toLowerCase();
   const email = (user.value?.email || '').trim().toLowerCase();
@@ -3083,6 +3087,7 @@ const selectedPendingIds = ref<number[]>([]);
 const approvalLoading = ref(false);
 const approvalApplying = ref(false);
 const approvalClearing = ref(false);
+const approvalRejecting = ref(false);
 
 async function openApprovalModal() {
   showApprovalModal.value = true;
@@ -3143,6 +3148,7 @@ async function applyPendingChanges() {
           calc_sign: calcSign,
           price_type: priceType,
           author_name: user.value?.name || 'system',
+          cost_rub: Number(pc['Себестоимость, руб.'] ?? pc.cost_rub ?? 0),
         };
       })
       .filter(Boolean);
@@ -3183,6 +3189,35 @@ async function clearAllPendingChanges() {
     lastError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     approvalClearing.value = false;
+  }
+}
+
+async function rejectPendingChanges() {
+  if (!selectedPendingIds.value.length) return;
+  approvalRejecting.value = true;
+  try {
+    const selected = approvalPendingChanges.value.filter((pc: any) =>
+      selectedPendingIds.value.includes(pc.id)
+    );
+    for (const pc of selected) {
+      await $fetch(`${apiBase.value}/api/cost/reject-price`, {
+        method: "POST",
+        body: {
+          model: pc['Модель'] ?? pc.model ?? '',
+          articul: pc['Артикул'] ?? pc.articul ?? '',
+          calc_sign: pc['Признак калькуляции'] ?? pc.calc_sign ?? null,
+          plan_id: pc['PLAN_ID'] ?? pc.plan_id ?? null,
+          date: pc['дата расчета'] ?? pc.date ?? null,
+        },
+        headers: fetchHeaders.value,
+      });
+    }
+    await loadApprovalPendingChanges();
+  } catch (e: any) {
+    console.error("[cost] reject pending changes failed", e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    approvalRejecting.value = false;
   }
 }
 
@@ -4182,6 +4217,7 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .row-modified { background:#fefce8; }
 .col-peo { width:48px; text-align:center; }
 .peo-badge { cursor:pointer; font-size:16px; }
+.peo-readonly .peo-badge { cursor:default; }
 .peo-filter-select { padding:4px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; }
 .approval-modal { width:400px; }
 .approval-body { padding:16px; display:flex; flex-direction:column; gap:12px; }
