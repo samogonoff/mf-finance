@@ -322,7 +322,7 @@
               <th v-if="isVisible('calc_margin_deviation')" class="col-num" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
                 Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="(can('cost:approve') || can('cost:peo_mark')) && isVisible('peo')" class="col-peo">ПЭО</th>
+              <th v-if="isVisible('peo')" class="col-peo">ПЭО</th>
             </tr>
           </thead>
           <tbody>
@@ -454,7 +454,7 @@
               </td>
               <td v-if="isVisible('calc_margin_pct')" class="col-num num">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
               <td v-if="isVisible('calc_margin_deviation')" class="col-num num" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
-              <td v-if="(can('cost:approve') || can('cost:peo_mark')) && isVisible('peo')" class="col-peo">
+              <td v-if="isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark') }">
                 <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="openApprovalPopup(row)">🟢</span>
                 <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" @click.stop="openApprovalPopup(row)">🔴</span>
                 <span v-else class="peo-badge peo-none" @click.stop="openApprovalPopup(row)">⚪</span>
@@ -4217,6 +4217,7 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .row-modified { background:#fefce8; }
 .col-peo { width:48px; text-align:center; }
 .peo-badge { cursor:pointer; font-size:16px; }
+.peo-readonly .peo-badge { cursor:default; }
 .peo-filter-select { padding:4px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; }
 .approval-modal { width:400px; }
 .approval-body { padding:16px; display:flex; flex-direction:column; gap:12px; }
