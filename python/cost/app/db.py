@@ -1028,8 +1028,8 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                     """
                     INSERT INTO cost_price_changes_audit
                         (model, articul, price_level, retail_rub, wholesale_rub, username, changed_at,
-                         price_rf, price_kz, price_uz, comment)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                         price_rf, price_kz, price_uz, comment, calc_sign, plan_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                     """,
                     rec.get("Модель"),
                     rec.get("Артикул"),
@@ -1042,6 +1042,8 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                     rec.get("Цена КЗ"),
                     rec.get("Цена УЗ"),
                     comment_val,
+                    rec.get("Признак калькуляции"),
+                    rec.get("PLAN_ID"),
                 )
             await conn2.execute(
                 "DELETE FROM cost_price_pending WHERE id = ANY($1::bigint[])",
@@ -1418,8 +1420,10 @@ async def get_calc_state(model, articul, calc_sign, plan_id, raw_date) -> dict:
             """SELECT EXISTS (
                   SELECT 1 FROM cost_price_changes_audit
                   WHERE model = $1 AND articul = $2
+                    AND calc_sign IS NOT DISTINCT FROM $3
+                    AND plan_id IS NOT DISTINCT FROM $4
                )""",
-            model, articul,
+            model, articul, calc_sign, plan_id,
         )
         peo = await conn.fetchrow(
             """SELECT status FROM cost_calc_approvals
@@ -1523,3 +1527,38 @@ async def get_approval_status(filters: dict | None = None) -> list[dict]:
     async with pool().acquire() as conn:
         rows = await conn.fetch(f"SELECT * FROM cost_calc_approvals{where} ORDER BY updated_at DESC", *params)
         return [dict(r) for r in rows]
+
+
+async def delete_dwh_record(model, articul, calc_sign, plan_id) -> dict:
+    """Delete DWH record from local audit and OLAP. Returns counts."""
+    # 1. Delete from local audit (postgres-cost)
+    async with pool().acquire() as conn:
+        audit_result = await conn.execute(
+            """DELETE FROM cost_price_changes_audit
+               WHERE model = $1 AND articul = $2
+                 AND calc_sign IS NOT DISTINCT FROM $3
+                 AND plan_id IS NOT DISTINCT FROM $4""",
+            model, articul, calc_sign, plan_id,
+        )
+        audit_deleted = int(audit_result.split()[1]) if audit_result.startswith("DELETE") else 0
+
+    # 2. Delete from OLAP (MSSQL)
+    olap_deleted = 0
+    proc_db = os.environ.get("PROC_DB_PROCEDURE")
+    if proc_db:
+        olap = get_olap_conn()
+        cursor = olap.cursor()
+        try:
+            cursor.execute(
+                f"""DELETE FROM CostHistory_Changes
+                    WHERE Модель = ? AND Артикул = ?
+                      AND calc_sign IS NOT DISTINCT FROM ?
+                      AND plan_id IS NOT DISTINCT FROM ?""",
+                model, articul, calc_sign, plan_id,
+            )
+            olap.commit()
+            olap_deleted = cursor.rowcount
+        finally:
+            olap.close()
+
+    return {"audit_deleted": audit_deleted, "olap_deleted": olap_deleted}
