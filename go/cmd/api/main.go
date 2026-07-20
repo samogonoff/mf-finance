@@ -136,6 +136,18 @@ func main() {
 			}
 			premasterRepo = fdRepo
 			log.Printf("debt: backend=findebt-live (MSSQL Payments.report.FinDebt1/3)")
+		case "findebt-docdate":
+			// Второй поток: та же витрина, но BYN/USD пересчитаны на дату документа
+			// (Doc_Date) через dim_valuta + currency_daily (ASOF). Для сверки с findebt.
+			ddRepo, derr := debt.NewFinDebtDocDateCHRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
+			if derr != nil {
+				log.Fatalf("debt: findebt-docdate init: %v", derr)
+			}
+			if ddRepo == nil {
+				log.Fatalf("debt: DEBT_BACKEND=findebt-docdate but CLICKHOUSE_HTTP_URL/USER not set")
+			}
+			premasterRepo = ddRepo
+			log.Printf("debt: backend=findebt-docdate (ClickHouse fact_findebt_ccy + currency_daily, пересчёт на Doc_Date)")
 		default:
 			// findebt (default): отчёт читает CH-снэпшот finance.fact_findebt/_docs.
 			fdRepo, ferr := debt.NewFinDebtCHRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
@@ -182,6 +194,19 @@ func main() {
 			CHPass: cfg.ClickHousePass,
 		}, etl.FinDebtOpts{Tables: fdTables}).
 			Start(context.Background(), time.Duration(cfg.DebtFinDebtSyncInterval)*time.Second)
+
+		// Фоновая синхронизация курсов (dim_valuta, currency_daily) для второго
+		// потока findebt-docdate. CURRENCY_SYNC_INTERVAL=0 → выключен (заливаем
+		// вручную cmd/findebt-etl MODE=currency).
+		etl.NewCurrencyWorker(etl.Deps{
+			MSSQL:  mssqlDB,
+			CHURL:  cfg.ClickHouseHTTPURL,
+			CHUser: cfg.ClickHouseUser,
+			CHPass: cfg.ClickHousePass,
+		}, etl.CurrencyTables{
+			ValutaFQN:        cfg.DebtValutaFQN,
+			CurrencyDailyFQN: cfg.DebtCurrencyDailyFQN,
+		}).Start(context.Background(), time.Duration(cfg.CurrencySyncInterval)*time.Second)
 	}
 
 	// Тактические планы (VS0 каркас + VS1 справочники + VS2 факт МП).

@@ -30,10 +30,21 @@ type Config struct {
 	//   "findebt" (default) → отчёт читает CH finance.fact_findebt/_docs
 	//                         (залито cmd/findebt-etl из FinDebt-вьюх).
 	//   "findebt-live"      → прямое чтение FinDebt-вьюх из MSSQL (фолбэк/дебаг).
+	//   "findebt-docdate"   → второй поток: та же свёртка, но BYN/USD пересчитаны
+	//                         на дату документа (Doc_Date) через dim_valuta +
+	//                         currency_daily (ASOF). Для сверки с findebt.
 	DebtBackend       string
 	ClickHouseHTTPURL string
 	ClickHouseUser    string
 	ClickHousePass    string
+
+	// Пересчёт валют на Doc_Date (второй поток findebt-docdate). FQN linked-server
+	// справочников курса на OLAP; настраиваемы, т.к. доступность [SRV-SQL] — вопрос
+	// интеграции. CurrencySyncInterval — период фонового обновления курсов (сек),
+	// 0 → воркер выключен (заливаем вручную через cmd/findebt-etl MODE=currency).
+	DebtValutaFQN        string
+	DebtCurrencyDailyFQN string
+	CurrencySyncInterval int
 
 	// FinDebt-вьюхи в БД Payments (PremasterPaymentsDatabase), схема report.
 	// FinDebt1 — свод остатков ДЗ/КЗ, FinDebt3 — документная детализация с
@@ -99,6 +110,10 @@ func Load() Config {
 		DebtFinDebt1Table:       env("MSSQL_FINDEBT1_TABLE", "FinDebt1"),
 		DebtFinDebt3Table:       env("MSSQL_FINDEBT3_TABLE", "FinDebt3"),
 		DebtFinDebtSyncInterval: atoiDef(env("FINDEBT_SYNC_INTERVAL", "0"), 0),
+
+		DebtValutaFQN:        env("MSSQL_VALUTA_FQN", "[SRV-SQL].Gpartner.dbo.valuta"),
+		DebtCurrencyDailyFQN: env("MSSQL_CURRENCY_DAILY_FQN", "[SRV-SQL].Checks.dbo.CurrencyDaily"),
+		CurrencySyncInterval: atoiDef(env("CURRENCY_SYNC_INTERVAL", "0"), 0),
 
 		PlansMock:          env("PLANS_MOCK", "0") == "1",
 		PlansMpFactTable:   env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),

@@ -16,7 +16,11 @@
 // ============================================================================
 // ENV:
 //
-//	MODE                  — bootstrap | incremental (дефолт bootstrap).
+//	MODE                  — bootstrap | incremental | currency (дефолт bootstrap).
+//	                        currency — синхронизация справочников курса (dim_valuta,
+//	                        currency_daily) для второго потока findebt-docdate.
+//	MSSQL_VALUTA_FQN         — FQN справочника валют (дефолт [SRV-SQL].Gpartner.dbo.valuta).
+//	MSSQL_CURRENCY_DAILY_FQN — FQN курсов (дефолт [SRV-SQL].Checks.dbo.CurrencyDaily).
 //	FINDEBT_MIN_DATE      — нижняя граница снэпшотов для bootstrap, YYYY-MM-DD (дефолт 2021-01-01).
 //	FINDEBT_BATCH         — размер батча, дефолт 5000.
 //	MSSQL_PAYMENTS_DB     — БД с вьюхами FinDebt (дефолт Payments).
@@ -98,6 +102,11 @@ func main() {
 	switch mode {
 	case "incremental":
 		n, err = etl.RunIncrementalFinDebt(ctx, deps, opts)
+	case "currency":
+		n, err = etl.RunCurrencySync(ctx, deps, etl.CurrencyTables{
+			ValutaFQN:        envOr("MSSQL_VALUTA_FQN", "[SRV-SQL].Gpartner.dbo.valuta"),
+			CurrencyDailyFQN: envOr("MSSQL_CURRENCY_DAILY_FQN", "[SRV-SQL].Checks.dbo.CurrencyDaily"),
+		})
 	default:
 		n, err = etl.RunBootstrapFinDebt(ctx, deps, opts)
 	}
