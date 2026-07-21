@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status)
+from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -377,13 +377,37 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         '  AND TRIM(cd."Артикул") = ca.articul'
         '  AND TRIM(cd."Признак калькуляции") = ca.calc_sign'
         '  AND TRIM(cd."PLAN_ID") = ca.plan_id'
+        '  AND (TRIM(cd."Номер задания производства") IS NOT DISTINCT FROM ca.task_number)'
     )
-    select_parts.append("MAX(CASE WHEN ca.status = 'approved' THEN 'approved' WHEN ca.status = 'rejected' THEN 'rejected' ELSE NULL END) AS peo_status")
+    select_parts.append(
+        "CASE WHEN BOOL_AND(ca.status = 'approved') THEN 'approved'"
+        "     WHEN BOOL_OR(ca.status = 'rejected') THEN 'rejected'"
+        "     ELSE NULL END AS peo_status"
+    )
     query = f"SELECT {', '.join(select_parts)} FROM cost_data_cache cd {join} WHERE {where} GROUP BY {', '.join(f'cd."{f}"' for f in AGG_GROUP_FIELDS)}"
 
     async with pool().acquire() as conn:
         rows = await conn.fetch(query, *params)
         data = [dict(row) for row in rows]
+
+    # ── Group-level approval status (for BM lock) ──────────────────────────
+    # A row is _group_approved only when ALL task_numbers within the same
+    # 4-tuple (model, articul, calc_sign, plan_id) have peo_status='approved'.
+    _gkey = lambda r: (
+        (r.get("Модель") or "").strip(),
+        (r.get("Артикул") or "").strip(),
+        (r.get("Признак калькуляции") or "").strip(),
+        (r.get("PLAN_ID") or "").strip(),
+    )
+    _group_all_approved: dict[tuple, bool] = {}
+    for row in data:
+        k = _gkey(row)
+        if k not in _group_all_approved:
+            _group_all_approved[k] = True
+        if row.get("peo_status") != "approved":
+            _group_all_approved[k] = False
+    for row in data:
+        row["_group_approved"] = _group_all_approved.get(_gkey(row), False)
 
     for row in data:
         row["sum_Себестоимость, руб."] = round(
@@ -404,43 +428,6 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
             row["target_margin_pct"] = target_map.get(l1)
     except Exception:
         pass  # no targets yet — leave field empty
-
-    # Inject draft/pending version status indicator
-    try:
-        pairs = set()
-        for row in data:
-            model = str(row.get("Модель", "") or "").strip()
-            articul = str(row.get("Артикул", "") or "").strip()
-            if model and articul:
-                pairs.add((model, articul))
-        if pairs:
-            pair_list = list(pairs)
-            conditions = " OR ".join(
-                f"(cv.model = ${i*2+1} AND cv.articul = ${i*2+2})"
-                for i in range(len(pair_list))
-            )
-            flat_params = [v for pair in pair_list for v in pair]
-            async with pool().acquire() as conn:
-                ver_rows = await conn.fetch(
-                    f"""SELECT DISTINCT cv.model, cv.articul, cv.status
-                        FROM cost_calc_versions cv
-                        WHERE ({conditions})
-                          AND cv.status IN ('draft', 'pending')""",
-                    *flat_params,
-                )
-            version_map: dict[tuple[str, str], str | None] = {}
-            for vr in ver_rows:
-                key = (str(vr["model"]).strip(), str(vr["articul"]).strip())
-                if key not in version_map:
-                    version_map[key] = vr["status"]
-            for row in data:
-                model = str(row.get("Модель", "") or "").strip()
-                articul = str(row.get("Артикул", "") or "").strip()
-                status = version_map.get((model, articul))
-                if status:
-                    row["version_status"] = status
-    except Exception:
-        pass  # draft indicator is cosmetic — don't break the page
 
     # ── Price levels → price_rf/kz/uz (Task 1) ───────────────────────────
     try:
@@ -772,13 +759,8 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 row["_has_pending"] = has_pending
                 row["_has_audit"] = has_audit
 
-                vs = row.get("version_status")
-                if vs in ("draft", "pending"):
-                    row["_lock_reason"] = "version"
-                elif has_pending:
+                if has_pending:
                     row["_lock_reason"] = "pending_changes"
-                elif has_audit:
-                    row["_lock_reason"] = "dwh_written"
                 else:
                     row["_lock_reason"] = None
     except Exception:
@@ -985,60 +967,22 @@ async def _check_save_locks(
         return []
 
     lock_keys: set[tuple[str, str, str, str]] = set()
+    # Map 4-tuple → set of task_numbers seen in the data
+    group_tasks: dict[tuple[str, str, str, str], set[str | None]] = {}
     for r in rows:
         m = str(r.get("model", "") or "").strip()
         a = str(r.get("articul", "") or "").strip()
         cs = str(r.get("calc_sign") or r.get("Признак калькуляции", "") or "").strip()
         pi = str(r.get("plan_id", "") or "").strip()
+        tn = str(r.get("task_number") or r.get("Номер задания производства", "") or "").strip() or None
         if m and a:
-            lock_keys.add((m, a, cs, pi))
+            key4 = (m, a, cs, pi)
+            lock_keys.add(key4)
+            group_tasks.setdefault(key4, set()).add(tn)
     if not lock_keys:
         return []
 
     lock_list = list(lock_keys)
-    pair_list = list(set((m, a) for m, a, _, _ in lock_list))
-
-    ver_map: dict[tuple[str, str], str] = {}
-    if pair_list:
-        conditions = " OR ".join(
-            f"(model = ${i*2+1} AND articul = ${i*2+2})"
-            for i in range(len(pair_list))
-        )
-        flat_params = [v for pair in pair_list for v in pair]
-        async with pool().acquire() as conn:
-            ver_rows = await conn.fetch(
-                f"""SELECT DISTINCT model, articul, status
-                    FROM cost_calc_versions
-                    WHERE ({conditions})
-                      AND status IN ('draft', 'pending')""",
-                *flat_params,
-            )
-        for vr in ver_rows:
-            key = (str(vr["model"]).strip(), str(vr["articul"]).strip())
-            if key not in ver_map:
-                ver_map[key] = vr["status"]
-
-    pending_set: set[tuple[str, str, str, str]] = set()
-    if lock_list:
-        pend_ph = ", ".join(
-            f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
-            for i in range(len(lock_list))
-        )
-        pend_params: list[str] = []
-        for m, a, cs, pi in lock_list:
-            pend_params.extend([m, a, cs, pi])
-        async with pool().acquire() as conn:
-            pend_rows = await conn.fetch(
-                f"""SELECT DISTINCT "Модель", "Артикул", "Признак калькуляции", "PLAN_ID"
-                    FROM cost_price_pending
-                    WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {pend_ph})""",
-                *pend_params,
-            )
-        for r in pend_rows:
-            pending_set.add((
-                str(r["Модель"]).strip(), str(r["Артикул"]).strip(),
-                str(r["Признак калькуляции"]).strip(), str(r["PLAN_ID"]).strip(),
-            ))
 
     audit_set: set[tuple[str, str, str, str]] = set()
     if lock_list:
@@ -1062,7 +1006,7 @@ async def _check_save_locks(
                 str(r["calc_sign"] or "").strip(), str(r["plan_id"] or "").strip(),
             ))
 
-    approval_map: dict[tuple[str, str, str, str], str] = {}
+    approved_groups: set[tuple[str, str, str, str]] = set()
     if lock_list:
         appr_ph = ", ".join(
             f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
@@ -1073,17 +1017,23 @@ async def _check_save_locks(
             appr_params.extend([m, a, cs, pi])
         async with pool().acquire() as conn:
             appr_rows = await conn.fetch(
-                f"""SELECT DISTINCT model, articul, calc_sign, plan_id, status
+                f"""SELECT DISTINCT model, articul, calc_sign, plan_id, task_number, status
                     FROM cost_calc_approvals
                     WHERE (model, articul, calc_sign, plan_id) IN (VALUES {appr_ph})""",
                 *appr_params,
             )
+        group_approval: dict[tuple[str, str, str, str], dict[str | None, str]] = {}
         for r in appr_rows:
-            key = (
+            key4 = (
                 str(r["model"]).strip(), str(r["articul"]).strip(),
                 str(r["calc_sign"] or "").strip(), str(r["plan_id"] or "").strip(),
             )
-            approval_map[key] = r["status"]
+            tn_val = str(r["task_number"] or "").strip() or None
+            group_approval.setdefault(key4, {})[tn_val] = r["status"]
+        for key4, expected_tasks in group_tasks.items():
+            approvals = group_approval.get(key4, {})
+            if all(approvals.get(tn) == "approved" for tn in expected_tasks):
+                approved_groups.add(key4)
 
     locked_rows: list[dict] = []
     for r in rows:
@@ -1097,24 +1047,6 @@ async def _check_save_locks(
             continue
 
         key4 = (model, articul, cs, pi)
-        key2 = (model, articul)
-
-        vs = ver_map.get(key2)
-        if vs in ("draft", "pending"):
-            locked_rows.append({
-                "model": model, "articul": articul,
-                "calc_sign": cs, "plan_id": pi,
-                "reason": f"Активна версия расчёта со статусом «{vs}»",
-            })
-            continue
-
-        if key4 in pending_set:
-            locked_rows.append({
-                "model": model, "articul": articul,
-                "calc_sign": cs, "plan_id": pi,
-                "reason": "Изменения уже ожидают согласования",
-            })
-            continue
 
         if key4 in audit_set:
             locked_rows.append({
@@ -1124,12 +1056,8 @@ async def _check_save_locks(
             })
             continue
 
-        # PEO gate: brand-managers (users with cost:edit_price but NOT cost:approve/peo_mark/admin)
-        # may only save prices on calc-approvals with status='approved', regardless of who owns
-        # the calculation. Self-edit special case is folded in — own unapproved calc is also locked.
         if not await _can_approve_or_peo(user_email):
-            peo_status = approval_map.get(key4)
-            if peo_status != "approved":
+            if key4 not in approved_groups:
                 locked_rows.append({
                     "model": model, "articul": articul,
                     "calc_sign": cs, "plan_id": pi,
@@ -1368,13 +1296,14 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
     if not _is_mock():
         async with pool().acquire() as conn:
             pending_rows = await conn.fetch(
-                "SELECT \"Модель\", \"Артикул\", \"Признак калькуляции\", \"PLAN_ID\" FROM cost_price_pending WHERE id = ANY($1::bigint[])",
+                "SELECT \"Модель\", \"Артикул\", \"Признак калькуляции\", \"PLAN_ID\", \"Номер задания производства\" FROM cost_price_pending WHERE id = ANY($1::bigint[])",
                 ids,
             )
         for pr in pending_rows:
+            tn = str(pr.get("Номер задания производства", "") or "").strip() or None
             await save_approval(
                 pr["Модель"], pr["Артикул"], pr["Признак калькуляции"], pr["PLAN_ID"],
-                "approved", reviewed_by,
+                "approved", reviewed_by, task_number=tn,
             )
 
     count = await apply_pending_changes(ids, reviewed_by)
@@ -1459,6 +1388,65 @@ async def checkout_calculation_endpoint(request: Request, user_email: str = Depe
         return mocks.checkout_calculation(model, articul, calc_sign, plan_id, parsed_date, username)
     await _check_calc_locks(user_email, model, articul, calc_sign, plan_id, date_str)
     return await checkout_calculation(model, articul, calc_sign, plan_id, parsed_date, username)
+
+
+@router.get("/raw-data")
+async def raw_data_endpoint(request: Request, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    model = request.query_params.get("model")
+    articul = request.query_params.get("articul")
+    calc_sign = request.query_params.get("calc_sign") or None
+    plan_id = request.query_params.get("plan_id") or None
+    date_str = request.query_params.get("date")
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return mocks.get_raw_cache_rows(model, articul, calc_sign, plan_id, date_str)
+    return await get_raw_cache_rows(model, articul, calc_sign, plan_id, date_str)
+
+
+@router.get("/versions")
+async def versions_endpoint(request: Request, _: str = Depends(_require_perm("cost:view"))) -> list[dict]:
+    model = request.query_params.get("model")
+    articul = request.query_params.get("articul")
+    calc_sign = request.query_params.get("calc_sign") or None
+    plan_id = request.query_params.get("plan_id") or None
+    date_str = request.query_params.get("date")
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return mocks.list_versions(model, articul, calc_sign, plan_id, date_str)
+    return await list_versions(model, articul, calc_sign, plan_id, date_str)
+
+
+@router.get("/version-rows/{version_id}")
+async def version_rows_endpoint(version_id: int, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    if _is_mock():
+        return mocks.get_version_rows(version_id)
+    data = await get_version_rows(version_id)
+    if data is None:
+        raise HTTPException(404, "version not found")
+    return data
+
+
+@router.post("/create-version")
+async def create_version_endpoint(payload: dict, user_email: str = Depends(_require_perm("cost:edit_materials"))) -> dict:
+    model = payload.get("model")
+    articul = payload.get("articul")
+    calc_sign = payload.get("calc_sign")
+    plan_id = payload.get("plan_id")
+    date_str = payload.get("date")
+    username = payload.get("username", user_email or "system")
+    rows = payload.get("rows", [])
+    status = payload.get("status", "draft")
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    if status not in ("draft", "pending"):
+        raise HTTPException(400, "status must be 'draft' or 'pending'")
+    if status == "pending":
+        await _check_calc_locks(user_email, model, articul, calc_sign, plan_id, date_str)
+    if _is_mock():
+        return mocks.create_version(model, articul, calc_sign, plan_id, date_str, username, rows, status)
+    return await create_version(model, articul, calc_sign, plan_id, date_str, username, rows, status)
 
 
 @router.post("/save-calculation-draft")
@@ -1619,11 +1607,12 @@ async def revoke_approval_endpoint(payload: dict, _: str = Depends(_require_any_
     articul = payload.get("articul")
     calc_sign = payload.get("calc_sign")
     plan_id = payload.get("plan_id")
+    task_number = payload.get("task_number")
     if not model or not articul:
         raise HTTPException(400, "model and articul required")
     if _is_mock():
         return mocks.revoke_approval(model, articul, calc_sign, plan_id)
-    await revoke_approval(model, articul, calc_sign, plan_id)
+    await revoke_approval(model, articul, calc_sign, plan_id, task_number=task_number)
     return {"success": True}
 
 

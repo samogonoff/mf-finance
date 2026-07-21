@@ -358,12 +358,6 @@ def aggregated(payload: dict | None = None) -> dict:
     for row in rows:
         l1 = (row.get("Level 01") or "").strip()
         row["target_margin_pct"] = _mock_margin_targets.get(l1)
-    # Inject mock version_status for first few rows to test UI indicator
-    for i, row in enumerate(rows):
-        if i == 0:
-            row["version_status"] = "draft"
-        elif i == 1:
-            row["version_status"] = "pending"
     # Inject price_rf/kz/uz from price levels
     pl_map = {pl["name"]: pl for pl in PRICE_LEVELS}
     for row in rows:
@@ -557,6 +551,29 @@ def get_active_version(model, articul, calc_sign, plan_id, date) -> dict:
 
 def delete_version(version_id) -> dict:
     return {"success": True, "mock": True}
+
+
+def get_raw_cache_rows(model, articul, calc_sign, plan_id, date) -> dict:
+    rows = _all_rows()
+    filtered = [
+        r for r in rows
+        if r.get("Модель") == model and r.get("Артикул") == articul
+    ]
+    for r in filtered:
+        r["change_type"] = "original"
+    return {"version_id": None, "rows": filtered}
+
+
+def list_versions(model, articul, calc_sign, plan_id, date) -> list[dict]:
+    return []
+
+
+def get_version_rows(version_id) -> dict:
+    return {"version_id": version_id, "version": 1, "status": "draft", "rows": []}
+
+
+def create_version(model, articul, calc_sign, plan_id, date, username, rows, status="draft") -> dict:
+    return {"version_id": 999, "version": 1, "mock": True}
 
 
 # ── Mock PEO approvals (Stream H) ──────────────────────────────────────────
