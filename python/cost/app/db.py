@@ -1187,15 +1187,30 @@ async def save_version_draft(version_id, rows) -> None:
 async def submit_version(version_id, comment=None) -> None:
     async with pool().acquire() as conn:
         async with conn.transaction():
-            # Get version info to know which calculation this belongs to
             ver = await conn.fetchrow(
-                """SELECT model, articul, calc_sign, plan_id
+                """SELECT model, articul, calc_sign, plan_id, "дата расчета"
                    FROM cost_calc_versions WHERE id=$1""",
                 version_id,
             )
             if ver is None:
                 return
-            # Reset PEO approval status — a new submission supersedes the old one
+            # Archive previous pending versions of this key (supersession)
+            await conn.execute(
+                """UPDATE cost_calc_versions SET status='archived'
+                   WHERE model=$1 AND articul=$2
+                     AND calc_sign IS NOT DISTINCT FROM $3
+                     AND plan_id IS NOT DISTINCT FROM $4
+                     AND "дата расчета"=$5
+                     AND status='pending' AND id <> $6""",
+                ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"],
+                ver["дата расчета"], version_id,
+            )
+            await conn.execute(
+                "UPDATE cost_calc_versions SET status='pending', comment=$2 WHERE id=$1",
+                version_id, comment,
+            )
+            await _apply_version_rows_to_cache(conn, version_id)
+            # Reset PEO approval — new submission supersedes the old one
             await conn.execute(
                 """DELETE FROM cost_calc_approvals
                    WHERE model=$1 AND articul=$2
@@ -1203,10 +1218,6 @@ async def submit_version(version_id, comment=None) -> None:
                      AND plan_id IS NOT DISTINCT FROM $4
                      AND status='approved'""",
                 ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"],
-            )
-            await conn.execute(
-                "UPDATE cost_calc_versions SET status='pending', comment=$2 WHERE id=$1",
-                version_id, comment,
             )
 
 
@@ -1320,6 +1331,153 @@ async def get_version_info(version_id) -> dict | None:
             version_id,
         )
         return dict(row) if row else None
+
+
+async def get_raw_cache_rows(model, articul, calc_sign, plan_id, raw_date) -> dict:
+    """Return rows from cost_data_cache WITHOUT creating a version."""
+    if isinstance(raw_date, str) and raw_date:
+        date = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
+    else:
+        date = raw_date
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            f"""SELECT {", ".join(f'"{c}"' for c in CACHE_COLUMNS)}
+               FROM cost_data_cache
+               WHERE "Модель"=$1 AND "Артикул"=$2
+                 AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+                 AND "PLAN_ID" IS NOT DISTINCT FROM $4
+                 AND "дата расчета"=$5
+               ORDER BY id""",
+            model, articul, calc_sign, plan_id, date,
+        )
+        return {"version_id": None, "rows": [dict(r) for r in rows]}
+
+
+async def list_versions(model, articul, calc_sign, plan_id, raw_date) -> list[dict]:
+    if isinstance(raw_date, str) and raw_date:
+        date = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
+    else:
+        date = raw_date
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, version, status, comment, created_at::text, created_by,
+                      approved_by, approved_at::text
+               FROM cost_calc_versions
+               WHERE model=$1 AND articul=$2
+                 AND calc_sign IS NOT DISTINCT FROM $3
+                 AND plan_id IS NOT DISTINCT FROM $4
+                 AND "дата расчета"=$5
+               ORDER BY version DESC""",
+            model, articul, calc_sign, plan_id, date,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_version_rows(version_id) -> dict | None:
+    async with pool().acquire() as conn:
+        ver = await conn.fetchrow(
+            """SELECT id, version, status FROM cost_calc_versions WHERE id=$1""",
+            version_id,
+        )
+        if ver is None:
+            return None
+        rows = await conn.fetch(
+            """SELECT * FROM cost_calc_version_rows WHERE version_id=$1 ORDER BY sort_order""",
+            version_id,
+        )
+        return {
+            "version_id": version_id,
+            "version": ver["version"],
+            "status": ver["status"],
+            "rows": [dict(r) for r in rows],
+        }
+
+
+async def create_version(model, articul, calc_sign, plan_id, raw_date, username, rows, status="draft") -> dict:
+    """Create a new version. If status='pending': applies rows to cache,
+    archives previous pending versions for this key, resets PEO approval."""
+    if isinstance(raw_date, str) and raw_date:
+        date = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
+    else:
+        date = raw_date
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            next_version = await conn.fetchval(
+                """SELECT COALESCE(MAX(version), 0) + 1 FROM cost_calc_versions
+                   WHERE model=$1 AND articul=$2 AND calc_sign IS NOT DISTINCT FROM $3
+                     AND plan_id IS NOT DISTINCT FROM $4 AND "дата расчета"=$5""",
+                model, articul, calc_sign, plan_id, date,
+            )
+            status_refreshed = await conn.fetchrow("SELECT refreshed_at FROM cost_cache_status WHERE id=1")
+            source_refreshed_at = status_refreshed["refreshed_at"] if status_refreshed else None
+            version_id = await conn.fetchval(
+                """INSERT INTO cost_calc_versions
+                   (model, articul, calc_sign, plan_id, "дата расчета", version,
+                    source_refreshed_at, created_by, status)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                   RETURNING id""",
+                model, articul, calc_sign, plan_id, date, next_version,
+                source_refreshed_at, username, status,
+            )
+            col_names = CACHE_COLUMNS
+            for row in rows:
+                norm = row.get("Норма")
+                price_rub = row.get("цена материала, руб.")
+                price_usd = row.get("цена материала, USD.")
+                if norm is not None and price_rub is not None:
+                    try:
+                        row["Основные материалы, руб."] = float(norm or 0) * float(price_rub or 0)
+                    except (ValueError, TypeError):
+                        pass
+                if norm is not None and price_usd is not None:
+                    try:
+                        row["Основные материалы, USD."] = float(norm or 0) * float(price_usd or 0)
+                    except (ValueError, TypeError):
+                        pass
+                values = [version_id]
+                for col in col_names:
+                    val = row.get(col)
+                    if col in _CACHE_NON_TEXT:
+                        if col in ("дата расчета", "дата производства"):
+                            if isinstance(val, str) and val:
+                                values.append(datetime.datetime.fromisoformat(val.replace("Z", "+00:00")).date())
+                            else:
+                                values.append(val if val is not None else None)
+                        else:
+                            values.append(val)
+                    else:
+                        values.append(str(val) if val is not None else None)
+                sort_order = row.get("sort_order", 0)
+                change_type = row.get("change_type", "original")
+                await conn.execute(
+                    f"""INSERT INTO cost_calc_version_rows
+                        (version_id, {", ".join(f'"{c}"' for c in col_names)}, sort_order, change_type)
+                        VALUES ($1, {", ".join(f"${j+2}" for j in range(len(col_names)))},
+                                ${len(col_names)+2}, ${len(col_names)+3})""",
+                    *values, sort_order, change_type,
+                )
+            if status == "pending":
+                # Archive previous pending versions of this key (supersession)
+                await conn.execute(
+                    """UPDATE cost_calc_versions SET status='archived'
+                       WHERE model=$1 AND articul=$2
+                         AND calc_sign IS NOT DISTINCT FROM $3
+                         AND plan_id IS NOT DISTINCT FROM $4
+                         AND "дата расчета"=$5
+                         AND status='pending' AND id <> $6""",
+                    model, articul, calc_sign, plan_id, date, version_id,
+                )
+                await _apply_version_rows_to_cache(conn, version_id)
+                # Reset PEO approval — new submission supersedes the old one
+                await conn.execute(
+                    """DELETE FROM cost_calc_approvals
+                       WHERE model=$1 AND articul=$2
+                         AND calc_sign IS NOT DISTINCT FROM $3
+                         AND plan_id IS NOT DISTINCT FROM $4
+                         AND status='approved'""",
+                    model, articul, calc_sign, plan_id,
+                )
+            return {"version_id": version_id, "version": next_version}
 
 
 _PRICE_FIELDS = [
@@ -1445,17 +1603,17 @@ async def get_calc_state(model, articul, calc_sign, plan_id, raw_date) -> dict:
 # ── PEO approval (cost_calc_approvals) ─────────────────────────────────────
 
 
-async def save_approval(model, articul, calc_sign, plan_id, status, approved_by, comment=None) -> dict:
+async def save_approval(model, articul, calc_sign, plan_id, status, approved_by, comment=None, task_number=None) -> dict:
     async with pool().acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
                 """
                 INSERT INTO cost_calc_approvals
-                    (model, articul, calc_sign, plan_id, status, approved_by, approved_at, comment)
-                VALUES ($1, $2, $3, $4, $5, $6,
-                        CASE WHEN $5 IN ('approved', 'rejected') THEN NOW() ELSE NULL END,
-                        $7)
-                ON CONFLICT (model, articul, calc_sign, plan_id) DO UPDATE SET
+                    (model, articul, calc_sign, plan_id, task_number, status, approved_by, approved_at, comment)
+                VALUES ($1, $2, $3, $4, $5, $6, $7,
+                        CASE WHEN $6 IN ('approved', 'rejected') THEN NOW() ELSE NULL END,
+                        $8)
+                ON CONFLICT (model, articul, calc_sign, plan_id, task_number) DO UPDATE SET
                     status = EXCLUDED.status,
                     approved_by = EXCLUDED.approved_by,
                     approved_at = EXCLUDED.approved_at,
@@ -1463,21 +1621,8 @@ async def save_approval(model, articul, calc_sign, plan_id, status, approved_by,
                     updated_at = NOW()
                 RETURNING *
                 """,
-                model, articul, calc_sign, plan_id, status, approved_by, comment,
+                model, articul, calc_sign, plan_id, task_number, status, approved_by, comment,
             )
-            # When approved, find latest pending version and apply its rows to cache
-            if status == 'approved':
-                ver = await conn.fetchrow(
-                    """SELECT id FROM cost_calc_versions
-                       WHERE model=$1 AND articul=$2
-                         AND calc_sign IS NOT DISTINCT FROM $3
-                         AND plan_id IS NOT DISTINCT FROM $4
-                         AND status='pending'
-                       ORDER BY created_at DESC LIMIT 1""",
-                    model, articul, calc_sign, plan_id,
-                )
-                if ver is not None:
-                    await _apply_version_rows_to_cache(conn, ver["id"])
             return dict(row)
 
 
@@ -1486,17 +1631,17 @@ async def save_approvals_batch(approvals: list[dict]) -> list[dict]:
     for a in approvals:
         r = await save_approval(
             a["model"], a.get("articul"), a.get("calc_sign"), a.get("plan_id"),
-            a["status"], a.get("approved_by"), a.get("comment"),
+            a["status"], a.get("approved_by"), a.get("comment"), a.get("task_number"),
         )
         results.append(r)
     return results
 
 
-async def revoke_approval(model, articul, calc_sign, plan_id) -> None:
+async def revoke_approval(model, articul, calc_sign, plan_id, task_number=None) -> None:
     async with pool().acquire() as conn:
         await conn.execute(
-            "DELETE FROM cost_calc_approvals WHERE model=$1 AND articul=$2 AND calc_sign IS NOT DISTINCT FROM $3 AND plan_id IS NOT DISTINCT FROM $4",
-            model, articul, calc_sign, plan_id,
+            "DELETE FROM cost_calc_approvals WHERE model=$1 AND articul=$2 AND calc_sign IS NOT DISTINCT FROM $3 AND plan_id IS NOT DISTINCT FROM $4 AND task_number IS NOT DISTINCT FROM $5",
+            model, articul, calc_sign, plan_id, task_number,
         )
 
 
