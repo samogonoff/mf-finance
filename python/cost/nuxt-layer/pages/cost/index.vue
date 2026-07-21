@@ -346,10 +346,8 @@
                 <span v-if="isRowLocked(row) && !row._has_pending && !row._has_audit" class="lock-icon" title="Строка заблокирована">🔒</span>
                 <span v-if="row._has_pending" class="state-badge state-badge--pending" title="Ожидает согласования">⏳</span>
                 <span v-if="row._has_audit" class="state-badge state-badge--audit" title="Записано в DWH">📤</span>
-                <span v-if="row.version_status === 'draft'" class="draft-badge draft-badge--draft" title="Черновик">✎</span>
-                <span v-if="row.version_status === 'pending'" class="draft-badge draft-badge--pending" title="Ожидает утверждения">⏳</span>
                 <button class="btn-details" @click.stop="openDetails(row)">🔍</button>
-                <button class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">🖊</button>
+                <button v-if="!isRowLocked(row) && !row._has_audit" class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">🖊</button>
               </td>
               <td><button class="btn-details" @click.stop="openRawRows(row)" title="Исходные строки">📋</button></td>
               <td v-if="isVisible('bm')">{{ row['Бренд-менеджер'] || '—' }}</td>
@@ -454,10 +452,10 @@
               </td>
               <td v-if="isVisible('calc_margin_pct')" class="col-num num">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
               <td v-if="isVisible('calc_margin_deviation')" class="col-num num" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
-              <td v-if="isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark') }">
-                <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="openApprovalPopup(row)">🟢</span>
-                <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" @click.stop="openApprovalPopup(row)">🔴</span>
-                <span v-else class="peo-badge peo-none" @click.stop="openApprovalPopup(row)">⚪</span>
+              <td v-if="isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark'), 'peo-active': approvalTarget === row }">
+                <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟢</span>
+                <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🔴</span>
+                <span v-else class="peo-badge peo-none" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">⚪</span>
               </td>
             </tr>
           </tbody>
@@ -760,22 +758,40 @@
         <div class="modal-content modal-wide" @click.stop>
           <div class="modal-header">
             <h2>Редактирование расчёта: {{ editingVersion.model }} / {{ editingVersion.articul }}</h2>
+            <span v-if="editingVersion._locked" class="version-status-badge" style="background:#fef3c7;color:#b45309;">🔒 Заблокировано</span>
             <div class="modal-header-actions">
               <button class="modal-close" @click="closeVersionEditor">×</button>
             </div>
           </div>
+          <div class="version-selector-bar">
+            <label>Версия: </label>
+            <select class="version-select editor-select"
+                    :disabled="editingVersion.isEditing || loadingVersionData"
+                    :value="editingVersion.selectedVersionId ?? '__raw__'"
+                    @change="onVersionSelectChange($event)">
+              <option value="__raw__">Исходные данные</option>
+              <option v-for="v in editingVersion.versions" :key="v.id" :value="v.id">
+                Версия {{ v.version }} · {{ v.status }}<template v-if="v.created_at"> · {{ v.created_at.slice(0, 16) }}</template>
+              </option>
+            </select>
+            <span v-if="currentVersionStatus" class="version-status-badge">{{ currentVersionStatus }}</span>
+          </div>
           <div class="version-editor-toolbar">
-            <button class="btn btn-sm" @click="addVersionRow">+ Добавить строку</button>
-            <button class="btn btn-sm btn-danger" @click="deleteSelectedRows">✕ Удалить</button>
-            <span class="spacer"></span>
-            <button class="btn btn-sm" :disabled="savingDraft" @click="saveDraft">{{ savingDraft ? 'Сохранение…' : '💾 Сохранить' }}</button>
-            <button class="btn btn-sm btn-primary" :disabled="submittingDraft" @click="submitDraft">{{ submittingDraft ? 'Отправка…' : '📨 Отправить на утверждение' }}</button>
+            <button v-if="!editingVersion.isEditing" class="btn btn-sm btn-primary" :disabled="loadingVersionData || editingVersion._locked" @click="startEditing">✏️ Редактировать</button>
+            <template v-else>
+              <button class="btn btn-sm" @click="addVersionRow">+ Добавить строку</button>
+              <button class="btn btn-sm btn-danger" @click="deleteSelectedRows">✕ Удалить</button>
+              <span class="spacer"></span>
+              <button class="btn btn-sm" :disabled="savingDraft || editingVersion._locked" @click="saveDraft">{{ savingDraft ? 'Сохранение…' : '💾 Сохранить' }}</button>
+              <button class="btn btn-sm btn-primary" :disabled="submittingDraft || editingVersion._locked" @click="submitDraft">{{ submittingDraft ? 'Отправка…' : '📨 Отправить на утверждение' }}</button>
+              <button class="btn btn-sm btn-ghost" @click="cancelEditing">Отмена</button>
+            </template>
           </div>
           <div class="version-editor-table-wrap">
             <table class="version-editor-table">
               <thead>
                 <tr>
-                  <th class="col-chk"><input type="checkbox" @change="(e: any) => editingVersion?.rows.forEach(r => r._selected = (e.target as HTMLInputElement).checked)" /></th>
+                  <th v-if="editingVersion.isEditing" class="col-chk"><input type="checkbox" @change="(e: any) => editingVersion?.rows.forEach(r => r._selected = (e.target as HTMLInputElement).checked)" /></th>
                   <th>Материал/операция</th>
                   <th>Наименование</th>
                   <th>Артикул материала</th>
@@ -790,22 +806,23 @@
               <tbody>
                 <tr v-for="(vr, vi) in editingVersion.rows" :key="vi"
                   :class="{ 'row-added': vr.change_type === 'added', 'row-modified': vr.change_type === 'modified' }">
-                  <td><input type="checkbox" v-model="vr._selected" /></td>
+                  <td v-if="editingVersion.isEditing"><input type="checkbox" v-model="vr._selected" /></td>
                   <td>
-                    <select :value="vr['Материал/операция/декор(призн)']" class="editor-select" @change="onVersionRowEdit(vr, $event, 'Материал/операция/декор(призн)')">
+                    <select v-if="editingVersion.isEditing" :value="vr['Материал/операция/декор(призн)']" class="editor-select" @change="onVersionRowEdit(vr, $event, 'Материал/операция/декор(призн)')">
                       <option value="материал">материал</option>
                       <option value="техоперация">техоперация</option>
                       <option value="декор">декор</option>
                     </select>
+                    <span v-else>{{ vr['Материал/операция/декор(призн)'] }}</span>
                   </td>
-                  <td><input :value="vr['Наименование']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /></td>
-                  <td><input :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /></td>
-                  <td><input :value="vr['Норма']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /></td>
-                  <td><input :value="vr['цена материала, руб.']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /></td>
-                  <td><input :value="vr['цена материала, USD.']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /></td>
-                  <td><input :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /></td>
+                  <td><input v-if="editingVersion.isEditing" :value="vr['Наименование']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ vr['Наименование'] }}</span></td>
+                  <td><input v-if="editingVersion.isEditing" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
+                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ vr['Норма'] }}</span></td>
+                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, руб.']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else>{{ vr['цена материала, руб.'] }}</span></td>
+                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, USD.']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ vr['цена материала, USD.'] }}</span></td>
+                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /><span v-else>{{ vr['Курс на дату расчета'] }}</span></td>
                   <td class="col-num">{{ ((vr['Норма'] || 0) * (vr['цена материала, руб.'] || 0)).toLocaleString('ru-RU', {minimumFractionDigits:2}) }}</td>
-                  <td><input :value="vr.row_comment" class="editor-input" placeholder="..." @input="onVersionRowEdit(vr, $event, 'row_comment')" /></td>
+                  <td><input v-if="editingVersion.isEditing" :value="vr.row_comment" class="editor-input" placeholder="..." @input="onVersionRowEdit(vr, $event, 'row_comment')" /><span v-else>{{ vr.row_comment }}</span></td>
                 </tr>
               </tbody>
             </table>
@@ -2327,9 +2344,21 @@ const priceRF = reactive<Record<number, number>>({});
 const priceKZ = reactive<Record<number, number>>({});
 const priceUZ = reactive<Record<number, number>>({});
 
-const editingVersion = ref<{version_id: number | null, rows: any[], model: string, articul: string} | null>(null);
+const editingVersion = ref<{
+  model: string;
+  articul: string;
+  calc_sign: string;
+  plan_id: string;
+  date: string;
+  rows: any[];
+  versions: any[];
+  selectedVersionId: number | null;
+  isEditing: boolean;
+  version_id: number | null;
+} | null>(null);
 const savingDraft = ref(false);
 const submittingDraft = ref(false);
+const loadingVersionData = ref(false);
 
 /** Реактивные значения комментариев по строке (индекс → строка). */
 const comments = reactive<Record<number, string>>({});
@@ -2399,24 +2428,50 @@ function getMarkupOptions(row: any): { value: string; label: string }[] {
   return Array.from(resultsMap.values());
 }
 
+/** Целевая наценка по category level01: Мальчикам/Девочкам → 30%, остальное → 40%. */
+function getTargetMarkup(level01: string): number {
+  const v = (level01 || '').toLowerCase();
+  return (v === 'мальчикам' || v === 'девочкам') ? 30 : 40;
+}
+
+/** Найти наценку из списка, максимально близкую к целевой. */
+function findClosestMarkup(
+  options: { value: string; label: string }[],
+  targetPct: number
+): { value: string; label: string } {
+  return options.reduce((best, opt) => {
+    const diff = Math.abs(parseFloat(opt.value) - targetPct);
+    const bestDiff = Math.abs(parseFloat(best.value) - targetPct);
+    return diff < bestDiff ? opt : best;
+  });
+}
+
 /** Обработчики ввода цен РФ, КЗ, УЗ. */
 const onPriceRFInput = (absoluteIdx: number, value: string) => {
+  const row = allAggregated.value[absoluteIdx];
+  if (row && isRowLocked(row)) return;
   const v = parseFloat(value);
   priceRF[absoluteIdx] = isNaN(v) ? 0 : v;
   changedRows.add(absoluteIdx);
 };
 const onPriceKZInput = (absoluteIdx: number, value: string) => {
+  const row = allAggregated.value[absoluteIdx];
+  if (row && isRowLocked(row)) return;
   const v = parseFloat(value);
   priceKZ[absoluteIdx] = isNaN(v) ? 0 : v;
   changedRows.add(absoluteIdx);
 };
 const onPriceUZInput = (absoluteIdx: number, value: string) => {
+  const row = allAggregated.value[absoluteIdx];
+  if (row && isRowLocked(row)) return;
   const v = parseFloat(value);
   priceUZ[absoluteIdx] = isNaN(v) ? 0 : v;
   changedRows.add(absoluteIdx);
 };
 
 const onCommentInput = (absoluteIdx: number, value: string) => {
+  const row = allAggregated.value[absoluteIdx];
+  if (row && isRowLocked(row)) return;
   comments[absoluteIdx] = value || "";
   changedRows.add(absoluteIdx);
 };
@@ -2425,48 +2480,193 @@ const openVersionEditor = async (row: any) => {
   const idx = getOriginalIndex(row);
   const r = allAggregated.value[idx];
   if (!r) return;
+  const params = new URLSearchParams({
+    model: r['Модель'] || '',
+    articul: r['Артикул'] || '',
+    calc_sign: r['Признак калькуляции'] || '',
+    plan_id: r['PLAN_ID'] || '',
+    date: r['дата расчета'] || '',
+  });
   try {
-    const params = new URLSearchParams({
-      model: r['Модель'] || '',
-      articul: r['Артикул'] || '',
+    const [rawResp, versionsResp] = await Promise.all([
+      $fetch<{ version_id: number | null; rows: any[] }>(
+        `${apiBase.value}/api/cost/raw-data?${params}`,
+        { headers: fetchHeaders.value }
+      ),
+      $fetch<any[]>(
+        `${apiBase.value}/api/cost/versions?${params}`,
+        { headers: fetchHeaders.value }
+      ),
+    ]);
+    editingVersion.value = {
+      model: r['Модель'],
+      articul: r['Артикул'],
       calc_sign: r['Признак калькуляции'] || '',
       plan_id: r['PLAN_ID'] || '',
       date: r['дата расчета'] || '',
-      username: username || 'system',
-    });
-    const data = await $fetch<{ version_id: number; rows: any[] }>(
-      `${apiBase.value}/api/cost/checkout-calculation?${params}`,
-      { headers: fetchHeaders.value }
-    );
-    editingVersion.value = {
-      version_id: data.version_id,
-      rows: (data.rows || []).map((rr: any) => ({...rr, _selected: false})),
-      model: r['Модель'],
-      articul: r['Артикул'],
+      rows: (rawResp.rows || []).map((rr: any) => ({...rr, _selected: false})),
+      versions: versionsResp || [],
+      selectedVersionId: null,
+      isEditing: false,
+      version_id: null,
+      _locked: isRowLocked(r),
     };
   } catch (e: any) {
-    console.error('[cost] checkout failed', e);
+    console.error('[cost] load version editor failed', e);
     lastError.value = e?.data?.detail || e?.message || String(e);
+  }
+};
+
+const refreshVersions = async () => {
+  if (!editingVersion.value) return;
+  const ev = editingVersion.value;
+  const params = new URLSearchParams({
+    model: ev.model,
+    articul: ev.articul,
+    calc_sign: ev.calc_sign,
+    plan_id: ev.plan_id,
+    date: ev.date,
+  });
+  try {
+    const versionsResp = await $fetch<any[]>(
+      `${apiBase.value}/api/cost/versions?${params}`,
+      { headers: fetchHeaders.value }
+    );
+    ev.versions = versionsResp || [];
+  } catch (e) {
+    console.error('[cost] refresh versions failed', e);
+  }
+};
+
+const selectRawData = async () => {
+  if (!editingVersion.value) return;
+  const ev = editingVersion.value;
+  ev.selectedVersionId = null;
+  ev.isEditing = false;
+  ev.version_id = null;
+  const params = new URLSearchParams({
+    model: ev.model,
+    articul: ev.articul,
+    calc_sign: ev.calc_sign,
+    plan_id: ev.plan_id,
+    date: ev.date,
+  });
+  loadingVersionData.value = true;
+  try {
+    const rawResp = await $fetch<{ version_id: number | null; rows: any[] }>(
+      `${apiBase.value}/api/cost/raw-data?${params}`,
+      { headers: fetchHeaders.value }
+    );
+    ev.rows = (rawResp.rows || []).map((rr: any) => ({...rr, _selected: false}));
+  } catch (e: any) {
+    console.error('[cost] load raw data failed', e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    loadingVersionData.value = false;
+  }
+};
+
+const selectVersion = async (versionId: number) => {
+  if (!editingVersion.value || loadingVersionData.value) return;
+  const ev = editingVersion.value;
+  ev.selectedVersionId = versionId;
+  ev.isEditing = false;
+  ev.version_id = null;
+  loadingVersionData.value = true;
+  try {
+    const data = await $fetch<{ version_id: number; rows: any[] }>(
+      `${apiBase.value}/api/cost/version-rows/${versionId}`,
+      { headers: fetchHeaders.value }
+    );
+    ev.rows = (data.rows || []).map((rr: any) => ({...rr, _selected: false}));
+  } catch (e: any) {
+    console.error('[cost] load version rows failed', e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    loadingVersionData.value = false;
+  }
+};
+
+const onVersionSelectChange = (event: Event) => {
+  const value = (event.target as HTMLSelectElement).value;
+  if (value === '__raw__') {
+    selectRawData();
+  } else {
+    selectVersion(parseInt(value, 10));
+  }
+};
+
+const currentVersionStatus = computed(() => {
+  if (!editingVersion.value) return '';
+  if (editingVersion.value.selectedVersionId === null) return 'Исходные данные';
+  const v = editingVersion.value.versions.find(vv => vv.id === editingVersion.value!.selectedVersionId);
+  return v ? v.status : '';
+});
+
+const startEditing = () => {
+  if (!editingVersion.value) return;
+  editingVersion.value.isEditing = true;
+  if (editingVersion.value.selectedVersionId !== null) {
+    editingVersion.value.version_id = editingVersion.value.selectedVersionId;
+  } else {
+    editingVersion.value.version_id = null;
+  }
+};
+
+const cancelEditing = async () => {
+  if (!editingVersion.value) return;
+  editingVersion.value.isEditing = false;
+  if (editingVersion.value.selectedVersionId !== null) {
+    await selectVersion(editingVersion.value.selectedVersionId);
+  } else {
+    await selectRawData();
   }
 };
 
 const saveDraft = async () => {
   if (!editingVersion.value) return;
+  const ev = editingVersion.value;
   savingDraft.value = true;
   try {
-    const resp = await fetch(`${apiBase.value}/api/cost/save-calculation-draft`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
-      body: JSON.stringify({
-        version_id: editingVersion.value.version_id,
-        rows: editingVersion.value.rows,
-      }),
-    });
-    if (!resp.ok) {
-      const errData = await resp.json().catch(() => ({}));
-      throw new Error(errData?.detail || `HTTP ${resp.status}`);
+    if (ev.version_id !== null) {
+      const resp = await fetch(`${apiBase.value}/api/cost/save-calculation-draft`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
+        body: JSON.stringify({
+          version_id: ev.version_id,
+          rows: ev.rows,
+        }),
+      });
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData?.detail || `HTTP ${resp.status}`);
+      }
+      alert('Черновик сохранён');
+    } else {
+      const resp = await fetch(`${apiBase.value}/api/cost/create-version`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
+        body: JSON.stringify({
+          model: ev.model,
+          articul: ev.articul,
+          calc_sign: ev.calc_sign || null,
+          plan_id: ev.plan_id || null,
+          date: ev.date,
+          username: username || 'system',
+          rows: ev.rows,
+          status: 'draft',
+        }),
+      });
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData?.detail || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      ev.version_id = data.version_id;
+      ev.selectedVersionId = data.version_id;
+      await refreshVersions();
+      alert('Новая версия сохранена как черновик');
     }
-    alert('Черновик сохранён');
   } catch (e) {
     alert('Ошибка при сохранении: ' + (e?.message || String(e)));
   } finally {
@@ -2477,19 +2677,42 @@ const saveDraft = async () => {
 const submitDraft = async () => {
   if (!editingVersion.value) return;
   if (!confirm('Отправить расчёт на утверждение?')) return;
+  const ev = editingVersion.value;
   submittingDraft.value = true;
   try {
-    const resp = await fetch(`${apiBase.value}/api/cost/submit-calculation-draft`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
-      body: JSON.stringify({version_id: editingVersion.value.version_id}),
-    });
-    if (!resp.ok) {
-      const errData = await resp.json().catch(() => ({}));
-      throw new Error(errData?.detail || `HTTP ${resp.status}`);
+    if (ev.version_id !== null) {
+      const resp = await fetch(`${apiBase.value}/api/cost/submit-calculation-draft`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
+        body: JSON.stringify({version_id: ev.version_id}),
+      });
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData?.detail || `HTTP ${resp.status}`);
+      }
+    } else {
+      const resp = await fetch(`${apiBase.value}/api/cost/create-version`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
+        body: JSON.stringify({
+          model: ev.model,
+          articul: ev.articul,
+          calc_sign: ev.calc_sign || null,
+          plan_id: ev.plan_id || null,
+          date: ev.date,
+          username: username || 'system',
+          rows: ev.rows,
+          status: 'pending',
+        }),
+      });
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData?.detail || `HTTP ${resp.status}`);
+      }
     }
     alert('Расчёт отправлен на утверждение');
     editingVersion.value = null;
+    await loadData();
   } catch (e) {
     alert('Ошибка при отправке: ' + (e?.message || String(e)));
   } finally {
@@ -2605,7 +2828,7 @@ function findSiblingIndices(row: any, excludeIdx: number): number[] {
 /** Выбор розничной цены из выпадающего списка: синхронизируем по всем строкам с тем же model+articul+plan_id+calc_sign. */
 const onRetailPriceSelect = (absoluteIdx: number, value: string) => {
   const row = allAggregated.value[absoluteIdx];
-  if (!row) return;
+  if (!row || isRowLocked(row)) return;
   const siblings = findSiblingIndices(row, absoluteIdx);
   const allIndices = [absoluteIdx, ...siblings];
   const numVal = parseFloat(value);
@@ -2637,10 +2860,14 @@ const onRetailPriceSelect = (absoluteIdx: number, value: string) => {
   }
   allIndices.forEach(i => updateRow(i, numVal));
 
-  // Автовыбор если ровно один вариант наценки (только для текущей строки, onMarkupSelect синхронизирует сам)
+  // Автовыбор наценки по category level01 (только для текущей строки, onMarkupSelect синхронизирует сам)
   const options = getMarkupOptions(row);
   if (options.length === 1) {
     onMarkupSelect(absoluteIdx, options[0].value);
+  } else if (options.length > 1) {
+    const target = getTargetMarkup(row["Level 01"]);
+    const closest = findClosestMarkup(options, target);
+    onMarkupSelect(absoluteIdx, closest.value);
   }
 };
 
@@ -2648,7 +2875,7 @@ const onRetailPriceSelect = (absoluteIdx: number, value: string) => {
 const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
   if (!markupValue) return;
   const row = allAggregated.value[absoluteIdx];
-  if (!row) return;
+  if (!row || isRowLocked(row)) return;
 
   const retailPrice = Number(row['avg_Розничная цена по уровню, руб.']);
   const avgVat = Number(row['avg_Ставка НДС'] || 0);
@@ -2821,9 +3048,11 @@ const saveAllChanges = async () => {
       alert(`Сохранено ${result.count} записей${result.mock ? " (mock-режим)" : ""}`);
       changedRows.clear();
     } else {
+      changedRows.clear();
       alert("Ошибка: " + (result.error || "unknown"));
     }
   } catch (e: any) {
+    changedRows.clear();
     console.error("[cost] save-batch failed", e);
     lastError.value = e?.data?.detail || e?.message || String(e);
   } finally {
@@ -2898,17 +3127,30 @@ const marginRowClass = (row: any): Record<string, boolean> => {
 };
 
 const isRowLocked = (row: any): boolean => {
-  if (user.value?.email === 'cost-dev@local') return false;
   if (can('cost:admin')) return false;
   if (row._lock_reason) return true;
-  const bm = (row['Бренд-менеджер'] || '').trim().toLowerCase();
-  const email = (user.value?.email || '').trim().toLowerCase();
-  if (bm && email && bm === email && row.peo_status !== 'approved') return true;
+  if (row._has_audit) return true;
+  if (can('cost:edit_price') && !can('cost:approve') && !can('cost:peo_mark')) {
+    if (!row._group_approved) return true;
+  }
   return false;
 };
 
 const openApprovalPopup = (row: any) => { if (!can('cost:approve') && !can('cost:peo_mark')) return; approvalTarget.value = row; approvalComment.value = ''; };
 const closeApprovalPopup = () => { approvalTarget.value = null; };
+
+const recomputeGroupApproved = (row: any) => {
+  const model = row['Модель'];
+  const articul = row['Артикул'];
+  const planId = row['PLAN_ID'];
+  const calcSign = row['Признак калькуляции'];
+  if (!model || !articul || !planId || !calcSign) return;
+  const siblings = allAggregated.value.filter(
+    (r) => r['Модель'] === model && r['Артикул'] === articul && r['PLAN_ID'] === planId && r['Признак калькуляции'] === calcSign
+  );
+  const allApproved = siblings.length > 0 && siblings.every((r) => r.peo_status === 'approved');
+  for (const r of siblings) r._group_approved = allApproved;
+};
 
 const setApproval = async (status: 'approved' | 'rejected') => {
   if (!approvalTarget.value) return;
@@ -2923,11 +3165,15 @@ const setApproval = async (status: 'approved' | 'rejected') => {
         approvals: [{
           model: r['Модель'], articul: r['Артикул'],
           calc_sign: r['Признак калькуляции'], plan_id: r['PLAN_ID'],
+          task_number: r['Номер задания производства'] || null,
           status, comment: status === 'rejected' ? approvalComment.value : '',
         }],
       }),
     });
-    if (approvalTarget.value) approvalTarget.value.peo_status = status;
+    if (approvalTarget.value) {
+      approvalTarget.value.peo_status = status;
+      recomputeGroupApproved(approvalTarget.value);
+    }
     closeApprovalPopup();
   } catch (e) {
     alert('Ошибка при сохранении статуса ПЭО');
@@ -2948,9 +3194,13 @@ const revokeApproval = async (row: any) => {
         articul: row['Артикул'],
         calc_sign: row['Признак калькуляции'],
         plan_id: row['PLAN_ID'],
+        task_number: row['Номер задания производства'] || null,
       },
     });
-    if (approvalTarget.value) approvalTarget.value.peo_status = null;
+    if (approvalTarget.value) {
+      approvalTarget.value.peo_status = null;
+      recomputeGroupApproved(approvalTarget.value);
+    }
     closeApprovalPopup();
   } catch (e: any) {
     alert('Ошибка при снятии согласования: ' + (e?.data?.detail || e?.message || String(e)));
@@ -4198,12 +4448,14 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .state-badge { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:4px; font-size:12px; margin-right:2px; vertical-align:middle; cursor:help; }
 .state-badge--pending { background:#fef3c7; color:#92400e; }
 .state-badge--audit { background:#d1fae5; color:#065f46; }
-.draft-badge { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:50%; font-size:11px; margin-right:2px; vertical-align:middle; }
-.draft-badge--draft { background:#dbeafe; color:#1d4ed8; }
-.draft-badge--pending { background:#fef3c7; color:#b45309; animation:pulse 2s infinite; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
 .version-editor-toolbar { display:flex; gap:8px; align-items:center; padding:8px 16px; border-bottom:1px solid var(--border-color, #e5e7eb); }
 .version-editor-toolbar .spacer { flex:1; }
+.version-selector-bar { display:flex; gap:8px; align-items:center; padding:8px 16px; border-bottom:1px solid var(--border-color, #e5e7eb); font-size:13px; }
+.version-selector-bar label { color: var(--text-secondary, #6b7280); }
+.version-select { width: auto; min-width: 280px; border:1px solid var(--border-color, #e5e7eb); padding:4px 8px; font-size:13px; background:#fff; border-radius:4px; }
+.version-select:disabled { background: var(--bg-tonal, #f3f4f6); color: var(--text-muted, #9ca3af); }
+.version-select:focus { border-color:var(--accent-color, #4338ca); outline:none; }
+.version-status-badge { padding:2px 8px; background: var(--bg-tonal, #f3f4f6); color: var(--text-secondary, #6b7280); border-radius:999px; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; }
 .version-editor-table-wrap { flex:1; overflow:auto; padding:0 16px 16px; }
 .version-editor-table { width:100%; border-collapse:collapse; font-size:13px; }
 .version-editor-table th, .version-editor-table td { padding:4px 6px; border:1px solid var(--border-color, #e5e7eb); text-align:left; white-space:nowrap; }
@@ -4218,8 +4470,11 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .col-peo { width:48px; text-align:center; }
 .peo-badge { cursor:pointer; font-size:16px; }
 .peo-readonly .peo-badge { cursor:default; }
+.peo-active .peo-badge { background:rgba(99,102,241,0.15); border-radius:4px; }
 .peo-filter-select { padding:4px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; }
-.approval-modal { width:400px; }
+.approval-modal { width:400px; background:#fff; color:#1f2937; }
+.approval-modal .modal-header { background:#fff; color:#1f2937; border-bottom:1px solid #e5e7eb; }
+.approval-modal .approval-label { color:#374151; }
 .approval-body { padding:16px; display:flex; flex-direction:column; gap:12px; }
 .approval-status-row, .approval-info-row { display:flex; gap:8px; align-items:center; }
 .approval-label { font-weight:500; color:#374151; min-width:80px; }
