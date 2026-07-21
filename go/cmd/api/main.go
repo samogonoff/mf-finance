@@ -136,6 +136,19 @@ func main() {
 			}
 			premasterRepo = fdRepo
 			log.Printf("debt: backend=findebt-live (MSSQL Payments.report.FinDebt1/3)")
+		case "findebt-docdate":
+			// Второй поток (метод аналитика): суммы из сырых Debt_arh/Wholesales_arh
+			// (CH debt_facts/turnover_facts), BYN/USD пересчитаны на дату документа
+			// через currency_daily (ASOF). Для сверки с findebt (дефолт, FinDebt3).
+			ddRepo, derr := debt.NewFinDebtDocDateCHRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
+			if derr != nil {
+				log.Fatalf("debt: findebt-docdate init: %v", derr)
+			}
+			if ddRepo == nil {
+				log.Fatalf("debt: DEBT_BACKEND=findebt-docdate but CLICKHOUSE_HTTP_URL/USER not set")
+			}
+			premasterRepo = ddRepo
+			log.Printf("debt: backend=findebt-docdate (ClickHouse debt_facts/turnover_facts + currency_daily, пересчёт на дату документа)")
 		default:
 			// findebt (default): отчёт читает CH-снэпшот finance.fact_findebt/_docs.
 			fdRepo, ferr := debt.NewFinDebtCHRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
@@ -182,6 +195,34 @@ func main() {
 			CHPass: cfg.ClickHousePass,
 		}, etl.FinDebtOpts{Tables: fdTables}).
 			Start(context.Background(), time.Duration(cfg.DebtFinDebtSyncInterval)*time.Second)
+
+		// Фоновая синхронизация курсов (dim_valuta, currency_daily) для второго
+		// потока findebt-docdate. CURRENCY_SYNC_INTERVAL=0 → выключен (заливаем
+		// вручную cmd/findebt-etl MODE=currency).
+		etl.NewCurrencyWorker(etl.Deps{
+			MSSQL:  mssqlDB,
+			CHURL:  cfg.ClickHouseHTTPURL,
+			CHUser: cfg.ClickHouseUser,
+			CHPass: cfg.ClickHousePass,
+		}, etl.CurrencyTables{
+			ValutaFQN:        cfg.DebtValutaFQN,
+			CurrencyDailyFQN: cfg.DebtCurrencyDailyFQN,
+		}).Start(context.Background(), time.Duration(cfg.CurrencySyncInterval)*time.Second)
+
+		// Фоновый reload сырых фактов метода аналитика (debt_facts/turnover_facts)
+		// для findebt-docdate. DEBTARH_SYNC_INTERVAL=0 → выключен (заливаем вручную
+		// cmd/findebt-etl MODE=debtarh).
+		etl.NewDebtArhWorker(etl.Deps{
+			MSSQL:  mssqlDB,
+			CHURL:  cfg.ClickHouseHTTPURL,
+			CHUser: cfg.ClickHouseUser,
+			CHPass: cfg.ClickHousePass,
+		}, etl.DebtArhTables{
+			DebtArhFQN:    cfg.DebtArhFQN,
+			WholesalesFQN: cfg.WholesalesArhFQN,
+			Fin1FQN:       "[" + cfg.PremasterPaymentsDatabase + "].[" + cfg.DebtFinDebtSchema + "].[" + cfg.DebtFinDebt1Table + "]",
+			CpartyCol:     cfg.DebtArhCpartyCol,
+		}, "").Start(context.Background(), time.Duration(cfg.DebtArhSyncInterval)*time.Second)
 	}
 
 	// Тактические планы (VS0 каркас + VS1 справочники + VS2 факт МП).

@@ -122,6 +122,14 @@ func (r *findebtCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 	if err != nil {
 		return nil, err
 	}
+	return decodeFinDebtReport(body, lens)
+}
+
+// decodeFinDebtReport разбирает JSONEachRow свода ДЗ/КЗ по договорам. Общий для
+// findebt-ch и findebt-docdate: набор колонок и семантика знака идентичны (КЗ во
+// вьюхе отрицательна → переворачиваем в положительный долг), различается только
+// SQL пересчёта валют. lens задаёт подпись валюты строки.
+func decodeFinDebtReport(body []byte, lens string) ([]DebtRow, error) {
 	out := []DebtRow{}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	for dec.More() {
@@ -219,6 +227,13 @@ func (r *findebtCHRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Docu
 	if err != nil {
 		return nil, err
 	}
+	return decodeFinDebtDrilldown(body)
+}
+
+// decodeFinDebtDrilldown разбирает JSONEachRow документной детализации договора.
+// Общий для findebt-ch и findebt-docdate: во втором потоке sum_d/sum_k уже
+// пересчитаны на Doc_Date в SQL, структура ответа та же.
+func decodeFinDebtDrilldown(body []byte) ([]DocumentRow, error) {
 	out := []DocumentRow{}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	for dec.More() {

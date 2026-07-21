@@ -52,16 +52,28 @@ curl -s "$CLICKHOUSE_HTTP_URL/?user=$CLICKHOUSE_USER&password=$CLICKHOUSE_PASSWO
 > `DROP TABLE IF EXISTS finance.fact_premaster` (и аналогично остальные).
 
 ### 2. Первичная заливка (bootstrap) — один раз, вручную
-Найти запущенный таск go-api и выполнить bootstrap внутри него (env с креды уже
-проброшены в контейнер деплоем — передаём только MODE):
+Найти запущенный таск go-api и выполнить bootstrap внутри него.
+
+⚠ Креды (`MSSQL_PREMASTER_*`, `CLICKHOUSE_*`, …) приходят из `docker config`,
+смонтированного как `/etc/api.env`, и сорсятся ТОЛЬКО в `entrypoint.sh` для PID 1.
+`docker exec` стартует свежий процесс с базовым env образа — этих переменных там
+НЕТ. Поэтому сорсим `/etc/api.env` сами, как это делает entrypoint:
 
 ```sh
 TASK=$(docker service ps --no-trunc --filter desired-state=running \
   --format '{{.Name}}.{{.ID}}' finance_go-api | head -1)
 
-# Полная история с 2021 (~2-3 мин; FinDebt3 читается с OLAP):
-docker exec -e MODE=bootstrap -e FINDEBT_MIN_DATE=2021-01-01 \
-  "$TASK" /findebt-etl
+# Полная история с 2021 (~2-3 мин; FinDebt3 читается с OLAP).
+# MODE/FINDEBT_MIN_DATE идут через -e и переживают source (в api.env их нет).
+docker exec -e MODE=bootstrap -e FINDEBT_MIN_DATE=2021-01-01 "$TASK" \
+  sh -c 'set -a; . /etc/api.env; set +a; exec /findebt-etl'
+```
+
+Если уже зашёл внутрь контейнера (`docker exec -it "$TASK" sh`) — env там пуст,
+грузим его сами прямо в shell, потом запускаем (бинарь в корне `/findebt-etl`):
+
+```sh
+set -a; . /etc/api.env; set +a; MODE=bootstrap FINDEBT_MIN_DATE=2021-01-01 /findebt-etl
 ```
 
 Ожидаемый лог: `bootstrap-findebt DONE rows=<N>`.
