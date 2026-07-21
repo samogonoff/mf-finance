@@ -28,11 +28,12 @@ type DebtArhTables struct {
 
 var cpartyColRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// cpartyExpr — SQL-выражение УНП контрагента: MAX(RTRIM(alias.col)) при валидной
-// колонке, иначе пустая строка. Валидируем идентификатор (анти-инъекция).
+// cpartyExpr — SQL-выражение УНП контрагента: MAX(RTRIM(ISNULL(...))) при валидной
+// колонке, иначе пустая строка-константа. Валидируем идентификатор (анти-инъекция),
+// ISNULL — потому что колонка бывает NULL.
 func cpartyExpr(alias, col string) string {
 	if col != "" && cpartyColRe.MatchString(col) {
-		return "MAX(RTRIM(" + alias + "." + col + "))"
+		return "MAX(RTRIM(ISNULL(" + alias + "." + col + ", '')))"
 	}
 	return "''"
 }
@@ -76,46 +77,57 @@ func debtClassCTE(fin1FQN string) string {
 }
 
 func extractDebtArhSQL(t DebtArhTables) string {
-	root := accRootSQL("LTRIM(RTRIM(d.Acc))")
+	// Ключевые выражения синхронизированы между SELECT и GROUP BY; ISNULL везде —
+	// DocID/Acc/UNPOrg/Currency/Sum/Date бывают NULL (scan в string/int падал).
+	id := "ISNULL(d.DocID, '')"
+	org := "LTRIM(RTRIM(ISNULL(d.UNPOrg, '')))"
+	acc := "LTRIM(RTRIM(ISNULL(d.Acc, '')))"
+	root := accRootSQL(acc)
+	cur := "CONVERT(INT, ISNULL(d.Currency, 0))"
+	sum := "ISNULL(d.Sum, 0)"
 	cp := cpartyExpr("d", t.CpartyCol)
 	return debtClassCTE(t.Fin1FQN) + `
 SELECT
-    d.DocID                               AS doc_id,
-    LTRIM(RTRIM(d.UNPOrg))                AS company_id,
-    ` + cp + `                            AS counterparty_id,
-    MAX(RTRIM(d.Name))                    AS contragent,
-    LTRIM(RTRIM(d.Acc))                   AS acc,
-    ` + root + `                          AS acc_root,
-    MAX(ISNULL(d.Description, ''))        AS doc_description,
-    CONVERT(INT, d.Currency)              AS currency_kod,
-    CONVERT(VARCHAR(40), d.Sum)           AS amount,
-    CONVERT(CHAR(10), MIN(d.[Date]), 23)  AS doc_date
+    ` + id + `                                              AS doc_id,
+    ` + org + `                                             AS company_id,
+    ` + cp + `                                              AS counterparty_id,
+    MAX(RTRIM(ISNULL(d.Name, '')))                          AS contragent,
+    ` + acc + `                                             AS acc,
+    ` + root + `                                            AS acc_root,
+    MAX(ISNULL(d.Description, ''))                          AS doc_description,
+    ` + cur + `                                             AS currency_kod,
+    CONVERT(VARCHAR(40), ` + sum + `)                       AS amount,
+    ISNULL(CONVERT(CHAR(10), MIN(d.[Date]), 23), '1970-01-01') AS doc_date
 FROM ` + t.DebtArhFQN + ` d WITH (NOLOCK)
-INNER JOIN DebtClass dc ON LTRIM(RTRIM(d.UNPOrg)) = dc.UNPOrg AND LTRIM(RTRIM(d.Acc)) = dc.Acc
-GROUP BY d.DocID, LTRIM(RTRIM(d.UNPOrg)), LTRIM(RTRIM(d.Acc)), ` + root + `,
-         CONVERT(INT, d.Currency), d.Sum`
+INNER JOIN DebtClass dc ON ` + org + ` = dc.UNPOrg AND ` + acc + ` = dc.Acc
+GROUP BY ` + id + `, ` + org + `, ` + acc + `, ` + root + `, ` + cur + `, ` + sum
 }
 
 func extractWholesalesSQL(t DebtArhTables) string {
-	root := accRootSQL("LTRIM(RTRIM(w.DrAcc))")
+	id := "ISNULL(w.DocID, '')"
+	org := "LTRIM(RTRIM(ISNULL(w.UNPOrg, '')))"
+	acc := "LTRIM(RTRIM(ISNULL(w.DrAcc, '')))"
+	root := accRootSQL(acc)
+	cur := "CONVERT(INT, ISNULL(w.Currency, 0))"
+	sum := "ISNULL(w.Sum, 0)"
+	evt := "ISNULL(CONVERT(CHAR(10), w.[Date], 23), '1970-01-01')"
 	cp := cpartyExpr("w", t.CpartyCol)
 	return debtClassCTE(t.Fin1FQN) + `
 SELECT
-    w.DocID                               AS doc_id,
-    LTRIM(RTRIM(w.UNPOrg))                AS company_id,
+    ` + id + `                            AS doc_id,
+    ` + org + `                           AS company_id,
     ` + cp + `                            AS counterparty_id,
-    MAX(RTRIM(w.Name))                    AS contragent,
-    LTRIM(RTRIM(w.DrAcc))                 AS acc,
+    MAX(RTRIM(ISNULL(w.Name, '')))        AS contragent,
+    ` + acc + `                           AS acc,
     ` + root + `                          AS acc_root,
-    MAX(w.DocumentType)                   AS doc_type,
-    CONVERT(INT, w.Currency)              AS currency_kod,
-    CONVERT(VARCHAR(40), w.Sum)           AS amount,
-    CONVERT(CHAR(10), w.[Date], 23)       AS event_date
+    MAX(ISNULL(w.DocumentType, ''))       AS doc_type,
+    ` + cur + `                           AS currency_kod,
+    CONVERT(VARCHAR(40), ` + sum + `)     AS amount,
+    ` + evt + `                           AS event_date
 FROM ` + t.WholesalesFQN + ` w WITH (NOLOCK)
-INNER JOIN DebtClass dc ON LTRIM(RTRIM(w.UNPOrg)) = dc.UNPOrg AND LTRIM(RTRIM(w.DrAcc)) = dc.Acc
+INNER JOIN DebtClass dc ON ` + org + ` = dc.UNPOrg AND ` + acc + ` = dc.Acc
 WHERE w.[Date] >= @min
-GROUP BY w.DocID, LTRIM(RTRIM(w.UNPOrg)), LTRIM(RTRIM(w.DrAcc)), ` + root + `,
-         CONVERT(INT, w.Currency), w.Sum, CONVERT(CHAR(10), w.[Date], 23)`
+GROUP BY ` + id + `, ` + org + `, ` + acc + `, ` + root + `, ` + cur + `, ` + sum + `, ` + evt
 }
 
 // RunDebtArhSync — полный reload debt_facts (все открытые документы whitelisted пар)
