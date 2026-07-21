@@ -46,6 +46,15 @@ type Config struct {
 	DebtCurrencyDailyFQN string
 	CurrencySyncInterval int
 
+	// Сырые таблицы метода аналитика (findebt-docdate): Debt_arh (остаток) и
+	// Wholesales_arh (движения). DebtArhCpartyCol — имя колонки УНП контрагента,
+	// если она есть в источнике (пусто → контрагент только по Name, без УНП в ключе).
+	// DebtArhSyncInterval — период фонового reload'а debt_facts/turnover_facts (сек).
+	DebtArhFQN          string
+	WholesalesArhFQN    string
+	DebtArhCpartyCol    string
+	DebtArhSyncInterval int
+
 	// FinDebt-вьюхи в БД Payments (PremasterPaymentsDatabase), схема report.
 	// FinDebt1 — свод остатков ДЗ/КЗ, FinDebt3 — документная детализация с
 	// просрочкой. Имена в env, чтобы переключаться на копию без правки кода.
@@ -114,6 +123,11 @@ func Load() Config {
 		DebtValutaFQN:        env("MSSQL_VALUTA_FQN", "[SRV-SQL].Gpartner.dbo.valuta"),
 		DebtCurrencyDailyFQN: env("MSSQL_CURRENCY_DAILY_FQN", "[SRV-SQL].Checks.dbo.CurrencyDaily"),
 		CurrencySyncInterval: atoiDef(env("CURRENCY_SYNC_INTERVAL", "0"), 0),
+
+		DebtArhFQN:          env("MSSQL_DEBT_ARH_FQN", "[Payments].[dbo].[Debt_arh]"),
+		WholesalesArhFQN:    env("MSSQL_WHOLESALES_ARH_FQN", "[Payments].[dbo].[Wholesales_arh]"),
+		DebtArhCpartyCol:    env("MSSQL_DEBT_ARH_CPARTY_COL", ""),
+		DebtArhSyncInterval: atoiDef(env("DEBTARH_SYNC_INTERVAL", "0"), 0),
 
 		PlansMock:          env("PLANS_MOCK", "0") == "1",
 		PlansMpFactTable:   env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),

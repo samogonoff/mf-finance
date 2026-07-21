@@ -16,11 +16,16 @@
 // ============================================================================
 // ENV:
 //
-//	MODE                  — bootstrap | incremental | currency (дефолт bootstrap).
-//	                        currency — синхронизация справочников курса (dim_valuta,
-//	                        currency_daily) для второго потока findebt-docdate.
+//	MODE                  — bootstrap | incremental | currency | debtarh (дефолт bootstrap).
+//	                        currency — справочники курса (dim_valuta, currency_daily).
+//	                        debtarh  — сырые факты метода аналитика (debt_facts,
+//	                        turnover_facts) из Debt_arh/Wholesales_arh. Оба — для
+//	                        второго потока findebt-docdate.
 //	MSSQL_VALUTA_FQN         — FQN справочника валют (дефолт [SRV-SQL].Gpartner.dbo.valuta).
 //	MSSQL_CURRENCY_DAILY_FQN — FQN курсов (дефолт [SRV-SQL].Checks.dbo.CurrencyDaily).
+//	MSSQL_DEBT_ARH_FQN       — FQN Debt_arh (дефолт [Payments].[dbo].[Debt_arh]).
+//	MSSQL_WHOLESALES_ARH_FQN — FQN Wholesales_arh (дефолт [Payments].[dbo].[Wholesales_arh]).
+//	MSSQL_DEBT_ARH_CPARTY_COL — колонка УНП контрагента в сырых таблицах (пусто → без УНП).
 //	FINDEBT_MIN_DATE      — нижняя граница снэпшотов для bootstrap, YYYY-MM-DD (дефолт 2021-01-01).
 //	FINDEBT_BATCH         — размер батча, дефолт 5000.
 //	MSSQL_PAYMENTS_DB     — БД с вьюхами FinDebt (дефолт Payments).
@@ -107,6 +112,13 @@ func main() {
 			ValutaFQN:        envOr("MSSQL_VALUTA_FQN", "[SRV-SQL].Gpartner.dbo.valuta"),
 			CurrencyDailyFQN: envOr("MSSQL_CURRENCY_DAILY_FQN", "[SRV-SQL].Checks.dbo.CurrencyDaily"),
 		})
+	case "debtarh":
+		n, err = etl.RunDebtArhSync(ctx, deps, etl.DebtArhTables{
+			DebtArhFQN:    envOr("MSSQL_DEBT_ARH_FQN", "[Payments].[dbo].[Debt_arh]"),
+			WholesalesFQN: envOr("MSSQL_WHOLESALES_ARH_FQN", "[Payments].[dbo].[Wholesales_arh]"),
+			Fin1FQN:       tables.Fin1FQN,
+			CpartyCol:     os.Getenv("MSSQL_DEBT_ARH_CPARTY_COL"),
+		}, opts.MinDate)
 	default:
 		n, err = etl.RunBootstrapFinDebt(ctx, deps, opts)
 	}

@@ -8,13 +8,19 @@
 > [findebt-verification.md](findebt-verification.md), [tz-requirements.md](tz-requirements.md),
 > [payments-source-map.md](payments-source-map.md), [open-questions.md](open-questions.md).
 
-> **Статус реализации (обновляется).**
-> - ✅ **Поток 1 — пересчёт валют на Doc_Date** (`DEBT_BACKEND=findebt-docdate`) —
->   РЕАЛИЗОВАН как второй, независимый бэкенд рядом с `findebt`. Блокера нет.
->   Дефолт остаётся `findebt` — для первой сверки. См. §12.
-> - ⛔ **Поток 2 — свёртка нач/об/кон из `Debt_arh` + движений** — НЕ начат:
->   блокер по ключу связи `Debt_arh.DocID` ↔ `FinDebt3` (§2, §11). Ждёт Фазы 0.
-> - ⛔ **Корректировки долга** (§7), **справочники/выгрузка** (§8) — зависят от потока 2.
+> **Статус реализации (обновлено — блокер снят аналитиком).**
+> Аналитик разрешил блокер: `FinDebt3` ↔ `Debt_arh` **связывать не нужно и нельзя**
+> (`Doc_Number` не уникален). `FinDebt1` — только whitelist пар `(UNPOrg, Acc)`;
+> суммы/документы — из `Debt_arh`/`Wholesales_arh` по `DocID`; агрегация по
+> `(UNPOrg, Acc[, контрагент])`. Полная методика: `vgo-doc-date-methodology-v2.md`
+> нет — см. §12 ниже, обновлённый под метод аналитика.
+> - ✅ **`DEBT_BACKEND=findebt-docdate`** — РЕАЛИЗОВАН как метод аналитика (суммы из
+>   `Debt_arh`/`Wholesales_arh`, пересчёт на дату документа). Второй поток рядом с
+>   `findebt` (дефолт), для сверки. См. §12.
+> - 🟡 **Открытые §9-риски** заложены с дефолтами/флажками: обороты только
+>   `Wholesales_arh(DrAcc)` (контрольное равенство может не сойтись — нужен
+>   `Payment_arh`/`CrAcc`); контрагент опционален (`MSSQL_DEBT_ARH_CPARTY_COL`);
+>   `Debt_arh_свернутая`/RUR 643vs860/знак Дт-Кт/канон. курс USD — на сверку.
 
 ## 0. TL;DR
 
@@ -222,48 +228,60 @@ revenue_period` уже есть — правим только их источн�
 6. Обновить [findebt-runbook.md](findebt-runbook.md) (заодно исправить расхождение
    имени `fact_findebt` → `fact_findebt_ccy`).
 
-## 12. Реализовано: поток `findebt-docdate` (пересчёт на Doc_Date)
+## 12. Реализовано: поток `findebt-docdate` = метод аналитика
 
-Второй бэкенд рядом с `findebt`, переключается через `DEBT_BACKEND`. Читает ту же
-витрину `fact_findebt_ccy`, но берёт только линзу «В валюте договора» и сам считает
-BYN/USD по курсу на `Doc_Date`. В линзе «В валюте договора» числа совпадают с
-`findebt` (sanity-check), BYN/USD отличаются — это и сравниваем.
+Второй бэкенд рядом с `findebt` (дефолт), переключается через `DEBT_BACKEND`. Полностью
+по методике аналитика (§4-§7): суммы из сырых `Debt_arh`/`Wholesales_arh` (не FinDebt3),
+пересчёт BYN/USD на дату документа через ASOF, агрегация по `(UNPOrg, Acc[, контрагент])`.
 
 **Что добавлено:**
-- CH-миграция `clickhouse/migrations/010_debt_currency.{up,down}.sql` — таблицы
-  `finance.dim_valuta` (NAIM→KOD) и `finance.currency_daily` (курсы к BYN,
-  `ORDER BY (kod,date)` под ASOF).
-- ETL `go/internal/etl/extract_currency.go` (+ `worker_currency.go`): `valuta`
-  полным reload'ом, `CurrencyDaily` инкрементом по `date`. Запуск:
-  `cmd/findebt-etl` c `MODE=currency`; фоновый воркер по `CURRENCY_SYNC_INTERVAL`.
-- Бэкенд `go/internal/reports/debt/repo_findebt_docdate_ch.go`
-  (`DEBT_BACKEND=findebt-docdate`): свод и drill-down с ASOF-пересчётом. Разбор
-  ответа общий с `findebt` (вынесены `decodeFinDebtReport`/`decodeFinDebtDrilldown`
-  в `repo_findebt_ch.go`).
-- Env (в `.env.example` и `config.go`): `MSSQL_VALUTA_FQN`,
-  `MSSQL_CURRENCY_DAILY_FQN`, `CURRENCY_SYNC_INTERVAL`.
+- CH-миграции: `010_debt_currency` (`dim_valuta`, `currency_daily`) +
+  `011_debt_arh_facts` (`debt_facts` из `Debt_arh` дедуп по DocID; `turnover_facts`
+  из `Wholesales_arh`).
+- ETL: `extract_currency.go` (+`worker_currency.go`, `MODE=currency`) и
+  `extract_debtarh.go` (+`worker_debtarh.go`, `MODE=debtarh`). Whitelist `(UNPOrg,Acc)`
+  из `FinDebt1` на последнюю дату канала ВГО; полный reload; контрагент опционален
+  (`MSSQL_DEBT_ARH_CPARTY_COL`, валидируется как идентификатор).
+- Бэкенд `repo_findebt_docdate_ch.go`: два запроса (сальдо из `debt_facts` порогом
+  по `DocDate`; обороты+выручка из `turnover_facts`), слияние по `(company,cparty,acc)`
+  в Go. Пересчёт `docDateConvExpr` (ASOF `currency_daily`). Drill-down по `DocID` со
+  знаком и флагом «на начало / внутри периода».
+- Env (`.env.example`+`config.go`): `MSSQL_VALUTA_FQN`, `MSSQL_CURRENCY_DAILY_FQN`,
+  `CURRENCY_SYNC_INTERVAL`, `MSSQL_DEBT_ARH_FQN`, `MSSQL_WHOLESALES_ARH_FQN`,
+  `MSSQL_DEBT_ARH_CPARTY_COL`, `DEBTARH_SYNC_INTERVAL`.
 
-**CH-ловушки, найденные и обойдённые (проверено на CH 24.3):**
-- Два `ASOF LEFT JOIN` в одном запросе допустимы, но ASOF требует **колоночного**
-  equi-join. Константа в `ON` (`rUsd.kod = 840`) → ошибка «ASOF join needs at least
-  one equi-join column». Решено колонкой `usd_kod = toInt32(840)` в левой части.
-- Алиас таблицы идёт **до** `FINAL`: `FROM ... AS ff FINAL`, не `FINAL ff`.
+**Расчёт (проверено на CH 24.3, эталон RUR 1221002.01@2024-07-01 → USD≈14153):**
+- сальдо на начало = `SUM(amt_t)` где `DocDate < from`; на конец = где `DocDate <= to`;
+  знак: `amt_t >= 0` → ДЗ, `< 0` → КЗ по модулю;
+- обороты = `turnover_facts` за `[from,to]`; выручка = `DocType LIKE 'Реализац%'`
+  (корректировки долга в выручку НЕ входят — проверено: `turn_dz` включает
+  корректировку, `revenue` — нет);
+- `Amount_Target = Amount × курс(вал→BYN) / (target=BYN?1:курс(target→BYN))` на дату
+  документа через ASOF.
 
-**Как запустить и сверить (dev/прод):**
-1. Накатить CH-миграцию 010 (CI-джоб `migrations` или `swarm/migrate-clickhouse.sh`).
-2. Залить курсы: `docker exec -e MODE=currency "$TASK" sh -c 'set -a; . /etc/api.env; set +a; exec /findebt-etl'`
-   (в dev — тем же способом, что bootstrap findebt, см. [findebt-runbook.md](findebt-runbook.md)).
-   Проверить: `EXISTS finance.currency_daily` → 1, `count()` > 0.
-3. Проверить `[SRV-SQL]` linked server доступен с OLAP-коннекта (иначе подменить
-   `MSSQL_VALUTA_FQN`/`MSSQL_CURRENCY_DAILY_FQN` на прямой путь) — §2, Фаза 0.
-4. Сверка: на одних фильтрах прогнать отчёт под `DEBT_BACKEND=findebt` и
-   `findebt-docdate`. Линза «В валюте договора» — числа обязаны совпасть; BYN/USD —
-   у docdate стабильны по датам документа, у findebt «плавают». Точечно сверить USD
-   нескольких документов с 1С на дату `Doc_Date`.
+**CH-ловушки (найдены и обойдены):**
+- ASOF требует **колоночного** equi-join: код USD — колонкой `usd_kod=toInt32(840)`,
+  не константой `rUsd.kod=840` (иначе «needs at least one equi-join column»).
+- Пустой `sumIf` по USD-линзе (Nullable из-за деления) → `NULL`; обёрнуто `ifNull(…,0)`.
+- Шэдоуинг алиаса: `toString(doc_date) AS doc_date` затеняет Date-колонку — `is_opening`
+  вынесен в подзапрос.
 
-**НЕ входит (остаётся на поток 2):** свёртка из `Debt_arh`/движений, обороты как
-реальные движения, корректировки, выручка `Реализация%`. `findebt-docdate` наследует
-свёртку `findebt` (разница снэпшотов) — меняется только валютный пересчёт.
+**Как запустить и сверить:**
+1. Накатить CH-миграции 010+011.
+2. Залить курсы (`MODE=currency`) и факты (`MODE=debtarh`) — как bootstrap findebt
+   ([findebt-runbook.md](findebt-runbook.md)). Проверить `count()` в `currency_daily`,
+   `debt_facts`, `turnover_facts`.
+3. Проверить `[SRV-SQL]` доступен (иначе подменить FQN курсов); проверить, есть ли в
+   `Debt_arh` УНП контрагента → задать `MSSQL_DEBT_ARH_CPARTY_COL`.
+4. Прогнать отчёт под `findebt` и `findebt-docdate` на одних фильтрах; сверить
+   контрольную пару МФ→Формэль и контрольное равенство
+   `(Дт нач−Кт нач)+(Дт об−Кт об)=(Дт кон−Кт кон)`.
+
+**Открытые §9-риски (на сверку, не блокируют):** обороты только `Wholesales_arh(DrAcc)`
+— если есть `Payment_arh`/`CrAcc`-движения, контрольное равенство разойдётся, добавить;
+`Debt_arh_свернутая` для старых периодов (UNION); RUR 643 vs 860; знак Дт/Кт; канон.
+курс USD (BYN-мост vs прямой ЦБ РФ, расхождение ~5%); «закрытые до периода» документы
+в `closing` (порог по `DocDate <= to` не отсекает погашенные — сверить с бухгалтерией).
 
 ## 11. Риски
 
