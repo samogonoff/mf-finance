@@ -368,7 +368,7 @@
               <td v-if="isVisible('avg_retail_rub')">
                 <select
                   class="price-select"
-                  :value="row['avg_Розничная цена по уровню, руб.'] || ''"
+                  :value="Number(row['avg_Розничная цена по уровню, руб.']) || ''"
                   :disabled="row['Признак калькуляции'] === 'ФКСС' || !can('cost:edit_price') || isRowLocked(row)"
                   @click.stop
                   @change="onRetailPriceSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
