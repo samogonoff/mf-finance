@@ -1062,6 +1062,16 @@ async def clear_pending_changes() -> int:
         return count
 
 
+async def clear_pending_changes_by_user(username: str) -> int:
+    """Delete rows from cost_price_pending created by a specific user."""
+    async with pool().acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM cost_price_pending WHERE username = $1", username
+        )
+        count = int(result.split()[1]) if result.startswith("DELETE") else 0
+        return count
+
+
 async def checkout_calculation(model, articul, calc_sign, plan_id, raw_date, username) -> dict:
     if isinstance(raw_date, str) and raw_date:
         date = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
@@ -1526,13 +1536,6 @@ async def reset_price_fields(model, articul, calc_sign, plan_id, raw_date) -> No
                    WHERE "Модель" = $1 AND "Артикул" = $2
                      AND "Признак калькуляции" IS NOT DISTINCT FROM $3
                      AND "PLAN_ID" IS NOT DISTINCT FROM $4""",
-                model, articul, calc_sign, plan_id,
-            )
-            await conn.execute(
-                """DELETE FROM cost_calc_approvals
-                   WHERE model = $1 AND articul = $2
-                     AND calc_sign IS NOT DISTINCT FROM $3
-                     AND plan_id IS NOT DISTINCT FROM $4""",
                 model, articul, calc_sign, plan_id,
             )
 
