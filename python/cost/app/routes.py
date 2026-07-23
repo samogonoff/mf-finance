@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
+from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -766,6 +766,14 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     except Exception:
         pass  # lock state is advisory — don't break the page
 
+    # ── Filter by PEO approval status (sent by frontend peoFilter) ─────────
+    peo_filter = (payload.get("peo_filter") or "").strip()
+    if peo_filter and peo_filter != "all":
+        if peo_filter == "none":
+            data = [r for r in data if r.get("peo_status") is None]
+        else:
+            data = [r for r in data if r.get("peo_status") == peo_filter]
+
     return {"data": data, "count": len(data)}
 
 
@@ -1364,6 +1372,12 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
 async def clear_changes() -> dict:
     """Delete ALL rows from cost_price_pending."""
     count = await clear_pending_changes()
+    return {"success": True, "deleted": count}
+
+
+@router.post("/pending-changes/clear-my")
+async def clear_my_changes(user_email: str = Depends(_require_perm("cost:view"))) -> dict:
+    count = await clear_pending_changes_by_user(user_email)
     return {"success": True, "deleted": count}
 
 

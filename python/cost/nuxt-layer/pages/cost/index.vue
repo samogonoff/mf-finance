@@ -52,17 +52,22 @@
           </div>
         </div>
 
-        <label class="filter-checkbox">
-          <input v-model="noWholesaleOnly" type="checkbox" @change="loadData" />
-          <span>Только строки без оптовой цены</span>
-        </label>
+        <div class="filter-checkbox-row">
+          <label class="filter-checkbox">
+            <input v-model="noWholesaleOnly" type="checkbox" @change="loadData" />
+            <span>Только строки без оптовой цены</span>
+          </label>
 
-        <select v-model="peoFilter" class="peo-filter-select" @change="loadData">
-          <option value="all">Все статусы ПЭО</option>
-          <option value="approved">Согласовано</option>
-          <option value="none">Не согласовано</option>
-          <option value="rejected">Отклонено</option>
-        </select>
+          <label class="peo-filter-label">
+            Статус согласования
+            <select v-model="peoFilter" class="peo-filter-select" @change="loadData">
+              <option value="all">Все</option>
+              <option value="approved">🟢 Согласовано</option>
+              <option value="none">Не согласовано</option>
+              <option value="rejected">🔴 Отклонено</option>
+            </select>
+          </label>
+        </div>
 
         <div v-if="cascadeBusy" class="filters-overlay">
           <div class="loader"></div>
@@ -141,6 +146,14 @@
             {{ saving ? "Сохранение…" : `Сохранить изменения (${changedRows.size})` }}
           </template>
           <template v-else>Сохранить изменения</template>
+        </button>
+        <button
+          v-if="can('cost:edit_price') || can('cost:admin') && changedRows.size"
+          class="btn btn-ghost"
+          @click="discardChanges"
+        >
+          <Icon name="lucide:undo-2" />
+          Сбросить введённые значения
         </button>
       </div>
     </div>
@@ -592,7 +605,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(r, ri) in rawRowsData" :key="ri">
+              <tr v-for="(r, ri) in rawRowsData" :key="ri" :class="{ 'row-zero-cost': isZeroCostRow(r) }">
                 <td v-for="col in rawRowsColumns" :key="col" :class="{ num: isRawRowsNumeric(col) }">{{ formatRawRowsCell(r[col], col) }}</td>
               </tr>
             </tbody>
@@ -800,19 +813,22 @@
                   <th class="col-num">Цена, USD</th>
                   <th class="col-num">Курс</th>
                   <th class="col-num">Сумма, руб.</th>
+                  <th class="col-num">Сумма, USD</th>
                   <th>Комментарий</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="(vr, vi) in editingVersion.rows" :key="vi"
-                  :class="{ 'row-added': vr.change_type === 'added', 'row-modified': vr.change_type === 'modified' }">
+                  :class="{ 'row-added': vr.change_type === 'added', 'row-modified': vr.change_type === 'modified', 'row-zero-cost': isZeroCostRow(vr) }">
                   <td v-if="editingVersion.isEditing"><input type="checkbox" v-model="vr._selected" /></td>
                   <td>
-                    <select v-if="editingVersion.isEditing" :value="vr['Материал/операция/декор(призн)']" class="editor-select" @change="onVersionRowEdit(vr, $event, 'Материал/операция/декор(призн)')">
-                      <option value="материал">материал</option>
-                      <option value="техоперация">техоперация</option>
-                      <option value="декор">декор</option>
+                    <select v-if="editingVersion.isEditing && editingTypeCell === vi" :value="vr['Материал/операция/декор(призн)']" class="editor-select" autofocus @change="onVersionRowEdit(vr, $event, 'Материал/операция/декор(призн)')" @blur="editingTypeCell = -1">
+                      <option value="Материал основной">Материал основной</option>
+                      <option value="Материал вспомогательный">Материал вспомогательный</option>
+                      <option value="Декор">Декор</option>
+                      <option value="Техоперация">Техоперация</option>
                     </select>
+                    <span v-else-if="editingVersion.isEditing" class="type-tag clickable" @click="editingTypeCell = vi">{{ vr['Материал/операция/декор(призн)'] || '—' }}</span>
                     <span v-else>{{ vr['Материал/операция/декор(призн)'] }}</span>
                   </td>
                   <td><input v-if="editingVersion.isEditing" :value="vr['Наименование']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ vr['Наименование'] }}</span></td>
@@ -822,6 +838,7 @@
                   <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, USD.']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ vr['цена материала, USD.'] }}</span></td>
                   <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /><span v-else>{{ vr['Курс на дату расчета'] }}</span></td>
                   <td class="col-num">{{ ((vr['Норма'] || 0) * (vr['цена материала, руб.'] || 0)).toLocaleString('ru-RU', {minimumFractionDigits:2}) }}</td>
+                  <td class="col-num">{{ ((vr['Норма'] || 0) * (vr['цена материала, USD.'] || 0)).toLocaleString('ru-RU', {minimumFractionDigits:2}) }}</td>
                   <td><input v-if="editingVersion.isEditing" :value="vr.row_comment" class="editor-input" placeholder="..." @input="onVersionRowEdit(vr, $event, 'row_comment')" /><span v-else>{{ vr.row_comment }}</span></td>
                 </tr>
               </tbody>
@@ -1511,6 +1528,15 @@ const pageRange = computed(() => {
   const b = Math.min(pageStart.value + pageSize, filteredCount);
   return `${a}–${b}`;
 });
+
+async function clearMyPendingChanges() {
+  try {
+    await $fetch(`${apiBase.value}/api/cost/pending-changes/clear-my`, {
+      method: "POST",
+      headers: fetchHeaders.value,
+    });
+  } catch { /* best-effort */ }
+}
 
 async function loadData() {
   loading.value = true;
@@ -2330,6 +2356,11 @@ const priceLevels = ref<PriceLevel[]>([]);
 const changedRows = reactive<Set<number>>(new Set());
 const saving = ref(false);
 
+function discardChanges() {
+  changedRows.clear();
+  loadData();
+}
+
 /** Уникальные розничные цены из справочника уровней цен (для datalist). */
 const uniqueRetailPrices = computed(() => {
   const prices = new Set(priceLevels.value.map(l => l.price_type3));
@@ -2355,12 +2386,15 @@ const editingVersion = ref<{
   selectedVersionId: number | null;
   isEditing: boolean;
   version_id: number | null;
+  _locked: boolean;
 } | null>(null);
 const savingDraft = ref(false);
 const submittingDraft = ref(false);
 const loadingVersionData = ref(false);
 
-/** Реактивные значения комментариев по строке (индекс → строка). */
+/** Индекс строки, для которой открыт dropdown типа (-1 = ни одна). */
+const editingTypeCell = ref<number>(-1);
+
 const comments = reactive<Record<number, string>>({});
 
 async function loadPriceLevels() {
@@ -2504,7 +2538,7 @@ const openVersionEditor = async (row: any) => {
       calc_sign: r['Признак калькуляции'] || '',
       plan_id: r['PLAN_ID'] || '',
       date: r['дата расчета'] || '',
-      rows: (rawResp.rows || []).map((rr: any) => ({...rr, _selected: false})),
+      rows: (rawResp.rows || []).map((rr: any) => normalizeVersionRow(rr)),
       versions: versionsResp || [],
       selectedVersionId: null,
       isEditing: false,
@@ -2557,7 +2591,7 @@ const selectRawData = async () => {
       `${apiBase.value}/api/cost/raw-data?${params}`,
       { headers: fetchHeaders.value }
     );
-    ev.rows = (rawResp.rows || []).map((rr: any) => ({...rr, _selected: false}));
+    ev.rows = (rawResp.rows || []).map((rr: any) => normalizeVersionRow(rr));
   } catch (e: any) {
     console.error('[cost] load raw data failed', e);
     lastError.value = e?.data?.detail || e?.message || String(e);
@@ -2578,7 +2612,7 @@ const selectVersion = async (versionId: number) => {
       `${apiBase.value}/api/cost/version-rows/${versionId}`,
       { headers: fetchHeaders.value }
     );
-    ev.rows = (data.rows || []).map((rr: any) => ({...rr, _selected: false}));
+    ev.rows = (data.rows || []).map((rr: any) => normalizeVersionRow(rr));
   } catch (e: any) {
     console.error('[cost] load version rows failed', e);
     lastError.value = e?.data?.detail || e?.message || String(e);
@@ -2588,6 +2622,7 @@ const selectVersion = async (versionId: number) => {
 };
 
 const onVersionSelectChange = (event: Event) => {
+  editingTypeCell.value = -1;
   const value = (event.target as HTMLSelectElement).value;
   if (value === '__raw__') {
     selectRawData();
@@ -2606,6 +2641,7 @@ const currentVersionStatus = computed(() => {
 const startEditing = () => {
   if (!editingVersion.value) return;
   editingVersion.value.isEditing = true;
+  editingTypeCell.value = -1;
   if (editingVersion.value.selectedVersionId !== null) {
     editingVersion.value.version_id = editingVersion.value.selectedVersionId;
   } else {
@@ -2616,6 +2652,7 @@ const startEditing = () => {
 const cancelEditing = async () => {
   if (!editingVersion.value) return;
   editingVersion.value.isEditing = false;
+  editingTypeCell.value = -1;
   if (editingVersion.value.selectedVersionId !== null) {
     await selectVersion(editingVersion.value.selectedVersionId);
   } else {
@@ -2720,7 +2757,7 @@ const submitDraft = async () => {
   }
 };
 
-const closeVersionEditor = () => { editingVersion.value = null; };
+const closeVersionEditor = () => { editingVersion.value = null; editingTypeCell.value = -1; };
 
 const addVersionRow = () => {
   if (!editingVersion.value) return;
@@ -2733,7 +2770,7 @@ const addVersionRow = () => {
       }
     }
     // Reset only user-editable material fields — preserve dates, model info, prices, etc.
-    template['Материал/операция/декор(призн)'] = 'материал';
+    template['Материал/операция/декор(призн)'] = 'Материал основной';
     template['Наименование'] = '';
     template['артикул материала'] = '';
     template['Норма'] = 0;
@@ -2798,15 +2835,71 @@ const onVersionRowEdit = (row: any, event: Event, field: string) => {
       }
     }
   }
-  // Recalculate Основные материалы from Норма × цена материала
-  if (field === 'Норма' || field === 'цена материала, руб.' || field === 'цена материала, USD.' || field === 'Курс на дату расчета') {
+  // When type field changes, zero out ALL cost buckets first
+  if (field === 'Материал/операция/декор(призн)') {
+    row['Основные материалы, руб.'] = 0;
+    row['Основные материалы, USD.'] = 0;
+    row['Вспомогательные материалы, руб.'] = 0;
+    row['Вспомогательные материалы, USD.'] = 0;
+    row['Декоры, руб.'] = 0;
+    row['Декоры, USD.'] = 0;
+    row['Пошив, руб.'] = 0;
+    row['Пошив, USD.'] = 0;
+  }
+  // Recalculate cost bucket based on material type
+  if (field === 'Норма' || field === 'цена материала, руб.' || field === 'цена материала, USD.' || field === 'Курс на дату расчета' || field === 'Материал/операция/декор(призн)') {
     const norm = row['Норма'] || 0;
     const priceRub = row['цена материала, руб.'] || 0;
     const priceUsd = row['цена материала, USD.'] || 0;
-    row['Основные материалы, руб.'] = norm * priceRub;
-    row['Основные материалы, USD.'] = norm * priceUsd;
+    const sumRub = norm * priceRub;
+    const sumUsd = norm * priceUsd;
+    const matType = row['Материал/операция/декор(призн)'] || '';
+    if (matType === 'Материал основной') {
+      row['Основные материалы, руб.'] = sumRub;
+      row['Основные материалы, USD.'] = sumUsd;
+    } else if (matType === 'Материал вспомогательный') {
+      row['Вспомогательные материалы, руб.'] = sumRub;
+      row['Вспомогательные материалы, USD.'] = sumUsd;
+    } else if (matType === 'Декор') {
+      row['Декоры, руб.'] = sumRub;
+      row['Декоры, USD.'] = sumUsd;
+    } else if (matType === 'Техоперация') {
+      row['Пошив, руб.'] = sumRub;
+      row['Пошив, USD.'] = sumUsd;
+    }
   }
 };
+
+/** Нормализует строку версии: маппит старые значения типа и вычисляет USD цену. */
+function normalizeVersionRow(rr: any): any {
+  const row = { ...rr, _selected: false };
+  // Normalize old material type values → new dropdown values
+  const typeMap: Record<string, string> = {
+    'материал': 'Материал основной',
+    'техоперация': 'Техоперация',
+    'декор': 'Декор',
+  };
+  const raw = (row['Материал/операция/декор(призн)'] || '').trim().toLowerCase();
+  if (typeMap[raw]) {
+    row['Материал/операция/декор(призн)'] = typeMap[raw];
+  }
+  // Fill USD price from RUB price × exchange rate if USD is empty/zero
+  const rate = Number(row['Курс на дату расчета'] || 0);
+  const priceRub = Number(row['цена материала, руб.'] || 0);
+  const priceUsd = Number(row['цена материала, USD.'] || 0);
+  if (priceUsd === 0 && priceRub > 0 && rate > 0) {
+    row['цена материала, USD.'] = priceRub / rate;
+  }
+  return row;
+}
+
+/** Определяет, вносит ли строка нулевой вклад в себестоимость (нет нормы или нет цены). */
+function isZeroCostRow(row: any): boolean {
+  const norm = Number(row['Норма'] || 0);
+  const priceRub = Number(row['цена материала, руб.'] || 0);
+  const priceUsd = Number(row['цена материала, USD.'] || 0);
+  return norm === 0 || (priceRub === 0 && priceUsd === 0);
+}
 
 /** Найти индексы строк с тем же Модель+Артикул+PLAN_ID+Признак калькуляции (исключая excludeIdx). */
 function findSiblingIndices(row: any, excludeIdx: number): number[] {
@@ -2934,61 +3027,6 @@ const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
     markupSelections[idx] = markupValue;
     changedRows.add(idx);
   }
-
-  if (matchedLevel) {
-    try {
-      const r = await $fetch<{ mock?: boolean }>(`${apiBase.value}/api/cost/save-changes`, {
-        method: "POST",
-        body: {
-          model: row["Модель"],
-          articul: row["Артикул"],
-          price_level: matchedLevel.name,
-          retail_rub: matchedLevel.price_type3,
-          wholesale_rub: matchedLevel.price_type1,
-          retail_usd: retailUsd,
-          wholesale_usd: wholesaleUsd,
-          calc_sign: row["Признак калькуляции"],
-          plan_id: row["PLAN_ID"],
-          brand_manager: row["Бренд-менеджер"],
-          model_name: row["Наименование модели"],
-          task_number: row["Номер задания производства"],
-          date: row["дата расчета"],
-          country: row["Страна пр-ва"],
-          family: row["Семья"],
-          season: row["Сезон"],
-          level01: row["Level 01"],
-          level02: row["Level 02"],
-          level03: row["Level 03"],
-          level04: row["Level 04"],
-          level05: row["Level 05"],
-          materials_rub: row["sum_Основные материалы, руб."],
-          materials_usd: row["sum_Основные материалы, USD."],
-          aux_materials_rub: row["sum_Вспомогательные материалы, руб."],
-          aux_materials_usd: row["sum_Вспомогательные материалы, USD."],
-          sewing_rub: row["sum_Пошив, руб."],
-          sewing_usd: row["sum_Пошив, USD."],
-          cutting_rub: row["sum_Раскрой, руб."],
-          cutting_usd: row["sum_Раскрой, USD."],
-          decors_rub: row["sum_Декоры, руб."],
-          decors_usd: row["sum_Декоры, USD."],
-          knitting_rub: row["sum_Вязание, руб."],
-          knitting_usd: row["sum_Вязание, USD."],
-          cost_rub: row["sum_Себестоимость, руб."],
-          cost_usd: row["sum_Себестоимость, USD."],
-          price_rf: priceRF[absoluteIdx] || 0,
-          price_kz: priceKZ[absoluteIdx] || 0,
-          price_uz: priceUZ[absoluteIdx] || 0,
-          comment: comments[absoluteIdx] || "",
-          author_name: user.value?.name || '',
-        },
-        headers: fetchHeaders.value,
-      });
-      if (r?.mock) mockMode.value = true;
-    } catch (e: any) {
-      console.error("[cost] save-changes failed", e);
-      lastError.value = e?.data?.detail || e?.message || String(e);
-    }
-  }
 };
 
 const saveAllChanges = async () => {
@@ -3041,7 +3079,7 @@ const saveAllChanges = async () => {
     });
     const result = await $fetch<{ success: boolean; count: number; error?: string; mock?: boolean }>(
       `${apiBase.value}/api/cost/save-batch`,
-      { method: "POST", body: { changes, author_name: user.value?.name || '' }, headers: fetchHeaders.value }
+      { method: "POST", body: { changes, author_name: user.value?.email || '' }, headers: fetchHeaders.value }
     );
     if (result.mock) mockMode.value = true;
     if (result.success) {
@@ -3397,7 +3435,7 @@ async function applyPendingChanges() {
           wholesale_rub: Number(pc['Отпускная цена по уровню, руб'] ?? pc.wholesale_rub ?? 0),
           calc_sign: calcSign,
           price_type: priceType,
-          author_name: user.value?.name || 'system',
+          author_name: user.value?.email || 'system',
           cost_rub: Number(pc['Себестоимость, руб.'] ?? pc.cost_rub ?? 0),
         };
       })
@@ -4391,11 +4429,17 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 }
 
 /* Filter checkbox */
+.filter-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-top: var(--sp-2);
+  flex-wrap: wrap;
+}
 .filter-checkbox {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  margin-top: var(--sp-2);
   font-size: var(--fs-xs);
   cursor: pointer;
   user-select: none;
@@ -4405,6 +4449,16 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   height: 16px;
   cursor: pointer;
 }
+.peo-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.peo-filter-select { padding:4px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; }
 
 .raw-rows-banner {
   padding: var(--sp-3) var(--sp-5);
@@ -4467,6 +4521,9 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .editor-select:focus { border-color:var(--accent-color, #4338ca); outline:none; }
 .row-added { background:#ecfdf5; }
 .row-modified { background:#fefce8; }
+.row-zero-cost { background: color-mix(in srgb, #ef4444 10%, transparent) !important; }
+.type-tag.clickable { cursor:pointer; padding:2px 6px; border-radius:4px; background:var(--bg-tonal, #f3f4f6); border:1px solid var(--border-color, #e5e7eb); }
+.type-tag.clickable:hover { background:var(--bg-hover, #e5e7eb); }
 .col-peo { width:48px; text-align:center; }
 .peo-badge { cursor:pointer; font-size:16px; }
 .peo-readonly .peo-badge { cursor:default; }
