@@ -2905,8 +2905,10 @@ function isZeroCostRow(row: any): boolean {
 const DECOR_TYPE_OVERRIDE = new Set(['шт', 'Декоры лиса', 'декор']);
 function typeDisplayValue(row: any): string {
   const t = row['Материал/операция/декор(призн)'] || '';
-  if (DECOR_TYPE_OVERRIDE.has(t) && row['Декоры, наименование']) {
-    return row['Декоры, наименование'];
+  if (DECOR_TYPE_OVERRIDE.has(t)) {
+    const decorName = (row['Декоры, наименование'] || '').trim();
+    if (decorName && decorName !== '-') return decorName;
+    return 'Декор';
   }
   return t;
 }
