@@ -1337,7 +1337,7 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
         docs = []
         for (cs, pi), items in groups.items():
             price_type = calc_sign_price_type.get(cs, items[0].get("price_type", 0))
-            author_name = items[0].get("author_name", "system")
+            author_name = (items[0].get("author_name", "system") or "system")[:15]
 
             doc = {
                 "plan_id": pi,

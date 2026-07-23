@@ -808,6 +808,7 @@
                   <th>Материал/операция</th>
                   <th>Наименование</th>
                   <th>Артикул материала</th>
+                  <th>Свойство</th>
                   <th class="col-num">Норма</th>
                   <th class="col-num">Цена, руб.</th>
                   <th class="col-num">Цена, USD</th>
@@ -828,11 +829,12 @@
                       <option value="Декор">Декор</option>
                       <option value="Техоперация">Техоперация</option>
                     </select>
-                    <span v-else-if="editingVersion.isEditing" class="type-tag clickable" @click="editingTypeCell = vi">{{ vr['Материал/операция/декор(призн)'] || '—' }}</span>
-                    <span v-else>{{ vr['Материал/операция/декор(призн)'] }}</span>
+                    <span v-else-if="editingVersion.isEditing" class="type-tag clickable" @click="editingTypeCell = vi">{{ typeDisplayValue(vr) || '—' }}</span>
+                    <span v-else>{{ typeDisplayValue(vr) }}</span>
                   </td>
                   <td><input v-if="editingVersion.isEditing" :value="vr['Наименование']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ vr['Наименование'] }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
+                  <td>{{ vr['Свойство'] }}</td>
                   <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ vr['Норма'] }}</span></td>
                   <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, руб.']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else>{{ vr['цена материала, руб.'] }}</span></td>
                   <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, USD.']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ vr['цена материала, USD.'] }}</span></td>
@@ -2890,6 +2892,11 @@ function normalizeVersionRow(rr: any): any {
   if (priceUsd === 0 && priceRub > 0 && rate > 0) {
     row['цена материала, USD.'] = priceRub / rate;
   }
+  // Merged property from свойство1/2/3
+  const parts = [row['свойство1'], row['свойство2'], row['свойство3']]
+    .map((v: any) => (v || '').toString().trim())
+    .filter((v: string) => v && v !== '-');
+  row['Свойство'] = parts.join(', ') || '—';
   return row;
 }
 
@@ -2899,6 +2906,19 @@ function isZeroCostRow(row: any): boolean {
   const priceRub = Number(row['цена материала, руб.'] || 0);
   const priceUsd = Number(row['цена материала, USD.'] || 0);
   return norm === 0 || (priceRub === 0 && priceUsd === 0);
+}
+
+/** Показывать название декора вместо типа, если тип = 'шт' / 'Декоры лиса' / 'декор'. */
+const DECOR_TYPE_OVERRIDE = new Set(['шт', 'Декоры лиса', 'декор']);
+const DECOR_EMPTY_VALUES = new Set(['', '-', '0', '0.0000', '0.00', '0.0']);
+function typeDisplayValue(row: any): string {
+  const t = row['Материал/операция/декор(призн)'] || '';
+  if (DECOR_TYPE_OVERRIDE.has(t)) {
+    const decorName = (row['Декоры, наименование'] || '').trim();
+    if (decorName && !DECOR_EMPTY_VALUES.has(decorName)) return decorName;
+    return 'Декор';
+  }
+  return t;
 }
 
 /** Найти индексы строк с тем же Модель+Артикул+PLAN_ID+Признак калькуляции (исключая excludeIdx). */
