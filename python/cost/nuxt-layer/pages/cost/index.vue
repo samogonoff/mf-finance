@@ -828,8 +828,8 @@
                       <option value="Декор">Декор</option>
                       <option value="Техоперация">Техоперация</option>
                     </select>
-                    <span v-else-if="editingVersion.isEditing" class="type-tag clickable" @click="editingTypeCell = vi">{{ vr['Материал/операция/декор(призн)'] || '—' }}</span>
-                    <span v-else>{{ vr['Материал/операция/декор(призн)'] }}</span>
+                    <span v-else-if="editingVersion.isEditing" class="type-tag clickable" @click="editingTypeCell = vi">{{ typeDisplayValue(vr) || '—' }}</span>
+                    <span v-else>{{ typeDisplayValue(vr) }}</span>
                   </td>
                   <td><input v-if="editingVersion.isEditing" :value="vr['Наименование']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ vr['Наименование'] }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
@@ -2899,6 +2899,16 @@ function isZeroCostRow(row: any): boolean {
   const priceRub = Number(row['цена материала, руб.'] || 0);
   const priceUsd = Number(row['цена материала, USD.'] || 0);
   return norm === 0 || (priceRub === 0 && priceUsd === 0);
+}
+
+/** Показывать название декора вместо типа, если тип = 'шт' / 'Декоры лиса' / 'декор'. */
+const DECOR_TYPE_OVERRIDE = new Set(['шт', 'Декоры лиса', 'декор']);
+function typeDisplayValue(row: any): string {
+  const t = row['Материал/операция/декор(призн)'] || '';
+  if (DECOR_TYPE_OVERRIDE.has(t) && row['Декоры, наименование']) {
+    return row['Декоры, наименование'];
+  }
+  return t;
 }
 
 /** Найти индексы строк с тем же Модель+Артикул+PLAN_ID+Признак калькуляции (исключая excludeIdx). */
