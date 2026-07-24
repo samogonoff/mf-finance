@@ -429,10 +429,16 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     except Exception:
         pass  # no targets yet — leave field empty
 
-    # ── Price levels → price_rf/kz/uz (Task 1) ───────────────────────────
+    # ── Fetch price-levels reference once (used by Task 1 below + Gpartner fallback) ──
+    price_levels: list[dict] = []
     try:
         loop = asyncio.get_event_loop()
         price_levels = await loop.run_in_executor(None, _get_price_levels_sync)
+    except Exception:
+        pass
+
+    # ── Price levels → price_rf/kz/uz (Task 1) ───────────────────────────
+    try:
         pl_map: dict[str, dict] = {pl["name"]: pl for pl in price_levels}
         for row in data:
             pl_name = str(row.get("Уровень цен", "") or "").strip()
@@ -562,12 +568,10 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
 
         if need_gpartner:
             loop = asyncio.get_event_loop()
-            gpartner_map, gp_price_levels = await asyncio.gather(
-                loop.run_in_executor(None, fetch_gpartner_planned, need_gpartner),
-                loop.run_in_executor(None, _get_price_levels_sync),
-            )
+            gpartner_map = await loop.run_in_executor(None, fetch_gpartner_planned, need_gpartner)
+            # PRICE_TYPE1 → [PRICE_TYPE3, ...] (round for float-safe key match)
             pt1_to_pt3: dict[float, list[float]] = {}
-            for pl in gp_price_levels:
+            for pl in price_levels:
                 pt1_to_pt3.setdefault(round(pl["price_type1"], 2), []).append(pl["price_type3"])
 
             for row in data:
