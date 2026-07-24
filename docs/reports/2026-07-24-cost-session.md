@@ -48,6 +48,11 @@
 |---|---|
 | `37e3162` | cost: add gpartner S_MODELI fallback for planned prices (КПСС/ПФКСС) |
 | `c8c3527` | cost: fix cache worker — last_full tracking, CancelledError, logging |
+| `3f26bd9` | cost: dedupe price-levels fetch in aggregated (single Gpartner round-trip) |
+| `40bf065` | docs: add cost session report (2026-07-24) |
+
+**MR**: https://git.markformelle.ru/services/finance/-/merge_requests/55
+**Конфликтов с master**: нет
 
 ---
 
