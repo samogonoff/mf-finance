@@ -604,6 +604,10 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
 
         return {"success": True, "row_count": total_rows}
 
+    except asyncio.CancelledError:
+        await set_cache_error("Cache refresh cancelled")
+        raise
+
     except Exception:
         err_msg = traceback.format_exc()
         await set_cache_error(err_msg)
