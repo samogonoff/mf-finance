@@ -386,6 +386,21 @@ def aggregated(payload: dict | None = None) -> dict:
                 row["planned_retail"] = src.get("avg_Розничная цена по уровню, руб.")
                 row["planned_wholesale"] = src.get("avg_Отпускная цена по уровню, руб")
                 break
+    for row in rows:
+        cs = str(row.get("Признак калькуляции", "") or "").strip()
+        if cs not in ("КПСС", "ПФКСС"):
+            continue
+        if row.get("planned_retail") is not None and row.get("planned_wholesale") is not None:
+            continue
+        price_mopt = round(float(row.get("sum_Себестоимость, руб.", 0) or 0) * 1.25, 2)
+        nnds = 20.0
+        level1 = str(row.get("Level 01", "") or "").strip()
+        mult = 1.3 if level1 in ("Девочкам", "Мальчикам") else 1.4
+        if row.get("planned_wholesale") is None:
+            row["planned_wholesale"] = price_mopt
+        if row.get("planned_retail") is None:
+            row["planned_retail"] = round(price_mopt * mult * (1 + nnds / 100), 2)
+        row["planned_cost"] = round(price_mopt * 0.7, 2)
     return {"data": rows, "count": len(rows)}
 
 
