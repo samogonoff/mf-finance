@@ -250,6 +250,7 @@
               </th>
               <th v-if="isVisible('planned_retail')" class="col-num">План. розница</th>
               <th v-if="isVisible('planned_wholesale')" class="col-num">План. опт</th>
+              <th v-if="isVisible('planned_cost')" class="col-num">План. с/с</th>
               <th v-if="isVisible('avg_retail_rub')" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
                 Сред. розница (руб)<span v-if="sortField === 'avg_Розничная цена по уровню, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
@@ -376,6 +377,7 @@
               <td v-if="isVisible('calc_sign')">{{ row['Признак калькуляции'] || '—' }}</td>
               <td v-if="isVisible('planned_retail')" class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
               <td v-if="isVisible('planned_wholesale')" class="col-num num">{{ row.planned_wholesale != null ? fmt(row.planned_wholesale) : '—' }}</td>
+              <td v-if="isVisible('planned_cost')" class="col-num num">{{ row.planned_cost != null ? fmt(row.planned_cost) : '—' }}</td>
               <td v-if="isVisible('avg_retail_rub')">
                 <select
                   class="price-select"
@@ -1044,6 +1046,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'calc_sign', label: 'Пр.кальк' },
   { key: 'planned_retail', label: 'План. розница' },
   { key: 'planned_wholesale', label: 'План. опт' },
+  { key: 'planned_cost', label: 'План. с/с' },
   { key: 'avg_retail_rub', label: 'Сред. розница (руб)' },
   { key: 'avg_rate', label: 'Курс (руб)' },
   { key: 'retail_markup', label: 'Розничная наценка' },
@@ -1072,7 +1075,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
 
 // Column groupings for the settings modal
 const mainColumnKeys = ['bm','model','articul','model_name','task_num','plan_id'];
-const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','comment'];
+const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','comment'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
 const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost'];

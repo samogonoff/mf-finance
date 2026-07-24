@@ -36,22 +36,40 @@ async def _cache_worker() -> None:
     try:
         status = await get_cache_status()
         if status is None or status["row_count"] == 0:
-            await load_cost_data_to_cache()
+            result = await load_cost_data_to_cache()
+            if result.get("success"):
+                last_full = datetime.now(timezone.utc)
+                print("[cache_worker] initial fill OK", flush=True)
+            else:
+                print(f"[cache_worker] initial fill FAILED: {result.get('error', 'unknown')[:200]}", flush=True)
+        else:
+            # Hot start: cache already populated — treat as fresh
             last_full = datetime.now(timezone.utc)
-    except Exception:
-        pass
+            print(f"[cache_worker] hot start: cache has {status['row_count']} rows", flush=True)
+    except Exception as exc:
+        print(f"[cache_worker] startup error: {exc}", flush=True)
 
     while True:
         await asyncio.sleep(3 * 3600)
         try:
             now = datetime.now(timezone.utc)
             if last_full is None or (now - last_full).total_seconds() >= 86400:
-                await load_cost_data_to_cache()
-                last_full = now
+                result = await load_cost_data_to_cache()
+                if result.get("success"):
+                    last_full = now
+                    print(f"[cache_worker] full refresh OK ({result.get('row_count')} rows)", flush=True)
+                else:
+                    # Don't update last_full — next tick will retry full refresh
+                    print(f"[cache_worker] full refresh FAILED: {result.get('error', 'unknown')[:200]}", flush=True)
             else:
-                await load_cost_data_to_cache(partial_months=2)
-        except Exception:
-            pass
+                result = await load_cost_data_to_cache(partial_months=2)
+                if result.get("success"):
+                    print(f"[cache_worker] partial refresh OK ({result.get('row_count')} rows)", flush=True)
+                else:
+                    print(f"[cache_worker] partial refresh FAILED: {result.get('error', 'unknown')[:200]}", flush=True)
+                # Don't update last_full on partial — only full refreshes count for 24h cycle
+        except Exception as exc:
+            print(f"[cache_worker] tick error: {exc}", flush=True)
 
 
 @asynccontextmanager

@@ -40,6 +40,11 @@ make cost-reset-db    # ⚠ снести том cost_db_data
 ../swarm/migrate.dev.sh down 1    # откатить одну версию в обеих БД
 ../swarm/migrate.dev.sh version
 ../swarm/migrate.dev.sh force 1   # форснуть версию (если БД «dirty»)
+
+# Go — вне докера (нужен только go 1.25 локально), обязательно перед коммитом Go-задачи:
+cd go && go build ./... && go vet ./... && go test ./...
+cd go && go test ./internal/plans/...        # один пакет
+cd go && go test ./internal/plans/ -run TestName -v  # один тест
 ```
 
 Эндпоинты после `make up`:
@@ -64,7 +69,8 @@ make cost-reset-db    # ⚠ снести том cost_db_data
 - Go-API использует `air` (`go/.air.toml`), бинарник — `./.tmp/api`, watch на `*.go`.
 - Nuxt с Vite-HMR, `CHOKIDAR_USEPOLLING=true` (без него поллинг не работает в WSL).
 - FastAPI `python-cost` запускается через `uvicorn --reload --reload-dir /var/www/cost/app` — изменения в `nuxt-layer/` его НЕ дёргают.
-- Тестов в репозитории нет ни в одном слое; единичные тесты пиши рядом, общего раннера нет.
+- **Go: раннер есть.** Перед коммитом любой Go-задачи: `cd go && go build ./... && go vet ./... && go test ./...` (конвенция, см. `tasks/todo.md`). Тесты лежат рядом с кодом (`*_test.go`, ~20 файлов) — заметно в `internal/plans/` (расчёты, ABAC, календарь, workflow) и `internal/etl/` (SQL-маппинг extract'ов); используют in-memory store/фикстуры, живой БД не требуют.
+- Nuxt и Python (`python/app`, `python/cost`) — тестов нет, общего раннера нет, линтеров (eslint/ruff/golangci-lint) не настроено.
 
 ## Архитектура
 
@@ -110,6 +116,8 @@ ROLE_USER         — всегда добавляется
 - B24-дублирование идёт через корпоративный mfportal `site_api` (тот же контракт, что у MP `SiteApiNotifyService`): POST JSON `{id: "<b24_id>", message: "Finance: <title>\n<message>"}` + Basic Auth. Канал включается, когда заданы ВСЕ три ENV: `SITE_API_NOTIFY_URL`, `SITE_API_NOTIFY_USER`, `SITE_API_NOTIFY_PASSWORD`. В `.env.example` пусто → автоматически «prod-only». Per-user отключение — чекбокс на `/account` (`PATCH /api/account/notification-settings`).
 - Доставка — fire-and-forget goroutine из `notifications.Service.Create`, аудит в полях `b24_sent_at`, `b24_attempts`, `b24_last_error`. Retry-цикла нет; повторная отправка вручную пока не реализована.
 
+**Модуль «Тактические планы» (`go/internal/plans/`) — самый крупный узел кода, не путать с cost-разделом.** P&L-планирование по ЦФО/площадкам с ABAC-срезами (`abac.go`, `plans_user_scope`), справочниками-директориями (`directories_*`, версионируемые, синхронизация из Excel/1С через `sync.go`/`cfo_import.go`), формулами расчёта (`calc.go`, `eval.go`, `pnl.go`), календарём периодов (`calendar.go`), workflow согласования (`workflow.go`, `workflow_task.go`), импортом/экспортом Excel (`xlsxread.go`, `importexport.go`) и MP-специфичной формой (`mpform_calc.go`, `mpform_spec.go`). MVP-вертикаль — форма TPL-MP (Маркетплейсы); этап 2 (своды, полный workflow 1.2–4, другие формы) не реализован. Источник истины по требованиям и статусу — `docs/reports/plans/{SPEC,plan,todo}.md` (отдельная от корневого `SPEC.md`, который про ВГО-отчёт). Факт/стратегия читаются из OLAP/SQL онлайн, с mock-фолбэком `PLANS_MOCK=1`.
+
 **Cost → уведомления через внутренний канал.**
 - Go-API: `POST /internal/notifications` за middleware `RequireInternalToken` (заголовок `X-Internal-Token` = ENV `INTERNAL_SERVICE_TOKEN`). Если ENV пуст — все `/internal/*` отвечают 503 (fail-closed).
 - python-cost: `app/notify.py` шлёт через `httpx`; URL+токен из `FINANCE_INTERNAL_API` и `INTERNAL_SERVICE_TOKEN`. Вызывается из `app/routes.py` после `save-changes` и `save-batch`. Сетевые ошибки no-op'ятся (логируем — но не валим сохранение цен).
@@ -125,13 +133,25 @@ ROLE_USER         — всегда добавляется
 
 ```
 finance/
-├── go/                     # Go 1.22, модуль github.com/company/finance-api
-│   ├── cmd/api/            # main.go + cors.go (точка входа, маршруты)
+├── go/                     # Go 1.25, модуль github.com/company/finance-api
+│   ├── cmd/
+│   │   ├── api/            # main.go + cors.go — основной сервер, точка входа
+│   │   ├── cfo-import/     # разовый импорт справочника ЦФО/ЦЗ (plans)
+│   │   ├── findebt-etl/    # standalone-раннер ETL по задолженности (fact_findebt*)
+│   │   ├── mssql-probe/    # разведочные SQL-пробы к MSSQL (PROBE_SQL=...), не коммитить логику, только утилита
+│   │   └── vgoprobe/       # разведочный проб к vGLMFAddUSD
 │   └── internal/
-│       ├── auth/           # OAuth-handler, токены (Redis), пользователь (PG)
-│       ├── config/         # env-driven Config (HTTP_ADDR, POSTGRES_URL, REDIS_ADDR, CORS_ORIGINS)
+│       ├── auth/           # OAuth-handler, токены (Redis), пользователь (PG), роли (roles.go)
+│       ├── bugtracker/     # POST /api/bugtracker/report — дедуп, скриншоты, admin-метрики
+│       ├── config/         # env-driven Config (HTTP_ADDR, POSTGRES_URL, REDIS_ADDR, CORS_ORIGINS, …)
 │       ├── db/             # pgx pool
-│       └── redisx/         # redis-клиент
+│       ├── etl/            # extract/bootstrap/incremental для ClickHouse-фактов (findebt, currency, debtarh, glmf)
+│       ├── internalapi/    # POST /internal/* за RequireInternalToken (канал python-cost → notifications)
+│       ├── notifications/  # общий поток уведомлений + опциональное B24-дублирование
+│       ├── plans/          # модуль «Тактические планы» (P&L) — см. Bewegt-point ниже и docs/reports/plans/SPEC.md
+│       ├── redisx/         # redis-клиент
+│       ├── reports/debt/   # отчёт «Задолженность ВГО» (mssql/clickhouse/finpl backends) — см. корневой SPEC.md
+│       └── users/          # admin-управление ролями пользователей
 ├── nuxt/                   # Nuxt 3, JS-зависимости в package.json
 │   ├── app.vue             # layout двухколоночный (sidebar 220px + content)
 │   ├── pages/              # /, /operations, /reports, /counterparties, /analytics, /account, /login

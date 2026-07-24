@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
+from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -429,10 +429,16 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     except Exception:
         pass  # no targets yet — leave field empty
 
-    # ── Price levels → price_rf/kz/uz (Task 1) ───────────────────────────
+    # ── Fetch price-levels reference once (used by Task 1 below + Gpartner fallback) ──
+    price_levels: list[dict] = []
     try:
         loop = asyncio.get_event_loop()
         price_levels = await loop.run_in_executor(None, _get_price_levels_sync)
+    except Exception:
+        pass
+
+    # ── Price levels → price_rf/kz/uz (Task 1) ───────────────────────────
+    try:
         pl_map: dict[str, dict] = {pl["name"]: pl for pl in price_levels}
         for row in data:
             pl_name = str(row.get("Уровень цен", "") or "").strip()
@@ -543,6 +549,60 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 if prices:
                     row["planned_retail"] = prices[0]
                     row["planned_wholesale"] = prices[1]
+    except Exception:
+        pass
+
+    # ── Плановые цены — fallback Gpartner S_MODELI (только КПСС/ПФКСС) ──────
+    try:
+        need_gpartner: list[tuple[str, str]] = []
+        for row in data:
+            cs = str(row.get("Признак калькуляции", "") or "").strip()
+            if cs not in ("КПСС", "ПФКСС"):
+                continue
+            if row.get("planned_retail") is not None and row.get("planned_wholesale") is not None:
+                continue
+            m = str(row.get("Модель", "") or "").strip()
+            a = str(row.get("Артикул", "") or "").strip()
+            if m and a:
+                need_gpartner.append((m, a))
+
+        if need_gpartner:
+            loop = asyncio.get_event_loop()
+            gpartner_map = await loop.run_in_executor(None, fetch_gpartner_planned, need_gpartner)
+            # PRICE_TYPE1 → [PRICE_TYPE3, ...] (round for float-safe key match)
+            pt1_to_pt3: dict[float, list[float]] = {}
+            for pl in price_levels:
+                pt1_to_pt3.setdefault(round(pl["price_type1"], 2), []).append(pl["price_type3"])
+
+            for row in data:
+                cs = str(row.get("Признак калькуляции", "") or "").strip()
+                if cs not in ("КПСС", "ПФКСС"):
+                    continue
+                m = str(row.get("Модель", "") or "").strip()
+                a = str(row.get("Артикул", "") or "").strip()
+                gp = gpartner_map.get((m, a))
+                if not gp:
+                    continue
+
+                price_mopt = gp.get("price_mopt")
+                nnds = gp.get("nnds")
+                plan_price = gp.get("plan_price")
+
+                if row.get("planned_wholesale") is None and price_mopt is not None:
+                    row["planned_wholesale"] = price_mopt
+
+                if row.get("planned_retail") is None and price_mopt is not None:
+                    candidates = pt1_to_pt3.get(round(price_mopt, 2), [])
+                    if len(candidates) == 1:
+                        row["planned_retail"] = candidates[0]
+                    elif len(candidates) > 1:
+                        level1 = str(row.get("Level 01", "") or "").strip()
+                        mult = 1.3 if level1 in ("Девочкам", "Мальчикам") else 1.4
+                        target = price_mopt * mult * (1 + (nnds or 0) / 100)
+                        row["planned_retail"] = min(candidates, key=lambda c: abs(c - target))
+
+                if row.get("planned_cost") is None and plan_price is not None:
+                    row["planned_cost"] = plan_price
     except Exception:
         pass
 

@@ -266,6 +266,41 @@ def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
         olap.close()
 
 
+def fetch_gpartner_planned(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+    """Плановая оптовая цена/НДС/себестоимость из Gpartner S_MODELI (fallback source).
+
+    pairs: список (model, articul). Возвращает {(model, articul): {price_mopt, nnds, plan_price}}.
+    Резервный источник planned_retail/planned_wholesale/planned_cost для КПСС/ПФКСС,
+    когда основная цепочка (cost_data_cache) не даёт данных — см. routes.get_aggregated.
+    """
+    if not pairs:
+        return {}
+    pairs = list(set(pairs))
+    conn = get_gpartner_conn()
+    cursor = conn.cursor()
+    try:
+        conditions = " OR ".join("(MODEL = ? AND ART = ?)" for _ in pairs)
+        params: list[str] = []
+        for m, a in pairs:
+            params.extend([m, a])
+
+        cursor.execute(
+            f"SELECT MODEL, ART, PRICE_MOPT, NNDS, PLAN_PRICE FROM [dbo].[S_MODELI] WHERE {conditions}",
+            params,
+        )
+        result: dict[tuple[str, str], dict] = {}
+        for row in cursor.fetchall():
+            key = (str(row[0] or "").strip(), str(row[1] or "").strip())
+            result[key] = {
+                "price_mopt": float(row[2]) if row[2] is not None else None,
+                "nnds": float(row[3]) if row[3] is not None else None,
+                "plan_price": float(row[4]) if row[4] is not None else None,
+            }
+        return result
+    finally:
+        conn.close()
+
+
 def get_dwh_conn() -> pyodbc.Connection:
     """Чтение справочника групп (DWH.dim.groups) для каскадных фильтров."""
     return _mssql_connect(
@@ -568,6 +603,10 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
         await sync_audit_from_olap()
 
         return {"success": True, "row_count": total_rows}
+
+    except asyncio.CancelledError:
+        await set_cache_error("Cache refresh cancelled")
+        raise
 
     except Exception:
         err_msg = traceback.format_exc()
