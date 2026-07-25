@@ -17,6 +17,7 @@ const (
 	ObjWelcome      = "welcome"
 	ObjBugReportNew = "bug_report_new"
 	ObjCostPriceSet = "cost_price_set"
+	ObjPlanTask     = "plan_task" // задание модуля «Тактические планы»
 )
 
 // Notification — строка из таблицы notifications (см. миграции 0003, 0005).

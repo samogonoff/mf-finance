@@ -28,12 +28,13 @@ type OlapFactSource struct {
 	db          *sql.DB
 	factTable   string
 	planTable   string
+	taktTable   string
 	penaltyView string
 }
 
 // NewOlapFactSource — конструктор.
-func NewOlapFactSource(db *sql.DB, factTable, planTable, penaltyView string) *OlapFactSource {
-	return &OlapFactSource{db: db, factTable: factTable, planTable: planTable, penaltyView: penaltyView}
+func NewOlapFactSource(db *sql.DB, factTable, planTable, taktTable, penaltyView string) *OlapFactSource {
+	return &OlapFactSource{db: db, factTable: factTable, planTable: planTable, taktTable: taktTable, penaltyView: penaltyView}
 }
 
 // MpFact — факт сегмента за период: продажи/себестоимость (FormToLoadFact, BYN) +
@@ -71,6 +72,22 @@ func (s *OlapFactSource) MpStrategy(ctx context.Context, year, month int, segmen
 		return []FactRow{}, nil
 	}
 	rows, err := s.formRows(ctx, s.planTable, year, month, platforms, "BYN")
+	if err != nil {
+		return nil, err
+	}
+	sortFacts(rows)
+	return rows, nil
+}
+
+// MpTaktTarget — тактические таргеты сегмента (FormToLoaTaktTarget, BYN). Probe
+// 2026-07-25: покрывает 2025-01…2026-12, включая 8006 (себест. по отпускным ценам),
+// которого в ФАКТЕ нет с 2023-12. Пусто при отсутствии таблицы.
+func (s *OlapFactSource) MpTaktTarget(ctx context.Context, year, month int, segment string) ([]FactRow, error) {
+	platforms := segmentPlatforms(segment)
+	if len(platforms) == 0 || s.taktTable == "" {
+		return []FactRow{}, nil
+	}
+	rows, err := s.formRows(ctx, s.taktTable, year, month, platforms, "BYN")
 	if err != nil {
 		return nil, err
 	}

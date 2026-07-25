@@ -130,12 +130,10 @@ const cards = computed(() => {
   return [...m.values()];
 });
 
-const STATUS: Record<string, { l: string; t: string }> = {
-  pending: { l: "не начато", t: "" }, in_progress: { l: "в работе", t: "badge-info" },
-  review: { l: "на проверке", t: "badge-warn" }, done: { l: "сделано", t: "badge-pos" }, returned: { l: "возвращено", t: "badge-neg" }
-};
-const statusLabel = (s: string) => STATUS[s]?.l ?? s;
-const statusTone = (s: string) => STATUS[s]?.t ?? "";
+// Подписи состояний — из общего словаря (usePlanStatus).
+const planStatus = usePlanStatus();
+const statusLabel = (s: string) => planStatus.label(s);
+const statusTone = (s: string) => planStatus.badge(s);
 
 type Act = { act: string; label: string; primary?: boolean };
 const actionsFor = (t: Task): Act[] => {

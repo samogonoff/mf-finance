@@ -20,7 +20,9 @@ func fmtNum(v *float64) string {
 
 // MpFormExport — .xlsx формы задания (Площадка | Код ЦФО | Блок | КодPL | Факт | Тактика).
 func (s *TaskStore) MpFormExport(ctx context.Context, taskID int64) ([]byte, error) {
-	f, err := s.MpFormData(ctx, taskID)
+	// Excel-обмен ведётся в валюте хранения (RUB) — так round-trip export→import
+	// не зависит от того, в какой валюте пользователь смотрел форму (CHECKPOINT B).
+	f, err := s.MpFormData(ctx, taskID, "RUB")
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +117,7 @@ func (s *TaskStore) MpFormImport(ctx context.Context, taskID, actorID int64, isA
 	if len(out) == 0 {
 		return 0, fmt.Errorf("не найдено строк с тактикой")
 	}
-	if err := s.SaveMpForm(ctx, taskID, actorID, isAdmin, out, nil); err != nil {
+	if err := s.SaveMpForm(ctx, taskID, actorID, isAdmin, out, nil, "RUB"); err != nil {
 		return 0, err
 	}
 	return len(out), nil

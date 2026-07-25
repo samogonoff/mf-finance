@@ -12,17 +12,11 @@
       </div>
     </header>
 
-    <!-- Прогресс по этапам -->
-    <div class="progress-row">
-      <div class="progress-bar">
-        <div class="progress-fill" :style="{ width: pct + '%' }"></div>
-      </div>
-      <span class="progress-label">{{ done }} из {{ list.length }} этапов завершено · {{ pct }}%</span>
-    </div>
+    <PlanStatusBar :pl-id="id" :year="year" :month="month" />
 
     <div class="segmented" role="tablist">
       <button class="seg" :class="{ active: tab === 'process' }" @click="tab = 'process'">Процесс</button>
-      <button class="seg" :class="{ active: tab === 'pnl' }" @click="openPnl">План · Тактика</button>
+      <button class="seg" :class="{ active: tab === 'pnl' }" @click="tab = 'pnl'">Свод · все данные</button>
       <button class="seg" :class="{ active: tab === 'svod' }" @click="tab = 'svod'">Свод по ЮЛ</button>
     </div>
 
@@ -112,42 +106,17 @@
       </div>
     </section>
 
-    <!-- ===== СВОДНОЕ ОКНО: План · Тактика · Стратегия ===== -->
+    <!-- ===== СВОД ПЕРИОДА: все данные карточки в одном окне ===== -->
     <section v-show="tab === 'pnl'" class="card">
       <div class="card-header pnl-head">
-        <span class="card-title">Сводный P&amp;L — единое окно (read-only)</span>
+        <span class="card-title">Свод периода — все данные карточки (read-only)</span>
         <div class="pnl-actions">
-          <span v-if="pnl" class="pnl-prev">сравнение с {{ pnl.prev_year ? `${pnl.prev_year}-${String(pnl.prev_month).padStart(2, "0")}` : "—" }}</span>
           <button v-if="canAdmin" class="btn btn-sm btn-ghost" @click="stratInput?.click()"><Icon name="lucide:upload" /> Импорт стратегии</button>
           <input ref="stratInput" type="file" accept=".xlsx" class="hidden-file" @change="doStrategyImport" />
         </div>
       </div>
       <p v-if="pnlNote" class="banner banner-pos">{{ pnlNote }}</p>
-      <div class="table-wrap">
-        <table class="data-table pnl-table">
-          <thead>
-            <tr>
-              <th>ЦФО</th><th>Статья</th>
-              <th class="num">Факт</th><th class="num">Стратегия</th><th class="num">Тактика</th>
-              <th class="num">Расчёт</th><th class="num">Δ такт−страт</th><th class="num">Прошл. период</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="pnl && !pnl.rows.length"><td colspan="8" class="empty-cell">Нет данных. Заполните формы заданий (тактика) и импортируйте стратегию.</td></tr>
-            <tr v-for="(r, i) in pnl?.rows || []" :key="i" :class="{ adj: r.is_manual }">
-              <td>{{ r.name_cfo || r.code_cfo }}</td>
-              <td class="exp">{{ r.expense_name || r.line_code }}</td>
-              <td class="num">{{ pf(r.fact) }}</td>
-              <td class="num strat">{{ pf(r.strategy) }}</td>
-              <td class="num tac">{{ pf(r.tactic) }}</td>
-              <td class="num">{{ pf(r.calc) }}</td>
-              <td class="num" :class="deltaCls(r)">{{ deltaTS(r) }}</td>
-              <td class="num prev">{{ pf(r.prev_tactic) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <p class="prov-note">Тактику наполняют задания этапов; стратегия — импорт «МП_стратегия_26»; факт — источник МП; Δ = тактика − стратегия.</p>
+      <MpBoard v-if="tab === 'pnl'" :key="boardKey" :pl-id="id" />
     </section>
 
     <!-- ===== СВОД ===== -->
@@ -238,10 +207,12 @@
 </template>
 
 <script setup lang="ts">
-import { money, num } from "~/utils/format";
+import { money } from "~/utils/format";
 import PlansModal from "~/components/plans/PlansModal.vue";
+import MpBoard from "~/components/plans/MpBoard.vue";
+import PlanStatusBar from "~/components/plans/PlanStatusBar.vue";
 import { usePlans, type StageState, type SvodRow } from "~/composables/usePlans";
-import { useTasks, type Task, type PnlSummary, type PnlRow } from "~/composables/useTasks";
+import { useTasks, type Task } from "~/composables/useTasks";
 
 definePageMeta({ middleware: "scope-guard" });
 
@@ -251,24 +222,14 @@ const year = ref(Number(route.query.year) || 2026);
 const month = ref(Number(route.query.month) || 6);
 
 const { stages, stageAction, mpSvod, addComment } = usePlans();
-const { byInstance, pnl: loadPnl, importStrategy } = useTasks();
+const { byInstance, importStrategy } = useTasks();
 const { hasRole, isAdmin } = useScope();
 const canAdmin = computed(() => isAdmin.value || hasRole("ROLE_PLANS_ADMIN"));
 
-const pnl = ref<PnlSummary | null>(null);
 const pnlNote = ref("");
 const stratInput = ref<HTMLInputElement | null>(null);
-const pf = (v: number | null) => (v === null || v === undefined ? "—" : num(v, 0));
-const deltaTS = (r: PnlRow) => (r.tactic != null && r.strategy != null ? num(r.tactic - r.strategy, 0) : "—");
-const deltaCls = (r: PnlRow) => {
-  if (r.tactic == null || r.strategy == null) return "";
-  const d = r.tactic - r.strategy;
-  return d > 0 ? "d-pos" : d < 0 ? "d-neg" : "";
-};
-const openPnl = async () => {
-  tab.value = "pnl";
-  try { pnl.value = await loadPnl(id); } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка свода"; }
-};
+// Смена ключа перемонтирует свод — так он перечитает данные после импорта стратегии.
+const boardKey = ref(0);
 const doStrategyImport = async (ev: Event) => {
   const f = (ev.target as HTMLInputElement).files?.[0];
   if (!f) return;
@@ -276,7 +237,7 @@ const doStrategyImport = async (ev: Event) => {
   try {
     const r = await importStrategy(id, f);
     pnlNote.value = `Импортировано стратегии: ${r.imported} строк`;
-    pnl.value = await loadPnl(id);
+    boardKey.value++;
   } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка импорта стратегии"; }
   finally { if (stratInput.value) stratInput.value.value = ""; }
 };
@@ -290,13 +251,11 @@ const tab = ref<"process" | "pnl" | "svod">("process");
 const ret = reactive({ open: false, from: "", target: "", reason: "" });
 const stageModal = ref<StageState | null>(null);
 
-// Реальные задания этапа (из движка), а не статичные имена маршрута.
-const TASK_ST: Record<string, { l: string; t: string }> = {
-  pending: { l: "не начато", t: "badge-dot" }, in_progress: { l: "в работе", t: "badge-info" },
-  review: { l: "на проверке", t: "badge-warn" }, done: { l: "сделано", t: "badge-pos" }, returned: { l: "возвращено", t: "badge-neg" }
-};
-const taskStLabel = (s: string) => TASK_ST[s]?.l ?? s;
-const taskStTone = (s: string) => TASK_ST[s]?.t ?? "badge-dot";
+// Подписи состояний — только из общего словаря (usePlanStatus), чтобы этапы и
+// задания на всех экранах назывались одинаково.
+const planStatus = usePlanStatus();
+const taskStLabel = (s: string) => planStatus.label(s);
+const taskStTone = (s: string) => planStatus.badge(s);
 const stageTasks = (code: string) => tasks.value.filter((t) => t.stage_code === code);
 const stageAssignees = (code: string) => [...new Set(stageTasks(code).map((t) => t.assignee_name).filter(Boolean))];
 const stageDone = (code: string) => stageTasks(code).filter((t) => t.status === "done").length;
@@ -326,8 +285,6 @@ const APPROVAL = new Set(["1.2", "1.3", "1.4", "2.2", "3", "4"]);
 const byCode = computed<Record<string, StageState>>(() =>
   Object.fromEntries(list.value.map((s) => [s.stage_code, s]))
 );
-const done = computed(() => list.value.filter((s) => s.status === "completed").length);
-const pct = computed(() => (list.value.length ? Math.round((done.value / list.value.length) * 100) : 0));
 
 type Col = (typeof COLS)[number];
 type Track = (typeof TRACKS)[number];
@@ -353,10 +310,8 @@ const depHint = (st: StageState): string => {
   return unmet.length ? "ждёт " + unmet.join(", ") : "";
 };
 
-const statusLabel = (s: string) =>
-  ({ pending: "ожидает", in_progress: "в работе", completed: "завершён", returned: "возвращён", blocked: "блок" } as Record<string, string>)[s] || s;
-const statusBadge = (s: string) =>
-  ({ completed: "badge-pos", in_progress: "badge-accent", returned: "badge-neg", blocked: "badge-warn", pending: "badge-dot" } as Record<string, string>)[s] || "badge-dot";
+const statusLabel = (s: string) => planStatus.label(s);
+const statusBadge = (s: string) => planStatus.badge(s);
 
 const returnTargets = (from: string) => list.value.filter((s) => s.stage_code !== from).map((s) => ({ code: s.stage_code, name: s.name }));
 
@@ -422,29 +377,6 @@ onMounted(load);
 </script>
 
 <style scoped>
-.progress-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-5);
-  margin-bottom: var(--sp-6);
-}
-.progress-bar {
-  flex: 1;
-  height: 8px;
-  background: var(--bg-surface-3);
-  border-radius: 999px;
-  overflow: hidden;
-}
-.progress-fill {
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.3s ease;
-}
-.progress-label {
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
 .segmented {
   display: inline-flex;
   gap: 2px;
@@ -727,17 +659,8 @@ onMounted(load);
 }
 .pnl-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); flex-wrap: wrap; }
 .pnl-actions { display: flex; align-items: center; gap: var(--sp-3); }
-.pnl-prev { font-size: var(--fs-xs); color: var(--text-muted); font-family: var(--font-mono); }
 .hidden-file { display: none; }
 .banner-pos { background: var(--pos-soft); color: var(--pos-strong); }
-.pnl-table .num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-.pnl-table .exp { color: var(--text-secondary); }
-.pnl-table .strat { color: var(--accent); }
-.pnl-table .tac { font-weight: var(--fw-semibold); }
-.pnl-table .prev { color: var(--text-muted); }
-.pnl-table tr.adj .tac { background: var(--warn-soft); }
-.pnl-table .d-pos { color: var(--pos-strong); }
-.pnl-table .d-neg { color: var(--neg-strong); }
 
 /* ── модалка поля ── */
 .field {

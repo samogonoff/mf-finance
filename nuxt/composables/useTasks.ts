@@ -70,7 +70,8 @@ export interface MpLine {
 }
 export interface MpFormCell {
   code_cfo: number; block_type: string; value: number;
-  fact: number | null; strategy: number | null; tactic: number | null;
+  fact: number | null; fact_prev: number | null; strategy: number | null;
+  target: number | null; tactic: number | null;
   is_manual: boolean; reason: string;
 }
 export interface MpTaskForm {
@@ -117,9 +118,12 @@ export const useTasks = () => {
 
   const data = (taskId: number): Promise<TaskData> => $fetch<TaskData>(`${base}/api/plans/tasks/${taskId}/data`, { headers: h() });
 
-  const mpForm = (taskId: number): Promise<MpTaskForm> => $fetch<MpTaskForm>(`${base}/api/plans/tasks/${taskId}/mp-form`, { headers: h() });
-  const saveMpForm = (taskId: number, rows: MpSaveRow[]): Promise<{ ok: boolean }> =>
-    $fetch(`${base}/api/plans/tasks/${taskId}/mp-form`, { method: "PUT", body: { rows }, headers: h() });
+  // currency — валюта ОТОБРАЖЕНИЯ (хранение всегда RUB): сервер пересчитывает
+  // денежные строки туда и обратно, проценты не трогает.
+  const mpForm = (taskId: number, currency = "RUB"): Promise<MpTaskForm> =>
+    $fetch<MpTaskForm>(`${base}/api/plans/tasks/${taskId}/mp-form`, { params: { currency }, headers: h() });
+  const saveMpForm = (taskId: number, rows: MpSaveRow[], currency = "RUB"): Promise<{ ok: boolean }> =>
+    $fetch(`${base}/api/plans/tasks/${taskId}/mp-form`, { method: "PUT", body: { rows, currency }, headers: h() });
 
   const exportMpForm = async (taskId: number): Promise<Blob> => {
     const res = await fetch(`${base}/api/plans/tasks/${taskId}/mp-form/export`, { headers: h() });
