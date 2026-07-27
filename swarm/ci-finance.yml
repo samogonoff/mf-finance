@@ -88,6 +88,7 @@ publish_prod:
 migrations_stage:
   <<: *migrations_common_template
   environment: staging
+  timeout: 10m
   tags:
     - ci-stage-apps-shell
   needs:
@@ -103,6 +104,7 @@ migrations_stage:
 migrations_prod:
   <<: *migrations_common_template
   environment: production
+  timeout: 10m
   tags:
     - ci-prod-apps-shell
   needs:
