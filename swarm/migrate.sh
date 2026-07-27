@@ -8,24 +8,6 @@ fi
 : "${POSTGRES_URL:?POSTGRES_URL is required}"
 : "${COST_DATABASE_URL:?COST_DATABASE_URL is required}"
 
-# Single-database force commands (to fix dirty state without affecting other DBs).
-case "${1:-}" in
-  force-cost)
-    /usr/local/bin/migrate \
-      -path=/migrations/cost \
-      -database "$COST_DATABASE_URL" \
-      force "${2:?usage: $0 force-cost <version>}"
-    exit $?
-    ;;
-  force-finance)
-    /usr/local/bin/migrate \
-      -path=/migrations/finance \
-      -database "$POSTGRES_URL" \
-      force "${2:?usage: $0 force-finance <version>}"
-    exit $?
-    ;;
-esac
-
 # Append lock_timeout & statement_timeout to DSN so migrations fail fast instead
 # of waiting indefinitely for ACCESS EXCLUSIVE locks held by running app sessions.
 append_timeout_params() {
@@ -39,6 +21,24 @@ append_timeout_params() {
 
 MIGRATE_POSTGRES_URL="$(append_timeout_params "$POSTGRES_URL")"
 MIGRATE_COST_URL="$(append_timeout_params "$COST_DATABASE_URL")"
+
+# Single-database force commands (to fix dirty state without affecting other DBs).
+case "${1:-}" in
+  force-cost)
+    /usr/local/bin/migrate \
+      -path=/migrations/cost \
+      -database "$MIGRATE_COST_URL" \
+      force "${2:?usage: $0 force-cost <version>}"
+    exit $?
+    ;;
+  force-finance)
+    /usr/local/bin/migrate \
+      -path=/migrations/finance \
+      -database "$MIGRATE_POSTGRES_URL" \
+      force "${2:?usage: $0 force-finance <version>}"
+    exit $?
+    ;;
+esac
 
 echo "==> migrate finance"
 /usr/local/bin/migrate \
