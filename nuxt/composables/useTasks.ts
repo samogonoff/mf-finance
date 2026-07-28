@@ -61,7 +61,10 @@ export interface TaskData {
   has_data: boolean;
 }
 
-export interface MpFormPlatform { code_cfo: number; name: string; country: string }
+export interface MpFormPlatform {
+  code_cfo: number; name: string; country: string;
+  segment: string; legal_entity: string;
+}
 export interface MpLine {
   block_type: string; code_pl: number; name: string; section: string;
   kind: "input" | "calc" | "calc_editable" | "header";

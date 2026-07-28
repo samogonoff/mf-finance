@@ -9,8 +9,12 @@
   <div class="page-mpf">
     <header class="page-header">
       <div>
-        <h1 class="page-title">Форма МП · {{ form?.segment === "small" ? "small" : "large" }}</h1>
-        <p class="page-subtitle">{{ form?.task.title }} · {{ form?.year }}-{{ String(form?.month || 0).padStart(2, "0") }} · {{ form?.platforms.length || 0 }} площадок · НДС {{ Math.round((form?.vat || 0) * 100) }}%</p>
+        <h1 class="page-title">Форма МП · {{ segmentTitle }}</h1>
+        <p class="page-subtitle">
+          {{ form?.task.title }} · {{ form?.year }}-{{ String(form?.month || 0).padStart(2, "0") }} ·
+          показано {{ visiblePlatforms.length }} из {{ form?.platforms.length || 0 }} площадок ·
+          НДС {{ Math.round((form?.vat || 0) * 100) }}% · {{ currency }}
+        </p>
       </div>
       <div class="page-actions">
         <NuxtLink :to="backLink" class="btn btn-ghost"><Icon name="lucide:arrow-left" /> К процессу</NuxtLink>
@@ -34,6 +38,41 @@
     <p v-if="note" class="banner banner-pos">{{ note }}</p>
     <p v-if="form && !canEdit" class="banner banner-warn">Только просмотр — вы не исполнитель этого задания.</p>
 
+    <!-- Одна форма на все МП: фильтры сужают показ, ввод по скрытым площадкам
+         сохраняется как есть (фильтр — только представление). -->
+    <div v-if="form && form.platforms.length > 1" class="mp-filters">
+      <div class="mf">
+        <span class="mf-lbl">Маркет</span>
+        <select v-model="platformFilter" class="select select-sm">
+          <option value="0">все площадки</option>
+          <option v-for="p in form.platforms" :key="p.code_cfo" :value="String(p.code_cfo)">
+            {{ p.name || p.code_cfo }}
+          </option>
+        </select>
+      </div>
+      <div v-if="segments.length > 1" class="mf">
+        <span class="mf-lbl">Сегмент</span>
+        <div class="chip-row">
+          <button type="button" class="chip" :class="{ active: segmentFilter === '' }" @click="segmentFilter = ''">все</button>
+          <button
+            v-for="s in segments"
+            :key="s"
+            type="button"
+            class="chip"
+            :class="{ active: segmentFilter === s }"
+            @click="segmentFilter = s"
+          >{{ s === "large" ? "крупные" : "мелкие" }}</button>
+        </div>
+      </div>
+      <div class="mf">
+        <span class="mf-lbl">ЮЛ</span>
+        <select v-model="legalFilter" class="select select-sm">
+          <option value="">все ЮЛ</option>
+          <option v-for="le in legalEntities" :key="le" :value="le">{{ le }}</option>
+        </select>
+      </div>
+    </div>
+
     <div v-if="form" class="legend">
       <span class="lg lg-input">ввод</span>
       <span class="lg lg-calced">расчёт (правится)</span>
@@ -45,17 +84,25 @@
       <div class="table-wrap">
         <table class="data-table mp-grid">
           <thead>
+            <!-- Группировка колонок по сегменту — когда форма покрывает и крупные, и мелкие МП. -->
+            <tr v-if="segmentGroups.length > 1" class="grp-row">
+              <th class="col-line"></th>
+              <th v-for="g in segmentGroups" :key="g.segment" :colspan="g.count" class="grp-head">
+                {{ g.segment === "large" ? "Крупные МП" : "Мелкие МП" }}
+              </th>
+              <th></th>
+            </tr>
             <tr>
               <th class="col-line">Показатель</th>
-              <th v-for="p in form.platforms" :key="p.code_cfo" class="col-plat num">
+              <th v-for="p in visiblePlatforms" :key="p.code_cfo" class="col-plat num">
                 {{ p.name || p.code_cfo }}<span class="cfo">ЦФО {{ p.code_cfo }}</span>
               </th>
-              <th class="col-total num">Итого</th>
+              <th class="col-total num">Итого<span v-if="totalScoped" class="cfo">по фильтру</span></th>
             </tr>
           </thead>
           <tbody>
             <template v-for="sec in sections" :key="sec.name">
-              <tr class="sec-row"><td :colspan="form.platforms.length + 2">{{ sec.name }}</td></tr>
+              <tr class="sec-row"><td :colspan="visiblePlatforms.length + 2">{{ sec.name }}</td></tr>
               <tr v-for="line in sec.lines" :key="line.block_type" class="line-row" :class="lineClass(line)">
                 <td class="col-line">
                   <span class="line-name">{{ line.name }}</span>
@@ -64,7 +111,7 @@
                 </td>
 
                 <!-- ячейки по площадкам -->
-                <td v-for="p in form.platforms" :key="p.code_cfo" class="cell" :class="cellClass(line, p.code_cfo)">
+                <td v-for="p in visiblePlatforms" :key="p.code_cfo" class="cell" :class="cellClass(line, p.code_cfo)">
                   <template v-if="line.scope === 'total'">
                     <span class="muted">—</span>
                   </template>
@@ -159,6 +206,42 @@ const sections = computed(() => {
   return out;
 });
 
+// Одна форма на все МП (миграция 0029): площадки обоих сегментов приходят одним
+// заданием, фильтры ниже — только представление, они не влияют на сохранение.
+const platformFilter = ref("0");
+const segmentFilter = ref("");
+const legalFilter = ref("");
+
+const segments = computed(() =>
+  [...new Set((form.value?.platforms || []).map((p) => p.segment).filter(Boolean))].sort()
+);
+const legalEntities = computed(() =>
+  [...new Set((form.value?.platforms || []).map((p) => p.legal_entity).filter(Boolean))].sort()
+);
+const visiblePlatforms = computed(() =>
+  (form.value?.platforms || []).filter((p) => {
+    if (platformFilter.value !== "0" && String(p.code_cfo) !== platformFilter.value) return false;
+    if (segmentFilter.value && p.segment !== segmentFilter.value) return false;
+    if (legalFilter.value && p.legal_entity !== legalFilter.value) return false;
+    return true;
+  })
+);
+const totalScoped = computed(() => visiblePlatforms.value.length !== (form.value?.platforms.length || 0));
+const segmentTitle = computed(() => {
+  if (segments.value.length > 1) return "все площадки";
+  return segments.value[0] === "small" ? "мелкие МП" : "крупные МП";
+});
+// Порядок колонок = порядок площадок; группы считаем по соседним одинаковым сегментам.
+const segmentGroups = computed(() => {
+  const out: { segment: string; count: number }[] = [];
+  for (const p of visiblePlatforms.value) {
+    const last = out[out.length - 1];
+    if (last && last.segment === p.segment) last.count++;
+    else out.push({ segment: p.segment, count: 1 });
+  }
+  return out;
+});
+
 const editableCell = (line: MpLine) => canEdit.value && line.editable;
 const canEdit = computed(() => {
   if (isAdmin.value || hasRole("ROLE_PLANS_ADMIN")) return true;
@@ -182,7 +265,10 @@ const platformValues = computed<Record<number, Record<string, number>>>(() => {
 });
 
 const cellValue = (line: MpLine, cfo: number): number => platformValues.value[cfo]?.[line.block_type] ?? 0;
-const sumBlock = (block: string): number => (form.value?.platforms || []).reduce((s, p) => s + (platformValues.value[p.code_cfo]?.[block] ?? 0), 0);
+// Итог считается по ВИДИМЫМ площадкам: отфильтровав срез, пользователь ждёт итог
+// именно по нему. Каскад при этом считается по всем — ввод скрытых не теряется.
+const sumBlock = (block: string): number =>
+  visiblePlatforms.value.reduce((s, p) => s + (platformValues.value[p.code_cfo]?.[block] ?? 0), 0);
 
 // Итого по строке: сумма денег; проценты пересчитываются из агрегатов.
 const totalValue = (line: MpLine): number => {
@@ -390,6 +476,15 @@ onMounted(load);
 .share { color: var(--text-muted); }
 .pct-sign { font-size: var(--fs-2xs); color: var(--text-muted); }
 .cur-switch .select-sm { height: 30px; }
+
+.mp-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-4); margin-bottom: var(--sp-4); }
+.mf { display: flex; flex-direction: column; gap: 2px; }
+.mf-lbl { font-size: var(--fs-2xs); color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.mf .select-sm { height: 30px; }
+.chip-row { display: flex; gap: 4px; }
+.chip { border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-secondary); border-radius: 999px; padding: 3px 12px; font-size: var(--fs-2xs); cursor: pointer; }
+.chip.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.grp-row .grp-head { text-align: center; font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: .04em; color: var(--text-secondary); background: var(--bg-tonal); border-bottom: 1px solid var(--border); }
 .muted { color: var(--text-muted); }
 
 .total-cell { text-align: right; background: var(--bg-tonal); font-weight: var(--fw-medium); }

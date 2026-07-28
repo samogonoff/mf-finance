@@ -39,7 +39,7 @@
         </select>
       </label>
       <label class="f">
-        <span class="f-lbl">Площадка</span>
+        <span class="f-lbl">Маркет</span>
         <select v-model="platform" class="select select-sm" @change="load">
           <option value="0">все</option>
           <option v-for="p in board?.platforms || []" :key="p.code_cfo" :value="String(p.code_cfo)">{{ p.name }}</option>

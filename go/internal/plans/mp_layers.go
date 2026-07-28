@@ -38,6 +38,64 @@ func newMpLayers() mpLayers {
 // layerKey — ключ строки в слоях, свёрнутых по block_type.
 func layerKey(cfo int, block string) string { return fmt.Sprintf("%d:%s", cfo, block) }
 
+// mpLayerSet — слои по каждому сегменту, встречающемуся в задании. Объединённая
+// форма МП (large+small одним заданием, миграция 0029) требует спрашивать источник
+// по каждому сегменту отдельно: в Budgeting разрез идёт по группам 250/480.
+type mpLayerSet struct {
+	bySegment map[string]mpLayers
+	segmentOf map[int]string // code_cfo → large|small
+}
+
+// forCfo — слои сегмента, которому принадлежит площадка (пустые, если неизвестна).
+func (l mpLayerSet) forCfo(cfo int) mpLayers {
+	if v, ok := l.bySegment[l.segmentOf[cfo]]; ok {
+		return v
+	}
+	return newMpLayers()
+}
+
+// segmentsByCfo — сегмент каждой площадки из dir_marketplace.
+func (s *TaskStore) segmentsByCfo(ctx context.Context, codes []int) map[int]string {
+	out := map[int]string{}
+	if len(codes) == 0 {
+		return out
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT (r.payload_json->>'code_cfo')::int, COALESCE(r.payload_json->>'segment','')
+		FROM plans_directory_row r JOIN plans_directory d ON d.id=r.directory_id
+		WHERE d.code='dir_marketplace' AND (r.payload_json->>'code_cfo')::int = ANY($1)`, codes)
+	if err != nil {
+		// Фолбэк на seed: справочник может быть ещё не наполнен.
+		for _, m := range MarketplaceSeed() {
+			out[m.CodeCFO] = m.Segment
+		}
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c int
+		var seg string
+		if rows.Scan(&c, &seg) == nil && seg != "" {
+			out[c] = seg
+		}
+	}
+	return out
+}
+
+// mpLayersFor читает слои по всем сегментам набора площадок.
+func (s *TaskStore) mpLayersFor(ctx context.Context, year, month int, segmentOf map[int]string, allowed map[int]bool, currency string) mpLayerSet {
+	set := mpLayerSet{bySegment: map[string]mpLayers{}, segmentOf: segmentOf}
+	seen := map[string]bool{}
+	for _, seg := range segmentOf {
+		if seg == "" || seen[seg] {
+			continue
+		}
+		seen[seg] = true
+		set.bySegment[seg] = s.mpSourceLayers(ctx, year, month, seg, allowed, currency)
+	}
+	return set
+}
+
 // mpSourceLayers читает все read-only сценарии сегмента за период.
 // allowed == nil — без фильтра по площадкам.
 func (s *TaskStore) mpSourceLayers(ctx context.Context, year, month int, segment string, allowed map[int]bool, currency string) mpLayers {
