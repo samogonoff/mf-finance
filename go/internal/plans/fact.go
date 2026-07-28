@@ -24,15 +24,18 @@ type MpFactSource interface {
 	MpFact(ctx context.Context, year, month int, segment string) ([]FactRow, error)
 	// MpStrategy — план/стратегия (read-only колонка формы). Может быть пустым.
 	MpStrategy(ctx context.Context, year, month int, segment string) ([]FactRow, error)
+	// MpTaktTarget — тактические таргеты (Budgeting.dbo.FormToLoaTaktTarget), read-only
+	// колонка «Таргет». Покрывает будущие месяцы (до конца года). Может быть пустым.
+	MpTaktTarget(ctx context.Context, year, month int, segment string) ([]FactRow, error)
 }
 
 // NewMpFactSource выбирает источник: mock при mock=true или отсутствии MSSQL,
 // иначе online-коннектор к FinDWH (тот же *sql.DB, что у ВГО-отчёта).
-func NewMpFactSource(mock bool, db *sql.DB, factTable, planTable, penaltyView string) MpFactSource {
+func NewMpFactSource(mock bool, db *sql.DB, factTable, planTable, taktTable, penaltyView string) MpFactSource {
 	if mock || db == nil {
 		return NewMockFactSource()
 	}
-	return NewOlapFactSource(db, factTable, planTable, penaltyView)
+	return NewOlapFactSource(db, factTable, planTable, taktTable, penaltyView)
 }
 
 // segmentGroup — соответствие сегмента группе в источнике (Group_МП_new).

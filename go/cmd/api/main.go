@@ -233,7 +233,7 @@ func main() {
 	// Тактические планы (VS0 каркас + VS1 справочники + VS2 факт МП).
 	// docs/reports/plans/SPEC.md. Факт: PLANS_MOCK=1 → фикстуры; иначе online
 	// FinDWH (переиспользуем mssqlDB ВГО-отчёта; при nil — fallback на mock).
-	plansFact := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactTable, cfg.PlansMpPlanTable, cfg.PlansMpPenaltyView)
+	plansFact := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactTable, cfg.PlansMpPlanTable, cfg.PlansMpTaktTable, cfg.PlansMpPenaltyView)
 	plansScope := plans.NewPgScopeStore(pool)
 	plansSvc := plans.NewService(plans.NewPgStore(pool), plansFact, plansScope)
 	// Principal для ABAC: id пользователя + признак админа планов (обходит ABAC).
@@ -270,7 +270,9 @@ func main() {
 	plansH.SetB24Importer(plans.NewB24Importer(cfg.B24UserGetWebhook, plansUsers))
 	plansH.SetOrgStore(plans.NewOrgStore(pool))
 	plansH.SetJobPositions(plans.NewJobPositionStore(pool))
-	plansH.SetTaskStore(plans.NewTaskStore(pool, plansFact))
+	// Уведомления участникам заданий идут в общий поток кабинета (колокольчик +
+	// опциональное дублирование в B24) — тот же notifSvc, что у баг-трекера.
+	plansH.SetTaskStore(plans.NewTaskStore(pool, plansFact).WithNotifier(notifSvc))
 	// Фоновая синхронизация + прогрев кэша (DIR-03). Интервал из PLANS_SYNC_INTERVAL.
 	plansSyncer.Start(context.Background(), time.Duration(cfg.PlansSyncInterval)*time.Second)
 
@@ -294,6 +296,7 @@ func main() {
 	mux.HandleFunc("GET /api/plans/tasks/mine", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MyTasks))
 	mux.HandleFunc("GET /api/plans/tasks/all", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.AllTasks))
 	mux.HandleFunc("GET /api/plans/instances/{id}/pnl", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.PnlView))
+	mux.HandleFunc("GET /api/plans/instances/{id}/board", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.BoardView))
 	mux.HandleFunc("POST /api/plans/instances/{id}/strategy/import", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.StrategyImport))
 	mux.HandleFunc("GET /api/plans/tasks/{taskId}/data", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.TaskDataView))
 	mux.HandleFunc("PUT /api/plans/tasks/{taskId}/assignee", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.TaskAssign))

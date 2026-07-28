@@ -14,7 +14,15 @@
       </div>
       <div class="page-actions">
         <NuxtLink :to="backLink" class="btn btn-ghost"><Icon name="lucide:arrow-left" /> К процессу</NuxtLink>
+        <label class="cur-switch" title="Валюта отображения (хранение — RUB)">
+          <select v-model="currency" class="select select-sm" :disabled="dirty" @change="load">
+            <option value="RUB">RUB</option>
+            <option value="BYN">BYN</option>
+            <option value="USD">USD</option>
+          </select>
+        </label>
         <button v-if="canEdit" class="btn btn-sm btn-ghost" :disabled="!hasStrategy" title="Копировать стратегический бюджет в тактику (TPL-09)" @click="copyStrategy"><Icon name="lucide:copy" /> Стратегия→тактика</button>
+        <button v-if="canEdit" class="btn btn-sm btn-ghost" :disabled="!hasTarget" title="Копировать тактику-таргет (Budgeting) в форму" @click="copyTarget"><Icon name="lucide:copy-check" /> Таргет→тактика</button>
         <button class="btn btn-sm btn-ghost" @click="doExport"><Icon name="lucide:download" /> Экспорт</button>
         <button v-if="canEdit" class="btn btn-sm btn-ghost" @click="fileInput?.click()"><Icon name="lucide:upload" /> Импорт</button>
         <input ref="fileInput" type="file" accept=".xlsx" class="hidden-file" @change="doImport" />
@@ -62,18 +70,22 @@
                   </template>
                   <template v-else-if="editableCell(line)">
                     <div class="cell-row">
+                      <!-- Проценты вводятся в процентах (31), хранятся долей (0.31). -->
                       <input
-                        v-model.number="inputs[key(p.code_cfo, line.block_type)]"
+                        :value="displayInput(line, p.code_cfo)"
                         type="number" class="cell-input"
                         :class="{ pct: line.value_kind === 'pct' }"
-                        :step="line.value_kind === 'pct' ? '0.01' : 'any'"
-                        :disabled="!canEdit" placeholder="—" @input="dirty = true"
+                        :step="line.value_kind === 'pct' ? '0.1' : 'any'"
+                        :disabled="!canEdit" :placeholder="line.value_kind === 'pct' ? '%' : '—'"
+                        @input="onInput(line, p.code_cfo, ($event.target as HTMLInputElement).value)"
                       />
+                      <span v-if="line.value_kind === 'pct'" class="pct-sign">%</span>
                       <button v-if="canEdit && line.kind === 'input'" class="corr-btn" :class="{ on: isCorr(p.code_cfo, line.block_type) }" title="Корректировка с причиной (ADJ-02)" @click="toggleCorr(p.code_cfo, line.block_type)"><Icon name="lucide:pencil" /></button>
                     </div>
-                    <span v-if="line.value_kind === 'pct'" class="hint-val">{{ fmtPct(inputs[key(p.code_cfo, line.block_type)]) }}</span>
                     <span v-if="line.kind === 'input' && factOf(p.code_cfo, line.block_type) != null" class="fact">факт: {{ fmtMoney(factOf(p.code_cfo, line.block_type)) }}</span>
+                    <span v-if="prevOf(p.code_cfo, line.block_type) != null" class="prev">пр. год: {{ fmt(line, prevOf(p.code_cfo, line.block_type)) }}</span>
                     <span v-if="stratOf(p.code_cfo, line.block_type) != null" class="strat">страт: {{ fmt(line, stratOf(p.code_cfo, line.block_type)) }}</span>
+                    <span v-if="targetOf(p.code_cfo, line.block_type) != null" class="target">таргет: {{ fmt(line, targetOf(p.code_cfo, line.block_type)) }}</span>
                     <input v-if="isCorr(p.code_cfo, line.block_type)" v-model="corr[key(p.code_cfo, line.block_type)]" class="corr-reason" :disabled="!canEdit" placeholder="причина корректировки…" />
                   </template>
                   <template v-else>
@@ -102,7 +114,7 @@
 </template>
 
 <script setup lang="ts">
-import { useTasks, type MpTaskForm, type MpLine, type MpSaveRow } from "~/composables/useTasks";
+import { useTasks, type MpTaskForm, type MpLine, type MpSaveRow, type MpFormCell } from "~/composables/useTasks";
 import { computePlatform, vatByCountry, B } from "~/composables/useMpCascade";
 import { num } from "~/utils/format";
 
@@ -122,6 +134,9 @@ const error = ref("");
 const note = ref("");
 const saving = ref(false);
 const dirty = ref(false);
+// Валюта отображения; хранение тактики всегда в RUB (пересчёт делает сервер).
+// Переключение заблокировано при несохранённых правках — иначе они потеряются.
+const currency = ref("RUB");
 const fileInput = ref<HTMLInputElement | null>(null);
 
 const key = (cfo: number, block: string) => `${cfo}:${block}`;
@@ -194,8 +209,27 @@ const shareOf = (line: MpLine, cfo: number): number => {
 
 const cellRef = (cfo: number, block: string) => form.value?.cells.find((c) => c.code_cfo === cfo && c.block_type === block);
 const factOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.fact ?? null;
+const prevOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.fact_prev ?? null;
 const stratOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.strategy ?? null;
+const targetOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.target ?? null;
 const hasStrategy = computed(() => !!form.value?.cells.some((c) => c.strategy != null));
+const hasTarget = computed(() => !!form.value?.cells.some((c) => c.target != null));
+
+// Ввод процентов — в процентах: в поле 31, в модели 0.31 (финансисты вводят «31»,
+// а не долю). Округление гасит артефакты float при ×100.
+const displayInput = (line: MpLine, cfo: number): number | null => {
+  const v = inputs[key(cfo, line.block_type)];
+  if (v == null || Number.isNaN(v)) return null;
+  return line.value_kind === "pct" ? Number((v * 100).toFixed(4)) : v;
+};
+const onInput = (line: MpLine, cfo: number, raw: string) => {
+  const k = key(cfo, line.block_type);
+  if (raw === "") { inputs[k] = null; dirty.value = true; return; }
+  const n = Number(raw);
+  if (Number.isNaN(n)) return;
+  inputs[k] = line.value_kind === "pct" ? Number((n / 100).toFixed(6)) : n;
+  dirty.value = true;
+};
 
 const isCorr = (cfo: number, block: string) => key(cfo, block) in corr;
 const toggleCorr = (cfo: number, block: string) => {
@@ -227,23 +261,27 @@ const seedFromCells = () => {
   }
 };
 
-const copyStrategy = () => {
+// Перенос read-only сценария в тактику: стратегия (TPL-09) или таргет из Budgeting.
+const copyScenario = (pick: (c: MpFormCell) => number | null, what: string) => {
   if (!form.value) return;
   let cnt = 0;
   for (const c of form.value.cells) {
-    if (c.strategy == null) continue;
+    const v = pick(c);
+    if (v == null) continue;
     const line = lineMap.value[c.block_type];
     if (!line?.editable) continue;
-    if (line.scope === "total") totals[c.block_type] = c.strategy;
-    else inputs[key(c.code_cfo, c.block_type)] = c.strategy;
+    if (line.scope === "total") totals[c.block_type] = v;
+    else inputs[key(c.code_cfo, c.block_type)] = v;
     cnt++;
   }
-  if (cnt) { dirty.value = true; note.value = `Скопировано из стратегии: ${cnt} значений`; }
+  if (cnt) { dirty.value = true; note.value = `Скопировано из «${what}»: ${cnt} значений`; }
 };
+const copyStrategy = () => copyScenario((c) => c.strategy, "стратегия");
+const copyTarget = () => copyScenario((c) => c.target, "таргет");
 
 const load = async () => {
   try {
-    form.value = await api.mpForm(taskId);
+    form.value = await api.mpForm(taskId, currency.value);
     seedFromCells();
     dirty.value = false;
   } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка загрузки формы"; }
@@ -270,7 +308,7 @@ const save = async () => {
     }
   }
   try {
-    await api.saveMpForm(taskId, rows);
+    await api.saveMpForm(taskId, rows, currency.value);
     note.value = `Сохранено ${rows.length} значений`;
     dirty.value = false;
   } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка сохранения"; }
@@ -343,11 +381,15 @@ onMounted(load);
 .calc-val { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fs-sm); }
 .calc-val.neg { color: var(--neg-strong); }
 .k-calc .calc-val { color: var(--text-secondary); }
-.hint-val, .fact, .strat, .share { display: block; font-size: var(--fs-2xs); font-family: var(--font-mono); margin-top: 2px; }
+.hint-val, .fact, .prev, .strat, .target, .share { display: block; font-size: var(--fs-2xs); font-family: var(--font-mono); margin-top: 2px; }
 .hint-val { color: var(--warn); }
 .fact { color: var(--text-muted); }
+.prev { color: var(--text-muted); }
 .strat { color: var(--accent); }
+.target { color: var(--pos-strong); }
 .share { color: var(--text-muted); }
+.pct-sign { font-size: var(--fs-2xs); color: var(--text-muted); }
+.cur-switch .select-sm { height: 30px; }
 .muted { color: var(--text-muted); }
 
 .total-cell { text-align: right; background: var(--bg-tonal); font-weight: var(--fw-medium); }

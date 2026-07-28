@@ -74,6 +74,7 @@ type Config struct {
 	PlansMock          bool
 	PlansMpFactTable   string // факт МП: Budgeting.dbo.FormToLoadFact (КодЦФО/КодPL/Дата/Значение, BYN)
 	PlansMpPlanTable   string // план/стратегия МП: Budgeting.dbo.FormToLoadPlan
+	PlansMpTaktTable   string // тактика-таргеты МП: Budgeting.dbo.FormToLoaTaktTarget (2025-01…2026-12)
 	PlansMpPenaltyView string // вью штрафов МП (FINDWHACCESSGROUP, Наименование LIKE '%Штраф%')
 	PlansAuditEnabled  bool
 
@@ -139,6 +140,7 @@ func Load() Config {
 		PlansMock:          env("PLANS_MOCK", "0") == "1",
 		PlansMpFactTable:   env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),
 		PlansMpPlanTable:   env("PLANS_MP_PLAN_TABLE", "Budgeting.dbo.FormToLoadPlan"),
+		PlansMpTaktTable:   env("PLANS_MP_TAKT_TABLE", "Budgeting.dbo.FormToLoaTaktTarget"),
 		PlansMpPenaltyView: env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
 		PlansAuditEnabled:  env("PLANS_AUDIT_ENABLED", "0") == "1",
 

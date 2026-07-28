@@ -79,6 +79,25 @@ func (s *MockFactSource) MpStrategy(_ context.Context, _, _ int, _ string) ([]Fa
 	return []FactRow{}, nil
 }
 
+// mockTaktUplift — насколько демо-таргет выше факта того же месяца.
+const mockTaktUplift = 1.05
+
+// MpTaktTarget — демо-таргет: факт периода × 1.05. В mock нет отдельного источника
+// (online — FormToLoaTaktTarget), но колонка «Таргет» должна быть наблюдаема в UI.
+func (s *MockFactSource) MpTaktTarget(ctx context.Context, year, month int, segment string) ([]FactRow, error) {
+	rows, err := s.MpFact(ctx, year, month, segment)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]FactRow, 0, len(rows))
+	for _, r := range rows {
+		r.Scenario = ScenarioTactic
+		r.Amount = math.Round(r.Amount*mockTaktUplift*100) / 100
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 // MpFact — факт сегмента за период из фикстур. Неизвестный сегмент → пусто.
 func (s *MockFactSource) MpFact(_ context.Context, year, month int, segment string) ([]FactRow, error) {
 	platforms := segmentPlatforms(segment)

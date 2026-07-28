@@ -1,5 +1,7 @@
 package plans
 
+import "strings"
+
 // Пересчёт валют формы TPL-MP (VS7). Источник «Источник_МП» отдаёт BYN/RUB/USD;
 // в MVP факт-mock — RUB, поэтому переключатель шапки пересчитывает суммы через
 // BYN-базу по курсам dir_fx_rate (поле «курс тактика» прототипа: сколько BYN за
@@ -18,6 +20,19 @@ func FxRateSeed() []FxRateRow {
 		{Currency: "BYN", RateBYN: 1.0},
 		{Currency: "RUB", RateBYN: 0.0376},
 		{Currency: "USD", RateBYN: 3.2},
+	}
+}
+
+// normalizeCurrency приводит валюту отображения к допустимому значению.
+// Всё, кроме BYN/USD, — RUB (валюта хранения тактики в pl_metric).
+func normalizeCurrency(c string) string {
+	switch strings.ToUpper(strings.TrimSpace(c)) {
+	case "BYN":
+		return "BYN"
+	case "USD":
+		return "USD"
+	default:
+		return "RUB"
 	}
 }
 
