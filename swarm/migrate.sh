@@ -52,6 +52,14 @@ UNLOCK_IDLE_SECONDS="${MIGRATE_UNLOCK_IDLE_SECONDS:-60}"
 AUTO_HEAL="${MIGRATE_AUTO_HEAL:-1}"
 # 1 — прибивать зомби-держателей advisory-локов, 0 — только показывать.
 AUTO_UNLOCK="${MIGRATE_AUTO_UNLOCK:-1}"
+# Сколько раз пробовать `up` и пауза между попытками (сек). Между попытками
+# скрипт снимает dirty и (если разрешено) убирает блокировщиков таблиц.
+UP_RETRIES="${MIGRATE_UP_RETRIES:-3}"
+RETRY_DELAY="${MIGRATE_RETRY_DELAY:-15}"
+# 1 — после неудачной попытки прибивать сессии, которые держат таблицы дольше
+# MIGRATE_BLOCKER_AGE_SECONDS (мешают взять ACCESS EXCLUSIVE под ALTER TABLE).
+KILL_BLOCKERS="${MIGRATE_KILL_BLOCKERS:-1}"
+BLOCKER_AGE_SECONDS="${MIGRATE_BLOCKER_AGE_SECONDS:-60}"
 # Путь к бинарю golang-migrate (переопределяется только в тестах/локально).
 MIGRATE_BIN="${MIGRATE_BIN:-/usr/local/bin/migrate}"
 
@@ -204,6 +212,99 @@ preflight() {
   heal_dirty "$_dsn" "$_mdsn" "$_path" "$_label"
 }
 
+# --- Блокировщики таблиц ------------------------------------------------------
+# Отдельная от advisory-локов история: `ALTER TABLE` берёт ACCESS EXCLUSIVE и
+# ждёт, пока освободятся ВСЕ блокировки на таблице. Живой python-cost (запросы к
+# cost_data_cache, refresh кэша на 960K строк) держит их дольше lock_timeout —
+# миграция падает с «canceling statement due to lock timeout».
+#
+# Поэтому блокировщиков НЕ трогаем на первой попытке (нормальный деплой в них не
+# упирается) и прибиваем только после неудачи — когда уже видно, что накат иначе
+# не пройдёт. Прерванный SELECT/refresh кэша приложение переживёт и повторит,
+# а застрявший накат блокирует весь деплой.
+# Одна строка на сессию: relation'ы схлопываем в список, иначе одна сессия
+# печатается по разу на каждый индекс таблицы.
+SQL_BLOCKERS_SELECT="
+SELECT a.pid,
+       format('pid=%s state=%s age=%s app=%s rel=%s query=%s',
+              a.pid,
+              a.state,
+              date_trunc('second', now() - a.state_change),
+              coalesce(nullif(a.application_name, ''), '-'),
+              left(string_agg(DISTINCT c.relname, ','), 60),
+              left(regexp_replace(coalesce(a.query, ''), '[[:space:]]+', ' ', 'g'), 60)) AS descr
+FROM pg_stat_activity a
+JOIN pg_locks l ON l.pid = a.pid AND l.locktype = 'relation' AND l.granted
+JOIN pg_class c ON c.oid = l.relation
+JOIN pg_namespace n ON n.oid = c.relnamespace
+                   AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+WHERE a.datname = current_database()
+  AND a.pid <> pg_backend_pid()
+  AND a.state_change < now() - make_interval(secs => %AGE%)
+GROUP BY a.pid, a.state, a.state_change, a.application_name, a.query"
+
+# blockers_sql <select-list> — подставляет порог и нужные колонки в базовый запрос.
+blockers_sql() {
+  printf 'SELECT %s FROM (%s) t' \
+    "$1" \
+    "$(printf '%s' "$SQL_BLOCKERS_SELECT" | sed "s/%AGE%/${BLOCKER_AGE_SECONDS}/")"
+}
+
+# show_blockers <raw-dsn> <label> — кто держит таблицы дольше порога.
+show_blockers() {
+  _dsn="$1"; _label="$2"
+  _rows="$(psql_q "$_dsn" "$(blockers_sql 't.descr')" 2>&1)" || { echo "    ⚠ не смог опросить блокировщиков: $_rows"; return 1; }
+  if [ -z "$_rows" ]; then
+    echo "    держателей таблиц старше ${BLOCKER_AGE_SECONDS}s нет"
+    return 1
+  fi
+  echo "    держат таблицы дольше ${BLOCKER_AGE_SECONDS}s:"
+  echo "$_rows" | sed 's/^/      /'
+  return 0
+}
+
+# kill_blockers <raw-dsn> <label> — прибить их (только если MIGRATE_KILL_BLOCKERS=1).
+kill_blockers() {
+  _dsn="$1"; _label="$2"
+  show_blockers "$_dsn" "$_label" || return 0
+
+  if [ "$KILL_BLOCKERS" != "1" ]; then
+    echo "    MIGRATE_KILL_BLOCKERS=0 — не трогаю; накат будет падать, пока они держат таблицу"
+    return 0
+  fi
+
+  _killed="$(psql_q "$_dsn" \
+    "$(blockers_sql "t.descr || ' terminated=' || pg_terminate_backend(t.pid)")" 2>&1)" \
+    || { echo "    ⚠ не смог прибить блокировщиков: $_killed"; return 0; }
+  echo "    ⚠ прибиты блокировщики:"
+  echo "$_killed" | sed 's/^/      /'
+}
+
+# migrate_up <raw-dsn> <migrate-dsn> <path> <label> — накат с ретраями.
+# Между попытками: снять dirty (упавшая миграция помечает БД грязной) и, если
+# разрешено, убрать блокировщиков таблиц.
+migrate_up() {
+  _dsn="$1"; _mdsn="$2"; _path="$3"; _label="$4"
+  _attempt=1
+  while :; do
+    if "$MIGRATE_BIN" -path="$_path" -database "$_mdsn" up; then
+      return 0
+    fi
+    if [ "$_attempt" -ge "$UP_RETRIES" ]; then
+      echo "==> [$_label] накат не прошёл за $UP_RETRIES попыток"
+      have_psql && show_blockers "$_dsn" "$_label" >/dev/null 2>&1
+      return 1
+    fi
+    echo "==> [$_label] попытка $_attempt из $UP_RETRIES не удалась, разбираюсь и повторяю через ${RETRY_DELAY}s"
+    if have_psql; then
+      kill_blockers "$_dsn" "$_label"
+      heal_dirty "$_dsn" "$_mdsn" "$_path" "$_label"
+    fi
+    sleep "$RETRY_DELAY"
+    _attempt=$((_attempt + 1))
+  done
+}
+
 # --- Одиночные команды --------------------------------------------------------
 case "${1:-}" in
   force-cost)
@@ -245,6 +346,7 @@ case "${1:-}" in
         && echo "==> [$_label] schema_migrations: $(psql_q "$_dsn" "$SQL_VERSION")" \
         || echo "==> [$_label] нет доступа к БД"
       show_locks "$_dsn" "$_label" || true
+      show_blockers "$_dsn" "$_label" || true
     done
     exit 0
     ;;
@@ -254,19 +356,25 @@ esac
 if [ "$1" = "up" ]; then
   preflight "$POSTGRES_URL" "$MIGRATE_POSTGRES_URL" /migrations/finance finance
   preflight "$COST_DATABASE_URL" "$MIGRATE_COST_URL" /migrations/cost cost
+
+  echo "==> migrate finance"
+  migrate_up "$POSTGRES_URL" "$MIGRATE_POSTGRES_URL" /migrations/finance finance
+
+  echo "==> migrate cost"
+  migrate_up "$COST_DATABASE_URL" "$MIGRATE_COST_URL" /migrations/cost cost
+else
+  echo "==> migrate finance"
+  "$MIGRATE_BIN" \
+    -path=/migrations/finance \
+    -database "$MIGRATE_POSTGRES_URL" \
+    "$@"
+
+  echo "==> migrate cost"
+  "$MIGRATE_BIN" \
+    -path=/migrations/cost \
+    -database "$MIGRATE_COST_URL" \
+    "$@"
 fi
-
-echo "==> migrate finance"
-"$MIGRATE_BIN" \
-  -path=/migrations/finance \
-  -database "$MIGRATE_POSTGRES_URL" \
-  "$@"
-
-echo "==> migrate cost"
-"$MIGRATE_BIN" \
-  -path=/migrations/cost \
-  -database "$MIGRATE_COST_URL" \
-  "$@"
 
 # ClickHouse — отдельный канал (HTTP-аплай, без golang-migrate/schema_migrations).
 # Применяем только на 'up'; down/version/force этим путём не поддерживаются.
