@@ -26,9 +26,10 @@ make cost-logs                # tail all cost services
 python/cost/
 ├── app/
 │   ├── __init__.py       # пустой
-│   ├── main.py           # FastAPI app, lifespan (init/close pool), CORS, /healthz
+│   ├── main.py           # FastAPI app, lifespan (init/close pool), CORS, access-лог, /healthz
 │   ├── routes.py         # все эндпоинты раздела
 │   ├── db.py             # asyncpg (postgres-cost) + pyodbc (MSSQL/OLAP)
+│   ├── logship.py        # логи JSON в stdout + async-трансляция в Logstash (ELK)
 │   └── mocks.py          # заглушки для COST_MOCK=1
 ├── migrations/
 │   └── 0001_cost_init.{up,down}.sql
@@ -45,6 +46,23 @@ python/cost/
 ├── .env                   # реальные креды (в gitignore)
 └── AGENTS.md              # этот файл
 ```
+
+## Логи (`app/logship.py`)
+
+Логи раздела — одна JSON-строка на событие в stdout (базовый канал, его собирает
+docker) плюс дубль в Logstash/ELK, если задан `LOGSTASH_HOST` (+ `LOGSTASH_PORT`,
+дефолт 5044) в `python/cost/.env`. Пусто → трансляция выключена. `service=finance-cost`;
+формат общий с Go-API (`finance-api`) и Nitro-роутами Nuxt (`finance-nuxt`), поэтому в
+одном индексе ELK всё лежит единообразно.
+
+Отправка асинхронная (поток-демон + очередь) и НИКОГДА не блокирует запрос:
+недоступный Logstash не тормозит API, строки отбрасываются, счётчик потерь раз в
+минуту уходит в лог. Access-лог каждого запроса пишет middleware в `app/main.py`
+(`request_id`, `route`, `status`, `duration_ms`, `user` из `X-Cost-User`); он же
+прокидывает `X-Request-Id` — по нему в ELK сшивается цепочка nuxt → go-api → cost.
+
+Новую диагностику пиши через `log(logging.INFO, "сообщение", поле=значение)` из
+`app.logship`, а не `print()` — иначе строка останется только в stdout.
 
 ## FastAPI endpoints (`app/`)
 

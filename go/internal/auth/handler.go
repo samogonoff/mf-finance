@@ -80,6 +80,14 @@ type ctxKey int
 
 const ctxKeyUser ctxKey = iota
 
+// AuthObserver — необязательный наблюдатель успешной аутентификации. Ставится
+// один раз при старте (cmd/api/logging.go) и служит одной цели: донести user_id
+// до внешнего access-лога. Просто прочитать пользователя из контекста снаружи
+// нельзя — RequireBearer кладёт *User в КЛОН запроса, и объемлющий middleware
+// его уже не видит; поэтому пользователь «поднимается» наверх через изменяемый
+// конверт, положенный в контекст до маршрутизации. nil → никто не слушает.
+var AuthObserver func(ctx context.Context, userID int64)
+
 // RequireBearer — middleware, которое читает Authorization: Bearer <token>,
 // валидирует через сервис и кладёт *User в контекст.
 func RequireBearer(svc *Service, next http.HandlerFunc) http.HandlerFunc {
@@ -95,6 +103,9 @@ func RequireBearer(svc *Service, next http.HandlerFunc) http.HandlerFunc {
 		if err != nil || u == nil {
 			writeErr(w, http.StatusUnauthorized, "invalid token")
 			return
+		}
+		if AuthObserver != nil {
+			AuthObserver(r.Context(), u.ID)
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyUser, u)
 		ctx = context.WithValue(ctx, ctxKey(99), token)
