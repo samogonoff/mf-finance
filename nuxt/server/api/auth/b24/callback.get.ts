@@ -1,4 +1,5 @@
 import {createError, defineEventHandler, getCookie, getHeader, getQuery, setCookie} from "h3";
+import {serverLog} from "../../../utils/logger";
 
 /**
  * OAuth-колбэк B24:
@@ -42,10 +43,11 @@ export default defineEventHandler(async (event) => {
     response = await $fetch(tokenUrl.toString());
   } catch (err: any) {
     const body = err?.data ?? err?.response?._data;
-    console.error("[b24/callback] token exchange failed", {
+    serverLog("ERROR", "b24 token exchange failed", {
+      route: "GET /api/auth/b24/callback",
       url: tokenUrl.toString().replace(/client_secret=[^&]+/, "client_secret=***"),
       status: err?.statusCode || err?.response?.status,
-      body
+      error: body?.error_description || body?.error || err?.message
     });
     throw createError({
       statusCode: 400,
@@ -57,7 +59,10 @@ export default defineEventHandler(async (event) => {
   }
 
   if (response.error || !response.access_token) {
-    console.error("[b24/callback] token exchange returned error", response);
+    serverLog("ERROR", "b24 token exchange returned error", {
+      route: "GET /api/auth/b24/callback",
+      error: response.error_description || response.error || "no access token received"
+    });
     throw createError({
       statusCode: 400,
       statusMessage: response.error_description || response.error || "No access token received"

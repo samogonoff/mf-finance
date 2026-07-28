@@ -129,15 +129,27 @@ ROLE_USER         — всегда добавляется
 - Админка: `/admin/bugtracker` (список + метрики, MTTR `EXTRACT(EPOCH FROM resolved_at - created_at)`) и `/admin/bugtracker/sources` (словарь причин).
 - FAB-кнопка «Сообщить о проблеме» — `BugReportFab.vue` подключён в `app.vue`, прячется на `/login` и в cost-only-режиме. `html2canvas` подключается **динамическим импортом** — не раздувает основной бандл.
 
+**Логи — JSON в stdout + опциональная трансляция в ELK (Logstash).** Схема портирована 1:1 из кабинета NCI и покрывает ОБА контура.
+- Формат общий для всех рантаймов: одна JSON-запись на строку (кодек `json_lines`), поля `time/level/msg/service/host` + свои (`request_id`, `route`, `status`, `duration_ms`, `user_id`/`user`, `error`). `service` различает источник: `finance-api` (Go), `finance-nuxt` (Nitro-роуты), `finance-cost` (FastAPI раздела «Себестоимость»), `finance-analytics` (песочница).
+- Реализации: `go/internal/logship/` (io.Writer вторым в `io.MultiWriter` рядом со stdout; slog настраивается в `go/cmd/api/logging.go`), `nuxt/server/utils/{logstash,logger}.ts`, `python/cost/app/logship.py`, `python/app/logship.py`. Два python-модуля — намеренные копии, а не общий пакет: контуры собираются в разные образы, `python-cost` не видит `python/`, и наоборот. Оба на чистом stdlib.
+- **Инвариант:** отправка асинхронная и НИКОГДА не блокирует горячий путь. Недоступный Logstash не тормозит запросы и не роняет stdout — строки просто отбрасываются, счётчик потерь раз в минуту уходит в лог (`logship: строки лога не доставлены в Logstash`; рост = канал в ELK ослеп, это алерт).
+- **stdout остаётся базовым каналом всегда** — его собирает docker. ELK только дублирует.
+- Включается заданием `LOGSTASH_HOST` (+ `LOGSTASH_PORT`, дефолт 5044). Пусто → трансляция выключена. Переменные читают ОБА рантайма основного контура из корневого `.env` **без префикса `NUXT_`**: nitro-код смотрит в `process.env` напрямую, а не через `runtimeConfig` (иначе понадобился бы `NUXT_LOGSTASH_HOST` и переменная перестала бы быть общей с Go). Контур «Себестоимость» изолирован — те же имена задаются отдельно в `python/cost/.env`.
+- Go-API логирует каждый запрос (`withLogging` в `cmd/api/logging.go`) и проставляет `X-Request-Id` (свой или пришедший от прокси); `user_id` доносится до access-лога через `auth.AuthObserver` — читать пользователя из контекста снаружи нельзя, `RequireBearer` кладёт его в клон запроса. Разбросанные по коду `log.Printf` перехвачены bridge'ом в slog, переписывать их не нужно.
+- python-analytics: свой access-лог в `Handler._access_log` (`python/app/main.py`), текстовый лог `BaseHTTPServer` подавлен, чтобы запрос не дублировался; сервис живёт только в dev-контуре (в прод-стек он не входит).
+- python-cost: свой access-лог-middleware в `app/main.py` (он же прокидывает `X-Request-Id`), INFO-строки `uvicorn.access` погашены, чтобы запрос не уезжал в ELK дважды.
+- Проверка канала и тестовые строки для настройки индекса ELK: `cd swarm && make logship-test` (шлёт по образцу каждого сервиса с `marker=logship-connectivity-test`).
+
 ### Слои
 
 ```
 finance/
 ├── go/                     # Go 1.25, модуль github.com/company/finance-api
 │   ├── cmd/
-│   │   ├── api/            # main.go + cors.go — основной сервер, точка входа
+│   │   ├── api/            # main.go + cors.go + logging.go (slog/JSON, access-лог) — точка входа
 │   │   ├── cfo-import/     # разовый импорт справочника ЦФО/ЦЗ (plans)
 │   │   ├── findebt-etl/    # standalone-раннер ETL по задолженности (fact_findebt*)
+│   │   ├── logship-test/   # проверка канала логов в Logstash (make logship-test)
 │   │   ├── mssql-probe/    # разведочные SQL-пробы к MSSQL (PROBE_SQL=...), не коммитить логику, только утилита
 │   │   └── vgoprobe/       # разведочный проб к vGLMFAddUSD
 │   └── internal/
@@ -147,6 +159,7 @@ finance/
 │       ├── db/             # pgx pool
 │       ├── etl/            # extract/bootstrap/incremental для ClickHouse-фактов (findebt, currency, debtarh, glmf)
 │       ├── internalapi/    # POST /internal/* за RequireInternalToken (канал python-cost → notifications)
+│       ├── logship/        # асинхронная трансляция slog-логов в Logstash (ELK)
 │       ├── notifications/  # общий поток уведомлений + опциональное B24-дублирование
 │       ├── plans/          # модуль «Тактические планы» (P&L) — см. Bewegt-point ниже и docs/reports/plans/SPEC.md
 │       ├── redisx/         # redis-клиент
@@ -161,7 +174,7 @@ finance/
 │   ├── plugins/            # api-unauthorized.client.ts: 401 → /login
 │   └── utils/format.ts     # money/pct/num/delta — единые форматтеры
 ├── python/
-│   ├── app/                # python-analytics — заглушка stdlib HTTPServer, /healthz
+│   ├── app/                # python-analytics — заглушка stdlib HTTPServer, /healthz + logship.py (ELK)
 │   └── cost/               # FastAPI раздел «Себестоимость» — см. python/cost/AGENTS.md
 │       ├── app/{main,routes,db,mocks}.py
 │       ├── nuxt-layer/     # фронт раздела, подключается в основной nuxt.config.ts
@@ -211,6 +224,7 @@ Python `os.environ`, Nuxt `process.env.*` / `runtimeConfig`), ОБЯЗАНА п�
 - **«Миграция падает с `canceling statement due to lock timeout` на `ALTER TABLE cost_data_cache`»** → это уже НЕ advisory-lock, а ACCESS EXCLUSIVE: таблицу держат живые сессии python-cost (запросы к кэшу, refresh на 960K строк), и `ALTER TABLE` не дожидается своей очереди за `MIGRATE_LOCK_TIMEOUT`. `migrate.sh` повторяет `up` (`MIGRATE_UP_RETRIES`, дефолт 3), и **после первой неудачи** прибивает держателей таблиц старше `MIGRATE_BLOCKER_AGE_SECONDS` (60 с), затем лечит dirty и повторяет. На первой попытке блокировщиков не трогает — нормальный деплой в них не упирается. Выключается через `MIGRATE_KILL_BLOCKERS=0` (тогда накат будет падать, пока приложение держит таблицу; альтернатива — на время наката погасить python-cost).
 - **«БД cost dirty / `force-cost 13` в CI»** → прибитого гвоздями force'а больше нет. `migrate.sh` сам читает `schema_migrations`, и при `dirty=true` форсит `version-1`, после чего `up` переприменяет упавшую миграцию (все наши миграции идемпотентны: `IF NOT EXISTS` / `DROP CONSTRAINT IF EXISTS`). Отключается через `MIGRATE_AUTO_HEAL=0`.
 - **«Миграция cost падает с `syntax error at or near "IF"`»** → в цепочку Postgres попал T-SQL-скрипт для `FinSandBox` (MSSQL). Такие миграции живут в `python/cost/migrations/mssql/`, а в основной цепочке остаётся no-op `SELECT 1;` — так сделано для 0006, 0013, 0015.
+- **«Логи не появляются в ELK»** → (1) `LOGSTASH_HOST` пуст — трансляция выключена по дизайну, в логе на старте нет строки `logship: трансляция логов в Logstash включена`; (2) для контура «Себестоимость» переменную надо задать ОТДЕЛЬНО в `python/cost/.env` — корневой `.env` он не читает; (3) в Nuxt имя переменной без префикса (`LOGSTASH_HOST`, не `NUXT_LOGSTASH_HOST`); (4) сам канал проверяется `cd swarm && make logship-test`; (5) если строки шлются, но не доезжают — смотри в stdout периодический warn `logship: строки лога не доставлены в Logstash` (там `dropped_total`).
 - **«Падает pyodbc к 10.10.6.x»** → выставь `COST_MOCK=1` в `python/cost/.env`. Будет ходить в моки из `app/mocks.py`.
 - **«analytics_ro не видит таблицу»** → права через `ALTER DEFAULT PRIVILEGES` выдаются только на будущие таблицы. Для уже созданных — `GRANT SELECT ON ALL TABLES IN SCHEMA public TO analytics_ro;` в `init-db.sh`.
 - **«python-cost не может создать уведомление»** → проверь, что `INTERNAL_SERVICE_TOKEN` одинаков у `go-api` и `python-cost` (`.env`), и что cost-стек запущен В ОДНОЙ сети с go-api (`finance_dev_network`, см. `docker-compose.cost.yml`). Если токен у go-api пуст — `/internal/*` возвращают 503.

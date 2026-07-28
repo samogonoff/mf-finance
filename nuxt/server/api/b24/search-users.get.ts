@@ -1,4 +1,5 @@
 import {createError, defineEventHandler, getCookie, getHeader, getQuery, setCookie} from "h3";
+import {serverLog} from "../../utils/logger";
 
 /**
  * Поиск сотрудников в Bitrix24 по фамилии — для прозрачной догрузки пользователей
@@ -61,11 +62,25 @@ export default defineEventHandler(async (event) => {
   // Истёкший/невалидный токен → обновляем и повторяем.
   if (!data || data.error) {
     const fresh = await refreshToken();
-    if (!fresh) throw createError({ statusCode: 401, statusMessage: "B24-токен истёк — войдите заново" });
+    if (!fresh) {
+      serverLog("WARN", "b24 user.get: обновить токен не удалось", {
+        route: "GET /api/b24/search-users",
+        domain,
+        error: data?.error || "refresh failed"
+      });
+      throw createError({ statusCode: 401, statusMessage: "B24-токен истёк — войдите заново" });
+    }
     token = fresh;
     data = await callUserGet(fresh).catch(() => null);
   }
-  if (!data || data.error || !data.result) return [];
+  if (!data || data.error || !data.result) {
+    serverLog("WARN", "b24 user.get вернул ошибку", {
+      route: "GET /api/b24/search-users",
+      domain,
+      error: data?.error || "empty response"
+    });
+    return [];
+  }
 
   return data.result
     .filter((u) => u.ID)

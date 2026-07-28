@@ -26,6 +26,11 @@ import (
 func main() {
 	cfg := config.Load()
 
+	// Логи: JSON в stdout + (если задан LOGSTASH_HOST) дубль в Logstash/ELK.
+	// Отправка асинхронная и никогда не блокирует обработку запросов.
+	logShipper := setupLogging(cfg.LogstashAddr)
+	defer logShipper.Close()
+
 	pool, err := db.Open(context.Background(), cfg.PostgresURL)
 	if err != nil {
 		log.Fatalf("postgres: %v", err)
@@ -356,7 +361,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           withCORS(mux, cfg.CORSOrigins),
+		Handler:           withLogging(withCORS(mux, cfg.CORSOrigins)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

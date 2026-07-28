@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"strings"
 )
@@ -92,6 +93,12 @@ type Config struct {
 	// B24 inbound-вебхук с правом user.get — для админ-импорта пользователей по ID
 	// (догрузка сотрудников, ещё не заходивших). Пусто → импорт отдаёт 503.
 	B24UserGetWebhook string
+
+	// Трансляция структурных логов (slog JSON) в Logstash по TCP (кодек
+	// json_lines). Собирается из LOGSTASH_HOST + LOGSTASH_PORT. Пусто в HOST →
+	// пустой адрес → трансляция выключена, остаётся только stdout
+	// (см. internal/logship). Порт по умолчанию — 5044.
+	LogstashAddr string
 }
 
 func Load() Config {
@@ -145,7 +152,21 @@ func Load() Config {
 		PlansDirCacheTTL:  atoiDef(env("PLANS_DIR_CACHE_TTL", "3600"), 3600),
 
 		B24UserGetWebhook: env("B24_USERGET_WEBHOOK", ""),
+
+		LogstashAddr: hostPort(env("LOGSTASH_HOST", ""), env("LOGSTASH_PORT", "")),
 	}
+}
+
+// hostPort склеивает host:port для Logstash. Пустой host → "" (трансляция
+// выключена), пустой порт при заданном хосте → 5044 (дефолт TCP-input'а).
+func hostPort(host, port string) string {
+	if host == "" {
+		return ""
+	}
+	if port == "" {
+		port = "5044"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func atoiDef(s string, def int) int {
