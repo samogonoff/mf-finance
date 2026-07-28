@@ -77,9 +77,16 @@ publish_prod:
     - export MIGRATE_IMAGE="$CI_REGISTRY_IMAGE/migrations-$reg_tag:$CI_COMMIT_SHORT_SHA"
     - printf "%b" "$ENV_FILE" > .env
     - docker pull "$MIGRATE_IMAGE"
-    # Dirty database workaround: version 13 (T-SQL → no-op migration) needs force
-    - docker run --rm --network host --env-file .env "$MIGRATE_IMAGE" force-cost 13 || true
-    - docker run --rm --network host --env-file .env "$MIGRATE_IMAGE" up
+    # Зачистка зомби-контейнеров прошлых прогонов. При job timeout GitLab убивает
+    # docker-CLI, но САМ контейнер остаётся жить и продолжает держать
+    # advisory-lock мигратора → следующий прогон падает на pg_advisory_lock
+    # ("canceling statement due to lock timeout"). Убиваем их до наката.
+    - docker ps --format '{{.ID}} {{.Image}}' | grep "/migrations-$reg_tag:" | awk '{print $1}' | xargs -r docker rm -f || true
+    # force-cost 13 больше не нужен: dirty-состояние снимает preflight в
+    # swarm/migrate.sh (force на version-1 + переприменение), а осиротевшие
+    # advisory-локи он же прибивает. Прибитая гвоздями версия 13 заставляла
+    # реплеить 14→N на КАЖДОМ деплое — лишние ALTER TABLE и лишний риск залипнуть.
+    - docker run --rm --network host --label finance-migrate=1 --env-file .env "$MIGRATE_IMAGE" up
   after_script:
     - rm -f .env
   allow_failure: false
