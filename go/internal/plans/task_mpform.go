@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // Форма ввода МП — TASK-DRIVEN и ПОЛНАЯ (весь каскад как в прототипе large):
@@ -14,9 +15,25 @@ import (
 
 // MpFormPlatform — площадка МП (ЦФО задания).
 type MpFormPlatform struct {
-	CodeCFO int    `json:"code_cfo"`
-	Name    string `json:"name"`
-	Country string `json:"country"`
+	CodeCFO     int    `json:"code_cfo"`
+	Name        string `json:"name"`
+	Country     string `json:"country"`
+	Segment     string `json:"segment"`      // large|small — группировка колонок в объединённой форме
+	LegalEntity string `json:"legal_entity"` // для фильтра «по ЮЛ» в форме и своде
+}
+
+// distinctSegments — набор сегментов, встречающихся среди площадок задания.
+func distinctSegments(segmentOf map[int]string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, 2)
+	for _, seg := range segmentOf {
+		if seg != "" && !seen[seg] {
+			seen[seg] = true
+			out = append(out, seg)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // MpFormCell — ячейка (площадка × строка): вычисленное значение + ввод/факт/стратегия.
@@ -135,19 +152,34 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	f.Task, f.Year, f.Month, f.Segment, f.Currency = t, year, month, segment, normalizeCurrency(currency)
 	f.Lines = mpFormSpec()
 
-	// Площадки задания + страна из dir_marketplace seed.
+	// Площадки задания + страна/сегмент. Задание может покрывать оба сегмента
+	// (объединённая форма МП) — тогда шапка помечается «all», а разделение
+	// остаётся внутри формы: колонки группируются по сегменту.
 	countryOf := map[int]string{}
+	leOf := map[int]string{}
 	for _, m := range MarketplaceSeed() {
 		countryOf[m.CodeCFO] = m.Country
+		leOf[m.CodeCFO] = m.LegalEntity
 	}
+	segmentOf := s.segmentsByCfo(ctx, t.CfoCodes)
 	mpNames := s.nameMap(ctx, "dir_marketplace", "code_cfo", "name_cfo")
 	cfoNames := s.nameMap(ctx, "dir_cfo", "code_cfo", "name_cfo")
+	dirLE := s.nameMap(ctx, "dir_marketplace", "code_cfo", "legal_entity")
 	for _, c := range t.CfoCodes {
 		name := mpNames[c]
 		if name == "" {
 			name = cfoNames[c]
 		}
-		f.Platforms = append(f.Platforms, MpFormPlatform{CodeCFO: c, Name: name, Country: countryOf[c]})
+		le := dirLE[c]
+		if le == "" {
+			le = leOf[c] // справочник может быть не наполнен — берём из seed
+		}
+		f.Platforms = append(f.Platforms, MpFormPlatform{
+			CodeCFO: c, Name: name, Country: countryOf[c], Segment: segmentOf[c], LegalEntity: le,
+		})
+	}
+	if segments := distinctSegments(segmentOf); len(segments) > 1 {
+		f.Segment = "all"
 	}
 	// НДС шапки — по стране первой площадки (для отображения; расчёт — per-площадка).
 	if len(f.Platforms) > 0 {
@@ -162,11 +194,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	for _, c := range t.CfoCodes {
 		allowedCfo[c] = true
 	}
-	layers := newMpLayers()
-	if len(t.CfoCodes) > 0 {
-		layers = s.mpSourceLayers(ctx, year, month, segment, allowedCfo, f.Currency)
-	}
-	factIdx := layers.fact
+	layerSet := s.mpLayersFor(ctx, year, month, segmentOf, allowedCfo, f.Currency)
 
 	// Сохранённая тактика + стратегия + причины корректировок.
 	tacByKey := map[string]float64{}
@@ -218,8 +246,10 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	}
 
 	// Онлайн-стратегия (FormToLoadPlan) перекрывает импортированную в pl_metric (TPL-09).
-	for k, v := range layers.strategy {
-		stratByKey[k] = v
+	for _, l := range layerSet.bySegment {
+		for k, v := range l.strategy {
+			stratByKey[k] = v
+		}
 	}
 
 	spec := mpFormSpec()
@@ -236,13 +266,16 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	}
 
 	for _, p := range f.Platforms {
-		values := computeMpPlatform(mpPlatformInputs(p.CodeCFO, tacByKey, factIdx), vatByCountry(p.Country))
+		// Слои берутся по сегменту КАЖДОЙ площадки: в объединённой форме
+		// large и small приходят из разных срезов источника.
+		pl := layerSet.forCfo(p.CodeCFO)
+		values := computeMpPlatform(mpPlatformInputs(p.CodeCFO, tacByKey, pl.fact), vatByCountry(p.Country))
 
 		for _, l := range spec {
 			if l.Kind == KindHeader {
 				continue
 			}
-			k := fmt.Sprintf("%d:%s", p.CodeCFO, l.BlockType)
+			k := layerKey(p.CodeCFO, l.BlockType)
 			cell := MpFormCell{CodeCFO: p.CodeCFO, BlockType: l.BlockType}
 			if l.Scope == ScopeTotal {
 				cell.Value = totalInputs[l.BlockType]
@@ -251,11 +284,11 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 			}
 			// Факт (для input-строк) — из источника; рядом факт прошлого года.
 			if editable[l.BlockType] {
-				if fv, ok := factSeed(factIdx, l.BlockType, p.CodeCFO); ok {
+				if fv, ok := factSeed(pl.fact, l.BlockType, p.CodeCFO); ok {
 					vv := fv
 					cell.Fact = &vv
 				}
-				if pv, ok := factSeed(layers.factPrev, l.BlockType, p.CodeCFO); ok {
+				if pv, ok := factSeed(pl.factPrev, l.BlockType, p.CodeCFO); ok {
 					vv := pv
 					cell.FactPrev = &vv
 				}
@@ -264,7 +297,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 				vv := sv
 				cell.Strategy = &vv
 			}
-			if tv, ok := layers.target[k]; ok {
+			if tv, ok := pl.target[k]; ok {
 				vv := tv
 				cell.Target = &vv
 			}
@@ -339,16 +372,17 @@ func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdm
 	lineByBlock := mpLineByBlock()
 	src := normalizeCurrency(currency)
 
-	factIdx := map[[2]int]float64{}
-	if s.fact != nil {
-		if fr, e := s.fact.MpFact(ctx, year, month, segment); e == nil {
-			for _, r := range fr {
-				if allowed[r.CodeCFO] {
-					factIdx[[2]int{r.CodeCFO, r.CodePL}] = convertAmount(r.Amount, r.Currency, "RUB")
-				}
-			}
+	// Сегмент пишем по КАЖДОЙ площадке (объединённая форма покрывает оба);
+	// тотал-строки (скидка/уценка) остаются под сегментом задания.
+	segmentOf := s.segmentsByCfo(ctx, t.CfoCodes)
+	segmentFor := func(cfo int) string {
+		if seg, ok := segmentOf[cfo]; ok && seg != "" {
+			return seg
 		}
+		return segment
 	}
+	// Значение «до корректировки» (ADJ-03) — факт в валюте хранения.
+	layerSet := s.mpLayersFor(ctx, year, month, segmentOf, allowed, "RUB")
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -360,10 +394,13 @@ func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdm
 			return fmt.Errorf("строка не редактируется: %s", r.BlockType)
 		}
 		pc := r.CodeCFO
+		rowSegment := segment
 		if line.Scope == ScopeTotal {
-			pc = 0 // тотал-строки (скидка/уценка) — по всему сегменту
+			pc = 0 // тотал-строки (скидка/уценка) — по всему заданию
 		} else if !allowed[pc] {
 			return fmt.Errorf("ЦФО %d вне задания", pc)
+		} else {
+			rowSegment = segmentFor(pc)
 		}
 		if r.IsManual && r.Comment == "" {
 			return fmt.Errorf("причина корректировки обязательна (ADJ-02)")
@@ -376,13 +413,13 @@ func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdm
 			VALUES ($1,'TPL-MP',$2,$3,$4,$5,'',$6,$7,$8,'RUB',$9,$10)
 			ON CONFLICT (pl_id, template_code, segment, line_code, block_type, profit_center, scenario, period_year, period_month, currency)
 			DO UPDATE SET amount=EXCLUDED.amount, is_manual=EXCLUDED.is_manual`,
-			t.PlID, segment, line.CodePL, r.BlockType, pc, ScenarioTactic, year, month, r.Amount, r.IsManual)
+			t.PlID, rowSegment, line.CodePL, r.BlockType, pc, ScenarioTactic, year, month, r.Amount, r.IsManual)
 		if err != nil {
 			return err
 		}
 		if r.IsManual {
 			var orig *float64
-			if v, ok := factIdx[[2]int{pc, line.CodePL}]; ok {
+			if v, ok := layerSet.forCfo(pc).fact[[2]int{pc, line.CodePL}]; ok {
 				vv := v
 				orig = &vv
 			}

@@ -101,8 +101,15 @@ func (s *TaskStore) matchingCfo(ctx context.Context, f CfoFilter) ([]cfoRowLite,
 	add("group_cfo2", f.GroupCFO2)
 	add("country", f.Country)
 	add("legal_entity", f.LegalEntity)
-	// Сегмент МП (large|small) — через справочник dir_marketplace по code_cfo.
-	if f.Segment != "" {
+	// Сегмент МП — через справочник dir_marketplace по code_cfo.
+	// "large"|"small" — конкретный сегмент; "all" — все площадки МП одним заданием
+	// (объединённая форма, миграция 0029).
+	if f.Segment == "all" {
+		conds = append(conds, `r.external_id IN (
+			SELECT mp.payload_json->>'code_cfo' FROM plans_directory_row mp
+			JOIN plans_directory dm ON dm.id=mp.directory_id
+			WHERE dm.code='dir_marketplace')`)
+	} else if f.Segment != "" {
 		args = append(args, f.Segment)
 		conds = append(conds, fmt.Sprintf(`r.external_id IN (
 			SELECT mp.payload_json->>'code_cfo' FROM plans_directory_row mp
@@ -217,7 +224,9 @@ func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 				queue(t, t.Title, codes, &p, holderOf[posID], "")
 			}
 			if len(unassigned) > 0 {
-				queue(t, t.Title+" · без ТОПа", unassigned, nil, nil, "")
+				// «без ТОПа» — внутренний жаргон: у ЦФО не задана должность-владелец.
+			// В UI пишем то, что от человека требуется: назначить исполнителя.
+			queue(t, t.Title+" · исполнитель не назначен", unassigned, nil, nil, "")
 			}
 		}
 	}

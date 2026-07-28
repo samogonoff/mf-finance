@@ -118,6 +118,40 @@ func TestMpPlatformInputs(t *testing.T) {
 	}
 }
 
+// Объединённая форма МП покрывает оба сегмента: набор сегментов задания должен
+// определяться по площадкам, а слои — подбираться под каждую площадку свои.
+func TestDistinctSegments(t *testing.T) {
+	got := distinctSegments(map[int]string{335: "large", 337: "large", 953: "small", 999: ""})
+	if len(got) != 2 || got[0] != "large" || got[1] != "small" {
+		t.Fatalf("сегменты = %v, ждали [large small]", got)
+	}
+	if n := len(distinctSegments(map[int]string{335: "large"})); n != 1 {
+		t.Errorf("однросегментное задание дало %d сегментов", n)
+	}
+}
+
+func TestMpLayerSetForCfo(t *testing.T) {
+	large := newMpLayers()
+	large.fact[[2]int{335, 1046}] = 100
+	small := newMpLayers()
+	small.fact[[2]int{953, 1046}] = 7
+
+	set := mpLayerSet{
+		bySegment: map[string]mpLayers{"large": large, "small": small},
+		segmentOf: map[int]string{335: "large", 953: "small"},
+	}
+	if v := set.forCfo(335).fact[[2]int{335, 1046}]; v != 100 {
+		t.Errorf("large-площадка получила %v, ждали 100", v)
+	}
+	if v := set.forCfo(953).fact[[2]int{953, 1046}]; v != 7 {
+		t.Errorf("small-площадка получила %v, ждали 7", v)
+	}
+	// Неизвестная площадка не должна ронять сборку формы — пустые слои.
+	if len(set.forCfo(42).fact) != 0 {
+		t.Error("неизвестная площадка должна давать пустые слои")
+	}
+}
+
 func TestNormalizeCurrency(t *testing.T) {
 	cases := map[string]string{"": "RUB", "rub": "RUB", " byn ": "BYN", "usd": "USD", "EUR": "RUB"}
 	for in, want := range cases {
