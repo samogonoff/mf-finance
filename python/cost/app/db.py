@@ -285,7 +285,7 @@ def fetch_gpartner_planned(pairs: list[tuple[str, str]]) -> dict[tuple[str, str]
             params.extend([m, a])
 
         cursor.execute(
-            f"SELECT MODEL, ART, PRICE_MOPT, NNDS, PLAN_PRICE FROM [dbo].[S_MODELI] WHERE {conditions}",
+            f"SELECT MODEL, ART, PRICE_MOPT, NDS, PLAN_PRICE FROM [dbo].[S_MODELI] WHERE {conditions}",
             params,
         )
         result: dict[tuple[str, str], dict] = {}
