@@ -80,7 +80,19 @@
       <span class="lg-hint">Менеджер задаёт «Продажи с НДС», %СПП и статьи затрат — остальное считается автоматически.</span>
     </div>
 
-    <div v-if="form" class="card form-card">
+    <!-- Первая загрузка: контур будущей таблицы. Форма тянет факт/стратегию/таргет
+         из OLAP — это секунды, и пустой экран всё это время выглядит как зависание. -->
+    <div v-if="!form && loading" class="card form-card">
+      <p class="loading-line">
+        <Icon name="lucide:loader-circle" class="spin" />
+        Загружаю форму задания: факт, стратегия и таргет из Budgeting…
+      </p>
+      <SkeletonTable :rows="16" :cols="5" :section-every="5" label="Загружаю форму МП" />
+    </div>
+
+    <div v-if="form" class="card form-card" :class="{ busy: loading }">
+      <!-- Перезагрузка при смене валюты: таблицу не убираем, но помечаем занятой. -->
+      <div v-if="loading" class="busy-veil"><Icon name="lucide:loader-circle" class="spin" /> Пересчитываю в {{ currency }}…</div>
       <div class="table-wrap">
         <table class="data-table mp-grid">
           <thead>
@@ -180,6 +192,7 @@ const corr = reactive<Record<string, string>>({});               // ключ я�
 const error = ref("");
 const note = ref("");
 const saving = ref(false);
+const loading = ref(true); // сразу true: onMounted грузит форму, скелетон не должен мигать
 const dirty = ref(false);
 // Валюта отображения; хранение тактики всегда в RUB (пересчёт делает сервер).
 // Переключение заблокировано при несохранённых правках — иначе они потеряются.
@@ -366,11 +379,13 @@ const copyStrategy = () => copyScenario((c) => c.strategy, "стратегия")
 const copyTarget = () => copyScenario((c) => c.target, "таргет");
 
 const load = async () => {
+  loading.value = true;
   try {
     form.value = await api.mpForm(taskId, currency.value);
     seedFromCells();
     dirty.value = false;
   } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка загрузки формы"; }
+  finally { loading.value = false; }
 };
 
 const save = async () => {
@@ -439,7 +454,19 @@ onMounted(load);
 .lg-calc { background: var(--bg-tonal); color: var(--text-secondary); }
 .lg-hint { color: var(--text-muted); }
 
-.form-card { padding: 0; overflow: hidden; }
+.form-card { padding: 0; overflow: hidden; position: relative; }
+.form-card.busy .table-wrap { opacity: 0.45; pointer-events: none; transition: opacity 0.15s ease; }
+.busy-veil {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: var(--sp-7); gap: 6px;
+  font-size: var(--fs-sm); color: var(--text-secondary);
+}
+.loading-line {
+  display: flex; align-items: center; gap: 6px;
+  padding: var(--sp-4) var(--sp-4) 0;
+  font-size: var(--fs-sm); color: var(--text-secondary);
+}
 .mp-grid { border-collapse: collapse; width: 100%; }
 .mp-grid th, .mp-grid td { vertical-align: top; }
 .col-line { min-width: 300px; position: sticky; left: 0; background: var(--bg-surface); z-index: 1; }

@@ -9,7 +9,15 @@
   числа врёт: задание может висеть «в работе» с одной заполненной ячейкой.
 -->
 <template>
-  <div class="status-bar" :class="{ alarm: overdue > 0 }">
+  <!-- Пока грузятся этапы и задания — контур той же высоты, чтобы страница не
+       прыгала, когда данные приедут. -->
+  <div v-if="loading" class="status-bar sk-bar" aria-busy="true">
+    <span class="skeleton skeleton-text sk-a" />
+    <span class="skeleton skeleton-text sk-b" />
+    <span class="skeleton sk-c" />
+  </div>
+
+  <div v-else class="status-bar" :class="{ alarm: overdue > 0 }">
     <div class="sb-main">
       <span class="sb-period">{{ periodLabel }}</span>
       <span class="sb-sep">·</span>
@@ -55,6 +63,7 @@ const { stages: loadStages } = usePlans();
 const { byInstance } = useTasks();
 const st = usePlanStatus();
 
+const loading = ref(true);
 const stages = ref<StageState[]>([]);
 const tasks = ref<Task[]>([]);
 /** Задания, где уже есть введённая тактика (заполнены, а не просто «в работе»). */
@@ -92,6 +101,8 @@ const load = async () => {
     ]);
   } catch {
     // Статус-бар — вспомогательный: молча деградирует до пустого, не роняя экран.
+  } finally {
+    loading.value = false;
   }
 };
 
@@ -113,6 +124,10 @@ onMounted(load);
   font-size: var(--fs-sm);
 }
 .status-bar.alarm { border-left-color: var(--neg-strong); }
+.sk-bar { border-left-color: var(--border); }
+.sk-bar .sk-a { width: 180px; }
+.sk-bar .sk-b { width: 260px; }
+.sk-bar .sk-c { width: 140px; height: 6px; margin-left: auto; }
 .sb-main { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .sb-period { font-family: var(--font-mono); font-weight: var(--fw-bold); }
 .sb-sep { color: var(--text-muted); }
