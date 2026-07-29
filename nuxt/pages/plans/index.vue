@@ -42,7 +42,19 @@
         <span v-if="myOpen.length" class="count">{{ myOpen.length }}</span>
       </div>
 
-      <p v-if="!loading && !myOpen.length" class="empty">
+      <!-- Пока грузятся задания — контуры карточек, а не пустое место. -->
+      <ul v-if="loading" class="todo">
+        <li v-for="i in 3" :key="i" class="todo-item sk-item">
+          <span class="skeleton sk-mark" />
+          <div class="ti-body">
+            <span class="skeleton skeleton-text sk-title" />
+            <span class="skeleton skeleton-text sk-meta" />
+          </div>
+          <span class="skeleton sk-btn" />
+        </li>
+      </ul>
+
+      <p v-else-if="!myOpen.length" class="empty">
         Открытых заданий нет.
         <template v-if="myDone.length">Все ваши задания ({{ myDone.length }}) приняты.</template>
         <template v-else>Задания появятся, когда админ сгенерирует их на период.</template>
@@ -116,7 +128,12 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-if="!list.length">
+          <tr v-if="loading">
+            <td colspan="4" class="sk-cell">
+              <span class="skeleton skeleton-text" style="width: 40%" />
+            </td>
+          </tr>
+          <tr v-else-if="!list.length">
             <td colspan="4" class="empty">Периодов нет. {{ canAdmin ? "Создайте период." : "Обратитесь к администратору планов." }}</td>
           </tr>
           <tr v-for="it in list" :key="it.id">
@@ -220,6 +237,14 @@ onMounted(load);
 .ti-title { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 .ti-meta { display: flex; gap: var(--sp-4); flex-wrap: wrap; margin-top: 2px; font-size: var(--fs-2xs); color: var(--text-secondary); }
 .ti-act { display: flex; gap: var(--sp-2); flex-shrink: 0; }
+
+.sk-item { border-left-color: var(--border); }
+.sk-mark { width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; }
+.sk-item .ti-body { display: flex; flex-direction: column; gap: 6px; }
+.sk-title { width: 280px; }
+.sk-meta { width: 190px; height: 0.7em; }
+.sk-btn { width: 96px; height: 26px; flex-shrink: 0; }
+.sk-cell { padding: var(--sp-4); }
 
 .more { position: relative; }
 .more summary { list-style: none; cursor: pointer; }

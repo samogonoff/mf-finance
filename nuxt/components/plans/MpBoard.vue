@@ -68,13 +68,19 @@
     </div>
 
     <p v-if="error" class="banner banner-neg">{{ error }}</p>
-    <p v-if="loading" class="hint-line">Загружаю свод…</p>
 
-    <p v-if="board && !visibleRows.length && !loading" class="empty-state">
+    <!-- Первая загрузка: контур будущей таблицы вместо пустоты (свод тянет
+         факт/стратегию/таргет по всем площадкам — это секунды). -->
+    <div v-if="!board && loading" class="sk-wrap">
+      <p class="hint-line"><Icon name="lucide:loader-circle" class="spin" /> Собираю свод периода…</p>
+      <SkeletonTable :rows="14" :cols="5" :section-every="5" label="Загружаю свод периода" />
+    </div>
+
+    <p v-else-if="board && !visibleRows.length && !loading" class="empty-state">
       Нет данных под фильтры. {{ hasAnyTactic ? "Ослабьте фильтры." : "Тактику наполняют задания — откройте вкладку «Задания»." }}
     </p>
 
-    <div v-else-if="board" class="table-wrap">
+    <div v-else-if="board" class="table-wrap" :class="{ busy: loading }">
       <table class="data-table board-table">
         <thead>
           <tr>
@@ -166,7 +172,7 @@ const st = usePlanStatus();
 
 const board = ref<Board | null>(null);
 const error = ref("");
-const loading = ref(false);
+const loading = ref(true); // сразу true: onMounted грузит свод, скелетон не должен мигать
 const platform = ref("0");
 const onlyManual = ref(false);
 const onlyInput = ref(false);
@@ -262,7 +268,14 @@ onMounted(load);
 .banner { padding: var(--sp-3) var(--sp-4); border-radius: var(--rd-4, 6px); margin-bottom: var(--sp-4); font-size: var(--fs-sm); }
 .banner-neg { background: var(--neg-soft); color: var(--neg-strong); }
 .hint-line, .empty-state { color: var(--text-muted); font-size: var(--fs-sm); padding: var(--sp-5) 0; }
+.hint-line { display: flex; align-items: center; gap: 6px; padding: 0 0 var(--sp-3); }
 .empty-state { text-align: center; }
+.sk-wrap { border: 1px solid var(--border); border-radius: var(--rd-4, 6px); padding: var(--sp-4); }
+/* Перезагрузка по фильтру: таблицу оставляем на месте, но гасим — так видно,
+   что числа уже неактуальны, и не прыгает верстка. */
+.table-wrap.busy { opacity: 0.45; pointer-events: none; transition: opacity 0.15s ease; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .board-table { width: 100%; border-collapse: collapse; }
 .board-table .num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
