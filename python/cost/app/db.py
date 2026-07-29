@@ -1193,34 +1193,42 @@ def _recalc_cost_buckets(row: dict) -> None:
     price_usd = row.get("цена материала, USD.")
     mat_type = (row.get("Материал/операция/декор(призн)", "") or "").strip()
 
-    try:
-        sum_rub = float(norm or 0) * float(price_rub or 0) if norm is not None and price_rub is not None else 0
-    except (ValueError, TypeError):
-        sum_rub = 0
-    try:
-        sum_usd = float(norm or 0) * float(price_usd or 0) if norm is not None and price_usd is not None else 0
-    except (ValueError, TypeError):
-        sum_usd = 0
+    if norm is None or price_rub is None:
+        sum_rub = None
+    else:
+        try:
+            sum_rub = float(norm) * float(price_rub)
+        except (ValueError, TypeError):
+            sum_rub = None
 
-    for f in ("Основные материалы, руб.", "Вспомогательные материалы, руб.",
-              "Декоры, руб.", "Пошив, руб."):
-        row[f] = 0
-    for f in ("Основные материалы, USD.", "Вспомогательные материалы, USD.",
-              "Декоры, USD.", "Пошив, USD."):
-        row[f] = 0
+    if norm is None or price_usd is None:
+        sum_usd = None
+    else:
+        try:
+            sum_usd = float(norm) * float(price_usd)
+        except (ValueError, TypeError):
+            sum_usd = None
 
     if mat_type in ("Материал основной",):
-        row["Основные материалы, руб."] = sum_rub
-        row["Основные материалы, USD."] = sum_usd
+        if sum_rub is not None:
+            row["Основные материалы, руб."] = sum_rub
+        if sum_usd is not None:
+            row["Основные материалы, USD."] = sum_usd
     elif mat_type in ("Материал вспомогательный",):
-        row["Вспомогательные материалы, руб."] = sum_rub
-        row["Вспомогательные материалы, USD."] = sum_usd
+        if sum_rub is not None:
+            row["Вспомогательные материалы, руб."] = sum_rub
+        if sum_usd is not None:
+            row["Вспомогательные материалы, USD."] = sum_usd
     elif mat_type in ("Декор", "шт", "Декоры лиса"):
-        row["Декоры, руб."] = sum_rub
-        row["Декоры, USD."] = sum_usd
+        if sum_rub is not None:
+            row["Декоры, руб."] = sum_rub
+        if sum_usd is not None:
+            row["Декоры, USD."] = sum_usd
     elif mat_type in ("Техоперация",):
-        row["Пошив, руб."] = sum_rub
-        row["Пошив, USD."] = sum_usd
+        if sum_rub is not None:
+            row["Пошив, руб."] = sum_rub
+        if sum_usd is not None:
+            row["Пошив, USD."] = sum_usd
 
 
 async def save_version_draft(version_id, rows) -> None:
