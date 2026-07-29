@@ -227,12 +227,14 @@ const toggle = (block: string) => { expanded[block] = !expanded[block]; };
 
 const isStrong = (block: string) => block === "pl_platform" || block === "platform_costs_total";
 
-const fmtPct = (v: number) => (v * 100).toFixed(1) + "%";
+// 2 знака везде — как в форме ввода МП, иначе доска и форма показывают разные
+// суммы по одной и той же строке.
+const fmtPct = (v: number) => num(v * 100, 2) + "%";
 const fmt = (line: MpLine, col: BoardColumn, v: number | null): string => {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
   const delta = col === "delta_strategy" || col === "delta_fact_prev";
-  if (line.value_kind === "pct") return delta ? (v * 100).toFixed(1) + " п.п." : fmtPct(v);
-  return num(v, 0);
+  if (line.value_kind === "pct") return delta ? num(v * 100, 2) + " п.п." : fmtPct(v);
+  return num(v, 2);
 };
 const deltaClass = (col: BoardColumn, v: number | null): string => {
   if (v === null || (col !== "delta_strategy" && col !== "delta_fact_prev")) return "";

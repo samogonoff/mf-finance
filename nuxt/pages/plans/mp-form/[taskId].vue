@@ -130,13 +130,12 @@
                   <template v-else-if="editableCell(line)">
                     <div class="cell-row">
                       <!-- Проценты вводятся в процентах (31), хранятся долей (0.31). -->
-                      <input
-                        :value="displayInput(line, p.code_cfo)"
-                        type="number" class="cell-input"
+                      <NumberField
+                        :model-value="displayInput(line, p.code_cfo)"
+                        class="cell-input"
                         :class="{ pct: line.value_kind === 'pct' }"
-                        :step="line.value_kind === 'pct' ? '0.1' : 'any'"
                         :disabled="!canEdit" :placeholder="line.value_kind === 'pct' ? '%' : '—'"
-                        @input="onInput(line, p.code_cfo, ($event.target as HTMLInputElement).value)"
+                        @update:model-value="onInput(line, p.code_cfo, $event)"
                       />
                       <span v-if="line.value_kind === 'pct'" class="pct-sign">%</span>
                       <button v-if="canEdit && line.kind === 'input'" class="corr-btn" :class="{ on: isCorr(p.code_cfo, line.block_type) }" title="Корректировка с причиной (ADJ-02)" @click="toggleCorr(p.code_cfo, line.block_type)"><Icon name="lucide:pencil" /></button>
@@ -156,7 +155,11 @@
                 <!-- Итого -->
                 <td class="cell total-cell">
                   <template v-if="line.scope === 'total' && editableCell(line)">
-                    <input v-model.number="totals[line.block_type]" type="number" class="cell-input" :disabled="!canEdit" placeholder="—" @input="dirty = true" />
+                    <NumberField
+                      :model-value="totals[line.block_type] ?? null"
+                      class="cell-input" :disabled="!canEdit" placeholder="—"
+                      @update:model-value="onTotalInput(line.block_type, $event)"
+                    />
                   </template>
                   <template v-else>
                     <span class="calc-val" :class="{ neg: totalValue(line) < 0 }">{{ fmt(line, totalValue(line)) }}</span>
@@ -176,6 +179,7 @@
 import { useTasks, type MpTaskForm, type MpLine, type MpSaveRow, type MpFormCell } from "~/composables/useTasks";
 import { computePlatform, vatByCountry, B } from "~/composables/useMpCascade";
 import { num } from "~/utils/format";
+import NumberField from "~/components/NumberField.vue";
 
 definePageMeta({ middleware: "scope-guard" });
 
@@ -321,12 +325,14 @@ const displayInput = (line: MpLine, cfo: number): number | null => {
   if (v == null || Number.isNaN(v)) return null;
   return line.value_kind === "pct" ? Number((v * 100).toFixed(4)) : v;
 };
-const onInput = (line: MpLine, cfo: number, raw: string) => {
+// NumberField отдаёт уже разобранное число (округление до копеек — на blur).
+const onInput = (line: MpLine, cfo: number, v: number | null) => {
   const k = key(cfo, line.block_type);
-  if (raw === "") { inputs[k] = null; dirty.value = true; return; }
-  const n = Number(raw);
-  if (Number.isNaN(n)) return;
-  inputs[k] = line.value_kind === "pct" ? Number((n / 100).toFixed(6)) : n;
+  inputs[k] = v == null ? null : line.value_kind === "pct" ? Number((v / 100).toFixed(6)) : v;
+  dirty.value = true;
+};
+const onTotalInput = (block: string, v: number | null) => {
+  totals[block] = v;
   dirty.value = true;
 };
 
@@ -339,9 +345,10 @@ const toggleCorr = (cfo: number, block: string) => {
 const lineClass = (line: MpLine) => `k-${line.kind}` + (line.block_type === B.plPlatform || line.block_type === B.platformCosts ? " strong" : "");
 const cellClass = (line: MpLine, cfo: number) => (isCorr(cfo, line.block_type) ? "is-corr" : "");
 
-// Форматирование по типу строки.
-const fmtMoney = (v: number | null | undefined) => (v == null ? "—" : num(v, 0));
-const fmtPct = (v: number | null | undefined) => (v == null || Number.isNaN(v) ? "—" : (v * 100).toFixed(1) + "%");
+// Форматирование по типу строки. 2 знака везде — как в полях ввода (NumberField),
+// иначе подсказка «факт» и значение в поле над ней расходятся на копейки.
+const fmtMoney = (v: number | null | undefined) => (v == null || Number.isNaN(v) ? "—" : num(v, 2));
+const fmtPct = (v: number | null | undefined) => (v == null || Number.isNaN(v) ? "—" : num(v * 100, 2) + "%");
 const fmt = (line: MpLine, v: number | null | undefined) => (line.value_kind === "pct" ? fmtPct(v) : fmtMoney(v));
 
 const seedFromCells = () => {
@@ -470,7 +477,7 @@ onMounted(load);
 .mp-grid { border-collapse: collapse; width: 100%; }
 .mp-grid th, .mp-grid td { vertical-align: top; }
 .col-line { min-width: 300px; position: sticky; left: 0; background: var(--bg-surface); z-index: 1; }
-.col-plat, .col-total { min-width: 150px; text-align: right; }
+.col-plat, .col-total { min-width: 176px; text-align: right; }
 .cfo { display: block; font-size: var(--fs-2xs); color: var(--text-muted); font-family: var(--font-mono); font-weight: var(--fw-normal); }
 
 .sec-row td { background: var(--bg-tonal); font-weight: var(--fw-bold); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--text-secondary); padding: var(--sp-2) var(--sp-4); position: sticky; left: 0; }
@@ -483,10 +490,11 @@ onMounted(load);
 .cell { text-align: right; }
 .cell.is-corr { background: var(--warn-soft); }
 .cell-row { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
-.cell-input { width: 120px; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; border: 1px solid var(--border); border-radius: var(--rd-3); padding: 3px 7px; background: var(--bg-surface); }
+/* Ширина под «1 123 773,51» с разделителями тысяч — формат NumberField. */
+.cell-input { width: 136px; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; border: 1px solid var(--border); border-radius: var(--rd-3); padding: 3px 7px; background: var(--bg-surface); }
 .cell-input:focus { border-color: var(--accent); outline: none; }
 .cell-input:disabled { background: var(--bg-tonal); color: var(--text-secondary); }
-.cell-input.pct { width: 70px; }
+.cell-input.pct { width: 80px; }
 .corr-btn { border: 1px solid var(--border); background: var(--bg-surface); border-radius: var(--rd-3); padding: 3px; cursor: pointer; color: var(--text-muted); display: inline-flex; }
 .corr-btn.on { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
 .corr-reason { width: 100%; margin-top: 4px; font-size: var(--fs-2xs); border: 1px solid var(--warn); border-radius: var(--rd-3); padding: 3px 6px; background: var(--bg-surface); text-align: left; }
