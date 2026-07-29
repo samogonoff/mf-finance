@@ -1187,6 +1187,42 @@ async def checkout_calculation(model, articul, calc_sign, plan_id, raw_date, use
         return {"version_id": version_id, "rows": [dict(r) for r in rows]}
 
 
+def _recalc_cost_buckets(row: dict) -> None:
+    norm = row.get("Норма")
+    price_rub = row.get("цена материала, руб.")
+    price_usd = row.get("цена материала, USD.")
+    mat_type = (row.get("Материал/операция/декор(призн)", "") or "").strip()
+
+    try:
+        sum_rub = float(norm or 0) * float(price_rub or 0) if norm is not None and price_rub is not None else 0
+    except (ValueError, TypeError):
+        sum_rub = 0
+    try:
+        sum_usd = float(norm or 0) * float(price_usd or 0) if norm is not None and price_usd is not None else 0
+    except (ValueError, TypeError):
+        sum_usd = 0
+
+    for f in ("Основные материалы, руб.", "Вспомогательные материалы, руб.",
+              "Декоры, руб.", "Пошив, руб."):
+        row[f] = 0
+    for f in ("Основные материалы, USD.", "Вспомогательные материалы, USD.",
+              "Декоры, USD.", "Пошив, USD."):
+        row[f] = 0
+
+    if mat_type in ("Материал основной",):
+        row["Основные материалы, руб."] = sum_rub
+        row["Основные материалы, USD."] = sum_usd
+    elif mat_type in ("Материал вспомогательный",):
+        row["Вспомогательные материалы, руб."] = sum_rub
+        row["Вспомогательные материалы, USD."] = sum_usd
+    elif mat_type in ("Декор", "шт", "Декоры лиса"):
+        row["Декоры, руб."] = sum_rub
+        row["Декоры, USD."] = sum_usd
+    elif mat_type in ("Техоперация",):
+        row["Пошив, руб."] = sum_rub
+        row["Пошив, USD."] = sum_usd
+
+
 async def save_version_draft(version_id, rows) -> None:
     async with pool().acquire() as conn:
         async with conn.transaction():
@@ -1196,20 +1232,7 @@ async def save_version_draft(version_id, rows) -> None:
             )
             col_names = CACHE_COLUMNS
             for row in rows:
-                # Recalculate Основные материалы = Норма × цена материала
-                norm = row.get("Норма")
-                price_rub = row.get("цена материала, руб.")
-                price_usd = row.get("цена материала, USD.")
-                if norm is not None and price_rub is not None:
-                    try:
-                        row["Основные материалы, руб."] = float(norm or 0) * float(price_rub or 0)
-                    except (ValueError, TypeError):
-                        pass
-                if norm is not None and price_usd is not None:
-                    try:
-                        row["Основные материалы, USD."] = float(norm or 0) * float(price_usd or 0)
-                    except (ValueError, TypeError):
-                        pass
+                _recalc_cost_buckets(row)
                 values = [version_id]
                 for col in col_names:
                     val = row.get(col)
@@ -1471,19 +1494,7 @@ async def create_version(model, articul, calc_sign, plan_id, raw_date, username,
             )
             col_names = CACHE_COLUMNS
             for row in rows:
-                norm = row.get("Норма")
-                price_rub = row.get("цена материала, руб.")
-                price_usd = row.get("цена материала, USD.")
-                if norm is not None and price_rub is not None:
-                    try:
-                        row["Основные материалы, руб."] = float(norm or 0) * float(price_rub or 0)
-                    except (ValueError, TypeError):
-                        pass
-                if norm is not None and price_usd is not None:
-                    try:
-                        row["Основные материалы, USD."] = float(norm or 0) * float(price_usd or 0)
-                    except (ValueError, TypeError):
-                        pass
+                _recalc_cost_buckets(row)
                 values = [version_id]
                 for col in col_names:
                     val = row.get(col)
