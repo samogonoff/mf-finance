@@ -834,7 +834,7 @@
                     <span v-else-if="editingVersion.isEditing" class="type-tag clickable" @click="editingTypeCell = vi">{{ typeDisplayValue(vr) || '—' }}</span>
                     <span v-else>{{ typeDisplayValue(vr) }}</span>
                   </td>
-                  <td><input v-if="editingVersion.isEditing" :value="vr['Наименование']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ vr['Наименование'] }}</span></td>
+                  <td><input v-if="editingVersion.isEditing" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ nameDisplayValue(vr) || '—' }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
                   <td>{{ vr['Свойство'] }}</td>
                   <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ vr['Норма'] }}</span></td>
@@ -2911,17 +2911,28 @@ function isZeroCostRow(row: any): boolean {
   return norm === 0 || (priceRub === 0 && priceUsd === 0);
 }
 
-/** Показывать название декора вместо типа, если тип = 'шт' / 'Декоры лиса' / 'декор'. */
-const DECOR_TYPE_OVERRIDE = new Set(['шт', 'Декоры лиса', 'декор']);
-const DECOR_EMPTY_VALUES = new Set(['', '-', '0', '0.0000', '0.00', '0.0']);
+/** Тип строки — декор, если тип ∈ {шт, Декоры лиса, декор}. */
+const DECOR_TYPE_OVERRIDE = new Set(['шт', 'Декоры лиса', 'декор', 'Декор']);
+const DECOR_EMPTY_VALUES = new Set(['', '-', '0', '0.0000', '0.00', '0.0', '--']);
+
+function isDecorRow(row: any): boolean {
+  return DECOR_TYPE_OVERRIDE.has(row['Материал/операция/декор(призн)'] || '');
+}
+
+/** В колонке «Материал/operация» для декоров всегда «Декор». */
 function typeDisplayValue(row: any): string {
-  const t = row['Материал/операция/декор(призн)'] || '';
-  if (DECOR_TYPE_OVERRIDE.has(t)) {
+  if (isDecorRow(row)) return 'Декор';
+  return row['Материал/операция/декор(призн)'] || '';
+}
+
+/** В колонке «Наименование»: для декоров — название декора, для остальных — Наименование. */
+function nameDisplayValue(row: any): string {
+  if (isDecorRow(row)) {
     const decorName = (row['Декоры, наименование'] || '').trim();
     if (decorName && !DECOR_EMPTY_VALUES.has(decorName)) return decorName;
-    return 'Декор';
+    return '';
   }
-  return t;
+  return row['Наименование'] || '';
 }
 
 /** Найти индексы строк с тем же Модель+Артикул+PLAN_ID+Признак калькуляции (исключая excludeIdx). */
