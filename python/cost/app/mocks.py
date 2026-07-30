@@ -438,6 +438,38 @@ def margin_targets() -> list[dict]:
     return result
 
 
+# ── Mock МП constants (наценка МП / % расходов МП / скидка СПП) ────────────
+
+_mock_mp_constants: list[dict] = []
+_mock_mp_constants_next_id = 1
+
+
+def list_mp_constants() -> list[dict]:
+    """История mock-констант МП, самые новые сверху."""
+    return sorted(
+        _mock_mp_constants,
+        key=lambda c: (c["effective_date"], c["created_at"]),
+        reverse=True,
+    )
+
+
+def add_mp_constants(markup_mp, expense_pct_mp, spp_discount, effective_date, username: str) -> dict:
+    global _mock_mp_constants_next_id
+    import datetime as _dt
+    row = {
+        "id": _mock_mp_constants_next_id,
+        "effective_date": (effective_date or _dt.date.today()).isoformat(),
+        "markup_mp": float(markup_mp),
+        "expense_pct_mp": float(expense_pct_mp),
+        "spp_discount": float(spp_discount),
+        "created_by": username,
+        "created_at": _dt.datetime.now().isoformat(),
+    }
+    _mock_mp_constants.append(row)
+    _mock_mp_constants_next_id += 1
+    return {"success": True, "id": row["id"]}
+
+
 def save_margin_targets(targets: list[dict], username: str) -> dict:
     """Save mock margin targets in memory."""
     for t in targets:

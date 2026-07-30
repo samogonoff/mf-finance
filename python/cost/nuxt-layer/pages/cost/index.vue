@@ -123,6 +123,9 @@
         <button class="btn btn-ghost" @click="openMarginModal">
           <Icon name="lucide:target" /> Таргеты маржинальности
         </button>
+        <button class="btn btn-ghost" @click="openMpConstantsModal">
+          <Icon name="lucide:percent" /> Константы МП
+        </button>
         <button v-if="can('cost:approve')" class="btn btn-ghost" @click="openApprovalModal">
           <Icon name="lucide:check-square" /> Согласование
         </button>
@@ -263,6 +266,7 @@
               <th v-if="isVisible('price_rf')" class="col-num">Цена РФ</th>
               <th v-if="isVisible('price_kz')" class="col-num">Цена КЗ</th>
               <th v-if="isVisible('price_uz')" class="col-num">Цена УЗ</th>
+              <th v-if="isVisible('mp_price_rub')" class="col-num">Цена для МП, рос. руб.</th>
               <th v-if="isVisible('comment')">Комментарий</th>
               <th v-if="isVisible('avg_wholesale') && !showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
                 Сред. опт (руб)<span v-if="sortField === 'avg_Отпускная цена по уровню, руб'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
@@ -432,6 +436,7 @@
                   @input="onPriceUZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
               </td>
+              <td v-if="isVisible('mp_price_rub')" class="col-num num">{{ fmt(row['mp_price_rub']) }}</td>
               <td v-if="isVisible('comment')">
                 <input class="comment-input" type="text"
                   :value="comments[getOriginalIndex(row)] ?? ''"
@@ -666,6 +671,68 @@
         </div>
       </div>
     </div>
+    <!-- MP constants modal -->
+    <div v-if="showMpConstantsModal" class="modal-overlay" @click.self="showMpConstantsModal = false">
+      <div class="modal-content" style="max-width:700px" @click.stop>
+        <div class="modal-header">
+          <h2>Константы МП</h2>
+          <button class="modal-close" @click="showMpConstantsModal = false">×</button>
+        </div>
+        <div style="padding:var(--sp-4) var(--sp-5);overflow:auto;flex:1">
+          <p class="muted" style="margin-bottom:var(--sp-3)">
+            История значений для формулы «Цена для МП, рос. руб.». Применяется всегда самая свежая запись.
+          </p>
+          <div v-if="mpConstantsLoading" class="muted" style="text-align:center;padding:24px">Загрузка…</div>
+          <table v-else class="data-table compact" style="width:100%;margin-bottom:var(--sp-4)">
+            <thead>
+              <tr>
+                <th>Дата</th>
+                <th class="col-num">Наценка МП</th>
+                <th class="col-num">% расходов МП</th>
+                <th class="col-num">Скидка СПП</th>
+                <th>Кто добавил</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in mpConstantsList" :key="c.id">
+                <td>{{ formatDate(c.effective_date) }}</td>
+                <td class="col-num num">{{ c.markup_mp }}</td>
+                <td class="col-num num">{{ c.expense_pct_mp }}</td>
+                <td class="col-num num">{{ c.spp_discount }}</td>
+                <td>{{ c.created_by }}</td>
+              </tr>
+              <tr v-if="!mpConstantsList.length">
+                <td colspan="5" class="muted" style="text-align:center;padding:16px">Константы ещё не задавались</td>
+              </tr>
+            </tbody>
+          </table>
+          <div style="border-top:1px solid var(--border);padding-top:var(--sp-3)">
+            <strong style="display:block;margin-bottom:var(--sp-2)">Добавить новое значение</strong>
+            <div style="display:flex;gap:var(--sp-3);flex-wrap:wrap;align-items:flex-end">
+              <label>Дата<br/>
+                <input v-model="mpConstantsForm.effective_date" type="date" class="form-input" />
+              </label>
+              <label>Наценка МП<br/>
+                <input v-model.number="mpConstantsForm.markup_mp" type="number" step="0.0001" class="form-input" style="width:110px" />
+              </label>
+              <label>% расходов МП<br/>
+                <input v-model.number="mpConstantsForm.expense_pct_mp" type="number" step="0.0001" class="form-input" style="width:110px" />
+              </label>
+              <label>Скидка СПП<br/>
+                <input v-model.number="mpConstantsForm.spp_discount" type="number" step="0.0001" class="form-input" style="width:110px" />
+              </label>
+              <button class="btn btn-primary btn-sm" :disabled="mpConstantsSaving" @click="addMpConstants">
+                {{ mpConstantsSaving ? 'Сохранение…' : 'Добавить' }}
+              </button>
+            </div>
+            <span v-if="mpConstantsSaveStatus" style="font-size:var(--fs-xs);color:var(--text-muted);display:block;margin-top:var(--sp-2)">{{ mpConstantsSaveStatus }}</span>
+          </div>
+        </div>
+        <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--border);display:flex;justify-content:flex-end;flex-shrink:0">
+          <button class="btn btn-ghost btn-sm" @click="showMpConstantsModal = false">Закрыть</button>
+        </div>
+      </div>
+    </div>
     <!-- Approval popup modal -->
     <div v-if="showApprovalModal" class="modal-overlay" @click.self="showApprovalModal = false">
       <div class="modal-content approval-modal-content" @click.stop>
@@ -712,6 +779,7 @@
                   <th class="col-num">Цена РФ</th>
                   <th class="col-num">Цена КЗ</th>
                   <th class="col-num">Цена УЗ</th>
+                  <th class="col-num">Цена для МП, рос. руб.</th>
                   <th>Комментарий</th>
                   <th class="col-num">Рентабельность, руб</th>
                   <th class="col-num">Рентабельность, %</th>
@@ -734,6 +802,7 @@
                   <td class="col-num num">{{ fmt(pc['Цена РФ']) }}</td>
                   <td class="col-num num">{{ fmt(pc['Цена КЗ']) }}</td>
                   <td class="col-num num">{{ fmt(pc['Цена УЗ']) }}</td>
+                  <td class="col-num num">{{ fmt(pc['mp_price_rub']) }}</td>
                   <td>{{ pc['Комментарий'] || '—' }}</td>
                   <td class="col-num num">{{ fmt(calcApprovalModal(pc).markupRub) }}</td>
                   <td class="col-num num">{{ calcApprovalModal(pc).markupPct.toFixed(1) }}%</td>
@@ -829,12 +898,14 @@
                       <option value="Материал основной">Материал основной</option>
                       <option value="Материал вспомогательный">Материал вспомогательный</option>
                       <option value="Декор">Декор</option>
-                      <option value="Техоперация">Техоперация</option>
+                      <option value="Пошив">Пошив</option>
+                      <option value="Раскрой">Раскрой</option>
+                      <option value="Вязание">Вязание</option>
                     </select>
                     <span v-else-if="editingVersion.isEditing" class="type-tag clickable" @click="editingTypeCell = vi">{{ typeDisplayValue(vr) || '—' }}</span>
                     <span v-else>{{ typeDisplayValue(vr) }}</span>
                   </td>
-                  <td><input v-if="editingVersion.isEditing" :value="vr['Наименование']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ vr['Наименование'] }}</span></td>
+                  <td><input v-if="editingVersion.isEditing" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ nameDisplayValue(vr) || '—' }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
                   <td>{{ vr['Свойство'] }}</td>
                   <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ vr['Норма'] }}</span></td>
@@ -1053,6 +1124,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'price_rf', label: 'Цена РФ' },
   { key: 'price_kz', label: 'Цена КЗ' },
   { key: 'price_uz', label: 'Цена УЗ' },
+  { key: 'mp_price_rub', label: 'Цена для МП, рос. руб.' },
   { key: 'comment', label: 'Комментарий' },
   { key: 'avg_wholesale', label: 'Сред. опт' },
   { key: 'price_level', label: 'Уровень цен' },
@@ -1075,7 +1147,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
 
 // Column groupings for the settings modal
 const mainColumnKeys = ['bm','model','articul','model_name','task_num','plan_id'];
-const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','comment'];
+const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
 const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost'];
@@ -1197,6 +1269,34 @@ const marginTargetsLoading = ref(false);
 const marginSaving = ref(false);
 const marginSaveStatus = ref('');
 const marginTargetsList = ref<{ level1: string; target_margin_pct: number | null }[]>([]);
+
+type MpFormulaInputs = { internal_rate: number; markup_mp: number; expense_pct_mp: number; spp_discount: number };
+const mpFormulaInputs = ref<MpFormulaInputs | null>(null);
+
+/** Цена для МП, рос. руб. — та же формула, что и на бэкенде (см. db.compute_mp_price),
+ * пересчитывается на клиенте при ручном выборе цены/наценки — тогда
+ * "avg_Отпускная цена по уровню, руб" меняется ещё до сохранения и бэкенд
+ * этого не видит. */
+function computeMpPriceJs(row: any): number | null {
+  const f = mpFormulaInputs.value;
+  const wholesale = Number(row['avg_Отпускная цена по уровню, руб']);
+  const ruNds = row['mp_ru_nds'];
+  if (!f || !wholesale || ruNds == null || !f.internal_rate || !f.spp_discount) return null;
+  const ndsMultiplier = 1 + Number(ruNds) / 100;
+  return (wholesale / f.internal_rate) * f.markup_mp * f.expense_pct_mp * ndsMultiplier / f.spp_discount;
+}
+
+const showMpConstantsModal = ref(false);
+const mpConstantsLoading = ref(false);
+const mpConstantsSaving = ref(false);
+const mpConstantsSaveStatus = ref('');
+const mpConstantsList = ref<{ id: number; effective_date: string; markup_mp: number; expense_pct_mp: number; spp_discount: number; created_by: string }[]>([]);
+const mpConstantsForm = ref<{ effective_date: string; markup_mp: number | null; expense_pct_mp: number | null; spp_discount: number | null }>({
+  effective_date: '',
+  markup_mp: null,
+  expense_pct_mp: null,
+  spp_discount: null,
+});
 
 // ── Filter state ────────────────────────────────────────────────────────────
 
@@ -1548,12 +1648,13 @@ async function loadData() {
   try {
     const payload = buildFilters();
     if (peoFilter.value !== 'all') payload.peo_filter = peoFilter.value;
-    const result = await $fetch<{ data: any[]; count: number }>(
+    const result = await $fetch<{ data: any[]; count: number; mp_formula_inputs: MpFormulaInputs | null }>(
       `${apiBase.value}/api/cost/aggregated`,
       { method: "POST", body: payload, headers: fetchHeaders.value }
     );
     allAggregated.value = result.data || [];
     totalAllRecords.value = result.count || 0;
+    mpFormulaInputs.value = result.mp_formula_inputs || null;
     currentPage.value = 0;
     selectedRowIndex.value = -1;
     changedRows.clear();
@@ -1674,6 +1775,59 @@ async function saveMarginTargets() {
     marginSaveStatus.value = 'Ошибка: ' + (e?.data?.detail || e?.message || String(e));
   } finally {
     marginSaving.value = false;
+  }
+}
+
+// ── MP constants modal ───────────────────────────────────────────────────────
+
+async function openMpConstantsModal() {
+  showMpConstantsModal.value = true;
+  mpConstantsSaveStatus.value = '';
+  await loadMpConstants();
+}
+
+async function loadMpConstants() {
+  mpConstantsLoading.value = true;
+  try {
+    mpConstantsList.value = await $fetch<any[]>(
+      `${apiBase.value}/api/cost/mp-constants`,
+      { headers: fetchHeaders.value }
+    );
+  } catch (e: any) {
+    console.error('[cost] load mp constants failed', e);
+    mpConstantsSaveStatus.value = 'Ошибка загрузки';
+  } finally {
+    mpConstantsLoading.value = false;
+  }
+}
+
+async function addMpConstants() {
+  const f = mpConstantsForm.value;
+  if (f.markup_mp == null || f.expense_pct_mp == null || f.spp_discount == null) {
+    mpConstantsSaveStatus.value = 'Заполните все три значения';
+    return;
+  }
+  mpConstantsSaving.value = true;
+  mpConstantsSaveStatus.value = '';
+  try {
+    await $fetch(`${apiBase.value}/api/cost/mp-constants`, {
+      method: 'POST',
+      body: {
+        effective_date: f.effective_date || undefined,
+        markup_mp: Number(f.markup_mp),
+        expense_pct_mp: Number(f.expense_pct_mp),
+        spp_discount: Number(f.spp_discount),
+        username,
+      },
+      headers: fetchHeaders.value,
+    });
+    mpConstantsSaveStatus.value = 'Добавлено';
+    await loadMpConstants();
+  } catch (e: any) {
+    console.error('[cost] add mp constants failed', e);
+    mpConstantsSaveStatus.value = 'Ошибка: ' + (e?.data?.detail || e?.message || String(e));
+  } finally {
+    mpConstantsSaving.value = false;
   }
 }
 
@@ -2537,15 +2691,30 @@ const openVersionEditor = async (row: any) => {
         { headers: fetchHeaders.value }
       ),
     ]);
+    const versions = versionsResp || [];
+    // Редактор всегда открывается на текущей pending-версии, если есть —
+    // иначе на "Исходных данных" (raw-data сам решит, отдать ли замороженный
+    // 'original'-снимок или живой cost_data_cache).
+    const pending = versions.find((v: any) => v.status === 'pending');
+    let initialRows = rawResp.rows || [];
+    let selectedVersionId: number | null = null;
+    if (pending) {
+      const verData = await $fetch<{ rows: any[] }>(
+        `${apiBase.value}/api/cost/version-rows/${pending.id}`,
+        { headers: fetchHeaders.value }
+      );
+      initialRows = verData.rows || [];
+      selectedVersionId = pending.id;
+    }
     editingVersion.value = {
       model: r['Модель'],
       articul: r['Артикул'],
       calc_sign: r['Признак калькуляции'] || '',
       plan_id: r['PLAN_ID'] || '',
       date: r['дата расчета'] || '',
-      rows: (rawResp.rows || []).map((rr: any) => normalizeVersionRow(rr)),
-      versions: versionsResp || [],
-      selectedVersionId: null,
+      rows: initialRows.map((rr: any) => normalizeVersionRow(rr)),
+      versions,
+      selectedVersionId,
       isEditing: false,
       version_id: null,
       _locked: isRowLocked(r),
@@ -2840,18 +3009,24 @@ const onVersionRowEdit = (row: any, event: Event, field: string) => {
       }
     }
   }
-  // When type field changes, zero out ALL cost buckets first
+  // Материал/операция/декор(призн) → денежный бакет (зеркалит _recalc_cost_buckets в db.py)
+  const BUCKET_BY_MAT_TYPE: Record<string, string> = {
+    'Материал основной': 'Основные материалы',
+    'Материал вспомогательный': 'Вспомогательные материалы',
+    'Декор': 'Декоры',
+    'Пошив': 'Пошив',
+    'Раскрой': 'Раскрой',
+    'Вязание': 'Вязание',
+  };
+  const MANAGED_BUCKETS = ['Основные материалы', 'Вспомогательные материалы', 'Декоры', 'Пошив', 'Раскрой', 'Вязание'];
+  // When type field changes, zero out ALL managed buckets first
   if (field === 'Материал/операция/декор(призн)') {
-    row['Основные материалы, руб.'] = 0;
-    row['Основные материалы, USD.'] = 0;
-    row['Вспомогательные материалы, руб.'] = 0;
-    row['Вспомогательные материалы, USD.'] = 0;
-    row['Декоры, руб.'] = 0;
-    row['Декоры, USD.'] = 0;
-    row['Пошив, руб.'] = 0;
-    row['Пошив, USD.'] = 0;
+    for (const b of MANAGED_BUCKETS) {
+      row[`${b}, руб.`] = 0;
+      row[`${b}, USD.`] = 0;
+    }
   }
-  // Recalculate cost bucket based on material type
+  // Recalculate cost bucket based on material/operation type
   if (field === 'Норма' || field === 'цена материала, руб.' || field === 'цена материала, USD.' || field === 'Курс на дату расчета' || field === 'Материал/операция/декор(призн)') {
     const norm = row['Норма'] || 0;
     const priceRub = row['цена материала, руб.'] || 0;
@@ -2859,18 +3034,16 @@ const onVersionRowEdit = (row: any, event: Event, field: string) => {
     const sumRub = norm * priceRub;
     const sumUsd = norm * priceUsd;
     const matType = row['Материал/операция/декор(призн)'] || '';
-    if (matType === 'Материал основной') {
-      row['Основные материалы, руб.'] = sumRub;
-      row['Основные материалы, USD.'] = sumUsd;
-    } else if (matType === 'Материал вспомогательный') {
-      row['Вспомогательные материалы, руб.'] = sumRub;
-      row['Вспомогательные материалы, USD.'] = sumUsd;
-    } else if (matType === 'Декор') {
-      row['Декоры, руб.'] = sumRub;
-      row['Декоры, USD.'] = sumUsd;
-    } else if (matType === 'Техоперация') {
-      row['Пошив, руб.'] = sumRub;
-      row['Пошив, USD.'] = sumUsd;
+    const target = BUCKET_BY_MAT_TYPE[matType];
+    if (target) {
+      for (const b of MANAGED_BUCKETS) {
+        if (b !== target) {
+          row[`${b}, руб.`] = 0;
+          row[`${b}, USD.`] = 0;
+        }
+      }
+      row[`${target}, руб.`] = sumRub;
+      row[`${target}, USD.`] = sumUsd;
     }
   }
 };
@@ -2881,8 +3054,10 @@ function normalizeVersionRow(rr: any): any {
   // Normalize old material type values → new dropdown values
   const typeMap: Record<string, string> = {
     'материал': 'Материал основной',
-    'техоперация': 'Техоперация',
     'декор': 'Декор',
+    // 'техоперация' — легаси-тип без разбиения на Пошив/Раскрой/Вязание,
+    // не мапим: строки с ним мигрируются на бэкенде (см. migrate_split_technoperation),
+    // а не-мигрированные остатки должны остаться нетронутыми, а не тихо стать одним из трёх.
   };
   const raw = (row['Материал/операция/декор(призн)'] || '').trim().toLowerCase();
   if (typeMap[raw]) {
@@ -2911,17 +3086,28 @@ function isZeroCostRow(row: any): boolean {
   return norm === 0 || (priceRub === 0 && priceUsd === 0);
 }
 
-/** Показывать название декора вместо типа, если тип = 'шт' / 'Декоры лиса' / 'декор'. */
-const DECOR_TYPE_OVERRIDE = new Set(['шт', 'Декоры лиса', 'декор']);
-const DECOR_EMPTY_VALUES = new Set(['', '-', '0', '0.0000', '0.00', '0.0']);
+/** Тип строки — декор, если тип ∈ {шт, Декоры лиса, декор}. */
+const DECOR_TYPE_OVERRIDE = new Set(['шт', 'Декоры лиса', 'декор', 'Декор']);
+const DECOR_EMPTY_VALUES = new Set(['', '-', '0', '0.0000', '0.00', '0.0', '--']);
+
+function isDecorRow(row: any): boolean {
+  return DECOR_TYPE_OVERRIDE.has(row['Материал/операция/декор(призн)'] || '');
+}
+
+/** В колонке «Материал/operация» для декоров всегда «Декор». */
 function typeDisplayValue(row: any): string {
-  const t = row['Материал/операция/декор(призн)'] || '';
-  if (DECOR_TYPE_OVERRIDE.has(t)) {
+  if (isDecorRow(row)) return 'Декор';
+  return row['Материал/операция/декор(призн)'] || '';
+}
+
+/** В колонке «Наименование»: для декоров — название декора, для остальных — Наименование. */
+function nameDisplayValue(row: any): string {
+  if (isDecorRow(row)) {
     const decorName = (row['Декоры, наименование'] || '').trim();
     if (decorName && !DECOR_EMPTY_VALUES.has(decorName)) return decorName;
-    return 'Декор';
+    return '';
   }
-  return t;
+  return row['Наименование'] || '';
 }
 
 /** Найти индексы строк с тем же Модель+Артикул+PLAN_ID+Признак калькуляции (исключая excludeIdx). */
@@ -2956,6 +3142,7 @@ const onRetailPriceSelect = (absoluteIdx: number, value: string) => {
     r["Уровень цен"] = "";
     r["avg_Розничная цена по уровню, USD."] = 0;
     r["avg_Отпускная цена по уровню, USD."] = 0;
+    r["mp_price_rub"] = null;
     markupSelections[idx] = "";
     changedRows.add(idx);
   };
@@ -2966,6 +3153,7 @@ const onRetailPriceSelect = (absoluteIdx: number, value: string) => {
     r["Уровень цен"] = "";
     r["avg_Розничная цена по уровню, USD."] = 0;
     r["avg_Отпускная цена по уровню, USD."] = 0;
+    r["mp_price_rub"] = null;
     markupSelections[idx] = "";
     changedRows.add(idx);
   };
@@ -3042,6 +3230,7 @@ const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
     r["Уровень цен"] = matchedLevel ? matchedLevel.name : "";
     r["avg_Розничная цена по уровню, USD."] = retailUsd;
     r["avg_Отпускная цена по уровню, USD."] = wholesaleUsd;
+    r["mp_price_rub"] = computeMpPriceJs(r);
     if (matchedLevel) {
       priceRF[idx] = matchedLevel.price_type4;
       priceKZ[idx] = matchedLevel.price_type5;

@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import traceback
 from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
-from app.db import (apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
+from app.db import (add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -552,6 +553,11 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     except Exception:
         pass
 
+    # Кэш ответов Gpartner S_MODELI (включая ru_nds) по (model, articul) —
+    # переиспользуется ниже для «Цена для МП», чтобы не дублировать round-trip
+    # на те же ключи.
+    gpartner_cache: dict[tuple[str, str], dict] = {}
+
     # ── Плановые цены — fallback Gpartner S_MODELI (только КПСС/ПФКСС) ──────
     try:
         need_gpartner: list[tuple[str, str]] = []
@@ -569,6 +575,7 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         if need_gpartner:
             loop = asyncio.get_event_loop()
             gpartner_map = await loop.run_in_executor(None, fetch_gpartner_planned, need_gpartner)
+            gpartner_cache.update(gpartner_map)
             # PRICE_TYPE1 → [PRICE_TYPE3, ...] (round for float-safe key match)
             pt1_to_pt3: dict[float, list[float]] = {}
             for pl in price_levels:
@@ -605,6 +612,68 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                     row["planned_cost"] = plan_price
     except Exception:
         pass
+
+    # ── Цена для МП, рос. руб. — живой предпросмотр (см. discussion с пользователем:
+    # окончательное значение считается заново в apply_pending_changes на момент
+    # утверждения, здесь — просто предпросмотр той же формулы "как сейчас").
+    # internal_rate/mp_constants отдаются на верхнем уровне ответа (return ниже) —
+    # фронтенд пересчитывает mp_price_rub сам при ручном выборе цены/наценки.
+    internal_rate = None
+    mp_constants = None
+    # Верхний предел на ДОПОЛНИТЕЛЬный round-trip в Gpartner ради ru_nds — при
+    # неотфильтрованной выгрузке (все 84k+ строк) уникальных пар может быть
+    # 20-30 тысяч, что при батчах по 500 даёт десятки последовательных
+    # запросов к живому серверу через VPN (замерено: ~90 сек на полный датасет).
+    # Свыше лимита — не тянем ru_nds для "хвоста", эти строки останутся без
+    # "Цена для МП" (не критично для бесфильтрового обзора), лишь бы не вешать
+    # загрузку целиком. При нормальном отфильтрованном просмотре (артикул/план)
+    # пар мало, лимит не мешает.
+    _MP_EXTRA_GPARTNER_PAIRS_LIMIT = 500
+    try:
+        missing_pairs = list({
+            (m, a)
+            for row in data
+            if (m := str(row.get("Модель", "") or "").strip())
+            and (a := str(row.get("Артикул", "") or "").strip())
+            and (m, a) not in gpartner_cache
+        })
+        if missing_pairs and len(missing_pairs) <= _MP_EXTRA_GPARTNER_PAIRS_LIMIT:
+            loop = asyncio.get_event_loop()
+            extra_map = await loop.run_in_executor(None, fetch_gpartner_planned, missing_pairs)
+            gpartner_cache.update(extra_map)
+
+        if gpartner_cache:
+            loop = asyncio.get_event_loop()
+            internal_rate = await loop.run_in_executor(None, fetch_gpartner_internal_rate)
+            mp_constants = await get_latest_mp_constants()
+
+        if internal_rate is not None and mp_constants is not None:
+            for row in data:
+                m = str(row.get("Модель", "") or "").strip()
+                a = str(row.get("Артикул", "") or "").strip()
+                gp = gpartner_cache.get((m, a))
+                ru_nds = gp.get("ru_nds") if gp else None
+                # Отдаём ru_nds на строке — фронтенд пересчитывает формулу сам,
+                # когда пользователь вручную выбирает уровень цены/наценку
+                # (avg_Отпускная цена по уровню, руб меняется на клиенте ещё до
+                # сохранения — см. onMarkupSelect/onRetailPriceSelect в index.vue).
+                row["mp_ru_nds"] = ru_nds
+                # У план-типов (КПСС/ПФКСС/ФКСС) "Отпускная цена по уровню, руб"
+                # в cost_data_cache часто NULL — реальная цена приходит через
+                # тот же фоллбэк, что и planned_wholesale (Task 3/Gpartner выше).
+                wholesale = row.get("avg_Отпускная цена по уровню, руб")
+                if wholesale is None:
+                    wholesale = row.get("planned_wholesale")
+                row["mp_price_rub"] = compute_mp_price(
+                    wholesale,
+                    internal_rate,
+                    mp_constants["markup_mp"],
+                    mp_constants["expense_pct_mp"],
+                    ru_nds,
+                    mp_constants["spp_discount"],
+                )
+    except Exception:
+        print("[mp-price] failed to compute:", traceback.format_exc())
 
     # ── Override prices/comment from FinSandBox (OLAP, primary) + pending ──
     try:
@@ -834,7 +903,15 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         else:
             data = [r for r in data if r.get("peo_status") == peo_filter]
 
-    return {"data": data, "count": len(data)}
+    mp_formula_inputs = None
+    if internal_rate is not None and mp_constants is not None:
+        mp_formula_inputs = {
+            "internal_rate": internal_rate,
+            "markup_mp": float(mp_constants["markup_mp"]),
+            "expense_pct_mp": float(mp_constants["expense_pct_mp"]),
+            "spp_discount": float(mp_constants["spp_discount"]),
+        }
+    return {"data": data, "count": len(data), "mp_formula_inputs": mp_formula_inputs}
 
 
 # ── Details по модели ────────────────────────────────────────────────────────
@@ -1533,6 +1610,8 @@ async def save_calculation_draft(payload: dict, user_email: str = Depends(_requi
         return mocks.save_version_draft(version_id, rows)
     ver = await get_version_info(version_id)
     if ver:
+        if ver["status"] == "original":
+            raise HTTPException(409, "Исходная версия неизменяема — редактирование создаёт новую версию")
         await _check_calc_locks(user_email, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], ver["дата расчета"])
     await save_version_draft(version_id, rows)
     return {"success": True}
@@ -1548,6 +1627,8 @@ async def submit_calculation_draft(payload: dict, user_email: str = Depends(_req
         return mocks.submit_version(version_id, comment)
     ver = await get_version_info(version_id)
     if ver:
+        if ver["status"] == "original":
+            raise HTTPException(409, "Исходная версия неизменяема — редактирование создаёт новую версию")
         await _check_calc_locks(user_email, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], ver["дата расчета"])
     await submit_version(version_id, comment)
     return {"success": True}
@@ -1725,6 +1806,31 @@ async def update_margin_targets(payload: dict) -> dict:
         return mocks.save_margin_targets(targets, username)
     await save_margin_targets(targets, username)
     return {"success": True, "count": len(targets)}
+
+
+@router.get("/mp-constants")
+async def mp_constants_history(_: str = Depends(_require_perm("cost:view"))) -> list[dict]:
+    """История констант для формулы «Цена для МП» (наценка МП/% расходов МП/скидка СПП)."""
+    if _is_mock():
+        return mocks.list_mp_constants()
+    return await list_mp_constants()
+
+
+@router.post("/mp-constants")
+async def add_mp_constants_endpoint(payload: dict, user_email: str = Depends(_require_perm("cost:edit_materials"))) -> dict:
+    """Добавляет новую строку в историю констант МП (не апдейт — новая запись)."""
+    markup_mp = payload.get("markup_mp")
+    expense_pct_mp = payload.get("expense_pct_mp")
+    spp_discount = payload.get("spp_discount")
+    if markup_mp is None or expense_pct_mp is None or spp_discount is None:
+        raise HTTPException(400, "markup_mp, expense_pct_mp, spp_discount required")
+    effective_date = payload.get("effective_date")
+    parsed_date = date.fromisoformat(effective_date) if effective_date else None
+    username = (payload.get("username") or user_email or "system").strip()
+    if _is_mock():
+        return mocks.add_mp_constants(markup_mp, expense_pct_mp, spp_discount, parsed_date, username)
+    new_id = await add_mp_constants(markup_mp, expense_pct_mp, spp_discount, parsed_date, username)
+    return {"success": True, "id": new_id}
 
 
 # ── Role-based permissions ────────────────────────────────────────────────────
