@@ -269,9 +269,15 @@ def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
 def fetch_gpartner_planned(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
     """Плановая оптовая цена/НДС/себестоимость из Gpartner S_MODELI (fallback source).
 
-    pairs: список (model, articul). Возвращает {(model, articul): {price_mopt, nnds, plan_price}}.
+    pairs: список (model, articul). Возвращает
+    {(model, articul): {price_mopt, nnds, plan_price, ru_nds}}.
     Резервный источник planned_retail/planned_wholesale/planned_cost для КПСС/ПФКСС,
     когда основная цепочка (cost_data_cache) не даёт данных — см. routes.get_aggregated.
+
+    ru_nds — ставка НДС РФ (уже готовое число, напр. 20.00 — не ссылка на
+    справочник: в этой базе S_NDS не существует) для формулы «Цена для МП».
+    Читается тем же запросом к S_MODELI, чтобы не плодить второй round-trip
+    в Gpartner на тех же ключах.
     """
     if not pairs:
         return {}
@@ -279,24 +285,50 @@ def fetch_gpartner_planned(pairs: list[tuple[str, str]]) -> dict[tuple[str, str]
     conn = get_gpartner_conn()
     cursor = conn.cursor()
     try:
-        conditions = " OR ".join("(MODEL = ? AND ART = ?)" for _ in pairs)
-        params: list[str] = []
-        for m, a in pairs:
-            params.extend([m, a])
-
-        cursor.execute(
-            f"SELECT MODEL, ART, PRICE_MOPT, NDS, PLAN_PRICE FROM [dbo].[S_MODELI] WHERE {conditions}",
-            params,
-        )
         result: dict[tuple[str, str], dict] = {}
-        for row in cursor.fetchall():
-            key = (str(row[0] or "").strip(), str(row[1] or "").strip())
-            result[key] = {
-                "price_mopt": float(row[2]) if row[2] is not None else None,
-                "nnds": float(row[3]) if row[3] is not None else None,
-                "plan_price": float(row[4]) if row[4] is not None else None,
-            }
+        # ODBC/MSSQL ограничивает число параметров запроса (~2100) — при большом
+        # наборе пар (напр. "Цена для МП" по всему незафильтрованному датасету,
+        # тысячи уникальных (model, articul)) один запрос на все пары падает с
+        # pyodbc.Error 07002 "COUNT field incorrect". Бьём на батчи по 500 пар
+        # (=1000 параметров), с запасом от лимита.
+        batch_size = 500
+        for i in range(0, len(pairs), batch_size):
+            batch = pairs[i:i + batch_size]
+            conditions = " OR ".join("(MODEL = ? AND ART = ?)" for _ in batch)
+            params: list[str] = []
+            for m, a in batch:
+                params.extend([m, a])
+
+            cursor.execute(
+                f"SELECT MODEL, ART, PRICE_MOPT, NDS, PLAN_PRICE, RU_NDS FROM [dbo].[S_MODELI] WHERE {conditions}",
+                params,
+            )
+            for row in cursor.fetchall():
+                key = (str(row[0] or "").strip(), str(row[1] or "").strip())
+                result[key] = {
+                    "price_mopt": float(row[2]) if row[2] is not None else None,
+                    "nnds": float(row[3]) if row[3] is not None else None,
+                    "plan_price": float(row[4]) if row[4] is not None else None,
+                    "ru_nds": float(row[5]) if row[5] is not None else None,
+                }
         return result
+    finally:
+        conn.close()
+
+
+def fetch_gpartner_internal_rate() -> float | None:
+    """Внутренний курс рубля (Gpartner.valuta1, VALUTA_ID=2) — самая свежая
+    запись на сегодня. Используется в формуле «Цена для МП, рос. руб.»;
+    по требованию — всегда актуальный курс, не фиксируется заранее.
+    """
+    conn = get_gpartner_conn()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT TOP 1 [KURS] FROM [dbo].[valuta1] WHERE [VALUTA_ID] = 2 ORDER BY [DATA] DESC"
+        )
+        row = cursor.fetchone()
+        return float(row[0]) if row and row[0] is not None else None
     finally:
         conn.close()
 
@@ -480,6 +512,74 @@ async def save_margin_targets(targets: list[dict], username: str) -> None:
                 )
 
 
+# ── МП constants (наценка МП / % расходов МП / скидка СПП) ──────────────────
+# История значений (append-only), в отличие от cost_margin_targets — здесь
+# нужно именно "когда что действовало", а не только текущее значение.
+
+
+async def list_mp_constants() -> list[dict]:
+    """Вся история констант МП, самые новые сверху."""
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, effective_date::text, markup_mp, expense_pct_mp, spp_discount,
+                      created_by, created_at::text
+               FROM cost_mp_constants
+               ORDER BY effective_date DESC, created_at DESC"""
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_latest_mp_constants() -> dict | None:
+    """Самая свежая по (effective_date, created_at) запись — то, что "сейчас
+    действует" для формулы «Цена для МП». None, если константы ещё ни разу
+    не задавались."""
+    async with pool().acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT markup_mp, expense_pct_mp, spp_discount, effective_date::text
+               FROM cost_mp_constants
+               ORDER BY effective_date DESC, created_at DESC
+               LIMIT 1"""
+        )
+        return dict(row) if row else None
+
+
+async def add_mp_constants(markup_mp, expense_pct_mp, spp_discount, effective_date, username: str) -> int:
+    """Добавляет новую строку истории (не апдейт существующей)."""
+    async with pool().acquire() as conn:
+        new_id = await conn.fetchval(
+            """INSERT INTO cost_mp_constants
+                   (effective_date, markup_mp, expense_pct_mp, spp_discount, created_by)
+               VALUES (COALESCE($1, CURRENT_DATE), $2, $3, $4, $5)
+               RETURNING id""",
+            effective_date, markup_mp, expense_pct_mp, spp_discount, username,
+        )
+        return new_id
+
+
+def compute_mp_price(avg_wholesale_rub, internal_rate, markup_mp, expense_pct_mp, nds_rate, spp_discount) -> float | None:
+    """Цена для МП, рос. руб. Формула как задал пользователь буквально:
+        Сред.опт(руб) / 0.036 * 1.5 * 1.05 * 1.22 / 0.75
+
+    markup_mp/expense_pct_mp/spp_discount — уже готовые множители из
+    cost_mp_constants (1.5, а не 50%; вводятся в этом виде через модалку
+    констант). nds_rate приходит из Gpartner S_MODELI.RU_NDS как "20.00"
+    (проценты) — здесь приводится к множителю (1 + 20/100 = 1.2).
+
+    Возвращает None, если какого-то входного значения не хватает — нельзя
+    молча посчитать по неполным данным.
+    """
+    if None in (avg_wholesale_rub, internal_rate, markup_mp, expense_pct_mp, nds_rate, spp_discount):
+        return None
+    if internal_rate == 0 or spp_discount == 0:
+        return None
+    nds_multiplier = 1 + float(nds_rate) / 100
+    return (
+        float(avg_wholesale_rub) / float(internal_rate)
+        * float(markup_mp) * float(expense_pct_mp) * nds_multiplier
+        / float(spp_discount)
+    )
+
+
 BATCH_SIZE = 10_000
 
 
@@ -594,6 +694,11 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
                         columns=cache_columns,
                     )
                     total_rows += len(batch)
+
+                # Обновление кэша (TRUNCATE/partial-delete + реимпорт из MSSQL)
+                # стирает эффект уже применённых версий — переприменяем pending/
+                # approved поверх свежих данных в той же транзакции.
+                await _reapply_active_versions_to_cache(conn)
 
         await prod_fut
 
@@ -891,7 +996,35 @@ async def get_pending_changes(filters: dict | None = None) -> list[dict]:
 
     async with pool().acquire() as conn:
         rows = await conn.fetch(query, *params)
-        return [dict(r) for r in rows]
+        records = [dict(r) for r in rows]
+
+    # Цена для МП — живой предпросмотр той же формулы, что и в основной
+    # таблице (см. get_aggregated в routes.py); итоговое значение при
+    # утверждении пересчитывается заново в apply_pending_changes.
+    try:
+        pairs = list({
+            (str(rec.get("Модель") or "").strip(), str(rec.get("Артикул") or "").strip())
+            for rec in records
+        })
+        gpartner_map = fetch_gpartner_planned(pairs) if pairs else {}
+        internal_rate = fetch_gpartner_internal_rate()
+        mp_constants = await get_latest_mp_constants()
+        if internal_rate is not None and mp_constants is not None:
+            for rec in records:
+                key = (str(rec.get("Модель") or "").strip(), str(rec.get("Артикул") or "").strip())
+                ru_nds = gpartner_map.get(key, {}).get("ru_nds")
+                rec["mp_price_rub"] = compute_mp_price(
+                    rec.get("Отпускная цена по уровню, руб"),
+                    internal_rate,
+                    mp_constants["markup_mp"],
+                    mp_constants["expense_pct_mp"],
+                    ru_nds,
+                    mp_constants["spp_discount"],
+                )
+    except Exception:
+        pass
+
+    return records
 
 
 _PENDING_FILTER_COLS = [
@@ -1024,6 +1157,35 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
 
     now = datetime.datetime.now()
 
+    # Цена для МП, рос. руб. — считается заново прямо сейчас, на момент
+    # утверждения (курс Gpartner.valuta1 и константы cost_mp_constants —
+    # "как сейчас", не то, что было при создании pending-записи; см.
+    # обсуждение с пользователем). "Отпускная цена по уровню, руб" — уже
+    # зафиксированное решение бренд-менеджера, берётся из pending как есть.
+    mp_prices: dict[int, float | None] = {}
+    try:
+        pairs = list({
+            (str(rec.get("Модель") or "").strip(), str(rec.get("Артикул") or "").strip())
+            for rec in records
+        })
+        gpartner_map = fetch_gpartner_planned(pairs) if pairs else {}
+        internal_rate = fetch_gpartner_internal_rate()
+        mp_constants = await get_latest_mp_constants()
+        if internal_rate is not None and mp_constants is not None:
+            for rec in records:
+                key = (str(rec.get("Модель") or "").strip(), str(rec.get("Артикул") or "").strip())
+                ru_nds = gpartner_map.get(key, {}).get("ru_nds")
+                mp_prices[rec["id"]] = compute_mp_price(
+                    rec.get("Отпускная цена по уровню, руб"),
+                    internal_rate,
+                    mp_constants["markup_mp"],
+                    mp_constants["expense_pct_mp"],
+                    ru_nds,
+                    mp_constants["spp_discount"],
+                )
+    except Exception:
+        pass  # МП-цену не посчитали — пишем NULL, остальное утверждение не блокируем
+
     if os.environ.get("COST_MOCK", "").strip() != "1":
         olap = get_olap_conn()
         cursor = olap.cursor()
@@ -1035,8 +1197,9 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                     INSERT INTO CostHistory_Changes
                         (Модель, Артикул, Уровень_цен, Розничная_цена_руб, Отпускная_цена_руб,
                          changed_at, Пользователь, calc_sign, plan_id, approved_at, approved_by,
-                         sebestoimost_rub, sebestoimost_usd, price_rf, price_kz, price_uz, comment)
-                    VALUES (?, ?, ?, ?, ?, GETDATE(), ?, ?, ?, GETDATE(), ?, ?, ?, ?, ?, ?, ?)
+                         sebestoimost_rub, sebestoimost_usd, price_rf, price_kz, price_uz, comment,
+                         mp_price_rub)
+                    VALUES (?, ?, ?, ?, ?, GETDATE(), ?, ?, ?, GETDATE(), ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         rec.get("Модель"),
@@ -1054,6 +1217,7 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                         rec.get("Цена КЗ"),
                         rec.get("Цена УЗ"),
                         comment_val,
+                        mp_prices.get(rec["id"]),
                     ),
                 )
             olap.commit()
@@ -1068,8 +1232,8 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                     """
                     INSERT INTO cost_price_changes_audit
                         (model, articul, price_level, retail_rub, wholesale_rub, username, changed_at,
-                         price_rf, price_kz, price_uz, comment, calc_sign, plan_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                         price_rf, price_kz, price_uz, comment, calc_sign, plan_id, mp_price_rub)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                     """,
                     rec.get("Модель"),
                     rec.get("Артикул"),
@@ -1084,6 +1248,7 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                     comment_val,
                     rec.get("Признак калькуляции"),
                     rec.get("PLAN_ID"),
+                    mp_prices.get(rec["id"]),
                 )
             await conn2.execute(
                 "DELETE FROM cost_price_pending WHERE id = ANY($1::bigint[])",
@@ -1166,19 +1331,30 @@ async def checkout_calculation(model, articul, calc_sign, plan_id, raw_date, use
         )
 
         col_list = ", ".join(f'"{c}"' for c in CACHE_COLUMNS)
-        await conn.execute(
-            f"""INSERT INTO cost_calc_version_rows
-                (version_id, {col_list}, sort_order, change_type)
-                SELECT $1, {col_list},
-                       row_number() OVER (ORDER BY id) - 1,
-                       'original'
-                FROM cost_data_cache
-                WHERE "Модель"=$2 AND "Артикул"=$3
-                  AND "Признак калькуляции" IS NOT DISTINCT FROM $4
-                  AND "PLAN_ID" IS NOT DISTINCT FROM $5
-                  AND "дата расчета"=$6""",
-            version_id, model, articul, calc_sign, plan_id, date,
+        cache_rows = await conn.fetch(
+            f"""SELECT {col_list} FROM cost_data_cache
+                WHERE "Модель"=$1 AND "Артикул"=$2
+                  AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+                  AND "PLAN_ID" IS NOT DISTINCT FROM $4
+                  AND "дата расчета"=$5
+                ORDER BY id""",
+            model, articul, calc_sign, plan_id, date,
         )
+        # Нормализуем легаси-коды типа ('шт', 'себестоимость лиса осн/всп',
+        # 'пошив', 'раскорой') к каноническим значениям дропдауна и выводим
+        # Норма/цена для операционных строк — см. _normalize_row_type.
+        for sort_order, r in enumerate(cache_rows):
+            vrow = dict(r)
+            _normalize_row_type(vrow)
+            _recalc_cost_buckets(vrow)
+            insert_values = [vrow.get(c) for c in CACHE_COLUMNS]
+            await conn.execute(
+                f"""INSERT INTO cost_calc_version_rows
+                    (version_id, {col_list}, sort_order, change_type)
+                    VALUES ($1, {", ".join(f"${j+2}" for j in range(len(CACHE_COLUMNS)))},
+                            ${len(CACHE_COLUMNS)+2}, ${len(CACHE_COLUMNS)+3})""",
+                version_id, *insert_values, sort_order, 'original',
+            )
 
         rows = await conn.fetch(
             """SELECT * FROM cost_calc_version_rows WHERE version_id=$1 ORDER BY sort_order""",
@@ -1187,29 +1363,173 @@ async def checkout_calculation(model, articul, calc_sign, plan_id, raw_date, use
         return {"version_id": version_id, "rows": [dict(r) for r in rows]}
 
 
+# Материал/операция/декор(призн) → денежный бакет, в который попадает Норма × цена.
+# Незнакомый тип в этот словарь не входит — такие строки _recalc_cost_buckets
+# не трогает вообще. Включает и канонические значения дропдауна редактора, и
+# реальные легаси-коды из источника (MSSQL CostHistory) — они НЕ совпадают
+# с каноническими (проверено на живых данных, см. _normalize_row_type).
+_BUCKET_BY_MAT_TYPE: dict[str, str] = {
+    # Канонические — то, что пишет дропдаун в редакторе версий.
+    "Материал основной": "Основные материалы",
+    "Материал вспомогательный": "Вспомогательные материалы",
+    "Декор": "Декоры",
+    "Пошив": "Пошив",
+    "Раскрой": "Раскрой",
+    "Вязание": "Вязание",
+    # Легаси-коды из источника — встречаются в cost_data_cache как есть.
+    "шт": "Декоры",
+    "Декоры лиса": "Декоры",
+    "себестоимость лиса осн": "Основные материалы",
+    "себестоимость лиса всп": "Вспомогательные материалы",
+    "пошив": "Пошив",
+    # "раскорой" (опечатка в источнике) сюда не входит — её бакет зависит от
+    # Level 01 (Раскрой/Вязание), см. _normalize_row_type.
+}
+_MANAGED_COST_BUCKETS = (
+    "Основные материалы", "Вспомогательные материалы", "Декоры",
+    "Пошив", "Раскрой", "Вязание",
+)
+
+
+def _recalc_cost_buckets(row: dict) -> None:
+    """Routes Норма × цена материала into exactly ONE managed cost bucket,
+    based on this row's Материал/операция/декор(призн) type.
+
+    All OTHER managed buckets on this row are forced to 0 (clears stale money
+    left over from a previous type/edit) so SUM() aggregation across rows never
+    double-counts a single row's cost. Rows whose type isn't in
+    _BUCKET_BY_MAT_TYPE are left completely untouched — no zeroing, no write —
+    since we don't know which bucket (if any) they should own.
+    """
+    mat_type = (row.get("Материал/операция/декор(призн)") or "").strip()
+    target = _BUCKET_BY_MAT_TYPE.get(mat_type)
+    if target is None:
+        return
+
+    norm = row.get("Норма")
+    price_rub = row.get("цена материала, руб.")
+    price_usd = row.get("цена материала, USD.")
+
+    sum_rub = None
+    if norm is not None and price_rub is not None:
+        try:
+            sum_rub = float(norm) * float(price_rub)
+        except (ValueError, TypeError):
+            sum_rub = None
+    sum_usd = None
+    if norm is not None and price_usd is not None:
+        try:
+            sum_usd = float(norm) * float(price_usd)
+        except (ValueError, TypeError):
+            sum_usd = None
+
+    for bucket in _MANAGED_COST_BUCKETS:
+        if bucket != target:
+            row[f"{bucket}, руб."] = 0
+            row[f"{bucket}, USD."] = 0
+
+    if sum_rub is not None:
+        row[f"{target}, руб."] = sum_rub
+    if sum_usd is not None:
+        row[f"{target}, USD."] = sum_usd
+
+
+# Level 01, для которых легаси-код "раскорой" в источнике на самом деле означает
+# "Вязание" (эти группы вяжутся, а не кроятся — своего кода под вязание в
+# источнике нет, используется тот же "раскорой").
+_KNITTING_LEVEL01 = {"Носки&Колготки", "Orodoro"}
+
+
+def _f(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _derive_norm_price(row: dict, minutes_raw, rub_raw, usd_raw) -> None:
+    """Пишет в row['Норма']/['цена материала, ...'] такие значения, что
+    Норма×цена воспроизводит исходную (уже готовую) сумму в рублях/USD.
+
+    В источнике для техопераций нет поля цены — только минуты и готовая
+    стоимость (см. обсуждение с пользователем). Если минуты нулевые, но сумма
+    есть (ручная правка без учёта минут) — Норма=1, цена=сумма, тождественно,
+    без потери денег.
+    """
+    minutes = _f(minutes_raw)
+    rub = _f(rub_raw)
+    usd = _f(usd_raw)
+    if minutes:
+        row["Норма"] = minutes
+        row["цена материала, руб."] = rub / minutes
+        row["цена материала, USD."] = usd / minutes
+    elif rub or usd:
+        row["Норма"] = 1.0
+        row["цена материала, руб."] = rub
+        row["цена материала, USD."] = usd
+    else:
+        row["Норма"] = 0.0
+        row["цена материала, руб."] = 0.0
+        row["цена материала, USD."] = 0.0
+
+
+# Легаси-коды типа из источника → канонический тип дропдауна (кроме "раскорой" —
+# у неё бакет/канон зависит от Level 01, см. _normalize_row_type).
+_LEGACY_TYPE_ALIASES: dict[str, str] = {
+    "шт": "Декор",
+    "Декоры лиса": "Декор",
+    "себестоимость лиса осн": "Материал основной",
+    "себестоимость лиса всп": "Материал вспомогательный",
+    "пошив": "Пошив",
+}
+
+
+def _normalize_row_type(row: dict) -> None:
+    """Приводит легаси-строковый код типа строки из источника (cost_data_cache)
+    к каноническому значению дропдауна редактора версий, и для операционных
+    строк (Пошив/Раскрой/Вязание) выводит Норма/цена материала из минут +
+    готовой стоимости, чтобы строку можно было редактировать как материальную
+    (Норма×цена), не имея реального поля цены в источнике.
+
+    Строки с уже каноническим или неизвестным типом не трогает.
+    """
+    raw_type = (row.get("Материал/операция/декор(призн)") or "").strip()
+
+    if raw_type == "раскорой":
+        level01 = (row.get("Level 01") or "").strip()
+        is_knitting = level01 in _KNITTING_LEVEL01
+        row["Материал/операция/декор(призн)"] = "Вязание" if is_knitting else "Раскрой"
+        # Только 10% нормы идёт в раскрой — кроме групп вязания, где то же поле
+        # источника значит вязание и берётся как есть (без коэффициента).
+        minutes = row.get("Раскрой, минуты")
+        scale = 1.0 if is_knitting else 0.1
+        minutes_scaled = _f(minutes) * scale if minutes is not None else minutes
+        _derive_norm_price(row, minutes_scaled, row.get("Раскрой, руб."), row.get("Раскрой, USD."))
+        return
+
+    canonical = _LEGACY_TYPE_ALIASES.get(raw_type)
+    if canonical is None:
+        return
+    row["Материал/операция/декор(призн)"] = canonical
+    if canonical == "Пошив":
+        _derive_norm_price(row, row.get("Пошив, минуты"), row.get("Пошив, руб."), row.get("Пошив, USD."))
+
+
 async def save_version_draft(version_id, rows) -> None:
     async with pool().acquire() as conn:
         async with conn.transaction():
+            status = await conn.fetchval(
+                "SELECT status FROM cost_calc_versions WHERE id=$1", version_id
+            )
+            if status == "original":
+                raise ValueError("Исходная версия неизменяема — редактирование создаёт новую версию")
             await conn.execute(
                 "DELETE FROM cost_calc_version_rows WHERE version_id=$1",
                 version_id,
             )
             col_names = CACHE_COLUMNS
             for row in rows:
-                # Recalculate Основные материалы = Норма × цена материала
-                norm = row.get("Норма")
-                price_rub = row.get("цена материала, руб.")
-                price_usd = row.get("цена материала, USD.")
-                if norm is not None and price_rub is not None:
-                    try:
-                        row["Основные материалы, руб."] = float(norm or 0) * float(price_rub or 0)
-                    except (ValueError, TypeError):
-                        pass
-                if norm is not None and price_usd is not None:
-                    try:
-                        row["Основные материалы, USD."] = float(norm or 0) * float(price_usd or 0)
-                    except (ValueError, TypeError):
-                        pass
+                _recalc_cost_buckets(row)
                 values = [version_id]
                 for col in col_names:
                     val = row.get(col)
@@ -1238,7 +1558,7 @@ async def submit_version(version_id, comment=None) -> None:
     async with pool().acquire() as conn:
         async with conn.transaction():
             ver = await conn.fetchrow(
-                """SELECT model, articul, calc_sign, plan_id, "дата расчета"
+                """SELECT model, articul, calc_sign, plan_id
                    FROM cost_calc_versions WHERE id=$1""",
                 version_id,
             )
@@ -1250,10 +1570,8 @@ async def submit_version(version_id, comment=None) -> None:
                    WHERE model=$1 AND articul=$2
                      AND calc_sign IS NOT DISTINCT FROM $3
                      AND plan_id IS NOT DISTINCT FROM $4
-                     AND "дата расчета"=$5
-                     AND status='pending' AND id <> $6""",
-                ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"],
-                ver["дата расчета"], version_id,
+                     AND status='pending' AND id <> $5""",
+                ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], version_id,
             )
             await conn.execute(
                 "UPDATE cost_calc_versions SET status='pending', comment=$2 WHERE id=$1",
@@ -1272,26 +1590,40 @@ async def submit_version(version_id, comment=None) -> None:
 
 
 async def _apply_version_rows_to_cache(conn, version_id) -> None:
+    """Применяет строки версии к cost_data_cache — заменяет собой строки
+    АКТУАЛЬНОЙ (max) "дата расчета" для этого ключа на момент применения, а не
+    даты, под которой версия была создана. Так согласованная версия продолжает
+    отражаться в основной таблице даже если источник успел пересчитать задание
+    (и проставить новую "дата расчета") между созданием версии и её применением.
+    Исторические даты в кэше не трогает.
+    """
     ver = await conn.fetchrow(
-        """SELECT model, articul, calc_sign, plan_id, "дата расчета"
+        """SELECT model, articul, calc_sign, plan_id
            FROM cost_calc_versions WHERE id=$1""",
         version_id,
     )
     if ver is None:
         return
+    current_date = await _current_cache_date(conn, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"])
+    if current_date is None:
+        return  # для ключа сейчас нет данных в кэше — применять некуда
+
     await conn.execute(
         """DELETE FROM cost_data_cache
            WHERE "Модель"=$1 AND "Артикул"=$2
              AND "Признак калькуляции" IS NOT DISTINCT FROM $3
              AND "PLAN_ID" IS NOT DISTINCT FROM $4
              AND "дата расчета"=$5::timestamptz""",
-        ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], ver["дата расчета"],
+        ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], current_date,
     )
-    # Insert version rows into cache (cast date→timestamptz where needed)
+    # Insert version rows into cache — "дата расчета" принудительно = current_date
+    # (строки версии могут нести устаревшую дату), "дата производства" — как есть.
     col_list = ", ".join(f'"{c}"' for c in CACHE_COLUMNS)
     select_items = []
     for c in CACHE_COLUMNS:
-        if c in ("дата расчета", "дата производства"):
+        if c == "дата расчета":
+            select_items.append("$2::timestamptz")
+        elif c == "дата производства":
             select_items.append(f'"{c}"::timestamptz')
         else:
             select_items.append(f'"{c}"')
@@ -1301,8 +1633,37 @@ async def _apply_version_rows_to_cache(conn, version_id) -> None:
             SELECT {select_list}
             FROM cost_calc_version_rows
             WHERE version_id=$1""",
-        version_id,
+        version_id, current_date,
     )
+
+
+async def _reapply_active_versions_to_cache(conn) -> int:
+    """После обновления кэша (TRUNCATE/partial-delete + реимпорт из MSSQL)
+    переприменяет самую свежую pending/approved версию по каждому ключу
+    калькуляции поверх только что загруженных данных — иначе обновление кэша
+    молча стирает эффект уже согласованных/отправленных на согласование
+    изменений цен по ВСЕЙ базе.
+
+    "Свежая" — по created_at, среди pending/approved (draft не учитывается —
+    черновики никогда не были применены к cost_data_cache). Это то же правило
+    "последнее применение побеждает", что уже действует при обычном
+    submit/approve — здесь мы просто восстанавливаем его после реимпорта.
+
+    Группировка — по (model, articul, calc_sign, plan_id) БЕЗ "дата расчета"
+    (см. миграцию 0027): версия принадлежит заданию целиком, а не конкретной
+    исторической дате пересчёта; _apply_version_rows_to_cache сама наложит её
+    на актуальную (max) дату для ключа.
+    """
+    version_ids = await conn.fetch(
+        """SELECT DISTINCT ON (model, articul, calc_sign, plan_id)
+                  id
+           FROM cost_calc_versions
+           WHERE status IN ('pending', 'approved')
+           ORDER BY model, articul, calc_sign, plan_id, created_at DESC"""
+    )
+    for r in version_ids:
+        await _apply_version_rows_to_cache(conn, r["id"])
+    return len(version_ids)
 
 
 async def approve_version(version_id, approved_by) -> None:
@@ -1323,19 +1684,17 @@ async def reject_version(version_id, approved_by, comment=None) -> None:
         )
 
 
-async def get_active_version(model, articul, calc_sign, plan_id, raw_date) -> dict | None:
-    if isinstance(raw_date, str) and raw_date:
-        date = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
-    else:
-        date = raw_date
+async def get_active_version(model, articul, calc_sign, plan_id, raw_date=None) -> dict | None:
+    """*raw_date* принимается только для обратной совместимости API и не
+    используется — версия принадлежит заданию целиком, не дате (миграция 0027)."""
     async with pool().acquire() as conn:
         ver = await conn.fetchrow(
             """SELECT * FROM cost_calc_versions
                WHERE model=$1 AND articul=$2 AND calc_sign IS NOT DISTINCT FROM $3
-                 AND plan_id IS NOT DISTINCT FROM $4 AND "дата расчета"=$5
+                 AND plan_id IS NOT DISTINCT FROM $4
                  AND status IN ('draft', 'pending')
                ORDER BY created_at DESC LIMIT 1""",
-            model, articul, calc_sign, plan_id, date,
+            model, articul, calc_sign, plan_id,
         )
         if ver is None:
             return None
@@ -1354,11 +1713,9 @@ async def delete_version(version_id) -> None:
         )
 
 
-async def archive_versions_by_key(model, articul, calc_sign, plan_id, raw_date) -> int:
-    if isinstance(raw_date, str) and raw_date:
-        d = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
-    else:
-        d = raw_date
+async def archive_versions_by_key(model, articul, calc_sign, plan_id, raw_date=None) -> int:
+    """*raw_date* принимается только для обратной совместимости API и не
+    используется — версия принадлежит заданию целиком, не дате (миграция 0027)."""
     async with pool().acquire() as conn:
         result = await conn.execute(
             """UPDATE cost_calc_versions
@@ -1366,9 +1723,8 @@ async def archive_versions_by_key(model, articul, calc_sign, plan_id, raw_date) 
                WHERE model = $1 AND articul = $2
                  AND calc_sign IS NOT DISTINCT FROM $3
                  AND plan_id IS NOT DISTINCT FROM $4
-                 AND "дата расчета" = $5
                  AND status IN ('draft', 'pending')""",
-            model, articul, calc_sign, plan_id, d,
+            model, articul, calc_sign, plan_id,
         )
         return int(result.split()[1]) if result.startswith("UPDATE") else 0
 
@@ -1376,20 +1732,47 @@ async def archive_versions_by_key(model, articul, calc_sign, plan_id, raw_date) 
 async def get_version_info(version_id) -> dict | None:
     async with pool().acquire() as conn:
         row = await conn.fetchrow(
-            """SELECT model, articul, calc_sign, plan_id, "дата расчета"::text
+            """SELECT model, articul, calc_sign, plan_id, "дата расчета"::text, status
                FROM cost_calc_versions WHERE id = $1""",
             version_id,
         )
         return dict(row) if row else None
 
 
-async def get_raw_cache_rows(model, articul, calc_sign, plan_id, raw_date) -> dict:
-    """Return rows from cost_data_cache WITHOUT creating a version."""
-    if isinstance(raw_date, str) and raw_date:
-        date = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
-    else:
-        date = raw_date
+async def get_raw_cache_rows(model, articul, calc_sign, plan_id, raw_date=None) -> dict:
+    """Return "Исходные данные" for the editor: the frozen 'original' version's
+    rows if this calc has already been saved/edited at least once (see
+    _ensure_original_version); otherwise the live cost_data_cache rows for the
+    CURRENT (max) "дата расчета" — always the latest recalculation from the
+    source, regardless of which historical date's row in the aggregated table
+    the user opened the editor from (см. миграцию 0027 — версии и "исходные
+    данные" принадлежат заданию, а не конкретной дате). *raw_date* принимается
+    только для обратной совместимости API и не используется.
+
+    version_id is always None in the response regardless of which source was
+    used — the frontend relies on that to route saves through /create-version
+    (fork a new version) rather than treating this as an in-place-editable
+    version_id.
+    """
     async with pool().acquire() as conn:
+        original = await conn.fetchrow(
+            """SELECT id FROM cost_calc_versions
+               WHERE model=$1 AND articul=$2
+                 AND calc_sign IS NOT DISTINCT FROM $3
+                 AND plan_id IS NOT DISTINCT FROM $4
+                 AND status = 'original'""",
+            model, articul, calc_sign, plan_id,
+        )
+        if original is not None:
+            rows = await conn.fetch(
+                """SELECT * FROM cost_calc_version_rows WHERE version_id=$1 ORDER BY sort_order""",
+                original["id"],
+            )
+            return {"version_id": None, "rows": [dict(r) for r in rows]}
+
+        date = await _current_cache_date(conn, model, articul, calc_sign, plan_id)
+        if date is None:
+            return {"version_id": None, "rows": []}
         rows = await conn.fetch(
             f"""SELECT {", ".join(f'"{c}"' for c in CACHE_COLUMNS)}
                FROM cost_data_cache
@@ -1403,11 +1786,10 @@ async def get_raw_cache_rows(model, articul, calc_sign, plan_id, raw_date) -> di
         return {"version_id": None, "rows": [dict(r) for r in rows]}
 
 
-async def list_versions(model, articul, calc_sign, plan_id, raw_date) -> list[dict]:
-    if isinstance(raw_date, str) and raw_date:
-        date = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
-    else:
-        date = raw_date
+async def list_versions(model, articul, calc_sign, plan_id, raw_date=None) -> list[dict]:
+    """Версии принадлежат заданию (model, articul, calc_sign, plan_id) целиком —
+    *raw_date* принимается только для обратной совместимости API и не
+    используется (см. миграцию 0027)."""
     async with pool().acquire() as conn:
         rows = await conn.fetch(
             """SELECT id, version, status, comment, created_at::text, created_by,
@@ -1416,9 +1798,9 @@ async def list_versions(model, articul, calc_sign, plan_id, raw_date) -> list[di
                WHERE model=$1 AND articul=$2
                  AND calc_sign IS NOT DISTINCT FROM $3
                  AND plan_id IS NOT DISTINCT FROM $4
-                 AND "дата расчета"=$5
+                 AND status != 'original'
                ORDER BY version DESC""",
-            model, articul, calc_sign, plan_id, date,
+            model, articul, calc_sign, plan_id,
         )
         return [dict(r) for r in rows]
 
@@ -1443,20 +1825,103 @@ async def get_version_rows(version_id) -> dict | None:
         }
 
 
+async def _current_cache_date(conn, model, articul, calc_sign, plan_id):
+    """Самая свежая "дата расчета" для этого ключа в cost_data_cache — источник
+    (MSSQL CostHistory) регулярно пересчитывает задание заново, оставляя старые
+    даты как историю; "актуальная" калькуляция — всегда самая свежая из них.
+    None, если для ключа в кэше сейчас вообще нет строк.
+    """
+    return await conn.fetchval(
+        """SELECT max("дата расчета") FROM cost_data_cache
+           WHERE "Модель"=$1 AND "Артикул"=$2
+             AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+             AND "PLAN_ID" IS NOT DISTINCT FROM $4""",
+        model, articul, calc_sign, plan_id,
+    )
+
+
+async def _ensure_original_version(conn, model, articul, calc_sign, plan_id, username) -> None:
+    """Lazily snapshots cost_data_cache for this calc key into an immutable
+    version(version=0, status='original') the first time a real save happens
+    for this key. No-op if one already exists (ON CONFLICT DO NOTHING on the
+    partial unique index — safe under concurrent first-saves).
+
+    Deliberately cheap: only calculations that actually get edited pay for a
+    snapshot, unlike mirroring the whole ~1M-row cache. Trade-off: for calcs
+    already edited/submitted BEFORE this existed, the snapshot reflects
+    whatever is currently in cost_data_cache (possibly already modified), not
+    the true historical MSSQL original — accepted, see discussion with user.
+
+    Key is (model, articul, calc_sign, plan_id) WITHOUT "дата расчета" — see
+    migration 0027: the version belongs to the task, not to a specific
+    recalculation date, since the source recalculates (and stamps a new date)
+    repeatedly over the task's lifetime.
+    """
+    date = await _current_cache_date(conn, model, articul, calc_sign, plan_id)
+    if date is None:
+        return  # для ключа сейчас нет данных в кэше — снимать нечего
+
+    new_id = await conn.fetchval(
+        """INSERT INTO cost_calc_versions
+               (model, articul, calc_sign, plan_id, "дата расчета", version, status, created_by)
+           VALUES ($1, $2, $3, $4, $5, 0, 'original', $6)
+           ON CONFLICT (model, articul, calc_sign, plan_id) WHERE status = 'original'
+           DO NOTHING
+           RETURNING id""",
+        model, articul, calc_sign, plan_id, date, username,
+    )
+    if new_id is None:
+        return  # уже существует
+
+    col_list = ", ".join(f'"{c}"' for c in CACHE_COLUMNS)
+    cache_rows = await conn.fetch(
+        f"""SELECT {col_list} FROM cost_data_cache
+            WHERE "Модель"=$1 AND "Артикул"=$2
+              AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+              AND "PLAN_ID" IS NOT DISTINCT FROM $4
+              AND "дата расчета"=$5
+            ORDER BY id""",
+        model, articul, calc_sign, plan_id, date,
+    )
+    for sort_order, r in enumerate(cache_rows):
+        vrow = dict(r)
+        _normalize_row_type(vrow)
+        _recalc_cost_buckets(vrow)
+        insert_values = [vrow.get(c) for c in CACHE_COLUMNS]
+        await conn.execute(
+            f"""INSERT INTO cost_calc_version_rows
+                (version_id, {col_list}, sort_order, change_type)
+                VALUES ($1, {", ".join(f"${j+2}" for j in range(len(CACHE_COLUMNS)))},
+                        ${len(CACHE_COLUMNS)+2}, ${len(CACHE_COLUMNS)+3})""",
+            new_id, *insert_values, sort_order, 'original',
+        )
+
+
 async def create_version(model, articul, calc_sign, plan_id, raw_date, username, rows, status="draft") -> dict:
     """Create a new version. If status='pending': applies rows to cache,
-    archives previous pending versions for this key, resets PEO approval."""
-    if isinstance(raw_date, str) and raw_date:
-        date = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
-    else:
-        date = raw_date
+    archives previous pending versions for this key, resets PEO approval.
+
+    Версия принадлежит заданию (model, articul, calc_sign, plan_id), не дате —
+    см. миграцию 0027. "дата расчета" на самой версии — информационная (на
+    основе какой даты она создана); резолвится из текущего cost_data_cache,
+    а не из того, что прислал фронтенд (там может быть уже устаревшая дата,
+    если источник успел пересчитать задание, пока была открыта форма).
+    """
     async with pool().acquire() as conn:
         async with conn.transaction():
+            await _ensure_original_version(conn, model, articul, calc_sign, plan_id, username)
+            date = await _current_cache_date(conn, model, articul, calc_sign, plan_id)
+            if date is None:
+                # для ключа сейчас нет строк в кэше — используем то, что прислал фронтенд
+                if isinstance(raw_date, str) and raw_date:
+                    date = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
+                else:
+                    date = raw_date
             next_version = await conn.fetchval(
                 """SELECT COALESCE(MAX(version), 0) + 1 FROM cost_calc_versions
                    WHERE model=$1 AND articul=$2 AND calc_sign IS NOT DISTINCT FROM $3
-                     AND plan_id IS NOT DISTINCT FROM $4 AND "дата расчета"=$5""",
-                model, articul, calc_sign, plan_id, date,
+                     AND plan_id IS NOT DISTINCT FROM $4""",
+                model, articul, calc_sign, plan_id,
             )
             status_refreshed = await conn.fetchrow("SELECT refreshed_at FROM cost_cache_status WHERE id=1")
             source_refreshed_at = status_refreshed["refreshed_at"] if status_refreshed else None
@@ -1471,19 +1936,7 @@ async def create_version(model, articul, calc_sign, plan_id, raw_date, username,
             )
             col_names = CACHE_COLUMNS
             for row in rows:
-                norm = row.get("Норма")
-                price_rub = row.get("цена материала, руб.")
-                price_usd = row.get("цена материала, USD.")
-                if norm is not None and price_rub is not None:
-                    try:
-                        row["Основные материалы, руб."] = float(norm or 0) * float(price_rub or 0)
-                    except (ValueError, TypeError):
-                        pass
-                if norm is not None and price_usd is not None:
-                    try:
-                        row["Основные материалы, USD."] = float(norm or 0) * float(price_usd or 0)
-                    except (ValueError, TypeError):
-                        pass
+                _recalc_cost_buckets(row)
                 values = [version_id]
                 for col in col_names:
                     val = row.get(col)
@@ -1513,9 +1966,8 @@ async def create_version(model, articul, calc_sign, plan_id, raw_date, username,
                        WHERE model=$1 AND articul=$2
                          AND calc_sign IS NOT DISTINCT FROM $3
                          AND plan_id IS NOT DISTINCT FROM $4
-                         AND "дата расчета"=$5
-                         AND status='pending' AND id <> $6""",
-                    model, articul, calc_sign, plan_id, date, version_id,
+                         AND status='pending' AND id <> $5""",
+                    model, articul, calc_sign, plan_id, version_id,
                 )
                 await _apply_version_rows_to_cache(conn, version_id)
                 # Reset PEO approval — new submission supersedes the old one
@@ -1592,21 +2044,18 @@ async def delete_pending_by_key(model, articul, calc_sign, plan_id) -> int:
         return int(result.split()[1]) if result.startswith("DELETE") else 0
 
 
-async def get_calc_state(model, articul, calc_sign, plan_id, raw_date) -> dict:
-    if isinstance(raw_date, str) and raw_date:
-        d = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
-    else:
-        d = raw_date
+async def get_calc_state(model, articul, calc_sign, plan_id, raw_date=None) -> dict:
+    """*raw_date* принимается только для обратной совместимости API и не
+    используется — версия принадлежит заданию целиком, не дате (миграция 0027)."""
     async with pool().acquire() as conn:
         ver = await conn.fetchrow(
             """SELECT id, status FROM cost_calc_versions
                WHERE model = $1 AND articul = $2
                  AND calc_sign IS NOT DISTINCT FROM $3
                  AND plan_id IS NOT DISTINCT FROM $4
-                 AND "дата расчета" = $5
                  AND status IN ('draft', 'pending')
                ORDER BY created_at DESC LIMIT 1""",
-            model, articul, calc_sign, plan_id, d,
+            model, articul, calc_sign, plan_id,
         )
         has_pending = await conn.fetchval(
             """SELECT EXISTS (
