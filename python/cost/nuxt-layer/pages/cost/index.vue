@@ -60,7 +60,7 @@
 
           <label class="peo-filter-label">
             Статус согласования
-            <select v-model="peoFilter" class="peo-filter-select" @change="loadData">
+            <select v-model="peoFilter" class="peo-filter-select" @change="onPeoFilterChange">
               <option value="all">Все</option>
               <option value="approved">🟢 Согласовано</option>
               <option value="none">Не согласовано</option>
@@ -125,6 +125,12 @@
         </button>
         <button class="btn btn-ghost" @click="openMpConstantsModal">
           <Icon name="lucide:percent" /> Константы МП
+        </button>
+        <!-- Только Калькулятор, ПЭО и админ: cost:edit_materials есть ровно у этих
+             ролей (у Бренд-менеджера и Просмотра его нет), а функционал правит
+             материалы плана. Бэкенд гейтит те же эндпоинты, кнопка — лишь UI. -->
+        <button v-if="can('cost:edit_materials') || can('cost:admin')" class="btn btn-ghost" @click="openPlanPricesModal">
+          <Icon name="lucide:layers" /> Цены материалов по плану
         </button>
         <button v-if="can('cost:approve')" class="btn btn-ghost" @click="openApprovalModal">
           <Icon name="lucide:check-square" /> Согласование
@@ -216,25 +222,35 @@
         <table id="cost-table-1" class="data-table compact">
           <thead>
             <tr>
-              <th></th>
-              <th></th>
-              <th v-if="isVisible('bm')" :class="{ sorted: sortField === 'Бренд-менеджер' }" @click="toggleSort('Бренд-менеджер')">
+              <th :class="stickyClasses('actions')" :style="stickyStyle('actions')"><span class="col-resize-handle" @mousedown.stop.prevent="startColResize('actions', $event)" @dblclick.stop.prevent="resetColWidth('actions')" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th :class="stickyClasses('raw_rows')" :style="stickyStyle('raw_rows')"><span class="col-resize-handle" @mousedown.stop.prevent="startColResize('raw_rows', $event)" @dblclick.stop.prevent="resetColWidth('raw_rows')" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-if="isVisible('bm')" :class="[{ sorted: sortField === 'Бренд-менеджер' }, ...stickyClasses('bm')]" :style="stickyStyle('bm')" @click="toggleSort('Бренд-менеджер')">
                 Бренд-менеджер<span v-if="sortField === 'Бренд-менеджер'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize('bm', $event)" @dblclick.stop.prevent="resetColWidth('bm')" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('model')" :class="{ sorted: sortField === 'Модель' }" @click="toggleSort('Модель')">
+              <th v-if="isVisible('model')" :class="[{ sorted: sortField === 'Модель' }, ...stickyClasses('model')]" :style="stickyStyle('model')" @click="toggleSort('Модель')">
                 Модель<span v-if="sortField === 'Модель'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize('model', $event)" @dblclick.stop.prevent="resetColWidth('model')" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('articul')" :class="{ sorted: sortField === 'Артикул' }" @click="toggleSort('Артикул')">
+              <th v-if="isVisible('articul')" :class="[{ sorted: sortField === 'Артикул' }, ...stickyClasses('articul')]" :style="stickyStyle('articul')" @click="toggleSort('Артикул')">
                 Артикул<span v-if="sortField === 'Артикул'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize('articul', $event)" @dblclick.stop.prevent="resetColWidth('articul')" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('model_name')" :class="{ sorted: sortField === 'Наименование модели' }" @click="toggleSort('Наименование модели')">
+              <th v-if="isVisible('model_name')" :class="[{ sorted: sortField === 'Наименование модели' }, ...stickyClasses('model_name')]" :style="stickyStyle('model_name')" @click="toggleSort('Наименование модели')">
                 Наименование модели<span v-if="sortField === 'Наименование модели'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize('model_name', $event)" @dblclick.stop.prevent="resetColWidth('model_name')" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('task_num')" :class="{ sorted: sortField === 'Номер задания производства' }" @click="toggleSort('Номер задания производства')">
+              <th v-if="isVisible('color')" :class="[{ sorted: sortField === 'color' }, ...stickyClasses('color')]" :style="stickyStyle('color')" @click="toggleSort('color')">
+                Цвет<span v-if="sortField === 'color'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize('color', $event)" @dblclick.stop.prevent="resetColWidth('color')" title="Изменить ширину · двойной клик — сброс"></span>
+              </th>
+              <th v-if="isVisible('task_num')" :class="[{ sorted: sortField === 'Номер задания производства' }, ...stickyClasses('task_num')]" :style="stickyStyle('task_num')" @click="toggleSort('Номер задания производства')">
                 № задания<span v-if="sortField === 'Номер задания производства'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize('task_num', $event)" @dblclick.stop.prevent="resetColWidth('task_num')" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('plan_id')" :class="{ sorted: sortField === 'PLAN_ID' }" @click="toggleSort('PLAN_ID')">
+              <th v-if="isVisible('plan_id')" :class="[{ sorted: sortField === 'PLAN_ID' }, ...stickyClasses('plan_id')]" :style="stickyStyle('plan_id')" @click="toggleSort('PLAN_ID')">
                 PLAN_ID<span v-if="sortField === 'PLAN_ID'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize('plan_id', $event)" @dblclick.stop.prevent="resetColWidth('plan_id')" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
               <th v-if="isVisible('country')" :class="{ sorted: sortField === 'Страна пр-ва' }" @click="toggleSort('Страна пр-ва')">
                 Страна<span v-if="sortField === 'Страна пр-ва'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
@@ -360,20 +376,21 @@
               :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
               @click="selectRow(getOriginalIndex(row))"
             >
-              <td>
+              <td :class="stickyClasses('actions')" :style="stickyStyle('actions')">
                 <span v-if="isRowLocked(row) && !row._has_pending && !row._has_audit" class="lock-icon" title="Строка заблокирована">🔒</span>
                 <span v-if="row._has_pending" class="state-badge state-badge--pending" title="Ожидает согласования">⏳</span>
                 <span v-if="row._has_audit" class="state-badge state-badge--audit" title="Записано в DWH">📤</span>
                 <button class="btn-details" @click.stop="openDetails(row)">🔍</button>
                 <button v-if="!isRowLocked(row) && !row._has_audit" class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">🖊</button>
               </td>
-              <td><button class="btn-details" @click.stop="openRawRows(row)" title="Исходные строки">📋</button></td>
-              <td v-if="isVisible('bm')">{{ row['Бренд-менеджер'] || '—' }}</td>
-              <td v-if="isVisible('model')">{{ row['Модель'] || '—' }}</td>
-              <td v-if="isVisible('articul')">{{ row['Артикул'] || '—' }}</td>
-              <td v-if="isVisible('model_name')">{{ row['Наименование модели'] || '—' }}</td>
-              <td v-if="isVisible('task_num')">{{ row['Номер задания производства'] || '—' }}</td>
-              <td v-if="isVisible('plan_id')">{{ row['PLAN_ID'] || '—' }}</td>
+              <td :class="stickyClasses('raw_rows')" :style="stickyStyle('raw_rows')"><button class="btn-details" @click.stop="openRawRows(row)" title="Исходные строки">📋</button></td>
+              <td v-if="isVisible('bm')" :class="stickyClasses('bm')" :style="stickyStyle('bm')">{{ row['Бренд-менеджер'] || '—' }}</td>
+              <td v-if="isVisible('model')" :class="stickyClasses('model')" :style="stickyStyle('model')">{{ row['Модель'] || '—' }}</td>
+              <td v-if="isVisible('articul')" :class="stickyClasses('articul')" :style="stickyStyle('articul')">{{ row['Артикул'] || '—' }}</td>
+              <td v-if="isVisible('model_name')" :class="stickyClasses('model_name')" :style="stickyStyle('model_name')">{{ row['Наименование модели'] || '—' }}</td>
+              <td v-if="isVisible('color')" :class="stickyClasses('color')" :style="stickyStyle('color')">{{ row['color'] || '—' }}</td>
+              <td v-if="isVisible('task_num')" :class="stickyClasses('task_num')" :style="stickyStyle('task_num')">{{ row['Номер задания производства'] || '—' }}</td>
+              <td v-if="isVisible('plan_id')" :class="stickyClasses('plan_id')" :style="stickyStyle('plan_id')">{{ row['PLAN_ID'] || '—' }}</td>
               <td v-if="isVisible('country')">{{ row['Страна пр-ва'] || '—' }}</td>
               <td v-if="isVisible('family')">{{ row['Семья'] || '—' }}</td>
               <td v-if="isVisible('season')">{{ row['Сезон'] || '—' }}</td>
@@ -733,6 +750,179 @@
         </div>
       </div>
     </div>
+    <!-- Plan material prices modal -->
+    <div v-if="showPlanPricesModal" class="modal-overlay" @click.self="showPlanPricesModal = false">
+      <div class="modal-content" style="max-width:1200px" @click.stop>
+        <div class="modal-header">
+          <h2>Цены материалов по плану</h2>
+          <button class="modal-close" @click="showPlanPricesModal = false">×</button>
+        </div>
+        <div style="padding:var(--sp-4) var(--sp-5);overflow:auto;flex:1">
+          <p class="muted" style="margin-bottom:var(--sp-3)">
+            Массовая правка цен материалов по номеру плана целиком, без привязки к модели, артикулу
+            и заданию. Только калькуляции с признаком КПСС. Приоритет в расчёте себестоимости:
+            версия калькуляции → применённый набор цен → исходные данные.
+          </p>
+
+          <div style="display:flex;gap:var(--sp-3);align-items:flex-end;margin-bottom:var(--sp-4)">
+            <label style="display:flex;flex-direction:column;gap:4px">
+              <span style="font-size:var(--fs-xs);color:var(--text-muted)">Номер плана</span>
+              <input v-model="planPricesPlanId" class="editor-input" style="width:160px"
+                     placeholder="например 9272" @keyup.enter="loadPlanPrices" />
+            </label>
+            <button class="btn btn-primary btn-sm" :disabled="!planPricesPlanId || planPricesLoading"
+                    @click="loadPlanPrices">Показать</button>
+            <span v-if="planPricesStatus" style="font-size:var(--fs-xs);color:var(--text-muted)">{{ planPricesStatus }}</span>
+          </div>
+
+          <div v-if="planPricesLoading" class="muted" style="text-align:center;padding:24px">Загрузка…</div>
+
+          <template v-else-if="planPricesLoaded">
+            <!-- Наборы-документы -->
+            <h3 style="font-size:var(--fs-sm);margin:0 0 var(--sp-2)">Наборы для плана {{ planPricesPlanId }}</h3>
+            <table class="data-table compact" style="width:100%;margin-bottom:var(--sp-4)">
+              <thead>
+                <tr>
+                  <th>Название</th>
+                  <th class="col-num">Строк</th>
+                  <th class="col-num">Курс</th>
+                  <th>Статус</th>
+                  <th>Автор</th>
+                  <th>Создан</th>
+                  <th>Применил</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!planPriceSets.length">
+                  <td colspan="8" class="muted" style="text-align:center">
+                    Наборов пока нет — все версии исключены из расчёта, действуют исходные данные
+                  </td>
+                </tr>
+                <tr v-for="s in planPriceSets" :key="s.id"
+                    :class="{ 'plan-set-applied': s.status === 'applied' }">
+                  <td>{{ s.title || '—' }}</td>
+                  <td class="col-num num">{{ s.rows_count }}</td>
+                  <td class="col-num num">{{ fmtPrice4(s.rate) }}</td>
+                  <td>
+                    <span v-if="s.status === 'applied'" class="plan-set-badge">● применён к расчёту</span>
+                    <span v-else-if="s.status === 'archived'" class="muted">архив</span>
+                    <span v-else class="muted">черновик</span>
+                  </td>
+                  <td>{{ s.created_by }}</td>
+                  <td>{{ formatDate(s.created_at) }}</td>
+                  <td>{{ s.applied_by || '—' }}</td>
+                  <td style="white-space:nowrap">
+                    <button class="btn btn-ghost btn-sm" @click="openPlanPriceSet(s.id)">Открыть</button>
+                    <button v-if="s.status !== 'applied'" class="btn btn-primary btn-sm"
+                            :disabled="planPricesSaving" @click="applyPlanPriceSet(s.id)">Применить</button>
+                    <button v-else class="btn btn-ghost btn-sm"
+                            :disabled="planPricesSaving" @click="unapplyPlanPriceSet(s.id)">Снять</button>
+                    <button v-if="s.status !== 'applied'" class="btn btn-ghost btn-sm"
+                            :disabled="planPricesSaving" @click="deletePlanPriceSet(s.id)">Удалить</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- Редактор набора -->
+            <div style="display:flex;gap:var(--sp-3);align-items:flex-end;margin-bottom:var(--sp-3)">
+              <label style="display:flex;flex-direction:column;gap:4px">
+                <span style="font-size:var(--fs-xs);color:var(--text-muted)">Название набора</span>
+                <input v-model="planPriceForm.title" class="editor-input" style="width:240px"
+                       :disabled="planPriceFormLocked" placeholder="например «пересчёт по курсу 3.2»" />
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px">
+                <span style="font-size:var(--fs-xs);color:var(--text-muted)">Курс (на весь набор)</span>
+                <input v-model.number="planPriceForm.rate" type="number" step="0.0001"
+                       class="editor-input col-num" style="width:120px"
+                       :disabled="planPriceFormLocked" @input="onPlanRateChange" />
+              </label>
+              <button class="btn btn-primary btn-sm" :disabled="planPricesSaving || planPriceFormLocked"
+                      @click="savePlanPriceSet">
+                {{ planPriceForm.set_id ? 'Сохранить набор' : 'Создать набор' }}
+              </button>
+              <button v-if="planPriceForm.set_id" class="btn btn-ghost btn-sm"
+                      :disabled="planPricesSaving" @click="resetPlanPriceForm">Новый набор</button>
+            </div>
+            <p v-if="planPriceFormLocked" class="muted" style="margin-bottom:var(--sp-3)">
+              Набор применён к расчёту — чтобы менять цены, сначала снимите применение.
+            </p>
+
+            <!-- table-layout: fixed + colgroup — иначе текстовые колонки
+                 растягиваются на всю длину содержимого (у .data-table td стоит
+                 white-space: nowrap), и на цены места почти не остаётся. -->
+            <table class="data-table compact plan-prices-table">
+              <!-- Сумма ровно 100%. Текстовым колонкам отдано меньше, чем они
+                   заняли бы сами: длинные наименования переносятся по словам,
+                   полный текст доступен в подсказке. -->
+              <colgroup>
+                <col style="width:21%" />
+                <col style="width:11%" />
+                <col style="width:17%" />
+                <col style="width:5%" />
+                <col style="width:11%" />
+                <col style="width:12%" />
+                <col style="width:12%" />
+                <col style="width:11%" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Наименование</th>
+                  <th>Артикул мат.</th>
+                  <th>Свойства</th>
+                  <th class="col-num">Строк</th>
+                  <th class="col-num">Исх. цена, руб</th>
+                  <th class="col-num">Цена, руб</th>
+                  <th class="col-num">Цена, $</th>
+                  <th>Перекрыто версией</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!planPriceRows.length">
+                  <td colspan="8" class="muted" style="text-align:center">
+                    Материалов с признаком КПСС в этом плане не найдено
+                  </td>
+                </tr>
+                <tr v-for="(r, ri) in planPriceRows" :key="ri"
+                    :class="{ 'plan-row-overridden': r.overridden_rows >= r.rows_count && r.rows_count > 0 }">
+                  <!-- title — полный текст во всплывающей подсказке: наименования
+                       материалов и свойства бывают длиннее любой разумной колонки. -->
+                  <td class="plan-cell-text" :title="r['Наименование'] || ''">{{ r['Наименование'] || '—' }}</td>
+                  <td class="plan-cell-text" :title="r['артикул материала'] || ''">{{ r['артикул материала'] || '—' }}</td>
+                  <td class="plan-cell-text muted" :title="planRowProps(r)">{{ planRowProps(r) }}</td>
+                  <td class="col-num num">{{ r.rows_count }}</td>
+                  <td class="col-num num">
+                    {{ fmtPrice4(r.source_price_rub) }}
+                    <span v-if="r.distinct_prices > 1" class="plan-spread-warn"
+                          :title="'Внутри группы было ' + r.distinct_prices + ' разных цен (' + fmtPrice4(r.min_price_rub) + '…' + fmtPrice4(r.max_price_rub) + '). Применение набора поставит одну цену на все строки.'">⚠</span>
+                  </td>
+                  <td class="col-num">
+                    <input v-model.number="r.price_rub" type="number" step="0.0001"
+                           class="editor-input col-num" :disabled="planPriceFormLocked"
+                           @input="onPlanPriceEdit(r, 'rub')" />
+                  </td>
+                  <td class="col-num">
+                    <input v-model.number="r.price_usd" type="number" step="0.0001"
+                           class="editor-input col-num" :disabled="planPriceFormLocked"
+                           @input="onPlanPriceEdit(r, 'usd')" />
+                  </td>
+                  <td>
+                    <span v-if="!r.overridden_rows" class="muted">—</span>
+                    <span v-else :class="r.overridden_rows >= r.rows_count ? 'plan-ovr-full' : 'plan-ovr-part'">
+                      {{ r.overridden_rows }} из {{ r.rows_count }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
+        </div>
+        <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--border);display:flex;justify-content:flex-end;flex-shrink:0">
+          <button class="btn btn-ghost btn-sm" @click="showPlanPricesModal = false">Закрыть</button>
+        </div>
+      </div>
+    </div>
     <!-- Approval popup modal -->
     <div v-if="showApprovalModal" class="modal-overlay" @click.self="showApprovalModal = false">
       <div class="modal-content approval-modal-content" @click.stop>
@@ -908,12 +1098,12 @@
                   <td><input v-if="editingVersion.isEditing" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ nameDisplayValue(vr) || '—' }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
                   <td>{{ vr['Свойство'] }}</td>
-                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ vr['Норма'] }}</span></td>
-                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, руб.']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else>{{ vr['цена материала, руб.'] }}</span></td>
-                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, USD.']" type="number" step="0.01" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ vr['цена материала, USD.'] }}</span></td>
+                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ fmtNorm(vr['Норма']) }}</span></td>
+                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, руб.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else>{{ fmtPrice4(vr['цена материала, руб.']) }}</span></td>
+                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ fmtPrice4(vr['цена материала, USD.']) }}</span></td>
                   <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /><span v-else>{{ vr['Курс на дату расчета'] }}</span></td>
-                  <td class="col-num">{{ ((vr['Норма'] || 0) * (vr['цена материала, руб.'] || 0)).toLocaleString('ru-RU', {minimumFractionDigits:2}) }}</td>
-                  <td class="col-num">{{ ((vr['Норма'] || 0) * (vr['цена материала, USD.'] || 0)).toLocaleString('ru-RU', {minimumFractionDigits:2}) }}</td>
+                  <td class="col-num">{{ fmtPrice4((vr['Норма'] || 0) * (vr['цена материала, руб.'] || 0)) }}</td>
+                  <td class="col-num">{{ fmtPrice4((vr['Норма'] || 0) * (vr['цена материала, USD.'] || 0)) }}</td>
                   <td><input v-if="editingVersion.isEditing" :value="vr.row_comment" class="editor-input" placeholder="..." @input="onVersionRowEdit(vr, $event, 'row_comment')" /><span v-else>{{ vr.row_comment }}</span></td>
                 </tr>
               </tbody>
@@ -1031,7 +1221,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useCostPermission } from "~/composables/useCostPermission";
 
 interface PriceLevel { name: string; price_type1: number; price_type3: number; price_type4: number; price_type5: number; price_type6: number }
@@ -1076,7 +1266,7 @@ const apiBase = computed(() =>
 );
 const apiHostLabel = computed(() => apiBase.value || "локального API");
 
-const { can, loading: permLoading } = useCostPermission();
+const { can, roles, loading: permLoading } = useCostPermission();
 const user = useState<any>("auth-user");
 
 const pageTitle = computed(() => {
@@ -1108,6 +1298,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'model', label: 'Модель' },
   { key: 'articul', label: 'Артикул' },
   { key: 'model_name', label: 'Наименование модели' },
+  { key: 'color', label: 'Цвет' },
   { key: 'task_num', label: '№ задания' },
   { key: 'plan_id', label: 'PLAN_ID' },
   { key: 'country', label: 'Страна' },
@@ -1146,7 +1337,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
 ];
 
 // Column groupings for the settings modal
-const mainColumnKeys = ['bm','model','articul','model_name','task_num','plan_id'];
+const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','plan_id'];
 const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
@@ -1160,8 +1351,11 @@ const usdColumns = computed(() => COLUMNS_CONFIG.filter(c => usdColumnKeys.inclu
 const costColumns = computed(() => COLUMNS_CONFIG.filter(c => costColumnKeys.includes(c.key)));
 const calcColumns = computed(() => COLUMNS_CONFIG.filter(c => calcColumnKeys.includes(c.key)));
 
-const STICKY_COL_KEYS = ['actions','raw_rows','bm','model','articul','model_name','task_num','plan_id'];
-const STICKY_COL_WIDTHS = [70, 32, 160, 110, 90, 200, 120, 90];
+const STICKY_COL_KEYS = ['actions','raw_rows','bm','model','articul','model_name','color','task_num','plan_id'];
+const STICKY_DEFAULT_WIDTHS: Record<string, number> = { actions: 110, raw_rows: 40, bm: 160, model: 110, articul: 90, model_name: 200, color: 120, task_num: 120, plan_id: 90 };
+const STICKY_MIN_WIDTHS: Record<string, number> = { actions: 70, raw_rows: 32, bm: 80, model: 70, articul: 60, model_name: 90, color: 60, task_num: 60, plan_id: 50 };
+const STICKY_MAX_WIDTH = 600;
+const WIDTH_STORAGE_KEY = 'cost_sticky_col_widths';
 const STORAGE_KEY = 'cost_column_visibility';
 
 function loadColumnVisibility(): Record<string, boolean> {
@@ -1198,7 +1392,6 @@ function applyColumnVisibility() {
   Object.assign(columnVisibility, pendingVisibility.value);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(columnVisibility));
   showColumnSettings.value = false;
-  nextTick(() => recalcStickyColumns());
 }
 
 function cancelColumnVisibility() {
@@ -1225,42 +1418,69 @@ const visibleColumnCount = computed(() => {
   return count;
 });
 
-function recalcStickyColumns() {
-  const table = document.getElementById('cost-table-1');
-  if (!table) return;
-  const headers = table.querySelectorAll('thead tr th');
-  const rows = table.querySelectorAll('tbody tr');
+function clampStickyWidth(key: string, w: number): number {
+  return Math.max(STICKY_MIN_WIDTHS[key] ?? 40, Math.min(STICKY_MAX_WIDTH, Math.round(w)));
+}
+function loadStickyWidths(): Record<string, number> {
+  const out = { ...STICKY_DEFAULT_WIDTHS };
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WIDTH_STORAGE_KEY) || '{}');
+    for (const k of STICKY_COL_KEYS) {
+      const w = Number(parsed[k]);
+      if (Number.isFinite(w) && w > 0) out[k] = clampStickyWidth(k, w);
+    }
+  } catch { /* defaults */ }
+  return out;
+}
+const stickyWidths = reactive<Record<string, number>>(loadStickyWidths());
+
+/** left = сумма ширин ВИДИМЫХ закреплённых колонок до этой (по порядку STICKY_COL_KEYS) */
+function stickyStyle(key: string): Record<string, string> {
   let left = 0;
-  const positions: number[] = [];
-  for (let i = 0; i < STICKY_COL_KEYS.length; i++) {
-    const key = STICKY_COL_KEYS[i];
-    const th = headers[i] as HTMLElement;
-    if (!th) { positions.push(left); continue; }
-    if (isVisible(key)) {
-      positions.push(left);
-      left += STICKY_COL_WIDTHS[i];
-      th.style.left = positions[i] + 'px';
-    } else {
-      positions.push(-9999);
-      th.style.left = '-9999px';
-    }
+  for (const k of STICKY_COL_KEYS) {
+    if (k === key) break;
+    if (isVisible(k)) left += stickyWidths[k];
   }
-  for (const row of rows) {
-    const cells = row.querySelectorAll('td');
-    for (let i = 0; i < Math.min(cells.length, STICKY_COL_KEYS.length); i++) {
-      const td = cells[i] as HTMLElement;
-      if (isVisible(STICKY_COL_KEYS[i])) {
-        td.style.left = positions[i] + 'px';
-      } else {
-        td.style.left = '-9999px';
-      }
-    }
+  const w = stickyWidths[key];
+  return { left: left + 'px', width: w + 'px', minWidth: w + 'px' };
+}
+/** последняя ВИДИМАЯ закреплённая колонка получает тень-разделитель */
+function isLastSticky(key: string): boolean {
+  const i = STICKY_COL_KEYS.indexOf(key);
+  for (let j = i + 1; j < STICKY_COL_KEYS.length; j++) {
+    if (isVisible(STICKY_COL_KEYS[j])) return false;
   }
+  return true;
+}
+function stickyClasses(key: string): (string | Record<string, boolean>)[] {
+  return ['sticky-col', { 'is-last-sticky': isLastSticky(key) }];
 }
 
-watch(showUSD, () => {
-  nextTick(() => recalcStickyColumns());
-});
+let resizing: { key: string; startX: number; startW: number } | null = null;
+function startColResize(key: string, e: MouseEvent) {
+  resizing = { key, startX: e.clientX, startW: stickyWidths[key] };
+  document.body.style.userSelect = 'none';
+  document.body.style.cursor = 'col-resize';
+  window.addEventListener('mousemove', onColResizeMove);
+  window.addEventListener('mouseup', stopColResize);
+}
+function onColResizeMove(e: MouseEvent) {
+  if (!resizing) return;
+  stickyWidths[resizing.key] = clampStickyWidth(resizing.key, resizing.startW + (e.clientX - resizing.startX));
+}
+function stopColResize() {
+  if (!resizing) return;
+  resizing = null;
+  document.body.style.userSelect = '';
+  document.body.style.cursor = '';
+  window.removeEventListener('mousemove', onColResizeMove);
+  window.removeEventListener('mouseup', stopColResize);
+  try { localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify(stickyWidths)); } catch { /* ignore */ }
+}
+function resetColWidth(key: string) {
+  stickyWidths[key] = STICKY_DEFAULT_WIDTHS[key];
+  try { localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify(stickyWidths)); } catch { /* ignore */ }
+}
 
 // ── Margin targets state ─────────────────────────────────────────────────────
 
@@ -1470,6 +1690,38 @@ const approvalTarget = ref<any>(null);
 const approvalComment = ref('');
 const approving = ref(false);
 const peoFilter = ref<string>('all');
+
+/** Бренд-менеджеру по умолчанию показываем только согласованные ПЭО калькуляции.
+ * Фильтр остаётся обычным — пользователь волен переключить его на любой другой.
+ *
+ * Роль определяем по имени, а не по набору прав: права у ролей администратор
+ * может переназначить, а «Бренд-менеджер» — системная роль (is_system=true),
+ * её не переименовывают. Ключ в ответе /roles/my — role_name.
+ *
+ * Дефолт применяется ровно один раз и только если пользователь ещё не трогал
+ * фильтр сам: роли приходят асинхронно (composable грузит их в своём onMounted),
+ * и без этой защиты поздний ответ мог бы затереть уже сделанный выбор. */
+const BRAND_MANAGER_ROLE = 'Бренд-менеджер';
+const peoFilterTouched = ref(false);
+let peoDefaultApplied = false;
+
+function onPeoFilterChange() {
+  peoFilterTouched.value = true;
+  loadData();
+}
+
+watch(roles, (list) => {
+  if (peoDefaultApplied || peoFilterTouched.value) return;
+  const isBrandManager = (list || []).some(
+    (r: any) => String(r?.role_name || '').trim() === BRAND_MANAGER_ROLE
+  );
+  if (!isBrandManager) return;
+  peoDefaultApplied = true;
+  peoFilter.value = 'approved';
+  // Роли могли догрузиться уже после автозагрузки по URL-фильтрам — тогда
+  // таблица показывает данные без учёта дефолта, перезапрашиваем.
+  if (totalAllRecords.value > 0) loadData();
+}, { immediate: true, deep: true });
 
 // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -1828,6 +2080,270 @@ async function addMpConstants() {
     mpConstantsSaveStatus.value = 'Ошибка: ' + (e?.data?.detail || e?.message || String(e));
   } finally {
     mpConstantsSaving.value = false;
+  }
+}
+
+// ── Цены материалов по плану (миграция 0033) ─────────────────────────────────
+//
+// Массовая правка цен материалов по PLAN_ID целиком. Наборы — «документы» с
+// историей: применён к расчёту может быть только один на план, либо ни один.
+// Приоритет в расчёте себестоимости: версия калькуляции → набор цен → источник,
+// поэтому в гриде показываем, сколько строк материала уже перекрыто версией —
+// там цена из набора не подействует.
+
+type PlanPriceSet = {
+  id: number; plan_id: string; title: string; status: string;
+  rate: number | null; rows_count: number; created_by: string;
+  created_at: string; applied_by: string | null; applied_at: string | null;
+};
+
+type PlanPriceRow = {
+  'Наименование': string; 'артикул материала': string;
+  'свойство1': string; 'свойство2': string; 'свойство3': string;
+  rows_count: number; overridden_rows: number; distinct_prices: number;
+  min_price_rub: number | null; max_price_rub: number | null;
+  source_price_rub: number | null; source_price_usd: number | null;
+  price_rub: number | null; price_usd: number | null;
+};
+
+const showPlanPricesModal = ref(false);
+const planPricesPlanId = ref('');
+const planPricesLoading = ref(false);
+const planPricesSaving = ref(false);
+const planPricesLoaded = ref(false);
+const planPricesStatus = ref('');
+const planPriceSets = ref<PlanPriceSet[]>([]);
+const planPriceRows = ref<PlanPriceRow[]>([]);
+const planPriceForm = ref<{ set_id: number | null; title: string; rate: number | null; status: string }>({
+  set_id: null, title: '', rate: null, status: 'draft',
+});
+
+/** Применённый набор править нельзя: его цены уже в расчёте, и правка «под ногами»
+ * рассинхронизировала бы кэш с набором (бэкенд это тоже запрещает). */
+const planPriceFormLocked = computed(() => planPriceForm.value.status === 'applied');
+
+function planRowProps(r: PlanPriceRow): string {
+  return [r['свойство1'], r['свойство2'], r['свойство3']].filter(Boolean).join(' / ') || '—';
+}
+
+async function openPlanPricesModal() {
+  showPlanPricesModal.value = true;
+  planPricesStatus.value = '';
+  // Если в фильтрах выбран ровно один план — подставляем его, это типичный сценарий.
+  const selected = (filters.value?.plan_id || []).filter((v: string) => v && v !== 'all');
+  if (selected.length === 1 && !planPricesPlanId.value) {
+    planPricesPlanId.value = String(selected[0]);
+  }
+  if (planPricesPlanId.value) await loadPlanPrices();
+}
+
+async function loadPlanPrices() {
+  const plan = planPricesPlanId.value.trim();
+  if (!plan) return;
+  planPricesLoading.value = true;
+  planPricesStatus.value = '';
+  try {
+    const [matsResp, setsResp] = await Promise.all([
+      $fetch<{ data: PlanPriceRow[] }>(
+        `${apiBase.value}/api/cost/plan-materials?plan_id=${encodeURIComponent(plan)}`,
+        { headers: fetchHeaders.value }),
+      $fetch<{ data: PlanPriceSet[] }>(
+        `${apiBase.value}/api/cost/plan-price-sets?plan_id=${encodeURIComponent(plan)}`,
+        { headers: fetchHeaders.value }),
+    ]);
+    planPriceSets.value = setsResp.data || [];
+    // Грид заполняем средними ценами из источника — их и правит пользователь.
+    planPriceRows.value = (matsResp.data || []).map((m: any) => ({
+      ...m,
+      source_price_rub: m.avg_price_rub,
+      source_price_usd: m.avg_price_usd,
+      price_rub: m.avg_price_rub,
+      price_usd: m.avg_price_usd,
+    }));
+    resetPlanPriceForm();
+    // Курс по умолчанию — средний по плану, если он один и тот же.
+    const rates = (matsResp.data || []).map((m: any) => m.avg_rate).filter((v: any) => v != null);
+    if (rates.length) planPriceForm.value.rate = Number(rates[0]);
+    planPricesLoaded.value = true;
+    const applied = planPriceSets.value.find(s => s.status === 'applied');
+    planPricesStatus.value = applied
+      ? `Применён набор «${applied.title || applied.id}»`
+      : 'Ни один набор не применён — действуют исходные данные';
+  } catch (e: any) {
+    console.error('[cost] load plan prices failed', e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    planPricesLoading.value = false;
+  }
+}
+
+function resetPlanPriceForm() {
+  planPriceForm.value = { set_id: null, title: '', rate: planPriceForm.value.rate, status: 'draft' };
+  for (const r of planPriceRows.value) {
+    r.price_rub = r.source_price_rub;
+    r.price_usd = r.source_price_usd;
+  }
+}
+
+async function openPlanPriceSet(setId: number) {
+  planPricesLoading.value = true;
+  try {
+    const data = await $fetch<{ set: PlanPriceSet; rows: any[] }>(
+      `${apiBase.value}/api/cost/plan-price-sets/${setId}`, { headers: fetchHeaders.value });
+    planPriceForm.value = {
+      set_id: data.set.id,
+      title: data.set.title || '',
+      rate: data.set.rate != null ? Number(data.set.rate) : null,
+      status: data.set.status,
+    };
+    // Накладываем цены набора на грид по ключу материала; материалы, которых в
+    // наборе нет, остаются с исходной ценой.
+    const byKey = new Map<string, any>();
+    for (const r of data.rows || []) byKey.set(planRowKey(r), r);
+    for (const r of planPriceRows.value) {
+      const saved = byKey.get(planRowKey(r));
+      r.price_rub = saved ? saved.price_rub : r.source_price_rub;
+      r.price_usd = saved ? saved.price_usd : r.source_price_usd;
+    }
+    planPricesStatus.value = `Открыт набор «${data.set.title || data.set.id}» (${data.set.status})`;
+  } catch (e: any) {
+    console.error('[cost] open plan price set failed', e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    planPricesLoading.value = false;
+  }
+}
+
+function planRowKey(r: any): string {
+  return [r['Наименование'], r['артикул материала'], r['свойство1'], r['свойство2'], r['свойство3']]
+    .map((v: any) => String(v ?? '').trim()).join('');
+}
+
+/** Взаимный пересчёт руб ↔ $ по курсу набора — как в редакторе версий, но курс
+ * один на весь набор (решение пользователя). */
+function onPlanPriceEdit(r: PlanPriceRow, changed: 'rub' | 'usd') {
+  const rate = Number(planPriceForm.value.rate || 0);
+  if (rate <= 0) return;
+  if (changed === 'rub') {
+    const v = Number(r.price_rub);
+    r.price_usd = Number.isFinite(v) ? Number((v / rate).toFixed(4)) : null;
+  } else {
+    const v = Number(r.price_usd);
+    r.price_rub = Number.isFinite(v) ? Number((v * rate).toFixed(4)) : null;
+  }
+}
+
+/** Смена курса пересчитывает $ из рублей во всех строках — рубль считаем ведущим. */
+function onPlanRateChange() {
+  const rate = Number(planPriceForm.value.rate || 0);
+  if (rate <= 0) return;
+  for (const r of planPriceRows.value) {
+    const v = Number(r.price_rub);
+    r.price_usd = Number.isFinite(v) ? Number((v / rate).toFixed(4)) : null;
+  }
+}
+
+async function savePlanPriceSet() {
+  const plan = planPricesPlanId.value.trim();
+  if (!plan) return;
+  planPricesSaving.value = true;
+  try {
+    const resp = await $fetch<{ set_id: number }>(`${apiBase.value}/api/cost/plan-price-sets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+      body: {
+        plan_id: plan,
+        set_id: planPriceForm.value.set_id,
+        title: planPriceForm.value.title,
+        rate: planPriceForm.value.rate,
+        username: user.value?.email || 'system',
+        rows: planPriceRows.value.map(r => ({
+          'Наименование': r['Наименование'],
+          'артикул материала': r['артикул материала'],
+          'свойство1': r['свойство1'],
+          'свойство2': r['свойство2'],
+          'свойство3': r['свойство3'],
+          price_rub: r.price_rub,
+          price_usd: r.price_usd,
+          source_price_rub: r.source_price_rub,
+          source_price_usd: r.source_price_usd,
+          rows_count: r.rows_count,
+        })),
+      },
+    });
+    planPriceForm.value.set_id = resp.set_id;
+    planPricesStatus.value = 'Набор сохранён';
+    await reloadPlanPriceSets();
+  } catch (e: any) {
+    console.error('[cost] save plan price set failed', e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    planPricesSaving.value = false;
+  }
+}
+
+async function reloadPlanPriceSets() {
+  const plan = planPricesPlanId.value.trim();
+  if (!plan) return;
+  const setsResp = await $fetch<{ data: PlanPriceSet[] }>(
+    `${apiBase.value}/api/cost/plan-price-sets?plan_id=${encodeURIComponent(plan)}`,
+    { headers: fetchHeaders.value });
+  planPriceSets.value = setsResp.data || [];
+}
+
+async function applyPlanPriceSet(setId: number) {
+  if (!confirm('Применить набор к расчёту себестоимости плана? Прежний применённый набор уйдёт в архив.')) return;
+  planPricesSaving.value = true;
+  try {
+    const resp = await $fetch<any>(`${apiBase.value}/api/cost/plan-price-sets/${setId}/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+      body: { username: user.value?.email || 'system' },
+    });
+    planPricesStatus.value = `Применено: строк с ценами ${resp.price_rows_applied}, версий переналожено ${resp.versions_reapplied}`;
+    await loadPlanPrices();
+    await loadData();
+  } catch (e: any) {
+    console.error('[cost] apply plan price set failed', e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    planPricesSaving.value = false;
+  }
+}
+
+async function unapplyPlanPriceSet(setId: number) {
+  if (!confirm('Исключить набор из расчёта? Цены материалов вернутся к исходным данным источника.')) return;
+  planPricesSaving.value = true;
+  try {
+    await $fetch<any>(`${apiBase.value}/api/cost/plan-price-sets/${setId}/unapply`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+    });
+    planPricesStatus.value = 'Набор исключён из расчёта';
+    await loadPlanPrices();
+    await loadData();
+  } catch (e: any) {
+    console.error('[cost] unapply plan price set failed', e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    planPricesSaving.value = false;
+  }
+}
+
+async function deletePlanPriceSet(setId: number) {
+  if (!confirm('Удалить набор?')) return;
+  planPricesSaving.value = true;
+  try {
+    await $fetch(`${apiBase.value}/api/cost/plan-price-sets/${setId}`, {
+      method: 'DELETE', headers: fetchHeaders.value,
+    });
+    planPricesStatus.value = 'Набор удалён';
+    if (planPriceForm.value.set_id === setId) resetPlanPriceForm();
+    await reloadPlanPriceSets();
+  } catch (e: any) {
+    console.error('[cost] delete plan price set failed', e);
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    planPricesSaving.value = false;
   }
 }
 
@@ -2673,12 +3189,17 @@ const openVersionEditor = async (row: any) => {
   const idx = getOriginalIndex(row);
   const r = allAggregated.value[idx];
   if (!r) return;
+  // Номер задания входит в ключ версии (миграция 0032): главная таблица
+  // группирует с ним, поэтому и версия должна относиться к конкретному заданию,
+  // а не ко всем заданиям модели+артикула в плане. У ПКПСС задания в источнике
+  // нет — там уходит пустая строка, и ключ вырождается, как и раньше.
   const params = new URLSearchParams({
     model: r['Модель'] || '',
     articul: r['Артикул'] || '',
     calc_sign: r['Признак калькуляции'] || '',
     plan_id: r['PLAN_ID'] || '',
     date: r['дата расчета'] || '',
+    task_number: r['Номер задания производства'] || '',
   });
   try {
     const [rawResp, versionsResp] = await Promise.all([
@@ -2712,6 +3233,7 @@ const openVersionEditor = async (row: any) => {
       calc_sign: r['Признак калькуляции'] || '',
       plan_id: r['PLAN_ID'] || '',
       date: r['дата расчета'] || '',
+      task_number: r['Номер задания производства'] || '',
       rows: initialRows.map((rr: any) => normalizeVersionRow(rr)),
       versions,
       selectedVersionId,
@@ -2734,6 +3256,7 @@ const refreshVersions = async () => {
     calc_sign: ev.calc_sign,
     plan_id: ev.plan_id,
     date: ev.date,
+    task_number: ev.task_number || '',
   });
   try {
     const versionsResp = await $fetch<any[]>(
@@ -2758,6 +3281,7 @@ const selectRawData = async () => {
     calc_sign: ev.calc_sign,
     plan_id: ev.plan_id,
     date: ev.date,
+    task_number: ev.task_number || '',
   });
   loadingVersionData.value = true;
   try {
@@ -2863,6 +3387,7 @@ const saveDraft = async () => {
           calc_sign: ev.calc_sign || null,
           plan_id: ev.plan_id || null,
           date: ev.date,
+          task_number: ev.task_number || null,
           username: username || 'system',
           rows: ev.rows,
           status: 'draft',
@@ -2911,6 +3436,7 @@ const submitDraft = async () => {
           calc_sign: ev.calc_sign || null,
           plan_id: ev.plan_id || null,
           date: ev.date,
+          task_number: ev.task_number || null,
           username: username || 'system',
           rows: ev.rows,
           status: 'pending',
@@ -3317,6 +3843,28 @@ const fmt = (v: any): string => {
   const n = Number(v);
   if (Number.isNaN(n)) return String(v);
   return n.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+/** Специфика расчёта калькуляции: нормы в источнике доходят до 6 знаков, а цены
+ * материалов — до 4 (money(19,4)). Округление до копеек на этом уровне съедает
+ * реальные деньги: цена 0.0005 превращалась в 0.00 и стоимость строки исчезала
+ * целиком (см. миграцию 0030). Поэтому в модалках исходных строк и редактора
+ * версий показываем нативную точность источника, а на главной таблице —
+ * по-прежнему копейки, но уже посчитанные из неокруглённых слагаемых. */
+const fmtNorm = (v: any): string => {
+  if (v === null || v === undefined || v === "") return "—";
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  return n.toLocaleString("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 6 });
+};
+
+/** Цены материалов в руб./USD. и суммы по строке — до 4 знаков, но не меньше
+ * копеек, чтобы колонка читалась как денежная. */
+const fmtPrice4 = (v: any): string => {
+  if (v === null || v === undefined || v === "") return "—";
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  return n.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 };
 
 const formatDate = (v: any): string => {
@@ -3895,9 +4443,14 @@ onMounted(async () => {
 
 // ── Raw rows helpers ────────────────────────────────────────────────────────
 
+/** Служебные колонки, которые не показываем в модалке исходных строк:
+ * cost_factor_* — внутренний коэффициент связи «Норма × цена» с реальной
+ * стоимостью статьи (миграция 0031), пользователю он не нужен. */
+const RAW_ROWS_HIDDEN = new Set(['id', 'cost_factor_rub', 'cost_factor_usd']);
+
 const rawRowsColumns = computed(() => {
   if (!rawRowsData.value.length) return [];
-  return Object.keys(rawRowsData.value[0]).filter(k => k !== 'id');
+  return Object.keys(rawRowsData.value[0]).filter(k => !RAW_ROWS_HIDDEN.has(k));
 });
 
 const RAW_ROWS_NUMERIC = new Set([
@@ -3957,9 +4510,24 @@ function rawRowsColumnLabel(col: string): string {
   return labels[col] || col;
 }
 
+/** Колонки, которые показываем с нативной точностью источника, а не в копейках:
+ * Норма — до 6 знаков, цены материалов и стоимости статей — до 4. Иначе строки
+ * с ценой 0.0005 выглядят как 0.00 (см. миграцию 0030). */
+const RAW_ROWS_NORM_COLS = new Set(['Норма']);
+const RAW_ROWS_PRICE4_COLS = new Set([
+  'цена материала, руб.', 'цена материала, USD.',
+  'Основные материалы, руб.', 'Основные материалы, USD.',
+  'Вспомогательные материалы, руб.', 'Вспомогательные материалы, USD.',
+  'Пошив, руб.', 'Пошив, USD.', 'Раскрой, руб.', 'Раскрой, USD.',
+  'Декоры, руб.', 'Декоры, USD.', 'Вязание, руб.', 'Вязание, USD.',
+  'Курс на дату расчета',
+]);
+
 function formatRawRowsCell(val: any, col: string): string {
   if (val === null || val === undefined) return '—';
   if (isRawRowsNumeric(col)) {
+    if (RAW_ROWS_NORM_COLS.has(col)) return fmtNorm(val);
+    if (RAW_ROWS_PRICE4_COLS.has(col)) return fmtPrice4(val);
     const n = Number(val);
     if (isNaN(n)) return String(val);
     return n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -4380,37 +4948,38 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   white-space: nowrap;
 }
 
-/* Sticky/frozen columns for the main aggregated table (cols 1-8) */
-#cost-table-1.data-table th:nth-child(-n+8),
-#cost-table-1.data-table td:nth-child(-n+8) {
+/* Sticky/frozen columns for the main aggregated table (positioning via inline styles) */
+#cost-table-1.data-table .sticky-col {
   position: sticky;
   background: var(--bg-surface);
+  z-index: 4;
 }
-#cost-table-1.data-table th:nth-child(1),
-#cost-table-1.data-table td:nth-child(1) { left: 0; width: 110px; min-width: 110px; z-index: 4; }
-#cost-table-1.data-table th:nth-child(2),
-#cost-table-1.data-table td:nth-child(2) { left: 110px; width: 40px; min-width: 40px; max-width: 40px; z-index: 4; }
-#cost-table-1.data-table th:nth-child(3),
-#cost-table-1.data-table td:nth-child(3) { left: 150px; width: 160px; min-width: 160px; z-index: 4; }
-#cost-table-1.data-table th:nth-child(4),
-#cost-table-1.data-table td:nth-child(4) { left: 310px; width: 110px; min-width: 110px; z-index: 4; }
-#cost-table-1.data-table th:nth-child(5),
-#cost-table-1.data-table td:nth-child(5) { left: 420px; width: 90px; min-width: 90px; z-index: 4; }
-#cost-table-1.data-table th:nth-child(6),
-#cost-table-1.data-table td:nth-child(6) { left: 510px; width: 200px; min-width: 200px; z-index: 4; }
-#cost-table-1.data-table th:nth-child(7),
-#cost-table-1.data-table td:nth-child(7) { left: 710px; width: 120px; min-width: 120px; z-index: 4; }
-#cost-table-1.data-table th:nth-child(8),
-#cost-table-1.data-table td:nth-child(8) { left: 830px; width: 90px; min-width: 90px; z-index: 4; box-shadow: 3px 0 6px rgba(0,0,0,0.06); }
+#cost-table-1.data-table .sticky-col.is-last-sticky {
+  box-shadow: 3px 0 6px rgba(0, 0, 0, 0.06);
+}
 /* Restore selected/hover/sorted backgrounds on sticky cells */
-#cost-table-1.data-table tr.selected td:nth-child(-n+8) {
+#cost-table-1.data-table tr.selected td.sticky-col {
   background: var(--bg-surface-3);
 }
-#cost-table-1.data-table th:nth-child(-n+8):hover {
+#cost-table-1.data-table th.sticky-col:hover {
   background: var(--bg-surface-3);
 }
-#cost-table-1.data-table th.sorted:nth-child(-n+8) {
+#cost-table-1.data-table th.sticky-col.sorted {
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
+}
+/* Resize handle on pinned column headers */
+#cost-table-1.data-table .col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+  touch-action: none;
+}
+#cost-table-1.data-table .col-resize-handle:hover {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .loader {
@@ -4761,5 +5330,34 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .colvis-footer { padding: var(--sp-3) var(--sp-5); border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
 .colvis-footer-actions { display: flex; gap: var(--sp-2); }
 .colvis-footer-buttons { display: flex; gap: var(--sp-3); }
+
+/* Цены материалов по плану (миграция 0033). Цвета — только токены дизайн-системы. */
+.plan-set-applied { background: var(--surface-accent, rgba(67, 56, 202, 0.06)); }
+.plan-set-badge { color: var(--accent); font-weight: var(--fw-semibold, 600); font-size: var(--fs-xs); white-space: nowrap; }
+/* Грид материалов набора. Фиксированная раскладка: ширины задаёт colgroup,
+   иначе длинные наименования съедают место у колонок с ценами. */
+.plan-prices-table { width: 100%; table-layout: fixed; }
+/* Текстовые колонки переносятся по словам вместо растягивания в одну строку
+   (общий стиль .data-table td ставит nowrap). Полный текст — в title. */
+.plan-prices-table td.plan-cell-text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.25;
+}
+.plan-prices-table th { white-space: normal; line-height: 1.2; }
+/* Поля ввода цен занимают всю ширину своей колонки — в numeric(18,4)
+   помещается до 4 знаков после запятой, они должны быть видны целиком. */
+.plan-prices-table td.col-num input.editor-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+/* Строка, полностью перекрытая версией: цена из набора на неё не подействует. */
+.plan-row-overridden { opacity: 0.55; }
+.plan-ovr-full { color: var(--text-muted); font-size: var(--fs-xs); white-space: nowrap; }
+.plan-ovr-part { color: var(--accent); font-size: var(--fs-xs); white-space: nowrap; }
+/* Внутри группы были разные цены — применение набора поставит одну на все строки. */
+.plan-spread-warn { color: var(--accent); cursor: help; margin-left: 4px; }
 
 </style>

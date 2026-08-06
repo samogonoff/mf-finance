@@ -5,12 +5,13 @@ import os
 import sys
 import traceback
 from datetime import date, datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
-from app.db import (add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
+from app.db import (aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -82,11 +83,11 @@ async def _can_approve_or_peo(user_email: str | None) -> bool:
         return False
 
 
-async def _check_calc_locks(user_email: str, model: str, articul: str, calc_sign, plan_id, date_str) -> None:
+async def _check_calc_locks(user_email: str, model: str, articul: str, calc_sign, plan_id, date_str, task_number=None) -> None:
     """Raise 403 if the calculation is locked for this user."""
     if await _is_cost_admin(user_email):
         return
-    state = await get_calc_state(model, articul, calc_sign, plan_id, date_str)
+    state = await get_calc_state(model, articul, calc_sign, plan_id, date_str, task_number)
     if state["has_dwh_record"]:
         raise HTTPException(403, "Калькуляция заблокирована: цена передана в DWH")
     if state["has_pending_price"]:
@@ -286,6 +287,9 @@ AGG_GROUP_FIELDS = [
     "Признак калькуляции",
     "дата расчета",
     "Номер задания производства",
+    # Цвет постоянен внутри задания (проверено на 85 583 группах), поэтому
+    # добавление в группировку не размножает строки агрегата.
+    "color",
     "Уровень цен",
     "Страна пр-ва",
     "Семья",
@@ -340,6 +344,27 @@ SEBEST_COMPONENTS_USD = [
     "sum_Основные материалы, USD.",
     "sum_Вспомогательные материалы, USD.",
 ]
+
+# Точность промежуточной агрегации себестоимости (миграция 0030). Бакеты в кэше
+# теперь хранятся с 6 знаками — реальной точностью источника, — поэтому SUM() по
+# ним точен. Складываем на Decimal, а не на float, и округляем ТОЛЬКО итог, до 4
+# знаков; до копеек округляет уже UI при отображении. Раньше здесь было
+# round(sum(float(...)), 2) — потери копеек набегали на каждой строке агрегата.
+_AGG_QUANT = Decimal("0.0001")
+
+
+def _sum_components(row: dict, fields: list[str]) -> float:
+    """Точная (Decimal) сумма компонентов себестоимости, округлённая до 4 знаков."""
+    total = Decimal(0)
+    for f in fields:
+        val = row.get(f)
+        if val is None:
+            continue
+        try:
+            total += val if isinstance(val, Decimal) else Decimal(str(val))
+        except (InvalidOperation, ValueError, TypeError):
+            continue
+    return float(total.quantize(_AGG_QUANT, rounding=ROUND_HALF_UP))
 
 
 @router.post("/aggregated")
@@ -411,12 +436,8 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         row["_group_approved"] = _group_all_approved.get(_gkey(row), False)
 
     for row in data:
-        row["sum_Себестоимость, руб."] = round(
-            sum(float(row.get(f, 0) or 0) for f in SEBEST_COMPONENTS_RUB), 2
-        )
-        row["sum_Себестоимость, USD."] = round(
-            sum(float(row.get(f, 0) or 0) for f in SEBEST_COMPONENTS_USD), 2
-        )
+        row["sum_Себестоимость, руб."] = _sum_components(row, SEBEST_COMPONENTS_RUB)
+        row["sum_Себестоимость, USD."] = _sum_components(row, SEBEST_COMPONENTS_USD)
 
     # Inject margin targets per level1
     try:
@@ -1033,6 +1054,7 @@ async def get_raw_rows(payload: dict) -> dict:
                 payload.get("Признак калькуляции") or None,
                 payload.get("PLAN_ID") or None,
                 parsed_date or payload.get("дата расчета"),
+                payload.get("Номер задания производства") or None,
             )
             if version:
                 ver_rows = await conn.fetch(
@@ -1061,16 +1083,17 @@ def _get_price_levels_sync() -> list[dict]:
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "SELECT NAME, PRICE_TYPE1, PRICE_TYPE3, PRICE_TYPE4, PRICE_TYPE5, PRICE_TYPE6 FROM [dbo].[s_price_level] ORDER BY NAME"
+            "SELECT ITEM_ID, NAME, PRICE_TYPE1, PRICE_TYPE3, PRICE_TYPE4, PRICE_TYPE5, PRICE_TYPE6 FROM [dbo].[s_price_level] ORDER BY NAME"
         )
         return [
             {
-                "name": (row[0] or "").strip(),
-                "price_type1": float(row[1] or 0),
-                "price_type3": float(row[2] or 0),
-                "price_type4": float(row[3] or 0),
-                "price_type5": float(row[4] or 0),
-                "price_type6": float(row[5] or 0),
+                "id": int(row[0] or 0),
+                "name": (row[1] or "").strip(),
+                "price_type1": float(row[2] or 0),
+                "price_type3": float(row[3] or 0),
+                "price_type4": float(row[4] or 0),
+                "price_type5": float(row[5] or 0),
+                "price_type6": float(row[6] or 0),
             }
             for row in cursor.fetchall()
         ]
@@ -1435,13 +1458,18 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
     reviewed_by = (payload.get("reviewed_by") or "system").strip()
     proc_payload: list[dict] | None = payload.get("proc_payload")
 
+    # Ключ строки согласования (Модель, Артикул, calc_sign, PLAN_ID) → имя уровня цен.
+    # Фронт шлёт в proc_payload только name-поля, а ITEM_ID уровня берём на бэке из
+    # справочника s_price_level — для поля price_level_id в JSON процедуры.
+    level_name_by_row: dict[tuple[str, str, str, str], str] = {}
+
     # One-step flow: pressing «Установить цены» is itself the PEO approval action.
     # Mark every pending row as approved in cost_calc_approvals BEFORE the DWH write.
     # save_approval is an UPSERT — calling it for an already-approved row is a no-op.
     if not _is_mock():
         async with pool().acquire() as conn:
             pending_rows = await conn.fetch(
-                "SELECT \"Модель\", \"Артикул\", \"Признак калькуляции\", \"PLAN_ID\", \"Номер задания производства\" FROM cost_price_pending WHERE id = ANY($1::bigint[])",
+                "SELECT \"Модель\", \"Артикул\", \"Признак калькуляции\", \"PLAN_ID\", \"Номер задания производства\", \"Уровень цен\" FROM cost_price_pending WHERE id = ANY($1::bigint[])",
                 ids,
             )
         for pr in pending_rows:
@@ -1450,6 +1478,12 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
                 pr["Модель"], pr["Артикул"], pr["Признак калькуляции"], pr["PLAN_ID"],
                 "approved", reviewed_by, task_number=tn,
             )
+            level_name_by_row[(
+                str(pr.get("Модель", "") or "").strip(),
+                str(pr.get("Артикул", "") or "").strip(),
+                str(pr.get("Признак калькуляции", "") or "").strip(),
+                str(pr.get("PLAN_ID", "") or "").strip(),
+            )] = str(pr.get("Уровень цен", "") or "").strip()
 
     count = await apply_pending_changes(ids, reviewed_by)
     result = {"success": True, "applied": count}
@@ -1471,27 +1505,53 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
 
         # Построить вложенный JSON: один документ на группу с prices1[]
         calc_sign_price_type = {"КПСС": 3, "ПФКСС": 1}
+
+        # Маппинг имени уровня цен → ITEM_ID справочника s_price_level.
+        # Вне mock тянем справочник из Gpartner; если он недоступен — все id = 0.
+        price_level_id_by_name: dict[str, int] = {}
+        if not _is_mock():
+            try:
+                loop = asyncio.get_event_loop()
+                price_levels = await loop.run_in_executor(None, _get_price_levels_sync)
+                price_level_id_by_name = {
+                    pl["name"]: int(pl["id"]) for pl in price_levels if pl.get("id")
+                }
+            except Exception:
+                price_level_id_by_name = {}
+
         docs = []
         for (cs, pi), items in groups.items():
             price_type = calc_sign_price_type.get(cs, items[0].get("price_type", 0))
             author_name = (items[0].get("author_name", "system") or "system")[:15]
 
-            doc = {
+            prices1 = []
+            for it in items:
+                # price_level_id есть только у ПФКСС: имя уровня из строки
+                # согласования → ITEM_ID справочника; не нашли — 0.
+                price_level_id = 0
+                if cs == "ПФКСС":
+                    row_key = (
+                        str(it.get("model", "") or "").strip(),
+                        str(it.get("articul", "") or "").strip(),
+                        cs,
+                        str(it.get("plan_id", "") or "").strip(),
+                    )
+                    price_level_id = price_level_id_by_name.get(level_name_by_row.get(row_key, ""), 0)
+                prices1.append({
+                    "model": it.get("model", ""),
+                    "articul": it.get("articul", ""),
+                    "wholesale_rub": it.get("wholesale_rub", 0),
+                    "plan_price": it.get("cost_rub") or it.get("Себестоимость, руб.", 0),
+                    "price_level_id": price_level_id,
+                })
+
+            docs.append({
                 "plan_id": pi,
                 "price_type": price_type,
                 "calc_sign": cs,
                 "author_name": author_name,
-                "prices1": [
-                    {
-                        "model": it.get("model", ""),
-                        "articul": it.get("articul", ""),
-                        "wholesale_rub": it.get("wholesale_rub", 0),
-                        "plan_price": it.get("cost_rub") or it.get("Себестоимость, руб.", 0),
-                    }
-                    for it in items
-                ],
-            }
-            docs.append(doc)
+                "prices1": prices1,
+            })
 
         json_str = _json.dumps(docs, ensure_ascii=False, default=str)
 
@@ -1548,11 +1608,12 @@ async def raw_data_endpoint(request: Request, _: str = Depends(_require_perm("co
     calc_sign = request.query_params.get("calc_sign") or None
     plan_id = request.query_params.get("plan_id") or None
     date_str = request.query_params.get("date")
+    task_number = request.query_params.get("task_number") or None
     if not model or not articul:
         raise HTTPException(400, "model and articul are required")
     if _is_mock():
         return mocks.get_raw_cache_rows(model, articul, calc_sign, plan_id, date_str)
-    return await get_raw_cache_rows(model, articul, calc_sign, plan_id, date_str)
+    return await get_raw_cache_rows(model, articul, calc_sign, plan_id, date_str, task_number)
 
 
 @router.get("/versions")
@@ -1562,11 +1623,12 @@ async def versions_endpoint(request: Request, _: str = Depends(_require_perm("co
     calc_sign = request.query_params.get("calc_sign") or None
     plan_id = request.query_params.get("plan_id") or None
     date_str = request.query_params.get("date")
+    task_number = request.query_params.get("task_number") or None
     if not model or not articul:
         raise HTTPException(400, "model and articul are required")
     if _is_mock():
         return mocks.list_versions(model, articul, calc_sign, plan_id, date_str)
-    return await list_versions(model, articul, calc_sign, plan_id, date_str)
+    return await list_versions(model, articul, calc_sign, plan_id, date_str, task_number)
 
 
 @router.get("/version-rows/{version_id}")
@@ -1589,15 +1651,16 @@ async def create_version_endpoint(payload: dict, user_email: str = Depends(_requ
     username = payload.get("username", user_email or "system")
     rows = payload.get("rows", [])
     status = payload.get("status", "draft")
+    task_number = payload.get("task_number") or None
     if not model or not articul:
         raise HTTPException(400, "model and articul are required")
     if status not in ("draft", "pending"):
         raise HTTPException(400, "status must be 'draft' or 'pending'")
     if status == "pending":
-        await _check_calc_locks(user_email, model, articul, calc_sign, plan_id, date_str)
+        await _check_calc_locks(user_email, model, articul, calc_sign, plan_id, date_str, task_number)
     if _is_mock():
         return mocks.create_version(model, articul, calc_sign, plan_id, date_str, username, rows, status)
-    return await create_version(model, articul, calc_sign, plan_id, date_str, username, rows, status)
+    return await create_version(model, articul, calc_sign, plan_id, date_str, username, rows, status, task_number)
 
 
 @router.post("/save-calculation-draft")
@@ -1612,7 +1675,7 @@ async def save_calculation_draft(payload: dict, user_email: str = Depends(_requi
     if ver:
         if ver["status"] == "original":
             raise HTTPException(409, "Исходная версия неизменяема — редактирование создаёт новую версию")
-        await _check_calc_locks(user_email, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], ver["дата расчета"])
+        await _check_calc_locks(user_email, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], ver["дата расчета"], ver.get("task_number"))
     await save_version_draft(version_id, rows)
     return {"success": True}
 
@@ -1629,7 +1692,7 @@ async def submit_calculation_draft(payload: dict, user_email: str = Depends(_req
     if ver:
         if ver["status"] == "original":
             raise HTTPException(409, "Исходная версия неизменяема — редактирование создаёт новую версию")
-        await _check_calc_locks(user_email, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], ver["дата расчета"])
+        await _check_calc_locks(user_email, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], ver["дата расчета"], ver.get("task_number"))
     await submit_version(version_id, comment)
     return {"success": True}
 
@@ -1670,7 +1733,10 @@ async def calculation_draft_status(request: Request, _: str = Depends(_require_p
         parsed_date = date_str
     if _is_mock():
         return mocks.get_active_version(model, articul, calc_sign, plan_id, parsed_date)
-    version = await get_active_version(model, articul, calc_sign, plan_id, parsed_date)
+    version = await get_active_version(
+        model, articul, calc_sign, plan_id, parsed_date,
+        request.query_params.get("task_number") or None,
+    )
     if version:
         return {"has_draft": True, "version_id": version["version"]["id"], "status": version["version"]["status"], "rows": version.get("rows", [])}
     return {"has_draft": False}
@@ -1702,7 +1768,9 @@ async def admin_unlock_row(payload: dict, _: str = Depends(_require_perm("cost:a
         parsed_date = date_str
     if _is_mock():
         return {"success": True, "archived": 0, "mock": True}
-    count = await archive_versions_by_key(model, articul, calc_sign, plan_id, parsed_date)
+    count = await archive_versions_by_key(
+        model, articul, calc_sign, plan_id, parsed_date, payload.get("task_number") or None
+    )
     return {"success": True, "archived": count}
 
 
@@ -1960,3 +2028,114 @@ async def cache_status() -> dict:
     if status is None:
         return {"refreshed_at": None, "row_count": 0, "is_refreshing": False, "error_message": "Cache not initialized"}
     return status
+
+
+# ── Наборы цен на материалы для плана (миграция 0033) ─────────────────────────
+
+
+@router.get("/plan-materials")
+async def plan_materials_endpoint(request: Request, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:
+    """Материалы плана, агрегированные по ключу из пяти полей источника.
+
+    Отдаёт средние цены и курс, разброс внутри группы и сколько строк уже
+    перекрыто активной версией калькуляции (там цена набора не подействует —
+    у версии приоритет).
+    """
+    plan_id = (request.query_params.get("plan_id") or "").strip()
+    if not plan_id:
+        raise HTTPException(400, "plan_id required")
+    if _is_mock():
+        return {"data": [], "count": 0, "mock": True}
+    data = await aggregate_plan_materials(plan_id)
+    return {"data": data, "count": len(data)}
+
+
+@router.get("/plan-price-sets")
+async def plan_price_sets_endpoint(request: Request, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:
+    """Список наборов. plan_id опционален — без него отдаём все, чтобы в UI
+    работал фильтр по номеру плана."""
+    if _is_mock():
+        return {"data": [], "count": 0, "mock": True}
+    data = await list_plan_price_sets(request.query_params.get("plan_id"))
+    return {"data": data, "count": len(data)}
+
+
+@router.get("/plan-price-sets/{set_id}")
+async def plan_price_set_endpoint(set_id: int, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:
+    if _is_mock():
+        raise HTTPException(404, "not available in mock mode")
+    data = await get_plan_price_set(set_id)
+    if data is None:
+        raise HTTPException(404, "набор не найден")
+    return data
+
+
+@router.post("/plan-price-sets")
+async def save_plan_price_set_endpoint(
+    payload: dict, user_email: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))
+) -> dict:
+    plan_id = (payload.get("plan_id") or "").strip()
+    if not plan_id:
+        raise HTTPException(400, "plan_id required")
+    if _is_mock():
+        return {"success": True, "set_id": 0, "mock": True}
+    try:
+        set_id = await save_plan_price_set(
+            plan_id,
+            payload.get("title") or "",
+            payload.get("rate"),
+            payload.get("rows") or [],
+            payload.get("username") or user_email or "system",
+            payload.get("set_id"),
+            payload.get("comment"),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True, "set_id": set_id}
+
+
+@router.post("/plan-price-sets/{set_id}/apply")
+async def apply_plan_price_set_endpoint(
+    set_id: int, payload: dict | None = None,
+    user_email: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin")),
+) -> dict:
+    """Применяет набор к расчёту себестоимости плана.
+
+    Перезаливает строки плана из источника и накладывает заново цены и версии —
+    поэтому ответ содержит счётчики затронутого (см. refresh_plan_from_source).
+    """
+    if _is_mock():
+        return {"success": True, "mock": True}
+    username = ((payload or {}).get("username") or user_email or "system")
+    try:
+        result = await apply_plan_price_set(set_id, username)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True, **result}
+
+
+@router.post("/plan-price-sets/{set_id}/unapply")
+async def unapply_plan_price_set_endpoint(
+    set_id: int, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))
+) -> dict:
+    """Исключает набор из расчёта и возвращает строки плана к данным источника."""
+    if _is_mock():
+        return {"success": True, "mock": True}
+    try:
+        result = await unapply_plan_price_set(set_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True, **result}
+
+
+@router.delete("/plan-price-sets/{set_id}")
+async def delete_plan_price_set_endpoint(
+    set_id: int, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))
+) -> dict:
+    if _is_mock():
+        return {"success": True, "mock": True}
+    try:
+        await delete_plan_price_set(set_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True}
