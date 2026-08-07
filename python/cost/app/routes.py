@@ -771,7 +771,16 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                             }
                     olap_ok = True
                 except Exception:
-                    pass
+                    # Молчать здесь нельзя: откат на локальный аудит меняет то,
+                    # что видит пользователь (аудит хранит лишь последнюю запись
+                    # на пару модель+артикул, без учёта признака и плана), и
+                    # выглядит как «цены пропали». Именно так тихо падал запрос
+                    # по лимиту параметров ODBC на широких выборках.
+                    print(
+                        f"[cost] fetch_olap_changes упал на {len(keys)} ключах — "
+                        f"откат на локальный аудит:\n{traceback.format_exc()}",
+                        flush=True,
+                    )
 
             # 3. LOCAL AUDIT (fallback if OLAP unavailable)
             if not olap_ok:
@@ -840,7 +849,10 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 if rec.get("comment"):
                     row["comment"] = rec["comment"]
     except Exception:
-        pass
+        # Падение здесь означает, что НИ ОДНА утверждённая цена не наложится на
+        # выдачу — пользователь увидит пустые цены при полностью корректных
+        # данных в DWH. Такое обязано быть видно в логах.
+        print(f"[cost] наложение утверждённых цен не выполнено:\n{traceback.format_exc()}", flush=True)
 
     # ── Lock state: _has_pending / _has_audit / _lock_reason ────────────────
     try:

@@ -213,6 +213,12 @@ def call_calc_sign_procedure(json_str: str) -> None:
         conn.close()
 
 
+# Ключей на один запрос к CostHistory_Changes. На ключ уходит 4 параметра,
+# лимит ODBC/MSSQL — ~2100; 500 × 4 = 2000, с запасом (проверено: 520 ключей
+# проходят, 530 уже падают).
+_OLAP_KEYS_PER_BATCH = 500
+
+
 def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
     """Запрос утверждённых изменений из FinSandBox.CostHistory_Changes (primary source).
 
@@ -226,41 +232,52 @@ def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
     olap = get_olap_conn()
     cursor = olap.cursor()
     try:
-        conditions = " OR ".join(
-            f"(Модель = ? AND Артикул = ? AND calc_sign = ? AND plan_id = ?)" for _ in keys
-        )
-        params: list[str | None] = []
-        for m, a, cs, pi in keys:
-            params.extend([m, a, cs or None, pi or None])
-
-        cursor.execute(f"""
-            SELECT Модель, Артикул, calc_sign, plan_id,
-                   Розничная_цена_руб, Отпускная_цена_руб,
-                   price_rf, price_kz, price_uz, comment,
-                   approved_at, Уровень_цен
-            FROM CostHistory_Changes
-            WHERE {conditions}
-            ORDER BY approved_at DESC
-        """, params)
-
-        cols = [d[0] for d in cursor.description]
         seen: set[tuple[str, str, str, str]] = set()
         result: list[dict] = []
-        for row in cursor.fetchall():
-            rec = dict(zip(cols, row))
-            key = (
-                str(rec.get("Модель") or "").strip(),
-                str(rec.get("Артикул") or "").strip(),
-                str(rec.get("calc_sign") or "").strip() if rec.get("calc_sign") else "",
-                str(rec.get("plan_id") or "").strip() if rec.get("plan_id") else "",
+
+        # Батчами: на ключ уходит 4 параметра, а лимит ODBC/MSSQL — ~2100 на
+        # запрос. Без разбиения выборка примерно от 525 строк роняла запрос с
+        # 07002 "COUNT field incorrect", вызывающий код молча откатывался на
+        # урезанный локальный аудит, и пользователь видел строки без цен —
+        # тем чаще, чем шире был его фильтр.
+        for i in range(0, len(keys), _OLAP_KEYS_PER_BATCH):
+            batch = keys[i:i + _OLAP_KEYS_PER_BATCH]
+            conditions = " OR ".join(
+                "(Модель = ? AND Артикул = ? AND calc_sign = ? AND plan_id = ?)" for _ in batch
             )
-            if key not in seen:
-                seen.add(key)
-                # Normalise column names to match cache convention
-                rec["retail_rub"] = rec.pop("Розничная_цена_руб")
-                rec["wholesale_rub"] = rec.pop("Отпускная_цена_руб")
-                rec["price_level"] = rec.pop("Уровень_цен")
-                result.append(rec)
+            params: list[str | None] = []
+            for m, a, cs, pi in batch:
+                params.extend([m, a, cs or None, pi or None])
+
+            cursor.execute(f"""
+                SELECT Модель, Артикул, calc_sign, plan_id,
+                       Розничная_цена_руб, Отпускная_цена_руб,
+                       price_rf, price_kz, price_uz, comment,
+                       approved_at, Уровень_цен
+                FROM CostHistory_Changes
+                WHERE {conditions}
+                ORDER BY approved_at DESC
+            """, params)
+
+            cols = [d[0] for d in cursor.description]
+            # Дедуп «последняя запись на ключ» остаётся корректным при батчинге:
+            # ключи не пересекаются между батчами, а внутри батча порядок задан
+            # ORDER BY approved_at DESC.
+            for row in cursor.fetchall():
+                rec = dict(zip(cols, row))
+                key = (
+                    str(rec.get("Модель") or "").strip(),
+                    str(rec.get("Артикул") or "").strip(),
+                    str(rec.get("calc_sign") or "").strip() if rec.get("calc_sign") else "",
+                    str(rec.get("plan_id") or "").strip() if rec.get("plan_id") else "",
+                )
+                if key not in seen:
+                    seen.add(key)
+                    # Normalise column names to match cache convention
+                    rec["retail_rub"] = rec.pop("Розничная_цена_руб")
+                    rec["wholesale_rub"] = rec.pop("Отпускная_цена_руб")
+                    rec["price_level"] = rec.pop("Уровень_цен")
+                    result.append(rec)
         return result
     finally:
         olap.close()
