@@ -321,11 +321,11 @@ def _match_filters(row: dict, payload: dict) -> bool:
 FILTER_OPTIONS: dict[str, Any] = get_filter_options({})
 
 PRICE_LEVELS: list[dict[str, Any]] = [
-    {"name": "Базовый розничный",  "price_type1": 1850.00, "price_type3": 2470.00, "price_type4": 2800.00, "price_type5": 2500.00, "price_type6": 2300.00},
-    {"name": "Премиум розничный",  "price_type1": 2280.00, "price_type3": 3150.00, "price_type4": 3500.00, "price_type5": 3200.00, "price_type6": 2900.00},
-    {"name": "Партнёрский",        "price_type1": 1620.00, "price_type3": 2120.00, "price_type4": 2400.00, "price_type5": 2100.00, "price_type6": 1900.00},
-    {"name": "Опт",                "price_type1": 1450.00, "price_type3": 1880.00, "price_type4": 2100.00, "price_type5": 1900.00, "price_type6": 1700.00},
-    {"name": "Распродажа",         "price_type1": 1290.00, "price_type3": 1690.00, "price_type4": 1900.00, "price_type5": 1700.00, "price_type6": 1500.00},
+    {"id": 1, "name": "Базовый розничный",  "price_type1": 1850.00, "price_type3": 2470.00, "price_type4": 2800.00, "price_type5": 2500.00, "price_type6": 2300.00},
+    {"id": 2, "name": "Премиум розничный",  "price_type1": 2280.00, "price_type3": 3150.00, "price_type4": 3500.00, "price_type5": 3200.00, "price_type6": 2900.00},
+    {"id": 3, "name": "Партнёрский",        "price_type1": 1620.00, "price_type3": 2120.00, "price_type4": 2400.00, "price_type5": 2100.00, "price_type6": 1900.00},
+    {"id": 4, "name": "Опт",                "price_type1": 1450.00, "price_type3": 1880.00, "price_type4": 2100.00, "price_type5": 1900.00, "price_type6": 1700.00},
+    {"id": 5, "name": "Распродажа",         "price_type1": 1290.00, "price_type3": 1690.00, "price_type4": 1900.00, "price_type5": 1700.00, "price_type6": 1500.00},
 ]
 
 
