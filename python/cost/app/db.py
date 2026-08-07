@@ -1496,6 +1496,19 @@ def _recalc_cost_buckets(row: dict) -> None:
     if target is None:
         return
 
+    # Декоры: стоимость задаётся суммой в «Декоры, руб./USD.» напрямую — нормы и
+    # цены материала у них в источнике нет вообще, и в редакторе версий эти поля
+    # для декоров скрыты. Произведение здесь не считаем, иначе заполненные
+    # когда-то норма с ценой затёрли бы введённую сумму (в базе такая строка
+    # одна, но ловушку убираем совсем). Прочие статьи всё равно обнуляем, чтобы
+    # SUM() по строкам не двоил стоимость.
+    if mat_type in _PLAN_DECOR_TYPES:
+        for bucket in _MANAGED_COST_BUCKETS:
+            if bucket != target:
+                row[f"{bucket}, руб."] = 0
+                row[f"{bucket}, USD."] = 0
+        return
+
     norm = row.get("Норма")
     price_rub = row.get("цена материала, руб.")
     price_usd = row.get("цена материала, USD.")
@@ -2319,15 +2332,97 @@ async def save_approval(model, articul, calc_sign, plan_id, status, approved_by,
             return dict(row)
 
 
+def _approval_key(a: dict) -> tuple:
+    """Ключ согласования — тот же, что в UNIQUE-констрейнте cost_calc_approvals."""
+    return (
+        a.get("model"), a.get("articul"), a.get("calc_sign"),
+        a.get("plan_id"), a.get("task_number"),
+    )
+
+
 async def save_approvals_batch(approvals: list[dict]) -> list[dict]:
-    results = []
+    """Массовый UPSERT статусов ПЭО — один запрос на всю пачку.
+
+    Дубли по ключу схлопываем заранее (побеждает последний): ON CONFLICT DO UPDATE
+    не может тронуть одну и ту же строку дважды в рамках одного INSERT, иначе
+    запрос упал бы целиком. На главной таблице такое реально — несколько строк
+    агрегата (разные даты расчёта / уровни цен) делят один ключ согласования.
+    """
+    if not approvals:
+        return []
+
+    deduped: dict[tuple, dict] = {}
     for a in approvals:
-        r = await save_approval(
-            a["model"], a.get("articul"), a.get("calc_sign"), a.get("plan_id"),
-            a["status"], a.get("approved_by"), a.get("comment"), a.get("task_number"),
-        )
-        results.append(r)
-    return results
+        deduped[_approval_key(a)] = a
+    items = list(deduped.values())
+
+    models = [a["model"] for a in items]
+    articuls = [a.get("articul") for a in items]
+    calc_signs = [a.get("calc_sign") for a in items]
+    plan_ids = [a.get("plan_id") for a in items]
+    task_numbers = [a.get("task_number") for a in items]
+    statuses = [a["status"] for a in items]
+    approved_bys = [a.get("approved_by") for a in items]
+    comments = [a.get("comment") for a in items]
+
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                INSERT INTO cost_calc_approvals
+                    (model, articul, calc_sign, plan_id, task_number, status, approved_by, approved_at, comment)
+                SELECT u.model, u.articul, u.calc_sign, u.plan_id, u.task_number, u.status, u.approved_by,
+                       CASE WHEN u.status IN ('approved', 'rejected') THEN NOW() ELSE NULL END,
+                       u.comment
+                FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
+                            $6::text[], $7::text[], $8::text[])
+                     AS u(model, articul, calc_sign, plan_id, task_number, status, approved_by, comment)
+                ON CONFLICT (model, articul, calc_sign, plan_id, task_number) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    approved_by = EXCLUDED.approved_by,
+                    approved_at = EXCLUDED.approved_at,
+                    comment = EXCLUDED.comment,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                models, articuls, calc_signs, plan_ids, task_numbers,
+                statuses, approved_bys, comments,
+            )
+            return [dict(r) for r in rows]
+
+
+async def revoke_approvals_batch(items: list[dict]) -> int:
+    """Массовое снятие согласования. Возвращает число удалённых записей."""
+    if not items:
+        return 0
+
+    deduped: dict[tuple, dict] = {}
+    for it in items:
+        deduped[_approval_key(it)] = it
+    uniq = list(deduped.values())
+
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            result = await conn.execute(
+                """
+                DELETE FROM cost_calc_approvals a
+                USING unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])
+                      AS u(model, articul, calc_sign, plan_id, task_number)
+                WHERE a.model = u.model
+                  AND a.articul = u.articul
+                  AND a.calc_sign IS NOT DISTINCT FROM u.calc_sign
+                  AND a.plan_id IS NOT DISTINCT FROM u.plan_id
+                  AND a.task_number IS NOT DISTINCT FROM u.task_number
+                """,
+                [it["model"] for it in uniq],
+                [it.get("articul") for it in uniq],
+                [it.get("calc_sign") for it in uniq],
+                [it.get("plan_id") for it in uniq],
+                [it.get("task_number") for it in uniq],
+            )
+    # asyncpg отдаёт тег команды вида "DELETE 12"
+    parts = (result or "").split()
+    return int(parts[-1]) if parts and parts[-1].isdigit() else 0
 
 
 async def revoke_approval(model, articul, calc_sign, plan_id, task_number=None) -> None:
@@ -2419,6 +2514,13 @@ _PLAN_MATERIAL_TYPES: list[str] = list(_PLAN_OSN_TYPES) + list(_PLAN_VSP_TYPES)
 # Ключ материала — пять полей источника (см. миграцию 0033).
 _PLAN_MAT_KEY = ["Наименование", "артикул материала", "свойство1", "свойство2", "свойство3"]
 
+# Декоры (миграция 0035). Устроены иначе материалов: Нормы и цены материала у
+# них нет вообще, стоимость лежит прямо в «Декоры, руб./USD.», а опознаются они
+# отдельным полем «Декоры, наименование» — обычное «Наименование» у декоров
+# пустое. Поэтому «цена декора» это сама сумма, и корректировка проставляется
+# в неё напрямую, без нормы и коэффициента.
+_PLAN_DECOR_TYPES: list[str] = ["шт", "декор", "Декор", "Декоры лиса"]
+
 
 def _plan_key_select(alias: str = "c") -> str:
     """trim(COALESCE(...)) по каждому полю ключа, с алиасами k0..k4."""
@@ -2497,6 +2599,66 @@ async def aggregate_plan_materials(plan_id: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def aggregate_plan_decors(plan_id: str) -> list[dict]:
+    """Декоры плана, сгруппированные по «Декоры, наименование».
+
+    Ключ проверен на живых данных: 159 групп (план + наименование) на 83 плана,
+    и у ВСЕХ ровно одна цена — разброса нет вообще. Строк с суммой, но без
+    наименования, ноль, то есть ключ покрывает все тарифицированные декоры.
+    distinct_prices/min/max всё равно отдаём — на случай, если в новых данных
+    разброс появится, чтобы это было видно в UI, а не молча усреднилось.
+
+    overridden_rows — сколько строк группы уже перекрыто активной версией
+    калькуляции: у версии приоритет, там цена набора не подействует.
+    """
+    plan = (plan_id or "").strip()
+    if not plan:
+        return []
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH dec AS (
+                SELECT trim(COALESCE(c."Декоры, наименование", '')) AS nm,
+                       c."Декоры, руб." AS rub,
+                       c."Декоры, USD." AS usd,
+                       c."Курс на дату расчета" AS rate,
+                       trim(c."Модель") AS m, trim(c."Артикул") AS a,
+                       trim(COALESCE(c."Признак калькуляции", '')) AS cs,
+                       trim(COALESCE(c."Номер задания производства", '')) AS t
+                FROM cost_data_cache c
+                WHERE trim(COALESCE(c."PLAN_ID", '')) = $1
+                  AND trim(COALESCE(c."Признак калькуляции", '')) = 'КПСС'
+                  AND c."Материал/операция/декор(призн)" = ANY($2::text[])
+                  AND trim(COALESCE(c."Декоры, наименование", '')) <> ''
+            ),
+            active AS (
+                SELECT DISTINCT model, articul, COALESCE(calc_sign, '') AS cs, task_number AS t
+                FROM cost_calc_versions
+                WHERE status IN ('pending', 'approved')
+                  AND COALESCE(plan_id, '') = $1
+            )
+            SELECT dec.nm AS "Декоры, наименование",
+                   count(*) AS rows_count,
+                   round(avg(dec.rub), 4) AS avg_price_rub,
+                   round(avg(dec.usd), 4) AS avg_price_usd,
+                   round(avg(dec.rate), 4) AS avg_rate,
+                   count(DISTINCT dec.rub) AS distinct_prices,
+                   round(min(dec.rub), 4) AS min_price_rub,
+                   round(max(dec.rub), 4) AS max_price_rub,
+                   count(*) FILTER (WHERE active.model IS NOT NULL) AS overridden_rows
+            FROM dec
+            LEFT JOIN active
+                   ON active.model = dec.m AND active.articul = dec.a
+                  AND active.cs = dec.cs
+                  AND (active.t = dec.t OR active.t = '')
+            GROUP BY dec.nm
+            ORDER BY dec.nm
+            """,
+            plan, _PLAN_DECOR_TYPES,
+        )
+        return [dict(r) for r in rows]
+
+
 async def list_plan_price_sets(plan_id: str | None = None) -> list[dict]:
     """Наборы цен. Без plan_id — все (для фильтра по номеру плана в UI)."""
     plan = (plan_id or "").strip()
@@ -2528,11 +2690,11 @@ async def get_plan_price_set(set_id: int) -> dict | None:
         if s is None:
             return None
         rows = await conn.fetch(
-            """SELECT id, "Наименование", "артикул материала",
+            """SELECT id, row_kind, "Наименование", "артикул материала",
                       "свойство1", "свойство2", "свойство3",
                       price_rub, price_usd, source_price_rub, source_price_usd, rows_count
                FROM cost_plan_price_set_rows WHERE set_id = $1
-               ORDER BY "Наименование", "артикул материала" """,
+               ORDER BY row_kind, "Наименование", "артикул материала" """,
             set_id,
         )
         return {"set": dict(s), "rows": [dict(r) for r in rows]}
@@ -2577,14 +2739,20 @@ async def save_plan_price_set(
                     "DELETE FROM cost_plan_price_set_rows WHERE set_id = $1", set_id
                 )
             for r in rows:
+                # row_kind: 'material' (ключ из пяти полей) либо 'decor' —
+                # у декора ключ один, «Декоры, наименование», и кладётся он в
+                # колонку "Наименование" (см. миграцию 0035).
+                kind = "decor" if str(r.get("row_kind") or "") == "decor" else "material"
+                name = r.get("Декоры, наименование") if kind == "decor" else r.get("Наименование")
                 await conn.execute(
                     """INSERT INTO cost_plan_price_set_rows
-                           (set_id, "Наименование", "артикул материала",
+                           (set_id, row_kind, "Наименование", "артикул материала",
                             "свойство1", "свойство2", "свойство3",
                             price_rub, price_usd, source_price_rub, source_price_usd, rows_count)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)""",
                     set_id,
-                    str(r.get("Наименование") or "").strip(),
+                    kind,
+                    str(name or "").strip(),
                     str(r.get("артикул материала") or "").strip(),
                     str(r.get("свойство1") or "").strip(),
                     str(r.get("свойство2") or "").strip(),
@@ -2644,6 +2812,7 @@ async def _apply_plan_price_set_to_cache(conn, set_id: int) -> int:
                 ELSE c."Вспомогательные материалы, USD." END
         FROM cost_plan_price_set_rows r, cost_plan_price_sets s
         WHERE r.set_id = s.id AND s.id = $1
+          AND r.row_kind = 'material'
           AND trim(COALESCE(c."PLAN_ID", '')) = s.plan_id
           AND trim(COALESCE(c."Признак калькуляции", '')) = 'КПСС'
           AND c."Материал/операция/декор(призн)" = ANY($2::text[])
@@ -2652,7 +2821,35 @@ async def _apply_plan_price_set_to_cache(conn, set_id: int) -> int:
         """,
         set_id, _PLAN_MATERIAL_TYPES,
     )
-    return int(result.split()[1]) if result.startswith("UPDATE") else 0
+    touched = int(result.split()[1]) if result.startswith("UPDATE") else 0
+
+    # Декоры (миграция 0035) — отдельным запросом, потому что модель другая:
+    # нормы и цены материала у них нет, поэтому цена набора проставляется прямо
+    # в «Декоры, руб.», а долларовая сумма пересчитывается по курсу набора
+    # (в источнике «Декоры, USD.» — производная от рублёвой, проверено: у 119
+    # строк из 120 отношение равно «Курсу на дату расчета»). Если курс у набора
+    # не задан, берём курс строки кэша.
+    decor_result = await conn.execute(
+        f"""
+        UPDATE cost_data_cache c SET
+            "Декоры, руб." = r.price_rub,
+            "Декоры, USD." = CASE
+                WHEN COALESCE(s.rate, c."Курс на дату расчета") > 0
+                THEN r.price_rub / COALESCE(s.rate, c."Курс на дату расчета")
+                ELSE c."Декоры, USD." END
+        FROM cost_plan_price_set_rows r, cost_plan_price_sets s
+        WHERE r.set_id = s.id AND s.id = $1
+          AND r.row_kind = 'decor'
+          AND r.price_rub IS NOT NULL
+          AND trim(COALESCE(c."PLAN_ID", '')) = s.plan_id
+          AND trim(COALESCE(c."Признак калькуляции", '')) = 'КПСС'
+          AND c."Материал/операция/декор(призн)" = ANY($2::text[])
+          AND trim(COALESCE(c."Декоры, наименование", '')) = r."Наименование"
+        """,
+        set_id, _PLAN_DECOR_TYPES,
+    )
+    touched += int(decor_result.split()[1]) if decor_result.startswith("UPDATE") else 0
+    return touched
 
 
 async def _reapply_applied_plan_price_sets(conn) -> int:

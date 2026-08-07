@@ -218,10 +218,66 @@
         </div>
         <a href="#" class="col-filter-reset" @click.prevent="resetColumnFilters">Сбросить фильтры колонок</a>
       </div>
+
+      <!-- Массовое согласование ПЭО: панель появляется, когда что-то выбрано -->
+      <div v-if="peoBulkEnabled && peoSelectedItems.length" class="peo-bulk-bar">
+        <div class="peo-bulk-info">
+          <strong>Выбрано: {{ peoSelectedItems.length }}</strong>
+          <span class="muted">калькуляций · строк таблицы: {{ peoSelectedRowCount }}</span>
+          <button
+            v-if="peoSelectedItems.length < peoSelectableRows.length"
+            class="btn btn-ghost btn-xs"
+            :disabled="peoBulkBusy"
+            @click="selectAllFilteredForPeo"
+          >
+            Выбрать все отфильтрованные ({{ peoSelectableRows.length }})
+          </button>
+          <button class="btn btn-ghost btn-xs" :disabled="peoBulkBusy" @click="clearPeoSelection">
+            Снять выбор
+          </button>
+        </div>
+        <div class="peo-bulk-actions">
+          <input
+            v-model="peoBulkComment"
+            type="text"
+            class="peo-bulk-comment"
+            placeholder="Комментарий (для отклонения)"
+            :disabled="peoBulkBusy"
+          />
+          <button class="btn btn-primary btn-sm" :disabled="peoBulkBusy" @click="runPeoBulk('approved')">
+            ✓ {{ peoBulkBusy && peoBulkAction === 'approved' ? 'Согласование…' : `Согласовать (${peoSelectedItems.length})` }}
+          </button>
+          <button class="btn btn-danger btn-sm" :disabled="peoBulkBusy" @click="runPeoBulk('rejected')">
+            ✗ {{ peoBulkBusy && peoBulkAction === 'rejected' ? 'Отклонение…' : 'Отклонить' }}
+          </button>
+          <button class="btn btn-ghost btn-sm" :disabled="peoBulkBusy" @click="runPeoBulk('revoke')">
+            ↩ {{ peoBulkBusy && peoBulkAction === 'revoke' ? 'Снятие…' : 'Снять согласование' }}
+          </button>
+        </div>
+        <div v-if="peoBulkBusy" class="peo-bulk-progress">
+          Обработано {{ peoBulkProgress.done }} из {{ peoBulkProgress.total }}…
+        </div>
+      </div>
+      <div v-if="peoBulkStatus || peoBulkError" class="peo-bulk-result">
+        <span v-if="peoBulkStatus" class="peo-bulk-ok">{{ peoBulkStatus }}</span>
+        <span v-if="peoBulkError" class="peo-bulk-err">{{ peoBulkError }}</span>
+        <button class="peo-bulk-x" aria-label="Закрыть" @click="peoBulkStatus = ''; peoBulkError = ''">×</button>
+      </div>
+
       <div class="table-wrap" @keydown="onCopyShortcut" tabindex="0">
         <table id="cost-table-1" class="data-table compact">
           <thead>
             <tr>
+              <th v-if="isVisible('peo_sel')" :class="stickyClasses('peo_sel')" :style="stickyStyle('peo_sel')" class="col-peo-sel">
+                <input
+                  type="checkbox"
+                  :checked="peoPageAllSelected"
+                  :indeterminate.prop="peoPageSomeSelected"
+                  :disabled="!peoPageSelectableRows.length"
+                  title="Выбрать все строки страницы"
+                  @change="togglePeoPage(($event.target as HTMLInputElement).checked)"
+                />
+              </th>
               <th :class="stickyClasses('actions')" :style="stickyStyle('actions')"><span class="col-resize-handle" @mousedown.stop.prevent="startColResize('actions', $event)" @dblclick.stop.prevent="resetColWidth('actions')" title="Изменить ширину · двойной клик — сброс"></span></th>
               <th :class="stickyClasses('raw_rows')" :style="stickyStyle('raw_rows')"><span class="col-resize-handle" @mousedown.stop.prevent="startColResize('raw_rows', $event)" @dblclick.stop.prevent="resetColWidth('raw_rows')" title="Изменить ширину · двойной клик — сброс"></span></th>
               <th v-if="isVisible('bm')" :class="[{ sorted: sortField === 'Бренд-менеджер' }, ...stickyClasses('bm')]" :style="stickyStyle('bm')" @click="toggleSort('Бренд-менеджер')">
@@ -376,6 +432,16 @@
               :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
               @click="selectRow(getOriginalIndex(row))"
             >
+              <td v-if="isVisible('peo_sel')" :class="stickyClasses('peo_sel')" :style="stickyStyle('peo_sel')" class="col-peo-sel">
+                <input
+                  type="checkbox"
+                  :checked="isPeoSelected(row)"
+                  :disabled="!canSelectForPeo(row)"
+                  :title="canSelectForPeo(row) ? 'Выбрать для массового согласования (Shift — диапазон)' : 'Строка недоступна для согласования'"
+                  @click.stop="onPeoCheckboxClick"
+                  @change="onPeoCheckboxChange(row, idx, ($event.target as HTMLInputElement).checked)"
+                />
+              </td>
               <td :class="stickyClasses('actions')" :style="stickyStyle('actions')">
                 <span v-if="isRowLocked(row) && !row._has_pending && !row._has_audit" class="lock-icon" title="Строка заблокирована">🔒</span>
                 <span v-if="row._has_pending" class="state-badge state-badge--pending" title="Ожидает согласования">⏳</span>
@@ -916,6 +982,69 @@
                 </tr>
               </tbody>
             </table>
+
+            <!-- Декоры. Отдельной таблицей, а не строками в предыдущей: у них
+                 нет ни нормы, ни цены материала — стоимость задана суммой
+                 напрямую, и колонки «артикул/свойства» к ним неприменимы. -->
+            <h3 style="font-size:var(--fs-sm);margin:var(--sp-4) 0 var(--sp-2)">
+              Декоры плана
+              <span class="muted" style="font-weight:normal;font-size:var(--fs-xs)">
+                — цена задаётся суммой; правки уходят в «Декоры, руб.» и «Декоры, USD.»
+              </span>
+            </h3>
+            <table class="data-table compact plan-prices-table">
+              <colgroup>
+                <col style="width:38%" />
+                <col style="width:8%" />
+                <col style="width:14%" />
+                <col style="width:14%" />
+                <col style="width:14%" />
+                <col style="width:12%" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Наименование декора</th>
+                  <th class="col-num">Строк</th>
+                  <th class="col-num">Исх. сумма, руб</th>
+                  <th class="col-num">Сумма, руб</th>
+                  <th class="col-num">Сумма, $</th>
+                  <th>Перекрыто версией</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!planDecorRows.length">
+                  <td colspan="6" class="muted" style="text-align:center">
+                    Декоров с признаком КПСС в этом плане не найдено
+                  </td>
+                </tr>
+                <tr v-for="(r, ri) in planDecorRows" :key="'d' + ri"
+                    :class="{ 'plan-row-overridden': r.overridden_rows >= r.rows_count && r.rows_count > 0 }">
+                  <td class="plan-cell-text" :title="r['Декоры, наименование'] || ''">{{ r['Декоры, наименование'] || '—' }}</td>
+                  <td class="col-num num">{{ r.rows_count }}</td>
+                  <td class="col-num num">
+                    {{ fmtPrice4(r.source_price_rub) }}
+                    <span v-if="r.distinct_prices > 1" class="plan-spread-warn"
+                          :title="'Внутри группы было ' + r.distinct_prices + ' разных сумм (' + fmtPrice4(r.min_price_rub) + '…' + fmtPrice4(r.max_price_rub) + '). Применение набора поставит одну на все строки.'">⚠</span>
+                  </td>
+                  <td class="col-num">
+                    <input v-model.number="r.price_rub" type="number" step="0.0001"
+                           class="editor-input col-num" :disabled="planPriceFormLocked"
+                           @input="onPlanPriceEdit(r, 'rub')" />
+                  </td>
+                  <td class="col-num">
+                    <input v-model.number="r.price_usd" type="number" step="0.0001"
+                           class="editor-input col-num" :disabled="planPriceFormLocked"
+                           @input="onPlanPriceEdit(r, 'usd')" />
+                  </td>
+                  <td>
+                    <span v-if="!r.overridden_rows" class="muted">—</span>
+                    <span v-else :class="r.overridden_rows >= r.rows_count ? 'plan-ovr-full' : 'plan-ovr-part'">
+                      {{ r.overridden_rows }} из {{ r.rows_count }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </template>
         </div>
         <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--border);display:flex;justify-content:flex-end;flex-shrink:0">
@@ -1098,12 +1227,16 @@
                   <td><input v-if="editingVersion.isEditing" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ nameDisplayValue(vr) || '—' }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
                   <td>{{ vr['Свойство'] }}</td>
-                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ fmtNorm(vr['Норма']) }}</span></td>
-                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, руб.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else>{{ fmtPrice4(vr['цена материала, руб.']) }}</span></td>
-                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ fmtPrice4(vr['цена материала, USD.']) }}</span></td>
+                  <!-- У декоров нормы и цены материала в источнике нет: их стоимость
+                       задаётся суммой в колонках «Сумма» ниже. Поля скрыты намеренно —
+                       если их заполнить, произведение затрёт сумму декора. -->
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted" title="У декора нет нормы — стоимость задаётся суммой">—</span><input v-else-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ fmtNorm(vr['Норма']) }}</span></td>
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing" :value="vr['цена материала, руб.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else>{{ fmtPrice4(vr['цена материала, руб.']) }}</span></td>
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing" :value="vr['цена материала, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ fmtPrice4(vr['цена материала, USD.']) }}</span></td>
                   <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /><span v-else>{{ vr['Курс на дату расчета'] }}</span></td>
-                  <td class="col-num">{{ fmtPrice4((vr['Норма'] || 0) * (vr['цена материала, руб.'] || 0)) }}</td>
-                  <td class="col-num">{{ fmtPrice4((vr['Норма'] || 0) * (vr['цена материала, USD.'] || 0)) }}</td>
+                  <!-- Для декора сумма редактируется напрямую, для материала считается. -->
+                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing" :value="vr['Декоры, руб.']" type="number" step="0.0001" class="editor-input col-num" title="Стоимость декора — задаётся суммой" @input="onVersionRowEdit(vr, $event, 'Декоры, руб.')" /><span v-else>{{ fmtPrice4(versionRowSum(vr, 'руб.')) }}</span></td>
+                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing" :value="vr['Декоры, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Декоры, USD.')" /><span v-else>{{ fmtPrice4(versionRowSum(vr, 'USD.')) }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr.row_comment" class="editor-input" placeholder="..." @input="onVersionRowEdit(vr, $event, 'row_comment')" /><span v-else>{{ vr.row_comment }}</span></td>
                 </tr>
               </tbody>
@@ -1351,9 +1484,9 @@ const usdColumns = computed(() => COLUMNS_CONFIG.filter(c => usdColumnKeys.inclu
 const costColumns = computed(() => COLUMNS_CONFIG.filter(c => costColumnKeys.includes(c.key)));
 const calcColumns = computed(() => COLUMNS_CONFIG.filter(c => calcColumnKeys.includes(c.key)));
 
-const STICKY_COL_KEYS = ['actions','raw_rows','bm','model','articul','model_name','color','task_num','plan_id'];
-const STICKY_DEFAULT_WIDTHS: Record<string, number> = { actions: 110, raw_rows: 40, bm: 160, model: 110, articul: 90, model_name: 200, color: 120, task_num: 120, plan_id: 90 };
-const STICKY_MIN_WIDTHS: Record<string, number> = { actions: 70, raw_rows: 32, bm: 80, model: 70, articul: 60, model_name: 90, color: 60, task_num: 60, plan_id: 50 };
+const STICKY_COL_KEYS = ['peo_sel','actions','raw_rows','bm','model','articul','model_name','color','task_num','plan_id'];
+const STICKY_DEFAULT_WIDTHS: Record<string, number> = { peo_sel: 34, actions: 110, raw_rows: 40, bm: 160, model: 110, articul: 90, model_name: 200, color: 120, task_num: 120, plan_id: 90 };
+const STICKY_MIN_WIDTHS: Record<string, number> = { peo_sel: 30, actions: 70, raw_rows: 32, bm: 80, model: 70, articul: 60, model_name: 90, color: 60, task_num: 60, plan_id: 50 };
 const STICKY_MAX_WIDTH = 600;
 const WIDTH_STORAGE_KEY = 'cost_sticky_col_widths';
 const STORAGE_KEY = 'cost_column_visibility';
@@ -1380,6 +1513,9 @@ const showColumnSettings = ref(false);
 const pendingVisibility = ref<Record<string, boolean>>({});
 
 function isVisible(key: string): boolean {
+  // Колонка выбора для массового согласования — не в COLUMNS_CONFIG: её нельзя
+  // скрыть настройками, она есть ровно у тех, кто вправе ставить статус ПЭО.
+  if (key === 'peo_sel') return peoBulkEnabled.value;
   return columnVisibility[key] !== false;
 }
 
@@ -1412,6 +1548,7 @@ function deselectAllColumns() {
 
 const visibleColumnCount = computed(() => {
   let count = 2; // actions + raw_rows (always visible)
+  if (peoBulkEnabled.value) count++; // колонка выбора для массового согласования
   for (const c of COLUMNS_CONFIG) {
     if (columnVisibility[c.key]) count++;
   }
@@ -1910,6 +2047,7 @@ async function loadData() {
     currentPage.value = 0;
     selectedRowIndex.value = -1;
     changedRows.clear();
+    clearPeoSelection();
     lastError.value = "";
     // Populate price_rf/kz/uz, comments and markup selections from response
     for (let i = 0; i < allAggregated.value.length; i++) {
@@ -2114,6 +2252,10 @@ const planPricesLoaded = ref(false);
 const planPricesStatus = ref('');
 const planPriceSets = ref<PlanPriceSet[]>([]);
 const planPriceRows = ref<PlanPriceRow[]>([]);
+/** Декоры набора. Отдельным списком, потому что ключ у них другой
+ * («Декоры, наименование» вместо пяти полей материала) и цена — это сама
+ * сумма, а не множитель к норме (см. миграцию 0035). */
+const planDecorRows = ref<any[]>([]);
 const planPriceForm = ref<{ set_id: number | null; title: string; rate: number | null; status: string }>({
   set_id: null, title: '', rate: null, status: 'draft',
 });
@@ -2144,7 +2286,7 @@ async function loadPlanPrices() {
   planPricesStatus.value = '';
   try {
     const [matsResp, setsResp] = await Promise.all([
-      $fetch<{ data: PlanPriceRow[] }>(
+      $fetch<{ data: PlanPriceRow[]; decors: any[] }>(
         `${apiBase.value}/api/cost/plan-materials?plan_id=${encodeURIComponent(plan)}`,
         { headers: fetchHeaders.value }),
       $fetch<{ data: PlanPriceSet[] }>(
@@ -2159,6 +2301,14 @@ async function loadPlanPrices() {
       source_price_usd: m.avg_price_usd,
       price_rub: m.avg_price_rub,
       price_usd: m.avg_price_usd,
+    }));
+    planDecorRows.value = (matsResp.decors || []).map((d: any) => ({
+      ...d,
+      row_kind: 'decor',
+      source_price_rub: d.avg_price_rub,
+      source_price_usd: d.avg_price_usd,
+      price_rub: d.avg_price_rub,
+      price_usd: d.avg_price_usd,
     }));
     resetPlanPriceForm();
     // Курс по умолчанию — средний по плану, если он один и тот же.
@@ -2179,7 +2329,7 @@ async function loadPlanPrices() {
 
 function resetPlanPriceForm() {
   planPriceForm.value = { set_id: null, title: '', rate: planPriceForm.value.rate, status: 'draft' };
-  for (const r of planPriceRows.value) {
+  for (const r of [...planPriceRows.value, ...planDecorRows.value]) {
     r.price_rub = r.source_price_rub;
     r.price_usd = r.source_price_usd;
   }
@@ -2199,9 +2349,18 @@ async function openPlanPriceSet(setId: number) {
     // Накладываем цены набора на грид по ключу материала; материалы, которых в
     // наборе нет, остаются с исходной ценой.
     const byKey = new Map<string, any>();
-    for (const r of data.rows || []) byKey.set(planRowKey(r), r);
+    const byDecor = new Map<string, any>();
+    for (const r of data.rows || []) {
+      if (r.row_kind === 'decor') byDecor.set(String(r['Наименование'] ?? '').trim(), r);
+      else byKey.set(planRowKey(r), r);
+    }
     for (const r of planPriceRows.value) {
       const saved = byKey.get(planRowKey(r));
+      r.price_rub = saved ? saved.price_rub : r.source_price_rub;
+      r.price_usd = saved ? saved.price_usd : r.source_price_usd;
+    }
+    for (const r of planDecorRows.value) {
+      const saved = byDecor.get(String(r['Декоры, наименование'] ?? '').trim());
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
       r.price_usd = saved ? saved.price_usd : r.source_price_usd;
     }
@@ -2257,18 +2416,32 @@ async function savePlanPriceSet() {
         title: planPriceForm.value.title,
         rate: planPriceForm.value.rate,
         username: user.value?.email || 'system',
-        rows: planPriceRows.value.map(r => ({
-          'Наименование': r['Наименование'],
-          'артикул материала': r['артикул материала'],
-          'свойство1': r['свойство1'],
-          'свойство2': r['свойство2'],
-          'свойство3': r['свойство3'],
-          price_rub: r.price_rub,
-          price_usd: r.price_usd,
-          source_price_rub: r.source_price_rub,
-          source_price_usd: r.source_price_usd,
-          rows_count: r.rows_count,
-        })),
+        rows: [
+          ...planPriceRows.value.map(r => ({
+            row_kind: 'material',
+            'Наименование': r['Наименование'],
+            'артикул материала': r['артикул материала'],
+            'свойство1': r['свойство1'],
+            'свойство2': r['свойство2'],
+            'свойство3': r['свойство3'],
+            price_rub: r.price_rub,
+            price_usd: r.price_usd,
+            source_price_rub: r.source_price_rub,
+            source_price_usd: r.source_price_usd,
+            rows_count: r.rows_count,
+          })),
+          // Декоры: ключ один — наименование декора; бэкенд кладёт его в
+          // колонку "Наименование" (см. миграцию 0035).
+          ...planDecorRows.value.map(r => ({
+            row_kind: 'decor',
+            'Декоры, наименование': r['Декоры, наименование'],
+            price_rub: r.price_rub,
+            price_usd: r.price_usd,
+            source_price_rub: r.source_price_rub,
+            source_price_usd: r.source_price_usd,
+            rows_count: r.rows_count,
+          })),
+        ],
       },
     });
     planPriceForm.value.set_id = resp.set_id;
@@ -3504,11 +3677,25 @@ const deleteSelectedRows = () => {
 const onVersionRowEdit = (row: any, event: Event, field: string) => {
   const target = event.target as HTMLInputElement | HTMLSelectElement;
   let val: any = target.value;
-  // Parse numeric fields
-  if (field === 'Норма' || field === 'цена материала, руб.' || field === 'цена материала, USD.' || field === 'Курс на дату расчета') {
+  // Parse numeric fields. «Декоры, руб./USD.» — стоимость декора, задаётся
+  // суммой напрямую: нормы и цены материала у декоров в источнике нет.
+  if (field === 'Норма' || field === 'цена материала, руб.' || field === 'цена материала, USD.'
+      || field === 'Курс на дату расчета' || field === 'Декоры, руб.' || field === 'Декоры, USD.') {
     val = target.value === '' ? null : parseFloat(target.value);
   }
   row[field] = val;
+
+  // Сумма декора: пересчитываем парную валюту по курсу строки, как это делают
+  // цены материала ниже.
+  if (field === 'Декоры, руб.' || field === 'Декоры, USD.') {
+    const decorRate = Number(row['Курс на дату расчета'] || 0);
+    if (decorRate > 0) {
+      if (field === 'Декоры, руб.') row['Декоры, USD.'] = Number(val || 0) / decorRate;
+      else row['Декоры, руб.'] = Number(val || 0) * decorRate;
+    }
+    if (row.change_type === 'original') row.change_type = 'modified';
+    return;
+  }
   // Mark row as modified (unless it's already 'added')
   if (row.change_type === 'original') {
     row.change_type = 'modified';
@@ -3605,6 +3792,16 @@ function normalizeVersionRow(rr: any): any {
 }
 
 /** Определяет, вносит ли строка нулевой вклад в себестоимость (нет нормы или нет цены). */
+/** Сумма по строке. У материалов это Норма × цена, у декоров — их собственная
+ * сумма из «Декоры, руб./USD.»: нормы и цены у декоров в источнике нет вообще.
+ * Раньше здесь всегда считалось произведение, и строки декоров показывали 0,
+ * хотя в себестоимость входили. */
+function versionRowSum(row: any, cur: 'руб.' | 'USD.'): number {
+  if (isDecorRow(row)) return Number(row[`Декоры, ${cur}`] || 0);
+  const price = Number(row[cur === 'руб.' ? 'цена материала, руб.' : 'цена материала, USD.'] || 0);
+  return Number(row['Норма'] || 0) * price;
+}
+
 function isZeroCostRow(row: any): boolean {
   const norm = Number(row['Норма'] || 0);
   const priceRub = Number(row['цена материала, руб.'] || 0);
@@ -3950,6 +4147,20 @@ const recomputeGroupApproved = (row: any) => {
   for (const r of siblings) r._group_approved = allApproved;
 };
 
+/** Ключ согласования одной строки агрегата: (модель, артикул, признак, PLAN_ID, № задания).
+ *
+ * Значения тримим: в `/aggregated` JOIN к `cost_calc_approvals` идёт по
+ * `TRIM(cd."Модель") = ca.model` и т.д., поэтому запись с пробелами по краям
+ * просто не найдётся обратно и статус не подтянется. */
+const peoKeyFields = (row: any) => ({
+  model: (row['Модель'] ?? '').toString().trim(),
+  articul: (row['Артикул'] ?? '').toString().trim(),
+  calc_sign: (row['Признак калькуляции'] ?? '').toString().trim(),
+  plan_id: (row['PLAN_ID'] ?? '').toString().trim(),
+  // Пустое задание шлём как null — так делал одиночный попап до массового режима.
+  task_number: (row['Номер задания производства'] ?? '').toString().trim() || null,
+});
+
 const setApproval = async (status: 'approved' | 'rejected') => {
   if (!approvalTarget.value) return;
   approving.value = true;
@@ -3960,10 +4171,9 @@ const setApproval = async (status: 'approved' | 'rejected') => {
       method: 'POST',
       headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
       body: JSON.stringify({
+        approved_by: user.value?.email || 'system',
         approvals: [{
-          model: r['Модель'], articul: r['Артикул'],
-          calc_sign: r['Признак калькуляции'], plan_id: r['PLAN_ID'],
-          task_number: r['Номер задания производства'] || null,
+          ...peoKeyFields(r),
           status, comment: status === 'rejected' ? approvalComment.value : '',
         }],
       }),
@@ -3987,13 +4197,7 @@ const revokeApproval = async (row: any) => {
     await $fetch(`${apiBase.value}/api/cost/revoke-approval`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
-      body: {
-        model: row['Модель'],
-        articul: row['Артикул'],
-        calc_sign: row['Признак калькуляции'],
-        plan_id: row['PLAN_ID'],
-        task_number: row['Номер задания производства'] || null,
-      },
+      body: peoKeyFields(row),
     });
     if (approvalTarget.value) {
       approvalTarget.value.peo_status = null;
@@ -4006,6 +4210,193 @@ const revokeApproval = async (row: any) => {
     approving.value = false;
   }
 };
+
+// ── Массовое согласование ПЭО ───────────────────────────────────────────────
+// Согласование пер-заданное, а строк агрегата с одним ключом может быть несколько
+// (разные даты расчёта и уровни цен). Поэтому выбор храним по ключу: «двойники»
+// отмечаются вместе, а в запрос ключ уходит ровно один раз.
+
+/** Пачка на один запрос. На бэке потолок 1000 (APPROVALS_BATCH_LIMIT). */
+const PEO_BULK_CHUNK = 200;
+
+const peoBulkEnabled = computed(() => can('cost:approve') || can('cost:peo_mark'));
+
+const peoKey = (row: any): string => {
+  const k = peoKeyFields(row);
+  return [k.model, k.articul, k.calc_sign ?? '', k.plan_id ?? '', k.task_number ?? ''].join('');
+};
+const peoItemKey = (it: any): string =>
+  [it.model ?? '', it.articul ?? '', it.calc_sign ?? '', it.plan_id ?? '', it.task_number ?? ''].join('');
+
+/** Те же условия, при которых открывается одиночный попап ПЭО. */
+const canSelectForPeo = (row: any): boolean =>
+  peoBulkEnabled.value && !isRowLocked(row) && !row._has_audit;
+
+const peoSelectedKeys = ref<Set<string>>(new Set());
+const peoBulkBusy = ref(false);
+const peoBulkAction = ref<'' | 'approved' | 'rejected' | 'revoke'>('');
+const peoBulkProgress = reactive({ done: 0, total: 0 });
+const peoBulkStatus = ref('');
+const peoBulkError = ref('');
+const peoBulkComment = ref('');
+
+const isPeoSelected = (row: any): boolean => peoSelectedKeys.value.has(peoKey(row));
+
+const peoSelectableRows = computed(() => sortedRows.value.filter(canSelectForPeo));
+const peoPageSelectableRows = computed(() => pageRows.value.filter(canSelectForPeo));
+
+const peoPageAllSelected = computed(
+  () => peoPageSelectableRows.value.length > 0 && peoPageSelectableRows.value.every(isPeoSelected)
+);
+const peoPageSomeSelected = computed(
+  () => !peoPageAllSelected.value && peoPageSelectableRows.value.some(isPeoSelected)
+);
+
+/** Уникальные ключи выбранного — ровно то, что уходит на бэкенд. */
+const peoSelectedItems = computed(() => {
+  const seen = new Set<string>();
+  const out: ReturnType<typeof peoKeyFields>[] = [];
+  for (const r of peoSelectableRows.value) {
+    const key = peoKey(r);
+    if (!peoSelectedKeys.value.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(peoKeyFields(r));
+  }
+  return out;
+});
+/** Сколько строк таблицы затронет операция — обычно больше, чем калькуляций. */
+const peoSelectedRowCount = computed(
+  () => peoSelectableRows.value.filter(isPeoSelected).length
+);
+
+// Shift-клик выделяет диапазон строк страницы — как в привычных таблицах.
+let peoShiftPressed = false;
+let peoLastClickedIdx: number | null = null;
+
+const onPeoCheckboxClick = (e: MouseEvent) => { peoShiftPressed = e.shiftKey; };
+
+const onPeoCheckboxChange = (row: any, pageIdx: number, checked: boolean) => {
+  const next = new Set(peoSelectedKeys.value);
+  const apply = (r: any) => { if (checked) next.add(peoKey(r)); else next.delete(peoKey(r)); };
+  if (peoShiftPressed && peoLastClickedIdx !== null) {
+    const from = Math.min(peoLastClickedIdx, pageIdx);
+    const to = Math.max(peoLastClickedIdx, pageIdx);
+    for (let i = from; i <= to; i++) {
+      const r = pageRows.value[i];
+      if (r && canSelectForPeo(r)) apply(r);
+    }
+  } else {
+    apply(row);
+  }
+  peoShiftPressed = false;
+  peoLastClickedIdx = pageIdx;
+  peoSelectedKeys.value = next;
+};
+
+const togglePeoPage = (checked: boolean) => {
+  const next = new Set(peoSelectedKeys.value);
+  for (const r of peoPageSelectableRows.value) {
+    if (checked) next.add(peoKey(r)); else next.delete(peoKey(r));
+  }
+  peoLastClickedIdx = null;
+  peoSelectedKeys.value = next;
+};
+
+const selectAllFilteredForPeo = () => {
+  peoLastClickedIdx = null;
+  peoSelectedKeys.value = new Set(peoSelectableRows.value.map(peoKey));
+};
+
+const clearPeoSelection = () => {
+  peoLastClickedIdx = null;
+  peoSelectedKeys.value = new Set();
+  peoBulkStatus.value = '';
+  peoBulkError.value = '';
+};
+
+/** Проставляет статус во все строки с этими ключами и пересчитывает _group_approved. */
+const applyPeoStatusLocally = (items: any[], status: 'approved' | 'rejected' | null) => {
+  const keys = new Set(items.map(peoItemKey));
+  const email = user.value?.email || '';
+  const now = new Date().toISOString();
+  const touched: any[] = [];
+  for (const r of allAggregated.value) {
+    if (!keys.has(peoKey(r))) continue;
+    r.peo_status = status;
+    r.peo_approved_by = status === 'approved' ? email : null;
+    r.peo_approved_at = status === 'approved' ? now : null;
+    touched.push(r);
+  }
+  // recomputeGroupApproved сканирует весь массив — на группу зовём один раз.
+  const doneGroups = new Set<string>();
+  for (const r of touched) {
+    const g = [r['Модель'], r['Артикул'], r['PLAN_ID'], r['Признак калькуляции']].join('');
+    if (doneGroups.has(g)) continue;
+    doneGroups.add(g);
+    recomputeGroupApproved(r);
+  }
+};
+
+async function runPeoBulk(action: 'approved' | 'rejected' | 'revoke') {
+  if (peoBulkBusy.value) return;
+  const items = peoSelectedItems.value;
+  if (!items.length) return;
+  if (action === 'revoke' && !confirm(`Снять согласование с ${items.length} калькуляций?`)) return;
+
+  const comment = action === 'rejected' ? peoBulkComment.value.trim() : '';
+  peoBulkBusy.value = true;
+  peoBulkAction.value = action;
+  peoBulkStatus.value = '';
+  peoBulkError.value = '';
+  peoBulkProgress.done = 0;
+  peoBulkProgress.total = items.length;
+
+  const okKeys = new Set<string>();
+  let failedCount = 0;
+  let lastErr = '';
+
+  try {
+    for (let i = 0; i < items.length; i += PEO_BULK_CHUNK) {
+      const chunk = items.slice(i, i + PEO_BULK_CHUNK);
+      try {
+        if (action === 'revoke') {
+          await $fetch(`${apiBase.value}/api/cost/revoke-approvals-batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+            body: { approvals: chunk },
+          });
+        } else {
+          await $fetch(`${apiBase.value}/api/cost/approve-calculation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+            body: {
+              approved_by: user.value?.email || 'system',
+              approvals: chunk.map((it) => ({ ...it, status: action, comment })),
+            },
+          });
+        }
+        applyPeoStatusLocally(chunk, action === 'revoke' ? null : action);
+        for (const it of chunk) okKeys.add(peoItemKey(it));
+      } catch (e: any) {
+        failedCount += chunk.length;
+        lastErr = e?.data?.detail || e?.message || String(e);
+      }
+      peoBulkProgress.done = Math.min(i + chunk.length, items.length);
+    }
+  } finally {
+    // Обработанное снимаем с выбора, неудачное оставляем — можно повторить.
+    const rest = new Set(peoSelectedKeys.value);
+    for (const k of okKeys) rest.delete(k);
+    peoSelectedKeys.value = rest;
+    peoBulkBusy.value = false;
+    peoBulkAction.value = '';
+  }
+
+  const verb = action === 'approved' ? 'Согласовано' : action === 'rejected' ? 'Отклонено' : 'Снято согласование';
+  peoBulkStatus.value = `${verb}: ${okKeys.size} из ${items.length} калькуляций`;
+  if (failedCount) peoBulkError.value = `Не удалось обработать ${failedCount}: ${lastErr}`;
+  if (action === 'rejected') peoBulkComment.value = '';
+}
 
 // ── Excel export ────────────────────────────────────────────────────────────
 
@@ -4095,7 +4486,8 @@ const onCopyShortcut = (e: KeyboardEvent) => {
   const rows = table.querySelectorAll("tr");
   let tsv = "";
   rows.forEach((r) => {
-    const cells = r.querySelectorAll("td, th");
+    // Колонку выбора для массового согласования в буфер не тащим — она служебная.
+    const cells = r.querySelectorAll("td:not(.col-peo-sel), th:not(.col-peo-sel)");
     const line: string[] = [];
     cells.forEach((c) => line.push((c as HTMLElement).innerText.replace(/\n/g, " ").trim()));
     tsv += line.join("\t") + "\n";
@@ -5306,6 +5698,44 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .type-tag.clickable { cursor:pointer; padding:2px 6px; border-radius:4px; background:var(--bg-tonal, #f3f4f6); border:1px solid var(--border-color, #e5e7eb); }
 .type-tag.clickable:hover { background:var(--bg-hover, #e5e7eb); }
 .col-peo { width:48px; text-align:center; }
+.col-peo-sel { text-align:center; padding-left:0; padding-right:0; }
+.col-peo-sel input { cursor:pointer; }
+.col-peo-sel input:disabled { cursor:default; opacity:.35; }
+
+/* Массовое согласование ПЭО */
+.peo-bulk-bar {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom:1px solid var(--border);
+  border-left:3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-surface-2, var(--bg-surface)));
+  flex-shrink:0;
+}
+.peo-bulk-info { display:flex; align-items:center; gap: var(--sp-2); flex-wrap:wrap; }
+.peo-bulk-actions { display:flex; align-items:center; gap: var(--sp-2); margin-left:auto; flex-wrap:wrap; }
+.peo-bulk-comment {
+  padding:4px 8px;
+  border:1px solid var(--border-color, #d1d5db);
+  border-radius:4px;
+  font-size:var(--fs-xs, 12px);
+  min-width:200px;
+}
+.peo-bulk-progress { flex-basis:100%; font-size:var(--fs-xs, 12px); color:var(--text-muted); }
+.peo-bulk-result {
+  display:flex;
+  align-items:center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom:1px solid var(--border);
+  font-size:var(--fs-sm, 13px);
+}
+.peo-bulk-ok { color: var(--pos, #16a34a); }
+.peo-bulk-err { color: var(--neg, #dc2626); }
+.peo-bulk-x { margin-left:auto; background:none; border:none; cursor:pointer; font-size:16px; color:var(--text-muted); }
+
 .peo-badge { cursor:pointer; font-size:16px; }
 .peo-readonly .peo-badge { cursor:default; }
 .peo-active .peo-badge { background:rgba(99,102,241,0.15); border-radius:4px; }
