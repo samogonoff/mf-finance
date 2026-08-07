@@ -916,6 +916,69 @@
                 </tr>
               </tbody>
             </table>
+
+            <!-- Декоры. Отдельной таблицей, а не строками в предыдущей: у них
+                 нет ни нормы, ни цены материала — стоимость задана суммой
+                 напрямую, и колонки «артикул/свойства» к ним неприменимы. -->
+            <h3 style="font-size:var(--fs-sm);margin:var(--sp-4) 0 var(--sp-2)">
+              Декоры плана
+              <span class="muted" style="font-weight:normal;font-size:var(--fs-xs)">
+                — цена задаётся суммой; правки уходят в «Декоры, руб.» и «Декоры, USD.»
+              </span>
+            </h3>
+            <table class="data-table compact plan-prices-table">
+              <colgroup>
+                <col style="width:38%" />
+                <col style="width:8%" />
+                <col style="width:14%" />
+                <col style="width:14%" />
+                <col style="width:14%" />
+                <col style="width:12%" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Наименование декора</th>
+                  <th class="col-num">Строк</th>
+                  <th class="col-num">Исх. сумма, руб</th>
+                  <th class="col-num">Сумма, руб</th>
+                  <th class="col-num">Сумма, $</th>
+                  <th>Перекрыто версией</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!planDecorRows.length">
+                  <td colspan="6" class="muted" style="text-align:center">
+                    Декоров с признаком КПСС в этом плане не найдено
+                  </td>
+                </tr>
+                <tr v-for="(r, ri) in planDecorRows" :key="'d' + ri"
+                    :class="{ 'plan-row-overridden': r.overridden_rows >= r.rows_count && r.rows_count > 0 }">
+                  <td class="plan-cell-text" :title="r['Декоры, наименование'] || ''">{{ r['Декоры, наименование'] || '—' }}</td>
+                  <td class="col-num num">{{ r.rows_count }}</td>
+                  <td class="col-num num">
+                    {{ fmtPrice4(r.source_price_rub) }}
+                    <span v-if="r.distinct_prices > 1" class="plan-spread-warn"
+                          :title="'Внутри группы было ' + r.distinct_prices + ' разных сумм (' + fmtPrice4(r.min_price_rub) + '…' + fmtPrice4(r.max_price_rub) + '). Применение набора поставит одну на все строки.'">⚠</span>
+                  </td>
+                  <td class="col-num">
+                    <input v-model.number="r.price_rub" type="number" step="0.0001"
+                           class="editor-input col-num" :disabled="planPriceFormLocked"
+                           @input="onPlanPriceEdit(r, 'rub')" />
+                  </td>
+                  <td class="col-num">
+                    <input v-model.number="r.price_usd" type="number" step="0.0001"
+                           class="editor-input col-num" :disabled="planPriceFormLocked"
+                           @input="onPlanPriceEdit(r, 'usd')" />
+                  </td>
+                  <td>
+                    <span v-if="!r.overridden_rows" class="muted">—</span>
+                    <span v-else :class="r.overridden_rows >= r.rows_count ? 'plan-ovr-full' : 'plan-ovr-part'">
+                      {{ r.overridden_rows }} из {{ r.rows_count }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </template>
         </div>
         <div style="padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--border);display:flex;justify-content:flex-end;flex-shrink:0">
@@ -1098,12 +1161,16 @@
                   <td><input v-if="editingVersion.isEditing" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ nameDisplayValue(vr) || '—' }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
                   <td>{{ vr['Свойство'] }}</td>
-                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ fmtNorm(vr['Норма']) }}</span></td>
-                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, руб.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else>{{ fmtPrice4(vr['цена материала, руб.']) }}</span></td>
-                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['цена материала, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ fmtPrice4(vr['цена материала, USD.']) }}</span></td>
+                  <!-- У декоров нормы и цены материала в источнике нет: их стоимость
+                       задаётся суммой в колонках «Сумма» ниже. Поля скрыты намеренно —
+                       если их заполнить, произведение затрёт сумму декора. -->
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted" title="У декора нет нормы — стоимость задаётся суммой">—</span><input v-else-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ fmtNorm(vr['Норма']) }}</span></td>
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing" :value="vr['цена материала, руб.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else>{{ fmtPrice4(vr['цена материала, руб.']) }}</span></td>
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing" :value="vr['цена материала, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ fmtPrice4(vr['цена материала, USD.']) }}</span></td>
                   <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /><span v-else>{{ vr['Курс на дату расчета'] }}</span></td>
-                  <td class="col-num">{{ fmtPrice4((vr['Норма'] || 0) * (vr['цена материала, руб.'] || 0)) }}</td>
-                  <td class="col-num">{{ fmtPrice4((vr['Норма'] || 0) * (vr['цена материала, USD.'] || 0)) }}</td>
+                  <!-- Для декора сумма редактируется напрямую, для материала считается. -->
+                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing" :value="vr['Декоры, руб.']" type="number" step="0.0001" class="editor-input col-num" title="Стоимость декора — задаётся суммой" @input="onVersionRowEdit(vr, $event, 'Декоры, руб.')" /><span v-else>{{ fmtPrice4(versionRowSum(vr, 'руб.')) }}</span></td>
+                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing" :value="vr['Декоры, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Декоры, USD.')" /><span v-else>{{ fmtPrice4(versionRowSum(vr, 'USD.')) }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr.row_comment" class="editor-input" placeholder="..." @input="onVersionRowEdit(vr, $event, 'row_comment')" /><span v-else>{{ vr.row_comment }}</span></td>
                 </tr>
               </tbody>
@@ -2114,6 +2181,10 @@ const planPricesLoaded = ref(false);
 const planPricesStatus = ref('');
 const planPriceSets = ref<PlanPriceSet[]>([]);
 const planPriceRows = ref<PlanPriceRow[]>([]);
+/** Декоры набора. Отдельным списком, потому что ключ у них другой
+ * («Декоры, наименование» вместо пяти полей материала) и цена — это сама
+ * сумма, а не множитель к норме (см. миграцию 0035). */
+const planDecorRows = ref<any[]>([]);
 const planPriceForm = ref<{ set_id: number | null; title: string; rate: number | null; status: string }>({
   set_id: null, title: '', rate: null, status: 'draft',
 });
@@ -2144,7 +2215,7 @@ async function loadPlanPrices() {
   planPricesStatus.value = '';
   try {
     const [matsResp, setsResp] = await Promise.all([
-      $fetch<{ data: PlanPriceRow[] }>(
+      $fetch<{ data: PlanPriceRow[]; decors: any[] }>(
         `${apiBase.value}/api/cost/plan-materials?plan_id=${encodeURIComponent(plan)}`,
         { headers: fetchHeaders.value }),
       $fetch<{ data: PlanPriceSet[] }>(
@@ -2159,6 +2230,14 @@ async function loadPlanPrices() {
       source_price_usd: m.avg_price_usd,
       price_rub: m.avg_price_rub,
       price_usd: m.avg_price_usd,
+    }));
+    planDecorRows.value = (matsResp.decors || []).map((d: any) => ({
+      ...d,
+      row_kind: 'decor',
+      source_price_rub: d.avg_price_rub,
+      source_price_usd: d.avg_price_usd,
+      price_rub: d.avg_price_rub,
+      price_usd: d.avg_price_usd,
     }));
     resetPlanPriceForm();
     // Курс по умолчанию — средний по плану, если он один и тот же.
@@ -2179,7 +2258,7 @@ async function loadPlanPrices() {
 
 function resetPlanPriceForm() {
   planPriceForm.value = { set_id: null, title: '', rate: planPriceForm.value.rate, status: 'draft' };
-  for (const r of planPriceRows.value) {
+  for (const r of [...planPriceRows.value, ...planDecorRows.value]) {
     r.price_rub = r.source_price_rub;
     r.price_usd = r.source_price_usd;
   }
@@ -2199,9 +2278,18 @@ async function openPlanPriceSet(setId: number) {
     // Накладываем цены набора на грид по ключу материала; материалы, которых в
     // наборе нет, остаются с исходной ценой.
     const byKey = new Map<string, any>();
-    for (const r of data.rows || []) byKey.set(planRowKey(r), r);
+    const byDecor = new Map<string, any>();
+    for (const r of data.rows || []) {
+      if (r.row_kind === 'decor') byDecor.set(String(r['Наименование'] ?? '').trim(), r);
+      else byKey.set(planRowKey(r), r);
+    }
     for (const r of planPriceRows.value) {
       const saved = byKey.get(planRowKey(r));
+      r.price_rub = saved ? saved.price_rub : r.source_price_rub;
+      r.price_usd = saved ? saved.price_usd : r.source_price_usd;
+    }
+    for (const r of planDecorRows.value) {
+      const saved = byDecor.get(String(r['Декоры, наименование'] ?? '').trim());
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
       r.price_usd = saved ? saved.price_usd : r.source_price_usd;
     }
@@ -2257,18 +2345,32 @@ async function savePlanPriceSet() {
         title: planPriceForm.value.title,
         rate: planPriceForm.value.rate,
         username: user.value?.email || 'system',
-        rows: planPriceRows.value.map(r => ({
-          'Наименование': r['Наименование'],
-          'артикул материала': r['артикул материала'],
-          'свойство1': r['свойство1'],
-          'свойство2': r['свойство2'],
-          'свойство3': r['свойство3'],
-          price_rub: r.price_rub,
-          price_usd: r.price_usd,
-          source_price_rub: r.source_price_rub,
-          source_price_usd: r.source_price_usd,
-          rows_count: r.rows_count,
-        })),
+        rows: [
+          ...planPriceRows.value.map(r => ({
+            row_kind: 'material',
+            'Наименование': r['Наименование'],
+            'артикул материала': r['артикул материала'],
+            'свойство1': r['свойство1'],
+            'свойство2': r['свойство2'],
+            'свойство3': r['свойство3'],
+            price_rub: r.price_rub,
+            price_usd: r.price_usd,
+            source_price_rub: r.source_price_rub,
+            source_price_usd: r.source_price_usd,
+            rows_count: r.rows_count,
+          })),
+          // Декоры: ключ один — наименование декора; бэкенд кладёт его в
+          // колонку "Наименование" (см. миграцию 0035).
+          ...planDecorRows.value.map(r => ({
+            row_kind: 'decor',
+            'Декоры, наименование': r['Декоры, наименование'],
+            price_rub: r.price_rub,
+            price_usd: r.price_usd,
+            source_price_rub: r.source_price_rub,
+            source_price_usd: r.source_price_usd,
+            rows_count: r.rows_count,
+          })),
+        ],
       },
     });
     planPriceForm.value.set_id = resp.set_id;
@@ -3504,11 +3606,25 @@ const deleteSelectedRows = () => {
 const onVersionRowEdit = (row: any, event: Event, field: string) => {
   const target = event.target as HTMLInputElement | HTMLSelectElement;
   let val: any = target.value;
-  // Parse numeric fields
-  if (field === 'Норма' || field === 'цена материала, руб.' || field === 'цена материала, USD.' || field === 'Курс на дату расчета') {
+  // Parse numeric fields. «Декоры, руб./USD.» — стоимость декора, задаётся
+  // суммой напрямую: нормы и цены материала у декоров в источнике нет.
+  if (field === 'Норма' || field === 'цена материала, руб.' || field === 'цена материала, USD.'
+      || field === 'Курс на дату расчета' || field === 'Декоры, руб.' || field === 'Декоры, USD.') {
     val = target.value === '' ? null : parseFloat(target.value);
   }
   row[field] = val;
+
+  // Сумма декора: пересчитываем парную валюту по курсу строки, как это делают
+  // цены материала ниже.
+  if (field === 'Декоры, руб.' || field === 'Декоры, USD.') {
+    const decorRate = Number(row['Курс на дату расчета'] || 0);
+    if (decorRate > 0) {
+      if (field === 'Декоры, руб.') row['Декоры, USD.'] = Number(val || 0) / decorRate;
+      else row['Декоры, руб.'] = Number(val || 0) * decorRate;
+    }
+    if (row.change_type === 'original') row.change_type = 'modified';
+    return;
+  }
   // Mark row as modified (unless it's already 'added')
   if (row.change_type === 'original') {
     row.change_type = 'modified';
@@ -3605,6 +3721,16 @@ function normalizeVersionRow(rr: any): any {
 }
 
 /** Определяет, вносит ли строка нулевой вклад в себестоимость (нет нормы или нет цены). */
+/** Сумма по строке. У материалов это Норма × цена, у декоров — их собственная
+ * сумма из «Декоры, руб./USD.»: нормы и цены у декоров в источнике нет вообще.
+ * Раньше здесь всегда считалось произведение, и строки декоров показывали 0,
+ * хотя в себестоимость входили. */
+function versionRowSum(row: any, cur: 'руб.' | 'USD.'): number {
+  if (isDecorRow(row)) return Number(row[`Декоры, ${cur}`] || 0);
+  const price = Number(row[cur === 'руб.' ? 'цена материала, руб.' : 'цена материала, USD.'] || 0);
+  return Number(row['Норма'] || 0) * price;
+}
+
 function isZeroCostRow(row: any): boolean {
   const norm = Number(row['Норма'] || 0);
   const priceRub = Number(row['цена материала, руб.'] || 0);
