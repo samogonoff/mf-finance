@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import mocks
-from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
+from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -1822,13 +1822,24 @@ async def admin_delete_dwh_record(payload: dict, _: str = Depends(_require_perm(
 # ── PEO approval (Stream H) ────────────────────────────────────────────────
 
 
+# Потолок на одну пачку: массовое согласование с главной таблицы шлётся чанками,
+# лимит защищает от «согласовать весь кеш одним запросом».
+APPROVALS_BATCH_LIMIT = 1000
+
+
 @router.post("/approve-calculation")
 async def approve_calculation(payload: dict, _: str = Depends(_require_any_perm("cost:approve", "cost:peo_mark"))) -> dict:
     approvals = payload.get("approvals", [])
     approved_by = payload.get("approved_by", "system")
     if not approvals:
         raise HTTPException(400, "approvals list required")
+    if len(approvals) > APPROVALS_BATCH_LIMIT:
+        raise HTTPException(400, f"Слишком большая пачка: {len(approvals)} > {APPROVALS_BATCH_LIMIT}")
     for a in approvals:
+        if not a.get("model") or not a.get("articul"):
+            raise HTTPException(400, "model and articul required for every approval")
+        if a.get("status") not in ("approved", "rejected", "pending"):
+            raise HTTPException(400, f"Недопустимый статус: {a.get('status')!r}")
         a.setdefault("approved_by", approved_by)
     if _is_mock():
         return mocks.save_approvals_batch(approvals)
@@ -1846,9 +1857,26 @@ async def revoke_approval_endpoint(payload: dict, _: str = Depends(_require_any_
     if not model or not articul:
         raise HTTPException(400, "model and articul required")
     if _is_mock():
-        return mocks.revoke_approval(model, articul, calc_sign, plan_id)
+        return mocks.revoke_approval(model, articul, calc_sign, plan_id, task_number)
     await revoke_approval(model, articul, calc_sign, plan_id, task_number=task_number)
     return {"success": True}
+
+
+@router.post("/revoke-approvals-batch")
+async def revoke_approvals_batch_endpoint(payload: dict, _: str = Depends(_require_any_perm("cost:approve", "cost:peo_mark"))) -> dict:
+    """Массовое снятие согласования — тот же ключ, что у /approve-calculation."""
+    items = payload.get("approvals", [])
+    if not items:
+        raise HTTPException(400, "approvals list required")
+    if len(items) > APPROVALS_BATCH_LIMIT:
+        raise HTTPException(400, f"Слишком большая пачка: {len(items)} > {APPROVALS_BATCH_LIMIT}")
+    for it in items:
+        if not it.get("model") or not it.get("articul"):
+            raise HTTPException(400, "model and articul required for every item")
+    if _is_mock():
+        return mocks.revoke_approvals_batch(items)
+    deleted = await revoke_approvals_batch(items)
+    return {"success": True, "count": deleted}
 
 
 @router.get("/approval-status")

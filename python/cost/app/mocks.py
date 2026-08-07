@@ -562,7 +562,7 @@ def details(model: str) -> dict:
 
 # ── Mock versioning (Stream G) ─────────────────────────────────────────────
 
-_mock_approvals_store: dict[tuple[str, str, str | None, str | None], str] = {}
+_mock_approvals_store: dict[tuple[str, str, str | None, str | None, str | None], str] = {}
 
 
 def checkout_calculation(model, articul, calc_sign, plan_id, date, username) -> dict:
@@ -626,28 +626,50 @@ def create_version(model, articul, calc_sign, plan_id, date, username, rows, sta
 # ── Mock PEO approvals (Stream H) ──────────────────────────────────────────
 
 
+def _approval_key(model, articul, calc_sign, plan_id, task_number=None) -> tuple:
+    """Ключ пер-заданный — как UNIQUE в cost_calc_approvals (миграция 0023)."""
+    return (model or "", articul or "", calc_sign, plan_id, task_number)
+
+
 def save_approvals_batch(approvals: list[dict]) -> dict:
     for a in approvals:
-        key = (a.get("model", ""), a.get("articul", ""), a.get("calc_sign"), a.get("plan_id"))
+        key = _approval_key(
+            a.get("model", ""), a.get("articul", ""), a.get("calc_sign"),
+            a.get("plan_id"), a.get("task_number"),
+        )
         _mock_approvals_store[key] = a.get("status", "pending")
     return {"success": True, "mock": True, "count": len(approvals)}
 
 
-def revoke_approval(model, articul, calc_sign, plan_id) -> dict:
-    key = (model, articul, calc_sign, plan_id)
-    _mock_approvals_store.pop(key, None)
+def revoke_approval(model, articul, calc_sign, plan_id, task_number=None) -> dict:
+    _mock_approvals_store.pop(_approval_key(model, articul, calc_sign, plan_id, task_number), None)
     return {"success": True, "mock": True}
+
+
+def revoke_approvals_batch(items: list[dict]) -> dict:
+    count = 0
+    for it in items:
+        key = _approval_key(
+            it.get("model", ""), it.get("articul", ""), it.get("calc_sign"),
+            it.get("plan_id"), it.get("task_number"),
+        )
+        if _mock_approvals_store.pop(key, None) is not None:
+            count += 1
+    return {"success": True, "mock": True, "count": count}
 
 
 def get_approval_status(filters: dict | None = None) -> dict:
     result = []
-    for (m, a, cs, pid), status in _mock_approvals_store.items():
+    for (m, a, cs, pid, tn), status in _mock_approvals_store.items():
         if filters:
             if filters.get("model") and m != filters["model"]:
                 continue
             if filters.get("articul") and a != filters["articul"]:
                 continue
-        result.append({"model": m, "articul": a, "calc_sign": cs, "plan_id": pid, "status": status})
+        result.append({
+            "model": m, "articul": a, "calc_sign": cs, "plan_id": pid,
+            "task_number": tn, "status": status,
+        })
     return {"data": result, "mock": True}
 
 

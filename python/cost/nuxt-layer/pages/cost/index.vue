@@ -218,10 +218,66 @@
         </div>
         <a href="#" class="col-filter-reset" @click.prevent="resetColumnFilters">Сбросить фильтры колонок</a>
       </div>
+
+      <!-- Массовое согласование ПЭО: панель появляется, когда что-то выбрано -->
+      <div v-if="peoBulkEnabled && peoSelectedItems.length" class="peo-bulk-bar">
+        <div class="peo-bulk-info">
+          <strong>Выбрано: {{ peoSelectedItems.length }}</strong>
+          <span class="muted">калькуляций · строк таблицы: {{ peoSelectedRowCount }}</span>
+          <button
+            v-if="peoSelectedItems.length < peoSelectableRows.length"
+            class="btn btn-ghost btn-xs"
+            :disabled="peoBulkBusy"
+            @click="selectAllFilteredForPeo"
+          >
+            Выбрать все отфильтрованные ({{ peoSelectableRows.length }})
+          </button>
+          <button class="btn btn-ghost btn-xs" :disabled="peoBulkBusy" @click="clearPeoSelection">
+            Снять выбор
+          </button>
+        </div>
+        <div class="peo-bulk-actions">
+          <input
+            v-model="peoBulkComment"
+            type="text"
+            class="peo-bulk-comment"
+            placeholder="Комментарий (для отклонения)"
+            :disabled="peoBulkBusy"
+          />
+          <button class="btn btn-primary btn-sm" :disabled="peoBulkBusy" @click="runPeoBulk('approved')">
+            ✓ {{ peoBulkBusy && peoBulkAction === 'approved' ? 'Согласование…' : `Согласовать (${peoSelectedItems.length})` }}
+          </button>
+          <button class="btn btn-danger btn-sm" :disabled="peoBulkBusy" @click="runPeoBulk('rejected')">
+            ✗ {{ peoBulkBusy && peoBulkAction === 'rejected' ? 'Отклонение…' : 'Отклонить' }}
+          </button>
+          <button class="btn btn-ghost btn-sm" :disabled="peoBulkBusy" @click="runPeoBulk('revoke')">
+            ↩ {{ peoBulkBusy && peoBulkAction === 'revoke' ? 'Снятие…' : 'Снять согласование' }}
+          </button>
+        </div>
+        <div v-if="peoBulkBusy" class="peo-bulk-progress">
+          Обработано {{ peoBulkProgress.done }} из {{ peoBulkProgress.total }}…
+        </div>
+      </div>
+      <div v-if="peoBulkStatus || peoBulkError" class="peo-bulk-result">
+        <span v-if="peoBulkStatus" class="peo-bulk-ok">{{ peoBulkStatus }}</span>
+        <span v-if="peoBulkError" class="peo-bulk-err">{{ peoBulkError }}</span>
+        <button class="peo-bulk-x" aria-label="Закрыть" @click="peoBulkStatus = ''; peoBulkError = ''">×</button>
+      </div>
+
       <div class="table-wrap" @keydown="onCopyShortcut" tabindex="0">
         <table id="cost-table-1" class="data-table compact">
           <thead>
             <tr>
+              <th v-if="isVisible('peo_sel')" :class="stickyClasses('peo_sel')" :style="stickyStyle('peo_sel')" class="col-peo-sel">
+                <input
+                  type="checkbox"
+                  :checked="peoPageAllSelected"
+                  :indeterminate.prop="peoPageSomeSelected"
+                  :disabled="!peoPageSelectableRows.length"
+                  title="Выбрать все строки страницы"
+                  @change="togglePeoPage(($event.target as HTMLInputElement).checked)"
+                />
+              </th>
               <th :class="stickyClasses('actions')" :style="stickyStyle('actions')"><span class="col-resize-handle" @mousedown.stop.prevent="startColResize('actions', $event)" @dblclick.stop.prevent="resetColWidth('actions')" title="Изменить ширину · двойной клик — сброс"></span></th>
               <th :class="stickyClasses('raw_rows')" :style="stickyStyle('raw_rows')"><span class="col-resize-handle" @mousedown.stop.prevent="startColResize('raw_rows', $event)" @dblclick.stop.prevent="resetColWidth('raw_rows')" title="Изменить ширину · двойной клик — сброс"></span></th>
               <th v-if="isVisible('bm')" :class="[{ sorted: sortField === 'Бренд-менеджер' }, ...stickyClasses('bm')]" :style="stickyStyle('bm')" @click="toggleSort('Бренд-менеджер')">
@@ -376,6 +432,16 @@
               :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
               @click="selectRow(getOriginalIndex(row))"
             >
+              <td v-if="isVisible('peo_sel')" :class="stickyClasses('peo_sel')" :style="stickyStyle('peo_sel')" class="col-peo-sel">
+                <input
+                  type="checkbox"
+                  :checked="isPeoSelected(row)"
+                  :disabled="!canSelectForPeo(row)"
+                  :title="canSelectForPeo(row) ? 'Выбрать для массового согласования (Shift — диапазон)' : 'Строка недоступна для согласования'"
+                  @click.stop="onPeoCheckboxClick"
+                  @change="onPeoCheckboxChange(row, idx, ($event.target as HTMLInputElement).checked)"
+                />
+              </td>
               <td :class="stickyClasses('actions')" :style="stickyStyle('actions')">
                 <span v-if="isRowLocked(row) && !row._has_pending && !row._has_audit" class="lock-icon" title="Строка заблокирована">🔒</span>
                 <span v-if="row._has_pending" class="state-badge state-badge--pending" title="Ожидает согласования">⏳</span>
@@ -1418,9 +1484,9 @@ const usdColumns = computed(() => COLUMNS_CONFIG.filter(c => usdColumnKeys.inclu
 const costColumns = computed(() => COLUMNS_CONFIG.filter(c => costColumnKeys.includes(c.key)));
 const calcColumns = computed(() => COLUMNS_CONFIG.filter(c => calcColumnKeys.includes(c.key)));
 
-const STICKY_COL_KEYS = ['actions','raw_rows','bm','model','articul','model_name','color','task_num','plan_id'];
-const STICKY_DEFAULT_WIDTHS: Record<string, number> = { actions: 110, raw_rows: 40, bm: 160, model: 110, articul: 90, model_name: 200, color: 120, task_num: 120, plan_id: 90 };
-const STICKY_MIN_WIDTHS: Record<string, number> = { actions: 70, raw_rows: 32, bm: 80, model: 70, articul: 60, model_name: 90, color: 60, task_num: 60, plan_id: 50 };
+const STICKY_COL_KEYS = ['peo_sel','actions','raw_rows','bm','model','articul','model_name','color','task_num','plan_id'];
+const STICKY_DEFAULT_WIDTHS: Record<string, number> = { peo_sel: 34, actions: 110, raw_rows: 40, bm: 160, model: 110, articul: 90, model_name: 200, color: 120, task_num: 120, plan_id: 90 };
+const STICKY_MIN_WIDTHS: Record<string, number> = { peo_sel: 30, actions: 70, raw_rows: 32, bm: 80, model: 70, articul: 60, model_name: 90, color: 60, task_num: 60, plan_id: 50 };
 const STICKY_MAX_WIDTH = 600;
 const WIDTH_STORAGE_KEY = 'cost_sticky_col_widths';
 const STORAGE_KEY = 'cost_column_visibility';
@@ -1447,6 +1513,9 @@ const showColumnSettings = ref(false);
 const pendingVisibility = ref<Record<string, boolean>>({});
 
 function isVisible(key: string): boolean {
+  // Колонка выбора для массового согласования — не в COLUMNS_CONFIG: её нельзя
+  // скрыть настройками, она есть ровно у тех, кто вправе ставить статус ПЭО.
+  if (key === 'peo_sel') return peoBulkEnabled.value;
   return columnVisibility[key] !== false;
 }
 
@@ -1479,6 +1548,7 @@ function deselectAllColumns() {
 
 const visibleColumnCount = computed(() => {
   let count = 2; // actions + raw_rows (always visible)
+  if (peoBulkEnabled.value) count++; // колонка выбора для массового согласования
   for (const c of COLUMNS_CONFIG) {
     if (columnVisibility[c.key]) count++;
   }
@@ -1977,6 +2047,7 @@ async function loadData() {
     currentPage.value = 0;
     selectedRowIndex.value = -1;
     changedRows.clear();
+    clearPeoSelection();
     lastError.value = "";
     // Populate price_rf/kz/uz, comments and markup selections from response
     for (let i = 0; i < allAggregated.value.length; i++) {
@@ -4076,6 +4147,20 @@ const recomputeGroupApproved = (row: any) => {
   for (const r of siblings) r._group_approved = allApproved;
 };
 
+/** Ключ согласования одной строки агрегата: (модель, артикул, признак, PLAN_ID, № задания).
+ *
+ * Значения тримим: в `/aggregated` JOIN к `cost_calc_approvals` идёт по
+ * `TRIM(cd."Модель") = ca.model` и т.д., поэтому запись с пробелами по краям
+ * просто не найдётся обратно и статус не подтянется. */
+const peoKeyFields = (row: any) => ({
+  model: (row['Модель'] ?? '').toString().trim(),
+  articul: (row['Артикул'] ?? '').toString().trim(),
+  calc_sign: (row['Признак калькуляции'] ?? '').toString().trim(),
+  plan_id: (row['PLAN_ID'] ?? '').toString().trim(),
+  // Пустое задание шлём как null — так делал одиночный попап до массового режима.
+  task_number: (row['Номер задания производства'] ?? '').toString().trim() || null,
+});
+
 const setApproval = async (status: 'approved' | 'rejected') => {
   if (!approvalTarget.value) return;
   approving.value = true;
@@ -4086,10 +4171,9 @@ const setApproval = async (status: 'approved' | 'rejected') => {
       method: 'POST',
       headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
       body: JSON.stringify({
+        approved_by: user.value?.email || 'system',
         approvals: [{
-          model: r['Модель'], articul: r['Артикул'],
-          calc_sign: r['Признак калькуляции'], plan_id: r['PLAN_ID'],
-          task_number: r['Номер задания производства'] || null,
+          ...peoKeyFields(r),
           status, comment: status === 'rejected' ? approvalComment.value : '',
         }],
       }),
@@ -4113,13 +4197,7 @@ const revokeApproval = async (row: any) => {
     await $fetch(`${apiBase.value}/api/cost/revoke-approval`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
-      body: {
-        model: row['Модель'],
-        articul: row['Артикул'],
-        calc_sign: row['Признак калькуляции'],
-        plan_id: row['PLAN_ID'],
-        task_number: row['Номер задания производства'] || null,
-      },
+      body: peoKeyFields(row),
     });
     if (approvalTarget.value) {
       approvalTarget.value.peo_status = null;
@@ -4132,6 +4210,193 @@ const revokeApproval = async (row: any) => {
     approving.value = false;
   }
 };
+
+// ── Массовое согласование ПЭО ───────────────────────────────────────────────
+// Согласование пер-заданное, а строк агрегата с одним ключом может быть несколько
+// (разные даты расчёта и уровни цен). Поэтому выбор храним по ключу: «двойники»
+// отмечаются вместе, а в запрос ключ уходит ровно один раз.
+
+/** Пачка на один запрос. На бэке потолок 1000 (APPROVALS_BATCH_LIMIT). */
+const PEO_BULK_CHUNK = 200;
+
+const peoBulkEnabled = computed(() => can('cost:approve') || can('cost:peo_mark'));
+
+const peoKey = (row: any): string => {
+  const k = peoKeyFields(row);
+  return [k.model, k.articul, k.calc_sign ?? '', k.plan_id ?? '', k.task_number ?? ''].join('');
+};
+const peoItemKey = (it: any): string =>
+  [it.model ?? '', it.articul ?? '', it.calc_sign ?? '', it.plan_id ?? '', it.task_number ?? ''].join('');
+
+/** Те же условия, при которых открывается одиночный попап ПЭО. */
+const canSelectForPeo = (row: any): boolean =>
+  peoBulkEnabled.value && !isRowLocked(row) && !row._has_audit;
+
+const peoSelectedKeys = ref<Set<string>>(new Set());
+const peoBulkBusy = ref(false);
+const peoBulkAction = ref<'' | 'approved' | 'rejected' | 'revoke'>('');
+const peoBulkProgress = reactive({ done: 0, total: 0 });
+const peoBulkStatus = ref('');
+const peoBulkError = ref('');
+const peoBulkComment = ref('');
+
+const isPeoSelected = (row: any): boolean => peoSelectedKeys.value.has(peoKey(row));
+
+const peoSelectableRows = computed(() => sortedRows.value.filter(canSelectForPeo));
+const peoPageSelectableRows = computed(() => pageRows.value.filter(canSelectForPeo));
+
+const peoPageAllSelected = computed(
+  () => peoPageSelectableRows.value.length > 0 && peoPageSelectableRows.value.every(isPeoSelected)
+);
+const peoPageSomeSelected = computed(
+  () => !peoPageAllSelected.value && peoPageSelectableRows.value.some(isPeoSelected)
+);
+
+/** Уникальные ключи выбранного — ровно то, что уходит на бэкенд. */
+const peoSelectedItems = computed(() => {
+  const seen = new Set<string>();
+  const out: ReturnType<typeof peoKeyFields>[] = [];
+  for (const r of peoSelectableRows.value) {
+    const key = peoKey(r);
+    if (!peoSelectedKeys.value.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(peoKeyFields(r));
+  }
+  return out;
+});
+/** Сколько строк таблицы затронет операция — обычно больше, чем калькуляций. */
+const peoSelectedRowCount = computed(
+  () => peoSelectableRows.value.filter(isPeoSelected).length
+);
+
+// Shift-клик выделяет диапазон строк страницы — как в привычных таблицах.
+let peoShiftPressed = false;
+let peoLastClickedIdx: number | null = null;
+
+const onPeoCheckboxClick = (e: MouseEvent) => { peoShiftPressed = e.shiftKey; };
+
+const onPeoCheckboxChange = (row: any, pageIdx: number, checked: boolean) => {
+  const next = new Set(peoSelectedKeys.value);
+  const apply = (r: any) => { if (checked) next.add(peoKey(r)); else next.delete(peoKey(r)); };
+  if (peoShiftPressed && peoLastClickedIdx !== null) {
+    const from = Math.min(peoLastClickedIdx, pageIdx);
+    const to = Math.max(peoLastClickedIdx, pageIdx);
+    for (let i = from; i <= to; i++) {
+      const r = pageRows.value[i];
+      if (r && canSelectForPeo(r)) apply(r);
+    }
+  } else {
+    apply(row);
+  }
+  peoShiftPressed = false;
+  peoLastClickedIdx = pageIdx;
+  peoSelectedKeys.value = next;
+};
+
+const togglePeoPage = (checked: boolean) => {
+  const next = new Set(peoSelectedKeys.value);
+  for (const r of peoPageSelectableRows.value) {
+    if (checked) next.add(peoKey(r)); else next.delete(peoKey(r));
+  }
+  peoLastClickedIdx = null;
+  peoSelectedKeys.value = next;
+};
+
+const selectAllFilteredForPeo = () => {
+  peoLastClickedIdx = null;
+  peoSelectedKeys.value = new Set(peoSelectableRows.value.map(peoKey));
+};
+
+const clearPeoSelection = () => {
+  peoLastClickedIdx = null;
+  peoSelectedKeys.value = new Set();
+  peoBulkStatus.value = '';
+  peoBulkError.value = '';
+};
+
+/** Проставляет статус во все строки с этими ключами и пересчитывает _group_approved. */
+const applyPeoStatusLocally = (items: any[], status: 'approved' | 'rejected' | null) => {
+  const keys = new Set(items.map(peoItemKey));
+  const email = user.value?.email || '';
+  const now = new Date().toISOString();
+  const touched: any[] = [];
+  for (const r of allAggregated.value) {
+    if (!keys.has(peoKey(r))) continue;
+    r.peo_status = status;
+    r.peo_approved_by = status === 'approved' ? email : null;
+    r.peo_approved_at = status === 'approved' ? now : null;
+    touched.push(r);
+  }
+  // recomputeGroupApproved сканирует весь массив — на группу зовём один раз.
+  const doneGroups = new Set<string>();
+  for (const r of touched) {
+    const g = [r['Модель'], r['Артикул'], r['PLAN_ID'], r['Признак калькуляции']].join('');
+    if (doneGroups.has(g)) continue;
+    doneGroups.add(g);
+    recomputeGroupApproved(r);
+  }
+};
+
+async function runPeoBulk(action: 'approved' | 'rejected' | 'revoke') {
+  if (peoBulkBusy.value) return;
+  const items = peoSelectedItems.value;
+  if (!items.length) return;
+  if (action === 'revoke' && !confirm(`Снять согласование с ${items.length} калькуляций?`)) return;
+
+  const comment = action === 'rejected' ? peoBulkComment.value.trim() : '';
+  peoBulkBusy.value = true;
+  peoBulkAction.value = action;
+  peoBulkStatus.value = '';
+  peoBulkError.value = '';
+  peoBulkProgress.done = 0;
+  peoBulkProgress.total = items.length;
+
+  const okKeys = new Set<string>();
+  let failedCount = 0;
+  let lastErr = '';
+
+  try {
+    for (let i = 0; i < items.length; i += PEO_BULK_CHUNK) {
+      const chunk = items.slice(i, i + PEO_BULK_CHUNK);
+      try {
+        if (action === 'revoke') {
+          await $fetch(`${apiBase.value}/api/cost/revoke-approvals-batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+            body: { approvals: chunk },
+          });
+        } else {
+          await $fetch(`${apiBase.value}/api/cost/approve-calculation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+            body: {
+              approved_by: user.value?.email || 'system',
+              approvals: chunk.map((it) => ({ ...it, status: action, comment })),
+            },
+          });
+        }
+        applyPeoStatusLocally(chunk, action === 'revoke' ? null : action);
+        for (const it of chunk) okKeys.add(peoItemKey(it));
+      } catch (e: any) {
+        failedCount += chunk.length;
+        lastErr = e?.data?.detail || e?.message || String(e);
+      }
+      peoBulkProgress.done = Math.min(i + chunk.length, items.length);
+    }
+  } finally {
+    // Обработанное снимаем с выбора, неудачное оставляем — можно повторить.
+    const rest = new Set(peoSelectedKeys.value);
+    for (const k of okKeys) rest.delete(k);
+    peoSelectedKeys.value = rest;
+    peoBulkBusy.value = false;
+    peoBulkAction.value = '';
+  }
+
+  const verb = action === 'approved' ? 'Согласовано' : action === 'rejected' ? 'Отклонено' : 'Снято согласование';
+  peoBulkStatus.value = `${verb}: ${okKeys.size} из ${items.length} калькуляций`;
+  if (failedCount) peoBulkError.value = `Не удалось обработать ${failedCount}: ${lastErr}`;
+  if (action === 'rejected') peoBulkComment.value = '';
+}
 
 // ── Excel export ────────────────────────────────────────────────────────────
 
@@ -4221,7 +4486,8 @@ const onCopyShortcut = (e: KeyboardEvent) => {
   const rows = table.querySelectorAll("tr");
   let tsv = "";
   rows.forEach((r) => {
-    const cells = r.querySelectorAll("td, th");
+    // Колонку выбора для массового согласования в буфер не тащим — она служебная.
+    const cells = r.querySelectorAll("td:not(.col-peo-sel), th:not(.col-peo-sel)");
     const line: string[] = [];
     cells.forEach((c) => line.push((c as HTMLElement).innerText.replace(/\n/g, " ").trim()));
     tsv += line.join("\t") + "\n";
@@ -5432,6 +5698,44 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .type-tag.clickable { cursor:pointer; padding:2px 6px; border-radius:4px; background:var(--bg-tonal, #f3f4f6); border:1px solid var(--border-color, #e5e7eb); }
 .type-tag.clickable:hover { background:var(--bg-hover, #e5e7eb); }
 .col-peo { width:48px; text-align:center; }
+.col-peo-sel { text-align:center; padding-left:0; padding-right:0; }
+.col-peo-sel input { cursor:pointer; }
+.col-peo-sel input:disabled { cursor:default; opacity:.35; }
+
+/* Массовое согласование ПЭО */
+.peo-bulk-bar {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom:1px solid var(--border);
+  border-left:3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-surface-2, var(--bg-surface)));
+  flex-shrink:0;
+}
+.peo-bulk-info { display:flex; align-items:center; gap: var(--sp-2); flex-wrap:wrap; }
+.peo-bulk-actions { display:flex; align-items:center; gap: var(--sp-2); margin-left:auto; flex-wrap:wrap; }
+.peo-bulk-comment {
+  padding:4px 8px;
+  border:1px solid var(--border-color, #d1d5db);
+  border-radius:4px;
+  font-size:var(--fs-xs, 12px);
+  min-width:200px;
+}
+.peo-bulk-progress { flex-basis:100%; font-size:var(--fs-xs, 12px); color:var(--text-muted); }
+.peo-bulk-result {
+  display:flex;
+  align-items:center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom:1px solid var(--border);
+  font-size:var(--fs-sm, 13px);
+}
+.peo-bulk-ok { color: var(--pos, #16a34a); }
+.peo-bulk-err { color: var(--neg, #dc2626); }
+.peo-bulk-x { margin-left:auto; background:none; border:none; cursor:pointer; font-size:16px; color:var(--text-muted); }
+
 .peo-badge { cursor:pointer; font-size:16px; }
 .peo-readonly .peo-badge { cursor:default; }
 .peo-active .peo-badge { background:rgba(99,102,241,0.15); border-radius:4px; }

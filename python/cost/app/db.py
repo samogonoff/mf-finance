@@ -2332,15 +2332,97 @@ async def save_approval(model, articul, calc_sign, plan_id, status, approved_by,
             return dict(row)
 
 
+def _approval_key(a: dict) -> tuple:
+    """Ключ согласования — тот же, что в UNIQUE-констрейнте cost_calc_approvals."""
+    return (
+        a.get("model"), a.get("articul"), a.get("calc_sign"),
+        a.get("plan_id"), a.get("task_number"),
+    )
+
+
 async def save_approvals_batch(approvals: list[dict]) -> list[dict]:
-    results = []
+    """Массовый UPSERT статусов ПЭО — один запрос на всю пачку.
+
+    Дубли по ключу схлопываем заранее (побеждает последний): ON CONFLICT DO UPDATE
+    не может тронуть одну и ту же строку дважды в рамках одного INSERT, иначе
+    запрос упал бы целиком. На главной таблице такое реально — несколько строк
+    агрегата (разные даты расчёта / уровни цен) делят один ключ согласования.
+    """
+    if not approvals:
+        return []
+
+    deduped: dict[tuple, dict] = {}
     for a in approvals:
-        r = await save_approval(
-            a["model"], a.get("articul"), a.get("calc_sign"), a.get("plan_id"),
-            a["status"], a.get("approved_by"), a.get("comment"), a.get("task_number"),
-        )
-        results.append(r)
-    return results
+        deduped[_approval_key(a)] = a
+    items = list(deduped.values())
+
+    models = [a["model"] for a in items]
+    articuls = [a.get("articul") for a in items]
+    calc_signs = [a.get("calc_sign") for a in items]
+    plan_ids = [a.get("plan_id") for a in items]
+    task_numbers = [a.get("task_number") for a in items]
+    statuses = [a["status"] for a in items]
+    approved_bys = [a.get("approved_by") for a in items]
+    comments = [a.get("comment") for a in items]
+
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                INSERT INTO cost_calc_approvals
+                    (model, articul, calc_sign, plan_id, task_number, status, approved_by, approved_at, comment)
+                SELECT u.model, u.articul, u.calc_sign, u.plan_id, u.task_number, u.status, u.approved_by,
+                       CASE WHEN u.status IN ('approved', 'rejected') THEN NOW() ELSE NULL END,
+                       u.comment
+                FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
+                            $6::text[], $7::text[], $8::text[])
+                     AS u(model, articul, calc_sign, plan_id, task_number, status, approved_by, comment)
+                ON CONFLICT (model, articul, calc_sign, plan_id, task_number) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    approved_by = EXCLUDED.approved_by,
+                    approved_at = EXCLUDED.approved_at,
+                    comment = EXCLUDED.comment,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                models, articuls, calc_signs, plan_ids, task_numbers,
+                statuses, approved_bys, comments,
+            )
+            return [dict(r) for r in rows]
+
+
+async def revoke_approvals_batch(items: list[dict]) -> int:
+    """Массовое снятие согласования. Возвращает число удалённых записей."""
+    if not items:
+        return 0
+
+    deduped: dict[tuple, dict] = {}
+    for it in items:
+        deduped[_approval_key(it)] = it
+    uniq = list(deduped.values())
+
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            result = await conn.execute(
+                """
+                DELETE FROM cost_calc_approvals a
+                USING unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])
+                      AS u(model, articul, calc_sign, plan_id, task_number)
+                WHERE a.model = u.model
+                  AND a.articul = u.articul
+                  AND a.calc_sign IS NOT DISTINCT FROM u.calc_sign
+                  AND a.plan_id IS NOT DISTINCT FROM u.plan_id
+                  AND a.task_number IS NOT DISTINCT FROM u.task_number
+                """,
+                [it["model"] for it in uniq],
+                [it.get("articul") for it in uniq],
+                [it.get("calc_sign") for it in uniq],
+                [it.get("plan_id") for it in uniq],
+                [it.get("task_number") for it in uniq],
+            )
+    # asyncpg отдаёт тег команды вида "DELETE 12"
+    parts = (result or "").split()
+    return int(parts[-1]) if parts and parts[-1].isdigit() else 0
 
 
 async def revoke_approval(model, articul, calc_sign, plan_id, task_number=None) -> None:
