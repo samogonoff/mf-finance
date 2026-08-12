@@ -2120,13 +2120,27 @@ async def save_plan_price_set_endpoint(
     plan_id = (payload.get("plan_id") or "").strip()
     if not plan_id:
         raise HTTPException(400, "plan_id required")
+    # Курс необязателен, но пустая строка из формы уходила прямо в numeric-колонку
+    # и роняла запрос с 500 — «изменения просто не сохранились» без внятной причины.
+    rate = payload.get("rate")
+    if isinstance(rate, str):
+        rate = rate.strip().replace(",", ".")
+        if not rate:
+            rate = None
+        else:
+            try:
+                rate = float(rate)
+            except ValueError:
+                raise HTTPException(400, f"Курс должен быть числом, получено {payload.get('rate')!r}")
+    if rate is not None and float(rate) <= 0:
+        rate = None
     if _is_mock():
         return {"success": True, "set_id": 0, "mock": True}
     try:
         set_id = await save_plan_price_set(
             plan_id,
             payload.get("title") or "",
-            payload.get("rate"),
+            rate,
             payload.get("rows") or [],
             payload.get("username") or user_email or "system",
             payload.get("set_id"),
