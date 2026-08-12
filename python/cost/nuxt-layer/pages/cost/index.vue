@@ -902,7 +902,8 @@
                 <span style="font-size:var(--fs-xs);color:var(--text-muted)">Курс (на весь набор)</span>
                 <input v-model.number="planPriceForm.rate" type="number" step="0.0001"
                        class="editor-input col-num" style="width:120px"
-                       :disabled="planPriceFormLocked" @input="onPlanRateChange" />
+                       :disabled="planPriceFormLocked"
+                       @input="onPlanRateChange(($event.target as HTMLInputElement).value)" />
               </label>
               <button class="btn btn-primary btn-sm" :disabled="planPricesSaving || planPriceFormLocked"
                       :title="`В набор уйдут только строки с ценой, отличной от источника: ${planPriceOverriddenCount}`"
@@ -2347,6 +2348,7 @@ function resetPlanPriceForm() {
   for (const r of [...planPriceRows.value, ...planDecorRows.value]) {
     r.price_rub = r.source_price_rub;
     r.price_usd = r.source_price_usd;
+    (r as any)._usdManual = false; // доллары снова исходные, не заданные вручную
   }
 }
 
@@ -2369,15 +2371,28 @@ async function openPlanPriceSet(setId: number) {
       if (r.row_kind === 'decor') byDecor.set(String(r['Наименование'] ?? '').trim(), r);
       else byKey.set(planRowKey(r), r);
     }
+    // Доллар в наборе может быть пустым: производную от курса считает сервер, и
+    // фронт её не сохраняет. В гриде показываем то же значение, что ляжет в
+    // расчёт, — иначе колонка «Цена, $» выглядела бы пустой.
+    const setRate = Number(data.set.rate || 0);
+    const showUsd = (saved: any, fallback: any) => {
+      if (saved.price_usd !== null && saved.price_usd !== undefined) return saved.price_usd;
+      const rub = Number(saved.price_rub);
+      if (setRate > 0 && Number.isFinite(rub)) return Number((rub / setRate).toFixed(4));
+      return fallback;
+    };
     for (const r of planPriceRows.value) {
       const saved = byKey.get(planRowKey(r));
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
-      r.price_usd = saved ? saved.price_usd : r.source_price_usd;
+      r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
+      // доллар в наборе задан явно — значит его правили вручную
+      (r as any)._usdManual = !!(saved && saved.price_usd !== null && saved.price_usd !== undefined);
     }
     for (const r of planDecorRows.value) {
       const saved = byDecor.get(String(r['Декоры, наименование'] ?? '').trim());
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
-      r.price_usd = saved ? saved.price_usd : r.source_price_usd;
+      r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
+      (r as any)._usdManual = !!(saved && saved.price_usd !== null && saved.price_usd !== undefined);
     }
     planPricesStatus.value = `Открыт набор «${data.set.title || data.set.id}» (${data.set.status})`;
   } catch (e: any) {
@@ -2399,14 +2414,36 @@ async function openPlanPriceSet(setId: number) {
  * Сравниваем с точностью до 4 знаков — столько же хранит база и отдаёт
  * `round(avg(...), 4)` в plan-materials, иначе строки «менялись» бы из-за
  * плавающей точки. */
+function planPriceNorm(v: any): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * 10000) / 10000 : null;
+}
+
+/** Задан ли доллар строки вручную. Флаг ставится там, где пользователь правит
+ * колонку «Цена, $», и снимается при правке рубля или пересчёте по курсу.
+ *
+ * Раньше это выводилось из чисел (совпадает ли доллар с рубль÷курс), но такая
+ * эвристика врала: после правки рубля доллар уже пересчитан по текущему курсу
+ * формы, и «производный» он или нет — по значению не отличить от заданного. */
+function planUsdIsManual(r: any): boolean {
+  return r._usdManual === true;
+}
+
+/** Доллар — производная от рублёвой цены по курсу набора.
+ *
+ * Такую цену на сервер не отправляем: он считает её сам тем же правилом
+ * (см. `_apply_plan_price_set_to_cache`). Иначе ввод курса менял бы price_usd во
+ * всех строках плана, все они выглядели бы переопределёнными, и тело запроса
+ * снова разрасталось бы до сотен килобайт. */
+function planUsdIsDerived(r: any): boolean {
+  return Number(planPriceForm.value.rate || 0) > 0 && !planUsdIsManual(r);
+}
+
 function planPriceOverridden(r: any): boolean {
-  const norm = (v: any): number | null => {
-    if (v === null || v === undefined || v === '') return null;
-    const n = Number(v);
-    return Number.isFinite(n) ? Math.round(n * 10000) / 10000 : null;
-  };
-  return norm(r.price_rub) !== norm(r.source_price_rub)
-    || norm(r.price_usd) !== norm(r.source_price_usd);
+  if (planPriceNorm(r.price_rub) !== planPriceNorm(r.source_price_rub)) return true;
+  if (planUsdIsDerived(r)) return false;
+  return planPriceNorm(r.price_usd) !== planPriceNorm(r.source_price_usd);
 }
 
 /** Сколько строк набора переопределяют цену — показываем на кнопке сохранения. */
@@ -2423,6 +2460,9 @@ function planRowKey(r: any): string {
 /** Взаимный пересчёт руб ↔ $ по курсу набора — как в редакторе версий, но курс
  * один на весь набор (решение пользователя). */
 function onPlanPriceEdit(r: PlanPriceRow, changed: 'rub' | 'usd') {
+  // Правку доллара помним: при смене курса такую строку не пересчитываем, и на
+  // сервер её доллар уходит явным значением, а не как производная от курса.
+  (r as any)._usdManual = changed === 'usd';
   const rate = Number(planPriceForm.value.rate || 0);
   if (rate <= 0) return;
   if (changed === 'rub') {
@@ -2434,13 +2474,25 @@ function onPlanPriceEdit(r: PlanPriceRow, changed: 'rub' | 'usd') {
   }
 }
 
-/** Смена курса пересчитывает $ из рублей во всех строках — рубль считаем ведущим. */
-function onPlanRateChange() {
-  const rate = Number(planPriceForm.value.rate || 0);
-  if (rate <= 0) return;
-  for (const r of planPriceRows.value) {
+/** Смена курса пересчитывает $ из рублей — рубль считаем ведущим.
+ *
+ * Вручную заданные доллары не трогаем. При очистке курса производные
+ * возвращаются к исходным: иначе в гриде остались бы доллары по уже
+ * несуществующему курсу, и каждая строка выглядела бы переопределённой. */
+function onPlanRateChange(raw?: string) {
+  // Курс берём из события, а не из формы: при вводе этот обработчик срабатывает
+  // раньше, чем v-model успевает записать новое значение, и пересчёт шёл по
+  // предыдущему курсу — доллары в гриде отставали на одну правку.
+  const parsed = raw === undefined
+    ? Number(planPriceForm.value.rate || 0)
+    : Number(String(raw).replace(',', '.'));
+  const rate = Number.isFinite(parsed) ? parsed : 0;
+  for (const r of [...planPriceRows.value, ...planDecorRows.value]) {
+    if (planUsdIsManual(r)) continue;
     const v = Number(r.price_rub);
-    r.price_usd = Number.isFinite(v) ? Number((v / rate).toFixed(4)) : null;
+    r.price_usd = rate > 0 && Number.isFinite(v)
+      ? Number((v / rate).toFixed(4))
+      : (r.source_price_usd ?? null);
   }
 }
 
@@ -2456,7 +2508,9 @@ async function savePlanPriceSet() {
         plan_id: plan,
         set_id: planPriceForm.value.set_id,
         title: planPriceForm.value.title,
-        rate: planPriceForm.value.rate,
+        // пустое поле курса — это отсутствие курса, а не пустая строка:
+        // такая строка уходила в numeric-колонку и сохранение падало с 500
+        rate: Number(planPriceForm.value.rate) > 0 ? Number(planPriceForm.value.rate) : null,
         username: user.value?.email || 'system',
         rows: [
           ...planPriceRows.value.filter(planPriceOverridden).map(r => ({
@@ -2467,7 +2521,8 @@ async function savePlanPriceSet() {
             'свойство2': r['свойство2'],
             'свойство3': r['свойство3'],
             price_rub: r.price_rub,
-            price_usd: r.price_usd,
+            // null → сервер посчитает доллар из рубля по курсу набора
+            price_usd: planUsdIsDerived(r) ? null : r.price_usd,
             source_price_rub: r.source_price_rub,
             source_price_usd: r.source_price_usd,
             rows_count: r.rows_count,

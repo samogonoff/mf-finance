@@ -2789,26 +2789,36 @@ async def _apply_plan_price_set_to_cache(conn, set_id: int) -> int:
     osn = ", ".join(f"'{t}'" for t in _PLAN_OSN_TYPES)
     vsp = ", ".join(f"'{t}'" for t in _PLAN_VSP_TYPES)
     join = _plan_key_join("c", "r")
+    # Долларовая цена материала: явно заданная в наборе, иначе — производная от
+    # рублёвой по курсу набора (у декоров это правило было с самого начала, см.
+    # запрос ниже). Так фронт может не присылать price_usd вовсе: раньше он гнал
+    # его для каждой строки, и смена курса набора превращала ВСЕ строки плана в
+    # «изменённые» — тело запроса раздувалось до сотен КБ на крупном плане.
+    # Если курса нет ни у набора, ни у строки кэша, доллар остаётся исходным.
+    rate = 'COALESCE(s.rate, c."Курс на дату расчета")'
+    eff_usd = (
+        f"COALESCE(r.price_usd, CASE WHEN {rate} > 0 THEN r.price_rub / {rate} END)"
+    )
     result = await conn.execute(
         f"""
         UPDATE cost_data_cache c SET
             "цена материала, руб." = COALESCE(r.price_rub, c."цена материала, руб."),
-            "цена материала, USD." = COALESCE(r.price_usd, c."цена материала, USD."),
+            "цена материала, USD." = COALESCE({eff_usd}, c."цена материала, USD."),
             "Основные материалы, руб." = CASE
                 WHEN c."Материал/операция/декор(призн)" IN ({osn}) AND r.price_rub IS NOT NULL
                 THEN c."Норма" * r.price_rub * COALESCE(c.cost_factor_rub, 1)
                 ELSE c."Основные материалы, руб." END,
             "Основные материалы, USD." = CASE
-                WHEN c."Материал/операция/декор(призн)" IN ({osn}) AND r.price_usd IS NOT NULL
-                THEN c."Норма" * r.price_usd * COALESCE(c.cost_factor_usd, 1)
+                WHEN c."Материал/операция/декор(призн)" IN ({osn}) AND {eff_usd} IS NOT NULL
+                THEN c."Норма" * {eff_usd} * COALESCE(c.cost_factor_usd, 1)
                 ELSE c."Основные материалы, USD." END,
             "Вспомогательные материалы, руб." = CASE
                 WHEN c."Материал/операция/декор(призн)" IN ({vsp}) AND r.price_rub IS NOT NULL
                 THEN c."Норма" * r.price_rub * COALESCE(c.cost_factor_rub, 1)
                 ELSE c."Вспомогательные материалы, руб." END,
             "Вспомогательные материалы, USD." = CASE
-                WHEN c."Материал/операция/декор(призн)" IN ({vsp}) AND r.price_usd IS NOT NULL
-                THEN c."Норма" * r.price_usd * COALESCE(c.cost_factor_usd, 1)
+                WHEN c."Материал/операция/декор(призн)" IN ({vsp}) AND {eff_usd} IS NOT NULL
+                THEN c."Норма" * {eff_usd} * COALESCE(c.cost_factor_usd, 1)
                 ELSE c."Вспомогательные материалы, USD." END
         FROM cost_plan_price_set_rows r, cost_plan_price_sets s
         WHERE r.set_id = s.id AND s.id = $1
