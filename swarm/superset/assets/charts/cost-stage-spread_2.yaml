@@ -1,0 +1,41 @@
+slice_name: "cost-stage-spread \xB7 \u042D\u0442\u0430\u043F\u044B \u043A\u0430\u043B\
+  \u044C\u043A\u0443\u043B\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F: \u0440\
+  \u0430\u0437\u0431\u0440\u043E\u0441 \u0438 \u043F\u0435\u0440\u0435\u0445\u043E\
+  \u0434"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  viz_type: table
+  all_columns:
+  - stage_label
+  - calc_count
+  - model_count
+  - cost_p25
+  - cost_median
+  - cost_p75
+  - cost_avg
+  - delta_prev_abs
+  - delta_prev_pct
+  columns:
+  - stage_label
+  - calc_count
+  - model_count
+  - cost_p25
+  - cost_median
+  - cost_p75
+  - cost_avg
+  - delta_prev_abs
+  - delta_prev_pct
+  query_mode: raw
+  include_time: false
+  order_desc: true
+  order_by_cols:
+  - stage_label
+  row_limit: 100
+query_context: null
+cache_timeout: null
+uuid: d6c0d9d3-ac9c-4f43-9a40-ad01ae2007d3
+version: 1.0.0
+dataset_uuid: 3150bca1-2ac4-4e84-aeb2-1b2195e542b1

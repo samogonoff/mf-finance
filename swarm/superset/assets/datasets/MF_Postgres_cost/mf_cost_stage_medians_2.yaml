@@ -1,0 +1,285 @@
+table_name: mf_cost_stage_medians
+main_dttm_col: last_calc_date
+currency_code_column: null
+description: null
+default_endpoint: null
+offset: 0
+cache_timeout: null
+catalog: cost
+schema: public
+sql: "-- \u041C\u0435\u0434\u0438\u0430\u043D\u044B \u0441\u0435\u0431\u0435\u0441\
+  \u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438 \u043F\u043E \u044D\u0442\u0430\
+  \u043F\u0430\u043C \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u0438\u0440\u043E\u0432\
+  \u0430\u043D\u0438\u044F, \u0421\u041E\u041F\u041E\u0421\u0422\u0410\u0412\u0418\
+  \u041C\u0410\u042F \u0432\u044B\u0431\u043E\u0440\u043A\u0430.\n--\n-- \u041F\u043E\
+  \u0447\u0435\u043C\u0443 \u0430\u0433\u0440\u0435\u0433\u0430\u0442 \u0441\u0447\
+  \u0438\u0442\u0430\u0435\u0442\u0441\u044F \u0437\u0434\u0435\u0441\u044C, \u0430\
+  \ \u043D\u0435 \u0432 \u0447\u0430\u0440\u0442\u0435: Postgres-\u0434\u0432\u0438\
+  \u0436\u043E\u043A Superset \u043D\u0435\n-- \u043A\u043E\u043C\u043F\u0438\u043B\
+  \u0438\u0440\u0443\u0435\u0442 \u0430\u0433\u0440\u0435\u0433\u0430\u0442 MEDIAN\
+  \ (\u0437\u0430\u044F\u0432\u043B\u0435\u043D \u0432 \u0441\u0445\u0435\u043C\u0435\
+  , \u043F\u0430\u0434\u0430\u0435\u0442 \u043D\u0430 compile), \u0430 AVG\n-- \u0437\
+  \u0434\u0435\u0441\u044C \u0432\u0440\u0451\u0442: \u043E\u0442\u043D\u043E\u0448\
+  \u0435\u043D\u0438\u0435 avg/median \u0434\u043E\u0445\u043E\u0434\u0438\u0442 \u0434\
+  \u043E 1,44 \u0438 \u043F\u043E\u0440\u044F\u0434\u043E\u043A \u044D\u0442\u0430\
+  \u043F\u043E\u0432 \u043C\u0435\u043D\u044F\u0435\u0442\u0441\u044F\n-- \u043C\u0435\
+  \u0441\u0442\u0430\u043C\u0438. \u041F\u043E\u044D\u0442\u043E\u043C\u0443 \u043E\
+  \u0434\u043D\u0430 \u0441\u0442\u0440\u043E\u043A\u0430 \u043D\u0430 \u044D\u0442\
+  \u0430\u043F \u2014 \u0447\u0430\u0440\u0442 \u0431\u0435\u0440\u0451\u0442 \u0435\
+  \u0451 \u043A\u0430\u043A \u0435\u0441\u0442\u044C.\n--\n-- stages_present >= 2\
+  \ \u2014 \u043A\u043B\u044E\u0447\u0435\u0432\u043E\u0435 \u0443\u0441\u043B\u043E\
+  \u0432\u0438\u0435 \u0447\u0435\u0441\u0442\u043D\u043E\u0441\u0442\u0438: \u0431\
+  \u0435\u0437 \u043D\u0435\u0433\u043E \u0441\u0440\u0430\u0432\u043D\u0438\u0432\
+  \u0430\u043B\u0438 \u0431\u044B\n-- \u0440\u0430\u0437\u043D\u044B\u0435 \u043D\u0430\
+  \u0431\u043E\u0440\u044B \u043C\u043E\u0434\u0435\u043B\u0435\u0439 (\u0424\u041A\
+  \u0421\u0421 \u2014 85 \u0442\u044B\u0441. \u043A\u0430\u043B\u044C\u043A\u0443\u043B\
+  \u044F\u0446\u0438\u0439 \u0441 \u043C\u0435\u0434\u0438\u0430\u043D\u043E\u0439\
+  \ 1,92;\n-- \u041F\u041A\u041F\u0421\u0421 \u2014 112 \u0441 \u043C\u0435\u0434\u0438\
+  \u0430\u043D\u043E\u0439 9,0). \u0421\u0443\u043C\u043C\u044B \u0432 BYN.\nWITH\
+  \ calc AS (\n  SELECT \"\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\
+  \u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438\" AS stage, \"\u041C\u043E\u0434\
+  \u0435\u043B\u044C\" AS model, \"\u0410\u0440\u0442\u0438\u043A\u0443\u043B\" AS\
+  \ articul,\n         \"\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\
+  \u0430\" AS calc_date,\n         max(\"\u0421\u0435\u0431\u0435\u0441\u0442\u043E\
+  \u0438\u043C\u043E\u0441\u0442\u044C, \u0440\u0443\u0431.\") AS cost_byn,\n    \
+  \     max(\"\u041E\u0441\u043D\u043E\u0432\u043D\u044B\u0435 \u043C\u0430\u0442\u0435\
+  \u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431.\") AS mat_main_byn,\n      \
+  \   max(\"\u041F\u043E\u0448\u0438\u0432, \u0440\u0443\u0431.\") AS sew_byn\n  FROM\
+  \ cost_data_cache\n  GROUP BY \"\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\
+  \u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438\", \"\u041C\u043E\u0434\
+  \u0435\u043B\u044C\", \"\u0410\u0440\u0442\u0438\u043A\u0443\u043B\", \"PLAN_ID\"\
+  , \"\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430\", \"\u041D\
+  \u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\
+  \u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430\"\n), ranked AS (\n\
+  \  SELECT calc.*, row_number() over (partition by model, articul, stage order by\
+  \ calc_date desc) AS rn\n  FROM calc WHERE cost_byn > 0 AND cost_byn < 1000\n),\
+  \ latest AS (\n  SELECT *, count(*) over (partition by model, articul) AS stages_present\n\
+  \  FROM ranked WHERE rn = 1\n), agg AS (\n  SELECT stage,\n    CASE stage WHEN '\u041F\
+  \u041A\u041F\u0421\u0421' THEN 1 WHEN '\u041A\u041F\u0421\u0421' THEN 2 WHEN '\u041F\
+  \u0424\u041A\u0421\u0421' THEN 3 WHEN '\u0424\u041A\u0421\u0421' THEN 4 ELSE 9 END\
+  \ AS stage_order,\n    CASE stage WHEN '\u041F\u041A\u041F\u0421\u0421' THEN '1.\
+  \ \u041F\u041A\u041F\u0421\u0421 \xB7 \u043D\u043E\u0432\u0430\u044F \u0440\u0430\
+  \u0437\u0440\u0430\u0431\u043E\u0442\u043A\u0430'\n               WHEN '\u041A\u041F\
+  \u0421\u0421'  THEN '2. \u041A\u041F\u0421\u0421 \xB7 \u043F\u043B\u0430\u043D\u043E\
+  \u0432\u0430\u044F \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u044F\
+  '\n               WHEN '\u041F\u0424\u041A\u0421\u0421' THEN '3. \u041F\u0424\u041A\
+  \u0421\u0421 \xB7 \u0444\u0430\u043A\u0442\u0438\u0447\u0435\u0441\u043A\u0430\u044F\
+  \ \u0440\u0430\u0441\u0446\u0435\u043D\u043A\u0430'\n               WHEN '\u0424\
+  \u041A\u0421\u0421'  THEN '4. \u0424\u041A\u0421\u0421 \xB7 \u0438\u0441\u0442\u043E\
+  \u0440\u0438\u044F \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\
+  \u0442\u0438'\n               ELSE stage END AS stage_label,\n    count(*) AS calc_count,\n\
+  \    count(DISTINCT model) AS model_count,\n    round(percentile_cont(0.25) WITHIN\
+  \ GROUP (ORDER BY cost_byn)::numeric, 2) AS cost_p25,\n    round(percentile_cont(0.5)\
+  \  WITHIN GROUP (ORDER BY cost_byn)::numeric, 2) AS cost_median,\n    round(percentile_cont(0.75)\
+  \ WITHIN GROUP (ORDER BY cost_byn)::numeric, 2) AS cost_p75,\n    round(avg(cost_byn)::numeric,\
+  \ 2) AS cost_avg,\n    round(percentile_cont(0.5) WITHIN GROUP (ORDER BY mat_main_byn)::numeric,\
+  \ 3) AS mat_main_median,\n    round(percentile_cont(0.5) WITHIN GROUP (ORDER BY\
+  \ sew_byn)::numeric, 3) AS sew_median,\n    max(calc_date)::date AS last_calc_date\n\
+  \  FROM latest WHERE stages_present >= 2 GROUP BY stage\n)\nSELECT agg.*,\n  round(cost_median\
+  \ - lag(cost_median) over (order by stage_order), 2) AS delta_prev_abs,\n  round(100.0\
+  \ * (cost_median - lag(cost_median) over (order by stage_order)) / nullif(lag(cost_median)\
+  \ over (order by stage_order), 0), 1) AS delta_prev_pct\nFROM agg"
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+folders: null
+uuid: 3150bca1-2ac4-4e84-aeb2-1b2195e542b1
+metrics:
+- metric_name: count
+  verbose_name: COUNT(*)
+  metric_type: count
+  expression: COUNT(*)
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+columns:
+- column_name: cost_p25
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: cost_p75
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: mat_main_median
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: delta_prev_abs
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: delta_prev_pct
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: cost_median
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: cost_avg
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: sew_median
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: last_calc_date
+  verbose_name: null
+  is_dttm: true
+  is_active: true
+  type: DATE
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: calc_count
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: LONGINTEGER
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: model_count
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: LONGINTEGER
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: stage_order
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: INTEGER
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: stage_label
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: stage
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+version: 1.0.0
+database_uuid: 9f1d4a10-0003-4c00-8b00-000000000003

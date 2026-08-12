@@ -1,0 +1,158 @@
+dashboard_title: "cost-stage-compare \xB7 \u0421\u0435\u0431\u0435\u0441\u0442\u043E\
+  \u0438\u043C\u043E\u0441\u0442\u044C: \u0441\u0440\u0430\u0432\u043D\u0435\u043D\
+  \u0438\u0435 \u044D\u0442\u0430\u043F\u043E\u0432 \u043A\u0430\u043B\u044C\u043A\
+  \u0443\u043B\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F"
+description: null
+css: null
+slug: cost-stage-compare
+certified_by: null
+certification_details: null
+published: true
+uuid: 2656c3bf-e554-41a6-9d70-a9304c4bd7d1
+position:
+  CHART-1:
+    children: []
+    id: CHART-1
+    meta:
+      chartId: 1
+      height: 50
+      sliceName: "\u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\
+        \u0442\u044C \u043F\u043E \u044D\u0442\u0430\u043F\u0430\u043C \u043A\u0430\
+        \u043B\u044C\u043A\u0443\u043B\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F\
+        \ \u2014 \u043C\u0435\u0434\u0438\u0430\u043D\u0430, BYN"
+      uuid: d1e0b2bf-6149-44e7-a6aa-b64d16429332
+      width: 4
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-9361377d
+    - COLUMN-963a12b2
+    type: CHART
+  COLUMN-963a12b2:
+    children:
+    - CHART-1
+    id: COLUMN-963a12b2
+    meta:
+      background: BACKGROUND_TRANSPARENT
+      width: 6
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-9361377d
+    type: COLUMN
+  CHART-2:
+    children: []
+    id: CHART-2
+    meta:
+      chartId: 2
+      height: 50
+      sliceName: "\u042D\u0442\u0430\u043F\u044B \u043A\u0430\u043B\u044C\u043A\u0443\
+        \u043B\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F \u2014 \u0440\u0430\
+        \u0437\u0431\u0440\u043E\u0441 \u0438 \u043F\u0435\u0440\u0435\u0445\u043E\
+        \u0434 \u043C\u0435\u0436\u0434\u0443 \u044D\u0442\u0430\u043F\u0430\u043C\
+        \u0438"
+      uuid: d6c0d9d3-ac9c-4f43-9a40-ad01ae2007d3
+      width: 4
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-9361377d
+    - COLUMN-ab00c68d
+    type: CHART
+  COLUMN-ab00c68d:
+    children:
+    - CHART-2
+    id: COLUMN-ab00c68d
+    meta:
+      background: BACKGROUND_TRANSPARENT
+      width: 6
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-9361377d
+    type: COLUMN
+  ROW-9361377d:
+    children:
+    - COLUMN-963a12b2
+    - COLUMN-ab00c68d
+    id: ROW-9361377d
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    type: ROW
+  CHART-3:
+    children: []
+    id: CHART-3
+    meta:
+      chartId: 3
+      height: 50
+      sliceName: "\u041F\u043E\u043B\u043D\u0430\u044F \u0446\u0435\u043F\u043E\u0447\
+        \u043A\u0430: \u043C\u043E\u0434\u0435\u043B\u0438 \u0441\u043E \u0432\u0441\
+        \u0435\u043C\u0438 4 \u044D\u0442\u0430\u043F\u0430\u043C\u0438"
+      uuid: 7891df3c-da30-489d-ad8d-f26f8693421f
+      width: 4
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-807711bf
+    - COLUMN-47276239
+    type: CHART
+  COLUMN-47276239:
+    children:
+    - CHART-3
+    id: COLUMN-47276239
+    meta:
+      background: BACKGROUND_TRANSPARENT
+      width: 12
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-807711bf
+    type: COLUMN
+  ROW-807711bf:
+    children:
+    - COLUMN-47276239
+    id: ROW-807711bf
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    type: ROW
+  GRID_ID:
+    children:
+    - ROW-9361377d
+    - ROW-807711bf
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    type: GRID
+  ROOT_ID:
+    children:
+    - GRID_ID
+    id: ROOT_ID
+    type: ROOT
+  DASHBOARD_VERSION_KEY: v2
+metadata:
+  filter_scopes: {}
+  expanded_slices: {}
+  refresh_frequency: 0
+  timed_refresh_immune_slices: []
+  color_scheme: null
+  label_colors: {}
+  shared_label_colors: []
+  color_scheme_domain: []
+  cross_filters_enabled: false
+  native_filter_configuration: []
+  global_chart_configuration:
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+  chart_configuration: {}
+  map_label_colors:
+    "\u041C\u0435\u0434\u0438\u0430\u043D\u043D\u0430\u044F \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C, BYN": '#1FA8C9'
+theme_uuid: null
+version: 1.0.0

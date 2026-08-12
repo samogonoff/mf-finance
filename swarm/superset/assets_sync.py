@@ -135,10 +135,24 @@ def strip_bundle_root(name: str) -> str:
     return parts[1] if len(parts) == 2 else name
 
 
+UUID_RE = re.compile(r"^uuid:\s*([0-9a-fA-F-]{36})\s*$", re.MULTILINE)
+
+
+def extract_uuid(text: str) -> str | None:
+    m = UUID_RE.search(text)
+    return m.group(1).lower() if m else None
+
+
 def cmd_export(client: SupersetClient, assets_dir: Path) -> int:
     bundle = client.export_bundle()
 
-    written, skipped_dbs = 0, []
+    written = 0
+    # Сравниваем подключения ПО UUID, а не по имени файла: Superset называет
+    # файлы экспорта по database_name («MF_ClickHouse_finance.yaml»), а в git они
+    # названы руками («mf_clickhouse.yaml»). Сравнение по именам давало ложное
+    # предупреждение на каждом экспорте — а предупреждение, которое всегда
+    # срабатывает, перестают читать.
+    exported_db_uuids: dict[str, str] = {}
     seen: set[Path] = set()
 
     for entry in bundle.namelist():
@@ -148,7 +162,9 @@ def cmd_export(client: SupersetClient, assets_dir: Path) -> int:
         top = rel.split("/", 1)[0]
 
         if top in EXPORT_SKIP_DIRS:
-            skipped_dbs.append(Path(rel).name)
+            uid = extract_uuid(bundle.read(entry).decode("utf-8", "replace"))
+            if uid:
+                exported_db_uuids[uid] = Path(rel).name
             continue
         if top not in ASSET_DIRS and rel != "metadata.yaml":
             continue
@@ -181,8 +197,16 @@ def cmd_export(client: SupersetClient, assets_dir: Path) -> int:
 
     # Подключение, созданное в UI, в git не попадёт — про это надо знать сразу,
     # а не при разборе упавшего импорта на проде.
-    known = {p.name for p in (assets_dir / "databases").glob("*.yaml")}
-    unknown = [name for name in skipped_dbs if name not in known]
+    known_uuids = {
+        uid
+        for p in (assets_dir / "databases").glob("*.yaml")
+        if (uid := extract_uuid(p.read_text(encoding="utf-8")))
+    }
+    unknown = [
+        f"{name} (uuid {uid})"
+        for uid, name in exported_db_uuids.items()
+        if uid not in known_uuids
+    ]
     if unknown:
         print(
             "\n⚠ в инстансе есть подключения, которых нет в git:\n  "
