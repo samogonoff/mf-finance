@@ -1,0 +1,45 @@
+slice_name: "cost-stage-fullchain \xB7 \u041C\u043E\u0434\u0435\u043B\u0438 \u0441\
+  \u043E \u0432\u0441\u0435\u043C\u0438 4 \u044D\u0442\u0430\u043F\u0430\u043C\u0438"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  viz_type: table
+  all_columns:
+  - model
+  - articul
+  - stage_order
+  - stage_label
+  - cost_byn
+  - price_byn
+  - calc_date
+  - level01
+  - brand_manager
+  - season
+  columns:
+  - model
+  - articul
+  - stage_order
+  - stage_label
+  - cost_byn
+  - price_byn
+  - calc_date
+  - level01
+  - brand_manager
+  - season
+  query_mode: raw
+  include_time: false
+  order_desc: true
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SIMPLE
+    subject: stages_present
+    operator: ==
+    comparator: 4
+  row_limit: 500
+query_context: null
+cache_timeout: null
+uuid: 45ccaaa5-88fb-4adf-b0b1-ccdc0c445bc2
+version: 1.0.0
+dataset_uuid: e23fdd2d-6869-42cd-ac88-30e488572f23

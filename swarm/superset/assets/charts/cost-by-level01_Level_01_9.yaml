@@ -1,0 +1,25 @@
+slice_name: "cost-by-level01 \xB7 \u041C\u0435\u0434\u0438\u0430\u043D\u0430 \u043F\
+  \u043E Level 01 \u0438 \u044D\u0442\u0430\u043F\u0430\u043C"
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  viz_type: echarts_timeseries_bar
+  metrics:
+  - cost_median
+  x_axis: level01
+  x_axis_sort_series_type: name
+  x_axis_sort_series_ascending: true
+  time_grain_sqla: null
+  granularity_sqla: null
+  groupby:
+  - stage_label
+  row_limit: 1000
+  legend_orientation: bottom
+  orientation: horizontal
+query_context: null
+cache_timeout: null
+uuid: 73dbc0ae-2969-40d0-89fe-b539af2ebdf0
+version: 1.0.0
+dataset_uuid: e23fdd2d-6869-42cd-ac88-30e488572f23

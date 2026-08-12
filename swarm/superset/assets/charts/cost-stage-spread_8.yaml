@@ -1,0 +1,27 @@
+slice_name: "cost-stage-spread \xB7 \u042D\u0442\u0430\u043F\u044B: \u0440\u0430\u0437\
+  \u0431\u0440\u043E\u0441 \u0438 \u043E\u0431\u044A\u0451\u043C"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  viz_type: table
+  all_columns:
+  - stage_label
+  metrics:
+  - calc_count
+  - model_count
+  - cost_p25
+  - cost_median
+  - cost_p75
+  - cost_avg
+  - price_median
+  groupby:
+  - stage_label
+  query_mode: aggregate
+  row_limit: 1000
+query_context: null
+cache_timeout: null
+uuid: 819631d2-6df8-48b2-8160-8c5101066e09
+version: 1.0.0
+dataset_uuid: e23fdd2d-6869-42cd-ac88-30e488572f23
