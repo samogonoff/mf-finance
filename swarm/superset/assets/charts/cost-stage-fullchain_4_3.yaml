@@ -9,6 +9,7 @@ params:
   all_columns:
   - model
   - articul
+  - stage_order
   - stage_label
   - cost_byn
   - price_byn
@@ -18,6 +19,7 @@ params:
   columns:
   - model
   - articul
+  - stage_order
   - stage_label
   - cost_byn
   - price_byn
@@ -33,11 +35,8 @@ params:
     subject: stages_present
     operator: ==
     comparator: 4
-  order_by_cols:
-  - model
-  - stage_label
   row_limit: 200
-query_context: null
+query_context: '{"datasource":{"id":1,"type":"table"},"force":false,"queries":[{"filters":[{"col":"stages_present","op":"==","val":4}],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":["model","articul","stage_order","stage_label","cost_byn","price_byn","calc_date","level01","brand_manager"],"orderby":[],"annotation_layers":[],"row_limit":200,"series_limit":0,"group_others_when_limit_reached":false,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{},"post_processing":[],"time_offsets":[]}],"form_data":{"adhoc_filters":[{"clause":"WHERE","comparator":4,"expressionType":"SIMPLE","operator":"==","subject":"stages_present"}],"all_columns":["model","articul","stage_order","stage_label","cost_byn","price_byn","calc_date","level01","brand_manager"],"columns":["model","articul","stage_order","stage_label","cost_byn","price_byn","calc_date","level01","brand_manager"],"datasource":"1__table","include_time":false,"order_desc":true,"query_mode":"raw","row_limit":200,"slice_id":3,"viz_type":"table","force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
 cache_timeout: null
 uuid: 7891df3c-da30-489d-ad8d-f26f8693421f
 version: 1.0.0

@@ -9,6 +9,7 @@ viz_type: table
 params:
   viz_type: table
   all_columns:
+  - stage_order
   - stage_label
   - calc_count
   - model_count
@@ -19,6 +20,7 @@ params:
   - delta_prev_abs
   - delta_prev_pct
   columns:
+  - stage_order
   - stage_label
   - calc_count
   - model_count
@@ -31,8 +33,6 @@ params:
   query_mode: raw
   include_time: false
   order_desc: true
-  order_by_cols:
-  - stage_label
   row_limit: 100
 query_context: null
 cache_timeout: null
