@@ -31,6 +31,12 @@ func (s *Service) allowedFor(ctx context.Context, p Principal) (map[int]bool, er
 	return allowedSet(codes), nil
 }
 
+// AllowedCFOs — ABAC-набор разрешённых площадок пользователя (nil = админ, без
+// ограничения). Нужен экранам, которые читают данные мимо формы (свод периода).
+func (s *Service) AllowedCFOs(ctx context.Context, p Principal) (map[int]bool, error) {
+	return s.allowedFor(ctx, p)
+}
+
 // AssignScope — назначение ABAC-среза пользователю (админ процессов).
 func (s *Service) AssignScope(ctx context.Context, sc UserScope) error {
 	return s.scope.UpsertScope(ctx, sc)

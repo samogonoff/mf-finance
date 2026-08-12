@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 // HTTP-ручки движка заданий процесса. Чтение — ROLE_PLANS_USER; генерация/назначение
@@ -61,7 +63,7 @@ func (h *Handler) MpTaskFormGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "движок недоступен")
 		return
 	}
-	f, err := h.tasks.MpFormData(r.Context(), parseInt64(r.PathValue("taskId")))
+	f, err := h.tasks.MpFormData(r.Context(), parseInt64(r.PathValue("taskId")), r.URL.Query().Get("currency"))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -111,14 +113,15 @@ func (h *Handler) MpTaskFormSave(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	var body struct {
-		Rows []MpSaveRow `json:"rows"`
+		Rows     []MpSaveRow `json:"rows"`
+		Currency string      `json:"currency"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	prin := h.prin(r)
-	if err := h.tasks.SaveMpForm(r.Context(), parseInt64(r.PathValue("taskId")), prin.UserID, prin.PlansAdmin, body.Rows, raw); err != nil {
+	if err := h.tasks.SaveMpForm(r.Context(), parseInt64(r.PathValue("taskId")), prin.UserID, prin.PlansAdmin, body.Rows, raw, body.Currency); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -133,6 +136,43 @@ func (h *Handler) PnlView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := h.tasks.Pnl(r.Context(), parseInt64(r.PathValue("id")))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// BoardView — GET /api/plans/instances/{id}/board. Свод периода: все строки формы
+// с детализацией по площадкам и колонками сценариев.
+// Фильтры: ?currency=BYN|RUB|USD&segment=large|small&legal_entity=&country=&cfo=335,337
+func (h *Handler) BoardView(w http.ResponseWriter, r *http.Request) {
+	if h.tasks == nil {
+		writeJSON(w, http.StatusOK, Board{})
+		return
+	}
+	q := r.URL.Query()
+	f := BoardFilter{
+		Currency:    q.Get("currency"),
+		Segment:     q.Get("segment"),
+		LegalEntity: q.Get("legal_entity"),
+		Country:     q.Get("country"),
+	}
+	for _, s := range strings.Split(q.Get("cfo"), ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && n > 0 {
+			f.CodeCFO = append(f.CodeCFO, n)
+		}
+	}
+	var allowed map[int]bool
+	if h.form != nil {
+		a, err := h.form.AllowedCFOs(r.Context(), h.prin(r))
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		allowed = a
+	}
+	res, err := h.tasks.BoardData(r.Context(), parseInt64(r.PathValue("id")), f, allowed)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

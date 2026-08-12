@@ -37,7 +37,8 @@ type Task struct {
 
 // TaskStore — доступ к заданиям.
 type TaskStore struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	notify TaskNotifier // канал уведомлений участникам (может быть nil)
 	fact MpFactSource // источник факта МП (read-only) для формы
 }
 
@@ -100,8 +101,15 @@ func (s *TaskStore) matchingCfo(ctx context.Context, f CfoFilter) ([]cfoRowLite,
 	add("group_cfo2", f.GroupCFO2)
 	add("country", f.Country)
 	add("legal_entity", f.LegalEntity)
-	// Сегмент МП (large|small) — через справочник dir_marketplace по code_cfo.
-	if f.Segment != "" {
+	// Сегмент МП — через справочник dir_marketplace по code_cfo.
+	// "large"|"small" — конкретный сегмент; "all" — все площадки МП одним заданием
+	// (объединённая форма, миграция 0029).
+	if f.Segment == "all" {
+		conds = append(conds, `r.external_id IN (
+			SELECT mp.payload_json->>'code_cfo' FROM plans_directory_row mp
+			JOIN plans_directory dm ON dm.id=mp.directory_id
+			WHERE dm.code='dir_marketplace')`)
+	} else if f.Segment != "" {
 		args = append(args, f.Segment)
 		conds = append(conds, fmt.Sprintf(`r.external_id IN (
 			SELECT mp.payload_json->>'code_cfo' FROM plans_directory_row mp
@@ -216,7 +224,9 @@ func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 				queue(t, t.Title, codes, &p, holderOf[posID], "")
 			}
 			if len(unassigned) > 0 {
-				queue(t, t.Title+" · без ТОПа", unassigned, nil, nil, "")
+				// «без ТОПа» — внутренний жаргон: у ЦФО не задана должность-владелец.
+			// В UI пишем то, что от человека требуется: назначить исполнителя.
+			queue(t, t.Title+" · исполнитель не назначен", unassigned, nil, nil, "")
 			}
 		}
 	}
@@ -273,22 +283,20 @@ func (s *TaskStore) ListByInstance(ctx context.Context, plID int64) ([]Task, err
 	return scanTasks(rows)
 }
 
-// ListAll — ВСЕ задания всех карточек (для админа/админа планов) с периодом.
-func (s *TaskStore) ListAll(ctx context.Context) ([]Task, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT t.id, t.pl_id, t.stage_code, t.form_code, t.title, t.cfo_codes, t.task_role,
-		       t.position_id, t.legal_entity, t.assignee_user_id,
-		       TRIM(COALESCE(au.last_name,'')||' '||COALESCE(au.name,'')),
-		       t.delegate_user_id, TRIM(COALESCE(du.last_name,'')||' '||COALESCE(du.name,'')), t.status,
-		       COALESCE(pli.period_year,0), COALESCE(pli.period_month,0)
-		FROM pl_task t
-		LEFT JOIN users au ON au.id=t.assignee_user_id
-		LEFT JOIN users du ON du.id=t.delegate_user_id
-		LEFT JOIN pl_instance pli ON pli.id=t.pl_id
-		ORDER BY pli.period_year DESC, pli.period_month DESC, t.pl_id, t.stage_code, t.id`)
-	if err != nil {
-		return nil, err
-	}
+// taskSelectPeriod — тот же набор колонок + период карточки: рабочему столу и
+// обзору всех заданий нужно показывать, к какому месяцу относится задание.
+const taskSelectPeriod = `
+SELECT t.id, t.pl_id, t.stage_code, t.form_code, t.title, t.cfo_codes, t.task_role,
+       t.position_id, t.legal_entity, t.assignee_user_id,
+       TRIM(COALESCE(au.last_name,'')||' '||COALESCE(au.name,'')),
+       t.delegate_user_id, TRIM(COALESCE(du.last_name,'')||' '||COALESCE(du.name,'')), t.status,
+       COALESCE(pli.period_year,0), COALESCE(pli.period_month,0)
+FROM pl_task t
+LEFT JOIN users au ON au.id=t.assignee_user_id
+LEFT JOIN users du ON du.id=t.delegate_user_id
+LEFT JOIN pl_instance pli ON pli.id=t.pl_id`
+
+func scanTasksPeriod(rows pgx.Rows) ([]Task, error) {
 	defer rows.Close()
 	out := make([]Task, 0)
 	for rows.Next() {
@@ -306,13 +314,25 @@ func (s *TaskStore) ListAll(ctx context.Context) ([]Task, error) {
 	return out, rows.Err()
 }
 
-// ListByUser — мои задания (я исполнитель или делегат).
-func (s *TaskStore) ListByUser(ctx context.Context, userID int64) ([]Task, error) {
-	rows, err := s.pool.Query(ctx, taskSelect+` WHERE t.assignee_user_id=$1 OR t.delegate_user_id=$1 ORDER BY t.stage_code, t.id`, userID)
+// ListAll — ВСЕ задания всех карточек (для админа/админа планов) с периодом.
+func (s *TaskStore) ListAll(ctx context.Context) ([]Task, error) {
+	rows, err := s.pool.Query(ctx, taskSelectPeriod+
+		` ORDER BY pli.period_year DESC, pli.period_month DESC, t.pl_id, t.stage_code, t.id`)
 	if err != nil {
 		return nil, err
 	}
-	return scanTasks(rows)
+	return scanTasksPeriod(rows)
+}
+
+// ListByUser — мои задания (я исполнитель или делегат), с периодом карточки.
+func (s *TaskStore) ListByUser(ctx context.Context, userID int64) ([]Task, error) {
+	rows, err := s.pool.Query(ctx, taskSelectPeriod+
+		` WHERE t.assignee_user_id=$1 OR t.delegate_user_id=$1
+		  ORDER BY pli.period_year DESC, pli.period_month DESC, t.stage_code, t.id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return scanTasksPeriod(rows)
 }
 
 // taskActorCan — права на действие (тонкие): admin — всё; исполнитель делегирует
@@ -356,15 +376,56 @@ func (s *TaskStore) Action(ctx context.Context, taskID, actorUserID int64, isAdm
 		if err != nil {
 			return err
 		}
-		_, err = s.pool.Exec(ctx, `UPDATE pl_task SET delegate_user_id=$2, status=$3, updated_at=NOW() WHERE id=$1`, taskID, delegateUserID, next)
-		return err
+		if _, err = s.pool.Exec(ctx, `UPDATE pl_task SET delegate_user_id=$2, status=$3, updated_at=NOW() WHERE id=$1`, taskID, delegateUserID, next); err != nil {
+			return err
+		}
+		if t, e := s.taskByID(ctx, taskID); e == nil {
+			s.notifyDelegated(delegateUserID, t, t.AssigneeName)
+		}
+		return nil
 	}
 	next, err := applyTaskAction(status, action, delegate != nil)
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `UPDATE pl_task SET status=$2, updated_at=NOW() WHERE id=$1`, taskID, next)
-	return err
+	if _, err = s.pool.Exec(ctx, `UPDATE pl_task SET status=$2, updated_at=NOW() WHERE id=$1`, taskID, next); err != nil {
+		return err
+	}
+	// Кого касается смена состояния: возврат — того, кто работает; сдача — того,
+	// кто принимает (исполнитель, если сдавал делегат).
+	if t, e := s.taskByID(ctx, taskID); e == nil {
+		switch action {
+		case "return":
+			target := t.AssigneeID
+			if t.DelegateID != nil {
+				target = t.DelegateID
+			}
+			if target != nil {
+				s.notifyReturned(*target, t)
+			}
+		case "submit":
+			if t.DelegateID != nil && t.AssigneeID != nil && *t.DelegateID == actorUserID {
+				s.notifySubmitted(*t.AssigneeID, t, t.DelegateName)
+			}
+		}
+	}
+	return nil
+}
+
+// taskByID — задание с периодом (для текста уведомлений).
+func (s *TaskStore) taskByID(ctx context.Context, taskID int64) (Task, error) {
+	rows, err := s.pool.Query(ctx, taskSelectPeriod+` WHERE t.id=$1`, taskID)
+	if err != nil {
+		return Task{}, err
+	}
+	list, err := scanTasksPeriod(rows)
+	if err != nil {
+		return Task{}, err
+	}
+	if len(list) == 0 {
+		return Task{}, fmt.Errorf("задание %d не найдено", taskID)
+	}
+	return list[0], nil
 }
 
 // --- Просмотр данных задания (read-only review для ответственного/согласующего) ---
@@ -589,10 +650,17 @@ func (s *TaskStore) SetAssignee(ctx context.Context, taskID, userID int64) error
 	if userID != 0 {
 		u = &userID
 	}
-	_, err := s.pool.Exec(ctx, `
+	if _, err := s.pool.Exec(ctx, `
 		UPDATE pl_task SET assignee_user_id=$2, delegate_user_id=NULL, updated_at=NOW() WHERE id=$1`,
-		taskID, u)
-	return err
+		taskID, u); err != nil {
+		return err
+	}
+	if userID != 0 {
+		if t, e := s.taskByID(ctx, taskID); e == nil {
+			s.notifyAssigned(userID, t)
+		}
+	}
+	return nil
 }
 
 // StageOwnerInfo — владелец этапа с именем.

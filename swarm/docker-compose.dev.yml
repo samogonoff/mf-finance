@@ -143,6 +143,9 @@ services:
       - PLANS_SYNC_INTERVAL=${PLANS_SYNC_INTERVAL:-3600}
       - PLANS_DIR_CACHE_TTL=${PLANS_DIR_CACHE_TTL:-3600}
       - B24_USERGET_WEBHOOK=${B24_USERGET_WEBHOOK:-}
+      # Трансляция логов в ELK. Пусто → только stdout (dev-дефолт).
+      - LOGSTASH_HOST=${LOGSTASH_HOST:-}
+      - LOGSTASH_PORT=${LOGSTASH_PORT:-}
     restart: on-failure
     depends_on:
       - postgres
@@ -176,6 +179,10 @@ services:
       # имени хоста "go-api"/"nginx". Public-fetch с фронта идёт через
       # NUXT_PUBLIC_API_BASE → api.finance.local.
       - NUXT_INTERNAL_API_BASE=http://go-api:8080
+      # Трансляция логов nitro-роутов в ELK (server/utils/logstash.ts). Имена
+      # БЕЗ префикса NUXT_ — код читает process.env напрямую, см. CLAUDE.md.
+      - LOGSTASH_HOST=${LOGSTASH_HOST:-}
+      - LOGSTASH_PORT=${LOGSTASH_PORT:-}
     ports:
       - "3001:3000"
     depends_on:
@@ -199,6 +206,11 @@ services:
     environment:
       - PORT=8090
       - ANALYTICS_DATABASE_URL=postgres://analytics_ro:analytics_ro@postgres:5432/finance?sslmode=disable
+      # Трансляция логов песочницы в ELK (app/logship.py, service=finance-analytics).
+      # Пусто → только stdout. Сеть data_net приватная для сервисов кабинета, но
+      # исходящий TCP до Logstash через NAT хоста ей доступен.
+      - LOGSTASH_HOST=${LOGSTASH_HOST:-}
+      - LOGSTASH_PORT=${LOGSTASH_PORT:-}
     restart: on-failure
     depends_on:
       - postgres

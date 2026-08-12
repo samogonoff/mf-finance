@@ -9,12 +9,24 @@
   <div class="page-mpf">
     <header class="page-header">
       <div>
-        <h1 class="page-title">Форма МП · {{ form?.segment === "small" ? "small" : "large" }}</h1>
-        <p class="page-subtitle">{{ form?.task.title }} · {{ form?.year }}-{{ String(form?.month || 0).padStart(2, "0") }} · {{ form?.platforms.length || 0 }} площадок · НДС {{ Math.round((form?.vat || 0) * 100) }}%</p>
+        <h1 class="page-title">Форма МП · {{ segmentTitle }}</h1>
+        <p class="page-subtitle">
+          {{ form?.task.title }} · {{ form?.year }}-{{ String(form?.month || 0).padStart(2, "0") }} ·
+          показано {{ visiblePlatforms.length }} из {{ form?.platforms.length || 0 }} площадок ·
+          НДС {{ Math.round((form?.vat || 0) * 100) }}% · {{ currency }}
+        </p>
       </div>
       <div class="page-actions">
         <NuxtLink :to="backLink" class="btn btn-ghost"><Icon name="lucide:arrow-left" /> К процессу</NuxtLink>
+        <label class="cur-switch" title="Валюта отображения (хранение — RUB)">
+          <select v-model="currency" class="select select-sm" :disabled="dirty" @change="load">
+            <option value="RUB">RUB</option>
+            <option value="BYN">BYN</option>
+            <option value="USD">USD</option>
+          </select>
+        </label>
         <button v-if="canEdit" class="btn btn-sm btn-ghost" :disabled="!hasStrategy" title="Копировать стратегический бюджет в тактику (TPL-09)" @click="copyStrategy"><Icon name="lucide:copy" /> Стратегия→тактика</button>
+        <button v-if="canEdit" class="btn btn-sm btn-ghost" :disabled="!hasTarget" title="Копировать тактику-таргет (Budgeting) в форму" @click="copyTarget"><Icon name="lucide:copy-check" /> Таргет→тактика</button>
         <button class="btn btn-sm btn-ghost" @click="doExport"><Icon name="lucide:download" /> Экспорт</button>
         <button v-if="canEdit" class="btn btn-sm btn-ghost" @click="fileInput?.click()"><Icon name="lucide:upload" /> Импорт</button>
         <input ref="fileInput" type="file" accept=".xlsx" class="hidden-file" @change="doImport" />
@@ -26,6 +38,41 @@
     <p v-if="note" class="banner banner-pos">{{ note }}</p>
     <p v-if="form && !canEdit" class="banner banner-warn">Только просмотр — вы не исполнитель этого задания.</p>
 
+    <!-- Одна форма на все МП: фильтры сужают показ, ввод по скрытым площадкам
+         сохраняется как есть (фильтр — только представление). -->
+    <div v-if="form && form.platforms.length > 1" class="mp-filters">
+      <div class="mf">
+        <span class="mf-lbl">Маркет</span>
+        <select v-model="platformFilter" class="select select-sm">
+          <option value="0">все площадки</option>
+          <option v-for="p in form.platforms" :key="p.code_cfo" :value="String(p.code_cfo)">
+            {{ p.name || p.code_cfo }}
+          </option>
+        </select>
+      </div>
+      <div v-if="segments.length > 1" class="mf">
+        <span class="mf-lbl">Сегмент</span>
+        <div class="chip-row">
+          <button type="button" class="chip" :class="{ active: segmentFilter === '' }" @click="segmentFilter = ''">все</button>
+          <button
+            v-for="s in segments"
+            :key="s"
+            type="button"
+            class="chip"
+            :class="{ active: segmentFilter === s }"
+            @click="segmentFilter = s"
+          >{{ s === "large" ? "крупные" : "мелкие" }}</button>
+        </div>
+      </div>
+      <div class="mf">
+        <span class="mf-lbl">ЮЛ</span>
+        <select v-model="legalFilter" class="select select-sm">
+          <option value="">все ЮЛ</option>
+          <option v-for="le in legalEntities" :key="le" :value="le">{{ le }}</option>
+        </select>
+      </div>
+    </div>
+
     <div v-if="form" class="legend">
       <span class="lg lg-input">ввод</span>
       <span class="lg lg-calced">расчёт (правится)</span>
@@ -33,21 +80,41 @@
       <span class="lg-hint">Менеджер задаёт «Продажи с НДС», %СПП и статьи затрат — остальное считается автоматически.</span>
     </div>
 
-    <div v-if="form" class="card form-card">
+    <!-- Первая загрузка: контур будущей таблицы. Форма тянет факт/стратегию/таргет
+         из OLAP — это секунды, и пустой экран всё это время выглядит как зависание. -->
+    <div v-if="!form && loading" class="card form-card">
+      <p class="loading-line">
+        <Icon name="lucide:loader-circle" class="spin" />
+        Загружаю форму задания: факт, стратегия и таргет из Budgeting…
+      </p>
+      <SkeletonTable :rows="16" :cols="5" :section-every="5" label="Загружаю форму МП" />
+    </div>
+
+    <div v-if="form" class="card form-card" :class="{ busy: loading }">
+      <!-- Перезагрузка при смене валюты: таблицу не убираем, но помечаем занятой. -->
+      <div v-if="loading" class="busy-veil"><Icon name="lucide:loader-circle" class="spin" /> Пересчитываю в {{ currency }}…</div>
       <div class="table-wrap">
         <table class="data-table mp-grid">
           <thead>
+            <!-- Группировка колонок по сегменту — когда форма покрывает и крупные, и мелкие МП. -->
+            <tr v-if="segmentGroups.length > 1" class="grp-row">
+              <th class="col-line"></th>
+              <th v-for="g in segmentGroups" :key="g.segment" :colspan="g.count" class="grp-head">
+                {{ g.segment === "large" ? "Крупные МП" : "Мелкие МП" }}
+              </th>
+              <th></th>
+            </tr>
             <tr>
               <th class="col-line">Показатель</th>
-              <th v-for="p in form.platforms" :key="p.code_cfo" class="col-plat num">
+              <th v-for="p in visiblePlatforms" :key="p.code_cfo" class="col-plat num">
                 {{ p.name || p.code_cfo }}<span class="cfo">ЦФО {{ p.code_cfo }}</span>
               </th>
-              <th class="col-total num">Итого</th>
+              <th class="col-total num">Итого<span v-if="totalScoped" class="cfo">по фильтру</span></th>
             </tr>
           </thead>
           <tbody>
             <template v-for="sec in sections" :key="sec.name">
-              <tr class="sec-row"><td :colspan="form.platforms.length + 2">{{ sec.name }}</td></tr>
+              <tr class="sec-row"><td :colspan="visiblePlatforms.length + 2">{{ sec.name }}</td></tr>
               <tr v-for="line in sec.lines" :key="line.block_type" class="line-row" :class="lineClass(line)">
                 <td class="col-line">
                   <span class="line-name">{{ line.name }}</span>
@@ -56,24 +123,27 @@
                 </td>
 
                 <!-- ячейки по площадкам -->
-                <td v-for="p in form.platforms" :key="p.code_cfo" class="cell" :class="cellClass(line, p.code_cfo)">
+                <td v-for="p in visiblePlatforms" :key="p.code_cfo" class="cell" :class="cellClass(line, p.code_cfo)">
                   <template v-if="line.scope === 'total'">
                     <span class="muted">—</span>
                   </template>
                   <template v-else-if="editableCell(line)">
                     <div class="cell-row">
-                      <input
-                        v-model.number="inputs[key(p.code_cfo, line.block_type)]"
-                        type="number" class="cell-input"
+                      <!-- Проценты вводятся в процентах (31), хранятся долей (0.31). -->
+                      <NumberField
+                        :model-value="displayInput(line, p.code_cfo)"
+                        class="cell-input"
                         :class="{ pct: line.value_kind === 'pct' }"
-                        :step="line.value_kind === 'pct' ? '0.01' : 'any'"
-                        :disabled="!canEdit" placeholder="—" @input="dirty = true"
+                        :disabled="!canEdit" :placeholder="line.value_kind === 'pct' ? '%' : '—'"
+                        @update:model-value="onInput(line, p.code_cfo, $event)"
                       />
+                      <span v-if="line.value_kind === 'pct'" class="pct-sign">%</span>
                       <button v-if="canEdit && line.kind === 'input'" class="corr-btn" :class="{ on: isCorr(p.code_cfo, line.block_type) }" title="Корректировка с причиной (ADJ-02)" @click="toggleCorr(p.code_cfo, line.block_type)"><Icon name="lucide:pencil" /></button>
                     </div>
-                    <span v-if="line.value_kind === 'pct'" class="hint-val">{{ fmtPct(inputs[key(p.code_cfo, line.block_type)]) }}</span>
                     <span v-if="line.kind === 'input' && factOf(p.code_cfo, line.block_type) != null" class="fact">факт: {{ fmtMoney(factOf(p.code_cfo, line.block_type)) }}</span>
+                    <span v-if="prevOf(p.code_cfo, line.block_type) != null" class="prev">пр. год: {{ fmt(line, prevOf(p.code_cfo, line.block_type)) }}</span>
                     <span v-if="stratOf(p.code_cfo, line.block_type) != null" class="strat">страт: {{ fmt(line, stratOf(p.code_cfo, line.block_type)) }}</span>
+                    <span v-if="targetOf(p.code_cfo, line.block_type) != null" class="target">таргет: {{ fmt(line, targetOf(p.code_cfo, line.block_type)) }}</span>
                     <input v-if="isCorr(p.code_cfo, line.block_type)" v-model="corr[key(p.code_cfo, line.block_type)]" class="corr-reason" :disabled="!canEdit" placeholder="причина корректировки…" />
                   </template>
                   <template v-else>
@@ -85,7 +155,11 @@
                 <!-- Итого -->
                 <td class="cell total-cell">
                   <template v-if="line.scope === 'total' && editableCell(line)">
-                    <input v-model.number="totals[line.block_type]" type="number" class="cell-input" :disabled="!canEdit" placeholder="—" @input="dirty = true" />
+                    <NumberField
+                      :model-value="totals[line.block_type] ?? null"
+                      class="cell-input" :disabled="!canEdit" placeholder="—"
+                      @update:model-value="onTotalInput(line.block_type, $event)"
+                    />
                   </template>
                   <template v-else>
                     <span class="calc-val" :class="{ neg: totalValue(line) < 0 }">{{ fmt(line, totalValue(line)) }}</span>
@@ -102,9 +176,10 @@
 </template>
 
 <script setup lang="ts">
-import { useTasks, type MpTaskForm, type MpLine, type MpSaveRow } from "~/composables/useTasks";
+import { useTasks, type MpTaskForm, type MpLine, type MpSaveRow, type MpFormCell } from "~/composables/useTasks";
 import { computePlatform, vatByCountry, B } from "~/composables/useMpCascade";
 import { num } from "~/utils/format";
+import NumberField from "~/components/NumberField.vue";
 
 definePageMeta({ middleware: "scope-guard" });
 
@@ -121,7 +196,11 @@ const corr = reactive<Record<string, string>>({});               // ключ я�
 const error = ref("");
 const note = ref("");
 const saving = ref(false);
+const loading = ref(true); // сразу true: onMounted грузит форму, скелетон не должен мигать
 const dirty = ref(false);
+// Валюта отображения; хранение тактики всегда в RUB (пересчёт делает сервер).
+// Переключение заблокировано при несохранённых правках — иначе они потеряются.
+const currency = ref("RUB");
 const fileInput = ref<HTMLInputElement | null>(null);
 
 const key = (cfo: number, block: string) => `${cfo}:${block}`;
@@ -140,6 +219,42 @@ const sections = computed(() => {
     let s = out.find((x) => x.name === l.section);
     if (!s) { s = { name: l.section, lines: [] }; out.push(s); }
     s.lines.push(l);
+  }
+  return out;
+});
+
+// Одна форма на все МП (миграция 0029): площадки обоих сегментов приходят одним
+// заданием, фильтры ниже — только представление, они не влияют на сохранение.
+const platformFilter = ref("0");
+const segmentFilter = ref("");
+const legalFilter = ref("");
+
+const segments = computed(() =>
+  [...new Set((form.value?.platforms || []).map((p) => p.segment).filter(Boolean))].sort()
+);
+const legalEntities = computed(() =>
+  [...new Set((form.value?.platforms || []).map((p) => p.legal_entity).filter(Boolean))].sort()
+);
+const visiblePlatforms = computed(() =>
+  (form.value?.platforms || []).filter((p) => {
+    if (platformFilter.value !== "0" && String(p.code_cfo) !== platformFilter.value) return false;
+    if (segmentFilter.value && p.segment !== segmentFilter.value) return false;
+    if (legalFilter.value && p.legal_entity !== legalFilter.value) return false;
+    return true;
+  })
+);
+const totalScoped = computed(() => visiblePlatforms.value.length !== (form.value?.platforms.length || 0));
+const segmentTitle = computed(() => {
+  if (segments.value.length > 1) return "все площадки";
+  return segments.value[0] === "small" ? "мелкие МП" : "крупные МП";
+});
+// Порядок колонок = порядок площадок; группы считаем по соседним одинаковым сегментам.
+const segmentGroups = computed(() => {
+  const out: { segment: string; count: number }[] = [];
+  for (const p of visiblePlatforms.value) {
+    const last = out[out.length - 1];
+    if (last && last.segment === p.segment) last.count++;
+    else out.push({ segment: p.segment, count: 1 });
   }
   return out;
 });
@@ -167,7 +282,10 @@ const platformValues = computed<Record<number, Record<string, number>>>(() => {
 });
 
 const cellValue = (line: MpLine, cfo: number): number => platformValues.value[cfo]?.[line.block_type] ?? 0;
-const sumBlock = (block: string): number => (form.value?.platforms || []).reduce((s, p) => s + (platformValues.value[p.code_cfo]?.[block] ?? 0), 0);
+// Итог считается по ВИДИМЫМ площадкам: отфильтровав срез, пользователь ждёт итог
+// именно по нему. Каскад при этом считается по всем — ввод скрытых не теряется.
+const sumBlock = (block: string): number =>
+  visiblePlatforms.value.reduce((s, p) => s + (platformValues.value[p.code_cfo]?.[block] ?? 0), 0);
 
 // Итого по строке: сумма денег; проценты пересчитываются из агрегатов.
 const totalValue = (line: MpLine): number => {
@@ -194,8 +312,29 @@ const shareOf = (line: MpLine, cfo: number): number => {
 
 const cellRef = (cfo: number, block: string) => form.value?.cells.find((c) => c.code_cfo === cfo && c.block_type === block);
 const factOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.fact ?? null;
+const prevOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.fact_prev ?? null;
 const stratOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.strategy ?? null;
+const targetOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.target ?? null;
 const hasStrategy = computed(() => !!form.value?.cells.some((c) => c.strategy != null));
+const hasTarget = computed(() => !!form.value?.cells.some((c) => c.target != null));
+
+// Ввод процентов — в процентах: в поле 31, в модели 0.31 (финансисты вводят «31»,
+// а не долю). Округление гасит артефакты float при ×100.
+const displayInput = (line: MpLine, cfo: number): number | null => {
+  const v = inputs[key(cfo, line.block_type)];
+  if (v == null || Number.isNaN(v)) return null;
+  return line.value_kind === "pct" ? Number((v * 100).toFixed(4)) : v;
+};
+// NumberField отдаёт уже разобранное число (округление до копеек — на blur).
+const onInput = (line: MpLine, cfo: number, v: number | null) => {
+  const k = key(cfo, line.block_type);
+  inputs[k] = v == null ? null : line.value_kind === "pct" ? Number((v / 100).toFixed(6)) : v;
+  dirty.value = true;
+};
+const onTotalInput = (block: string, v: number | null) => {
+  totals[block] = v;
+  dirty.value = true;
+};
 
 const isCorr = (cfo: number, block: string) => key(cfo, block) in corr;
 const toggleCorr = (cfo: number, block: string) => {
@@ -206,9 +345,10 @@ const toggleCorr = (cfo: number, block: string) => {
 const lineClass = (line: MpLine) => `k-${line.kind}` + (line.block_type === B.plPlatform || line.block_type === B.platformCosts ? " strong" : "");
 const cellClass = (line: MpLine, cfo: number) => (isCorr(cfo, line.block_type) ? "is-corr" : "");
 
-// Форматирование по типу строки.
-const fmtMoney = (v: number | null | undefined) => (v == null ? "—" : num(v, 0));
-const fmtPct = (v: number | null | undefined) => (v == null || Number.isNaN(v) ? "—" : (v * 100).toFixed(1) + "%");
+// Форматирование по типу строки. 2 знака везде — как в полях ввода (NumberField),
+// иначе подсказка «факт» и значение в поле над ней расходятся на копейки.
+const fmtMoney = (v: number | null | undefined) => (v == null || Number.isNaN(v) ? "—" : num(v, 2));
+const fmtPct = (v: number | null | undefined) => (v == null || Number.isNaN(v) ? "—" : num(v * 100, 2) + "%");
 const fmt = (line: MpLine, v: number | null | undefined) => (line.value_kind === "pct" ? fmtPct(v) : fmtMoney(v));
 
 const seedFromCells = () => {
@@ -227,26 +367,32 @@ const seedFromCells = () => {
   }
 };
 
-const copyStrategy = () => {
+// Перенос read-only сценария в тактику: стратегия (TPL-09) или таргет из Budgeting.
+const copyScenario = (pick: (c: MpFormCell) => number | null, what: string) => {
   if (!form.value) return;
   let cnt = 0;
   for (const c of form.value.cells) {
-    if (c.strategy == null) continue;
+    const v = pick(c);
+    if (v == null) continue;
     const line = lineMap.value[c.block_type];
     if (!line?.editable) continue;
-    if (line.scope === "total") totals[c.block_type] = c.strategy;
-    else inputs[key(c.code_cfo, c.block_type)] = c.strategy;
+    if (line.scope === "total") totals[c.block_type] = v;
+    else inputs[key(c.code_cfo, c.block_type)] = v;
     cnt++;
   }
-  if (cnt) { dirty.value = true; note.value = `Скопировано из стратегии: ${cnt} значений`; }
+  if (cnt) { dirty.value = true; note.value = `Скопировано из «${what}»: ${cnt} значений`; }
 };
+const copyStrategy = () => copyScenario((c) => c.strategy, "стратегия");
+const copyTarget = () => copyScenario((c) => c.target, "таргет");
 
 const load = async () => {
+  loading.value = true;
   try {
-    form.value = await api.mpForm(taskId);
+    form.value = await api.mpForm(taskId, currency.value);
     seedFromCells();
     dirty.value = false;
   } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка загрузки формы"; }
+  finally { loading.value = false; }
 };
 
 const save = async () => {
@@ -270,7 +416,7 @@ const save = async () => {
     }
   }
   try {
-    await api.saveMpForm(taskId, rows);
+    await api.saveMpForm(taskId, rows, currency.value);
     note.value = `Сохранено ${rows.length} значений`;
     dirty.value = false;
   } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка сохранения"; }
@@ -315,11 +461,23 @@ onMounted(load);
 .lg-calc { background: var(--bg-tonal); color: var(--text-secondary); }
 .lg-hint { color: var(--text-muted); }
 
-.form-card { padding: 0; overflow: hidden; }
+.form-card { padding: 0; overflow: hidden; position: relative; }
+.form-card.busy .table-wrap { opacity: 0.45; pointer-events: none; transition: opacity 0.15s ease; }
+.busy-veil {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: var(--sp-7); gap: 6px;
+  font-size: var(--fs-sm); color: var(--text-secondary);
+}
+.loading-line {
+  display: flex; align-items: center; gap: 6px;
+  padding: var(--sp-4) var(--sp-4) 0;
+  font-size: var(--fs-sm); color: var(--text-secondary);
+}
 .mp-grid { border-collapse: collapse; width: 100%; }
 .mp-grid th, .mp-grid td { vertical-align: top; }
 .col-line { min-width: 300px; position: sticky; left: 0; background: var(--bg-surface); z-index: 1; }
-.col-plat, .col-total { min-width: 150px; text-align: right; }
+.col-plat, .col-total { min-width: 176px; text-align: right; }
 .cfo { display: block; font-size: var(--fs-2xs); color: var(--text-muted); font-family: var(--font-mono); font-weight: var(--fw-normal); }
 
 .sec-row td { background: var(--bg-tonal); font-weight: var(--fw-bold); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--text-secondary); padding: var(--sp-2) var(--sp-4); position: sticky; left: 0; }
@@ -332,10 +490,11 @@ onMounted(load);
 .cell { text-align: right; }
 .cell.is-corr { background: var(--warn-soft); }
 .cell-row { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
-.cell-input { width: 120px; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; border: 1px solid var(--border); border-radius: var(--rd-3); padding: 3px 7px; background: var(--bg-surface); }
+/* Ширина под «1 123 773,51» с разделителями тысяч — формат NumberField. */
+.cell-input { width: 136px; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; border: 1px solid var(--border); border-radius: var(--rd-3); padding: 3px 7px; background: var(--bg-surface); }
 .cell-input:focus { border-color: var(--accent); outline: none; }
 .cell-input:disabled { background: var(--bg-tonal); color: var(--text-secondary); }
-.cell-input.pct { width: 70px; }
+.cell-input.pct { width: 80px; }
 .corr-btn { border: 1px solid var(--border); background: var(--bg-surface); border-radius: var(--rd-3); padding: 3px; cursor: pointer; color: var(--text-muted); display: inline-flex; }
 .corr-btn.on { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
 .corr-reason { width: 100%; margin-top: 4px; font-size: var(--fs-2xs); border: 1px solid var(--warn); border-radius: var(--rd-3); padding: 3px 6px; background: var(--bg-surface); text-align: left; }
@@ -343,11 +502,24 @@ onMounted(load);
 .calc-val { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fs-sm); }
 .calc-val.neg { color: var(--neg-strong); }
 .k-calc .calc-val { color: var(--text-secondary); }
-.hint-val, .fact, .strat, .share { display: block; font-size: var(--fs-2xs); font-family: var(--font-mono); margin-top: 2px; }
+.hint-val, .fact, .prev, .strat, .target, .share { display: block; font-size: var(--fs-2xs); font-family: var(--font-mono); margin-top: 2px; }
 .hint-val { color: var(--warn); }
 .fact { color: var(--text-muted); }
+.prev { color: var(--text-muted); }
 .strat { color: var(--accent); }
+.target { color: var(--pos-strong); }
 .share { color: var(--text-muted); }
+.pct-sign { font-size: var(--fs-2xs); color: var(--text-muted); }
+.cur-switch .select-sm { height: 30px; }
+
+.mp-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-4); margin-bottom: var(--sp-4); }
+.mf { display: flex; flex-direction: column; gap: 2px; }
+.mf-lbl { font-size: var(--fs-2xs); color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.mf .select-sm { height: 30px; }
+.chip-row { display: flex; gap: 4px; }
+.chip { border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-secondary); border-radius: 999px; padding: 3px 12px; font-size: var(--fs-2xs); cursor: pointer; }
+.chip.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.grp-row .grp-head { text-align: center; font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: .04em; color: var(--text-secondary); background: var(--bg-tonal); border-bottom: 1px solid var(--border); }
 .muted { color: var(--text-muted); }
 
 .total-cell { text-align: right; background: var(--bg-tonal); font-weight: var(--fw-medium); }

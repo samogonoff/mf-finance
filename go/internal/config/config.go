@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"strings"
 )
@@ -73,6 +74,7 @@ type Config struct {
 	PlansMock          bool
 	PlansMpFactTable   string // факт МП: Budgeting.dbo.FormToLoadFact (КодЦФО/КодPL/Дата/Значение, BYN)
 	PlansMpPlanTable   string // план/стратегия МП: Budgeting.dbo.FormToLoadPlan
+	PlansMpTaktTable   string // тактика-таргеты МП: Budgeting.dbo.FormToLoaTaktTarget (2025-01…2026-12)
 	PlansMpPenaltyView string // вью штрафов МП (FINDWHACCESSGROUP, Наименование LIKE '%Штраф%')
 	PlansAuditEnabled  bool
 
@@ -92,6 +94,12 @@ type Config struct {
 	// B24 inbound-вебхук с правом user.get — для админ-импорта пользователей по ID
 	// (догрузка сотрудников, ещё не заходивших). Пусто → импорт отдаёт 503.
 	B24UserGetWebhook string
+
+	// Трансляция структурных логов (slog JSON) в Logstash по TCP (кодек
+	// json_lines). Собирается из LOGSTASH_HOST + LOGSTASH_PORT. Пусто в HOST →
+	// пустой адрес → трансляция выключена, остаётся только stdout
+	// (см. internal/logship). Порт по умолчанию — 5044.
+	LogstashAddr string
 }
 
 func Load() Config {
@@ -132,6 +140,7 @@ func Load() Config {
 		PlansMock:          env("PLANS_MOCK", "0") == "1",
 		PlansMpFactTable:   env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),
 		PlansMpPlanTable:   env("PLANS_MP_PLAN_TABLE", "Budgeting.dbo.FormToLoadPlan"),
+		PlansMpTaktTable:   env("PLANS_MP_TAKT_TABLE", "Budgeting.dbo.FormToLoaTaktTarget"),
 		PlansMpPenaltyView: env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
 		PlansAuditEnabled:  env("PLANS_AUDIT_ENABLED", "0") == "1",
 
@@ -145,7 +154,21 @@ func Load() Config {
 		PlansDirCacheTTL:  atoiDef(env("PLANS_DIR_CACHE_TTL", "3600"), 3600),
 
 		B24UserGetWebhook: env("B24_USERGET_WEBHOOK", ""),
+
+		LogstashAddr: hostPort(env("LOGSTASH_HOST", ""), env("LOGSTASH_PORT", "")),
 	}
+}
+
+// hostPort склеивает host:port для Logstash. Пустой host → "" (трансляция
+// выключена), пустой порт при заданном хосте → 5044 (дефолт TCP-input'а).
+func hostPort(host, port string) string {
+	if host == "" {
+		return ""
+	}
+	if port == "" {
+		port = "5044"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func atoiDef(s string, def int) int {

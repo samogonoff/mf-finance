@@ -59,6 +59,12 @@ build:                 ## пересобрать все образы без кэ
 restart-%:             ## перезапустить сервис: make restart-go-api
 	docker compose --env-file ../.env -f docker-compose.dev.yml restart $*
 
+logship-test:          ## послать тестовые строки в Logstash (настройка индекса ELK)
+	docker exec \
+	  -e LOGSTASH_HOST="$$(grep -E '^LOGSTASH_HOST=' ../.env | cut -d= -f2-)" \
+	  -e LOGSTASH_PORT="$$(grep -E '^LOGSTASH_PORT=' ../.env | cut -d= -f2-)" \
+	  swarm-go-api-1 go run ./cmd/logship-test
+
 # === Раздел «Себестоимость» — изолированный контур ============================
 # Запускается отдельно от основного dev-контура: своя БД, свой env, свой nginx.
 # Конфиг разработчика — python/cost/.env (создаётся из .env.example).

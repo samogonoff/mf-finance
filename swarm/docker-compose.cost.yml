@@ -50,6 +50,10 @@ services:
       # Доступно только когда поднят основной dev-контур (finance_dev_network).
       - FINANCE_INTERNAL_API=${FINANCE_INTERNAL_API:-http://go-api:8080}
       - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:-dev-internal-token-change-me}
+      # Трансляция логов раздела в ELK (app/logship.py, service=finance-cost).
+      # Пусто → только stdout.
+      - LOGSTASH_HOST=${LOGSTASH_HOST:-}
+      - LOGSTASH_PORT=${LOGSTASH_PORT:-}
     ports:
       - "${COST_API_PORT:-8091}:8091"
     depends_on:
@@ -84,6 +88,9 @@ services:
       # страницами проекта, если разраб откроет /operations и т.п.
       - NUXT_PUBLIC_API_BASE=http://localhost:${COST_NGINX_PORT:-8088}
       - NUXT_PUBLIC_COST_ONLY=${NUXT_PUBLIC_COST_ONLY:-1}
+      # Трансляция логов nitro-роутов в ELK (service=finance-nuxt).
+      - LOGSTASH_HOST=${LOGSTASH_HOST:-}
+      - LOGSTASH_PORT=${LOGSTASH_PORT:-}
     ports:
       - "${COST_NUXT_PORT:-3002}:3000"
     networks:
