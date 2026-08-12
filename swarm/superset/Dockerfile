@@ -35,5 +35,39 @@ import psycopg2, clickhouse_connect, pymssql, fastmcp; \
 print('драйверы на месте: psycopg2', psycopg2.__version__.split()[0], \
       '| pymssql', pymssql.__version__, '| fastmcp', fastmcp.__version__)"
 
+# ── Русский интерфейс ────────────────────────────────────────────────────────
+#
+# Официальный образ поставляет переводы ТОЛЬКО в исходниках: в
+# superset/translations/<locale>/LC_MESSAGES/ лежит messages.po, а
+# скомпилированных файлов нет ни одного (проверено на 6.1.0: во всём каталоге
+# ни .mo, ни .json). Поэтому интерфейс остаётся английским, сколько бы ни
+# выставляли BABEL_DEFAULT_LOCALE и LANGUAGES в superset_config.py.
+#
+# Слоёв перевода два, и нужны ОБА:
+#   messages.mo   — бэкенд, Flask-Babel;
+#   messages.json — фронтенд, см. superset/translations/utils.py:get_language_pack.
+#                   Файла нет → функция молча логирует ошибку и отдаёт английский.
+# Основная часть интерфейса на React, так что без .json перевода почти не видно.
+# `pybabel compile` здесь не годится: он падает на 13 строках русского каталога
+# с несовместимыми плейсхолдерами (дефекты апстримного перевода). Наш скрипт эти
+# строки отбраковывает — иначе битый плейсхолдер уронил бы страницу в рантайме —
+# и печатает их число, чтобы регресс в апстриме был заметен.
+ARG SUPERSET_LOCALES="ru"
+
+COPY superset/build_translations.py /app/build_translations.py
+
+RUN /app/.venv/bin/python /app/build_translations.py \
+      /app/superset/translations ${SUPERSET_LOCALES}
+
+# Проверяем, что оба слоя на месте и пакет реально читается тем же кодом,
+# которым его читает Superset. Иначе образ соберётся, а интерфейс останется
+# английским — молча, как и было до этого.
+RUN /app/.venv/bin/python -c "\
+import sys; sys.path.insert(0, '/app'); \
+from superset.translations.utils import get_language_pack; \
+p = get_language_pack('ru')['locale_data']['superset']; \
+assert p['Dashboards'][1] and p['Dashboards'][1] != 'Dashboards', p.get('Dashboards'); \
+print('перевод ru:', len(p), 'строк, Dashboards =', p['Dashboards'][1])"
+
 # Возвращаем непривилегированного пользователя базового образа.
 USER superset
