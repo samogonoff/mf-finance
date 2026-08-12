@@ -4,7 +4,7 @@ currency_code_column: null
 description: null
 default_endpoint: null
 offset: 0
-cache_timeout: null
+cache_timeout: 3600
 catalog: cost
 schema: public
 sql: "-- \u0421\u041E\u041F\u041E\u0421\u0422\u0410\u0412\u0418\u041C\u0410\u042F\
