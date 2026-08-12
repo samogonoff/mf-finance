@@ -905,8 +905,10 @@
                        :disabled="planPriceFormLocked" @input="onPlanRateChange" />
               </label>
               <button class="btn btn-primary btn-sm" :disabled="planPricesSaving || planPriceFormLocked"
+                      :title="`В набор уйдут только строки с ценой, отличной от источника: ${planPriceOverriddenCount}`"
                       @click="savePlanPriceSet">
                 {{ planPriceForm.set_id ? 'Сохранить набор' : 'Создать набор' }}
+                <template v-if="planPriceOverriddenCount"> ({{ planPriceOverriddenCount }})</template>
               </button>
               <button v-if="planPriceForm.set_id" class="btn btn-ghost btn-sm"
                       :disabled="planPricesSaving" @click="resetPlanPriceForm">Новый набор</button>
@@ -2282,9 +2284,12 @@ async function openPlanPricesModal() {
   showPlanPricesModal.value = true;
   planPricesStatus.value = '';
   // Если в фильтрах выбран ровно один план — подставляем его, это типичный сценарий.
-  const selected = (filters.value?.plan_id || []).filter((v: string) => v && v !== 'all');
-  if (selected.length === 1 && !planPricesPlanId.value) {
-    planPricesPlanId.value = String(selected[0]);
+  // Фильтры лежат в `selected` (см. filterConfig): здесь раньше стояло
+  // `filters.value?.plan_id` — такой переменной нет, и открытие модалки падало
+  // с ReferenceError, не дойдя до загрузки цен.
+  const selectedPlans = (selected.plan_id || []).filter((v: string) => v && v !== 'all');
+  if (selectedPlans.length === 1 && !planPricesPlanId.value) {
+    planPricesPlanId.value = String(selectedPlans[0]);
   }
   if (planPricesPlanId.value) await loadPlanPrices();
 }
@@ -2383,6 +2388,33 @@ async function openPlanPriceSet(setId: number) {
   }
 }
 
+/** Цена строки отличается от источника, то есть строка реально переопределяет цену.
+ *
+ * По этому признаку набор и отправляется на сервор: строки с ценой, равной
+ * источнику, при применении набора ничего не меняют (наложение идёт через
+ * COALESCE по price_rub/price_usd), а в теле запроса занимали основной объём —
+ * на плане с 669 материалами это 250 КБ, и такой POST отбивался на прод-фасаде
+ * ещё до FastAPI (ответ прокси без CORS-заголовков → «Failed to fetch»).
+ *
+ * Сравниваем с точностью до 4 знаков — столько же хранит база и отдаёт
+ * `round(avg(...), 4)` в plan-materials, иначе строки «менялись» бы из-за
+ * плавающей точки. */
+function planPriceOverridden(r: any): boolean {
+  const norm = (v: any): number | null => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.round(n * 10000) / 10000 : null;
+  };
+  return norm(r.price_rub) !== norm(r.source_price_rub)
+    || norm(r.price_usd) !== norm(r.source_price_usd);
+}
+
+/** Сколько строк набора переопределяют цену — показываем на кнопке сохранения. */
+const planPriceOverriddenCount = computed(() =>
+  planPriceRows.value.filter(planPriceOverridden).length
+  + planDecorRows.value.filter(planPriceOverridden).length
+);
+
 function planRowKey(r: any): string {
   return [r['Наименование'], r['артикул материала'], r['свойство1'], r['свойство2'], r['свойство3']]
     .map((v: any) => String(v ?? '').trim()).join('');
@@ -2427,7 +2459,7 @@ async function savePlanPriceSet() {
         rate: planPriceForm.value.rate,
         username: user.value?.email || 'system',
         rows: [
-          ...planPriceRows.value.map(r => ({
+          ...planPriceRows.value.filter(planPriceOverridden).map(r => ({
             row_kind: 'material',
             'Наименование': r['Наименование'],
             'артикул материала': r['артикул материала'],
@@ -2442,7 +2474,7 @@ async function savePlanPriceSet() {
           })),
           // Декоры: ключ один — наименование декора; бэкенд кладёт его в
           // колонку "Наименование" (см. миграцию 0035).
-          ...planDecorRows.value.map(r => ({
+          ...planDecorRows.value.filter(planPriceOverridden).map(r => ({
             row_kind: 'decor',
             'Декоры, наименование': r['Декоры, наименование'],
             price_rub: r.price_rub,
@@ -2455,7 +2487,9 @@ async function savePlanPriceSet() {
       },
     });
     planPriceForm.value.set_id = resp.set_id;
-    planPricesStatus.value = 'Набор сохранён';
+    planPricesStatus.value = planPriceOverriddenCount.value
+      ? `Набор сохранён: строк с переопределённой ценой ${planPriceOverriddenCount.value}`
+      : 'Набор сохранён пустым — ни одна цена не отличается от источника';
     await reloadPlanPriceSets();
   } catch (e: any) {
     console.error('[cost] save plan price set failed', e);
