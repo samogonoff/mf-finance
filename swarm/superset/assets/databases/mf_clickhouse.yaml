@@ -1,0 +1,24 @@
+# ClickHouse finance — аналитический слой (fact_glmf, fact_findebt, fact_findebt_ccy,
+# debt_facts, turnover_facts, currency_daily, dim_contract).
+#
+# UUID зашит руками и МЕНЯТЬ ЕГО НЕЛЬЗЯ: по нему датасеты из assets/datasets/
+# находят подключение и в dev, и в prod. Смена uuid = импорт создаст второе
+# подключение, а датасеты останутся висеть на старом.
+#
+# extra — это ВЛОЖЕННЫЙ ОБЪЕКТ (ImportV1DatabaseExtraSchema), не JSON-строка.
+# Строкой импорт падает с 'str' object has no attribute 'get'.
+uuid: 9f1d4a10-0001-4c00-8b00-000000000001
+database_name: MF ClickHouse (finance)
+sqlalchemy_uri: ${SUPERSET_DB_CH_URI}
+expose_in_sqllab: true
+allow_run_async: true
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+cache_timeout: null
+extra:
+  allows_virtual_table_explore: true
+  cost_estimate_enabled: false
+  metadata_params: {}
+  engine_params: {}
+version: 1.0.0

@@ -1,0 +1,25 @@
+# MSSQL OLAP / Premaster1C — первичные источники (10.10.6.15 — расчётный слой
+# FinDebt, 10.10.6.107 — Premaster1C и витрина FinDWH.dbo.Table_Fin_PL).
+#
+# Требует VPN до 10.10.6.x. Если сети нет, оставьте SUPERSET_DB_MSSQL_URI пустым:
+# при SUPERSET_ASSETS_STRICT=0 файл просто выпадет из бандла (см. assets_sync.py).
+#
+# Долгие запросы: async включён, но помните, что это ЖИВОЙ OLAP-сервер —
+# тяжёлые свёртки делаем в ClickHouse, здесь только разведка и сверка.
+uuid: 9f1d4a10-0004-4c00-8b00-000000000004
+database_name: MF MSSQL (OLAP/Premaster)
+sqlalchemy_uri: ${SUPERSET_DB_MSSQL_URI}
+expose_in_sqllab: true
+allow_run_async: true
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+cache_timeout: null
+extra:
+  allows_virtual_table_explore: true
+  cost_estimate_enabled: false
+  metadata_params: {}
+  engine_params:
+    connect_args:
+      timeout: 120
+version: 1.0.0

@@ -1,0 +1,208 @@
+# Apache Superset — третий изолированный dev-контур (BI поверх наших данных).
+#
+# Запуск:
+#   cd swarm && make superset-up
+#
+# Что входит:
+#   postgres-superset — МЕТАБАЗА Superset (дашборды/чарты/пользователи).
+#                       Это не аналитические данные, аналитику Superset читает
+#                       из внешних источников (см. superset/assets/databases/).
+#   redis-superset    — кэш графиков, filter state, результаты async-запросов
+#   superset-init     — one-shot: миграции метабазы, админ, роли, импорт ассетов
+#   superset          — веб-приложение (порт SUPERSET_PORT, по умолчанию 8093)
+#   superset-mcp      — встроенный MCP-сервер (`superset mcp run`), порт 5008
+#
+# ПОЧЕМУ НЕ ЛЕЗЕМ В СЕТИ ДРУГИХ КОНТУРОВ.
+# Соблазн подключиться к swarm_finance_dev_network есть, но тогда контур не
+# поднимется без `make up`, а объявление внешней сети с чужими compose-лейблами
+# ломает основной контур. Поэтому до источников ходим через host.docker.internal
+# (extra_hosts host-gateway работает и в Docker Desktop, и в Linux 20.10+).
+# Бонус: ровно тот же способ конфигурации работает в prod, где БД вообще на
+# других хостах — меняется только URI в env.
+
+# Своё имя проекта, в отличие от cost-контура. Тот делит проект `swarm` с
+# основным осознанно — ему нужна сеть finance_dev_network. Superset в чужие сети
+# не лезет, а общий проект стоил бы дорого: `make down-remove` (и вообще любой
+# --remove-orphans в основном контуре) снёс бы контейнеры Superset как orphan-ов.
+name: swarm-superset
+
+x-superset-common: &superset-common
+  build:
+    context: .
+    dockerfile: superset/Dockerfile
+  image: mf-superset:local
+  env_file:
+    - ../.env
+  environment:
+    - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-dev-superset-secret-change-me}
+    - SUPERSET_METADATA_URI=postgresql+psycopg2://${SUPERSET_POSTGRES_USER:-superset}:${SUPERSET_POSTGRES_PASSWORD:-superset}@postgres-superset:5432/${SUPERSET_POSTGRES_DB:-superset}
+    - SUPERSET_REDIS_URL=redis://redis-superset:6379
+    - SUPERSET_PUBLIC_URL=${SUPERSET_PUBLIC_URL:-http://localhost:8093/}
+    - SUPERSET_INTERNAL_URL=http://superset:8088
+    - SUPERSET_ADMIN_USERNAME=${SUPERSET_ADMIN_USERNAME:-admin}
+    - SUPERSET_ADMIN_PASSWORD=${SUPERSET_ADMIN_PASSWORD:-admin}
+    - SUPERSET_ADMIN_EMAIL=${SUPERSET_ADMIN_EMAIL:-admin@localhost}
+    # Строки соединения к источникам. Подставляются в assets/databases/*.yaml
+    # вместо ${...}-плейсхолдеров на импорте — см. superset/assets_sync.py.
+    - SUPERSET_DB_CH_URI=${SUPERSET_DB_CH_URI:-clickhousedb://finance:finance@host.docker.internal:58123/finance}
+    - SUPERSET_DB_PG_FINANCE_URI=${SUPERSET_DB_PG_FINANCE_URI:-postgresql+psycopg2://finance:finance@host.docker.internal:55432/finance}
+    - SUPERSET_DB_PG_COST_URI=${SUPERSET_DB_PG_COST_URI:-postgresql+psycopg2://cost:cost@host.docker.internal:55433/cost}
+    - SUPERSET_DB_MSSQL_URI=${SUPERSET_DB_MSSQL_URI:-}
+    # В dev пустой MSSQL-URI — это норма (нет VPN до 10.10.6.x): такой источник
+    # просто выпадает из бандла. В CI/prod ставьте =1, чтобы пропуск источника
+    # ронял импорт, а не проходил молча.
+    - SUPERSET_ASSETS_STRICT=${SUPERSET_ASSETS_STRICT:-0}
+    - MCP_AUTH_ENABLED=${MCP_AUTH_ENABLED:-0}
+    - MCP_DEV_USERNAME=${MCP_DEV_USERNAME:-admin}
+    - MCP_JWT_SECRET=${MCP_JWT_SECRET:-}
+  volumes:
+    - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+    - ./superset/assets_sync.py:/app/assets_sync.py:ro
+    # Read-write: экспорт пишет YAML прямо в git-дерево, чтобы был git diff.
+    - ./superset/assets:/app/assets:rw
+    - superset_home:/app/superset_home
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  networks:
+    - superset_net
+
+services:
+
+  postgres-superset:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_USER=${SUPERSET_POSTGRES_USER:-superset}
+      - POSTGRES_PASSWORD=${SUPERSET_POSTGRES_PASSWORD:-superset}
+      - POSTGRES_DB=${SUPERSET_POSTGRES_DB:-superset}
+      - PGDATA=/var/lib/postgresql/data/superset/
+    volumes:
+      - superset_db_data:/var/lib/postgresql/data:rw
+    ports:
+      - "${SUPERSET_POSTGRES_PORT:-55434}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SUPERSET_POSTGRES_USER:-superset}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - superset_net
+    restart: on-failure
+
+  redis-superset:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "${SUPERSET_REDIS_PORT:-63792}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - superset_net
+
+  # One-shot. Идемпотентен: гоняется при каждом superset-up, повторный запуск
+  # безопасен. Порядок важен — db upgrade до create-admin, init до импорта
+  # ассетов (импорт требует существующих ролей и админа).
+  superset-init:
+    <<: *superset-common
+    container_name: swarm-superset-init-1
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        echo "→ миграции метабазы"
+        superset db upgrade
+        echo "→ админ (если ещё нет)"
+        superset fab create-admin \
+          --username "$${SUPERSET_ADMIN_USERNAME}" \
+          --firstname Finance --lastname Admin \
+          --email "$${SUPERSET_ADMIN_EMAIL}" \
+          --password "$${SUPERSET_ADMIN_PASSWORD}" || true
+        echo "→ роли и permissions"
+        superset init
+        echo "→ готово. Ассеты импортируются отдельно: make superset-assets-import"
+    depends_on:
+      postgres-superset:
+        condition: service_healthy
+      redis-superset:
+        condition: service_healthy
+    restart: "no"
+
+  superset:
+    <<: *superset-common
+    container_name: swarm-superset-1
+    # CMD базового образа — /app/docker/entrypoints/run-server.sh (gunicorn).
+    # Не переопределяем: он умеет и воркеров, и healthcheck-совместимый старт.
+    ports:
+      - "${SUPERSET_PORT:-8093}:8088"
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: on-failure
+
+  # Celery-воркер: исполняет async-запросы SQL Lab и чартов. Без него любой
+  # запрос к подключению с allow_run_async: true падает с
+  # «Results backend is not configured» — а async включён у всех наших
+  # источников намеренно (ClickHouse и MSSQL медленные).
+  superset-worker:
+    <<: *superset-common
+    container_name: swarm-superset-worker-1
+    command:
+      - celery
+      - --app=superset.tasks.celery_app:app
+      - worker
+      - --loglevel=INFO
+      - -O
+      - fair
+      - --concurrency=${SUPERSET_WORKER_CONCURRENCY:-4}
+    # Базовый healthcheck образа дёргает /health на 8088 — у воркера такого
+    # порта нет, иначе контейнер вечно висел бы unhealthy.
+    healthcheck:
+      test: ["CMD-SHELL", "celery --app=superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      superset:
+        condition: service_healthy
+    restart: on-failure
+
+  # MCP-сервер: отдельный процесс того же образа и той же метабазы.
+  # Эндпоинт http://localhost:5008/mcp — именно его прописываем в .mcp.json.
+  superset-mcp:
+    <<: *superset-common
+    container_name: swarm-superset-mcp-1
+    command: ["superset", "mcp", "run", "--host", "0.0.0.0", "--port", "5008"]
+    ports:
+      - "${MCP_SERVICE_PORT:-5008}:5008"
+    # Переопределяем healthcheck базового образа: он curl'ит /health на 8088,
+    # которого у MCP-процесса нет. Без -f curl вернёт 0 и на 4xx — нам важно
+    # только то, что порт слушает и отвечает HTTP.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:5008/mcp || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      superset:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  superset_db_data:
+  superset_home:
+
+networks:
+  superset_net:
+    driver: bridge
