@@ -1,0 +1,29 @@
+slice_name: "comm-09 \xB7 \u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430 \u043F\
+  \u043E \u043D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u044F\u043C"
+description: null
+certified_by: null
+certification_details: null
+viz_type: pie
+params:
+  viz_type: pie
+  groupby:
+  - model_name
+  metric: calc_count
+  color_scheme: supersetColors
+  show_labels: true
+  show_legend: true
+  label_type: key_value_percent
+  number_format: SMART_NUMBER
+  sort_by_metric: true
+  row_limit: 12
+  donut: true
+  show_total: false
+  labels_outside: true
+  outerRadius: 70
+  innerRadius: 30
+  date_format: smart_date
+query_context: null
+cache_timeout: null
+uuid: 9d0abc1c-8275-4585-9c7f-7d5f4a6c0921
+version: 1.0.0
+dataset_uuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d

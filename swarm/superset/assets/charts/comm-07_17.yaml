@@ -1,0 +1,26 @@
+slice_name: "comm-07 \xB7 \u0414\u0438\u043D\u0430\u043C\u0438\u043A\u0430 \u0446\u0435\
+  \u043D \u043F\u043E \u0441\u0435\u0437\u043E\u043D\u0430\u043C"
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  viz_type: echarts_timeseries_line
+  metrics:
+  - cost_median
+  - price_median
+  - retail_median
+  x_axis: season
+  x_axis_sort_series_type: name
+  x_axis_sort_series_ascending: true
+  time_grain_sqla: null
+  granularity_sqla: null
+  row_limit: 1000
+  y_axis_title: BYN
+  y_axis_format: ',.2f'
+  legend_orientation: right
+query_context: null
+cache_timeout: null
+uuid: 7e7fe92b-8ddd-4dbe-a190-29adaab659dd
+version: 1.0.0
+dataset_uuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
