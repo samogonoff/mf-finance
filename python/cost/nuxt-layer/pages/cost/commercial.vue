@@ -126,6 +126,16 @@ const apiBase = computed(() =>
   config.public.costOnly ? '' : ((config.public.apiBase as string) || '')
 )
 
+/** Пользователя раздела бэкенд берёт из заголовка X-Cost-User — ни nginx-cost,
+ * ни фасад основного контура его не подставляют, и глобального перехватчика
+ * $fetch в проекте нет. Каждая страница раздела шлёт заголовок сама (тот же
+ * приём в index.vue). Без него любой вызов возвращает 401. */
+const { user } = useAuth()
+const fetchHeaders = computed(() => {
+  const email = user.value?.email || ''
+  return email ? { 'X-Cost-User': email } : {}
+})
+
 /** Фильтры дашборда. Ключи совпадают с белым списком FILTERS в
  * app/commercial.py — сервер игнорирует всё, чего в нём нет. */
 const filterConfig = [
@@ -183,7 +193,8 @@ async function reload() {
   loading.value = true
   error.value = ''
   try {
-    const res = await $fetch<any>(`${apiBase.value}/api/cost/commercial?${buildParams()}`)
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/commercial?${buildParams()}`,
+                                  { headers: fetchHeaders.value })
     tiles.value = res.tiles || {}
     seasons.value = res.seasons || []
     structure.value = res.structure || []
@@ -200,7 +211,8 @@ async function reload() {
 async function loadFilterOptions() {
   try {
     filterOptions.value = await $fetch<Record<string, string[]>>(
-      `${apiBase.value}/api/cost/commercial/filter-options`
+      `${apiBase.value}/api/cost/commercial/filter-options`,
+      { headers: fetchHeaders.value }
     )
   } catch (e: any) {
     console.error('[cost] commercial filter-options failed', e)
