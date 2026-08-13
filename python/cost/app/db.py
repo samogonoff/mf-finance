@@ -409,6 +409,12 @@ CACHE_COLUMNS: list[str] = [
     "Наименование модели",
     "Номер задания производства",
     "PLAN_ID",
+    # Объём выпуска в штуках (миграция 0036). Нужен для показателей «выпуска»:
+    # маржинальность и рентабельность выпуска считаются взвешенно —
+    # Σ(наценка × объём) / Σ(отпускная × объём). Среднее по изделиям даёт другую
+    # величину: модель с тиражом 10 штук весит там столько же, сколько хит
+    # с тиражом миллион.
+    "выпуск шт",
     "Материал/операция/декор(призн)",
     # Цвет модели. В источнике постоянен внутри задания (проверено: 85 583
     # группы, у всех одно значение), поэтому входит и в AGG_GROUP_FIELDS.
@@ -442,6 +448,14 @@ CACHE_COLUMNS: list[str] = [
     # коэффициент переносился между cost_data_cache и cost_calc_version_rows.
     "cost_factor_rub", "cost_factor_usd",
 ]
+
+# Колонки из CACHE_COLUMNS, которых в MSSQL заведомо НЕТ: они считаются локально
+# уже после загрузки. Нужны, чтобы предупреждение о пропавших колонках в
+# _producer не срабатывало на них каждый refresh — предупреждение, которое всегда
+# горит, перестают читать.
+CACHE_COLUMNS_COMPUTED_LOCALLY: frozenset[str] = frozenset({
+    "cost_factor_rub", "cost_factor_usd",
+})
 
 
 async def get_cache_status() -> dict | None:
@@ -480,12 +494,38 @@ async def set_cache_error(error_message: str) -> None:
         )
 
 
+async def refresh_calc_mv() -> None:
+    """Пересчитать материализованную витрину калькуляций (миграция 0036).
+
+    CONCURRENTLY — чтобы не блокировать читателей: без него REFRESH берёт
+    ACCESS EXCLUSIVE на витрину и дашборды встают на время пересчёта. Требует
+    UNIQUE-индекса, он создан в миграции на calc_key.
+
+    Ошибку НЕ пробрасываем: витрина нужна аналитике, а не разделу, и её сбой не
+    должен помечать успешный refresh кэша как неудачный. Но и молчать нельзя —
+    иначе дашборды будут показывать вчерашние цифры без единого признака.
+    """
+    try:
+        async with pool().acquire() as conn:
+            # Отдельный таймаут: на ~87 тыс. строк пересчёт занимает секунды,
+            # но если источник распух, лучше сдаться, чем висеть в пуле.
+            await conn.execute("SET LOCAL statement_timeout = '10min'")
+            await conn.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY cost_calc_mv")
+        print("[cost] витрина cost_calc_mv обновлена", flush=True)
+    except Exception as exc:  # noqa: BLE001 — сбой витрины не валит refresh кэша
+        print(f"[cost] ВНИМАНИЕ: не удалось обновить cost_calc_mv: {exc}", flush=True)
+
+
 async def set_cache_completed(row_count: int) -> None:
     async with pool().acquire() as conn:
         await conn.execute(
             "UPDATE cost_cache_status SET refreshed_at = NOW(), row_count = $1, is_refreshing = FALSE, error_message = NULL, refreshing_since = NULL WHERE id = 1",
             row_count,
         )
+    # Витрина производна от кэша, поэтому пересчитываем сразу после него.
+    # Строго ПОСЛЕ снятия is_refreshing: пересчёт может занять секунды, и
+    # держать раздел в состоянии «обновляюсь» из-за аналитики незачем.
+    await refresh_calc_mv()
 
 
 async def try_acquire_refresh_lock() -> bool:
@@ -720,6 +760,22 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
                 c for c in CACHE_COLUMNS
                 if (CACHE_COLUMN_MSSQL_MAP.get(c, c)) in mssql_columns
             ]
+            # Отсутствующая в источнике колонка отфильтровывается молча: refresh
+            # проходит успешно, а колонка в кэше остаётся пустой навсегда. Опечатка
+            # в имени внутри CACHE_COLUMNS так не обнаруживается вообще. Логируем
+            # неожиданные пропуски — заведомо отсутствующие (cost_factor_*
+            # считаются локально) в список не попадают, иначе предупреждение
+            # срабатывало бы каждый refresh и его перестали бы читать.
+            unexpected = [
+                c for c in CACHE_COLUMNS
+                if c not in cols and c not in CACHE_COLUMNS_COMPUTED_LOCALLY
+            ]
+            if unexpected:
+                print(
+                    "[cost] ВНИМАНИЕ: колонок нет в источнике CostHistory: "
+                    f"{', '.join(unexpected)} — в кэше они останутся пустыми",
+                    flush=True,
+                )
             idx = [
                 mssql_columns.index(CACHE_COLUMN_MSSQL_MAP.get(c, c))
                 for c in cols
