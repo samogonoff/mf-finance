@@ -1,0 +1,18 @@
+slice_name: "comm-13 \xB7 \u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F \u0446\
+  \u0435\u043D\u0430, BYN"
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 4__table
+  viz_type: big_number_total
+  metric: retail_median
+  y_axis_format: ',.2f'
+  subheader: "\u043C\u0435\u0434\u0438\u0430\u043D\u0430, \u0432 \u043D\u0430\u0446\
+    \u0435\u043D\u043A\u0443 \u043D\u0435 \u0432\u0445\u043E\u0434\u0438\u0442"
+query_context: null
+cache_timeout: null
+uuid: 2a901c14-b1fe-4af9-9317-d1e710f49212
+version: 1.0.0
+dataset_uuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d

@@ -5,12 +5,13 @@ certified_by: null
 certification_details: null
 viz_type: big_number_total
 params:
+  datasource: 4__table
   viz_type: big_number_total
   metric: calc_count
-  subheader: "\u0438\u0437 87 043: \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u0434\
+  y_axis_format: ',d'
+  subheader: "\u0438\u0437 87 184: \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u0434\
     \u0435 \u0435\u0441\u0442\u044C \u0438 \u0441\u0435\u0431\u0435\u0441\u0442\u043E\
     \u0438\u043C\u043E\u0441\u0442\u044C, \u0438 \u0446\u0435\u043D\u0430"
-  y_axis_format: ',d'
 query_context: null
 cache_timeout: null
 uuid: 65c6f72e-a950-4cbb-a7c5-07f143c4e177

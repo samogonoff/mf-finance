@@ -205,9 +205,10 @@ position:
   GRID_ID:
     children:
     - ROW-4d31b806
+    - ROW-tiles-2
     - ROW-0b5a2d57
     - ROW-measure-switch
-    - ROW-N-B2XOSJI0
+    - ROW-N-Z6ZYJTIP
     id: GRID_ID
     parents:
     - ROOT_ID
@@ -279,10 +280,47 @@ position:
     - GRID_ID
     meta:
       background: BACKGROUND_TRANSPARENT
-  ROW-N-B2XOSJI0:
+  ROW-tiles-2:
+    type: ROW
+    id: ROW-tiles-2
     children:
-    - CHART-MPCL42DM
-    id: ROW-N-B2XOSJI0
+    - CHART-22
+    - CHART-23
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-22:
+    type: CHART
+    id: CHART-22
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-tiles-2
+    meta:
+      chartId: 22
+      width: 3
+      height: 20
+  CHART-23:
+    type: CHART
+    id: CHART-23
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-tiles-2
+    meta:
+      chartId: 23
+      width: 3
+      height: 20
+  ROW-N-Z6ZYJTIP:
+    children:
+    - CHART-Y8X4NQJV
+    - CHART-1CWR65H0
+    - CHART-KKDHNLNL
+    id: ROW-N-Z6ZYJTIP
     meta:
       '0': ROOT_ID
       background: BACKGROUND_TRANSPARENT
@@ -290,9 +328,9 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-  CHART-MPCL42DM:
+  CHART-Y8X4NQJV:
     children: []
-    id: CHART-MPCL42DM
+    id: CHART-Y8X4NQJV
     meta:
       chartId: 21
       height: 50
@@ -306,7 +344,36 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-N-B2XOSJI0
+    - ROW-N-Z6ZYJTIP
+  CHART-1CWR65H0:
+    children: []
+    id: CHART-1CWR65H0
+    meta:
+      chartId: 22
+      height: 50
+      sliceName: "comm-12 \xB7 \u0412\u044B\u043F\u0443\u0441\u043A, \u0448\u0442"
+      uuid: 6fe71cff-5519-4528-a793-a4f18beb5d5c
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-Z6ZYJTIP
+  CHART-KKDHNLNL:
+    children: []
+    id: CHART-KKDHNLNL
+    meta:
+      chartId: 23
+      height: 50
+      sliceName: "comm-13 \xB7 \u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F\
+        \ \u0446\u0435\u043D\u0430, BYN"
+      uuid: 2a901c14-b1fe-4af9-9317-d1e710f49212
+      width: 4
+    type: CHART
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-N-Z6ZYJTIP
 metadata:
   expanded_slices: {}
   refresh_frequency: 0
@@ -357,8 +424,7 @@ metadata:
     scope:
       rootPath:
       - ROOT_ID
-      excluded:
-      - 21
+      excluded: []
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -372,6 +438,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-month
     name: "\u041C\u0435\u0441\u044F\u0446 \u0432\u044B\u043F\u0443\u0441\u043A\u0430"
@@ -397,7 +466,6 @@ metadata:
       - ROOT_ID
       excluded:
       - 17
-      - 21
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -410,6 +478,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-bm
     name: "\u0411\u0440\u0435\u043D\u0434-\u043C\u0435\u043D\u0435\u0434\u0436\u0435\
@@ -434,8 +505,7 @@ metadata:
     scope:
       rootPath:
       - ROOT_ID
-      excluded:
-      - 21
+      excluded: []
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -449,6 +519,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-lvl01
     name: Level 01
@@ -473,8 +546,7 @@ metadata:
     scope:
       rootPath:
       - ROOT_ID
-      excluded:
-      - 21
+      excluded: []
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -488,6 +560,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-lvl02
     name: Level 02
@@ -513,8 +588,7 @@ metadata:
     scope:
       rootPath:
       - ROOT_ID
-      excluded:
-      - 21
+      excluded: []
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -528,6 +602,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-lvl03
     name: Level 03
@@ -554,8 +631,7 @@ metadata:
     scope:
       rootPath:
       - ROOT_ID
-      excluded:
-      - 21
+      excluded: []
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -569,6 +645,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-name
     name: "\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435\
@@ -597,8 +676,7 @@ metadata:
     scope:
       rootPath:
       - ROOT_ID
-      excluded:
-      - 21
+      excluded: []
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -612,6 +690,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-model
     name: "\u041C\u043E\u0434\u0435\u043B\u044C"
@@ -640,8 +721,7 @@ metadata:
     scope:
       rootPath:
       - ROOT_ID
-      excluded:
-      - 21
+      excluded: []
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -655,6 +735,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-articul
     name: "\u0410\u0440\u0442\u0438\u043A\u0443\u043B"
@@ -684,8 +767,7 @@ metadata:
     scope:
       rootPath:
       - ROOT_ID
-      excluded:
-      - 21
+      excluded: []
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -699,6 +781,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-country
     name: "\u0421\u0442\u0440\u0430\u043D\u0430 \u043F\u0440-\u0432\u0430"
@@ -723,8 +808,7 @@ metadata:
     scope:
       rootPath:
       - ROOT_ID
-      excluded:
-      - 21
+      excluded: []
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -738,6 +822,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-season
     name: "\u0421\u0435\u0437\u043E\u043D"
@@ -762,8 +849,7 @@ metadata:
     scope:
       rootPath:
       - ROOT_ID
-      excluded:
-      - 21
+      excluded: []
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -777,6 +863,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-sign
     name: "\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\
@@ -802,8 +891,7 @@ metadata:
     scope:
       rootPath:
       - ROOT_ID
-      excluded:
-      - 21
+      excluded: []
     type: NATIVE_FILTER
     description: ''
     chartsInScope:
@@ -817,6 +905,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
     tabsInScope: []
   - id: NATIVE_FILTER-measure
     name: "\u041C\u0435\u0440\u0430 (\u043A\u043E\u043B\u044C\u0446\u043E \u0432\u044B\
@@ -853,6 +944,8 @@ metadata:
       - 18
       - 19
       - 20
+      - 22
+      - 23
     type: NATIVE_FILTER
     description: "\u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0430\u0435\u0442\
       \ \u043C\u0435\u0440\u0443 \u043A\u043E\u043B\u044C\u0446\u0430 \xAB\u0441\u0442\
