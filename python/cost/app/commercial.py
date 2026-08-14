@@ -173,6 +173,12 @@ async def dashboard(
             max(calc_date)                                        AS last_calc_date
         FROM base
     ),
+    -- Сезоны в ХРОНОЛОГИЧЕСКОМ порядке, а не по алфавиту: иначе AW2026 встаёт
+    -- раньше SS2021, и ось «динамики» перестаёт быть временной. Внутри года
+    -- SS (весна-лето) идёт перед AW (осень-зима).
+    --
+    -- Сезон «-» (около 5 тыс. калькуляций) периодом не является — ставим его
+    -- первым и подписываем на фронте, а не выбрасываем молча.
     seasons AS (
         SELECT season,
                percentile_cont(0.5) WITHIN GROUP (ORDER BY cost_b)   AS cost_byn,
@@ -181,7 +187,10 @@ async def dashboard(
                percentile_cont(0.5) WITHIN GROUP (ORDER BY price_u)  AS price_usd,
                percentile_cont(0.5) WITHIN GROUP (ORDER BY retail_b) AS retail_byn,
                percentile_cont(0.5) WITHIN GROUP (ORDER BY retail_u) AS retail_usd,
-               count(*) AS calc_count
+               count(*) AS calc_count,
+               coalesce(nullif(regexp_replace(season, '\\D', '', 'g'), '')::int, 0) * 10
+                 + CASE upper(left(season, 2)) WHEN 'SS' THEN 1 WHEN 'AW' THEN 2 ELSE 0 END
+                 AS sort_key
         FROM base WHERE season IS NOT NULL GROUP BY season
     ),
     structure AS (
@@ -200,7 +209,7 @@ async def dashboard(
     )
     SELECT json_build_object(
         'tiles',     (SELECT row_to_json(t) FROM tiles t),
-        'seasons',   coalesce((SELECT json_agg(s ORDER BY s.season) FROM seasons s), '[]'::json),
+        'seasons',   coalesce((SELECT json_agg(s ORDER BY s.sort_key, s.season) FROM seasons s), '[]'::json),
         'structure', coalesce((SELECT json_agg(x) FROM structure x), '[]'::json),
         'ring',      coalesce((SELECT json_agg(r) FROM ring r), '[]'::json)
     ) AS payload
@@ -231,16 +240,40 @@ async def dashboard(
     return payload
 
 
+# Потолок на список значений одного фильтра. Нужен, потому что мультиселект
+# рендерит все опции в DOM: артикулов 12 020, моделей 4 255 — на таком списке
+# страница подвисает при открытии. Обрезаем на сервере и СООБЩАЕМ об обрезке,
+# чтобы интерфейс не делал вид, будто показал всё.
+FILTER_OPTIONS_LIMIT = 500
+
+
 async def filter_options() -> dict:
     """Значения фильтров. Отдельным запросом: они меняются редко и кэшируются
-    на фронте, тогда как сам дашборд перезапрашивается на каждое изменение."""
+    на фронте, тогда как сам дашборд перезапрашивается на каждое изменение.
+
+    Возвращает `{колонка: [значения]}` плюс служебный `_truncated` — список
+    колонок, где значений больше потолка. Для таких фильтров выпадающий список
+    неполон, и выбирать по нему конкретный артикул бессмысленно: это работа
+    основной таблицы раздела, а не дашборда.
+    """
     cols = list(dict.fromkeys(FILTERS.values()))
     selects = ",\n            ".join(
         f"""(SELECT coalesce(json_agg(v ORDER BY v), '[]'::json)
              FROM (SELECT DISTINCT "{c}" AS v FROM cost_calc_mv
-                   WHERE "{c}" IS NOT NULL) s{i}) AS "{c}\""""
+                   WHERE "{c}" IS NOT NULL
+                   ORDER BY 1 LIMIT {FILTER_OPTIONS_LIMIT + 1}) s{i}) AS "{c}\""""
         for i, c in enumerate(cols)
     )
     async with pool().acquire() as conn:
         row = await conn.fetchrow(f"SELECT {selects}")
-    return {c: _as_dict(row[c]) for c in cols}
+
+    out: dict = {}
+    truncated: list[str] = []
+    for c in cols:
+        values = _as_dict(row[c]) or []
+        if len(values) > FILTER_OPTIONS_LIMIT:
+            truncated.append(c)
+            values = values[:FILTER_OPTIONS_LIMIT]
+        out[c] = values
+    out["_truncated"] = truncated
+    return out

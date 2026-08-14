@@ -34,7 +34,11 @@
 
     <section class="filters">
       <div v-for="f in filterConfig" :key="f.key" class="filter-item">
-        <label>{{ f.label }}</label>
+        <label>
+          {{ f.label }}
+          <span v-if="truncatedFilters.includes(f.key)" class="trunc"
+                title="Значений больше, чем показано — список обрезан">неполный</span>
+        </label>
         <CostMultiSelect v-model="selected[f.key]"
                          :options="filterOptions[f.key] || []"
                          :placeholder="`Все · ${f.label.toLowerCase()}`"
@@ -67,9 +71,15 @@
       <article class="card">
         <h2 class="card-title">Динамика цен по сезонам</h2>
         <p class="card-note">Медианы — средние здесь искажены выбросами</p>
-        <ClientOnly>
-          <Line v-if="seasonData" :data="seasonData" :options="lineOptions" :height="260" />
-        </ClientOnly>
+        <!-- Высоту задаёт КОНТЕЙНЕР, а не пропс графика. При
+             maintainAspectRatio: false канвас растягивается на родителя, и если
+             у родителя высоты нет — он растёт бесконечно: график уезжает вниз,
+             ResizeObserver снова дёргает перерисовку, и страница мерцает. -->
+        <div class="chart-box">
+          <ClientOnly>
+            <Line v-if="seasonData" :data="seasonData" :options="lineOptions" />
+          </ClientOnly>
+        </div>
       </article>
 
       <article class="card">
@@ -78,9 +88,11 @@
           Сегмент «прочее» — остаток до полной себестоимости: прямые затраты
           покрывают около 79%
         </p>
-        <ClientOnly>
-          <Bar v-if="structureData" :data="structureData" :options="stackedOptions" :height="300" />
-        </ClientOnly>
+        <div class="chart-box chart-box-tall">
+          <ClientOnly>
+            <Bar v-if="structureData" :data="structureData" :options="stackedOptions" />
+          </ClientOnly>
+        </div>
       </article>
 
       <article class="card">
@@ -102,16 +114,18 @@
         <p v-if="ringEmpty" class="card-note warn">
           Мера «{{ meta.measure_label }}» не заполнена в данных — график пуст, это не ноль
         </p>
-        <ClientOnly>
-          <Doughnut v-if="ringData && !ringEmpty" :data="ringData" :options="ringOptions" :height="300" />
-        </ClientOnly>
+        <div class="chart-box chart-box-tall">
+          <ClientOnly>
+            <Doughnut v-if="ringData && !ringEmpty" :data="ringData" :options="ringOptions" />
+          </ClientOnly>
+        </div>
       </article>
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Bar, Doughnut, Line } from 'vue-chartjs'
 import {
   ArcElement, BarElement, CategoryScale, Chart as ChartJS, Legend,
@@ -138,10 +152,13 @@ const fetchHeaders = computed(() => {
 
 /** Фильтры дашборда. Ключи совпадают с белым списком FILTERS в
  * app/commercial.py — сервер игнорирует всё, чего в нём нет. */
+// Модели (4 255) и артикула (12 020) здесь НЕТ намеренно: мультиселект рендерит
+// все опции в DOM, и на таком списке страница подвисает при открытии. Выбирать
+// конкретный артикул из обрезанного списка бессмысленно — это работа основной
+// таблицы раздела. API их по-прежнему принимает, если понадобится ссылка
+// с параметром.
 const filterConfig = [
   { key: 'model_name', label: 'Наименование товара' },
-  { key: 'model', label: 'Модель' },
-  { key: 'articul', label: 'Артикул' },
   { key: 'country', label: 'Страна пр-ва' },
   { key: 'calc_sign', label: 'Признак кальк.' },
   { key: 'season', label: 'Сезон' },
@@ -156,6 +173,7 @@ const selected = reactive<Record<string, string[]>>(
   Object.fromEntries(filterConfig.map(f => [f.key, [] as string[]])) as any
 )
 const filterOptions = ref<Record<string, string[]>>({})
+const truncatedFilters = ref<string[]>([])
 const dateFrom = ref('')
 const dateTo = ref('')
 
@@ -210,10 +228,15 @@ async function reload() {
 
 async function loadFilterOptions() {
   try {
-    filterOptions.value = await $fetch<Record<string, string[]>>(
+    const raw = await $fetch<Record<string, any>>(
       `${apiBase.value}/api/cost/commercial/filter-options`,
       { headers: fetchHeaders.value }
     )
+    // Сервер обрезает длинные списки и говорит, какие именно. Показываем это:
+    // фильтр с неполным списком должен выглядеть неполным, а не всеобъемлющим.
+    truncatedFilters.value = raw._truncated || []
+    const { _truncated, ...options } = raw
+    filterOptions.value = options as Record<string, string[]>
   } catch (e: any) {
     console.error('[cost] commercial filter-options failed', e)
   }
@@ -291,30 +314,53 @@ const tileList = computed(() => {
 // появится, менять надо здесь.
 
 const palette = ref<string[]>([])
-const ink = ref('#333')
-const grid = ref('rgba(0,0,0,.08)')
+const ink = ref('#6b7280')
+const grid = ref('rgba(127,127,127,.2)')
+
+/** #rrggbb → rgba(). Canvas НЕ понимает color-mix() и прочий современный CSS:
+ * такие значения молча игнорируются, и серия рисуется чёрной либо исчезает.
+ * Токены дизайн-системы заданы обычным hex, поэтому альфа-варианты считаем сами. */
+function withAlpha(hex: string, alpha: number): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
+  if (!m) return hex
+  const n = parseInt(m[1], 16)
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`
+}
 
 function readTokens() {
   if (typeof window === 'undefined') return
   const cs = getComputedStyle(document.documentElement)
   const tok = (n: string, fb: string) => (cs.getPropertyValue(n) || '').trim() || fb
   const accent = tok('--accent', '#4338ca')
-  const info = tok('--info', '#0ea5e9')
-  const pos = tok('--pos', '#16a34a')
-  const neg = tok('--neg', '#dc2626')
-  ink.value = tok('--text-muted', tok('--fg-muted', '#6b7280'))
-  grid.value = tok('--border', 'rgba(0,0,0,.08)')
-  palette.value = [accent, info, pos, neg,
-                   `color-mix(in srgb, ${accent} 55%, transparent)`,
-                   `color-mix(in srgb, ${info} 55%, transparent)`,
-                   `color-mix(in srgb, ${pos} 55%, transparent)`,
-                   `color-mix(in srgb, ${neg} 55%, transparent)`,
-                   `color-mix(in srgb, ${accent} 30%, transparent)`,
-                   `color-mix(in srgb, ${info} 30%, transparent)`,
-                   `color-mix(in srgb, ${pos} 30%, transparent)`,
-                   `color-mix(in srgb, ${neg} 30%, transparent)`]
+  const info = tok('--info', '#0b5cad')
+  const pos = tok('--pos', '#0a7f3f')
+  const neg = tok('--neg', '#b42318')
+  ink.value = tok('--text-muted', '#6b7280')
+  grid.value = withAlpha(tok('--border', '#e3e6ea'), 0.9)
+  // Категориальной палитры в дизайн-системе нет — только accent/info/pos/neg.
+  // Семь серий стека набираем рампом: сначала базовые цвета, затем те же с
+  // прозрачностью. Появится палитра — менять здесь.
+  const base = [accent, info, pos, neg]
+  palette.value = [
+    ...base,
+    ...base.map((c) => withAlpha(c, 0.6)),
+    ...base.map((c) => withAlpha(c, 0.35)),
+  ]
 }
-onMounted(readTokens)
+
+// Тему кабинета можно переключить на ходу, а токены прочитаны один раз — без
+// этого графики остались бы в светлых цветах на тёмном фоне. Следим за
+// атрибутами <html>, каким бы способом тема ни переключалась.
+let themeObserver: MutationObserver | null = null
+onMounted(() => {
+  readTokens()
+  themeObserver = new MutationObserver(readTokens)
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['class', 'data-theme', 'style'],
+  })
+})
+onBeforeUnmount(() => themeObserver?.disconnect())
 
 const color = (i: number) => palette.value[i % (palette.value.length || 1)] || '#888'
 
@@ -432,7 +478,8 @@ const ringOptions = computed(() => ({
   gap: var(--sp-3); align-items: end;
 }
 .filter-item { display: flex; flex-direction: column; gap: var(--sp-1); }
-.filter-item label { font-size: var(--fs-2xs); color: var(--text-muted); }
+.filter-item label { font-size: var(--fs-2xs); color: var(--text-muted); display: flex; gap: var(--sp-1); align-items: baseline; }
+.trunc { color: var(--neg); font-size: var(--fs-2xs); }
 .reset { align-self: end; }
 
 .error { color: var(--neg); font-size: var(--fs-sm); }
@@ -457,6 +504,13 @@ const ringOptions = computed(() => ({
 }
 .card-title { font-size: var(--fs-md); font-weight: var(--fw-medium); margin: 0; }
 .card-note { font-size: var(--fs-2xs); color: var(--text-muted); margin: 0; }
+
+/* Высота графика задаётся здесь и только здесь. Chart.js с
+   maintainAspectRatio: false тянется на родителя — без явной высоты канвас
+   растёт бесконечно, а ResizeObserver зацикливает перерисовку. */
+.chart-box { position: relative; height: 260px; min-width: 0; }
+.chart-box-tall { height: 320px; }
+.chart-box :deep(canvas) { max-height: 100%; }
 
 .ring-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; }
 .ring-controls { display: flex; gap: var(--sp-3); }

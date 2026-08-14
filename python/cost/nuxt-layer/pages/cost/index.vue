@@ -9,6 +9,13 @@
           <span v-if="mockMode" class="mock-pill">MOCK данные</span>
         </p>
       </div>
+      <!-- Навигация кабинета живёт в nuxt/, за границей раздела, поэтому вход
+           в дашборд — отсюда, из шапки самого раздела. -->
+      <div class="header-actions">
+        <NuxtLink to="/cost/commercial" class="btn btn-ghost btn-sm">
+          <Icon name="lucide:chart-pie" /> Коммерческая эффективность
+        </NuxtLink>
+      </div>
     </header>
 
     <!-- Фильтры -->
