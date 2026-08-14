@@ -77,7 +77,10 @@
 
     <section class="charts">
       <article class="card">
-        <h2 class="card-title">Динамика цен по месяцам</h2>
+        <div class="ring-head">
+          <h2 class="card-title">Динамика цен по месяцам</h2>
+          <span class="hint">клик по месяцу — фильтр</span>
+        </div>
         <p class="card-note">
           Медианы — средние здесь искажены выбросами.
           <!-- Фильтр «месяц» к этому графику не применяется намеренно: он и есть
@@ -124,7 +127,10 @@
 
       <article class="card">
         <div class="ring-head">
-          <h2 class="card-title">Структура выпуска</h2>
+          <h2 class="card-title">
+            Структура выпуска
+            <span class="hint">— клик по сегменту фильтрует</span>
+          </h2>
           <div class="ring-controls">
             <label>Измерение
               <select v-model="dimension" class="form-input" @change="reload">
@@ -347,6 +353,49 @@ function drillTo(depth: number) {
   reload()
 }
 
+// ── Кросфильтрация ──────────────────────────────────────────────────────────
+//
+// Клик по элементу графика становится обычным фильтром — тем же, что в панели
+// сверху. Так выбор ВИДЕН и снимается штатно (крестиком в мультиселекте), а не
+// живёт отдельным невидимым состоянием, про которое пользователь забыл.
+// Повторный клик по тому же значению снимает фильтр.
+
+function toggleFilter(key: string, value: string) {
+  if (!value || !(key in selected)) return
+  const cur = selected[key] || []
+  selected[key] = cur.includes(value) ? cur.filter(v => v !== value) : [...cur, value]
+}
+
+/** Клик по сегменту кольца → фильтр по текущему измерению кольца. Все измерения
+ * есть и в фильтрах (для этого «Семья» и добавлена), так что записать выбор
+ * всегда есть куда. */
+function crossFilterRing(index: number) {
+  const label = ring.value[index]?.label
+  if (label === undefined || label === null) return
+  toggleFilter(dimension.value, String(label))
+  reload()
+}
+
+/** Клик по точке динамики → фильтр по этому месяцу. Год выставляется тоже:
+ * без него «июнь» означал бы все июни всех лет. Сам график на месяц не
+ * реагирует (он и есть разрез по месяцам), но реагирует на год — окно графика
+ * сузится до выбранного года, а остальные виджеты до месяца. */
+function crossFilterMonth(index: number) {
+  const ym = months.value[index]?.ym
+  if (!ym) return
+  const [year, month] = String(ym).split('-')
+  const already = (selected.year || []).includes(year)
+    && (selected.month || []).includes(month)
+  if (already) {
+    selected.year = (selected.year || []).filter(v => v !== year)
+    selected.month = (selected.month || []).filter(v => v !== month)
+  } else {
+    selected.year = [year]
+    selected.month = [month]
+  }
+  reload()
+}
+
 // ── Форматтеры ──────────────────────────────────────────────────────────────
 
 const nf2 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -537,8 +586,23 @@ const baseOptions = computed(() => ({
   },
 }))
 
+/** Курсор-указатель поверх канваса: «кликабельность» иначе никак не видна —
+ * Chart.js рисует в канвасе, а не в DOM. */
+function pointerOnHover(e: any, elements: any[]) {
+  const canvas = e?.native?.target
+  if (canvas) canvas.style.cursor = elements.length ? 'pointer' : 'default'
+}
+
 const lineOptions = computed(() => ({
   ...baseOptions.value,
+  // mode: 'index' — клик и подсказка ловятся по всей вертикали месяца, а не
+  // только точным попаданием в точку линии.
+  interaction: { mode: 'index' as const, intersect: false },
+  onClick: (_e: any, elements: any[]) => {
+    const idx = elements?.[0]?.index
+    if (idx !== undefined && idx !== null) crossFilterMonth(idx)
+  },
+  onHover: pointerOnHover,
   scales: {
     x: { ticks: { color: ink.value }, grid: { color: grid.value } },
     y: { ticks: { color: ink.value }, grid: { color: grid.value }, title: { display: true, text: curLabel.value } },
@@ -574,6 +638,11 @@ const structureOptions = computed(() => ({
 const ringOptions = computed(() => ({
   ...baseOptions.value,
   cutout: '55%',
+  onClick: (_e: any, elements: any[]) => {
+    const idx = elements?.[0]?.index
+    if (idx !== undefined && idx !== null) crossFilterRing(idx)
+  },
+  onHover: pointerOnHover,
   plugins: {
     ...baseOptions.value.plugins,
     legend: { position: 'right' as const, labels: { color: ink.value, boxWidth: 10, font: { size: 11 } } },

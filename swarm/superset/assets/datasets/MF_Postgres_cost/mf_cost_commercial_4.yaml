@@ -525,8 +525,8 @@ columns:
   is_active: true
   type: BOOLEAN
   advanced_data_type: null
-  groupby: true
-  filterable: true
+  groupby: false
+  filterable: false
   expression: ''
   description: null
   python_date_format: null
@@ -538,7 +538,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -551,7 +551,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -564,7 +564,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -577,7 +577,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -590,7 +590,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -603,7 +603,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -616,7 +616,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -629,7 +629,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -642,7 +642,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -655,7 +655,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -668,7 +668,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -681,7 +681,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -694,7 +694,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -707,7 +707,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -720,7 +720,7 @@ columns:
   is_active: true
   type: DECIMAL
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -733,7 +733,7 @@ columns:
   is_active: true
   type: DATETIMETZ
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -746,7 +746,7 @@ columns:
   is_active: true
   type: DATETIMETZ
   advanced_data_type: null
-  groupby: true
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -759,7 +759,59 @@ columns:
   is_active: true
   type: DATETIMETZ
   advanced_data_type: null
-  groupby: true
+  groupby: false
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: price_level
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: family
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: calc_sign
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: color
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: false
   filterable: true
   expression: ''
   description: null
@@ -780,19 +832,6 @@ columns:
   datetime_format: null
   extra: null
 - column_name: brand_manager
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: STRING
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  datetime_format: null
-  extra: null
-- column_name: calc_sign
   verbose_name: null
   is_dttm: false
   is_active: true
@@ -831,19 +870,6 @@ columns:
   python_date_format: null
   datetime_format: null
   extra: null
-- column_name: price_level
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: STRING
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  datetime_format: null
-  extra: null
 - column_name: articul
   verbose_name: null
   is_dttm: false
@@ -858,32 +884,6 @@ columns:
   datetime_format: null
   extra: null
 - column_name: season
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: STRING
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  datetime_format: null
-  extra: null
-- column_name: family
-  verbose_name: null
-  is_dttm: false
-  is_active: true
-  type: STRING
-  advanced_data_type: null
-  groupby: true
-  filterable: true
-  expression: ''
-  description: null
-  python_date_format: null
-  datetime_format: null
-  extra: null
-- column_name: color
   verbose_name: null
   is_dttm: false
   is_active: true
