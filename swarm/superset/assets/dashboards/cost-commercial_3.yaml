@@ -114,7 +114,7 @@ position:
         \u0435\u043D \u043F\u043E \u043C\u0435\u0441\u044F\u0446\u0430\u043C \u0432\
         \u044B\u043F\u0443\u0441\u043A\u0430"
       uuid: 7e7fe92b-8ddd-4dbe-a190-29adaab659dd
-      width: 3
+      width: 6
     parents:
     - ROOT_ID
     - GRID_ID
@@ -131,37 +131,7 @@ position:
         \ \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\
         \u0438, \u0442\u043E\u043F-10"
       uuid: 172a9c5e-68b8-449e-a2e8-84f46f4e200d
-      width: 3
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-0b5a2d57
-    type: CHART
-  CHART-19:
-    children: []
-    id: CHART-19
-    meta:
-      chartId: 19
-      height: 50
-      sliceName: "comm-09 \xB7 \u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430\
-        \ \u0432\u044B\u043F\u0443\u0441\u043A\u0430, \u0448\u0442"
-      uuid: 9d0abc1c-8275-4585-9c7f-7d5f4a6c0921
-      width: 3
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-0b5a2d57
-    type: CHART
-  CHART-20:
-    children: []
-    id: CHART-20
-    meta:
-      chartId: 20
-      height: 50
-      sliceName: "comm-10 \xB7 \u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430\
-        \ \u0432\u044B\u043F\u0443\u0441\u043A\u0430, BYN"
-      uuid: c16c6327-64d2-41b8-8ac3-2dfc339366cc
-      width: 3
+      width: 6
     parents:
     - ROOT_ID
     - GRID_ID
@@ -219,7 +189,7 @@ position:
     id: COLUMN-5fe001ed
     meta:
       background: BACKGROUND_TRANSPARENT
-      width: 3
+      width: 6
     parents:
     - ROOT_ID
     - GRID_ID
@@ -276,8 +246,6 @@ position:
     children:
     - COLUMN-5fe001ed
     - CHART-18
-    - CHART-20
-    - CHART-19
     id: ROW-0b5a2d57
     meta:
       background: BACKGROUND_TRANSPARENT
@@ -374,8 +342,6 @@ metadata:
     - 16
     - 17
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -414,8 +380,6 @@ metadata:
     - 15
     - 16
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -455,8 +419,6 @@ metadata:
     - 16
     - 17
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -496,8 +458,6 @@ metadata:
     - 16
     - 17
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -538,8 +498,6 @@ metadata:
     - 16
     - 17
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -581,8 +539,6 @@ metadata:
     - 16
     - 17
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -626,8 +582,6 @@ metadata:
     - 16
     - 17
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -671,8 +625,6 @@ metadata:
     - 16
     - 17
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -717,8 +669,6 @@ metadata:
     - 16
     - 17
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -758,8 +708,6 @@ metadata:
     - 16
     - 17
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -799,8 +747,6 @@ metadata:
     - 16
     - 17
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -841,8 +787,6 @@ metadata:
     - 16
     - 17
     - 18
-    - 19
-    - 20
     - 21
     - 22
     - 23
@@ -880,8 +824,6 @@ metadata:
       - 16
       - 17
       - 18
-      - 19
-      - 20
       - 22
       - 23
     type: NATIVE_FILTER
