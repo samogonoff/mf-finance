@@ -35,8 +35,8 @@ params:
   - knitting_sum
   - other_sum
   x_axis: brand_manager
-  timeseries_limit_metric: cost_sum
-  x_axis_sort: cost_sum
+  timeseries_limit_metric: cost_sort_key
+  x_axis_sort: cost_sort_key
   x_axis_sort_asc: false
   order_desc: true
   x_axis_sort_series_type: name

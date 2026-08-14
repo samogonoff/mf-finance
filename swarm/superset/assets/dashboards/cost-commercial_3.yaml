@@ -17,7 +17,8 @@ position:
       chartId: 11
       height: 20
       sliceName: "comm-01 \xB7 \u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\
-        \u043D\u043E\u0441\u0442\u044C, %"
+        \u043D\u043E\u0441\u0442\u044C \u0432\u044B\u043F\u0443\u0441\u043A\u0430\
+        , %"
       uuid: 35b5bde5-17c5-4a44-a0fc-e994fa0a8b4f
       width: 4
     parents:
@@ -33,7 +34,8 @@ position:
       chartId: 12
       height: 20
       sliceName: "comm-02 \xB7 \u0420\u0435\u043D\u0442\u0430\u0431\u0435\u043B\u044C\
-        \u043D\u043E\u0441\u0442\u044C, %"
+        \u043D\u043E\u0441\u0442\u044C \u0432\u044B\u043F\u0443\u0441\u043A\u0430\
+        , %"
       uuid: e9c420d4-76d7-49ce-8f7c-6f45ae5482c9
       width: 4
     parents:
@@ -51,7 +53,7 @@ position:
       sliceName: "comm-03 \xB7 \u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\
         \u043E\u0441\u0442\u044C, BYN"
       uuid: a15e8abe-e6b6-4d1c-80db-1d68b89c061f
-      width: 2
+      width: 1
     parents:
     - ROOT_ID
     - GRID_ID
@@ -66,7 +68,7 @@ position:
       sliceName: "comm-04 \xB7 \u041E\u0442\u043F\u0443\u0441\u043A\u043D\u0430\u044F\
         \ \u0446\u0435\u043D\u0430, BYN"
       uuid: fc5c1a93-c835-4337-8af3-f4b97be71369
-      width: 2
+      width: 1
     parents:
     - ROOT_ID
     - GRID_ID
@@ -80,7 +82,7 @@ position:
       height: 20
       sliceName: "comm-05 \xB7 \u041D\u0430\u0446\u0435\u043D\u043A\u0430, BYN"
       uuid: 062d5d31-c621-44b1-824f-e8bb2500c114
-      width: 2
+      width: 1
     parents:
     - ROOT_ID
     - GRID_ID
@@ -96,7 +98,7 @@ position:
         \u0442\u0430, \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\
         \u0439"
       uuid: 65c6f72e-a950-4cbb-a7c5-07f143c4e177
-      width: 2
+      width: 3
     parents:
     - ROOT_ID
     - GRID_ID
@@ -165,6 +167,52 @@ position:
     - GRID_ID
     - ROW-0b5a2d57
     type: CHART
+  CHART-21:
+    children: []
+    id: CHART-21
+    meta:
+      chartId: 21
+      height: 50
+      sliceName: "comm-11 \xB7 \u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430\
+        \ \u0432\u044B\u043F\u0443\u0441\u043A\u0430 (\u043C\u0435\u0440\u0430 \u043F\
+        \u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0430\u0435\u0442\u0441\u044F \u0444\
+        \u0438\u043B\u044C\u0442\u0440\u043E\u043C)"
+      uuid: 8389ffad-835f-4c02-84b0-36d7398e180c
+      width: 12
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-measure-switch
+    type: CHART
+  CHART-22:
+    children: []
+    id: CHART-22
+    meta:
+      chartId: 22
+      height: 20
+      sliceName: "comm-12 \xB7 \u0412\u044B\u043F\u0443\u0441\u043A, \u0448\u0442"
+      uuid: 6fe71cff-5519-4528-a793-a4f18beb5d5c
+      width: 2
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-4d31b806
+    type: CHART
+  CHART-23:
+    children: []
+    id: CHART-23
+    meta:
+      chartId: 23
+      height: 20
+      sliceName: "comm-13 \xB7 \u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F\
+        \ \u0446\u0435\u043D\u0430, BYN"
+      uuid: 2a901c14-b1fe-4af9-9317-d1e710f49212
+      width: 2
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-4d31b806
+    type: CHART
   COLUMN-5fe001ed:
     children:
     - CHART-17
@@ -183,7 +231,7 @@ position:
     id: COLUMN-ac8c5fc8
     meta:
       background: BACKGROUND_TRANSPARENT
-      width: 2
+      width: 1
     parents:
     - ROOT_ID
     - GRID_ID
@@ -195,7 +243,7 @@ position:
     id: COLUMN-babca758
     meta:
       background: BACKGROUND_TRANSPARENT
-      width: 2
+      width: 1
     parents:
     - ROOT_ID
     - GRID_ID
@@ -205,10 +253,8 @@ position:
   GRID_ID:
     children:
     - ROW-4d31b806
-    - ROW-tiles-2
     - ROW-0b5a2d57
     - ROW-measure-switch
-    - ROW-N-Z6ZYJTIP
     id: GRID_ID
     parents:
     - ROOT_ID
@@ -246,6 +292,8 @@ position:
     - CHART-13
     - CHART-14
     - CHART-15
+    - CHART-23
+    - CHART-22
     - CHART-16
     id: ROW-4d31b806
     meta:
@@ -254,126 +302,16 @@ position:
     - ROOT_ID
     - GRID_ID
     type: ROW
-  CHART-21:
-    type: CHART
-    id: CHART-21
-    children: []
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-measure-switch
-    meta:
-      chartId: 21
-      width: 12
-      height: 50
-      sliceName: "comm-11 \xB7 \u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430\
-        \ \u0432\u044B\u043F\u0443\u0441\u043A\u0430 (\u043C\u0435\u0440\u0430 \u043F\
-        \u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0430\u0435\u0442\u0441\u044F \u0444\
-        \u0438\u043B\u044C\u0442\u0440\u043E\u043C)"
   ROW-measure-switch:
-    type: ROW
-    id: ROW-measure-switch
     children:
     - CHART-21
+    id: ROW-measure-switch
+    meta:
+      background: BACKGROUND_TRANSPARENT
     parents:
     - ROOT_ID
     - GRID_ID
-    meta:
-      background: BACKGROUND_TRANSPARENT
-  ROW-tiles-2:
     type: ROW
-    id: ROW-tiles-2
-    children:
-    - CHART-22
-    - CHART-23
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    meta:
-      background: BACKGROUND_TRANSPARENT
-  CHART-22:
-    type: CHART
-    id: CHART-22
-    children: []
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-tiles-2
-    meta:
-      chartId: 22
-      width: 3
-      height: 20
-  CHART-23:
-    type: CHART
-    id: CHART-23
-    children: []
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-tiles-2
-    meta:
-      chartId: 23
-      width: 3
-      height: 20
-  ROW-N-Z6ZYJTIP:
-    children:
-    - CHART-Y8X4NQJV
-    - CHART-1CWR65H0
-    - CHART-KKDHNLNL
-    id: ROW-N-Z6ZYJTIP
-    meta:
-      '0': ROOT_ID
-      background: BACKGROUND_TRANSPARENT
-    type: ROW
-    parents:
-    - ROOT_ID
-    - GRID_ID
-  CHART-Y8X4NQJV:
-    children: []
-    id: CHART-Y8X4NQJV
-    meta:
-      chartId: 21
-      height: 50
-      sliceName: "comm-11 \xB7 \u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430\
-        \ \u0432\u044B\u043F\u0443\u0441\u043A\u0430 (\u043C\u0435\u0440\u0430 \u043F\
-        \u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0430\u0435\u0442\u0441\u044F \u0444\
-        \u0438\u043B\u044C\u0442\u0440\u043E\u043C)"
-      uuid: 8389ffad-835f-4c02-84b0-36d7398e180c
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-Z6ZYJTIP
-  CHART-1CWR65H0:
-    children: []
-    id: CHART-1CWR65H0
-    meta:
-      chartId: 22
-      height: 50
-      sliceName: "comm-12 \xB7 \u0412\u044B\u043F\u0443\u0441\u043A, \u0448\u0442"
-      uuid: 6fe71cff-5519-4528-a793-a4f18beb5d5c
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-Z6ZYJTIP
-  CHART-KKDHNLNL:
-    children: []
-    id: CHART-KKDHNLNL
-    meta:
-      chartId: 23
-      height: 50
-      sliceName: "comm-13 \xB7 \u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F\
-        \ \u0446\u0435\u043D\u0430, BYN"
-      uuid: 2a901c14-b1fe-4af9-9317-d1e710f49212
-      width: 4
-    type: CHART
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-N-Z6ZYJTIP
 metadata:
   expanded_slices: {}
   refresh_frequency: 0
@@ -381,24 +319,24 @@ metadata:
   color_scheme: ''
   label_colors: {}
   shared_label_colors:
+  - "\u0411\u0420\u042E\u041A\u0418 \u0416\u0415\u041D\u0421\u041A\u0418\u0415"
   - "\u0411\u042E\u0421\u0422\u0413\u0410\u041B\u042C\u0422\u0415\u0420 \u0416\u0415\
     \u041D\u0421\u041A\u0418\u0419"
+  - "\u041A\u041E\u041B\u0413\u041E\u0422\u041A\u0418 \u0414\u0415\u0422\u0421\u041A\
+    \u0418\u0415"
+  - "\u041D\u041E\u0421\u041A\u0418 \u0414\u0415\u0422\u0421\u041A\u0418\u0415"
   - "\u041D\u041E\u0421\u041A\u0418 \u0416\u0415\u041D\u0421\u041A\u0418\u0415"
+  - "\u041D\u041E\u0421\u041A\u0418 \u0416\u0415\u041D\u0421\u041A\u0418\u0415 \u0421\
+    rystal mini 20"
   - "\u041D\u041E\u0421\u041A\u0418 \u041C\u0423\u0416\u0421\u041A\u0418\u0415"
-  - "\u0422\u0415\u0421\u042C\u041C\u0410 \u0416\u0410\u041A\u041A\u0410\u0420\u0414\
-    \ 35 \u041C\u041C"
   - "\u0422\u0420\u0423\u0421\u042B \u0416\u0415\u041D\u0421\u041A\u0418\u0415"
   - "\u0422\u0420\u0423\u0421\u042B \u0416\u0415\u041D\u0421\u041A\u0418\u0415 (3\u0428\
     \u0422.)"
+  - "\u0422\u0420\u0423\u0421\u042B \u041C\u0423\u0416\u0421\u041A\u0418\u0415"
   - "\u0424\u0423\u0422\u0411\u041E\u041B\u041A\u0410 \u0416\u0415\u041D\u0421\u041A\
     \u0410\u042F"
   - "\u0424\u0423\u0422\u0411\u041E\u041B\u041A\u0410 \u041C\u0423\u0416\u0421\u041A\
     \u0410\u042F"
-  - "\u0428\u043D\u0443\u0440 \u0441 \u043C\u0435\u0442\u0430\u043B\u043B\u0438\u0447\
-    \u0435\u0441\u043A\u0438\u043C \u043D\u0430\u043A\u043E\u043D\u0435\u0447\u043D\
-    \u0438\u043A\u043E\u043C (\u0441\u043E\u0431\u0441\u0442\u0432\u0435\u043D\u043D\
-    \u043E\u0435 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\
-    \u043E) \u0423\u0417\u0411"
   color_scheme_domain: []
   cross_filters_enabled: true
   native_filter_configuration:
@@ -972,6 +910,9 @@ metadata:
     - 18
     - 19
     - 20
+    - 21
+    - 22
+    - 23
   chart_configuration:
     '17':
       id: 17
@@ -987,6 +928,9 @@ metadata:
         - 18
         - 19
         - 20
+        - 21
+        - 22
+        - 23
     '18':
       id: 18
       crossFilters:
@@ -1001,6 +945,9 @@ metadata:
         - 17
         - 19
         - 20
+        - 21
+        - 22
+        - 23
     '19':
       id: 19
       crossFilters:
@@ -1015,6 +962,9 @@ metadata:
         - 17
         - 18
         - 20
+        - 21
+        - 22
+        - 23
     '20':
       id: 20
       crossFilters:
@@ -1029,33 +979,52 @@ metadata:
         - 17
         - 18
         - 19
+        - 21
+        - 22
+        - 23
+    '21':
+      id: 21
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 22
+        - 23
   map_label_colors:
-    "\u0428\u043D\u0443\u0440 \u0441 \u043C\u0435\u0442\u0430\u043B\u043B\u0438\u0447\u0435\u0441\u043A\u0438\u043C \u043D\u0430\u043A\u043E\u043D\u0435\u0447\u043D\u0438\u043A\u043E\u043C (\u0441\u043E\u0431\u0441\u0442\u0432\u0435\u043D\u043D\u043E\u0435 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u043E) \u0423\u0417\u0411": '#1FA8C9'
-    "\u0422\u0415\u0421\u042C\u041C\u0410 \u0416\u0410\u041A\u041A\u0410\u0420\u0414 35 \u041C\u041C": '#454E7C'
-    "\u041D\u041E\u0421\u041A\u0418 \u0416\u0415\u041D\u0421\u041A\u0418\u0415": '#5AC189'
-    "\u041D\u041E\u0421\u041A\u0418 \u041C\u0423\u0416\u0421\u041A\u0418\u0415": '#454E7C'
-    "\u041D\u041E\u0421\u041A\u0418 \u0414\u0415\u0422\u0421\u041A\u0418\u0415": '#1FA8C9'
-    "\u0422\u0420\u0423\u0421\u042B \u0416\u0415\u041D\u0421\u041A\u0418\u0415": '#666666'
-    "\u041A\u041E\u041B\u0413\u041E\u0422\u041A\u0418 \u0414\u0415\u0422\u0421\u041A\u0418\u0415": '#FF7F44'
-    "\u0422\u0420\u0423\u0421\u042B \u041C\u0423\u0416\u0421\u041A\u0418\u0415": '#A868B7'
-    "\u0411\u042E\u0421\u0422\u0413\u0410\u041B\u042C\u0422\u0415\u0420 \u0416\u0415\u041D\u0421\u041A\u0418\u0419": '#3CCCCB'
-    "\u0424\u0423\u0422\u0411\u041E\u041B\u041A\u0410 \u0416\u0415\u041D\u0421\u041A\u0410\u042F": '#E04355'
-    "\u0422\u0420\u0423\u0421\u042B \u0416\u0415\u041D\u0421\u041A\u0418\u0415 (3\u0428\u0422.)": '#A38F79'
-    "\u0424\u0423\u0422\u0411\u041E\u041B\u041A\u0410 \u041C\u0423\u0416\u0421\u041A\u0410\u042F": '#FCC700'
-    "\u0410\u043F\u043F\u043B\u0438\u043A\u0430\u0446\u0438\u044F \u0438\u0437 \u0441\u0442\u0440\u0430\u0437 (\u0441\u0442\u0435\u043A\u043B\u043E)": '#5AC189'
-    "\u0411\u0420\u042E\u041A\u0418 \u0416\u0415\u041D\u0421\u041A\u0418\u0415": '#FF7F44'
-    "\u0411\u0420\u042E\u041A\u0418 \u041C\u0423\u0416\u0421\u041A\u0418\u0415": '#A868B7'
     retail_median: '#454E7C'
     price_median: '#1FA8C9'
     cost_median: '#5AC189'
-    cost_sum: '#1FA8C9'
     mat_main_sum: '#FCC700'
     sewing_sum: '#FF7F44'
     other_sum: '#454E7C'
     mat_aux_sum: '#1FA8C9'
     cutting_sum: '#5AC189'
     decor_sum: '#666666'
+    cost_sort_key: '#E04355'
     knitting_sum: '#E04355'
+    "\u0410\u043F\u043F\u043B\u0438\u043A\u0430\u0446\u0438\u044F \u0438\u0437 \u0441\u0442\u0440\u0430\u0437 (\u0441\u0442\u0435\u043A\u043B\u043E)": '#5AC189'
+    "\u0411\u042E\u0421\u0422\u0413\u0410\u041B\u042C\u0422\u0415\u0420 \u0416\u0415\u041D\u0421\u041A\u0418\u0419": '#3CCCCB'
+    "\u0411\u0420\u042E\u041A\u0418 \u0416\u0415\u041D\u0421\u041A\u0418\u0415": '#FF7F44'
+    "\u0424\u0423\u0422\u0411\u041E\u041B\u041A\u0410 \u0416\u0415\u041D\u0421\u041A\u0410\u042F": '#E04355'
+    "\u0422\u0420\u0423\u0421\u042B \u0416\u0415\u041D\u0421\u041A\u0418\u0415": '#666666'
+    "\u0424\u0423\u0422\u0411\u041E\u041B\u041A\u0410 \u041C\u0423\u0416\u0421\u041A\u0410\u042F": '#FCC700'
+    "\u0422\u0420\u0423\u0421\u042B \u0416\u0415\u041D\u0421\u041A\u0418\u0415 (3\u0428\u0422.)": '#A38F79'
+    "\u041D\u041E\u0421\u041A\u0418 \u041C\u0423\u0416\u0421\u041A\u0418\u0415": '#454E7C'
+    "\u041D\u041E\u0421\u041A\u0418 \u0416\u0415\u041D\u0421\u041A\u0418\u0415": '#5AC189'
+    "\u0411\u0420\u042E\u041A\u0418 \u041C\u0423\u0416\u0421\u041A\u0418\u0415": '#A868B7'
+    "\u0422\u0420\u0423\u0421\u042B \u041C\u0423\u0416\u0421\u041A\u0418\u0415": '#A868B7'
+    "\u041A\u041E\u041B\u0413\u041E\u0422\u041A\u0418 \u0414\u0415\u0422\u0421\u041A\u0418\u0415": '#FF7F44'
+    "\u041D\u041E\u0421\u041A\u0418 \u0414\u0415\u0422\u0421\u041A\u0418\u0415": '#1FA8C9'
+    "\u041D\u041E\u0421\u041A\u0418 \u0416\u0415\u041D\u0421\u041A\u0418\u0415 \u0421rystal mini 20": '#8FD3E4'
   chart_customization_config: []
   filter_bar_orientation: HORIZONTAL
   default_filters: '{}'
