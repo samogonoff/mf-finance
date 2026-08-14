@@ -1,28 +1,36 @@
-slice_name: "comm-09 \xB7 \u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430 \u043F\
-  \u043E \u043D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u044F\u043C"
-description: null
+slice_name: "comm-09 \xB7 \u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430 \u0432\
+  \u044B\u043F\u0443\u0441\u043A\u0430, \u0448\u0442"
+description: "\u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430 \u0432\u044B\u043F\
+  \u0443\u0441\u043A\u0430 \u0432 \u0448\u0442\u0443\u043A\u0430\u0445. \u0422\u043E\
+  \u043B\u044C\u043A\u043E \u0424\u041A\u0421\u0421: \u043E\u0441\u0442\u0430\u043B\
+  \u044C\u043D\u044B\u0435 \u043F\u0440\u0438\u0437\u043D\u0430\u043A\u0438 \u043A\
+  \u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438 \u2014 \u043F\u043B\
+  \u0430\u043D\u043E\u0432\u044B\u0435 \u0438 \u043F\u0440\u0435\u0434\u0432\u0430\
+  \u0440\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0435 \u0440\u0430\u0441\u0447\u0451\
+  \u0442\u044B."
 certified_by: null
 certification_details: null
 viz_type: pie
 params:
+  datasource: 4__table
   viz_type: pie
   groupby:
   - model_name
-  metric: calc_count
+  metric: volume_total
   color_scheme: supersetColors
   show_labels: true
   show_legend: true
   label_type: key_value_percent
-  number_format: SMART_NUMBER
+  number_format: ',d'
   sort_by_metric: true
   row_limit: 12
   donut: true
-  show_total: false
+  show_total: true
   labels_outside: true
   outerRadius: 70
   innerRadius: 30
   date_format: smart_date
-query_context: '{"datasource":{"id":4,"type":"table"},"force":false,"queries":[{"filters":[],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":["model_name"],"metrics":["calc_count"],"orderby":[["calc_count",false]],"annotation_layers":[],"row_limit":12,"series_limit":0,"group_others_when_limit_reached":false,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{},"post_processing":[{"operation":"contribution","options":{"columns":["calc_count"],"rename_columns":["calc_count__contribution"]}}]}],"form_data":{"color_scheme":"supersetColors","datasource":"4__table","date_format":"smart_date","donut":true,"groupby":["model_name"],"innerRadius":30,"label_type":"key_value_percent","labels_outside":true,"metric":"calc_count","number_format":"SMART_NUMBER","outerRadius":70,"row_limit":12,"show_labels":true,"show_legend":true,"show_total":false,"slice_id":19,"sort_by_metric":true,"viz_type":"pie","force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
+query_context: null
 cache_timeout: null
 uuid: 9d0abc1c-8275-4585-9c7f-7d5f4a6c0921
 version: 1.0.0
