@@ -121,6 +121,35 @@
         </div>
       </article>
     </section>
+
+    <!-- Тот же макет, собранный в Superset — чтобы сравнить обе реализации
+         на одном экране. Инструмент разработчика, не часть продукта. -->
+    <section v-if="supersetUrl" class="card compare">
+      <div class="compare-head">
+        <div>
+          <h2 class="card-title">Тот же дашборд в Superset — для сравнения</h2>
+          <p class="card-note">
+            Встроен без guest-токенов: iframe работает потому, что браузер уже
+            залогинен в Superset на том же хосте. Прод-схема встраивания другая —
+            см. <code>docs/bi/superset-prod-plan.md</code>.
+            <br />
+            Открытие блока запускает все запросы Superset заново — те самые
+            18+ на дашборд.
+          </p>
+        </div>
+        <div class="compare-actions">
+          <button class="btn btn-ghost btn-sm" @click="showSuperset = !showSuperset">
+            {{ showSuperset ? 'Скрыть' : 'Показать' }}
+          </button>
+          <a :href="supersetUrl" target="_blank" rel="noopener"
+             class="btn btn-ghost btn-sm">Открыть отдельно</a>
+        </div>
+      </div>
+      <!-- v-if, а не v-show: пока блок скрыт, iframe не создаётся и Superset
+           не грузится. -->
+      <iframe v-if="showSuperset" :src="supersetEmbedSrc" class="superset-frame"
+              title="Дашборд Superset" loading="lazy" />
+    </section>
   </div>
 </template>
 
@@ -183,6 +212,18 @@ const measure = ref('calcs')
 
 const loading = ref(false)
 const error = ref('')
+
+/** Встроенный для сравнения дашборд Superset. Пустая строка в конфиге — блока
+ * нет вовсе (см. nuxt-layer/nuxt.config.ts). */
+const supersetUrl = computed(() => (config.public.supersetEmbedUrl as string) || '')
+const showSuperset = ref(true)
+/** standalone=1 убирает шапку и меню Superset — во встроенном виде они лишние
+ * и мешают сравнивать сами графики. */
+const supersetEmbedSrc = computed(() => {
+  const u = supersetUrl.value
+  if (!u) return ''
+  return u + (u.includes('?') ? '&' : '?') + 'standalone=1'
+})
 const tiles = ref<Record<string, any>>({})
 const seasons = ref<any[]>([])
 const structure = ref<any[]>([])
@@ -511,6 +552,15 @@ const ringOptions = computed(() => ({
 .chart-box { position: relative; height: 260px; min-width: 0; }
 .chart-box-tall { height: 320px; }
 .chart-box :deep(canvas) { max-height: 100%; }
+
+.compare-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-4); flex-wrap: wrap; }
+.compare-actions { display: flex; gap: var(--sp-2); flex-shrink: 0; }
+/* Высота под полный дашборд Superset: он длинный, а вложенная полоса прокрутки
+   для сравнения хуже — глаз теряет соответствие блоков. */
+.superset-frame {
+  width: 100%; height: 1400px; border: 1px solid var(--border);
+  border-radius: var(--rd-3); background: var(--bg-surface-2);
+}
 
 .ring-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; }
 .ring-controls { display: flex; gap: var(--sp-3); }
