@@ -1154,17 +1154,6 @@ async def commercial_dashboard(
         raise HTTPException(400, str(exc))
 
 
-@router.get("/commercial/filter-options")
-async def commercial_filter_options(
-    _: str = Depends(_require_perm("cost:view")),
-) -> dict:
-    """Значения фильтров дашборда. Отдельно от данных: меняются редко,
-    кэшируются на фронте."""
-    if _is_mock():
-        return mocks.commercial_filter_options()
-    return await commercial.filter_options()
-
-
 @router.get("/price-levels")
 def get_price_levels() -> list[dict]:
     if _is_mock():

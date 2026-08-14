@@ -80,30 +80,47 @@ FILTERS: dict[str, str] = {
 }
 
 
-def _build_where(filters: dict, params: list) -> str:
-    """WHERE из белого списка. Значения уходят только параметрами."""
-    parts = [
-        # База расчёта: без цены и себестоимости наценку не посчитать.
-        # Отсечение выбросов свыше 1000 BYN тоже здесь — их единицы, но они
-        # задирают суммы при медиане около 2.
-        "cost_byn > 0",
-        "cost_byn < 1000",
-        "wholesale_price_byn > 0",
-    ]
+# Базовые условия выборки, общие для всех запросов дашборда.
+BASE_CONDITIONS = (
+    # Без цены и себестоимости наценку не посчитать.
+    "cost_byn > 0",
+    # Отсечение выбросов: их единицы, но при медиане около 2 они задирают суммы.
+    "cost_byn < 1000",
+    "wholesale_price_byn > 0",
+)
+
+
+def _collect_params(filters: dict, params: list) -> dict[str, str]:
+    """Раскладывает значения фильтров по параметрам ОДИН раз и возвращает
+    готовые условия по ключам. Один общий список параметров нужен, чтобы
+    девять вариантов WHERE (для каскада) не плодили девять копий значений."""
+    conditions: dict[str, str] = {}
     for key, column in FILTERS.items():
         values = filters.get(key)
         if not values:
             continue
         params.append(list(values))
-        parts.append(f'"{column}" = ANY(${len(params)})')
+        conditions[key] = f'"{column}" = ANY(${len(params)})'
 
     if filters.get("date_from"):
         params.append(filters["date_from"])
-        parts.append(f"calc_date >= ${len(params)}")
+        conditions["date_from"] = f"calc_date >= ${len(params)}"
     if filters.get("date_to"):
         params.append(filters["date_to"])
-        parts.append(f"calc_date <= ${len(params)}")
+        conditions["date_to"] = f"calc_date <= ${len(params)}"
+    return conditions
 
+
+def _where(conditions: dict[str, str], exclude: str | None = None) -> str:
+    """Собирает WHERE, при желании выбросив условие одного фильтра.
+
+    `exclude` нужен для каскада: варианты фильтра считаются по данным,
+    отфильтрованным всеми ОСТАЛЬНЫМИ. Если учитывать и его собственный выбор,
+    список схлопнется до уже выбранного, и ни добавить значение, ни снять
+    выбор станет нельзя.
+    """
+    parts = list(BASE_CONDITIONS)
+    parts += [c for key, c in conditions.items() if key != exclude]
     return " AND ".join(parts)
 
 
@@ -120,8 +137,20 @@ async def dashboard(
         raise ValueError(f"недопустимая мера: {measure}")
 
     params: list = []
-    where = _build_where(filters, params)
+    conditions = _collect_params(filters, params)
+    where = _where(conditions)
     measure_expr = MEASURES[measure][1]
+
+    # Каскад: для каждого фильтра свой список вариантов, посчитанный по данным
+    # без его собственного условия. Считаем здесь же, в общем запросе, — иначе
+    # каждое изменение фильтра стоило бы двух обращений к серверу.
+    option_selects = ",\n            ".join(
+        f"""'{key}', (SELECT coalesce(json_agg(v ORDER BY v), '[]'::json) FROM
+                (SELECT DISTINCT "{col}" AS v FROM cost_calc_mv
+                 WHERE {_where(conditions, exclude=key)} AND "{col}" IS NOT NULL
+                 ORDER BY 1 LIMIT {FILTER_OPTIONS_LIMIT + 1}) o_{i})"""
+        for i, (key, col) in enumerate(FILTERS.items())
+    )
 
     # base MATERIALIZED — чтобы Postgres прошёл по витрине один раз, а не
     # подставлял CTE заново в каждый из четырёх агрегатов.
@@ -211,7 +240,10 @@ async def dashboard(
         'tiles',     (SELECT row_to_json(t) FROM tiles t),
         'seasons',   coalesce((SELECT json_agg(s ORDER BY s.sort_key, s.season) FROM seasons s), '[]'::json),
         'structure', coalesce((SELECT json_agg(x) FROM structure x), '[]'::json),
-        'ring',      coalesce((SELECT json_agg(r) FROM ring r), '[]'::json)
+        'ring',      coalesce((SELECT json_agg(r) FROM ring r), '[]'::json),
+        'options',   json_build_object(
+            {option_selects}
+        )
     ) AS payload
     """
 
@@ -223,8 +255,20 @@ async def dashboard(
         total = await conn.fetchval("SELECT count(*) FROM cost_calc_mv")
 
     payload = _as_dict(row["payload"])
+
+    # Обрезаем длинные списки и запоминаем, какие именно: фильтр с неполным
+    # списком должен выглядеть неполным, а не всеобъемлющим.
+    options = payload.get("options") or {}
+    options_truncated: list[str] = []
+    for key, values in list(options.items()):
+        if values and len(values) > FILTER_OPTIONS_LIMIT:
+            options_truncated.append(key)
+            options[key] = values[:FILTER_OPTIONS_LIMIT]
+    payload["options"] = options
+
     refreshed = status["refreshed_at"] if status else None
     payload["meta"] = {
+        "options_truncated": options_truncated,
         # Полнота выборки: сколько всего калькуляций против попавших в расчёт.
         "calc_total": total,
         # Штамп свежести: дашборд по устаревшему кэшу врёт молча, цифры
@@ -247,33 +291,7 @@ async def dashboard(
 FILTER_OPTIONS_LIMIT = 500
 
 
-async def filter_options() -> dict:
-    """Значения фильтров. Отдельным запросом: они меняются редко и кэшируются
-    на фронте, тогда как сам дашборд перезапрашивается на каждое изменение.
-
-    Возвращает `{колонка: [значения]}` плюс служебный `_truncated` — список
-    колонок, где значений больше потолка. Для таких фильтров выпадающий список
-    неполон, и выбирать по нему конкретный артикул бессмысленно: это работа
-    основной таблицы раздела, а не дашборда.
-    """
-    cols = list(dict.fromkeys(FILTERS.values()))
-    selects = ",\n            ".join(
-        f"""(SELECT coalesce(json_agg(v ORDER BY v), '[]'::json)
-             FROM (SELECT DISTINCT "{c}" AS v FROM cost_calc_mv
-                   WHERE "{c}" IS NOT NULL
-                   ORDER BY 1 LIMIT {FILTER_OPTIONS_LIMIT + 1}) s{i}) AS "{c}\""""
-        for i, c in enumerate(cols)
-    )
-    async with pool().acquire() as conn:
-        row = await conn.fetchrow(f"SELECT {selects}")
-
-    out: dict = {}
-    truncated: list[str] = []
-    for c in cols:
-        values = _as_dict(row[c]) or []
-        if len(values) > FILTER_OPTIONS_LIMIT:
-            truncated.append(c)
-            values = values[:FILTER_OPTIONS_LIMIT]
-        out[c] = values
-    out["_truncated"] = truncated
-    return out
+# Отдельного эндпоинта значений фильтров больше нет: варианты зависят от
+# текущего выбора (каскад) и приходят вместе с данными в `payload["options"]`.
+# Иначе каждое изменение фильтра стоило бы двух обращений к серверу, а списки
+# успевали бы разъехаться с цифрами.

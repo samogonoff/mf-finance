@@ -3,10 +3,10 @@ dashboard_title: "cost-commercial \xB7 \u041A\u043E\u043C\u043C\u0435\u0440\u044
   \u0441\u0442\u044C \u0438 \u0446\u0435\u043D\u043E\u043E\u0431\u0440\u0430\u0437\
   \u043E\u0432\u0430\u043D\u0438\u0435"
 description: null
-css: null
+css: ''
 slug: cost-commercial
-certified_by: null
-certification_details: null
+certified_by: ''
+certification_details: ''
 published: true
 uuid: 5337d505-16d4-4823-8a63-f8f829a2f6e7
 position:
@@ -15,7 +15,7 @@ position:
     id: CHART-11
     meta:
       chartId: 11
-      height: 50
+      height: 20
       sliceName: "comm-01 \xB7 \u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\
         \u043D\u043E\u0441\u0442\u044C, %"
       uuid: 35b5bde5-17c5-4a44-a0fc-e994fa0a8b4f
@@ -26,24 +26,12 @@ position:
     - ROW-4d31b806
     - COLUMN-ac8c5fc8
     type: CHART
-  COLUMN-ac8c5fc8:
-    children:
-    - CHART-11
-    id: COLUMN-ac8c5fc8
-    meta:
-      background: BACKGROUND_TRANSPARENT
-      width: 6
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-4d31b806
-    type: COLUMN
   CHART-12:
     children: []
     id: CHART-12
     meta:
       chartId: 12
-      height: 50
+      height: 20
       sliceName: "comm-02 \xB7 \u0420\u0435\u043D\u0442\u0430\u0431\u0435\u043B\u044C\
         \u043D\u043E\u0441\u0442\u044C, %"
       uuid: e9c420d4-76d7-49ce-8f7c-6f45ae5482c9
@@ -54,163 +42,66 @@ position:
     - ROW-4d31b806
     - COLUMN-babca758
     type: CHART
-  COLUMN-babca758:
-    children:
-    - CHART-12
-    id: COLUMN-babca758
-    meta:
-      background: BACKGROUND_TRANSPARENT
-      width: 6
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-4d31b806
-    type: COLUMN
-  ROW-4d31b806:
-    children:
-    - COLUMN-ac8c5fc8
-    - COLUMN-babca758
-    id: ROW-4d31b806
-    meta:
-      background: BACKGROUND_TRANSPARENT
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    type: ROW
   CHART-13:
     children: []
     id: CHART-13
     meta:
       chartId: 13
-      height: 50
+      height: 20
       sliceName: "comm-03 \xB7 \u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\
         \u043E\u0441\u0442\u044C, BYN"
       uuid: a15e8abe-e6b6-4d1c-80db-1d68b89c061f
-      width: 4
+      width: 2
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-0b5a2d57
-    - COLUMN-f22de467
+    - ROW-4d31b806
     type: CHART
-  COLUMN-f22de467:
-    children:
-    - CHART-13
-    id: COLUMN-f22de467
-    meta:
-      background: BACKGROUND_TRANSPARENT
-      width: 6
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-0b5a2d57
-    type: COLUMN
   CHART-14:
     children: []
     id: CHART-14
     meta:
       chartId: 14
-      height: 50
+      height: 20
       sliceName: "comm-04 \xB7 \u041E\u0442\u043F\u0443\u0441\u043A\u043D\u0430\u044F\
         \ \u0446\u0435\u043D\u0430, BYN"
       uuid: fc5c1a93-c835-4337-8af3-f4b97be71369
-      width: 4
+      width: 2
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-0b5a2d57
-    - COLUMN-5fe001ed
+    - ROW-4d31b806
     type: CHART
-  COLUMN-5fe001ed:
-    children:
-    - CHART-14
-    id: COLUMN-5fe001ed
-    meta:
-      background: BACKGROUND_TRANSPARENT
-      width: 6
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-0b5a2d57
-    type: COLUMN
-  ROW-0b5a2d57:
-    children:
-    - COLUMN-f22de467
-    - COLUMN-5fe001ed
-    id: ROW-0b5a2d57
-    meta:
-      background: BACKGROUND_TRANSPARENT
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    type: ROW
   CHART-15:
     children: []
     id: CHART-15
     meta:
       chartId: 15
-      height: 50
+      height: 20
       sliceName: "comm-05 \xB7 \u041D\u0430\u0446\u0435\u043D\u043A\u0430, BYN"
       uuid: 062d5d31-c621-44b1-824f-e8bb2500c114
-      width: 4
+      width: 2
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-3287d499
-    - COLUMN-a21d4b4e
+    - ROW-4d31b806
     type: CHART
-  COLUMN-a21d4b4e:
-    children:
-    - CHART-15
-    id: COLUMN-a21d4b4e
-    meta:
-      background: BACKGROUND_TRANSPARENT
-      width: 6
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-3287d499
-    type: COLUMN
   CHART-16:
     children: []
     id: CHART-16
     meta:
       chartId: 16
-      height: 50
+      height: 19
       sliceName: "comm-06 \xB7 \u0411\u0430\u0437\u0430 \u0440\u0430\u0441\u0447\u0451\
         \u0442\u0430, \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\
         \u0439"
       uuid: 65c6f72e-a950-4cbb-a7c5-07f143c4e177
-      width: 4
+      width: 2
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-3287d499
-    - COLUMN-f2cc0f27
+    - ROW-4d31b806
     type: CHART
-  COLUMN-f2cc0f27:
-    children:
-    - CHART-16
-    id: COLUMN-f2cc0f27
-    meta:
-      background: BACKGROUND_TRANSPARENT
-      width: 6
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-3287d499
-    type: COLUMN
-  ROW-3287d499:
-    children:
-    - COLUMN-a21d4b4e
-    - COLUMN-f2cc0f27
-    id: ROW-3287d499
-    meta:
-      background: BACKGROUND_TRANSPARENT
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    type: ROW
   CHART-17:
     children: []
     id: CHART-17
@@ -220,25 +111,13 @@ position:
       sliceName: "comm-07 \xB7 \u0414\u0438\u043D\u0430\u043C\u0438\u043A\u0430 \u0446\
         \u0435\u043D \u043F\u043E \u0441\u0435\u0437\u043E\u043D\u0430\u043C"
       uuid: 7e7fe92b-8ddd-4dbe-a190-29adaab659dd
-      width: 4
+      width: 3
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-cd52357d
-    - COLUMN-c5715bfd
+    - ROW-0b5a2d57
+    - COLUMN-5fe001ed
     type: CHART
-  COLUMN-c5715bfd:
-    children:
-    - CHART-17
-    id: COLUMN-c5715bfd
-    meta:
-      background: BACKGROUND_TRANSPARENT
-      width: 6
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-cd52357d
-    type: COLUMN
   CHART-18:
     children: []
     id: CHART-18
@@ -249,36 +128,12 @@ position:
         \ \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\
         \u0438 \u043F\u043E \u0442\u043E\u0432\u0430\u0440\u0430\u043C"
       uuid: 172a9c5e-68b8-449e-a2e8-84f46f4e200d
-      width: 4
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    - ROW-cd52357d
-    - COLUMN-360a64ec
-    type: CHART
-  COLUMN-360a64ec:
-    children:
-    - CHART-18
-    id: COLUMN-360a64ec
-    meta:
-      background: BACKGROUND_TRANSPARENT
       width: 6
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-cd52357d
-    type: COLUMN
-  ROW-cd52357d:
-    children:
-    - COLUMN-c5715bfd
-    - COLUMN-360a64ec
-    id: ROW-cd52357d
-    meta:
-      background: BACKGROUND_TRANSPARENT
-    parents:
-    - ROOT_ID
-    - GRID_ID
-    type: ROW
+    - ROW-0b5a2d57
+    type: CHART
   CHART-19:
     children: []
     id: CHART-19
@@ -296,6 +151,42 @@ position:
     - ROW-24dec677
     - COLUMN-dbe61ee4
     type: CHART
+  COLUMN-5fe001ed:
+    children:
+    - CHART-17
+    id: COLUMN-5fe001ed
+    meta:
+      background: BACKGROUND_TRANSPARENT
+      width: 6
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-0b5a2d57
+    type: COLUMN
+  COLUMN-ac8c5fc8:
+    children:
+    - CHART-11
+    id: COLUMN-ac8c5fc8
+    meta:
+      background: BACKGROUND_TRANSPARENT
+      width: 2
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-4d31b806
+    type: COLUMN
+  COLUMN-babca758:
+    children:
+    - CHART-12
+    id: COLUMN-babca758
+    meta:
+      background: BACKGROUND_TRANSPARENT
+      width: 2
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-4d31b806
+    type: COLUMN
   COLUMN-dbe61ee4:
     children:
     - CHART-19
@@ -308,6 +199,40 @@ position:
     - GRID_ID
     - ROW-24dec677
     type: COLUMN
+  DASHBOARD_VERSION_KEY: v2
+  GRID_ID:
+    children:
+    - ROW-4d31b806
+    - ROW-0b5a2d57
+    - ROW-24dec677
+    id: GRID_ID
+    parents:
+    - ROOT_ID
+    type: GRID
+  HEADER_ID:
+    id: HEADER_ID
+    meta:
+      text: "cost-commercial \xB7 \u041A\u043E\u043C\u043C\u0435\u0440\u0447\u0435\
+        \u0441\u043A\u0430\u044F \u044D\u0444\u0444\u0435\u043A\u0442\u0438\u0432\u043D\
+        \u043E\u0441\u0442\u044C \u0438 \u0446\u0435\u043D\u043E\u043E\u0431\u0440\
+        \u0430\u0437\u043E\u0432\u0430\u043D\u0438\u0435"
+    type: HEADER
+  ROOT_ID:
+    children:
+    - GRID_ID
+    id: ROOT_ID
+    type: ROOT
+  ROW-0b5a2d57:
+    children:
+    - COLUMN-5fe001ed
+    - CHART-18
+    id: ROW-0b5a2d57
+    meta:
+      background: BACKGROUND_TRANSPARENT
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    type: ROW
   ROW-24dec677:
     children:
     - COLUMN-dbe61ee4
@@ -318,221 +243,38 @@ position:
     - ROOT_ID
     - GRID_ID
     type: ROW
-  GRID_ID:
+  ROW-4d31b806:
     children:
-    - ROW-4d31b806
-    - ROW-0b5a2d57
-    - ROW-3287d499
-    - ROW-cd52357d
-    - ROW-24dec677
-    id: GRID_ID
+    - COLUMN-ac8c5fc8
+    - COLUMN-babca758
+    - CHART-13
+    - CHART-14
+    - CHART-15
+    - CHART-16
+    id: ROW-4d31b806
+    meta:
+      background: BACKGROUND_TRANSPARENT
     parents:
     - ROOT_ID
-    type: GRID
-  ROOT_ID:
-    children:
     - GRID_ID
-    id: ROOT_ID
-    type: ROOT
-  DASHBOARD_VERSION_KEY: v2
+    type: ROW
 metadata:
   expanded_slices: {}
   refresh_frequency: 0
   timed_refresh_immune_slices: []
-  color_scheme: null
+  color_scheme: ''
   label_colors: {}
-  shared_label_colors: {}
+  shared_label_colors: []
   color_scheme_domain: []
   cross_filters_enabled: true
   native_filter_configuration:
-  - id: NATIVE_FILTER-name
-    name: "\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435\
-      \ \u0442\u043E\u0432\u0430\u0440\u0430"
+  - id: NATIVE_FILTER-bm
+    name: "\u0411\u0440\u0435\u043D\u0434-\u043C\u0435\u043D\u0435\u0434\u0436\u0435\
+      \u0440"
     filterType: filter_select
     targets:
     - column:
-        name: model_name
-      datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
-    defaultDataMask:
-      extraFormData: {}
-      filterState: {}
-      ownState: {}
-    controlValues:
-      multiSelect: true
-      enableEmptyFilter: false
-      defaultToFirstItem: false
-      inverseSelection: false
-      searchAllOptions: false
-      sortAscending: true
-    cascadeParentIds: []
-    scope:
-      rootPath:
-      - ROOT_ID
-      excluded: []
-    type: NATIVE_FILTER
-    description: ''
-    chartsInScope:
-    - 11
-    - 12
-    - 13
-    - 14
-    - 15
-    - 16
-    - 17
-    - 18
-    - 19
-    tabsInScope: []
-  - id: NATIVE_FILTER-model
-    name: "\u041C\u043E\u0434\u0435\u043B\u044C"
-    filterType: filter_select
-    targets:
-    - column:
-        name: model
-      datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
-    defaultDataMask:
-      extraFormData: {}
-      filterState: {}
-      ownState: {}
-    controlValues:
-      multiSelect: true
-      enableEmptyFilter: false
-      defaultToFirstItem: false
-      inverseSelection: false
-      searchAllOptions: false
-      sortAscending: true
-    cascadeParentIds: []
-    scope:
-      rootPath:
-      - ROOT_ID
-      excluded: []
-    type: NATIVE_FILTER
-    description: ''
-    chartsInScope:
-    - 11
-    - 12
-    - 13
-    - 14
-    - 15
-    - 16
-    - 17
-    - 18
-    - 19
-    tabsInScope: []
-  - id: NATIVE_FILTER-articul
-    name: "\u0410\u0440\u0442\u0438\u043A\u0443\u043B"
-    filterType: filter_select
-    targets:
-    - column:
-        name: articul
-      datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
-    defaultDataMask:
-      extraFormData: {}
-      filterState: {}
-      ownState: {}
-    controlValues:
-      multiSelect: true
-      enableEmptyFilter: false
-      defaultToFirstItem: false
-      inverseSelection: false
-      searchAllOptions: false
-      sortAscending: true
-    cascadeParentIds: []
-    scope:
-      rootPath:
-      - ROOT_ID
-      excluded: []
-    type: NATIVE_FILTER
-    description: ''
-    chartsInScope:
-    - 11
-    - 12
-    - 13
-    - 14
-    - 15
-    - 16
-    - 17
-    - 18
-    - 19
-    tabsInScope: []
-  - id: NATIVE_FILTER-country
-    name: "\u0421\u0442\u0440\u0430\u043D\u0430 \u043F\u0440-\u0432\u0430"
-    filterType: filter_select
-    targets:
-    - column:
-        name: country
-      datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
-    defaultDataMask:
-      extraFormData: {}
-      filterState: {}
-      ownState: {}
-    controlValues:
-      multiSelect: true
-      enableEmptyFilter: false
-      defaultToFirstItem: false
-      inverseSelection: false
-      searchAllOptions: false
-      sortAscending: true
-    cascadeParentIds: []
-    scope:
-      rootPath:
-      - ROOT_ID
-      excluded: []
-    type: NATIVE_FILTER
-    description: ''
-    chartsInScope:
-    - 11
-    - 12
-    - 13
-    - 14
-    - 15
-    - 16
-    - 17
-    - 18
-    - 19
-    tabsInScope: []
-  - id: NATIVE_FILTER-sign
-    name: "\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\
-      ."
-    filterType: filter_select
-    targets:
-    - column:
-        name: calc_sign
-      datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
-    defaultDataMask:
-      extraFormData: {}
-      filterState: {}
-      ownState: {}
-    controlValues:
-      multiSelect: true
-      enableEmptyFilter: false
-      defaultToFirstItem: false
-      inverseSelection: false
-      searchAllOptions: false
-      sortAscending: true
-    cascadeParentIds: []
-    scope:
-      rootPath:
-      - ROOT_ID
-      excluded: []
-    type: NATIVE_FILTER
-    description: ''
-    chartsInScope:
-    - 11
-    - 12
-    - 13
-    - 14
-    - 15
-    - 16
-    - 17
-    - 18
-    - 19
-    tabsInScope: []
-  - id: NATIVE_FILTER-season
-    name: "\u0421\u0435\u0437\u043E\u043D"
-    filterType: filter_select
-    targets:
-    - column:
-        name: season
+        name: brand_manager
       datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
     defaultDataMask:
       extraFormData: {}
@@ -581,7 +323,8 @@ metadata:
       inverseSelection: false
       searchAllOptions: false
       sortAscending: true
-    cascadeParentIds: []
+    cascadeParentIds:
+    - NATIVE_FILTER-bm
     scope:
       rootPath:
       - ROOT_ID
@@ -599,13 +342,12 @@ metadata:
     - 18
     - 19
     tabsInScope: []
-  - id: NATIVE_FILTER-bm
-    name: "\u0411\u0440\u0435\u043D\u0434-\u043C\u0435\u043D\u0435\u0434\u0436\u0435\
-      \u0440"
+  - id: NATIVE_FILTER-lvl02
+    name: Level 02
     filterType: filter_select
     targets:
     - column:
-        name: brand_manager
+        name: level02
       datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
     defaultDataMask:
       extraFormData: {}
@@ -618,7 +360,238 @@ metadata:
       inverseSelection: false
       searchAllOptions: false
       sortAscending: true
-    cascadeParentIds: []
+    cascadeParentIds:
+    - NATIVE_FILTER-bm
+    - NATIVE_FILTER-lvl01
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+    type: NATIVE_FILTER
+    description: ''
+    chartsInScope:
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    tabsInScope: []
+  - id: NATIVE_FILTER-lvl03
+    name: Level 03
+    filterType: filter_select
+    targets:
+    - column:
+        name: level03
+      datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
+    defaultDataMask:
+      extraFormData: {}
+      filterState: {}
+      ownState: {}
+    controlValues:
+      multiSelect: true
+      enableEmptyFilter: false
+      defaultToFirstItem: false
+      inverseSelection: false
+      searchAllOptions: false
+      sortAscending: true
+    cascadeParentIds:
+    - NATIVE_FILTER-bm
+    - NATIVE_FILTER-lvl01
+    - NATIVE_FILTER-lvl02
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+    type: NATIVE_FILTER
+    description: ''
+    chartsInScope:
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    tabsInScope: []
+  - id: NATIVE_FILTER-name
+    name: "\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435\
+      \ \u0442\u043E\u0432\u0430\u0440\u0430"
+    filterType: filter_select
+    targets:
+    - column:
+        name: model_name
+      datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
+    defaultDataMask:
+      extraFormData: {}
+      filterState: {}
+      ownState: {}
+    controlValues:
+      multiSelect: true
+      enableEmptyFilter: false
+      defaultToFirstItem: false
+      inverseSelection: false
+      searchAllOptions: false
+      sortAscending: true
+    cascadeParentIds:
+    - NATIVE_FILTER-bm
+    - NATIVE_FILTER-lvl01
+    - NATIVE_FILTER-lvl02
+    - NATIVE_FILTER-lvl03
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+    type: NATIVE_FILTER
+    description: ''
+    chartsInScope:
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    tabsInScope: []
+  - id: NATIVE_FILTER-country
+    name: "\u0421\u0442\u0440\u0430\u043D\u0430 \u043F\u0440-\u0432\u0430"
+    filterType: filter_select
+    targets:
+    - column:
+        name: country
+      datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
+    defaultDataMask:
+      extraFormData: {}
+      filterState: {}
+      ownState: {}
+    controlValues:
+      multiSelect: true
+      enableEmptyFilter: false
+      defaultToFirstItem: false
+      inverseSelection: false
+      searchAllOptions: false
+      sortAscending: true
+    cascadeParentIds:
+    - NATIVE_FILTER-bm
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+    type: NATIVE_FILTER
+    description: ''
+    chartsInScope:
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    tabsInScope: []
+  - id: NATIVE_FILTER-season
+    name: "\u0421\u0435\u0437\u043E\u043D"
+    filterType: filter_select
+    targets:
+    - column:
+        name: season
+      datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
+    defaultDataMask:
+      extraFormData: {}
+      filterState: {}
+      ownState: {}
+    controlValues:
+      multiSelect: true
+      enableEmptyFilter: false
+      defaultToFirstItem: false
+      inverseSelection: false
+      searchAllOptions: false
+      sortAscending: true
+    cascadeParentIds:
+    - NATIVE_FILTER-bm
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+    type: NATIVE_FILTER
+    description: ''
+    chartsInScope:
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    tabsInScope: []
+  - id: NATIVE_FILTER-sign
+    name: "\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\
+      ."
+    filterType: filter_select
+    targets:
+    - column:
+        name: calc_sign
+      datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
+    defaultDataMask:
+      extraFormData: {}
+      filterState: {}
+      ownState: {}
+    controlValues:
+      multiSelect: true
+      enableEmptyFilter: false
+      defaultToFirstItem: false
+      inverseSelection: false
+      searchAllOptions: false
+      sortAscending: true
+    cascadeParentIds:
+    - NATIVE_FILTER-bm
+    scope:
+      rootPath:
+      - ROOT_ID
+      excluded: []
+    type: NATIVE_FILTER
+    description: ''
+    chartsInScope:
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    tabsInScope: []
+  - id: NATIVE_FILTER-plevel
+    name: "\u0423\u0440\u043E\u0432\u0435\u043D\u044C \u0446\u0435\u043D"
+    filterType: filter_select
+    targets:
+    - column:
+        name: price_level
+      datasetUuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d
+    defaultDataMask:
+      extraFormData: {}
+      filterState: {}
+      ownState: {}
+    controlValues:
+      multiSelect: true
+      enableEmptyFilter: false
+      defaultToFirstItem: false
+      inverseSelection: false
+      searchAllOptions: false
+      sortAscending: true
+    cascadeParentIds:
+    - NATIVE_FILTER-bm
     scope:
       rootPath:
       - ROOT_ID
@@ -679,7 +652,71 @@ metadata:
     - 17
     - 18
     - 19
-  chart_configuration: {}
-  map_label_colors: {}
+  chart_configuration:
+    '17':
+      id: 17
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 18
+        - 19
+    '18':
+      id: 18
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 19
+    '19':
+      id: 19
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+  map_label_colors:
+    price_median: '#1FA8C9'
+    retail_median: '#454E7C'
+    cost_median: '#5AC189'
+    mat_aux_sum: '#1FA8C9'
+    other_sum: '#454E7C'
+    cutting_sum: '#5AC189'
+    sewing_sum: '#FF7F44'
+    decor_sum: '#666666'
+    knitting_sum: '#E04355'
+    mat_main_sum: '#FCC700'
+    "\u041D\u041E\u0421\u041A\u0418 \u0414\u0415\u0422\u0421\u041A\u0418\u0415": '#1FA8C9'
+    "\u041D\u041E\u0421\u041A\u0418 \u041C\u0423\u0416\u0421\u041A\u0418\u0415": '#454E7C'
+    "\u041D\u041E\u0421\u041A\u0418 \u0416\u0415\u041D\u0421\u041A\u0418\u0415": '#5AC189'
+    "\u041A\u041E\u041B\u0413\u041E\u0422\u041A\u0418 \u0414\u0415\u0422\u0421\u041A\u0418\u0415": '#FF7F44'
+    "\u0422\u0420\u0423\u0421\u042B \u0416\u0415\u041D\u0421\u041A\u0418\u0415": '#666666'
+    "\u041D\u041E\u0421\u041A\u0418": '#E04355'
+    "\u041A\u041E\u041B\u0413\u041E\u0422\u041A\u0418 \u0416\u0415\u041D\u0421\u041A\u0418\u0415": '#FCC700'
+    "\u0422\u0420\u0423\u0421\u042B \u041C\u0423\u0416\u0421\u041A\u0418\u0415": '#A868B7'
+    "\u0411\u042E\u0421\u0422\u0413\u0410\u041B\u042C\u0422\u0415\u0420 \u0416\u0415\u041D\u0421\u041A\u0418\u0419": '#3CCCCB'
+    "\u0422\u0420\u0423\u0421\u042B \u0416\u0415\u041D\u0421\u041A\u0418\u0415 (3\u0428\u0422.)": '#A38F79'
+    "\u0413\u041E\u041B\u042C\u0424\u042B \u0414\u0415\u0422\u0421\u041A\u0418\u0415": '#8FD3E4'
+    "\u0422\u041E\u041F \u0414\u041B\u042F \u0414\u0415\u0412\u041E\u0427\u0415\u041A": '#A1A6BD'
+  chart_customization_config: []
+  filter_bar_orientation: HORIZONTAL
+  default_filters: '{}'
 theme_uuid: null
 version: 1.0.0

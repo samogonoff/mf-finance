@@ -259,27 +259,16 @@ async function reload() {
     structure.value = res.structure || []
     ring.value = res.ring || []
     meta.value = res.meta || { dimensions: [], measures: [] }
+    // Каскад: варианты пересчитаны под текущий выбор и приходят вместе с
+    // данными. Отдельного запроса за ними нет — иначе списки успевали бы
+    // разъехаться с цифрами, которые рядом.
+    filterOptions.value = res.options || {}
+    truncatedFilters.value = res.meta?.options_truncated || []
   } catch (e: any) {
     console.error('[cost] commercial dashboard failed', e)
     error.value = e?.data?.detail || e?.message || 'Не удалось загрузить дашборд'
   } finally {
     loading.value = false
-  }
-}
-
-async function loadFilterOptions() {
-  try {
-    const raw = await $fetch<Record<string, any>>(
-      `${apiBase.value}/api/cost/commercial/filter-options`,
-      { headers: fetchHeaders.value }
-    )
-    // Сервер обрезает длинные списки и говорит, какие именно. Показываем это:
-    // фильтр с неполным списком должен выглядеть неполным, а не всеобъемлющим.
-    truncatedFilters.value = raw._truncated || []
-    const { _truncated, ...options } = raw
-    filterOptions.value = options as Record<string, string[]>
-  } catch (e: any) {
-    console.error('[cost] commercial filter-options failed', e)
   }
 }
 
@@ -290,7 +279,7 @@ function resetFilters() {
   reload()
 }
 
-onMounted(() => { loadFilterOptions(); reload() })
+onMounted(reload)
 
 // ── Форматтеры ──────────────────────────────────────────────────────────────
 

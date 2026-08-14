@@ -22,7 +22,7 @@ params:
   outerRadius: 70
   innerRadius: 30
   date_format: smart_date
-query_context: null
+query_context: '{"datasource":{"id":4,"type":"table"},"force":false,"queries":[{"filters":[],"extras":{"having":"","where":""},"applied_time_extras":{},"columns":["model_name"],"metrics":["calc_count"],"orderby":[["calc_count",false]],"annotation_layers":[],"row_limit":12,"series_limit":0,"group_others_when_limit_reached":false,"order_desc":true,"url_params":{},"custom_params":{},"custom_form_data":{},"post_processing":[{"operation":"contribution","options":{"columns":["calc_count"],"rename_columns":["calc_count__contribution"]}}]}],"form_data":{"color_scheme":"supersetColors","datasource":"4__table","date_format":"smart_date","donut":true,"groupby":["model_name"],"innerRadius":30,"label_type":"key_value_percent","labels_outside":true,"metric":"calc_count","number_format":"SMART_NUMBER","outerRadius":70,"row_limit":12,"show_labels":true,"show_legend":true,"show_total":false,"slice_id":19,"sort_by_metric":true,"viz_type":"pie","force":false,"result_format":"json","result_type":"full"},"result_format":"json","result_type":"full"}'
 cache_timeout: null
 uuid: 9d0abc1c-8275-4585-9c7f-7d5f4a6c0921
 version: 1.0.0
