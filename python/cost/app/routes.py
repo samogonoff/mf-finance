@@ -1126,28 +1126,29 @@ async def commercial_dashboard(
     Обе валюты в ответе: переключатель BYN/USD на фронте не ходит на сервер.
 
     Списочные фильтры принимаются повторяющимся параметром (?season=SS2025&
-    season=SS2026), даты — ISO-строкой. Всё остальное игнорируется: имена
-    колонок берутся из белого списка, а не из запроса.
+    season=SS2026), включая год и месяц (?year=2026&month=07). Всё остальное
+    игнорируется: имена колонок берутся из белого списка, а не из запроса.
+
+    structure_path — путь проваливания по иерархии для графика структуры
+    себестоимости, тоже повторяющимся параметром и в порядке уровней
+    (?structure_path=Иванов&structure_path=Одежда).
+
+    date_basis — по какой дате считать год, месяц и динамику: production
+    (дата производства, по умолчанию) или calc (дата расчёта).
     """
     if _is_mock():
         return mocks.commercial_dashboard()
 
     qp = request.query_params
-    filters: dict = {key: qp.getlist(key) for key in commercial.FILTERS if qp.getlist(key)}
-    for key in ("date_from", "date_to"):
-        raw = (qp.get(key) or "").strip()
-        if not raw:
-            continue
-        try:
-            filters[key] = datetime.fromisoformat(raw)
-        except ValueError:
-            raise HTTPException(400, f"{key}: ожидается дата в формате ISO, получено {raw!r}")
+    filters: dict = {key: qp.getlist(key) for key in commercial.FILTER_KEYS if qp.getlist(key)}
 
     try:
         return await commercial.dashboard(
             filters,
             dimension=(qp.get("dimension") or "model_name").strip(),
-            measure=(qp.get("measure") or "calcs").strip(),
+            measure=(qp.get("measure") or "volume_pcs").strip(),
+            structure_path=qp.getlist("structure_path"),
+            date_basis=(qp.get("date_basis") or commercial.DEFAULT_DATE_BASIS).strip(),
         )
     except ValueError as exc:
         # Измерение или мера вне белого списка — это ошибка клиента, а не 500.

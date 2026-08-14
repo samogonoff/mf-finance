@@ -32,25 +32,27 @@
       следующего обновления кэша.
     </div>
 
+    <!-- В витрине две даты, и они про разное: «дата производства» — когда изделие
+         выпущено (2024-2026, ровно по месяцам), «дата расчёта» — когда посчитали
+         калькуляцию (в кэше это всегда последние месяцы, все 87 тыс. записей
+         попадают в один-два месяца). Анализируем по дате выпуска — решение
+         заказчика 14.08.2026. Подпись стоит здесь, чтобы разрез нельзя было
+         спутать: выглядят два варианта одинаково, а показывают разное. -->
+    <p class="basis">
+      Год и месяц — по <strong>{{ meta.date_basis_label || 'дате производства' }}</strong>
+    </p>
+
     <section class="filters">
       <div v-for="f in filterConfig" :key="f.key" class="filter-item">
         <label>
           {{ f.label }}
           <span v-if="truncatedFilters.includes(f.key)" class="trunc"
-                title="Значений больше, чем показано — список обрезан">неполный</span>
+                title="Значений больше, чем показано — список обрезан, ищите поиском">неполный</span>
         </label>
         <CostMultiSelect v-model="selected[f.key]"
-                         :options="filterOptions[f.key] || []"
+                         :options="optionsFor(f.key)"
                          :placeholder="`Все · ${f.label.toLowerCase()}`"
                          @change="reload" />
-      </div>
-      <div class="filter-item">
-        <label>Дата расчёта с</label>
-        <input v-model="dateFrom" type="date" class="form-input" @change="reload" />
-      </div>
-      <div class="filter-item">
-        <label>по</label>
-        <input v-model="dateTo" type="date" class="form-input" @change="reload" />
       </div>
       <button class="btn btn-ghost btn-sm reset" @click="resetFilters">Сбросить</button>
     </section>
@@ -69,35 +71,54 @@
 
     <section class="charts">
       <article class="card">
-        <h2 class="card-title">Динамика цен по сезонам</h2>
-        <p class="card-note">Медианы — средние здесь искажены выбросами</p>
+        <h2 class="card-title">Динамика цен по месяцам</h2>
+        <p class="card-note">
+          Медианы — средние здесь искажены выбросами.
+          <!-- Фильтр «месяц» к этому графику не применяется намеренно: он и есть
+               разрез по месяцам, иначе схлопнулся бы в одну точку. -->
+          Разрез по месяцам (по {{ meta.date_basis_label || 'дате производства' }}),
+          поэтому фильтр «Месяц» на график не влияет — только «Год».
+        </p>
         <!-- Высоту задаёт КОНТЕЙНЕР, а не пропс графика. При
              maintainAspectRatio: false канвас растягивается на родителя, и если
              у родителя высоты нет — он растёт бесконечно: график уезжает вниз,
              ResizeObserver снова дёргает перерисовку, и страница мерцает. -->
         <div class="chart-box">
           <ClientOnly>
-            <Line v-if="seasonData" :data="seasonData" :options="lineOptions" />
-          </ClientOnly>
-        </div>
-      </article>
-
-      <article class="card">
-        <h2 class="card-title">Структура себестоимости по товарам</h2>
-        <p class="card-note">
-          Сегмент «прочее» — остаток до полной себестоимости: прямые затраты
-          покрывают около 79%
-        </p>
-        <div class="chart-box chart-box-tall">
-          <ClientOnly>
-            <Bar v-if="structureData" :data="structureData" :options="stackedOptions" />
+            <Line v-if="monthData" :data="monthData" :options="lineOptions" />
           </ClientOnly>
         </div>
       </article>
 
       <article class="card">
         <div class="ring-head">
-          <h2 class="card-title">Структура</h2>
+          <h2 class="card-title">Структура себестоимости · {{ meta.structure_label }}</h2>
+          <span v-if="meta.structure_can_drill" class="hint">клик по столбцу — провалиться</span>
+        </div>
+        <!-- Хлебные крошки проваливания. Уровень, на котором стоим, не кликается
+             — кликаются только пройденные. -->
+        <nav class="crumbs">
+          <button class="crumb" :disabled="!structurePath.length" @click="drillTo(0)">Все</button>
+          <template v-for="(c, i) in (meta.structure_path || [])" :key="i">
+            <span class="crumb-sep">›</span>
+            <button class="crumb" :disabled="i === structurePath.length - 1"
+                    :title="c.label" @click="drillTo(i + 1)">{{ c.value }}</button>
+          </template>
+        </nav>
+        <p class="card-note">
+          Топ-10 по себестоимости, от большей к меньшей. Сегмент «прочее» —
+          остаток до полной себестоимости: прямые затраты покрывают около 79%
+        </p>
+        <div class="chart-box chart-box-tall">
+          <ClientOnly>
+            <Bar v-if="structureData" :data="structureData" :options="structureOptions" />
+          </ClientOnly>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="ring-head">
+          <h2 class="card-title">Структура выпуска</h2>
           <div class="ring-controls">
             <label>Измерение
               <select v-model="dimension" class="form-input" @change="reload">
@@ -111,6 +132,11 @@
             </label>
           </div>
         </div>
+        <p class="card-note">
+          Выпуск считается только по калькуляциям с признаком
+          <strong>{{ meta.volume_sign || 'ФКСС' }}</strong> — остальные признаки
+          плановые и предварительные, выпуском не являются
+        </p>
         <p v-if="ringEmpty" class="card-note warn">
           Мера «{{ meta.measure_label }}» не заполнена в данных — график пуст, это не ноль
         </p>
@@ -180,22 +206,26 @@ const fetchHeaders = computed(() => {
 })
 
 /** Фильтры дашборда. Ключи совпадают с белым списком FILTERS в
- * app/commercial.py — сервер игнорирует всё, чего в нём нет. */
-// Модели (4 255) и артикула (12 020) здесь НЕТ намеренно: мультиселект рендерит
-// все опции в DOM, и на таком списке страница подвисает при открытии. Выбирать
-// конкретный артикул из обрезанного списка бессмысленно — это работа основной
-// таблицы раздела. API их по-прежнему принимает, если понадобится ссылка
-// с параметром.
+ * app/commercial.py — сервер игнорирует всё, чего в нём нет.
+ *
+ * Год и месяц — вместо интервала дат (просьба заказчика 14.08.2026): дата
+ * расчёта не бизнес-дата, и интервал по ней всё равно выставляли по месяцам.
+ * «Уровень цен» убран, «Модель» и «Артикул» добавлены. Их списки длинные
+ * (4 255 и 12 020 значений), поэтому сервер отдаёт первую тысячу и помечает
+ * список неполным, а искать в нём нужно поиском внутри мультиселекта. */
 const filterConfig = [
-  { key: 'model_name', label: 'Наименование товара' },
-  { key: 'country', label: 'Страна пр-ва' },
-  { key: 'calc_sign', label: 'Признак кальк.' },
-  { key: 'season', label: 'Сезон' },
+  { key: 'year', label: 'Год' },
+  { key: 'month', label: 'Месяц' },
+  { key: 'brand_manager', label: 'Бренд-менеджер' },
   { key: 'level01', label: 'Level 01' },
   { key: 'level02', label: 'Level 02' },
   { key: 'level03', label: 'Level 03' },
-  { key: 'brand_manager', label: 'Бренд-менеджер' },
-  { key: 'price_level', label: 'Уровень цен' },
+  { key: 'model_name', label: 'Наименование товара' },
+  { key: 'model', label: 'Модель' },
+  { key: 'articul', label: 'Артикул' },
+  { key: 'country', label: 'Страна пр-ва' },
+  { key: 'season', label: 'Сезон' },
+  { key: 'calc_sign', label: 'Признак кальк.' },
 ]
 
 const selected = reactive<Record<string, string[]>>(
@@ -203,12 +233,14 @@ const selected = reactive<Record<string, string[]>>(
 )
 const filterOptions = ref<Record<string, string[]>>({})
 const truncatedFilters = ref<string[]>([])
-const dateFrom = ref('')
-const dateTo = ref('')
 
 const currency = ref<'BYN' | 'USD'>('BYN')
 const dimension = ref('model_name')
-const measure = ref('calcs')
+const measure = ref('volume_pcs')
+/** Путь проваливания по иерархии «структуры себестоимости»: бренд-менеджер →
+ * Level 01…05 → товар. Это НЕ общий фильтр — он применяется только к этому
+ * графику, иначе клик по столбцу менял бы и плитки, и динамику, и кольцо. */
+const structurePath = ref<string[]>([])
 
 const loading = ref(false)
 const error = ref('')
@@ -225,10 +257,10 @@ const supersetEmbedSrc = computed(() => {
   return u + (u.includes('?') ? '&' : '?') + 'standalone=1'
 })
 const tiles = ref<Record<string, any>>({})
-const seasons = ref<any[]>([])
+const months = ref<any[]>([])
 const structure = ref<any[]>([])
 const ring = ref<any[]>([])
-const meta = ref<Record<string, any>>({ dimensions: [], measures: [] })
+const meta = ref<Record<string, any>>({ dimensions: [], measures: [], structure_path: [] })
 
 // ── Загрузка ────────────────────────────────────────────────────────────────
 //
@@ -241,8 +273,7 @@ function buildParams(): string {
   for (const f of filterConfig) {
     for (const v of selected[f.key] || []) p.append(f.key, v)
   }
-  if (dateFrom.value) p.set('date_from', dateFrom.value)
-  if (dateTo.value) p.set('date_to', dateTo.value)
+  for (const v of structurePath.value) p.append('structure_path', v)
   p.set('dimension', dimension.value)
   p.set('measure', measure.value)
   return p.toString()
@@ -255,10 +286,10 @@ async function reload() {
     const res = await $fetch<any>(`${apiBase.value}/api/cost/commercial?${buildParams()}`,
                                   { headers: fetchHeaders.value })
     tiles.value = res.tiles || {}
-    seasons.value = res.seasons || []
+    months.value = res.months || []
     structure.value = res.structure || []
     ring.value = res.ring || []
-    meta.value = res.meta || { dimensions: [], measures: [] }
+    meta.value = res.meta || { dimensions: [], measures: [], structure_path: [] }
     // Каскад: варианты пересчитаны под текущий выбор и приходят вместе с
     // данными. Отдельного запроса за ними нет — иначе списки успевали бы
     // разъехаться с цифрами, которые рядом.
@@ -274,12 +305,41 @@ async function reload() {
 
 function resetFilters() {
   for (const f of filterConfig) selected[f.key] = []
-  dateFrom.value = ''
-  dateTo.value = ''
+  structurePath.value = []
   reload()
 }
 
 onMounted(reload)
+
+// ── Фильтры: месяцы подписываем словами ─────────────────────────────────────
+
+const MONTHS_FULL = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+                     'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь']
+const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн',
+                      'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+
+/** Значение месяца в фильтре — '01'…'12' (так его понимает SQL). Показывать
+ * пользователю номер незачем, поэтому мультиселекту отдаём {value,label}. */
+function optionsFor(key: string): any[] {
+  const raw = filterOptions.value[key] || []
+  if (key !== 'month') return raw
+  return raw.map(v => ({ value: v, label: MONTHS_FULL[Number(v) - 1] || v }))
+}
+
+// ── Проваливание по структуре себестоимости ─────────────────────────────────
+
+function drillInto(value: string) {
+  if (!meta.value.structure_can_drill || !value) return
+  structurePath.value = [...structurePath.value, value]
+  reload()
+}
+
+/** Обрезать путь до `depth` уровней: 0 — вернуться на самый верх. */
+function drillTo(depth: number) {
+  if (depth >= structurePath.value.length) return
+  structurePath.value = structurePath.value.slice(0, depth)
+  reload()
+}
 
 // ── Форматтеры ──────────────────────────────────────────────────────────────
 
@@ -315,7 +375,8 @@ function pick(base: string): number | null {
 const tileList = computed(() => {
   const marginKey = hasVolume.value ? 'margin_pct_w' : 'margin_pct'
   const profitKey = hasVolume.value ? 'profit_pct_w' : 'profit_pct'
-  const scope = hasVolume.value ? 'взвешено по выпуску' : 'по калькуляциям, без веса'
+  const sign = meta.value.volume_sign || 'ФКСС'
+  const scope = hasVolume.value ? `взвешено по выпуску, ${sign}` : 'по калькуляциям, без веса'
   const num = (k: string) => {
     const v = tiles.value[k]
     return v === null || v === undefined ? null : Number(v)
@@ -325,6 +386,8 @@ const tileList = computed(() => {
       format: fmtPct, note: `наценка / отпускная · ${scope}` },
     { label: `Рентабельность${hasVolume.value ? ' выпуска' : ''}, %`, value: num(profitKey),
       format: fmtPct, note: `наценка / себестоимость · ${scope}` },
+    { label: 'Выпуск, шт', value: num('volume_total'),
+      format: (v: number) => nf0.format(v), note: `сумма тиражей · ${sign}` },
     { label: `Себестоимость, ${curLabel.value}`, value: pick('cost'),
       format: fmtMoney, note: 'медиана' },
     { label: `Отпускная цена, ${curLabel.value}`, value: pick('price'),
@@ -398,17 +461,26 @@ const color = (i: number) => palette.value[i % (palette.value.length || 1)] || '
 // Переключение валюты пересобирает серии из уже загруженного ответа — без
 // обращения к серверу.
 
-const seasonData = computed(() => {
-  if (!seasons.value.length) return null
+/** Подпись месяца: внутри одного года достаточно названия, на нескольких годах
+ * без года подписи станут неразличимы (два «июня» подряд). */
+function monthLabel(ym: string, multiYear: boolean): string {
+  const [y, m] = String(ym).split('-')
+  const name = MONTHS_SHORT[Number(m) - 1] || m
+  return multiYear ? `${name} ${y}` : name
+}
+
+const monthData = computed(() => {
+  if (!months.value.length) return null
   const k = cur.value
+  const multiYear = new Set(months.value.map(m => String(m.ym).slice(0, 4))).size > 1
   return {
-    labels: seasons.value.map(s => s.season),
+    labels: months.value.map(m => monthLabel(m.ym, multiYear)),
     datasets: [
-      { label: `Себестоимость, ${curLabel.value}`, data: seasons.value.map(s => Number(s[`cost_${k}`])),
+      { label: `Себестоимость, ${curLabel.value}`, data: months.value.map(m => Number(m[`cost_${k}`])),
         borderColor: color(0), backgroundColor: color(0), tension: 0.25 },
-      { label: `Отпускная, ${curLabel.value}`, data: seasons.value.map(s => Number(s[`price_${k}`])),
+      { label: `Отпускная, ${curLabel.value}`, data: months.value.map(m => Number(m[`price_${k}`])),
         borderColor: color(1), backgroundColor: color(1), tension: 0.25 },
-      { label: `Розничная, ${curLabel.value}`, data: seasons.value.map(s => Number(s[`retail_${k}`])),
+      { label: `Розничная, ${curLabel.value}`, data: months.value.map(m => Number(m[`retail_${k}`])),
         borderColor: color(2), backgroundColor: color(2), tension: 0.25 },
     ],
   }
@@ -427,7 +499,7 @@ const STRUCTURE_PARTS = [
 const structureData = computed(() => {
   if (!structure.value.length) return null
   return {
-    labels: structure.value.map(r => r.model_name),
+    labels: structure.value.map(r => r.label),
     datasets: STRUCTURE_PARTS.map(([key, label], i) => ({
       label, data: structure.value.map(r => Number(r[key] || 0)), backgroundColor: color(i),
     })),
@@ -475,12 +547,41 @@ const stackedOptions = computed(() => ({
   },
 }))
 
+/** Стек себестоимости + проваливание по клику. Курсор меняем сами: Chart.js
+ * рисует в канвасе, и «кликабельность» столбца иначе никак не видна. */
+const structureOptions = computed(() => ({
+  ...stackedOptions.value,
+  onClick: (_e: any, elements: any[]) => {
+    const idx = elements?.[0]?.index
+    if (idx === undefined || idx === null) return
+    drillInto(structure.value[idx]?.label)
+  },
+  onHover: (e: any, elements: any[]) => {
+    const canvas = e?.native?.target
+    if (canvas) {
+      canvas.style.cursor =
+        elements.length && meta.value.structure_can_drill ? 'pointer' : 'default'
+    }
+  },
+}))
+
 const ringOptions = computed(() => ({
   ...baseOptions.value,
   cutout: '55%',
   plugins: {
     ...baseOptions.value.plugins,
     legend: { position: 'right' as const, labels: { color: ink.value, boxWidth: 10, font: { size: 11 } } },
+    // Штуки выпуска — это миллионы, и без доли в процентах сегменты нечитаемы.
+    tooltip: {
+      callbacks: {
+        label: (ctx: any) => {
+          const v = Number(ctx.parsed) || 0
+          const total = (ctx.dataset?.data || []).reduce((s: number, x: any) => s + Number(x || 0), 0)
+          const share = total ? ` · ${nf2.format((100 * v) / total)}%` : ''
+          return ` ${ctx.label}: ${nf0.format(v)}${share}`
+        },
+      },
+    },
   },
 }))
 </script>
@@ -507,6 +608,7 @@ const ringOptions = computed(() => ({
   display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: var(--sp-3); align-items: end;
 }
+.basis { margin: 0; font-size: var(--fs-2xs); color: var(--text-muted); }
 .filter-item { display: flex; flex-direction: column; gap: var(--sp-1); }
 .filter-item label { font-size: var(--fs-2xs); color: var(--text-muted); display: flex; gap: var(--sp-1); align-items: baseline; }
 .trunc { color: var(--neg); font-size: var(--fs-2xs); }
@@ -534,6 +636,17 @@ const ringOptions = computed(() => ({
 }
 .card-title { font-size: var(--fs-md); font-weight: var(--fw-medium); margin: 0; }
 .card-note { font-size: var(--fs-2xs); color: var(--text-muted); margin: 0; }
+.hint { font-size: var(--fs-2xs); color: var(--text-muted); font-style: italic; }
+
+/* Хлебные крошки проваливания. */
+.crumbs { display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
+.crumb {
+  border: none; background: transparent; padding: 0 2px; cursor: pointer;
+  font-size: var(--fs-2xs); color: var(--accent); max-width: 200px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.crumb:disabled { color: var(--text-muted); cursor: default; }
+.crumb-sep { font-size: var(--fs-2xs); color: var(--text-muted); }
 
 /* Высота графика задаётся здесь и только здесь. Chart.js с
    maintainAspectRatio: false тянется на родителя — без явной высоты канвас

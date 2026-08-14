@@ -711,8 +711,14 @@ def commercial_dashboard() -> dict:
     иначе фронт в mock-режиме молча рисовал бы не то. Взвешенные показатели
     отдаются None: в реальности они пусты, пока не наполнен volume_pcs, и фронт
     обязан уметь это показать.
+
+    Списки измерений, мер и фильтров берём из самого модуля дашборда, а не
+    переписываем сюда: копия уже расходилась с боевым ответом при первой же
+    правке набора фильтров.
     """
-    seasons = ["SS2025", "SS2026", "AW2025"]
+    from app import commercial
+
+    months = ["2026-06", "2026-07", "2026-08"]
     return {
         "tiles": {
             "calc_count": 1234, "model_count": 210, "volume_total": None,
@@ -724,18 +730,19 @@ def commercial_dashboard() -> dict:
             "margin_pct_w": None, "profit_pct_w": None,
             "last_calc_date": "2026-08-12T00:00:00+00:00",
         },
-        "seasons": [
-            {"season": s, "cost_byn": 12.0 + i, "cost_usd": 4.1 + i * 0.3,
+        "months": [
+            {"ym": m, "cost_byn": 12.0 + i, "cost_usd": 4.1 + i * 0.3,
              "price_byn": 20.0 + i * 2, "price_usd": 6.9 + i * 0.7,
              "retail_byn": 33.0 + i * 3, "retail_usd": 11.4 + i,
              "calc_count": 400 + i * 50}
-            for i, s in enumerate(seasons)
+            for i, m in enumerate(months)
         ],
         "structure": [
-            {"model_name": name, "mat_main": 40.0 + i * 5, "mat_aux": 6.0,
+            {"label": name, "mat_main": 40.0 + i * 5, "mat_aux": 6.0,
              "sewing": 18.0, "cutting": 3.0, "decor": 2.0, "knitting": 0.0,
              "other": 14.0 + i, "cost_total": 83.0 + i * 6}
-            for i, name in enumerate(("ТРУСЫ МУЖСКИЕ", "НОСКИ МУЖСКИЕ", "ЛЕГИНСЫ"))
+            # Верхний уровень иерархии — бренд-менеджеры (см. structure_dim ниже).
+            for i, name in enumerate(("ИВАНОВА И.И.", "ПЕТРОВ П.П.", "СИДОРОВА А.А."))
         ],
         "ring": [
             {"label": "ТРУСЫ МУЖСКИЕ", "value": 520},
@@ -753,19 +760,25 @@ def commercial_dashboard() -> dict:
             "level02": ["Бельё", "Одежда"],
             "level03": ["Трусы", "Носки"],
             "brand_manager": ["Иванова И.И.", "Петров П.П."],
-            "price_level": ["уровень 21д20"],
+            "year": ["2026"],
+            "month": ["06", "07", "08"],
         },
         "meta": {
             "options_truncated": [],
             "calc_total": 2000,
             "cache_refreshed_at": "2026-08-12T06:00:00+00:00",
             "dimension": "model_name", "dimension_label": "Наименование товара",
-            "measure": "calcs", "measure_label": "Калькуляций",
-            "dimensions": [{"key": "model_name", "label": "Наименование товара"},
-                           {"key": "country", "label": "Страна пр-ва"},
-                           {"key": "season", "label": "Сезон"}],
-            "measures": [{"key": "calcs", "label": "Калькуляций"},
-                         {"key": "volume", "label": "Выпуск, шт"},
-                         {"key": "cost", "label": "Себестоимость, сумма"}],
+            "measure": "volume_pcs", "measure_label": "Выпуск, шт",
+            "dimensions": [{"key": k, "label": v}
+                           for k, v in commercial.DIMENSIONS.items()],
+            "measures": [{"key": k, "label": v[0]}
+                         for k, v in commercial.MEASURES.items()],
+            "volume_sign": commercial.VOLUME_SIGN,
+            "structure_dim": "brand_manager",
+            "structure_label": "Бренд-менеджер",
+            "structure_path": [],
+            "structure_can_drill": True,
+            "date_basis": commercial.DEFAULT_DATE_BASIS,
+            "date_basis_label": commercial.DATE_BASES[commercial.DEFAULT_DATE_BASIS][0],
         },
     }

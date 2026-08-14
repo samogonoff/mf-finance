@@ -29,7 +29,7 @@
       />
       <div class="ms-list">
         <div
-          v-for="opt in filtered"
+          v-for="opt in visible"
           :key="opt.value"
           class="ms-option"
           :class="{ selected: modelValue.includes(opt.value) }"
@@ -43,6 +43,12 @@
         </div>
         <div v-if="!filtered.length" class="ms-empty">
           {{ normalized.length ? "Нет совпадений" : "Нет данных" }}
+        </div>
+        <!-- Список обрезан для отрисовки — сообщаем об этом. Молчаливое
+             усечение читалось бы как «других значений нет». -->
+        <div v-else-if="filtered.length > visible.length" class="ms-empty">
+          Показаны первые {{ visible.length }} из {{ filtered.length }} —
+          уточните поиск
         </div>
       </div>
       <div v-if="modelValue.length" class="ms-actions">
@@ -119,6 +125,14 @@ const filtered = computed(() => {
       (o.description && o.description.toLowerCase().includes(q))
   );
 });
+
+/** Сколько опций реально попадает в DOM. Каждая опция — три-четыре узла, и на
+ * длинных справочниках (артикулов 12 020, моделей 4 255) открытие дропдауна
+ * вешало страницу целиком. Отрисовываем начало списка, остальное ищется
+ * поиском — он и так стоит первым элементом дропдауна. */
+const RENDER_LIMIT = 200;
+
+const visible = computed(() => filtered.value.slice(0, RENDER_LIMIT));
 
 const toggle = () => {
   if (props.disabled) return;
