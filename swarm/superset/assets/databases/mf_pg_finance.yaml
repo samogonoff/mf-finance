@@ -1,0 +1,19 @@
+# Postgres finance — главная БД Go-API: тактические планы, справочники ЦФО,
+# пользователи, уведомления, баг-трекер.
+#
+# DML запрещён намеренно: Superset читает операционную БД, но не пишет в неё.
+uuid: 9f1d4a10-0002-4c00-8b00-000000000002
+database_name: MF Postgres (finance)
+sqlalchemy_uri: ${SUPERSET_DB_PG_FINANCE_URI}
+expose_in_sqllab: true
+allow_run_async: true
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+cache_timeout: null
+extra:
+  allows_virtual_table_explore: true
+  cost_estimate_enabled: false
+  metadata_params: {}
+  engine_params: {}
+version: 1.0.0

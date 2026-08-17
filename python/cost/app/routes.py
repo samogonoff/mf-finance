@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app import mocks
+from app import commercial, mocks
 from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
 from app.middleware import require_perm
 from app.notify import notify_admins
@@ -1113,6 +1113,48 @@ def _get_price_levels_sync() -> list[dict]:
         conn.close()
 
 
+@router.get("/commercial")
+async def commercial_dashboard(
+    request: Request, _: str = Depends(_require_perm("cost:view"))
+) -> dict:
+    """Весь дашборд коммерческой эффективности ОДНИМ запросом.
+
+    Плитки, три серии и метаданные приходят вместе. Тот же макет в Superset
+    разошёлся на двадцать с лишним независимых запросов — по одному на виджет
+    и на каждый фильтр, — и каждый заново сканировал витрину.
+
+    Обе валюты в ответе: переключатель BYN/USD на фронте не ходит на сервер.
+
+    Списочные фильтры принимаются повторяющимся параметром (?season=SS2025&
+    season=SS2026), включая год и месяц (?year=2026&month=07). Всё остальное
+    игнорируется: имена колонок берутся из белого списка, а не из запроса.
+
+    structure_path — путь проваливания по иерархии для графика структуры
+    себестоимости, тоже повторяющимся параметром и в порядке уровней
+    (?structure_path=Иванов&structure_path=Одежда).
+
+    date_basis — по какой дате считать год, месяц и динамику: production
+    (дата производства, по умолчанию) или calc (дата расчёта).
+    """
+    if _is_mock():
+        return mocks.commercial_dashboard()
+
+    qp = request.query_params
+    filters: dict = {key: qp.getlist(key) for key in commercial.FILTER_KEYS if qp.getlist(key)}
+
+    try:
+        return await commercial.dashboard(
+            filters,
+            dimension=(qp.get("dimension") or "model_name").strip(),
+            measure=(qp.get("measure") or "volume_pcs").strip(),
+            structure_path=qp.getlist("structure_path"),
+            date_basis=(qp.get("date_basis") or commercial.DEFAULT_DATE_BASIS).strip(),
+        )
+    except ValueError as exc:
+        # Измерение или мера вне белого списка — это ошибка клиента, а не 500.
+        raise HTTPException(400, str(exc))
+
+
 @router.get("/price-levels")
 def get_price_levels() -> list[dict]:
     if _is_mock():
@@ -2120,13 +2162,27 @@ async def save_plan_price_set_endpoint(
     plan_id = (payload.get("plan_id") or "").strip()
     if not plan_id:
         raise HTTPException(400, "plan_id required")
+    # Курс необязателен, но пустая строка из формы уходила прямо в numeric-колонку
+    # и роняла запрос с 500 — «изменения просто не сохранились» без внятной причины.
+    rate = payload.get("rate")
+    if isinstance(rate, str):
+        rate = rate.strip().replace(",", ".")
+        if not rate:
+            rate = None
+        else:
+            try:
+                rate = float(rate)
+            except ValueError:
+                raise HTTPException(400, f"Курс должен быть числом, получено {payload.get('rate')!r}")
+    if rate is not None and float(rate) <= 0:
+        rate = None
     if _is_mock():
         return {"success": True, "set_id": 0, "mock": True}
     try:
         set_id = await save_plan_price_set(
             plan_id,
             payload.get("title") or "",
-            payload.get("rate"),
+            rate,
             payload.get("rows") or [],
             payload.get("username") or user_email or "system",
             payload.get("set_id"),

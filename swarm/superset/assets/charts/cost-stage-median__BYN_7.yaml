@@ -1,0 +1,27 @@
+slice_name: "cost-stage-median \xB7 \u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\
+  \u043C\u043E\u0441\u0442\u044C \u043F\u043E \u044D\u0442\u0430\u043F\u0430\u043C\
+  \ (\u043C\u0435\u0434\u0438\u0430\u043D\u0430, BYN)"
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  viz_type: echarts_timeseries_bar
+  metrics:
+  - cost_median
+  x_axis: stage_label
+  x_axis_sort_series_type: name
+  x_axis_sort_series_ascending: true
+  time_grain_sqla: null
+  granularity_sqla: null
+  row_limit: 1000
+  y_axis_title: BYN
+  y_axis_format: ',.2f'
+  show_legend: false
+  legend_orientation: right
+  orientation: vertical
+query_context: null
+cache_timeout: null
+uuid: f3303198-f39e-45c2-82a0-23987a6e8105
+version: 1.0.0
+dataset_uuid: e23fdd2d-6869-42cd-ac88-30e488572f23

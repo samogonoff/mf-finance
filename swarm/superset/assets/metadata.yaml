@@ -1,0 +1,8 @@
+# Манифест бандла ассетов Superset.
+#
+# type: assets — обязательное значение, по нему ImportAssetsCommand отличает
+# полный бандл (databases + datasets + charts + dashboards + queries) от
+# частичных экспортов вида «только дашборд». Сопоставление объектов при импорте
+# идёт ПО UUID, поэтому uuid в YAML — это первичный ключ между dev и prod.
+version: 1.0.0
+type: assets

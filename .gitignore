@@ -9,6 +9,12 @@ node_modules/
 .nuxt-root-bak/
 .output/
 dist/
+# Лок-файл в проекте один — nuxt/package-lock.json. Второй лок-файл рядом
+# заставляет сборку зависеть от того, какой менеджер вызвали (npm ci или
+# pnpm install разрешат зависимости по-разному) — классическое «у меня
+# работает, на CI нет».
+pnpm-lock.yaml
+yarn.lock
 
 # Go
 go/bin/
@@ -29,6 +35,11 @@ go/vendor/
 
 # Daily reports
 daily-reports/
+# Отчёты по сессиям — рабочие записи, не документация проекта. Раньше их
+# коммитили в docs/reports/, теперь место для них — daily-reports/ выше.
+# Шаблон узкий намеренно: docs/reports/{debt,plans}/ — это спецификации,
+# на них правило не распространяется.
+docs/reports/*-cost-session.md
 
 # Python
 __pycache__/

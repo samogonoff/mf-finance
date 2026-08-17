@@ -97,3 +97,52 @@ cost-reset-db:         ## ⚠ полностью пересоздать БД р�
 	$(COST_COMPOSE) rm -fv postgres-cost
 	docker volume rm swarm_cost_db_data || true
 	$(COST_COMPOSE) up -d postgres-cost
+
+# === Superset — BI-контур ======================================================
+# Изолирован от остальных контуров: своя метабаза, свой redis, свои порты.
+# До источников ходит через host.docker.internal, поэтому поднимается независимо
+# от `make up` / `make cost-up` (но данные будут только у тех БД, что запущены).
+#
+# Дашборды живут в метабазе, а в git — в swarm/superset/assets/ как YAML.
+# Цикл разработки: правим в UI → superset-assets-export → git diff → commit.
+SUPERSET_COMPOSE := docker compose --env-file ../.env -f docker-compose.superset.yml
+
+superset-up:           ## поднять BI-контур (Superset + MCP)
+	$(SUPERSET_COMPOSE) up --build -d
+	@echo "→ UI:    http://localhost:$${SUPERSET_PORT:-8093}  (admin / $${SUPERSET_ADMIN_PASSWORD:-admin})"
+	@echo "→ MCP:   http://localhost:$${MCP_SERVICE_PORT:-5008}/mcp"
+	@echo "→ PG:    psql -h localhost -p $${SUPERSET_POSTGRES_PORT:-55434} -U superset superset"
+	@echo "→ дальше: make superset-assets-import  (накатить подключения и дашборды из git)"
+
+superset-down:         ## остановить BI-контур
+	$(SUPERSET_COMPOSE) down
+
+superset-logs:         ## tail логов BI-контура
+	$(SUPERSET_COMPOSE) logs -f --tail=200
+
+superset-logs-mcp:     ## логи только MCP-сервера
+	$(SUPERSET_COMPOSE) logs -f --tail=200 superset-mcp
+
+superset-logs-worker:  ## логи Celery-воркера (async-запросы)
+	$(SUPERSET_COMPOSE) logs -f --tail=200 superset-worker
+
+superset-ps:           ## статус контейнеров BI-контура
+	$(SUPERSET_COMPOSE) ps
+
+superset-psql:         ## psql в метабазу Superset
+	$(SUPERSET_COMPOSE) exec postgres-superset psql -U superset superset
+
+superset-console:      ## shell в контейнер Superset
+	docker exec -it swarm-superset-1 bash
+
+superset-assets-import: ## git → Superset: накатить подключения и дашборды из assets/
+	docker exec swarm-superset-1 python /app/assets_sync.py import
+
+superset-assets-export: ## Superset → git: выгрузить дашборды/чарты/датасеты в assets/
+	docker exec swarm-superset-1 python /app/assets_sync.py export
+	@echo "→ теперь: git -C .. diff -- swarm/superset/assets/"
+
+superset-reset-db:     ## ⚠ снести метабазу Superset (дашборды пропадут, git-ассеты нет)
+	$(SUPERSET_COMPOSE) down
+	docker volume rm swarm-superset_superset_db_data || true
+	$(SUPERSET_COMPOSE) up --build -d

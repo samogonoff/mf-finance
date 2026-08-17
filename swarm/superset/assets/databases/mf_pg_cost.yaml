@@ -1,0 +1,20 @@
+# Postgres cost — БД раздела «Себестоимость»: калькуляции, согласования ПЭО,
+# история цен.
+#
+# Внимание: сам раздел «Себестоимость» правится только внутри python/cost/
+# (см. python/cost/AGENTS.md). Здесь мы её ТОЛЬКО читаем — allow_dml: false.
+uuid: 9f1d4a10-0003-4c00-8b00-000000000003
+database_name: MF Postgres (cost)
+sqlalchemy_uri: ${SUPERSET_DB_PG_COST_URI}
+expose_in_sqllab: true
+allow_run_async: true
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+cache_timeout: null
+extra:
+  allows_virtual_table_explore: true
+  cost_estimate_enabled: false
+  metadata_params: {}
+  engine_params: {}
+version: 1.0.0

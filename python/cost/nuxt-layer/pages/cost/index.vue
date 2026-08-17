@@ -9,6 +9,13 @@
           <span v-if="mockMode" class="mock-pill">MOCK данные</span>
         </p>
       </div>
+      <!-- Навигация кабинета живёт в nuxt/, за границей раздела, поэтому вход
+           в дашборд — отсюда, из шапки самого раздела. -->
+      <div class="header-actions">
+        <NuxtLink to="/cost/commercial" class="btn btn-ghost btn-sm">
+          <Icon name="lucide:chart-pie" /> Коммерческая эффективность
+        </NuxtLink>
+      </div>
     </header>
 
     <!-- Фильтры -->
@@ -264,7 +271,7 @@
         <button class="peo-bulk-x" aria-label="Закрыть" @click="peoBulkStatus = ''; peoBulkError = ''">×</button>
       </div>
 
-      <div class="table-wrap" @keydown="onCopyShortcut" tabindex="0">
+      <div class="table-wrap" @keydown="onTableKeydown" @focusin="onGridFocusIn" tabindex="0">
         <table id="cost-table-1" class="data-table compact">
           <thead>
             <tr>
@@ -902,11 +909,14 @@
                 <span style="font-size:var(--fs-xs);color:var(--text-muted)">Курс (на весь набор)</span>
                 <input v-model.number="planPriceForm.rate" type="number" step="0.0001"
                        class="editor-input col-num" style="width:120px"
-                       :disabled="planPriceFormLocked" @input="onPlanRateChange" />
+                       :disabled="planPriceFormLocked"
+                       @input="onPlanRateChange(($event.target as HTMLInputElement).value)" />
               </label>
               <button class="btn btn-primary btn-sm" :disabled="planPricesSaving || planPriceFormLocked"
+                      :title="`В набор уйдут только строки с ценой, отличной от источника: ${planPriceOverriddenCount}`"
                       @click="savePlanPriceSet">
                 {{ planPriceForm.set_id ? 'Сохранить набор' : 'Создать набор' }}
+                <template v-if="planPriceOverriddenCount"> ({{ planPriceOverriddenCount }})</template>
               </button>
               <button v-if="planPriceForm.set_id" class="btn btn-ghost btn-sm"
                       :disabled="planPricesSaving" @click="resetPlanPriceForm">Новый набор</button>
@@ -1226,7 +1236,17 @@
                   </td>
                   <td><input v-if="editingVersion.isEditing" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ nameDisplayValue(vr) || '—' }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
-                  <td>{{ vr['Свойство'] }}</td>
+                  <td>
+                    <input
+                      v-if="editingVersion.isEditing"
+                      :value="vr._propRaw"
+                      class="editor-input"
+                      placeholder="свойства через запятую"
+                      title="До трёх свойств через запятую — пишутся в свойство1/2/3"
+                      @input="onVersionPropertyEdit(vr, $event)"
+                    />
+                    <span v-else>{{ vr['Свойство'] }}</span>
+                  </td>
                   <!-- У декоров нормы и цены материала в источнике нет: их стоимость
                        задаётся суммой в колонках «Сумма» ниже. Поля скрыты намеренно —
                        если их заполнить, произведение затрёт сумму декора. -->
@@ -1354,7 +1374,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { useCostPermission } from "~/composables/useCostPermission";
 
 interface PriceLevel { name: string; price_type1: number; price_type3: number; price_type4: number; price_type5: number; price_type6: number }
@@ -2272,9 +2292,12 @@ async function openPlanPricesModal() {
   showPlanPricesModal.value = true;
   planPricesStatus.value = '';
   // Если в фильтрах выбран ровно один план — подставляем его, это типичный сценарий.
-  const selected = (filters.value?.plan_id || []).filter((v: string) => v && v !== 'all');
-  if (selected.length === 1 && !planPricesPlanId.value) {
-    planPricesPlanId.value = String(selected[0]);
+  // Фильтры лежат в `selected` (см. filterConfig): здесь раньше стояло
+  // `filters.value?.plan_id` — такой переменной нет, и открытие модалки падало
+  // с ReferenceError, не дойдя до загрузки цен.
+  const selectedPlans = (selected.plan_id || []).filter((v: string) => v && v !== 'all');
+  if (selectedPlans.length === 1 && !planPricesPlanId.value) {
+    planPricesPlanId.value = String(selectedPlans[0]);
   }
   if (planPricesPlanId.value) await loadPlanPrices();
 }
@@ -2332,6 +2355,7 @@ function resetPlanPriceForm() {
   for (const r of [...planPriceRows.value, ...planDecorRows.value]) {
     r.price_rub = r.source_price_rub;
     r.price_usd = r.source_price_usd;
+    (r as any)._usdManual = false; // доллары снова исходные, не заданные вручную
   }
 }
 
@@ -2354,15 +2378,28 @@ async function openPlanPriceSet(setId: number) {
       if (r.row_kind === 'decor') byDecor.set(String(r['Наименование'] ?? '').trim(), r);
       else byKey.set(planRowKey(r), r);
     }
+    // Доллар в наборе может быть пустым: производную от курса считает сервер, и
+    // фронт её не сохраняет. В гриде показываем то же значение, что ляжет в
+    // расчёт, — иначе колонка «Цена, $» выглядела бы пустой.
+    const setRate = Number(data.set.rate || 0);
+    const showUsd = (saved: any, fallback: any) => {
+      if (saved.price_usd !== null && saved.price_usd !== undefined) return saved.price_usd;
+      const rub = Number(saved.price_rub);
+      if (setRate > 0 && Number.isFinite(rub)) return Number((rub / setRate).toFixed(4));
+      return fallback;
+    };
     for (const r of planPriceRows.value) {
       const saved = byKey.get(planRowKey(r));
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
-      r.price_usd = saved ? saved.price_usd : r.source_price_usd;
+      r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
+      // доллар в наборе задан явно — значит его правили вручную
+      (r as any)._usdManual = !!(saved && saved.price_usd !== null && saved.price_usd !== undefined);
     }
     for (const r of planDecorRows.value) {
       const saved = byDecor.get(String(r['Декоры, наименование'] ?? '').trim());
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
-      r.price_usd = saved ? saved.price_usd : r.source_price_usd;
+      r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
+      (r as any)._usdManual = !!(saved && saved.price_usd !== null && saved.price_usd !== undefined);
     }
     planPricesStatus.value = `Открыт набор «${data.set.title || data.set.id}» (${data.set.status})`;
   } catch (e: any) {
@@ -2373,6 +2410,55 @@ async function openPlanPriceSet(setId: number) {
   }
 }
 
+/** Цена строки отличается от источника, то есть строка реально переопределяет цену.
+ *
+ * По этому признаку набор и отправляется на сервор: строки с ценой, равной
+ * источнику, при применении набора ничего не меняют (наложение идёт через
+ * COALESCE по price_rub/price_usd), а в теле запроса занимали основной объём —
+ * на плане с 669 материалами это 250 КБ, и такой POST отбивался на прод-фасаде
+ * ещё до FastAPI (ответ прокси без CORS-заголовков → «Failed to fetch»).
+ *
+ * Сравниваем с точностью до 4 знаков — столько же хранит база и отдаёт
+ * `round(avg(...), 4)` в plan-materials, иначе строки «менялись» бы из-за
+ * плавающей точки. */
+function planPriceNorm(v: any): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * 10000) / 10000 : null;
+}
+
+/** Задан ли доллар строки вручную. Флаг ставится там, где пользователь правит
+ * колонку «Цена, $», и снимается при правке рубля или пересчёте по курсу.
+ *
+ * Раньше это выводилось из чисел (совпадает ли доллар с рубль÷курс), но такая
+ * эвристика врала: после правки рубля доллар уже пересчитан по текущему курсу
+ * формы, и «производный» он или нет — по значению не отличить от заданного. */
+function planUsdIsManual(r: any): boolean {
+  return r._usdManual === true;
+}
+
+/** Доллар — производная от рублёвой цены по курсу набора.
+ *
+ * Такую цену на сервер не отправляем: он считает её сам тем же правилом
+ * (см. `_apply_plan_price_set_to_cache`). Иначе ввод курса менял бы price_usd во
+ * всех строках плана, все они выглядели бы переопределёнными, и тело запроса
+ * снова разрасталось бы до сотен килобайт. */
+function planUsdIsDerived(r: any): boolean {
+  return Number(planPriceForm.value.rate || 0) > 0 && !planUsdIsManual(r);
+}
+
+function planPriceOverridden(r: any): boolean {
+  if (planPriceNorm(r.price_rub) !== planPriceNorm(r.source_price_rub)) return true;
+  if (planUsdIsDerived(r)) return false;
+  return planPriceNorm(r.price_usd) !== planPriceNorm(r.source_price_usd);
+}
+
+/** Сколько строк набора переопределяют цену — показываем на кнопке сохранения. */
+const planPriceOverriddenCount = computed(() =>
+  planPriceRows.value.filter(planPriceOverridden).length
+  + planDecorRows.value.filter(planPriceOverridden).length
+);
+
 function planRowKey(r: any): string {
   return [r['Наименование'], r['артикул материала'], r['свойство1'], r['свойство2'], r['свойство3']]
     .map((v: any) => String(v ?? '').trim()).join('');
@@ -2381,6 +2467,9 @@ function planRowKey(r: any): string {
 /** Взаимный пересчёт руб ↔ $ по курсу набора — как в редакторе версий, но курс
  * один на весь набор (решение пользователя). */
 function onPlanPriceEdit(r: PlanPriceRow, changed: 'rub' | 'usd') {
+  // Правку доллара помним: при смене курса такую строку не пересчитываем, и на
+  // сервер её доллар уходит явным значением, а не как производная от курса.
+  (r as any)._usdManual = changed === 'usd';
   const rate = Number(planPriceForm.value.rate || 0);
   if (rate <= 0) return;
   if (changed === 'rub') {
@@ -2392,13 +2481,25 @@ function onPlanPriceEdit(r: PlanPriceRow, changed: 'rub' | 'usd') {
   }
 }
 
-/** Смена курса пересчитывает $ из рублей во всех строках — рубль считаем ведущим. */
-function onPlanRateChange() {
-  const rate = Number(planPriceForm.value.rate || 0);
-  if (rate <= 0) return;
-  for (const r of planPriceRows.value) {
+/** Смена курса пересчитывает $ из рублей — рубль считаем ведущим.
+ *
+ * Вручную заданные доллары не трогаем. При очистке курса производные
+ * возвращаются к исходным: иначе в гриде остались бы доллары по уже
+ * несуществующему курсу, и каждая строка выглядела бы переопределённой. */
+function onPlanRateChange(raw?: string) {
+  // Курс берём из события, а не из формы: при вводе этот обработчик срабатывает
+  // раньше, чем v-model успевает записать новое значение, и пересчёт шёл по
+  // предыдущему курсу — доллары в гриде отставали на одну правку.
+  const parsed = raw === undefined
+    ? Number(planPriceForm.value.rate || 0)
+    : Number(String(raw).replace(',', '.'));
+  const rate = Number.isFinite(parsed) ? parsed : 0;
+  for (const r of [...planPriceRows.value, ...planDecorRows.value]) {
+    if (planUsdIsManual(r)) continue;
     const v = Number(r.price_rub);
-    r.price_usd = Number.isFinite(v) ? Number((v / rate).toFixed(4)) : null;
+    r.price_usd = rate > 0 && Number.isFinite(v)
+      ? Number((v / rate).toFixed(4))
+      : (r.source_price_usd ?? null);
   }
 }
 
@@ -2414,10 +2515,12 @@ async function savePlanPriceSet() {
         plan_id: plan,
         set_id: planPriceForm.value.set_id,
         title: planPriceForm.value.title,
-        rate: planPriceForm.value.rate,
+        // пустое поле курса — это отсутствие курса, а не пустая строка:
+        // такая строка уходила в numeric-колонку и сохранение падало с 500
+        rate: Number(planPriceForm.value.rate) > 0 ? Number(planPriceForm.value.rate) : null,
         username: user.value?.email || 'system',
         rows: [
-          ...planPriceRows.value.map(r => ({
+          ...planPriceRows.value.filter(planPriceOverridden).map(r => ({
             row_kind: 'material',
             'Наименование': r['Наименование'],
             'артикул материала': r['артикул материала'],
@@ -2425,14 +2528,15 @@ async function savePlanPriceSet() {
             'свойство2': r['свойство2'],
             'свойство3': r['свойство3'],
             price_rub: r.price_rub,
-            price_usd: r.price_usd,
+            // null → сервер посчитает доллар из рубля по курсу набора
+            price_usd: planUsdIsDerived(r) ? null : r.price_usd,
             source_price_rub: r.source_price_rub,
             source_price_usd: r.source_price_usd,
             rows_count: r.rows_count,
           })),
           // Декоры: ключ один — наименование декора; бэкенд кладёт его в
           // колонку "Наименование" (см. миграцию 0035).
-          ...planDecorRows.value.map(r => ({
+          ...planDecorRows.value.filter(planPriceOverridden).map(r => ({
             row_kind: 'decor',
             'Декоры, наименование': r['Декоры, наименование'],
             price_rub: r.price_rub,
@@ -2445,7 +2549,9 @@ async function savePlanPriceSet() {
       },
     });
     planPriceForm.value.set_id = resp.set_id;
-    planPricesStatus.value = 'Набор сохранён';
+    planPricesStatus.value = planPriceOverriddenCount.value
+      ? `Набор сохранён: строк с переопределённой ценой ${planPriceOverriddenCount.value}`
+      : 'Набор сохранён пустым — ни одна цена не отличается от источника';
     await reloadPlanPriceSets();
   } catch (e: any) {
     console.error('[cost] save plan price set failed', e);
@@ -3646,6 +3752,14 @@ const addVersionRow = () => {
     template['Материал/операция/декор(призн)'] = 'Материал основной';
     template['Наименование'] = '';
     template['артикул материала'] = '';
+    // Свойства — тоже поля материала, их нельзя тащить из первой строки:
+    // они входят в ключ материала (свойство1..3), и новая строка «наследовала»
+    // бы чужие характеристики.
+    template['свойство1'] = '';
+    template['свойство2'] = '';
+    template['свойство3'] = '';
+    template['Свойство'] = '';
+    template._propRaw = '';
     template['Норма'] = 0;
     template['цена материала, руб.'] = 0;
     template['цена материала, USD.'] = 0;
@@ -3788,8 +3902,27 @@ function normalizeVersionRow(rr: any): any {
     .map((v: any) => (v || '').toString().trim())
     .filter((v: string) => v && v !== '-');
   row['Свойство'] = parts.join(', ') || '—';
+  // Сырой текст для поля ввода «Свойство». Держим отдельно от собранного
+  // `Свойство`, чтобы при вводе не подставлять пересобранное значение обратно
+  // в input — иначе курсор прыгал бы в конец на каждом символе.
+  row._propRaw = parts.join(', ');
   return row;
 }
+
+/** Разбирает введённое «Свойство» обратно в свойство1/2/3 — в БД лежат они,
+ * колонки «Свойство» там нет. Больше трёх частей склеиваем в третье поле,
+ * чтобы введённое не потерялось. */
+const onVersionPropertyEdit = (row: any, event: Event) => {
+  const raw = (event.target as HTMLInputElement).value;
+  row._propRaw = raw;
+  const parts = raw.split(',').map((v) => v.trim());
+  row['свойство1'] = parts[0] || '';
+  row['свойство2'] = parts[1] || '';
+  row['свойство3'] = parts.length > 3 ? parts.slice(2).join(', ') : (parts[2] || '');
+  const filled = [row['свойство1'], row['свойство2'], row['свойство3']].filter(Boolean);
+  row['Свойство'] = filled.join(', ') || '—';
+  if (row.change_type === 'original') row.change_type = 'modified';
+};
 
 /** Определяет, вносит ли строка нулевой вклад в себестоимость (нет нормы или нет цены). */
 /** Сумма по строке. У материалов это Норма × цена, у декоров — их собственная
@@ -4493,6 +4626,199 @@ const onCopyShortcut = (e: KeyboardEvent) => {
     tsv += line.join("\t") + "\n";
   });
   navigator.clipboard?.writeText(tsv);
+};
+
+// ── Навигация по ячейкам как в Excel ───────────────────────────────────────
+// Активная ячейка — это та, чей input/select в фокусе: отдельного слоя выделения
+// нет, поэтому ввод работает ровно как раньше, а подсветку даёт :focus-within.
+// Маршрут считается по DOM (`cellIndex` ячейки), а не по списку ключей колонок —
+// тогда скрытие колонок и любые правки шаблона учитываются сами.
+
+/** Поля ввода строки. Чекбокс выбора для согласования исключён: он служебный,
+ * и пробел на нём должен работать нативно. */
+const GRID_FOCUSABLE = 'input:not([disabled]):not([readonly]):not([type="checkbox"]), select:not([disabled])';
+
+type GridCell = HTMLInputElement | HTMLSelectElement;
+
+const gridFocusableIn = (scope: Element | null): GridCell[] =>
+  scope ? Array.from(scope.querySelectorAll<GridCell>(GRID_FOCUSABLE)) : [];
+
+/** Ячейка той же колонки в строке, если она доступна для ввода. */
+const gridCellAt = (tr: Element | null, cellIndex: number): GridCell | null => {
+  if (!tr) return null;
+  const td = (tr as HTMLTableRowElement).cells?.[cellIndex];
+  return td ? gridFocusableIn(td)[0] ?? null : null;
+};
+
+/** Ближайшая доступная ячейка колонки при движении по строкам: заблокированные
+ * (ФКСС, нет прав, локи) пропускаем, иначе фокус застревал бы в столбце. */
+const gridSeekInColumn = (fromRow: Element, cellIndex: number, dir: 1 | -1): GridCell | null => {
+  let tr: Element | null = dir === 1 ? fromRow.nextElementSibling : fromRow.previousElementSibling;
+  while (tr) {
+    const cell = gridCellAt(tr, cellIndex);
+    if (cell) return cell;
+    tr = dir === 1 ? tr.nextElementSibling : tr.previousElementSibling;
+  }
+  return null;
+};
+
+/** Соседняя ячейка ввода в пределах строки. */
+const gridSeekInRow = (tr: Element, cellIndex: number, dir: 1 | -1): GridCell | null => {
+  const cells = Array.from((tr as HTMLTableRowElement).cells || []);
+  const from = cellIndex + dir;
+  for (let i = from; dir === 1 ? i < cells.length : i >= 0; i += dir) {
+    const cell = gridFocusableIn(cells[i])[0];
+    if (cell) return cell;
+  }
+  return null;
+};
+
+/** Доводит ячейку в видимую область: focus() сам скроллит, но закреплённые
+ * колонки слева перекрывают результат — их суммарную ширину компенсируем. */
+const gridRevealCell = (cell: GridCell) => {
+  cell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  const wrap = cell.closest('.table-wrap') as HTMLElement | null;
+  if (!wrap) return;
+  const stickyWidth = STICKY_COL_KEYS
+    .filter((k) => isVisible(k))
+    .reduce((sum, k) => sum + (stickyWidths[k] || 0), 0);
+  const overlap = (wrap.getBoundingClientRect().left + stickyWidth) - cell.getBoundingClientRect().left;
+  if (overlap > 0) wrap.scrollLeft -= overlap + 4;
+};
+
+const gridFocus = (cell: GridCell | null): boolean => {
+  if (!cell) return false;
+  cell.focus();
+  if (cell instanceof HTMLInputElement && cell.type !== 'checkbox') cell.select();
+  gridRevealCell(cell);
+  return true;
+};
+
+/** Первая доступная ячейка страницы в нужной колонке — точка входа после
+ * перелистывания. */
+const gridFocusOnPage = (cellIndex: number, fromTop: boolean) => {
+  const body = document.querySelector('#cost-table-1 tbody');
+  if (!body) return;
+  const rows = Array.from((body as HTMLTableSectionElement).rows);
+  const ordered = fromTop ? rows : [...rows].reverse();
+  for (const tr of ordered) {
+    if (gridFocus(gridCellAt(tr, cellIndex))) return;
+  }
+  // в этой колонке на новой странице вводить негде — берём любую первую
+  for (const tr of ordered) {
+    if (gridFocus(gridFocusableIn(tr)[0] ?? null)) return;
+  }
+};
+
+// Значение на момент входа в ячейку — для отката по Escape. Снимок привязан к
+// элементу, а не к событию фокуса: focusin приходит не всегда (например, когда
+// окно браузера неактивно), а keydown срабатывает до применения символа к value —
+// значит на первом нажатии в ячейке мы ещё видим исходное значение.
+let gridSnapshot: { el: GridCell | null; value: string } = { el: null, value: '' };
+
+const gridRemember = (el: GridCell) => {
+  if (gridSnapshot.el !== el) gridSnapshot = { el, value: el.value };
+};
+
+const onGridFocusIn = (e: FocusEvent) => {
+  const el = e.target as GridCell;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT')) gridRemember(el);
+};
+
+/** Внутри текстового поля ←/→ должны двигать каретку, и только на краю текста
+ * уводить в соседнюю ячейку — как в Google Sheets. */
+const gridCaretAtEdge = (el: GridCell, dir: 1 | -1): boolean => {
+  if (el.tagName === 'SELECT') return true;
+  const input = el as HTMLInputElement;
+  // у type=number selectionStart недоступен — считаем, что край всегда достигнут
+  let start: number | null = null;
+  let end: number | null = null;
+  try { start = input.selectionStart; end = input.selectionEnd; } catch { return true; }
+  if (start === null || end === null) return true;
+  if (start !== end) return false;
+  return dir === 1 ? start >= input.value.length : start <= 0;
+};
+
+const onGridKeydown = (e: KeyboardEvent) => {
+  const el = e.target as GridCell;
+  if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'SELECT')) return;
+  if ((el as HTMLInputElement).type === 'checkbox') return;
+  const td = el.closest('td');
+  const tr = el.closest('tr');
+  if (!td || !tr || !tr.closest('#cost-table-1')) return;
+  // Alt+↓ — нативное раскрытие списка в селектах, не перехватываем
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
+
+  gridRemember(el);
+
+  const cellIndex = (td as HTMLTableCellElement).cellIndex;
+  const moveRow = (dir: 1 | -1) => {
+    if (gridFocus(gridSeekInColumn(tr, cellIndex, dir))) return;
+    // границы страницы: продолжаем ввод на соседней, не трогая пагинацию руками
+    if (dir === 1 && currentPage.value < totalPages.value - 1) {
+      currentPage.value++;
+      nextTick(() => gridFocusOnPage(cellIndex, true));
+    } else if (dir === -1 && currentPage.value > 0) {
+      currentPage.value--;
+      nextTick(() => gridFocusOnPage(cellIndex, false));
+    }
+  };
+  const moveCol = (dir: 1 | -1) => {
+    if (gridFocus(gridSeekInRow(tr, cellIndex, dir))) return;
+    // конец строки — переходим на начало следующей (поведение Tab в Excel)
+    const nextRow = dir === 1 ? tr.nextElementSibling : tr.previousElementSibling;
+    if (!nextRow) return moveRow(dir);
+    const cells = Array.from((nextRow as HTMLTableRowElement).cells);
+    const pool = dir === 1 ? cells : [...cells].reverse();
+    for (const c of pool) {
+      if (gridFocus(gridFocusableIn(c)[0] ?? null)) return;
+    }
+  };
+
+  switch (e.key) {
+    case 'ArrowDown':
+      e.preventDefault(); // иначе number-поле изменит значение, а select — выбор
+      moveRow(1);
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      moveRow(-1);
+      break;
+    case 'Enter':
+      e.preventDefault();
+      moveRow(e.shiftKey ? -1 : 1);
+      break;
+    case 'Tab':
+      e.preventDefault();
+      moveCol(e.shiftKey ? -1 : 1);
+      break;
+    case 'ArrowRight':
+      if (!gridCaretAtEdge(el, 1)) return;
+      e.preventDefault();
+      moveCol(1);
+      break;
+    case 'ArrowLeft':
+      if (!gridCaretAtEdge(el, -1)) return;
+      e.preventDefault();
+      moveCol(-1);
+      break;
+    case 'Escape': {
+      e.preventDefault();
+      // откат ввода: гоним значение через тот же @input/@change, что и обычную правку
+      if (gridSnapshot.el === el && el.value !== gridSnapshot.value) {
+        el.value = gridSnapshot.value;
+        el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+      }
+      gridSnapshot = { el: null, value: '' };
+      el.blur();
+      break;
+    }
+  }
+};
+
+const onTableKeydown = (e: KeyboardEvent) => {
+  onCopyShortcut(e);
+  if (!e.defaultPrevented) onGridKeydown(e);
 };
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -5697,6 +6023,16 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .row-zero-cost { background: color-mix(in srgb, #ef4444 10%, transparent) !important; }
 .type-tag.clickable { cursor:pointer; padding:2px 6px; border-radius:4px; background:var(--bg-tonal, #f3f4f6); border:1px solid var(--border-color, #e5e7eb); }
 .type-tag.clickable:hover { background:var(--bg-hover, #e5e7eb); }
+/* Активная ячейка Excel-навигации — это ячейка с полем в фокусе */
+#cost-table-1 tbody td:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+#cost-table-1 tbody td:focus-within .price-input,
+#cost-table-1 tbody td:focus-within .comment-input,
+#cost-table-1 tbody td:focus-within .price-select { outline: none; }
+
 .col-peo { width:48px; text-align:center; }
 .col-peo-sel { text-align:center; padding-left:0; padding-right:0; }
 .col-peo-sel input { cursor:pointer; }

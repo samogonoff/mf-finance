@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "MCP-серверы проекта Finance Cabinet.",
+    "",
+    "superset — встроенный MCP-сервер Apache Superset (модуль superset.mcp_service).",
+    "Поднимается контейнером superset-mcp из swarm/docker-compose.superset.yml:",
+    "  cd swarm && make superset-up",
+    "Если контур не запущен, сервер будет в статусе 'Failed to connect' — это",
+    "нормально, поднимите контур и перезапустите Claude Code.",
+    "",
+    "Под этот сервер написаны скиллы preset-io/agent-skills (плагин",
+    "preset-mcp-skills). Порт и URL берутся из MCP_SERVICE_PORT в .env.",
+    "",
+    "В prod URL другой и требует Authorization: Bearer <JWT> (MCP_AUTH_ENABLED=1).",
+    "Локальный dev-эндпоинт без авторизации — только на localhost."
+  ],
+  "mcpServers": {
+    "superset": {
+      "type": "http",
+      "url": "http://localhost:5008/mcp"
+    }
+  }
+}
