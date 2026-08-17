@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import commercial, mocks
-from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, save_margin_targets, try_acquire_refresh_lock, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
+from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -2068,7 +2068,17 @@ async def my_roles_permissions(request: Request) -> dict:
 # ── Cache refresh & status ──────────────────────────────────────────────────
 
 
-REFRESH_TIMEOUT_MINUTES = 10
+# Ссылка на фоновую задачу обновления. asyncio держит задачи слабой ссылкой —
+# без этого поля задачу может собрать GC прямо посреди обновления.
+_refresh_task: asyncio.Task | None = None
+
+
+def _start_refresh() -> None:
+    """Запустить фоновое обновление. Флаг is_refreshing уже захвачен вызывающим."""
+    global _refresh_task
+    _refresh_task = asyncio.ensure_future(
+        load_cost_data_to_cache(partial_months=2, lock_held=True)
+    )
 
 
 @router.post("/refresh-cache")
@@ -2077,27 +2087,34 @@ async def refresh_cache() -> dict:
     if _is_mock():
         return mocks.refresh_cache()
 
-    # Атомарно захватываем блокировку: SET is_refreshing = TRUE WHERE FALSE
-    if await try_acquire_refresh_lock():
-        asyncio.ensure_future(load_cost_data_to_cache(partial_months=2))
+    # Порядок проверок важен. Сначала — надёжный признак: идёт ли обновление
+    # прямо в этом процессе. Если идёт, не трогаем его, СКОЛЬКО БЫ оно ни
+    # длилось: второй запуск поверх первого ничего не ускоряет, а дублирует
+    # строки — каждая транзакция удаляет только то, что видела на своём старте,
+    # и вставляет свою полную копию.
+    #
+    # Раньше первым стоял возраст флага с порогом в 10 минут. Полное обновление
+    # идёт ~25 минут, поэтому здоровое обновление объявлялось зависшим на 11-й
+    # минуте и поверх него запускалось второе. Отсюда и брались задвоенные и
+    # затроенные калькуляции в cost_data_cache.
+    if refresh_in_progress():
+        return {
+            "status": "already_refreshing",
+            "message": "Обновление уже идёт — дождитесь завершения",
+        }
+
+    # В этом процессе обновления нет: флаг либо свободен, либо осиротел после
+    # падения процесса, либо его держит соседний контейнер во время деплоя
+    # (order: start-first). Отбираем только заведомо протухший — см.
+    # acquire_or_reclaim_refresh_lock и COST_STALE_REFRESH_MINUTES.
+    if await acquire_or_reclaim_refresh_lock():
+        _start_refresh()
         return {"status": "started", "message": "Обновление кеша запущено"}
 
-    # Блокировка не захвачена — проверяем, не зависла ли
-    status = await get_cache_status()
-    if status and status.get("refreshing_since"):
-        age = (datetime.now(timezone.utc) - status["refreshing_since"]).total_seconds() / 60
-        if age < REFRESH_TIMEOUT_MINUTES:
-            return {"status": "already_refreshing", "message": "Обновление уже запущено другим пользователем"}
-
-    # Зависшая блокировка (> 10 мин) — форсированный перезапуск
-    async with pool().acquire() as conn:
-        await conn.execute(
-            "UPDATE cost_cache_status SET is_refreshing = TRUE,"
-            "  refreshing_since = NOW(), error_message = NULL"
-            " WHERE id = 1"
-        )
-    asyncio.ensure_future(load_cost_data_to_cache(partial_months=2))
-    return {"status": "started", "message": "Обновление кеша запущено (предыдущая блокировка сброшена)"}
+    return {
+        "status": "already_refreshing",
+        "message": "Обновление уже запущено другим пользователем",
+    }
 
 
 @router.get("/cache-status")
