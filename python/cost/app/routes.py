@@ -2073,11 +2073,14 @@ async def my_roles_permissions(request: Request) -> dict:
 _refresh_task: asyncio.Task | None = None
 
 
-def _start_refresh() -> None:
-    """Запустить фоновое обновление. Флаг is_refreshing уже захвачен вызывающим."""
+def _start_refresh(partial_months: int | None = 2) -> None:
+    """Запустить фоновое обновление. Флаг is_refreshing уже захвачен вызывающим.
+
+    *partial_months* = None — полное обновление (TRUNCATE + вся CostHistory).
+    """
     global _refresh_task
     _refresh_task = asyncio.ensure_future(
-        load_cost_data_to_cache(partial_months=2, lock_held=True)
+        load_cost_data_to_cache(partial_months=partial_months, lock_held=True)
     )
 
 
@@ -2110,6 +2113,47 @@ async def refresh_cache() -> dict:
     if await acquire_or_reclaim_refresh_lock():
         _start_refresh()
         return {"status": "started", "message": "Обновление кеша запущено"}
+
+    return {
+        "status": "already_refreshing",
+        "message": "Обновление уже запущено другим пользователем",
+    }
+
+
+@router.post("/refresh-cache-full")
+async def refresh_cache_full(_: str = Depends(_require_perm("cost:admin"))) -> dict:
+    """Принудительное ПОЛНОЕ обновление кеша: TRUNCATE + вся CostHistory.
+
+    Зачем отдельная ручка. Обычная кнопка обновляет только последние 2 месяца по
+    «дата расчета» — этого достаточно для свежих данных, но не для чистки. Если
+    в кэше накопились дубли (так было при наложении двух обновлений до фикса от
+    17.08.2026) или сменился набор колонок, лечит только полный перезалив.
+
+    Право cost:admin, а не общее: операция дорогая и заметная.
+      * идёт ~25 минут на ~1 млн строк;
+      * TRUNCATE держит ACCESS EXCLUSIVE на cost_data_cache до конца транзакции,
+        то есть ВСЕ запросы раздела к кэшу на это время встают. Запускать в окно.
+
+    Блокировка — та же, что у частичного обновления: второе поверх первого не
+    запустится (см. load_cost_data_to_cache и acquire_or_reclaim_refresh_lock),
+    иначе как раз и получаются дубли.
+    """
+    if _is_mock():
+        return mocks.refresh_cache()
+
+    if refresh_in_progress():
+        return {
+            "status": "already_refreshing",
+            "message": "Обновление уже идёт — дождитесь завершения",
+        }
+
+    if await acquire_or_reclaim_refresh_lock():
+        _start_refresh(partial_months=None)
+        return {
+            "status": "started",
+            "message": "Запущено полное обновление кеша (~25 минут, раздел будет "
+                       "недоступен для запросов к кэшу)",
+        }
 
     return {
         "status": "already_refreshing",

@@ -113,6 +113,15 @@
           <Icon name="lucide:refresh-cw" />
           {{ cacheRefreshing ? 'Обновление…' : 'Обновить кеш' }}
         </button>
+        <!-- Полное обновление — только админу раздела: TRUNCATE + перезалив всей
+             CostHistory, ~25 минут, и на это время запросы к кэшу встают.
+             Обычная кнопка рядом берёт только последние 2 месяца. -->
+        <button v-if="can('cost:admin')" class="btn btn-ghost btn-sm"
+                :disabled="cacheRefreshing" title="TRUNCATE + перезалив всей CostHistory"
+                @click="refreshCacheFull">
+          <Icon name="lucide:database-backup" />
+          Полное обновление
+        </button>
         <span v-if="cacheRefreshing" class="cache-spinner">
           <Icon name="lucide:loader" class="spinning" /> обновление данных…
         </span>
@@ -3266,10 +3275,11 @@ function showCacheNotification(msg: string) {
   setTimeout(() => { cacheNotification.value = ''; }, 4000);
 }
 
-async function refreshCache() {
+/** Запустить обновление указанной ручкой и дождаться его в опросе статуса. */
+async function startCacheRefresh(endpoint: string) {
   try {
     const result = await $fetch<{ status: string; message?: string }>(
-      `${apiBase.value}/api/cost/refresh-cache`,
+      `${apiBase.value}/api/cost/${endpoint}`,
       { method: "POST", headers: fetchHeaders.value }
     );
     if (result.status === "already_refreshing") {
@@ -3277,6 +3287,7 @@ async function refreshCache() {
       return;
     }
     if (result.status === "mock") return;
+    if (result.message) showCacheNotification(result.message);
 
     cacheRefreshing.value = true;
     // Poll until refresh completes
@@ -3291,6 +3302,9 @@ async function refreshCache() {
           cacheInfo.value = s;
           if (!s?.is_refreshing) {
             cacheRefreshing.value = false;
+            if (s?.error_message) {
+              showCacheNotification('Обновление завершилось с ошибкой — см. статус кеша');
+            }
           }
         } catch {
           cacheRefreshing.value = false;
@@ -3299,9 +3313,32 @@ async function refreshCache() {
     };
     poll();
   } catch (e: any) {
-    console.error("[cost] refresh-cache failed", e);
+    console.error(`[cost] ${endpoint} failed`, e);
+    showCacheNotification(e?.data?.detail || 'Не удалось запустить обновление');
     cacheRefreshing.value = false;
   }
+}
+
+function refreshCache() {
+  return startCacheRefresh('refresh-cache');
+}
+
+/** Полное обновление: TRUNCATE + перезалив всей CostHistory.
+ *
+ * Спрашиваем подтверждение не для вида: операция идёт ~25 минут и держит
+ * ACCESS EXCLUSIVE на cost_data_cache до конца транзакции — все запросы раздела
+ * к кэшу на это время встают. Нужна для чистки (дубли, смена набора колонок),
+ * для свежести достаточно обычной кнопки рядом.
+ */
+function refreshCacheFull() {
+  if (!confirm(
+    'Полное обновление кеша: таблица очищается и перезаливается из источника целиком.\n\n' +
+    '· идёт около 25 минут на ~1 млн строк;\n' +
+    '· на это время запросы раздела к кешу будут ждать;\n' +
+    '· согласованные версии цен и применённые наборы накладываются заново автоматически.\n\n' +
+    'Обычной кнопке «Обновить кеш» это не нужно — она берёт последние 2 месяца. Запустить полное?'
+  )) return;
+  return startCacheRefresh('refresh-cache-full');
 }
 
 // ── Price levels & save ─────────────────────────────────────────────────────
