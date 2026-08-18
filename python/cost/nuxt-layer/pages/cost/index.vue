@@ -3314,7 +3314,16 @@ async function startCacheRefresh(endpoint: string) {
     poll();
   } catch (e: any) {
     console.error(`[cost] ${endpoint} failed`, e);
-    showCacheNotification(e?.data?.detail || 'Не удалось запустить обновление');
+    // Код ответа обязателен в тексте. Без него «не удалось запустить обновление»
+    // одинаково выглядит и когда прав нет (403), и когда ручки нет в
+    // задеплоенном образе (404), и когда сервис перезапускается (502) — а
+    // лечится это тремя разными способами.
+    const status = e?.statusCode || e?.status || e?.response?.status;
+    const detail = e?.data?.detail || e?.data?.message || e?.message;
+    showCacheNotification(
+      `Не удалось запустить обновление${status ? ` (HTTP ${status})` : ''}` +
+      `${detail ? `: ${detail}` : ''}`
+    );
     cacheRefreshing.value = false;
   }
 }
