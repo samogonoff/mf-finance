@@ -49,6 +49,11 @@ async def _cache_worker() -> None:
                 last_full = datetime.now(timezone.utc)
                 log(logging.INFO, "cache_worker: initial fill OK", phase="initial",
                     row_count=result.get("row_count"))
+            elif result.get("skipped"):
+                # Обновление уже идёт (например, его запустили руками из UI) —
+                # это не ошибка, второй запуск поверх первого дублирует строки.
+                log(logging.INFO, "cache_worker: initial fill skipped", phase="initial",
+                    reason=str(result.get("error", ""))[:200])
             else:
                 log(logging.ERROR, "cache_worker: initial fill FAILED", phase="initial",
                     error=str(result.get("error", "unknown"))[:200])
@@ -70,6 +75,11 @@ async def _cache_worker() -> None:
                     last_full = now
                     log(logging.INFO, "cache_worker: full refresh OK", phase="full",
                         row_count=result.get("row_count"))
+                elif result.get("skipped"):
+                    # Тик попал в уже идущее обновление — пропускаем, last_full
+                    # не двигаем, полное обновление повторится на следующем тике.
+                    log(logging.INFO, "cache_worker: full refresh skipped", phase="full",
+                        reason=str(result.get("error", ""))[:200])
                 else:
                     # Don't update last_full — next tick will retry full refresh
                     log(logging.ERROR, "cache_worker: full refresh FAILED", phase="full",
@@ -79,6 +89,9 @@ async def _cache_worker() -> None:
                 if result.get("success"):
                     log(logging.INFO, "cache_worker: partial refresh OK", phase="partial",
                         row_count=result.get("row_count"))
+                elif result.get("skipped"):
+                    log(logging.INFO, "cache_worker: partial refresh skipped", phase="partial",
+                        reason=str(result.get("error", ""))[:200])
                 else:
                     log(logging.ERROR, "cache_worker: partial refresh FAILED", phase="partial",
                         error=str(result.get("error", "unknown"))[:200])

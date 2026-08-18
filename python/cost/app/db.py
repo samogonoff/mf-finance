@@ -719,7 +719,84 @@ async def _compute_cost_factors(conn, cutoff_date=None) -> None:
     )
 
 
-async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
+# Гарантия «одно обновление за раз» внутри процесса.
+#
+# Одного флага is_refreshing в БД для этого мало: он живёт в отдельной
+# транзакции, и его можно перебить снаружи — POST /refresh-cache так и делал,
+# считая блокировку протухшей. Два обновления, идущие одновременно, размножают
+# строки: каждая транзакция удаляет только то, что видела на своём старте
+# (READ COMMITTED не показывает чужие незакоммиченные вставки), а потом
+# вставляет свою полную копию. N параллельных обновлений = N копий каждой
+# калькуляции.
+_refresh_lock = asyncio.Lock()
+
+# Через сколько минут флаг is_refreshing считается протухшим и может быть отобран.
+# Обязан быть ВЫШЕ реальной длительности полного обновления (замер на ~1 млн
+# строк: 25 минут), иначе живое обновление в соседнем процессе примут за мёртвое.
+STALE_REFRESH_MINUTES = int(os.environ.get("COST_STALE_REFRESH_MINUTES", "45"))
+
+
+def refresh_in_progress() -> bool:
+    """True, если в ЭТОМ процессе прямо сейчас идёт обновление кэша."""
+    return _refresh_lock.locked()
+
+
+async def acquire_or_reclaim_refresh_lock() -> bool:
+    """Захватить флаг is_refreshing, отобрав его, если он протух.
+
+    Вызывать только когда refresh_in_progress() == False — иначе отберём флаг у
+    собственного работающего обновления.
+
+    Флаг остаётся висеть, если процесс умер на середине обновления (деплой,
+    рестарт, OOM): снимают его set_cache_completed / set_cache_error, а до них
+    дело не дошло. Без отбора такой флаг навсегда заблокировал бы и кнопку, и
+    трёхчасовой тик воркера — кэш перестал бы обновляться молча.
+    """
+    if await try_acquire_refresh_lock():
+        return True
+    async with pool().acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE cost_cache_status"
+            "   SET is_refreshing = TRUE, refreshing_since = NOW(), error_message = NULL"
+            " WHERE id = 1 AND is_refreshing = TRUE"
+            "   AND refreshing_since < NOW() - make_interval(mins => $1)"
+            " RETURNING 1",
+            STALE_REFRESH_MINUTES,
+        )
+    return row is not None
+
+
+async def load_cost_data_to_cache(
+    partial_months: int | None = None, *, lock_held: bool = False
+) -> dict:
+    """Единственная точка входа в обновление кэша.
+
+    Если обновление уже идёт — вызов отклоняется, а не встаёт в очередь: второе
+    обновление поверх первого не ускоряет, а дублирует данные (см. _refresh_lock).
+
+    *lock_held* — вызывающий уже захватил флаг через try_acquire_refresh_lock() и
+    отвечает за него сам. Так делает POST /refresh-cache, которому нужен
+    синхронный ответ «запущено / уже идёт» до старта фоновой задачи.
+
+    Возвращает {'success': False, 'skipped': True, ...}, если вызов отклонён —
+    это не ошибка, вызывающему её логировать как ошибку не нужно.
+    """
+    _busy = {
+        "success": False,
+        "skipped": True,
+        "error": "Обновление кэша уже идёт — повторный запуск пропущен",
+    }
+    # Проверка и захват без await между ними — внутри одного event loop это
+    # атомарно, гонка двух корутин здесь невозможна.
+    if _refresh_lock.locked():
+        return _busy
+    async with _refresh_lock:
+        if not lock_held and not await acquire_or_reclaim_refresh_lock():
+            return _busy
+        return await _load_cost_data_to_cache(partial_months)
+
+
+async def _load_cost_data_to_cache(partial_months: int | None = None) -> dict:
     """Fetch from MSSQL [Checks].[dbo].[CostHistory] and bulk insert into cache.
 
     Batches of BATCH_SIZE rows — never loads the full dataset into Python memory.
@@ -735,7 +812,9 @@ async def load_cost_data_to_cache(partial_months: int | None = None) -> dict:
     import queue as thr_queue
     import traceback
 
-    await set_cache_refreshing(True)
+    # is_refreshing уже выставлен захватом блокировки в load_cost_data_to_cache
+    # (или вызывающим, если lock_held=True). Снимают его set_cache_completed /
+    # set_cache_error на выходе.
 
     q: thr_queue.Queue = thr_queue.Queue(maxsize=4)
 
