@@ -935,7 +935,14 @@ async def _load_cost_data_to_cache(partial_months: int | None = None) -> dict:
 
 
 def _fetch_audit_from_olap() -> list[dict]:
-    """Синхронный запрос: получить последнюю запись из CostHistory_Changes для каждой (Модель, Артикул).
+    """Синхронный запрос: последняя запись из CostHistory_Changes на калькуляцию.
+
+    Ключ — (Модель, Артикул, calc_sign, plan_id), как и при записи цен. Раньше
+    партиционирование шло по паре Модель+Артикул, и из всех калькуляций модели в
+    аудите оставалась ОДНА: на главной таблице значок «записано в DWH» и
+    блокировка строки уезжали на чужие признаки калькуляции — например запись по
+    КПСС гасила ПФКСС той же модели, где ни цену поправить, ни статус ПЭО
+    поставить уже было нельзя.
 
     Выполняется в thread executor.  Возвращает список плоских dict-ов,
     где ключи уже приведены к именам колонок cost_price_changes_audit.
@@ -947,6 +954,8 @@ def _fetch_audit_from_olap() -> list[dict]:
             SELECT
                 Модель,
                 Артикул,
+                calc_sign,
+                plan_id,
                 Уровень_цен           AS price_level,
                 Розничная_цена_руб    AS retail_rub,
                 Отпускная_цена_руб    AS wholesale_rub,
@@ -959,7 +968,7 @@ def _fetch_audit_from_olap() -> list[dict]:
             FROM (
                 SELECT *,
                     ROW_NUMBER() OVER (
-                        PARTITION BY Модель, Артикул
+                        PARTITION BY Модель, Артикул, calc_sign, plan_id
                         ORDER BY approved_at DESC, changed_at DESC
                     ) AS rn
                 FROM CostHistory_Changes
@@ -997,6 +1006,11 @@ async def sync_audit_from_olap() -> None:
         (
             r.get("Модель") or r.get("model"),
             r.get("Артикул") or r.get("articul"),
+            # Признак и план обязаны доехать: по ним определяется, какая именно
+            # калькуляция уже в DWH (см. lock-state в routes.py). Без них аудит
+            # выглядел «легаси» и блокировал всю модель целиком.
+            r.get("calc_sign"),
+            r.get("plan_id"),
             r.get("price_level"),
             r.get("retail_rub"),
             r.get("wholesale_rub"),
@@ -1017,7 +1031,8 @@ async def sync_audit_from_olap() -> None:
                 "cost_price_changes_audit",
                 records=rows,
                 columns=[
-                    "model", "articul", "price_level", "retail_rub", "wholesale_rub",
+                    "model", "articul", "calc_sign", "plan_id",
+                    "price_level", "retail_rub", "wholesale_rub",
                     "username", "changed_at", "price_rf", "price_kz", "price_uz", "comment",
                 ],
             )
@@ -2670,6 +2685,103 @@ def _plan_key_join(left: str, right: str) -> str:
     return " AND ".join(
         f"trim(COALESCE({left}.\"{c}\", '')) = {right}.\"{c}\"" for c in _PLAN_MAT_KEY
     )
+
+
+# Порядок этапов калькулирования. ПКПСС — первый, сравнивать его не с чем;
+# каждый следующий этап имеет смысл сверять со всеми предыдущими.
+_CALC_STAGE_ORDER: list[str] = ["ПКПСС", "КПСС", "ПФКСС", "ФКСС"]
+
+# Насколько узко искать предыдущий этап. ПКПСС считается по модели и артикулу
+# (заданий на нём в источнике может не быть вовсе), у остальных этапов
+# калькуляция привязана к заданию и плану — сверяем именно её.
+_CALC_STAGE_SCOPE: dict[str, str] = {
+    "ПКПСС": "model+articul",
+    "КПСС": "model+articul+plan+task",
+    "ПФКСС": "model+articul+plan+task",
+    "ФКСС": "model+articul+plan+task",
+}
+
+
+async def get_prev_stage_prices(
+    model: str, articul: str, calc_sign: str,
+    plan_id: str | None = None, task_number: str | None = None,
+) -> list[dict]:
+    """Цены материалов на предыдущих этапах калькулирования.
+
+    Нужно, чтобы в редакторе расчёта было видно, во что материал оценивался
+    раньше: на КПСС — цены ПКПСС, на ПФКСС — цены КПСС и ПКПСС.
+
+    Сопоставление — по ключу материала (те же пять полей, что у наборов цен по
+    плану). Совпадает не всё: состав материалов между этапами меняется, поэтому
+    вызывающая сторона должна быть готова и к строкам без пары.
+    """
+    m = (model or "").strip()
+    a = (articul or "").strip()
+    cs = (calc_sign or "").strip()
+    if not m or not a or cs not in _CALC_STAGE_ORDER:
+        return []
+
+    prev_stages = _CALC_STAGE_ORDER[: _CALC_STAGE_ORDER.index(cs)]
+    if not prev_stages:
+        return []  # ПКПСС — первый этап
+
+    plan = (plan_id or "").strip()
+    task = (task_number or "").strip()
+    key_cols = ", ".join(f'trim(COALESCE("{c}", \'\')) AS k{i}' for i, c in enumerate(_PLAN_MAT_KEY))
+
+    out: list[dict] = []
+    async with pool().acquire() as conn:
+        for stage in prev_stages:
+            scope = _CALC_STAGE_SCOPE.get(stage, "model+articul")
+            params: list[str] = [m, a, stage]
+            narrow = ""
+            # Сужаем до задания и плана только если они известны и на этом этапе
+            # вообще применимы — иначе остаёмся на уровне модель+артикул.
+            if scope == "model+articul+plan+task" and plan:
+                params.append(plan)
+                narrow += f' AND trim(COALESCE("PLAN_ID", \'\')) = ${len(params)}'
+                if task:
+                    params.append(task)
+                    narrow += f' AND trim(COALESCE("Номер задания производства", \'\')) = ${len(params)}'
+            else:
+                scope = "model+articul"
+
+            rows = await conn.fetch(
+                f"""
+                SELECT {key_cols},
+                       round(avg("цена материала, руб."), 4) AS price_rub,
+                       round(avg("цена материала, USD."), 4) AS price_usd,
+                       count(*) AS rows_count,
+                       count(DISTINCT "цена материала, руб.") AS distinct_prices,
+                       max("дата расчета")::text AS last_date
+                FROM cost_data_cache
+                WHERE trim(COALESCE("Модель", '')) = $1
+                  AND trim(COALESCE("Артикул", '')) = $2
+                  AND trim(COALESCE("Признак калькуляции", '')) = $3
+                  AND trim(COALESCE("Наименование", '')) <> ''
+                  {narrow}
+                GROUP BY 1, 2, 3, 4, 5
+                ORDER BY 1, 2
+                """,
+                *params,
+            )
+            if not rows:
+                continue
+            out.append({
+                "stage": stage,
+                "scope": scope,
+                "rows": [
+                    {
+                        "Наименование": r["k0"], "артикул материала": r["k1"],
+                        "свойство1": r["k2"], "свойство2": r["k3"], "свойство3": r["k4"],
+                        "price_rub": r["price_rub"], "price_usd": r["price_usd"],
+                        "rows_count": r["rows_count"], "distinct_prices": r["distinct_prices"],
+                        "last_date": r["last_date"],
+                    }
+                    for r in rows
+                ],
+            })
+    return out
 
 
 async def aggregate_plan_materials(plan_id: str) -> list[dict]:

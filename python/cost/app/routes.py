@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import commercial, mocks
-from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version)
+from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -890,7 +890,14 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                     str(r["Признак калькуляции"]).strip(), str(r["PLAN_ID"]).strip(),
                 ))
 
-            # 2. Audit records — by (model, articul) only
+            # 2. Audit records — запись в DWH идёт по калькуляции целиком, поэтому
+            # сверяем полный ключ (model, articul, calc_sign, plan_id). Раньше
+            # сверялась только пара model+articul, и запись по КПСС (в DWH попадает
+            # только он) помечала «записано в DWH» и блокировала ПФКСС/ФКСС той же
+            # модели — там ни цены править, ни статус ПЭО поставить было нельзя.
+            #
+            # У записей до миграции 0022 признака и плана нет: для них оставляем
+            # прежнее поведение, иначе с легаси-строк блокировка исчезла бы вовсе.
             audit_pairs = list(set((m, a) for m, a, _, _ in lock_list))
             audit_ph = ", ".join(
                 f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(audit_pairs))
@@ -900,14 +907,21 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 audit_params.extend([m, a])
             async with pool().acquire() as conn:
                 audit_rows = await conn.fetch(
-                    f"""SELECT DISTINCT model, articul
+                    f"""SELECT DISTINCT model, articul, calc_sign, plan_id
                         FROM cost_price_changes_audit
                         WHERE (model, articul) IN (VALUES {audit_ph})""",
                     *audit_params,
                 )
-            audit_set: set[tuple[str, str]] = set()
+            audit_set: set[tuple[str, str, str, str]] = set()
+            audit_legacy: set[tuple[str, str]] = set()
             for r in audit_rows:
-                audit_set.add((str(r["model"]).strip(), str(r["articul"]).strip()))
+                m_a = (str(r["model"] or "").strip(), str(r["articul"] or "").strip())
+                cs = str(r["calc_sign"] or "").strip()
+                pi = str(r["plan_id"] or "").strip()
+                if cs and pi:
+                    audit_set.add((*m_a, cs, pi))
+                else:
+                    audit_legacy.add(m_a)
 
             for row in data:
                 m = str(row.get("Модель", "") or "").strip()
@@ -916,7 +930,7 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 pi = str(row.get("PLAN_ID", "") or "").strip()
 
                 has_pending = (m, a, cs, pi) in pending_set
-                has_audit = (m, a) in audit_set
+                has_audit = (m, a, cs, pi) in audit_set or (m, a) in audit_legacy
 
                 row["_has_pending"] = has_pending
                 row["_has_audit"] = has_audit
@@ -2174,6 +2188,28 @@ async def cache_status() -> dict:
 
 
 # ── Наборы цен на материалы для плана (миграция 0033) ─────────────────────────
+
+
+@router.get("/calc-stage-prices")
+async def calc_stage_prices_endpoint(request: Request) -> dict:
+    """Цены материалов на предыдущих этапах калькулирования.
+
+    Для редактора расчёта: на КПСС отдаём цены ПКПСС, на ПФКСС — КПСС и ПКПСС.
+    Для ПКПСС список пустой — это первый этап, сравнивать не с чем.
+    """
+    q = request.query_params
+    model = (q.get("model") or "").strip()
+    articul = (q.get("articul") or "").strip()
+    calc_sign = (q.get("calc_sign") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model and articul required")
+    if _is_mock():
+        return {"stages": [], "mock": True}
+    stages = await get_prev_stage_prices(
+        model, articul, calc_sign,
+        q.get("plan_id"), q.get("task_number"),
+    )
+    return {"stages": stages, "count": sum(len(s["rows"]) for s in stages)}
 
 
 @router.get("/plan-materials")

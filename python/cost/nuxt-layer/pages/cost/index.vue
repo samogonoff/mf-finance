@@ -485,7 +485,8 @@
                 <select
                   class="price-select"
                   :value="Number(row['avg_Розничная цена по уровню, руб.']) || ''"
-                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !can('cost:edit_price') || isRowLocked(row)"
+                  :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
+                  :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
                   @change="onRetailPriceSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
                 >
@@ -498,7 +499,8 @@
                 <select
                   class="price-select"
                   :value="markupSelections[getOriginalIndex(row)] || ''"
-                  :disabled="row['Признак калькуляции'] === 'ФКСС' || !row['avg_Розничная цена по уровню, руб.'] || !can('cost:edit_price') || isRowLocked(row)"
+                  :disabled="isFkssRow(row) || !row['avg_Розничная цена по уровню, руб.'] || !can('cost:edit_price') || isRowLocked(row)"
+                  :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
                   @change="onMarkupSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
                 >
@@ -512,7 +514,8 @@
                  <input class="price-input" type="number"
                   :value="priceRF[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена РФ"
-                  :disabled="!can('cost:edit_price') || isRowLocked(row)"
+                  :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
+                  :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
                   @input="onPriceRFInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
@@ -521,7 +524,8 @@
                  <input class="price-input" type="number"
                   :value="priceKZ[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена КЗ"
-                  :disabled="!can('cost:edit_price') || isRowLocked(row)"
+                  :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
+                  :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
                   @input="onPriceKZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
@@ -530,7 +534,8 @@
                  <input class="price-input" type="number"
                   :value="priceUZ[getOriginalIndex(row)] ?? ''"
                   placeholder="Цена УЗ"
-                  :disabled="!can('cost:edit_price') || isRowLocked(row)"
+                  :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
+                  :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
                   @input="onPriceUZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
@@ -540,7 +545,8 @@
                 <input class="comment-input" type="text"
                   :value="comments[getOriginalIndex(row)] ?? ''"
                   placeholder="..."
-                  :disabled="isRowLocked(row)"
+                  :disabled="isFkssRow(row) || isRowLocked(row)"
+                  :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
                   @input="onCommentInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
                 />
@@ -929,6 +935,12 @@
               </button>
               <button v-if="planPriceForm.set_id" class="btn btn-ghost btn-sm"
                       :disabled="planPricesSaving" @click="resetPlanPriceForm">Новый набор</button>
+              <button class="btn btn-ghost btn-sm"
+                      :disabled="!planPriceRows.length && !planDecorRows.length"
+                      title="Выгрузить материалы и декоры плана с ценами текущего набора"
+                      @click="exportPlanPricesToExcel">
+                <Icon name="lucide:download" /> Экспорт в Excel
+              </button>
             </div>
             <p v-if="planPriceFormLocked" class="muted" style="margin-bottom:var(--sp-3)">
               Набор применён к расчёту — чтобы менять цены, сначала снимите применение.
@@ -1209,6 +1221,25 @@
               <button class="btn btn-sm btn-ghost" @click="cancelEditing">Отмена</button>
             </template>
           </div>
+          <!-- Явно говорим, что с чем сравниваем: иначе отсутствие колонок
+               прошлых этапов не отличить от «функция не работает». -->
+          <div class="stage-note">
+            <template v-if="stagePricesLoading">Цены предыдущих этапов: загрузка…</template>
+            <template v-else-if="stagePrices.length">
+              Цены предыдущих этапов:
+              <span v-for="(sp, si) in stagePrices" :key="'n-' + sp.stage">
+                <template v-if="si"> · </template>
+                <b>{{ sp.stage }}</b> — {{ sp.rows.length }} материал(ов),
+                {{ sp.scope === 'model+articul' ? 'по модели и артикулу' : 'по модели, артикулу, плану и заданию' }}
+              </span>
+            </template>
+            <template v-else-if="editingVersion.calc_sign === 'ПКПСС'">
+              ПКПСС — первый этап калькулирования, сравнивать не с чем.
+            </template>
+            <template v-else>
+              Расчётов на предыдущих этапах для этой модели и артикула не найдено — сравнивать не с чем.
+            </template>
+          </div>
           <div class="version-editor-table-wrap">
             <table class="version-editor-table">
               <thead>
@@ -1218,6 +1249,11 @@
                   <th>Наименование</th>
                   <th>Артикул материала</th>
                   <th>Свойство</th>
+                  <!-- Цены предыдущих этапов калькулирования: слева от текущих,
+                       только для чтения. Ключ сопоставления — материал
+                       (наименование + артикул + три свойства). -->
+                  <th v-for="sp in stagePrices" :key="'h-' + sp.stage" class="col-num stage-col"
+                      :title="stageColHint(sp)">Цена {{ sp.stage }}, руб.</th>
                   <th class="col-num">Норма</th>
                   <th class="col-num">Цена, руб.</th>
                   <th class="col-num">Цена, USD</th>
@@ -1256,6 +1292,17 @@
                     />
                     <span v-else>{{ vr['Свойство'] }}</span>
                   </td>
+                  <td v-for="sp in stagePrices" :key="'c-' + sp.stage" class="col-num num stage-col">
+                    <template v-if="stagePriceOf(sp, vr) !== null">
+                      {{ fmtPrice4(stagePriceOf(sp, vr)) }}
+                      <span v-if="stagePriceDelta(sp, vr) !== null" class="stage-delta"
+                            :class="stagePriceDelta(sp, vr)! >= 0 ? 'delta-pos' : 'delta-neg'"
+                            :title="'Отличие текущей цены от ' + sp.stage">
+                        {{ (stagePriceDelta(sp, vr)! >= 0 ? '+' : '') + stagePriceDelta(sp, vr)!.toFixed(1) + '%' }}
+                      </span>
+                    </template>
+                    <span v-else class="muted" title="На этом этапе такого материала не было">—</span>
+                  </td>
                   <!-- У декоров нормы и цены материала в источнике нет: их стоимость
                        задаётся суммой в колонках «Сумма» ниже. Поля скрыты намеренно —
                        если их заполнить, произведение затрёт сумму декора. -->
@@ -1270,6 +1317,35 @@
                 </tr>
               </tbody>
             </table>
+
+            <!-- Материалы, которые были на предыдущем этапе, но в текущем
+                 расчёте отсутствуют: в таблицу их не поставить (там строки
+                 текущего расчёта), а знать о них нужно. -->
+            <div v-if="stageOrphans.length" class="stage-orphans">
+              <div v-for="so in stageOrphans" :key="'o-' + so.stage" class="stage-orphan-block">
+                <div class="stage-orphan-head">
+                  На этапе {{ so.stage }} было ещё {{ so.rows.length }} материал(ов), которых нет в этом расчёте
+                </div>
+                <table class="version-editor-table stage-orphan-table">
+                  <thead>
+                    <tr>
+                      <th>Наименование</th>
+                      <th>Артикул материала</th>
+                      <th>Свойство</th>
+                      <th class="col-num">Цена, руб.</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(r, ri) in so.rows" :key="ri">
+                      <td>{{ r['Наименование'] || '—' }}</td>
+                      <td>{{ r['артикул материала'] || '—' }}</td>
+                      <td class="muted">{{ [r['свойство1'], r['свойство2'], r['свойство3']].filter(Boolean).join(' / ') || '—' }}</td>
+                      <td class="col-num num">{{ r.price_rub !== null ? fmtPrice4(r.price_rub) : '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -3314,7 +3390,16 @@ async function startCacheRefresh(endpoint: string) {
     poll();
   } catch (e: any) {
     console.error(`[cost] ${endpoint} failed`, e);
-    showCacheNotification(e?.data?.detail || 'Не удалось запустить обновление');
+    // Код ответа обязателен в тексте. Без него «не удалось запустить обновление»
+    // одинаково выглядит и когда прав нет (403), и когда ручки нет в
+    // задеплоенном образе (404), и когда сервис перезапускается (502) — а
+    // лечится это тремя разными способами.
+    const status = e?.statusCode || e?.status || e?.response?.status;
+    const detail = e?.data?.detail || e?.data?.message || e?.message;
+    showCacheNotification(
+      `Не удалось запустить обновление${status ? ` (HTTP ${status})` : ''}` +
+      `${detail ? `: ${detail}` : ''}`
+    );
     cacheRefreshing.value = false;
   }
 }
@@ -3501,6 +3586,98 @@ const onCommentInput = (absoluteIdx: number, value: string) => {
   changedRows.add(absoluteIdx);
 };
 
+// ── Цены предыдущих этапов калькулирования ──────────────────────────────────
+// ПКПСС — первый этап, сравнивать не с чем. На КПСС показываем цены ПКПСС, на
+// ПФКСС — КПСС и ПКПСС. Сопоставление идёт по ключу материала, поэтому колонки
+// живут прямо в таблице расчёта (закладки не нужны, и ввод в режиме
+// редактирования ничем не перебивается). Состав материалов между этапами
+// совпадает не полностью — непарные строки предыдущего этапа показываем отдельным
+// блоком под таблицей, иначе они бы просто потерялись.
+
+type StagePrices = {
+  stage: string;
+  scope: string;
+  rows: any[];
+  byKey: Map<string, any>;
+};
+
+const stagePrices = ref<StagePrices[]>([]);
+const stagePricesLoading = ref(false);
+
+/** Ключ материала: те же пять полей, что у наборов цен по плану. */
+const stageMatKey = (r: any): string =>
+  ['Наименование', 'артикул материала', 'свойство1', 'свойство2', 'свойство3']
+    .map((f) => (r?.[f] ?? '').toString().trim())
+    .join('');
+
+const stageColHint = (sp: StagePrices): string => {
+  const scope = sp.scope === 'model+articul'
+    ? 'по модели и артикулу'
+    : 'по модели, артикулу, плану и заданию';
+  return `Цена материала на этапе ${sp.stage} (${scope}); «—» — на том этапе такого материала не было`;
+};
+
+const stagePriceOf = (sp: StagePrices, vr: any): number | null => {
+  const hit = sp.byKey.get(stageMatKey(vr));
+  const v = hit ? Number(hit.price_rub) : NaN;
+  return Number.isFinite(v) ? v : null;
+};
+
+/** Насколько текущая цена отличается от цены этапа, в процентах.
+ *
+ * Пустая текущая цена — это «цены нет», а не ноль: иначе строка без цены
+ * показывала бы −100 % к прошлому этапу. */
+const stagePriceDelta = (sp: StagePrices, vr: any): number | null => {
+  const prev = stagePriceOf(sp, vr);
+  const raw = vr['цена материала, руб.'];
+  if (raw === null || raw === undefined || raw === '') return null;
+  const cur = Number(raw);
+  if (prev === null || !Number.isFinite(cur) || prev === 0) return null;
+  const delta = ((cur - prev) / prev) * 100;
+  return Math.abs(delta) < 0.05 ? null : delta;
+};
+
+/** Материалы предыдущего этапа, которых в текущем расчёте нет. */
+const stageOrphans = computed(() => {
+  const ev = editingVersion.value;
+  if (!ev) return [] as { stage: string; rows: any[] }[];
+  const present = new Set(ev.rows.map(stageMatKey));
+  return stagePrices.value
+    .map((sp) => ({ stage: sp.stage, rows: sp.rows.filter((r) => !present.has(stageMatKey(r))) }))
+    .filter((s) => s.rows.length);
+});
+
+async function loadStagePrices(row: any) {
+  stagePrices.value = [];
+  const model = (row['Модель'] ?? '').toString().trim();
+  const articul = (row['Артикул'] ?? '').toString().trim();
+  const calcSign = (row['Признак калькуляции'] ?? '').toString().trim();
+  if (!model || !articul || !calcSign) return;
+  stagePricesLoading.value = true;
+  try {
+    const params = new URLSearchParams({ model, articul, calc_sign: calcSign });
+    const plan = (row['PLAN_ID'] ?? '').toString().trim();
+    const task = (row['Номер задания производства'] ?? '').toString().trim();
+    if (plan) params.set('plan_id', plan);
+    if (task) params.set('task_number', task);
+    const res = await $fetch<{ stages: { stage: string; scope: string; rows: any[] }[] }>(
+      `${apiBase.value}/api/cost/calc-stage-prices?${params.toString()}`,
+      { headers: fetchHeaders.value },
+    );
+    stagePrices.value = (res.stages || []).map((s) => ({
+      ...s,
+      byKey: new Map(s.rows.map((r) => [stageMatKey(r), r])),
+    }));
+  } catch (e: any) {
+    // Цены прошлых этапов — справочная информация: если не отдались, редактор
+    // всё равно должен работать.
+    console.error('[cost] load stage prices failed', e);
+    stagePrices.value = [];
+  } finally {
+    stagePricesLoading.value = false;
+  }
+}
+
 const openVersionEditor = async (row: any) => {
   const idx = getOriginalIndex(row);
   const r = allAggregated.value[idx];
@@ -3557,6 +3734,9 @@ const openVersionEditor = async (row: any) => {
       version_id: null,
       _locked: isRowLocked(r),
     };
+    // Справочные цены прошлых этапов — отдельным запросом и без await в общей
+    // цепочке: редактор открывается сразу, колонки появляются по готовности.
+    void loadStagePrices(r);
   } catch (e: any) {
     console.error('[cost] load version editor failed', e);
     lastError.value = e?.data?.detail || e?.message || String(e);
@@ -3773,7 +3953,11 @@ const submitDraft = async () => {
   }
 };
 
-const closeVersionEditor = () => { editingVersion.value = null; editingTypeCell.value = -1; };
+const closeVersionEditor = () => {
+  editingVersion.value = null;
+  editingTypeCell.value = -1;
+  stagePrices.value = [];
+};
 
 const addVersionRow = () => {
   if (!editingVersion.value) return;
@@ -4291,6 +4475,16 @@ const marginRowClass = (row: any): Record<string, boolean> => {
   return { 'row-margin-ok': dev >= 0, 'row-margin-bad': dev < 0 };
 };
 
+/** ФКСС — история себестоимости, в DWH такие цены не пишутся.
+ *
+ * Бэкенд их и не принимал (`/save-changes` отвечает 400, `/save-batch` молча
+ * фильтрует), но поля цен РФ/КЗ/УЗ и комментарий в таблице оставались
+ * доступными: пользователь вводил значения, а сохранение их выбрасывало без
+ * объяснения. Теперь ввод закрыт там же, где он бессмыслен. */
+const FKSS_HINT = 'ФКСС — история себестоимости: цены не редактируются и в DWH не пишутся';
+const isFkssRow = (row: any): boolean =>
+  (row?.['Признак калькуляции'] ?? '').toString().trim() === 'ФКСС';
+
 const isRowLocked = (row: any): boolean => {
   if (can('cost:admin')) return false;
   if (row._lock_reason) return true;
@@ -4645,6 +4839,78 @@ const exportToExcel = () => {
   a.click();
   URL.revokeObjectURL(url);
 };
+
+/** Выгрузка таблицы цен по плану — материалы и декоры вместе с ценами текущего
+ * набора. Формат тот же, что у экспорта главной таблицы: HTML-таблица под
+ * `application/vnd.ms-excel` (настоящий .xlsx в разделе не собирается нигде).
+ *
+ * Выгружается ровно то, что видно в модалке: цены открытого набора, исходная
+ * цена источника, разброс внутри группы и перекрытие версиями — по ним видно,
+ * почему цена набора могла не доехать до расчёта. */
+function exportPlanPricesToExcel() {
+  const plan = planPricesPlanId.value.trim();
+  if (!plan || (!planPriceRows.value.length && !planDecorRows.value.length)) return;
+
+  const esc = (v: any) => String(v ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const cell = (v: any) => `<td>${esc(v)}</td>`;
+  const numCell = (v: any) => `<td>${v === null || v === undefined || v === '' ? '' : esc(fmtPrice4(v))}</td>`;
+  const head = (cols: string[]) => '<tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>';
+
+  const setTitle = planPriceForm.value.set_id
+    ? `${planPriceForm.value.title || planPriceForm.value.set_id} (${planPriceForm.value.status})`
+    : 'новый набор (не сохранён)';
+
+  let html = '<table border="1">';
+  html += `<tr><td colspan="10"><b>Цены материалов по плану ${esc(plan)}</b></td></tr>`;
+  html += `<tr><td colspan="10">Набор: ${esc(setTitle)}; курс: ${esc(planPriceForm.value.rate ?? '—')}; `
+    + `строк с переопределённой ценой: ${planPriceOverriddenCount.value}</td></tr>`;
+  html += '<tr><td colspan="10"></td></tr>';
+
+  html += '<tr><td colspan="10"><b>Материалы</b></td></tr>';
+  html += head([
+    'Наименование', 'Артикул мат.', 'Свойство 1', 'Свойство 2', 'Свойство 3',
+    'Строк', 'Исх. цена, руб', 'Цена, руб', 'Цена, $',
+    'Разных цен в группе', 'Мин. цена, руб', 'Макс. цена, руб',
+    'Перекрыто версией', 'Цена переопределена',
+  ]);
+  for (const r of planPriceRows.value) {
+    html += '<tr>'
+      + cell(r['Наименование']) + cell(r['артикул материала'])
+      + cell(r['свойство1']) + cell(r['свойство2']) + cell(r['свойство3'])
+      + cell(r.rows_count)
+      + numCell(r.source_price_rub) + numCell(r.price_rub) + numCell(r.price_usd)
+      + cell(r.distinct_prices ?? '') + numCell(r.min_price_rub) + numCell(r.max_price_rub)
+      + cell(r.overridden_rows ? `${r.overridden_rows} из ${r.rows_count}` : '')
+      + cell(planPriceOverridden(r) ? 'да' : '')
+      + '</tr>';
+  }
+
+  html += '<tr><td colspan="10"></td></tr>';
+  html += '<tr><td colspan="10"><b>Декоры</b> — цена задаётся суммой</td></tr>';
+  html += head([
+    'Наименование декора', 'Строк', 'Исх. сумма, руб', 'Сумма, руб', 'Сумма, $',
+    'Перекрыто версией', 'Цена переопределена',
+  ]);
+  for (const r of planDecorRows.value) {
+    html += '<tr>'
+      + cell(r['Декоры, наименование'])
+      + cell(r.rows_count)
+      + numCell(r.source_price_rub) + numCell(r.price_rub) + numCell(r.price_usd)
+      + cell(r.overridden_rows ? `${r.overridden_rows} из ${r.rows_count}` : '')
+      + cell(planPriceOverridden(r) ? 'да' : '')
+      + '</tr>';
+  }
+  html += '</table>';
+
+  const blob = new Blob(['﻿' + html], { type: 'application/vnd.ms-excel' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `PlanPrices_${plan}_${new Date().toISOString().slice(0, 10)}.xls`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 // Ctrl+C при пустом выделении — копируем всю таблицу как TSV
 const onCopyShortcut = (e: KeyboardEvent) => {
@@ -6050,6 +6316,26 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .version-editor-table { width:100%; border-collapse:collapse; font-size:13px; }
 .version-editor-table th, .version-editor-table td { padding:4px 6px; border:1px solid var(--border-color, #e5e7eb); text-align:left; white-space:nowrap; }
 .version-editor-table .col-chk { width:32px; text-align:center; }
+
+/* Цены предыдущих этапов — справочные, поэтому визуально отделены от текущих */
+.version-editor-table .stage-col {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--text-muted);
+}
+.version-editor-table th.stage-col { color: var(--text); font-style: italic; }
+.stage-delta { font-size: var(--fs-2xs, 10px); margin-left: 4px; }
+
+.stage-note {
+  padding: 6px 16px;
+  font-size: var(--fs-xs, 12px);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+}
+.stage-note b { color: var(--text); }
+
+.stage-orphans { margin-top: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-3); }
+.stage-orphan-head { font-size: var(--fs-xs); color: var(--text-muted); margin-bottom: 4px; }
+.stage-orphan-table { width: auto; min-width: 480px; }
 .version-editor-table .col-num { text-align:right; }
 .editor-input { width:100%; border:1px solid transparent; padding:2px 4px; font-size:13px; background:transparent; }
 .editor-input:focus { border-color:var(--accent-color, #4338ca); outline:none; background:#fff; }
