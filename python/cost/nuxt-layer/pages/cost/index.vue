@@ -65,6 +65,24 @@
             <span>Только строки без оптовой цены</span>
           </label>
 
+          <label class="filter-checkbox"
+                 :class="{ 'is-forced': hideDwhSentForced }"
+                 :title="hideDwhSentForced
+                   ? 'Для роли Калькулятор и ПЭО фильтр включён постоянно: в отправленных в DWH калькуляциях править и согласовывать нечего'
+                   : 'Скрыть калькуляции, уже отправленные в DWH (📤)'">
+            <input
+              type="checkbox"
+              :checked="hideDwhSent"
+              :disabled="hideDwhSentForced"
+              @change="hideDwhSentManual = ($event.target as HTMLInputElement).checked"
+            />
+            <span>
+              Скрыть отправленные в DWH
+              <template v-if="dwhSentHiddenCount"> ({{ dwhSentHiddenCount }})</template>
+              <template v-if="hideDwhSentForced"> · для вашей роли всегда</template>
+            </span>
+          </label>
+
           <label class="peo-filter-label">
             Статус согласования
             <select v-model="peoFilter" class="peo-filter-select" @change="onPeoFilterChange">
@@ -416,16 +434,16 @@
               <th v-if="isVisible('sum_cost') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, USD.' }" @click="toggleSort('sum_Себестоимость, USD.')">
                 Себест. ($)<span v-if="sortField === 'sum_Себестоимость, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('calc_markup')" class="col-num" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
+              <th v-if="isVisible('calc_markup')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
                 Рентабельность <template v-if="showUSD">($)</template><template v-else>(руб)</template><span v-if="sortField === 'calc_markup_rub'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('calc_markup_pct')" class="col-num" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
+              <th v-if="isVisible('calc_markup_pct')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
                 Рентабельность (%)<span v-if="sortField === 'calc_markup_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('calc_margin_pct')" class="col-num" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
+              <th v-if="isVisible('calc_margin_pct')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
                 Маржа (%)<span v-if="sortField === 'calc_margin_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('calc_margin_deviation')" class="col-num" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
+              <th v-if="isVisible('calc_margin_deviation')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
                 Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="isVisible('peo')" class="col-peo">ПЭО</th>
@@ -571,12 +589,12 @@
               <td v-if="isVisible('sum_knitting') && showUSD" class="col-num num">{{ fmt(row['sum_Вязание, USD.']) }}</td>
               <td v-if="isVisible('sum_cost') && !showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
               <td v-if="isVisible('sum_cost') && showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
-              <td v-if="isVisible('calc_markup')" class="col-num num">{{ fmt(calc(row, showUSD).markupRub) }}</td>
-              <td v-if="isVisible('calc_markup_pct')" class="col-num num" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
+              <td v-if="isVisible('calc_markup')" class="col-num num col-metric">{{ fmt(calc(row, showUSD).markupRub) }}</td>
+              <td v-if="isVisible('calc_markup_pct')" class="col-num num col-metric" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
                 {{ calc(row, showUSD).markupPct.toFixed(1) }}%
               </td>
-              <td v-if="isVisible('calc_margin_pct')" class="col-num num">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
-              <td v-if="isVisible('calc_margin_deviation')" class="col-num num" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
+              <td v-if="isVisible('calc_margin_pct')" class="col-num num col-metric">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
+              <td v-if="isVisible('calc_margin_deviation')" class="col-num num col-metric" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
               <td v-if="isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark'), 'peo-active': approvalTarget === row }">
                 <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟢</span>
                 <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🔴</span>
@@ -1965,6 +1983,29 @@ watch(roles, (list) => {
   if (totalAllRecords.value > 0) loadData();
 }, { immediate: true, deep: true });
 
+/** Скрыть калькуляции, уже отправленные в DWH (значок 📤, флаг `_has_audit`).
+ *
+ * Калькулятору и ПЭО такие строки в работе только мешают: править в них нечего
+ * (строка заблокирована) и статус ПЭО уже не поставить — поэтому у этих ролей
+ * фильтр включён постоянно и не отключается. Остальным даём обычный переключатель,
+ * по умолчанию выключенный, чтобы картина базы не менялась у них незаметно.
+ *
+ * Роль, как и у дефолта бренд-менеджера, определяем по имени системной роли:
+ * права админ может переназначить, а имя не меняют. */
+const DWH_HIDDEN_ROLES = ['Калькулятор', 'ПЭО'];
+
+const hideDwhSentForced = computed(() =>
+  (roles.value || []).some((r: any) => DWH_HIDDEN_ROLES.includes(String(r?.role_name || '').trim()))
+);
+const hideDwhSentManual = ref(false);
+const hideDwhSent = computed(() => hideDwhSentForced.value || hideDwhSentManual.value);
+
+/** Сколько строк текущей выборки скрыто фильтром — иначе «пропажа» строк выглядит
+ * как потеря данных. */
+const dwhSentHiddenCount = computed(() =>
+  hideDwhSent.value ? allAggregated.value.filter((r: any) => r._has_audit).length : 0
+);
+
 // ── Data loading ────────────────────────────────────────────────────────────
 
 const allAggregated = ref<any[]>([]);
@@ -2040,6 +2081,8 @@ function onColFilterChange(changedKey: string) {
 
 const filteredAggregated = computed(() => {
   return allAggregated.value.filter((row: any) => {
+    // Отправленные в DWH — вне работы: править и согласовывать в них нечего.
+    if (hideDwhSent.value && row._has_audit) return false;
     return columnFilterConfig.every((cfg) => {
       const sel = columnFilters[cfg.key];
       if (!sel || sel.length === 0) return true;
@@ -5974,14 +6017,43 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   white-space: nowrap;
 }
 
+/* Сетка. Hairline по дизайн-системе: тонкая линия токеном --border, без теней.
+   Внешнюю рамку не рисуем — таблица и так лежит в карточке с рамкой. */
+.data-table th,
+.data-table td {
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.data-table th:last-child,
+.data-table td:last-child { border-right: none; }
+.data-table tbody tr:last-child td { border-bottom: none; }
+
+/* Рентабельность и маржинальность — ключевые метрики строки, поэтому они
+   заметно жирнее остальных чисел. */
+.data-table .col-metric {
+  font-weight: var(--fw-semibold, 600);
+}
+.data-table th.col-metric {
+  font-weight: var(--fw-bold, 700);
+}
+
 /* Sticky/frozen columns for the main aggregated table (positioning via inline styles) */
 #cost-table-1.data-table .sticky-col {
   position: sticky;
   background: var(--bg-surface);
   z-index: 4;
 }
+/* На закреплённых колонках collapsed-границы не рисуются (ячейка уезжает из
+   потока), поэтому линии сетки им даём внутренней тенью. */
+#cost-table-1.data-table th.sticky-col,
+#cost-table-1.data-table td.sticky-col {
+  border-right: none;
+  box-shadow: inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border);
+}
+/* Последняя закреплённая колонка сохраняет тень-разделитель — и линию сетки
+   тоже, иначе стык с прокручиваемой частью выглядит пустым. */
 #cost-table-1.data-table .sticky-col.is-last-sticky {
-  box-shadow: 3px 0 6px rgba(0, 0, 0, 0.06);
+  box-shadow: inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border), 3px 0 6px rgba(0, 0, 0, 0.06);
 }
 /* Restore selected/hover/sorted backgrounds on sticky cells */
 #cost-table-1.data-table tr.selected td.sticky-col {
@@ -6256,6 +6328,10 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   height: 16px;
   cursor: pointer;
 }
+/* Фильтр, включённый ролью: видно, что он не выключается, но выглядит не
+   «сломанным», а обязательным. */
+.filter-checkbox.is-forced { cursor: default; color: var(--text-muted); }
+.filter-checkbox.is-forced input[type="checkbox"] { cursor: default; }
 .peo-filter-label {
   display: inline-flex;
   align-items: center;
