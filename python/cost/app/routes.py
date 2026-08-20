@@ -386,8 +386,11 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         where_parts.append(f'"дата расчета" <= ${len(params) + 1}')
         params.append(date.fromisoformat(payload["date_to"]))
 
-    if payload.get("no_wholesale_only"):
-        where_parts.append('("Отпускная цена по уровню, руб" IS NULL OR "Отпускная цена по уровню, руб" = 0)')
+    # Фильтр «только строки без оптовой цены» здесь НЕ применяется: цены не
+    # хранятся в cost_data_cache, а накладываются на выдачу из pending/DWH ниже.
+    # Условие в WHERE отсекало по пустой цене источника и пропускало калькуляции,
+    # где цена уже установлена и видна в таблице. Фильтр перенесён после
+    # наложения цен — см. блок «Фильтр по отсутствию отпускной цены».
 
     for key, col in MULTI_FILTER_COLUMNS.items():
         values = payload.get(key) or []
@@ -941,6 +944,23 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                     row["_lock_reason"] = None
     except Exception:
         pass  # lock state is advisory — don't break the page
+
+    # ── Фильтр по отсутствию отпускной цены ────────────────────────────────
+    # Считаем по ИТОГОВОМУ значению, то есть после наложения цен из
+    # cost_price_pending и CostHistory_Changes: в самом кэше отпускной цены нет
+    # почти нигде, и фильтр по источнику показывал строки с уже установленной
+    # ценой (в таблице у них заполнен «Сред. опт» и стоит значок 📤).
+    if payload.get("no_wholesale_only"):
+        def _has_no_wholesale(row: dict) -> bool:
+            value = row.get("avg_Отпускная цена по уровню, руб")
+            if value is None:
+                return True
+            try:
+                return float(value) == 0
+            except (TypeError, ValueError):
+                return True
+
+        data = [r for r in data if _has_no_wholesale(r)]
 
     # ── Filter by PEO approval status (sent by frontend peoFilter) ─────────
     peo_filter = (payload.get("peo_filter") or "").strip()
