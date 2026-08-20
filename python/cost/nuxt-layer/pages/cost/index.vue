@@ -3581,10 +3581,11 @@ function getMarkupOptions(row: any): { value: string; label: string }[] {
   return Array.from(resultsMap.values());
 }
 
-/** Целевая наценка по category level01: Мальчикам/Девочкам → 30%, остальное → 40%. */
+/** Целевая наценка по category level01: Мальчикам/Девочкам/Ясли → 30%, остальное → 40%.
+ * (Ясли добавлены 19.08.2026 по просьбе заказчика.) */
+const TARGET_MARKUP_30 = new Set(['мальчикам', 'девочкам', 'ясли']);
 function getTargetMarkup(level01: string): number {
-  const v = (level01 || '').toLowerCase();
-  return (v === 'мальчикам' || v === 'девочкам') ? 30 : 40;
+  return TARGET_MARKUP_30.has((level01 || '').trim().toLowerCase()) ? 30 : 40;
 }
 
 /** Найти наценку из списка, максимально близкую к целевой. */
