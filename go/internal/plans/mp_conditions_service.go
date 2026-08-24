@@ -202,6 +202,15 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 	if !preview && !cardEditable(card) {
 		return MpRecalcResult{}, errors.New("период закрыт: пересчёт утверждённой версии невозможен")
 	}
+	// Пересчёт «от условий» — это inverse-направление (ТЗ §3.1). В legacy-режиме
+	// суммы приходят из источника и пересчитывать их от долей нельзя: получилось бы
+	// молчаливое переписывание чисел другим алгоритмом. Режим включается на
+	// карточке (PUT /api/plans/cards/{id}/calc-mode).
+	if card.CalcMode != CalcInverse {
+		return MpRecalcResult{}, errors.New(
+			"карточка считается в режиме «от сумм»: пересчёт расходной части от условий " +
+				"доступен после включения режима «от условий» (инверсия) на карточке")
+	}
 	conds, err := s.store.Conditions(ctx, card.PlID, card.Year, card.Month)
 	if err != nil {
 		return MpRecalcResult{}, err

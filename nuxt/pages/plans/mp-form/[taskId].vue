@@ -4,6 +4,15 @@
   PL), колонки = площадки задания + Итого. Менеджер вводит ПРОДАЖИ с НДС (1046),
   правит %СПП/наценку и статьи затрат — производное считается ВЖИВУЮ (useMpCascade,
   зеркало go/internal/plans/mpform_calc.go). Факт/стратегия — read-only. ТЗ §7.2.3.
+
+  Скорректированное ТЗ (§3.1, §3.4) добавило второе направление расчёта: в режиме
+  inverse вводятся только продажи, а %СПП, наценки, себестоимость и суммы статей
+  считаются из реестра «Условия площадки». Режим приходит с сервера в calc_mode —
+  клиент его не выбирает, потому что закрытые периоды обязаны считаться тем
+  алгоритмом, которым были утверждены.
+
+  Здесь же живёт оболочка процесса (CardProcessPanel) и карточка площадки
+  (PlatformCard, ТЗ §3.2): «провалиться в площадку, заполнить, вернуться».
 -->
 <template>
   <div class="page-mpf">
@@ -13,11 +22,23 @@
         <p class="page-subtitle">
           {{ form?.task.title }} · {{ form?.year }}-{{ String(form?.month || 0).padStart(2, "0") }} ·
           показано {{ visiblePlatforms.length }} из {{ form?.platforms.length || 0 }} площадок ·
-          НДС {{ Math.round((form?.vat || 0) * 100) }}% · {{ currency }}
+          НДС {{ Math.round((form?.vat || 0) * 100) }}% · {{ currency }} ·
+          <span class="mode-tag" :class="{ inv: isInverse }" :title="modeHint">{{ modeLabel }}</span>
         </p>
       </div>
       <div class="page-actions">
         <NuxtLink :to="backLink" class="btn btn-ghost"><Icon name="lucide:arrow-left" /> К процессу</NuxtLink>
+        <!-- Условия и общие затраты — соседние экраны того же процесса; без ссылок
+             из формы их не найти, а в inverse без них форма не считается. -->
+        <NuxtLink v-if="cardId" :to="`/plans/mp-conditions/${cardId}`" class="btn btn-sm btn-ghost">
+          <Icon name="lucide:sliders-horizontal" /> Условия площадок
+        </NuxtLink>
+        <NuxtLink v-if="cardId" :to="`/plans/mp-common-costs/${cardId}`" class="btn btn-sm btn-ghost">
+          <Icon name="lucide:layers" /> Общие затраты
+        </NuxtLink>
+        <button v-if="cardId" class="btn btn-sm btn-ghost" :disabled="checking" @click="doValidate">
+          <Icon name="lucide:shield-check" :class="{ spin: checking }" /> Проверить
+        </button>
         <label class="cur-switch" title="Валюта отображения (хранение — RUB)">
           <select v-model="currency" class="select select-sm" :disabled="dirty" @change="load">
             <option value="RUB">RUB</option>
@@ -37,6 +58,51 @@
     <p v-if="error" class="banner banner-neg">{{ error }}</p>
     <p v-if="note" class="banner banner-pos">{{ note }}</p>
     <p v-if="form && !canEdit" class="banner banner-warn">Только просмотр — вы не исполнитель этого задания.</p>
+
+    <!-- Оболочка процесса: статус карточки, шаги, возврат, публикация. Отправку
+         на согласование блокируем по результату валидаций (ТЗ §7 — блокирующие
+         замечания не пропускают форму дальше). -->
+    <CardProcessPanel
+      v-if="cardId"
+      :card-id="cardId"
+      :can-submit="canSubmit"
+      :submit-hint="submitHint"
+    />
+
+    <section v-if="checkResult" class="card check-card">
+      <div class="card-header">
+        <span class="card-title">
+          Проверка формы — {{ checkResult.issues.length ? `замечаний: ${checkResult.issues.length}` : "замечаний нет" }}
+        </span>
+        <span class="badge" :class="checkResult.can_submit ? 'badge-pos' : 'badge-neg'">
+          {{ checkResult.can_submit ? "можно отправлять" : "отправка заблокирована" }}
+        </span>
+      </div>
+      <table v-if="checkResult.issues.length" class="data-table compact">
+        <thead><tr><th class="th-code">Код</th><th>Площадка</th><th>Замечание</th></tr></thead>
+        <tbody>
+          <tr v-for="(i, idx) in checkResult.issues" :key="idx" :class="i.level === 'blocking' ? 'row-block' : 'row-warn'">
+            <td><span class="badge" :class="i.level === 'blocking' ? 'badge-neg' : 'badge-warn'">{{ i.code }}</span></td>
+            <td>
+              <span v-if="i.name_cfo || i.code_cfo">{{ i.name_cfo || "—" }}</span>
+              <span v-else class="muted">форма целиком</span>
+              <span v-if="i.code_cfo" class="cfo-inline">ЦФО {{ i.code_cfo }}</span>
+            </td>
+            <td>
+              {{ i.message }}
+              <!-- ТЗ §6.1: отклонение сверх порога само не блокирует, но требует
+                   обоснования — иначе согласующий не поймёт, что изменилось. -->
+              <span v-if="i.needs_why" class="need-note">требуется комментарий (обоснование в реестре условий)</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="check-ok">Блокирующих замечаний нет — форму можно отправлять на согласование.</p>
+      <p v-if="checkResult.needs_reason?.length" class="check-why">
+        Без обоснования останутся {{ checkResult.needs_reason.length }} изменений условий —
+        <NuxtLink v-if="cardId" :to="`/plans/mp-conditions/${cardId}`" class="link">заполнить причины</NuxtLink>.
+      </p>
+    </section>
 
     <!-- Одна форма на все МП: фильтры сужают показ, ввод по скрытым площадкам
          сохраняется как есть (фильтр — только представление). -->
@@ -77,7 +143,12 @@
       <span class="lg lg-input">ввод</span>
       <span class="lg lg-calced">расчёт (правится)</span>
       <span class="lg lg-calc">расчёт</span>
-      <span class="lg-hint">Менеджер задаёт «Продажи с НДС», %СПП и статьи затрат — остальное считается автоматически.</span>
+      <span v-if="isInverse" class="lg-hint">
+        Режим «расчёт от условий»: руками вводятся только продажи с НДС. %СПП, наценки и
+        себестоимость правятся в реестре условий; сумму статьи затрат можно переопределить
+        вручную — автопересчёт её не затрёт.
+      </span>
+      <span v-else class="lg-hint">Менеджер задаёт «Продажи с НДС», %СПП и статьи затрат — остальное считается автоматически.</span>
     </div>
 
     <!-- Первая загрузка: контур будущей таблицы. Форма тянет факт/стратегию/таргет
@@ -106,8 +177,14 @@
             </tr>
             <tr>
               <th class="col-line">Показатель</th>
+              <!-- Заголовок колонки — вход в карточку площадки (ТЗ §3.2): в узкой
+                   колонке не видно ни условий, ни сравнения со сценариями. -->
               <th v-for="p in visiblePlatforms" :key="p.code_cfo" class="col-plat num">
-                {{ p.name || p.code_cfo }}<span class="cfo">ЦФО {{ p.code_cfo }}</span>
+                <button type="button" class="plat-btn" :title="`Открыть карточку площадки «${p.name || p.code_cfo}»`" @click="openPlatform(p)">
+                  {{ p.name || p.code_cfo }}
+                  <Icon name="lucide:maximize-2" class="plat-ic" />
+                </button>
+                <span class="cfo">ЦФО {{ p.code_cfo }}</span>
               </th>
               <th class="col-total num">Итого<span v-if="totalScoped" class="cfo">по фильтру</span></th>
             </tr>
@@ -144,11 +221,20 @@
                     <span v-if="prevOf(p.code_cfo, line.block_type) != null" class="prev">пр. год: {{ fmt(line, prevOf(p.code_cfo, line.block_type)) }}</span>
                     <span v-if="stratOf(p.code_cfo, line.block_type) != null" class="strat">страт: {{ fmt(line, stratOf(p.code_cfo, line.block_type)) }}</span>
                     <span v-if="targetOf(p.code_cfo, line.block_type) != null" class="target">таргет: {{ fmt(line, targetOf(p.code_cfo, line.block_type)) }}</span>
+                    <!-- В inverse суммы статей — производные от доли: показываем и долю
+                         из условий, и посчитанную по ней сумму. Пустое поле = «берём
+                         расчёт», заполненное = ручное переопределение (ТЗ §7.2). -->
+                    <span v-if="isInverse && line.cost_line" class="share">доля {{ fmtPct(condShare(line, p.code_cfo)) }}</span>
+                    <span v-if="isInverse && line.cost_line && displayInput(line, p.code_cfo) == null" class="calc-hint">
+                      по доле: {{ fmtMoney(cellValue(line, p.code_cfo)) }}
+                    </span>
                     <input v-if="isCorr(p.code_cfo, line.block_type)" v-model="corr[key(p.code_cfo, line.block_type)]" class="corr-reason" :disabled="!canEdit" placeholder="причина корректировки…" />
                   </template>
                   <template v-else>
                     <span class="calc-val" :class="{ neg: cellValue(line, p.code_cfo) < 0 }">{{ fmt(line, cellValue(line, p.code_cfo)) }}</span>
-                    <span v-if="line.cost_line" class="share">доля {{ fmtPct(shareOf(line, p.code_cfo)) }}</span>
+                    <!-- Доля статьи: в inverse она ЗАДАНА условиями площадки, поэтому
+                         показываем её из реестра, а не считаем обратно от суммы. -->
+                    <span v-if="line.cost_line" class="share">доля {{ fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}</span>
                   </template>
                 </td>
 
@@ -169,23 +255,90 @@
             </template>
             <tr v-if="!form.platforms.length"><td :colspan="2" class="empty-cell">У задания нет площадок (ЦФО не размечены).</td></tr>
           </tbody>
+
+          <!-- Итоги формы. Считаются по ВСЕМ площадкам задания, а не по фильтру:
+               дефект прототипа (доля ПЗ в обороте 27,92 % вместо 26,32 % из-за
+               того, что комиссии вычитались только у WB и Ozon) не воспроизводится
+               — ТЗ §1 п.25, отдельный пункт приёмки. -->
+          <tfoot v-if="form.platforms.length">
+            <tr class="tot-row">
+              <td class="col-line">PL формы (сумма)</td>
+              <td :colspan="visiblePlatforms.length" class="tot-note">
+                = цена площадки без НДС − себестоимость отпускная − общие затраты − прямые затраты + комиссии
+              </td>
+              <td class="total-cell strong">{{ fmtMoney(formTotals.pl) }}</td>
+            </tr>
+            <tr class="tot-row">
+              <td class="col-line">PL формы, %</td>
+              <td :colspan="visiblePlatforms.length" class="tot-note">от цены площадки без НДС</td>
+              <td class="total-cell strong">{{ fmtPct(formTotals.plPct) }}</td>
+            </tr>
+            <tr class="tot-row">
+              <td class="col-line">Доля прямых затрат в обороте</td>
+              <td :colspan="visiblePlatforms.length" class="tot-note">
+                по всем {{ form.platforms.length }} площадкам формы (не по фильтру); комиссии вычитаются у каждой площадки
+              </td>
+              <td class="total-cell strong">{{ fmtPct(formTotals.directShareTurnover) }}</td>
+            </tr>
+            <tr class="tot-row">
+              <td class="col-line">Общие затраты по МП</td>
+              <td :colspan="visiblePlatforms.length" class="tot-note">
+                <template v-if="cardId">
+                  вводятся отдельно —
+                  <NuxtLink :to="`/plans/mp-common-costs/${cardId}`" class="link">7 групп статей PL</NuxtLink>
+                  <span v-if="commonCostsError" class="tot-warn">· {{ commonCostsError }}</span>
+                </template>
+                <template v-else>карточка процесса не создана — общие затраты не подключены</template>
+              </td>
+              <td class="total-cell">{{ fmtMoney(commonCostTotal) }}</td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>
+
+    <!-- Карточка площадки: тот же ввод, что в сетке, но с условиями и сценариями. -->
+    <PlatformCard
+      :open="!!platformModal"
+      :platform="platformModal"
+      :lines="form?.lines || []"
+      :cells="form?.cells || []"
+      :values="platformModal ? platformValues[platformModal.code_cfo] || {} : {}"
+      :inputs="platformModal ? platformInputs(platformModal.code_cfo) : {}"
+      :conditions="platformModal ? condOf(platformModal.code_cfo) : null"
+      :inverse="isInverse"
+      :editable="canEdit"
+      :currency="currency"
+      :vat-fallback="form?.vat || 0.2"
+      :card-id="cardId"
+      @close="platformModal = null"
+      @input="onPlatformInput"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { useTasks, type MpTaskForm, type MpLine, type MpSaveRow, type MpFormCell } from "~/composables/useTasks";
-import { computePlatform, vatByCountry, B } from "~/composables/useMpCascade";
+import { useTasks, type MpTaskForm, type MpLine, type MpSaveRow, type MpFormCell, type MpFormPlatform } from "~/composables/useTasks";
+import {
+  computePlatform,
+  computePlatformInverse,
+  computeFormTotals,
+  vatByCountry,
+  B,
+  type MpConditions
+} from "~/composables/useMpCascade";
+import { useMpConditions, type MpIssue } from "~/composables/useMpConditions";
 import { num } from "~/utils/format";
 import NumberField from "~/components/NumberField.vue";
+import CardProcessPanel from "~/components/plans/CardProcessPanel.vue";
+import PlatformCard from "~/components/plans/PlatformCard.vue";
 
 definePageMeta({ middleware: "scope-guard" });
 
 const route = useRoute();
 const taskId = Number(route.params.taskId);
 const api = useTasks();
+const cardApi = useMpConditions();
 const { user } = useAuth();
 const { hasRole, isAdmin } = useScope();
 
@@ -202,6 +355,47 @@ const dirty = ref(false);
 // Переключение заблокировано при несохранённых правках — иначе они потеряются.
 const currency = ref("RUB");
 const fileInput = ref<HTMLInputElement | null>(null);
+
+// ── Режим расчёта, карточка процесса, валидации ──
+const isInverse = computed(() => form.value?.calc_mode === "inverse");
+const cardId = computed(() => form.value?.card_id || 0);
+const modeLabel = computed(() => (isInverse.value ? "расчёт от условий" : "расчёт от сумм"));
+const modeHint = computed(() =>
+  isInverse.value
+    ? "Инверсия ТЗ §3.1: продажи + условия площадки → расходная часть"
+    : "Прежнее направление: суммы → доли и наценки"
+);
+const checking = ref(false);
+const checkResult = ref<{ issues: MpIssue[]; blocking: boolean; needs_reason: MpIssue[]; can_submit: boolean } | null>(null);
+// До первой проверки отправку не блокируем: иначе форма без загруженных валидаций
+// выглядела бы сломанной. Проверка сама выставляет can_submit.
+const canSubmit = computed(() => (checkResult.value ? checkResult.value.can_submit : true));
+const submitHint = computed(() => {
+  if (!checkResult.value || checkResult.value.can_submit) return "";
+  if (checkResult.value.blocking) return "Есть блокирующие замечания — устраните их и проверьте снова";
+  return "Часть изменений условий без обоснования — заполните причины в реестре условий";
+});
+
+// Общие затраты (7 групп статей PL) в PL формы не считаются от продаж, а вводятся
+// на отдельном экране; здесь нужен только их итог.
+const commonCostTotal = ref(0);
+const commonCostsError = ref("");
+
+// Карточка площадки (ТЗ §3.2).
+const platformModal = ref<MpFormPlatform | null>(null);
+const openPlatform = (p: MpFormPlatform) => { platformModal.value = p; };
+const platformInputs = (cfo: number): Record<string, number | null> => {
+  const out: Record<string, number | null> = {};
+  for (const l of form.value?.lines || []) {
+    if (l.scope === "platform") out[l.block_type] = inputs[key(cfo, l.block_type)] ?? null;
+  }
+  return out;
+};
+const onPlatformInput = (block: string, v: number | null) => {
+  if (!platformModal.value) return;
+  inputs[key(platformModal.value.code_cfo, block)] = v;
+  dirty.value = true;
+};
 
 const key = (cfo: number, block: string) => `${cfo}:${block}`;
 const lineMap = computed<Record<string, MpLine>>(() => {
@@ -268,7 +462,15 @@ const canEdit = computed(() => {
 });
 const backLink = computed(() => (form.value ? `/plans/process/${form.value.task.pl_id}` : "/plans"));
 
+// Условия площадки (приходят только в inverse-режиме).
+const condOf = (cfo: number): MpConditions | null => form.value?.conditions?.[cfo] ?? null;
+// Доля статьи из условий — она ЗАДАНА, а не выведена из суммы.
+const condShare = (line: MpLine, cfo: number): number => condOf(cfo)?.shares?.[line.block_type] ?? 0;
+
 // Живой пересчёт каскада по каждой площадке из введённых значений.
+// Направление берём из calc_mode карточки: в inverse расходная часть считается из
+// условий площадки, а введённые суммы статей работают как переопределения
+// (зеркало go/internal/plans/task_mpform.go → platformValues).
 const platformValues = computed<Record<number, Record<string, number>>>(() => {
   const map: Record<number, Record<string, number>> = {};
   for (const p of form.value?.platforms || []) {
@@ -276,10 +478,20 @@ const platformValues = computed<Record<number, Record<string, number>>>(() => {
     for (const l of form.value?.lines || []) {
       if (l.scope === "platform" && l.editable) inp[l.block_type] = inputs[key(p.code_cfo, l.block_type)];
     }
-    map[p.code_cfo] = computePlatform(inp, vatByCountry(p.country));
+    const vat = vatByCountry(p.country);
+    const cond = condOf(p.code_cfo);
+    map[p.code_cfo] = isInverse.value && cond ? computePlatformInverse(inp, cond, vat) : computePlatform(inp, vat);
   }
   return map;
 });
+
+// Итоги формы — по ВСЕМ площадкам задания (ТЗ §1 п.25), включая скрытые фильтром.
+const formTotals = computed(() =>
+  computeFormTotals(
+    (form.value?.platforms || []).map((p) => platformValues.value[p.code_cfo] || {}),
+    commonCostTotal.value
+  )
+);
 
 const cellValue = (line: MpLine, cfo: number): number => platformValues.value[cfo]?.[line.block_type] ?? 0;
 // Итог считается по ВИДИМЫМ площадкам: отфильтровав срез, пользователь ждёт итог
@@ -359,6 +571,13 @@ const seedFromCells = () => {
     if (!line?.editable) continue;
     if (line.scope === "total") {
       totals[c.block_type] = c.tactic ?? c.value ?? 0;
+    } else if (isInverse.value && line.kind === "calc_editable") {
+      // Суммы статей в inverse — расчётные. Сеять их фактом нельзя: тогда каждая
+      // статья сразу стала бы «ручным переопределением» и доля из условий никогда
+      // бы не применилась. Переопределением считается только сохранённая тактика
+      // (так же решает сервер: overrides берутся из tactic, не из факта).
+      inputs[key(c.code_cfo, c.block_type)] = c.tactic ?? null;
+      if (c.is_manual) corr[key(c.code_cfo, c.block_type)] = c.reason || "";
     } else {
       const seed = c.tactic ?? (SEED_FROM_VALUE.has(c.block_type) ? c.value : c.fact) ?? 0;
       inputs[key(c.code_cfo, c.block_type)] = seed;
@@ -391,8 +610,39 @@ const load = async () => {
     form.value = await api.mpForm(taskId, currency.value);
     seedFromCells();
     dirty.value = false;
+    await loadCommonCosts();
   } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка загрузки формы"; }
   finally { loading.value = false; }
+};
+
+// Итог общих затрат нужен только для строки PL формы. Недоступность этой ручки не
+// должна ломать ввод: показываем ноль и подпись, что итог не подтянулся.
+const loadCommonCosts = async () => {
+  commonCostTotal.value = 0;
+  commonCostsError.value = "";
+  if (!cardId.value) return;
+  try {
+    const cc = await cardApi.commonCosts(cardId.value);
+    commonCostTotal.value = (cc.values || []).reduce((s, v) => s + (v.amount || 0), 0);
+  } catch {
+    commonCostsError.value = "итог общих затрат не загрузился";
+  }
+};
+
+const doValidate = async () => {
+  if (!cardId.value) return;
+  checking.value = true;
+  error.value = "";
+  note.value = "";
+  try {
+    checkResult.value = await cardApi.validate(cardId.value);
+    if (checkResult.value.can_submit) note.value = "Проверка пройдена: блокирующих замечаний нет.";
+  } catch (e: unknown) {
+    const d = typeof e === "object" && e && "data" in e ? (e as { data?: { error?: string } }).data : null;
+    error.value = d?.error || (e instanceof Error ? e.message : "Проверка не выполнена");
+  } finally {
+    checking.value = false;
+  }
 };
 
 const save = async () => {
@@ -478,7 +728,10 @@ onMounted(load);
 .mp-grid th, .mp-grid td { vertical-align: top; }
 .col-line { min-width: 300px; position: sticky; left: 0; background: var(--bg-surface); z-index: 1; }
 .col-plat, .col-total { min-width: 176px; text-align: right; }
-.cfo { display: block; font-size: var(--fs-2xs); color: var(--text-muted); font-family: var(--font-mono); font-weight: var(--fw-normal); }
+/* --fw-regular, а не несуществующий --fw-normal: с нерезолвящимся токеном
+   свойство отбрасывается и код ЦФО наследует жирный шрифт заголовка колонки,
+   переставая быть вторичным атрибутом. */
+.cfo { display: block; font-size: var(--fs-2xs); color: var(--text-muted); font-family: var(--font-mono); font-weight: var(--fw-regular); }
 
 .sec-row td { background: var(--bg-tonal); font-weight: var(--fw-bold); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--text-secondary); padding: var(--sp-2) var(--sp-4); position: sticky; left: 0; }
 .line-row td { border-top: 1px solid var(--border); padding: var(--sp-2) var(--sp-4); }
@@ -523,6 +776,34 @@ onMounted(load);
 .muted { color: var(--text-muted); }
 
 .total-cell { text-align: right; background: var(--bg-tonal); font-weight: var(--fw-medium); }
+
+/* ── режим расчёта, вход в площадку, итоги формы, проверка ── */
+.mode-tag { color: var(--text-muted); }
+.mode-tag.inv { color: var(--accent); font-weight: var(--fw-semibold); }
+.plat-btn {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  font: inherit; color: var(--text-strong);
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.plat-btn:hover { color: var(--accent); }
+.plat-ic { width: 12px; height: 12px; color: var(--text-muted); }
+.plat-btn:hover .plat-ic { color: var(--accent); }
+.calc-hint { display: block; font-size: var(--fs-2xs); font-family: var(--font-mono); color: var(--accent); margin-top: 2px; }
+.tot-row td { border-top: 1px solid var(--border); padding: var(--sp-2) var(--sp-4); background: var(--bg-surface-2); }
+.tot-row .col-line { font-weight: var(--fw-semibold); }
+.tot-note { text-align: left; font-size: var(--fs-2xs); color: var(--text-muted); }
+.tot-warn { color: var(--warn); }
+.tot-row .total-cell { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.strong { font-weight: var(--fw-semibold); }
+.check-card { padding: 0; overflow: hidden; }
+.check-card .th-code { width: 90px; }
+.check-ok { padding: var(--sp-4); font-size: var(--fs-sm); color: var(--pos-strong); margin: 0; }
+.check-why { padding: 0 var(--sp-4) var(--sp-4); font-size: var(--fs-2xs); color: var(--warn); margin: 0; }
+.row-block td { background: var(--neg-soft); }
+.row-warn td { background: var(--warn-soft); }
+.need-note { display: block; font-size: var(--fs-2xs); color: var(--neg); }
+.cfo-inline { margin-left: 6px; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-muted); }
+.link { color: var(--accent); }
 .dirty-dot { color: var(--warn); margin-left: 4px; font-size: 10px; vertical-align: middle; }
 .empty-cell { text-align: center; color: var(--text-muted); padding: var(--sp-6); }
 .hidden-file { display: none; }

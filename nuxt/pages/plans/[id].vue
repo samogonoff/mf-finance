@@ -98,6 +98,54 @@
         </div>
       </div>
 
+      <!-- ===== Формы периода (карточки процесса) =====
+           Таймлайн этапов показывает КАЛЕНДАРЬ периода, а карточки — состояние
+           каждой формы отдельно: по ТЗ §2.2 единица маршрута это форма, поэтому
+           возврат по мелким МП не должен выглядеть как возврат всего периода. -->
+      <div class="cards-block">
+        <div class="cb-head">
+          <h3 class="cb-title">Формы периода</h3>
+          <span class="cb-hint">
+            У каждой формы свой маршрут, статус и версия. Клик по «Согласование» открывает
+            лист согласования и публикацию.
+          </span>
+        </div>
+        <p v-if="cardsError" class="banner banner-warn">{{ cardsError }}</p>
+        <p v-else-if="!cards.length" class="cb-empty">Карточки форм на период не созданы.</p>
+
+        <div v-for="c in cards" :key="c.id" class="fcard">
+          <div class="fc-main">
+            <div class="fc-id">
+              <span class="fc-title">{{ c.title }}</span>
+              <span class="fc-meta">
+                <span class="fc-form">{{ c.form_code }}</span>
+                <span v-if="c.scope_key">· {{ scopeLabel(c.scope_key) }}</span>
+                <span v-if="c.legal_entity">· {{ c.legal_entity }}</span>
+                · версия {{ c.current_version }}
+                · {{ c.calc_mode === "inverse" ? "расчёт от условий" : "расчёт от сумм" }}
+              </span>
+            </div>
+            <span class="badge" :class="cardBadge(c)">{{ cardStatus(c) }}</span>
+            <span v-if="c.locked" class="fc-lock"><Icon name="lucide:lock" /> закрыт</span>
+          </div>
+          <div class="fc-links">
+            <NuxtLink v-if="formTaskId(c)" :to="`/plans/mp-form/${formTaskId(c)}`" class="fc-link">
+              <Icon name="lucide:file-input" /> Форма
+            </NuxtLink>
+            <NuxtLink v-if="c.form_code === 'TPL-MP'" :to="`/plans/mp-conditions/${c.id}`" class="fc-link">
+              <Icon name="lucide:sliders-horizontal" /> Условия
+            </NuxtLink>
+            <NuxtLink v-if="c.form_code === 'TPL-MP'" :to="`/plans/mp-common-costs/${c.id}`" class="fc-link">
+              <Icon name="lucide:layers" /> Общие затраты
+            </NuxtLink>
+            <button type="button" class="fc-link btn-like" @click="openCard = openCard === c.id ? 0 : c.id">
+              <Icon name="lucide:check-check" /> Согласование
+            </button>
+          </div>
+          <CardProcessPanel v-if="openCard === c.id" :card-id="c.id" @changed="loadCards" />
+        </div>
+      </div>
+
       <div class="tl-legend">
         <span><i class="dot s-pending"></i> ожидает</span>
         <span><i class="dot s-in_progress"></i> в работе</span>
@@ -212,8 +260,10 @@ import { money } from "~/utils/format";
 import PlansModal from "~/components/plans/PlansModal.vue";
 import MpBoard from "~/components/plans/MpBoard.vue";
 import PlanStatusBar from "~/components/plans/PlanStatusBar.vue";
+import CardProcessPanel from "~/components/plans/CardProcessPanel.vue";
 import { usePlans, type StageState, type SvodRow } from "~/composables/usePlans";
 import { useTasks, type Task } from "~/composables/useTasks";
+import { useMpConditions, type PlanCard } from "~/composables/useMpConditions";
 
 definePageMeta({ middleware: "scope-guard" });
 
@@ -245,6 +295,10 @@ const doStrategyImport = async (ev: Event) => {
 
 const list = ref<StageState[]>([]);
 const tasks = ref<Task[]>([]);
+const cards = ref<PlanCard[]>([]);
+const cardsError = ref("");
+const openCard = ref(0);
+const cardApi = useMpConditions();
 const svod = ref<SvodRow[]>([]);
 const error = ref("");
 const busy = ref(false);
@@ -325,6 +379,45 @@ const stageForms = (code: string): Array<{ label: string; to: string }> => {
   return [];
 };
 
+// Человеческие метки статуса карточки: сервер отдаёт status_label технической
+// строкой (on_approval_1.2), в списке форм нужна фраза, а не код.
+const cardStatus = (c: PlanCard): string => {
+  switch (c.status) {
+    case "draft": return "черновик";
+    case "on_approval": return `на согласовании (шаг ${c.step_code})`;
+    case "returned": return `возвращено на ${c.step_code}`;
+    case "approved": return "утверждено";
+    case "published": return "опубликовано";
+    case "publish_failed": return "ошибка публикации";
+    case "archived": return "архив";
+    default: return c.status_label || c.status;
+  }
+};
+const cardBadge = (c: PlanCard): string => {
+  switch (c.status) {
+    case "on_approval": return "badge-warn";
+    case "returned": case "publish_failed": return "badge-neg";
+    case "approved": case "published": return "badge-pos";
+    case "archived": return "badge-dot";
+    default: return "badge-info";
+  }
+};
+const scopeLabel = (scope: string) =>
+  scope === "large" ? "крупные МП" : scope === "small" ? "мелкие МП" : scope === "all" ? "все площадки" : scope;
+// Ввод формы остаётся task-driven: карточка про процесс, задание — про права и
+// срез ЦФО. Связываем их по коду формы.
+const formTaskId = (c: PlanCard): number => tasks.value.find((t) => t.form_code === c.form_code)?.id || 0;
+
+const loadCards = async () => {
+  cardsError.value = "";
+  try {
+    cards.value = await cardApi.cards(id);
+  } catch (e: unknown) {
+    cards.value = [];
+    cardsError.value = e instanceof Error ? e.message : "Карточки форм недоступны";
+  }
+};
+
 const load = async () => {
   error.value = "";
   try {
@@ -333,6 +426,7 @@ const load = async () => {
       mpSvod(year.value, month.value),
       byInstance(id).catch(() => [])
     ]);
+    await loadCards();
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : "Ошибка загрузки";
   }
@@ -621,6 +715,44 @@ onMounted(load);
   align-items: center;
   gap: 3px;
 }
+/* ── формы периода (карточки процесса) ── */
+.cards-block {
+  margin-top: var(--sp-6);
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.cb-head { display: flex; align-items: baseline; gap: var(--sp-4); flex-wrap: wrap; }
+.cb-title { font-size: var(--fs-md); color: var(--text-strong); margin: 0; }
+.cb-hint { font-size: var(--fs-2xs); color: var(--text-muted); }
+.cb-empty { font-size: var(--fs-sm); color: var(--text-muted); margin: 0; }
+.banner-warn { background: var(--warn-soft); color: var(--warn); }
+.fcard {
+  border: 1px solid var(--border);
+  border-radius: var(--rd-4, 6px);
+  padding: var(--sp-3) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.fc-main { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.fc-id { display: flex; flex-direction: column; gap: 1px; margin-right: auto; }
+.fc-title { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--text-strong); }
+.fc-meta { display: flex; gap: var(--sp-2); flex-wrap: wrap; font-size: var(--fs-2xs); color: var(--text-muted); }
+.fc-form { font-family: var(--font-mono); }
+.fc-lock { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-2xs); color: var(--neg); }
+.fc-links { display: flex; gap: var(--sp-4); flex-wrap: wrap; }
+.fc-link {
+  font-size: var(--fs-2xs);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.btn-like { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; font-size: var(--fs-2xs); color: var(--accent); }
+
 .tl-legend {
   display: flex;
   gap: var(--sp-6);

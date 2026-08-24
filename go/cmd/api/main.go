@@ -392,6 +392,13 @@ func main() {
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/validate", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.ValidateGet))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.Export))
 	mux.HandleFunc("POST /api/plans/retail/{cardId}/import", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.Import))
+	// Соответствие «пользователь ↔ RegManager» (ТЗ Розница §9). Без него ни один
+	// РМ не увидит своих магазинов: в справочнике хранится ФИО, а не логин, а
+	// автосвязка через DimEmployee не подтверждена (§12 п.3).
+	plansRegMgrH := plans.NewRegManagerHandler(plans.NewRegManagerStore(pool), plansPrincipal)
+	mux.HandleFunc("GET /api/plans/retail/reg-managers", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansRegMgrH.List))
+	mux.HandleFunc("PUT /api/plans/retail/reg-managers", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansRegMgrH.Save))
+	mux.HandleFunc("DELETE /api/plans/retail/reg-managers/{id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansRegMgrH.Delete))
 
 	mux.HandleFunc("GET /api/plans/forms/{formCode}/presets", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PresetsGet))
 	mux.HandleFunc("PUT /api/plans/forms/{formCode}/presets", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PresetsSave))

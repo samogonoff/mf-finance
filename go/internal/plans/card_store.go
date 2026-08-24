@@ -74,6 +74,20 @@ const cardCols = `c.id, c.pl_id, c.form_code, c.scope_key, c.title,
 // cardFrom — источник для cardCols.
 const cardFrom = ` FROM form_card c JOIN pl_instance i ON i.id = c.pl_id`
 
+// cardReturning — тот же набор полей для RETURNING после INSERT/UPDATE.
+//
+// Почему не `WITH up AS (INSERT … RETURNING id) SELECT … WHERE id = (SELECT id FROM up)`:
+// в Postgres изменяющий CTE и основной запрос работают на ОДНОМ снимке, поэтому
+// основной SELECT не видит вставленную/обновлённую строку (для INSERT — «no rows
+// in result set», для UPDATE — старые значения). Период берём подзапросами:
+// в RETURNING они разрешены и видят уже существующую pl_instance.
+const cardReturning = `id, pl_id, form_code, scope_key, title,
+	(SELECT period_year FROM pl_instance WHERE id = form_card.pl_id),
+	(SELECT period_month FROM pl_instance WHERE id = form_card.pl_id),
+	country, legal_entity, currency,
+	calc_mode, status, step_code, current_version, COALESCE(fx_snapshot,'{}'), locked,
+	due_at, COALESCE(created_by,0), updated_at`
+
 func scanCard(row interface {
 	Scan(dest ...any) error
 }) (Card, error) {
@@ -104,18 +118,15 @@ func (s *pgCardStore) EnsureCard(ctx context.Context, in Card) (Card, error) {
 		createdBy = in.CreatedBy
 	}
 	row := s.pool.QueryRow(ctx, `
-		WITH up AS (
-			INSERT INTO form_card (pl_id, form_code, scope_key, title, country, legal_entity,
-				currency, calc_mode, status, step_code, created_by)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draft',$9,$10)
-			ON CONFLICT (pl_id, form_code, scope_key) DO UPDATE
-				SET title = EXCLUDED.title,
-				    country = EXCLUDED.country,
-				    legal_entity = EXCLUDED.legal_entity,
-				    currency = COALESCE(NULLIF(EXCLUDED.currency,''), form_card.currency)
-			RETURNING id
-		)
-		SELECT `+cardCols+cardFrom+` WHERE c.id = (SELECT id FROM up)`,
+		INSERT INTO form_card (pl_id, form_code, scope_key, title, country, legal_entity,
+			currency, calc_mode, status, step_code, created_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draft',$9,$10)
+		ON CONFLICT (pl_id, form_code, scope_key) DO UPDATE
+			SET title = EXCLUDED.title,
+			    country = EXCLUDED.country,
+			    legal_entity = EXCLUDED.legal_entity,
+			    currency = COALESCE(NULLIF(EXCLUDED.currency,''), form_card.currency)
+		RETURNING `+cardReturning,
 		in.PlID, in.FormCode, in.ScopeKey, in.Title, in.Country, in.LegalEntity,
 		in.Currency, in.CalcMode, in.StepCode, createdBy)
 	return scanCard(row)
@@ -212,13 +223,10 @@ func (s *pgCardStore) SaveTransition(ctx context.Context, cardID int64, tr CardT
 	}
 
 	row := tx.QueryRow(ctx, `
-		WITH up AS (
-			UPDATE form_card
-			   SET status = $2, step_code = $3, locked = $4, current_version = $5, updated_at = NOW()
-			 WHERE id = $1
-			RETURNING id
-		)
-		SELECT `+cardCols+cardFrom+` WHERE c.id = (SELECT id FROM up)`,
+		UPDATE form_card
+		   SET status = $2, step_code = $3, locked = $4, current_version = $5, updated_at = NOW()
+		 WHERE id = $1
+		RETURNING `+cardReturning,
 		cardID, tr.Status, tr.StepCode, tr.Locked, version)
 	c, err := scanCard(row)
 	if err != nil {
@@ -286,7 +294,7 @@ func (s *pgCardStore) CardApprovals(ctx context.Context, cardID int64) ([]CardAp
 		  FROM card_approval a
 		  LEFT JOIN users u ON u.id = a.user_id
 		 WHERE a.card_id = $1
-		 ORDER BY a.decided_at`, cardID)
+		 ORDER BY a.decided_at, a.id`, cardID)
 	if err != nil {
 		return nil, err
 	}

@@ -102,13 +102,30 @@ func TestValidateMp_DoubleCountOwnership(t *testing.T) {
 }
 
 // МП-11: наименование статьи в форме расходится со справочником (конфликт кода 54).
+// Замечание уровня формы: наименование статьи от площадки не зависит, поэтому
+// оно выдаётся один раз, а не по каждой площадке.
 func TestValidateMp_PLNameConflict(t *testing.T) {
 	issues := ValidateMpForm(MpValidationInput{
-		Platforms: []MarketplaceRow{{CodeCFO: 335, NameCFO: "Wildberries", Segment: "large", Country: "RU", LegalEntity: "TD"}},
-		PLNames:   map[int]string{54: "Аренда помещений (стоянки)"},
+		Platforms: []MarketplaceRow{
+			{CodeCFO: 335, NameCFO: "Wildberries", Segment: "large", Country: "RU", LegalEntity: "TD"},
+			{CodeCFO: 336, NameCFO: "Lamoda", Segment: "large", Country: "RU", LegalEntity: "TD"},
+		},
+		PLNames: map[int]string{54: "Аренда помещений (стоянки)"},
 	})
-	if !mpHasIssue(issues, "МП-11", 335) {
-		t.Fatalf("ожидалось МП-11 (конфликт кода 54), получено %+v", issues)
+	var count int
+	for _, i := range issues {
+		if i.Code == "МП-11" {
+			count++
+			if i.CodeCFO != 0 {
+				t.Errorf("МП-11 не должно привязываться к площадке, получено ЦФО %d", i.CodeCFO)
+			}
+			if i.Block != BCostLogWarehouse {
+				t.Errorf("МП-11 должно указывать на статью 54, получено %q", i.Block)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("ожидалось одно замечание МП-11 на форму, получено %d: %+v", count, issues)
 	}
 }
 

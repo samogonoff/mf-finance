@@ -25,6 +25,7 @@
           <summary class="btn btn-ghost"><Icon name="lucide:settings" /> Настройки</summary>
           <div class="more-menu">
             <NuxtLink to="/plans/admin/route" class="more-item"><Icon name="lucide:git-branch" /> Маршрут</NuxtLink>
+            <NuxtLink to="/plans/admin/form-route" class="more-item"><Icon name="lucide:route" /> Маршрут форм</NuxtLink>
             <NuxtLink to="/plans/admin/positions" class="more-item"><Icon name="lucide:briefcase" /> Должности</NuxtLink>
             <NuxtLink to="/plans/admin/task-templates" class="more-item"><Icon name="lucide:wrench" /> Конструктор заданий</NuxtLink>
             <NuxtLink to="/plans/audit" class="more-item"><Icon name="lucide:scroll-text" /> Аудит</NuxtLink>
