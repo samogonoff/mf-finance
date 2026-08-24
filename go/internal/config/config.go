@@ -77,6 +77,11 @@ type Config struct {
 	PlansMpTaktTable   string // тактика-таргеты МП: Budgeting.dbo.FormToLoaTaktTarget (2025-01…2026-12)
 	PlansMpPenaltyView string // вью штрафов МП (FINDWHACCESSGROUP, Наименование LIKE '%Штраф%')
 	PlansAuditEnabled  bool
+	// PlansLegacyMpAPI=1 возвращает к жизни устаревшую ветку /api/plans/mp/{form,
+	// compute,copy,formula,export,import} — форма из двух editable-строк (1046/8006)
+	// со своим движком calc.go. Актуальная форма живёт на /api/plans/tasks/{id}/mp-form.
+	// По умолчанию 0 → эти ручки отвечают 410 Gone (заморожены до удаления).
+	PlansLegacyMpAPI bool
 
 	// Справочники Лисы (ТЗ §«Справочники из Лисы»): MSSQL-БД Gpartner (FOX_*).
 	// LisaMock=1 → синхронизация из фикстур (как PLANS_MOCK), без сети к FOX.
@@ -143,6 +148,7 @@ func Load() Config {
 		PlansMpTaktTable:   env("PLANS_MP_TAKT_TABLE", "Budgeting.dbo.FormToLoaTaktTarget"),
 		PlansMpPenaltyView: env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
 		PlansAuditEnabled:  env("PLANS_AUDIT_ENABLED", "0") == "1",
+		PlansLegacyMpAPI:   env("PLANS_LEGACY_MP_API", "0") == "1",
 
 		LisaHost:          env("FOX_HOST", ""),
 		LisaPort:          env("FOX_PORT", "1433"),

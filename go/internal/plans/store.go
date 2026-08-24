@@ -43,7 +43,12 @@ type MetricStore interface {
 	// StagesSave — сохранить статусы этапов.
 	StagesSave(ctx context.Context, plID int64, stages []StageState) error
 	// RecordApproval — лист согласования (pl_approval).
-	RecordApproval(ctx context.Context, plID int64, code string, userID int64, decision, legalEntity string) error
+	RecordApproval(ctx context.Context, plID int64, e ApprovalEntry) error
+	// RevokeApprovalsFrom — аннулировать решения от целевого этапа и выше при
+	// возврате (ТЗ МП §2.3: решения не удаляются, а помечаются revoked).
+	RevokeApprovalsFrom(ctx context.Context, plID int64, fromStage, reason string) error
+	// Approvals — лист согласования экземпляра (история решений).
+	Approvals(ctx context.Context, plID int64) ([]ApprovalEntry, error)
 	// RouteConfig — ответственные по этапам (stage_code → метка).
 	RouteConfig(ctx context.Context) (map[string]string, error)
 	// UpsertRouteConfig — назначить ответственных этапа (админ процессов).
@@ -312,16 +317,50 @@ func (s *pgStore) StagesSave(ctx context.Context, plID int64, stages []StageStat
 	return tx.Commit(ctx)
 }
 
-func (s *pgStore) RecordApproval(ctx context.Context, plID int64, code string, userID int64, decision, legalEntity string) error {
+func (s *pgStore) RecordApproval(ctx context.Context, plID int64, e ApprovalEntry) error {
 	var uid any
-	if userID != 0 {
-		uid = userID
+	if e.UserID != 0 {
+		uid = e.UserID
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO pl_approval (pl_id, stage_id, legal_entity, user_id, decision)
-		VALUES ($1, (SELECT id FROM pl_stage_instance WHERE pl_id = $1 AND stage_code = $2), $3, $4, $5)`,
-		plID, code, legalEntity, uid, decision)
+		INSERT INTO pl_approval
+			(pl_id, stage_id, stage_code, legal_entity, user_id, decision, target_stage, comment)
+		VALUES ($1, (SELECT id FROM pl_stage_instance WHERE pl_id = $1 AND stage_code = $2),
+			$2, $3, $4, $5, $6, $7)`,
+		plID, e.StageCode, e.LegalEntity, uid, e.Decision, e.TargetStage, e.Comment)
 	return err
+}
+
+// RevokeApprovalsFrom помечает revoked все НЕаннулированные решения этапов,
+// код которых >= fromStage (лексикографически: '1.2' < '1.3' < '1.4' < '3' < '4').
+func (s *pgStore) RevokeApprovalsFrom(ctx context.Context, plID int64, fromStage, reason string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE pl_approval
+		   SET revoked = TRUE, revoked_reason = $3
+		 WHERE pl_id = $1 AND NOT revoked AND decision = 'approve' AND stage_code >= $2`,
+		plID, fromStage, reason)
+	return err
+}
+
+func (s *pgStore) Approvals(ctx context.Context, plID int64) ([]ApprovalEntry, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT stage_code, COALESCE(user_id, 0), decision, legal_entity,
+		       target_stage, comment, revoked, revoked_reason, decided_at
+		  FROM pl_approval WHERE pl_id = $1 ORDER BY decided_at`, plID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ApprovalEntry
+	for rows.Next() {
+		var e ApprovalEntry
+		if err := rows.Scan(&e.StageCode, &e.UserID, &e.Decision, &e.LegalEntity,
+			&e.TargetStage, &e.Comment, &e.Revoked, &e.RevokedReason, &e.DecidedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func (s *pgStore) RouteConfig(ctx context.Context) (map[string]string, error) {

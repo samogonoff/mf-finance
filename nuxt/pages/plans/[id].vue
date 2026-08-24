@@ -156,12 +156,13 @@
         </select>
       </label>
       <label class="field">
-        <span class="field-label">Причина возврата</span>
+        <span class="field-label">Причина возврата <span class="req">*</span></span>
         <textarea v-model="ret.reason" class="select textarea" rows="3" placeholder="что доработать"></textarea>
+        <span class="field-hint">Обязательно: возврат без комментария не принимается</span>
       </label>
       <template #footer>
         <button class="btn btn-ghost" @click="ret.open = false">Отмена</button>
-        <button class="btn btn-danger" :disabled="!ret.target || busy" @click="submitReturn">
+        <button class="btn btn-danger" :disabled="!ret.target || !ret.reason.trim() || busy" @click="submitReturn">
           <Icon name="lucide:corner-up-left" /> Вернуть
         </button>
       </template>
@@ -357,14 +358,19 @@ const openReturn = (code: string) => {
 };
 
 const submitReturn = async () => {
-  if (!ret.target) return;
+  // Комментарий обязателен: сервер отклоняет возврат без него (ТЗ §2.3, V-06).
+  if (!ret.target || !ret.reason.trim()) return;
   busy.value = true;
   error.value = "";
   try {
-    list.value = await stageAction(id, ret.from, { action: "return", target: ret.target, year: year.value, month: month.value });
-    if (ret.reason.trim()) {
-      await addComment(id, `Возврат ${ret.from} → ${ret.target}: ${ret.reason}`, `stage:${ret.from}`);
-    }
+    list.value = await stageAction(id, ret.from, {
+      action: "return",
+      target: ret.target,
+      comment: ret.reason.trim(),
+      year: year.value,
+      month: month.value
+    });
+    await addComment(id, `Возврат ${ret.from} → ${ret.target}: ${ret.reason}`, `stage:${ret.from}`);
     ret.open = false;
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : "Ошибка возврата";
@@ -672,6 +678,15 @@ onMounted(load);
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   margin-bottom: var(--sp-3);
+}
+.req {
+  color: var(--neg);
+}
+.field-hint {
+  display: block;
+  margin-top: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
 .textarea {
   width: 100%;

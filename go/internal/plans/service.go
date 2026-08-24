@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 )
 
 // Service — бизнес-логика формы TPL-MP (VS3): сборка матрицы (факт + тактика)
@@ -170,7 +171,12 @@ func (s *Service) SetRoute(ctx context.Context, code, responsible string) error 
 
 // StageAction — действие WF-03 (start/submit/approve/return) с проверкой
 // зависимостей (WF-DEP); согласование пишет лист (pl_approval).
-func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year, month int, country, code, action, target string) ([]StageState, error) {
+// Возврат требует целевого этапа И комментария (ТЗ МП §2.3, Розница §2.3, V-06);
+// решения от целевого этапа и выше аннулируются с пометкой revoked.
+func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year, month int, country, code, action, target, comment string) ([]StageState, error) {
+	if action == "return" && strings.TrimSpace(comment) == "" {
+		return nil, errors.New("возврат без комментария невозможен")
+	}
 	stages, err := s.Stages(ctx, plID, year, month, country)
 	if err != nil {
 		return nil, err
@@ -183,9 +189,27 @@ func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year
 		return nil, err
 	}
 	if action == "approve" || action == "return" {
-		_ = s.store.RecordApproval(ctx, plID, code, p.UserID, action, "")
+		// Лист согласования — часть контракта, а не побочный эффект: ошибку записи
+		// возвращаем (раньше глушилась и таблицы pl_approval вовсе не было).
+		if err := s.store.RecordApproval(ctx, plID, ApprovalEntry{
+			StageCode: code, UserID: p.UserID, Decision: action,
+			TargetStage: target, Comment: comment,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if action == "return" && target != "" {
+		if err := s.store.RevokeApprovalsFrom(ctx, plID, target,
+			"возврат на этап "+target+" с этапа "+code); err != nil {
+			return nil, err
+		}
 	}
 	return next, nil
+}
+
+// Approvals — лист согласования экземпляра (история решений, включая revoked).
+func (s *Service) Approvals(ctx context.Context, plID int64) ([]ApprovalEntry, error) {
+	return s.store.Approvals(ctx, plID)
 }
 
 // MpForm собирает форму: read-only факт (OLAP/FinDWH) + сохранённая тактика,
