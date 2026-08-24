@@ -2476,6 +2476,18 @@ async def get_calc_state(model, articul, calc_sign, plan_id, raw_date=None, task
 # ── PEO approval (cost_calc_approvals) ─────────────────────────────────────
 
 
+def _norm_task(value) -> str:
+    """Номер задания в согласованиях: пустое — всегда '' и никогда NULL.
+
+    До 24.08.2026 фронт и бэкенд писали для калькуляций без задания NULL, а
+    UNIQUE (…, task_number) в Postgres по умолчанию NULLS DISTINCT — из-за этого
+    ON CONFLICT DO UPDATE не срабатывал и каждое согласование добавляло новую
+    запись. Дубли с разными статусами гасили BOOL_AND в /aggregated, и зелёная
+    отметка ПЭО пропадала. Миграция 0038 закрепила NOT NULL DEFAULT '', эта
+    функция — единственное место, где значение приводится к виду для записи. """
+    return (value or "").strip()
+
+
 async def save_approval(model, articul, calc_sign, plan_id, status, approved_by, comment=None, task_number=None) -> dict:
     async with pool().acquire() as conn:
         async with conn.transaction():
@@ -2494,7 +2506,7 @@ async def save_approval(model, articul, calc_sign, plan_id, status, approved_by,
                     updated_at = NOW()
                 RETURNING *
                 """,
-                model, articul, calc_sign, plan_id, task_number, status, approved_by, comment,
+                model, articul, calc_sign, plan_id, _norm_task(task_number), status, approved_by, comment,
             )
             return dict(row)
 
@@ -2503,7 +2515,7 @@ def _approval_key(a: dict) -> tuple:
     """Ключ согласования — тот же, что в UNIQUE-констрейнте cost_calc_approvals."""
     return (
         a.get("model"), a.get("articul"), a.get("calc_sign"),
-        a.get("plan_id"), a.get("task_number"),
+        a.get("plan_id"), _norm_task(a.get("task_number")),
     )
 
 
@@ -2527,7 +2539,7 @@ async def save_approvals_batch(approvals: list[dict]) -> list[dict]:
     articuls = [a.get("articul") for a in items]
     calc_signs = [a.get("calc_sign") for a in items]
     plan_ids = [a.get("plan_id") for a in items]
-    task_numbers = [a.get("task_number") for a in items]
+    task_numbers = [_norm_task(a.get("task_number")) for a in items]
     statuses = [a["status"] for a in items]
     approved_bys = [a.get("approved_by") for a in items]
     comments = [a.get("comment") for a in items]
@@ -2585,7 +2597,7 @@ async def revoke_approvals_batch(items: list[dict]) -> int:
                 [it.get("articul") for it in uniq],
                 [it.get("calc_sign") for it in uniq],
                 [it.get("plan_id") for it in uniq],
-                [it.get("task_number") for it in uniq],
+                [_norm_task(it.get("task_number")) for it in uniq],
             )
     # asyncpg отдаёт тег команды вида "DELETE 12"
     parts = (result or "").split()
@@ -2596,7 +2608,7 @@ async def revoke_approval(model, articul, calc_sign, plan_id, task_number=None) 
     async with pool().acquire() as conn:
         await conn.execute(
             "DELETE FROM cost_calc_approvals WHERE model=$1 AND articul=$2 AND calc_sign IS NOT DISTINCT FROM $3 AND plan_id IS NOT DISTINCT FROM $4 AND task_number IS NOT DISTINCT FROM $5",
-            model, articul, calc_sign, plan_id, task_number,
+            model, articul, calc_sign, plan_id, _norm_task(task_number),
         )
 
 

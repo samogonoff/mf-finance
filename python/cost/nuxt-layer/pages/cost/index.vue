@@ -4635,8 +4635,12 @@ const peoKeyFields = (row: any) => ({
   articul: (row['Артикул'] ?? '').toString().trim(),
   calc_sign: (row['Признак калькуляции'] ?? '').toString().trim(),
   plan_id: (row['PLAN_ID'] ?? '').toString().trim(),
-  // Пустое задание шлём как null — так делал одиночный попап до массового режима.
-  task_number: (row['Номер задания производства'] ?? '').toString().trim() || null,
+  // Пустое задание шлём пустой строкой, а НЕ null: в cost_calc_approvals
+  // task_number NOT NULL DEFAULT '' (миграция 0038). Пока сюда уходил null,
+  // UNIQUE не срабатывал (NULLS DISTINCT) и каждое согласование плодило новую
+  // запись, а join в /aggregated её не находил — зелёная отметка ПЭО пропадала
+  // после перезагрузки данных.
+  task_number: (row['Номер задания производства'] ?? '').toString().trim(),
 });
 
 const setApproval = async (status: 'approved' | 'rejected') => {

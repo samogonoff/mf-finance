@@ -627,8 +627,13 @@ def create_version(model, articul, calc_sign, plan_id, date, username, rows, sta
 
 
 def _approval_key(model, articul, calc_sign, plan_id, task_number=None) -> tuple:
-    """Ключ пер-заданный — как UNIQUE в cost_calc_approvals (миграция 0023)."""
-    return (model or "", articul or "", calc_sign, plan_id, task_number)
+    """Ключ пер-заданный — как UNIQUE в cost_calc_approvals (миграции 0023, 0038).
+
+    Пустое задание приводим к '' — в БД колонка NOT NULL DEFAULT '', и mock
+    должен вести себя так же, иначе в mock-режиме '' и None были бы двумя
+    разными согласованиями одной калькуляции.
+    """
+    return (model or "", articul or "", calc_sign, plan_id, (task_number or "").strip())
 
 
 def save_approvals_batch(approvals: list[dict]) -> dict:
