@@ -101,31 +101,44 @@ func TestValidateMp_DoubleCountOwnership(t *testing.T) {
 	}
 }
 
-// МП-11: наименование статьи в форме расходится со справочником (конфликт кода 54).
-// Замечание уровня формы: наименование статьи от площадки не зависит, поэтому
-// оно выдаётся один раз, а не по каждой площадке.
+// МП-11: конфликт кода 54 блокирует (смысл статьи расходится — свод исказится),
+// а стилистическое расхождение названия только предупреждает. Замечание уровня
+// формы: наименование от площадки не зависит.
 func TestValidateMp_PLNameConflict(t *testing.T) {
 	issues := ValidateMpForm(MpValidationInput{
 		Platforms: []MarketplaceRow{
 			{CodeCFO: 335, NameCFO: "Wildberries", Segment: "large", Country: "RU", LegalEntity: "TD"},
 			{CodeCFO: 336, NameCFO: "Lamoda", Segment: "large", Country: "RU", LegalEntity: "TD"},
 		},
-		PLNames: map[int]string{54: "Аренда помещений (стоянки)"},
+		PLNames: map[int]string{
+			54: "Аренда помещений (стоянки)",     // содержательный конфликт (ТЗ §8.1)
+			58: "Банковские расходы / эквайринг", // та же статья, другая формулировка
+		},
 	})
-	var count int
+	var blocking, warning int
 	for _, i := range issues {
-		if i.Code == "МП-11" {
-			count++
-			if i.CodeCFO != 0 {
-				t.Errorf("МП-11 не должно привязываться к площадке, получено ЦФО %d", i.CodeCFO)
-			}
+		if i.Code != "МП-11" {
+			continue
+		}
+		if i.CodeCFO != 0 {
+			t.Errorf("МП-11 не должно привязываться к площадке, получено ЦФО %d", i.CodeCFO)
+		}
+		switch i.Level {
+		case MpBlocking:
+			blocking++
 			if i.Block != BCostLogWarehouse {
-				t.Errorf("МП-11 должно указывать на статью 54, получено %q", i.Block)
+				t.Errorf("блокировать должен только конфликт кода 54, получено %q", i.Block)
+			}
+		case MpWarning:
+			warning++
+			if i.Block != BCostAcquiring {
+				t.Errorf("предупреждение ожидалось по статье 58, получено %q", i.Block)
 			}
 		}
 	}
-	if count != 1 {
-		t.Fatalf("ожидалось одно замечание МП-11 на форму, получено %d: %+v", count, issues)
+	if blocking != 1 || warning != 1 {
+		t.Fatalf("ожидались 1 блокирующее (код 54) и 1 предупреждение (код 58), получено %d/%d: %+v",
+			blocking, warning, issues)
 	}
 }
 

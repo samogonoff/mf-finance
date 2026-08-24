@@ -22,7 +22,9 @@
         <p class="page-subtitle">
           {{ form?.task.title }} · {{ form?.year }}-{{ String(form?.month || 0).padStart(2, "0") }} ·
           показано {{ visiblePlatforms.length }} из {{ form?.platforms.length || 0 }} площадок ·
-          НДС {{ Math.round((form?.vat || 0) * 100) }}% · {{ currency }} ·
+          <span :title="'эффективная ставка первой площадки из справочника; расчёт идёт по ставке каждой площадки'">
+            НДС {{ vatLabel }}
+          </span> · {{ currency }} ·
           <span class="mode-tag" :class="{ inv: isInverse }" :title="modeHint">{{ modeLabel }}</span>
         </p>
       </div>
@@ -438,6 +440,11 @@ const visiblePlatforms = computed(() =>
   })
 );
 const totalScoped = computed(() => visiblePlatforms.value.length !== (form.value?.platforms.length || 0));
+// Ставка НДС выводится с двумя знаками: у площадок она ЭФФЕКТИВНАЯ и не равна
+// законодательной (20,36 % у WB/Lamoda/Ozon, 16,62 % у Yandex Market — ТЗ §3.4).
+// Округление до целых стирало бы это отличие.
+const vatLabel = computed(() => `${((form.value?.vat || 0) * 100).toFixed(2).replace(".", ",")} %`);
+
 const segmentTitle = computed(() => {
   if (segments.value.length > 1) return "все площадки";
   return segments.value[0] === "small" ? "мелкие МП" : "крупные МП";
