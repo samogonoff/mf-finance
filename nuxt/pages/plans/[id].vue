@@ -138,6 +138,15 @@
             <NuxtLink v-if="c.form_code === 'TPL-MP'" :to="`/plans/mp-common-costs/${c.id}`" class="fc-link">
               <Icon name="lucide:layers" /> Общие затраты
             </NuxtLink>
+            <!-- Розница: форма ввода и экран согласования — отдельные экраны, как
+                 и требует ТЗ (§4 ввод / §5 свод); заданий (pl_task) у неё нет,
+                 поэтому ссылка идёт на карточку, а не на задание. -->
+            <NuxtLink v-if="c.form_code === 'TPL-TO-RETAIL'" :to="`/plans/retail-form/${c.id}`" class="fc-link">
+              <Icon name="lucide:file-input" /> Форма
+            </NuxtLink>
+            <NuxtLink v-if="c.form_code === 'TPL-TO-RETAIL'" :to="`/plans/retail-summary/${c.id}`" class="fc-link">
+              <Icon name="lucide:layout-list" /> Свод
+            </NuxtLink>
             <button type="button" class="fc-link btn-like" @click="openCard = openCard === c.id ? 0 : c.id">
               <Icon name="lucide:check-check" /> Согласование
             </button>
