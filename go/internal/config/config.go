@@ -3,6 +3,7 @@ package config
 import (
 	"net"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -91,6 +92,21 @@ type Config struct {
 	PlansPublishEnabled bool
 	PlansPublishTargets []string
 
+	// Форма «Розница» (TPL-TO-RETAIL, ТЗ Розница §11). Источники — тот же сервер
+	// FinDWH/Budgeting/Checks, что у МП; при PlansMock=1 или без MSSQL работают
+	// фикстуры (plans/retail_mock.go), форма и тесты не зависят от VPN.
+	PlansRetailStoreTable    string // справочник магазинов: FinDWH.dbo.[001 CodeCFO]
+	PlansRetailStoreGroup    string // значение GroupCFO1 справочника ('Магазины')
+	PlansRetailFactTable     string // факт продаж (выручка с НДС) из FOX
+	PlansRetailFactColumns   string // CSV колонок факта: ЦФО, дата, сумма (колонки не подтверждены пробой)
+	PlansRetailStrategyTable string // стратегия в нац. валюте: Budgeting.dbo.VFORMTOLOADPLAN
+	PlansRetailStrategyGroup string // ГруппыЦФО1 таблицы плана ('3.Магазины' — НЕ равно группе справочника)
+	PlansRetailPlanHistTable string // история плана: Checks.dbo.plan_saler_st
+	PlansRetailPlanHistNew   string // история плана новых магазинов: Checks.dbo.plan_saler_st_new_stores
+	// PlansRetailValueLimits — верхняя граница значения ячейки по стране (V-02),
+	// формат «BY=5000000,RU=50000000». Страна без записи → границы нет.
+	PlansRetailValueLimits map[string]float64
+
 	// Справочники Лисы (ТЗ §«Справочники из Лисы»): MSSQL-БД Gpartner (FOX_*).
 	// LisaMock=1 → синхронизация из фикстур (как PLANS_MOCK), без сети к FOX.
 	// PlansSyncInterval — период cron-синхронизации; PlansDirCacheTTL — дефолтный
@@ -161,6 +177,16 @@ func Load() Config {
 		PlansPublishTargets: splitCSV(env("PLANS_PUBLISH_TARGETS",
 			"Budgeting.dbo.VFORMTOLOADTAKTTARGET,Budgeting.dbo.FormToLoaTaktTarget")),
 
+		PlansRetailStoreTable:    env("PLANS_RETAIL_STORE_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
+		PlansRetailStoreGroup:    env("PLANS_RETAIL_STORE_GROUP", "Магазины"),
+		PlansRetailFactTable:     env("PLANS_RETAIL_FACT_TABLE", "FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail"),
+		PlansRetailFactColumns:   env("PLANS_RETAIL_FACT_COLUMNS", "CodeCFO,Date,Summa"),
+		PlansRetailStrategyTable: env("PLANS_RETAIL_STRATEGY_TABLE", "Budgeting.dbo.VFORMTOLOADPLAN"),
+		PlansRetailStrategyGroup: env("PLANS_RETAIL_STRATEGY_GROUP", "3.Магазины"),
+		PlansRetailPlanHistTable: env("PLANS_RETAIL_PLAN_HISTORY_TABLE", "Checks.dbo.plan_saler_st"),
+		PlansRetailPlanHistNew:   env("PLANS_RETAIL_PLAN_HISTORY_NEW_TABLE", "Checks.dbo.plan_saler_st_new_stores"),
+		PlansRetailValueLimits:   parseCountryLimits(env("PLANS_RETAIL_VALUE_LIMITS", "")),
+
 		LisaHost:          env("FOX_HOST", ""),
 		LisaPort:          env("FOX_PORT", "1433"),
 		LisaDB:            env("FOX_DB", ""),
@@ -207,6 +233,25 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// parseCountryLimits — «BY=5000000,RU=50000000» → map[страна]граница (V-02
+// формы «Розница»). Нераспознанная запись игнорируется: неверная граница не
+// должна ронять старт сервиса, отсутствие границы — это просто «без границы».
+func parseCountryLimits(s string) map[string]float64 {
+	out := map[string]float64{}
+	for _, part := range splitCSV(s) {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(kv[1]), 64)
+		if err != nil || v <= 0 {
+			continue
+		}
+		out[strings.ToUpper(strings.TrimSpace(kv[0]))] = v
+	}
+	return out
 }
 
 func splitCSV(s string) []string {

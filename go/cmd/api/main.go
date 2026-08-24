@@ -264,7 +264,25 @@ func main() {
 		}
 	}
 	plansCache := plans.NewDirCache(rdb, pool, time.Duration(cfg.PlansDirCacheTTL)*time.Second)
-	plansSyncer := plans.NewSyncer(pool, plans.BuildProviders(cfg.LisaMock, lisa), plansCache)
+	// Источники формы «Розница» (ТЗ Розница §11) — тот же MSSQL, что у МП.
+	// PLANS_MOCK=1 или отсутствие соединения → фикстуры (18 магазинов РБ): форма
+	// и синхронизация справочника работают в dev без VPN.
+	plansRetailSource := plans.NewRetailSource(cfg.PlansMock, mssqlDB, plans.RetailTables{
+		StoreTable:       cfg.PlansRetailStoreTable,
+		StoreGroup:       cfg.PlansRetailStoreGroup,
+		FactTable:        cfg.PlansRetailFactTable,
+		FactColumns:      cfg.PlansRetailFactColumns,
+		StrategyTable:    cfg.PlansRetailStrategyTable,
+		StrategyGroup:    cfg.PlansRetailStrategyGroup,
+		PlanHistTable:    cfg.PlansRetailPlanHistTable,
+		PlanHistNewTable: cfg.PlansRetailPlanHistNew,
+	})
+	// Справочник магазинов розницы синхронизируется общим движком (версионирование
+	// строк, раз в сутки + кнопка) — ТЗ Розница §11. Провайдер регистрируется ДО
+	// Start: после старта фоновой синхронизации карту провайдеров не меняем.
+	plansProviders := append(plans.BuildProviders(cfg.LisaMock, lisa),
+		plans.NewRetailStoreProvider(plansRetailSource))
+	plansSyncer := plans.NewSyncer(pool, plansProviders, plansCache)
 	plansPositions := plans.NewPositionStore(pool)
 	plansUsers := plans.NewUsersStore(pool)
 	plansDeputies := plans.NewDeputyStore(pool)
@@ -294,8 +312,30 @@ func main() {
 		WithOwners(plans.NewStageOwnerResolver(plansTasks)).
 		WithAudit(plansAudit)
 	plansCards.RegisterForm(plans.TemplateMP, plans.NewMpCardProvider(plansStore, plansRates), plans.NewMpCardProvider(plansStore, plansRates))
+
+	// Форма «Розница» (TPL-TO-RETAIL): карточка + сервис сетки/расчёта/валидаций.
+	plansRetailRepo := plans.NewRetailRepo(pool)
+	plansRetailProvider := plans.NewRetailCardProvider(plansRetailRepo, plansRates)
+	plansCards.RegisterForm(plans.TemplateRetail, plansRetailProvider, plansRetailProvider)
+	plansRetail := plans.NewRetailService(plansRetailRepo, plansCards, plansRetailSource).
+		WithRates(plansRates).
+		WithCalendar(plansCalendar).
+		WithScope(plansScope).
+		WithAudit(plansAudit).
+		WithValueLimits(cfg.PlansRetailValueLimits)
+	plansRetailH := plans.NewRetailHandler(plansRetail, plansPrincipal)
+
 	plansCardsH := plans.NewCardHandler(plansCards, plansScope, plansPrincipal).
 		WithPresets(plans.NewPresetStore(pool))
+
+	// Форма МП по скорректированному ТЗ: реестр условий площадки + инверсия
+	// расчёта. TaskStore получает контекст расчёта, чтобы сетка формы считалась
+	// тем же направлением, что указано в карточке (calc_mode).
+	plansMpCond := plans.NewMpConditionsStore(pool)
+	plansMpCondSvc := plans.NewMpConditionsService(plansMpCond, plansStore, plans.NewCardStore(pool),
+		plansRates, plansFact, plansScope).WithAudit(plansAudit)
+	plansMpCondH := plans.NewMpConditionsHandler(plansMpCondSvc, plansPrincipal)
+	plansTasks.WithCalcContext(plans.NewCardStore(pool), plansMpCond, plansRates)
 
 	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
 	mux.HandleFunc("GET /api/plans/directories", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Directories))
@@ -328,6 +368,31 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/forms/{formCode}/route", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.FormRouteSave))
 	mux.HandleFunc("GET /api/plans/forms/{formCode}/publish-mapping", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PublishMappings))
 	mux.HandleFunc("PUT /api/plans/forms/{formCode}/publish-mapping", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.PublishMappingSave))
+	// Форма МП по скорректированному ТЗ: реестр «Условия площадки» (§6.1), общие
+	// затраты по 7 группам статей (§4.3), пересчёт расходной части от условий и
+	// отчёт валидаций МП-01..11 / W1..W8 (§10). Пересчёт с preview=1 ничего не
+	// сохраняет — это обязательный предпросмотр diff при изменении условий (§7.2).
+	mux.HandleFunc("GET /api/plans/mp/cards/{cardId}/conditions", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.ConditionsGet))
+	mux.HandleFunc("PUT /api/plans/mp/cards/{cardId}/conditions", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.ConditionsSave))
+	mux.HandleFunc("POST /api/plans/mp/cards/{cardId}/conditions/copy", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.ConditionsCopy))
+	mux.HandleFunc("POST /api/plans/mp/cards/{cardId}/recalc", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.Recalc))
+	mux.HandleFunc("GET /api/plans/mp/cards/{cardId}/validate", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.Validate))
+	mux.HandleFunc("GET /api/plans/mp/cards/{cardId}/common-costs", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.CommonCostsGet))
+	mux.HandleFunc("PUT /api/plans/mp/cards/{cardId}/common-costs", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.CommonCostsSave))
+	// Форма «Розница» (ТЗ Розница §12). Чтение — RolePlansUser (ABAC/РМ §9
+	// фильтрует магазины внутри сервиса), параметры периода и LFL-переопределение
+	// требуют финансиста и проверяются в сервисе, а не ролью на маршруте.
+	mux.HandleFunc("GET /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormGet))
+	mux.HandleFunc("PUT /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormSave))
+	mux.HandleFunc("POST /api/plans/retail/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.BulkApply))
+	mux.HandleFunc("GET /api/plans/retail/{cardId}/params", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.ParamsGet))
+	mux.HandleFunc("PUT /api/plans/retail/{cardId}/params", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansRetailH.ParamsSave))
+	mux.HandleFunc("PUT /api/plans/retail/{cardId}/lfl-override", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansRetailH.LFLOverride))
+	mux.HandleFunc("GET /api/plans/retail/{cardId}/summary", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.SummaryGet))
+	mux.HandleFunc("GET /api/plans/retail/{cardId}/validate", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.ValidateGet))
+	mux.HandleFunc("GET /api/plans/retail/{cardId}/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.Export))
+	mux.HandleFunc("POST /api/plans/retail/{cardId}/import", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.Import))
+
 	mux.HandleFunc("GET /api/plans/forms/{formCode}/presets", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PresetsGet))
 	mux.HandleFunc("PUT /api/plans/forms/{formCode}/presets", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PresetsSave))
 	mux.HandleFunc("DELETE /api/plans/forms/{formCode}/presets", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PresetsDelete))

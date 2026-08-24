@@ -44,37 +44,42 @@ const (
 // Ключи block_type каскада TPL-MP. Совместимы с ранее сохранёнными pl_metric
 // (sales_manager_price/shipments/cogs_total/penalties уже использовались).
 const (
-	BSalesManagerGross = "sales_manager_price"     // 1046 — ПРОДАЖИ по ценам менеджера с НДС (ввод)
-	BSalesManagerNet   = "sales_manager_price_net" // 1045 — …без НДС (расчёт)
+	BSalesManagerGross = "sales_manager_price"      // 1046 — ПРОДАЖИ по ценам менеджера с НДС (ввод)
+	BSalesManagerNet   = "sales_manager_price_net"  // 1045 — …без НДС (расчёт)
 	BSPP               = "spp"                      // % СПП (скидка) — расчёт/правка
 	BSalesPlatGross    = "sales_platform_price"     // 1022 — по цене площадки с НДС (расчёт)
 	BSalesPlatNet      = "sales_platform_price_net" // 1006 — по цене площадки без НДС (расчёт)
 	BShipments         = "shipments"                // 8006 — себестоимость по отпускным ценам (ввод)
-	BMarkup            = "markup"                    // Наценка, % — расчёт/правка
-	BDiscount          = "discount"                  // Скидка (по всем площадкам) — ввод
-	BMarkdown          = "markdown"                  // Уценка (по всем площадкам) — ввод
-	BRetailMargin      = "retail_margin"             // Маржа розничная — расчёт
-	BRetailMarginPct   = "retail_margin_pct"         // Маржинальность розничная, % — расчёт
-	BCogsTotal         = "cogs_total"                // 2006/6006 — Себестоимость общая (ввод)
-	BMarkupTotal       = "markup_total"              // Наценка от общей сс, % — расчёт
-	BGrossMargin       = "gross_margin"              // Маржа (gross) — расчёт
-	BGrossMarginPct    = "gross_margin_pct"          // Маржа (gross), % — расчёт
-	BCommission        = "commission"                // Комиссия площадки — расчёт (1045−1006)
-	BCostAgent         = "cost_agent"                // 64 — Агентское вознаграждение (ввод)
-	BCostFreight       = "cost_freight"              // 51 — Грузоперевозки экспорт (ввод)
-	BCostLogTransport  = "cost_log_transport"        // 52 — Транспортная логистика (ввод)
-	BCostLogWarehouse  = "cost_log_warehouse"        // 54 — Складская логистика (ввод)
-	BCostAds           = "cost_ads"                   // 13 — РЕКЛАМА И МАРКЕТИНГ (ввод)
-	BCostAdsSocial     = "cost_ads_social"            // 15 — Реклама-соц.сети (ввод)
-	BCostPackaging     = "cost_packaging"             // 45 — Расходы на упаковку (ввод)
-	BCostAcquiring     = "cost_acquiring"             // 58 — Эквайринг (ввод)
-	BCostIT            = "cost_it"                     // 48 — Расходы на IT обслуживание (ввод)
-	BCostPenalties     = "penalties"                   // 66 — Штрафы (ввод, FINDWH)
-	BCostOther         = "cost_other"                  // 66 — Прочие удержания и компенсации (ввод)
-	BPlatformCosts     = "platform_costs_total"        // Итого прямые затраты по площадке — расчёт
-	BDirectShare       = "direct_share"                // Доля прямых затрат по площадке, % — расчёт
-	BPlPlatform        = "pl_platform"                 // PL по площадке — расчёт
-	BPlPlatformPct     = "pl_platform_pct"             // PL по площадке, % — расчёт
+	BMarkup            = "markup"                   // Наценка, % — расчёт/правка
+	BDiscount          = "discount"                 // Скидка (по всем площадкам) — ввод
+	BMarkdown          = "markdown"                 // Уценка (по всем площадкам) — ввод
+	BRetailMargin      = "retail_margin"            // Маржа розничная — расчёт
+	BRetailMarginPct   = "retail_margin_pct"        // Маржинальность розничная, % — расчёт
+	BCogsTotal         = "cogs_total"               // 2006/6006 — Себестоимость общая (ввод)
+	BMarkupTotal       = "markup_total"             // Наценка от общей сс, % — расчёт
+	BGrossMargin       = "gross_margin"             // Маржа (gross) — расчёт
+	BGrossMarginPct    = "gross_margin_pct"         // Маржа (gross), % — расчёт
+	BCommission        = "commission"               // Комиссия площадки — расчёт (1045−1006)
+	BCostAgent         = "cost_agent"               // 64 — Агентское вознаграждение (ввод)
+	BCostFreight       = "cost_freight"             // 51 — Грузоперевозки экспорт (ввод)
+	BCostLogTransport  = "cost_log_transport"       // 52 — Транспортная логистика (ввод)
+	BCostLogWarehouse  = "cost_log_warehouse"       // 54 — Складская логистика (ввод)
+	BCostAds           = "cost_ads"                 // 13 — РЕКЛАМА И МАРКЕТИНГ (ввод)
+	BCostAdsSocial     = "cost_ads_social"          // 15 — Реклама-соц.сети (ввод)
+	BCostPackaging     = "cost_packaging"           // 45 — Расходы на упаковку (ввод)
+	BCostAcquiring     = "cost_acquiring"           // 58 — Эквайринг (ввод)
+	BCostIT            = "cost_it"                  // 48 — Расходы на IT обслуживание (ввод)
+	BCostPenalties     = "penalties"                // 66 — Штрафы (ввод, FINDWH)
+	BCostOther         = "cost_other"               // 66 — Прочие удержания и компенсации (ввод)
+	BPlatformCosts     = "platform_costs_total"     // Итого прямые затраты по площадке — расчёт
+	BDirectShare       = "direct_share"             // Доля прямых затрат по площадке, % — расчёт
+	BPlPlatform        = "pl_platform"              // PL по площадке (от прямых затрат) — расчёт
+	BPlPlatformPct     = "pl_platform_pct"          // PL по площадке, % — расчёт
+	// PL от себестоимости общей и доля прямых затрат в обороте — строки дерева
+	// показателей ТЗ §4.1, которых в первой редакции формы не было.
+	BPlPlatformTotalCost    = "pl_platform_total_cost"     // PL (сумма) от себестоимости общей — расчёт
+	BPlPlatformTotalCostPct = "pl_platform_total_cost_pct" // PL от себестоимости общей, % — расчёт
+	BDirectShareTurnover    = "direct_share_turnover"      // Доля прямых затрат в обороте, % — расчёт
 )
 
 // MpLine — строка спеки формы.
@@ -82,13 +87,13 @@ type MpLine struct {
 	BlockType string     `json:"block_type"`
 	CodePL    int        `json:"code_pl"`
 	Name      string     `json:"name"`
-	Section   string     `json:"section"`    // группа-заголовок для UI
+	Section   string     `json:"section"` // группа-заголовок для UI
 	Kind      MpLineKind `json:"kind"`
 	ValueKind string     `json:"value_kind"` // money | pct
 	Scope     string     `json:"scope"`      // platform | total
 	Formula   string     `json:"formula"`    // человекочитаемая формула (для drill-down в UI)
 	Editable  bool       `json:"editable"`
-	CostLine  bool       `json:"cost_line"`  // статья прямых затрат (для «доли в выручке, %»)
+	CostLine  bool       `json:"cost_line"` // статья прямых затрат (для «доли в выручке, %»)
 }
 
 // mpFormSpec — полная упорядоченная спека формы large (и small — те же статьи).
@@ -139,6 +144,9 @@ func mpFormSpec() []MpLine {
 		{BlockType: BDirectShare, Name: "Доля прямых затрат по площадке, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= прямые затраты / менеджер_без_НДС"},
 		{BlockType: BPlPlatform, Name: "PL по площадке", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= маржа (gross) − прямые затраты"},
 		{BlockType: BPlPlatformPct, Name: "PL по площадке, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= PL по площадке / площадка_без_НДС"},
+		{BlockType: BPlPlatformTotalCost, Name: "PL (сумма) от себестоимости общей", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= маржа (gross) − (прямые затраты − комиссия площадки)"},
+		{BlockType: BPlPlatformTotalCostPct, Name: "PL от себестоимости общей, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= PL от общей сс / площадка_без_НДС"},
+		{BlockType: BDirectShareTurnover, Name: "Доля прямых затрат в обороте, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= (прямые затраты − комиссия) / площадка_без_НДС"},
 	}
 }
 
@@ -179,8 +187,48 @@ func plToBlock() map[int]string {
 
 // mpEditableSet — множество block_type, которые допустимо сохранять (ввод + правка расчёта).
 func mpEditableSet() map[string]bool {
+	return mpEditableSetFor(CalcLegacy)
+}
+
+// mpFormSpecFor — спека формы под режим расчёта карточки.
+//
+// В inverse-режиме (ТЗ §3.1) состав вводимых строк меняется: руками заполняются
+// только продажи по ценам менеджера с НДС, скидки/уценки и общие затраты, а
+// %СПП, наценки и статьи прямых затрат становятся ПРОИЗВОДНЫМИ от реестра
+// «Условия площадки» — в самой сетке они read-only, правятся в реестре.
+// Исключение: суммы статей допускают ручное переопределение (ТЗ §7.2 «ручное
+// переопределение не перезатирается автопересчётом»), поэтому у них
+// KindCalcEditable, а не KindCalc.
+func mpFormSpecFor(mode string) []MpLine {
+	spec := mpFormSpec()
+	if mode != CalcInverse {
+		return spec
+	}
+	for i := range spec {
+		switch spec[i].BlockType {
+		case BSPP, BMarkup, BMarkupTotal:
+			// Задаются в реестре условий, в сетке только показываются.
+			spec[i].Kind = KindCalc
+			spec[i].Editable = false
+			spec[i].Formula = "из реестра «Условия площадки»"
+		case BShipments, BCogsTotal:
+			spec[i].Kind = KindCalc
+			spec[i].Editable = false
+			spec[i].Formula = "= цена площадки без НДС / (1 + наценка)"
+		default:
+			if spec[i].CostLine && spec[i].Kind == KindInput {
+				spec[i].Kind = KindCalcEditable
+				spec[i].Formula = "= продажи менеджера без НДС × доля статьи (реестр условий)"
+			}
+		}
+	}
+	return spec
+}
+
+// mpEditableSetFor — что допустимо сохранять из сетки в данном режиме.
+func mpEditableSetFor(mode string) map[string]bool {
 	out := map[string]bool{}
-	for _, l := range mpFormSpec() {
+	for _, l := range mpFormSpecFor(mode) {
 		if l.Editable {
 			out[l.BlockType] = true
 		}

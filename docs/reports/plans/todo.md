@@ -186,6 +186,34 @@ per-площадка, курс тактики из справочника, об�
 - [x] Golden-тест каскада legacy (`mpform_golden_test.go`) — страховка на весь рефакторинг
 - [x] Заморозка legacy-ветки `/api/plans/mp/{form,compute,copy,formula,export,import}` → 410 (`PLANS_LEGACY_MP_API=1` для аварийного отката); удалены `pages/plans/mp.vue`, `MpFactTable.vue`, мёртвый `segmentGroup()`
 
+### [x] Фаза 1. Общая оболочка процесса (карточки форм)
+- [x] `migrations/0031_plans_form_card` — `form_card` (статусы/шаг/версия/calc_mode/lock), `card_approval` (решения + revoked), `card_version` (снапшот значений+условий+курсов), `plans_form_route` (маршрут данными, шаг «Финансист» выключен по умолчанию)
+- [x] `migrations/0032_plans_publish` — `publish_mapping` (ответы BI как данные) + `publish_log`
+- [x] `migrations/0033_plans_view_preset` — пресеты представлений (Розница §4.6)
+- [x] `migrations/0034_plans_vat_fx` — справочник `dir_vat` (эффективные ставки площадок) + помесячные курсы и KZT/UZS в `dir_fx_rate`
+- [x] `card.go` — чистая статусная машина + 8 тестов (возврат только назад и только с комментарием, аннулирование, reopen с причиной, skip_if_same_user, блокировка после утверждения)
+- [x] `card_store.go` / `card_service.go` / `card_handler.go` — переход одной транзакцией, лист согласования, версии, API `/api/plans/cards/*`
+- [x] `publish.go` / `publish_store.go` — Publisher + dry-run + идемпотентность (DELETE+INSERT, у приёмников нет PK) + контроль «введено = записано» + белый список таблиц; 6 тестов
+- [x] `rates.go` — RateBook: НДС и курсы из справочников с кэшем и фолбэком; 4 теста
+- [x] `abac_scope.go` — ABAC по стране/ЮЛ/шагу (колонки `plans_user_scope` существовали с 0012, но не применялись); 6 тестов
+- [x] `calendar_store.go` — календари из `plans_country_calendar` вместо `CalendarSeed()`
+- [x] `form_registry.go` — реестр форм и их карточек (МП large/small, Розница BY/RU/KZ/UZ)
+- [x] `.env.example`: `PLANS_PUBLISH_ENABLED`, `PLANS_PUBLISH_TARGETS`
+- [ ] ⏳ Уведомления на события карточки (возврат/утверждение/ошибка публикации) — переиспользовать `task_notify.go`
+
+### [x] Фаза 2. МП: условия площадки и инверсия расчёта
+- [x] `migrations/0036_plans_mp_conditions` — `mp_conditions` + `mp_condition_item` (доли статей, допускаются отрицательные), `mp_common_cost` (7 групп статей PL), `mp_calc_log` (лог расчёта по ячейке), `plans_calc_owner` (владелец пары CodePL×CodeCFO, ТЗ §8.1)
+- [x] `mpform_inverse.go` — каскад «условия → суммы» (ТЗ §3.4) + итоги формы по F274; **приёмочный тест на контрольной выборке Приложения Б воспроизводит Wildberries и итог по форме** (`mpform_inverse_test.go`, 6 тестов)
+- [x] Итоговая «доля прямых затрат в обороте» считается по всем площадкам — дефект прототипа (27,92 % вместо 26,32 %) не воспроизводится
+- [x] `mp_conditions.go` / `mp_conditions_service.go` / `mp_conditions_handler.go` — реестр условий: CRUD с версиями, копирование из прошлого периода, diff для согласующего с порогами обоснования, подсказки «фактическая доля прошлого месяца» (в реестр не переносятся, §3.1)
+- [x] `mp_validate.go` — МП-01…МП-11 + МП-W1…МП-W8, включая контроль двойного счёта 51/52/54 и конфликт наименований кодов 52/54; 8 тестов
+- [x] Ручное переопределение расчётной суммы не перезатирается автопересчётом (§7.2): в форме видно «расчёт даёт X, вручную Y»
+- [x] `mpform_spec.go` — спека по режиму (`mpFormSpecFor`): в inverse %СПП/наценки/себестоимость read-only, статьи затрат — calc_editable; добавлены строки «PL от себестоимости общей» и «Доля прямых затрат в обороте»
+- [x] Штрафы: поддержка источника `DWH.dbo.wb_dimensions_penalty` (ТЗ §6.2/§9.1) наряду с FINDWHACCESSGROUP
+- [x] Валюта площадки RUB/KZT/UZS + эффективная ставка НДС per-площадка в форме
+- [x] Фронт: `composables/useMpConditions.ts`, `composables/useMpCascade.ts` (второй режим каскада), `pages/plans/mp-conditions/[cardId].vue` (реестр условий с diff, подсказками и пересчётом)
+- [ ] ⏳ Инверсия включается на боевой период только после подтверждения §12 п.11 (сейчас `calc_mode` карточки = legacy по умолчанию)
+
 ### Дальше (вне текущего прохода)
 Прочие шаблоны (ТО-розница/ЦФО-затраты/опт/ИМ/производство/стратегия) ·
 cron-синхронизация справочников · уведомления на события workflow ·

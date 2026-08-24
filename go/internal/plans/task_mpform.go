@@ -40,14 +40,14 @@ func distinctSegments(segmentOf map[int]string) []string {
 type MpFormCell struct {
 	CodeCFO   int      `json:"code_cfo"`
 	BlockType string   `json:"block_type"`
-	Value     float64  `json:"value"`             // вычисленное значение каскада (отображение)
-	Fact      *float64 `json:"fact"`              // из источника (для input-строк)
-	FactPrev  *float64 `json:"fact_prev"`         // факт того же месяца прошлого года (SPEC §9.6)
-	Strategy  *float64 `json:"strategy"`          // стратегический бюджет (read-only)
-	Target    *float64 `json:"target"`            // тактика-таргет (FormToLoaTaktTarget, read-only)
-	Tactic    *float64 `json:"tactic"`            // сохранённая тактика (editable); nil если нет
-	IsManual  bool     `json:"is_manual"`         // ручная корректировка (ADJ-02)
-	Reason    string   `json:"reason,omitempty"`  // причина корректировки
+	Value     float64  `json:"value"`            // вычисленное значение каскада (отображение)
+	Fact      *float64 `json:"fact"`             // из источника (для input-строк)
+	FactPrev  *float64 `json:"fact_prev"`        // факт того же месяца прошлого года (SPEC §9.6)
+	Strategy  *float64 `json:"strategy"`         // стратегический бюджет (read-only)
+	Target    *float64 `json:"target"`           // тактика-таргет (FormToLoaTaktTarget, read-only)
+	Tactic    *float64 `json:"tactic"`           // сохранённая тактика (editable); nil если нет
+	IsManual  bool     `json:"is_manual"`        // ручная корректировка (ADJ-02)
+	Reason    string   `json:"reason,omitempty"` // причина корректировки
 }
 
 // MpTaskForm — структура формы задания МП.
@@ -61,6 +61,15 @@ type MpTaskForm struct {
 	Platforms []MpFormPlatform `json:"platforms"`
 	Lines     []MpLine         `json:"lines"`
 	Cells     []MpFormCell     `json:"cells"`
+	// CalcMode — направление расчёта карточки: legacy («суммы → доли») либо
+	// inverse («условия → суммы», ТЗ §3.1). От него зависит, какие строки
+	// доступны на ввод, поэтому клиент обязан его учитывать.
+	CalcMode string `json:"calc_mode"`
+	// CardID — карточка процесса этой формы (0, если период старый и карточки нет).
+	CardID int64 `json:"card_id,omitempty"`
+	// Conditions — условия площадок, из которых посчитана расходная часть
+	// (в inverse-режиме): %СПП, наценки и доли статей для показа рядом со строками.
+	Conditions map[int]MpConditions `json:"conditions,omitempty"`
 }
 
 // seedPL — code_pl для подтяжки input-строк из источника (SUMIFS прототипа).
@@ -150,7 +159,26 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		return f, err
 	}
 	f.Task, f.Year, f.Month, f.Segment, f.Currency = t, year, month, segment, normalizeCurrency(currency)
-	f.Lines = mpFormSpec()
+
+	// Режим расчёта карточки определяет и состав вводимых строк, и способ
+	// получения расходной части (ТЗ §3.1).
+	plID := t.PlID
+	mode, card := s.calcModeFor(ctx, plID, segment)
+	f.CalcMode, f.CardID = mode, card.ID
+	f.Lines = mpFormSpecFor(mode)
+
+	// Условия площадок нужны и для расчёта, и для показа долей в сетке.
+	condByCfo := map[int]MpConditions{}
+	if s.cond != nil {
+		if list, err := s.cond.Conditions(ctx, plID, year, month); err == nil {
+			for _, c := range list {
+				condByCfo[c.CodeCFO] = c
+			}
+		}
+	}
+	if mode == CalcInverse {
+		f.Conditions = condByCfo
+	}
 
 	// Площадки задания + страна/сегмент. Задание может покрывать оба сегмента
 	// (объединённая форма МП) — тогда шапка помечается «all», а разделение
@@ -181,9 +209,10 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	if segments := distinctSegments(segmentOf); len(segments) > 1 {
 		f.Segment = "all"
 	}
-	// НДС шапки — по стране первой площадки (для отображения; расчёт — per-площадка).
+	// НДС шапки — эффективная ставка первой площадки (для отображения; расчёт
+	// идёт per-площадка, у каждой ставка своя — ТЗ §3.4).
 	if len(f.Platforms) > 0 {
-		f.Vat = vatByCountry(f.Platforms[0].Country)
+		f.Vat = s.vatFor(ctx, f.Platforms[0])
 	} else {
 		f.Vat = 0.20
 	}
@@ -252,8 +281,8 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		}
 	}
 
-	spec := mpFormSpec()
-	editable := mpEditableSet()
+	spec := f.Lines
+	editable := mpEditableSetFor(mode)
 
 	// Тотал-строки (скидка/уценка) — по всем площадкам, profit_center=0.
 	totalInputs := map[string]float64{}
@@ -269,7 +298,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		// Слои берутся по сегменту КАЖДОЙ площадки: в объединённой форме
 		// large и small приходят из разных срезов источника.
 		pl := layerSet.forCfo(p.CodeCFO)
-		values := computeMpPlatform(mpPlatformInputs(p.CodeCFO, tacByKey, pl.fact), vatByCountry(p.Country))
+		values := s.platformValues(ctx, mode, p, condByCfo[p.CodeCFO], tacByKey, pl.fact)
 
 		for _, l := range spec {
 			if l.Kind == KindHeader {
@@ -313,6 +342,44 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		}
 	}
 	return f, nil
+}
+
+// platformValues — значения строк по площадке в зависимости от режима расчёта.
+//
+// legacy: как было — суммы (тактика ?? факт) прогоняются через каскад
+// «суммы → доли». inverse (ТЗ §3.1): вводится только объём продаж, а расходная
+// часть считается из условий площадки; уже сохранённые ручные значения статей
+// передаются как переопределения и автопересчётом не затираются (ТЗ §7.2).
+func (s *TaskStore) platformValues(ctx context.Context, mode string, p MpFormPlatform,
+	cond MpConditions, tactic map[string]float64, factIdx map[[2]int]float64) map[string]float64 {
+
+	inputs := mpPlatformInputs(p.CodeCFO, tactic, factIdx)
+	if mode != CalcInverse || cond.CodeCFO == 0 {
+		return computeMpPlatform(inputs, s.vatFor(ctx, p))
+	}
+	// Ручные переопределения: суммы статей, сохранённые пользователем поверх
+	// расчёта. Продажи и проценты сюда не попадают — они входы каскада.
+	overrides := map[string]float64{}
+	for _, b := range mpCostBlocks {
+		if v, ok := tactic[layerKey(p.CodeCFO, b)]; ok {
+			overrides[b] = v
+		}
+	}
+	values, _ := computeMpPlatformInverse(MpInverseInput{
+		SalesManagerGross: inputs[BSalesManagerGross],
+		Conditions:        conditionsToInput(cond, s.vatFor(ctx, p)),
+		Overrides:         overrides,
+	})
+	return values
+}
+
+// vatFor — эффективная ставка НДС площадки: из справочника dir_vat, если он
+// подключён, иначе законодательная по стране (ТЗ §3.4 запрещает прошивать её).
+func (s *TaskStore) vatFor(ctx context.Context, p MpFormPlatform) float64 {
+	if s.rates != nil {
+		return s.rates.Vat(ctx, p.Country, p.CodeCFO)
+	}
+	return vatByCountry(p.Country)
 }
 
 // mpPlatformInputs — входы каскада по площадке: сохранённая тактика ?? факт из
