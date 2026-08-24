@@ -307,3 +307,23 @@ func absf(v float64) float64 {
 	}
 	return v
 }
+
+// ReconciliationIssues — V-05: контрольные сверки согласующего (§7) должны быть
+// нулевыми, и их несходимость БЛОКИРУЕТ отправку («Согласующему показывается, что
+// свод не сходится, до нажатия "Согласовать"»). Сверка, пропущенная из-за
+// недоступного источника, не блокирует: это не расхождение данных, а отсутствие
+// связи, и она уже помечена Skipped.
+func ReconciliationIssues(recs []RetailReconciliation) []ValidationIssue {
+	out := make([]ValidationIssue, 0)
+	for _, r := range recs {
+		if r.Skipped || r.OK {
+			continue
+		}
+		out = append(out, ValidationIssue{
+			Code: "V-05", Blocking: true, Value: r.Diff,
+			Message: fmt.Sprintf("%s: расхождение %.2f (%s %.2f против %.2f)",
+				r.Title, r.Diff, "свод", r.Left, r.Right),
+		})
+	}
+	return out
+}

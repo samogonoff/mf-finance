@@ -681,6 +681,9 @@ func (s *RetailService) Validate(ctx context.Context, p Principal, cardID int64)
 	if err != nil {
 		return RetailValidationReport{}, err
 	}
+	// V-05: несошедшаяся контрольная сверка — блокирующее замечание, а не просто
+	// красный блок в своде. Иначе форму можно было бы отправить с расхождением.
+	blocking = append(blocking, ReconciliationIssues(sum.Reconciliations)...)
 	return RetailValidationReport{
 		CardID: cardID, Blocking: blocking, Warnings: warnings,
 		CanSubmit: len(blocking) == 0, Reconciliations: sum.Reconciliations,

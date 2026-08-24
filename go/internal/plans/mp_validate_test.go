@@ -2,8 +2,8 @@ package plans
 
 import "testing"
 
-// hasIssue — есть ли замечание с кодом (и опционально по площадке).
-func hasIssue(list []MpIssue, code string, cfo int) bool {
+// mpHasIssue — есть ли замечание МП с кодом (и опционально по площадке).
+func mpHasIssue(list []MpIssue, code string, cfo int) bool {
 	for _, i := range list {
 		if i.Code == code && (cfo == 0 || i.CodeCFO == cfo) {
 			return true
@@ -40,7 +40,7 @@ func TestValidateMp_MissingConditionsBlocks(t *testing.T) {
 	issues := ValidateMpForm(MpValidationInput{
 		Platforms: []MarketplaceRow{{CodeCFO: 336, NameCFO: "Lamoda", Segment: "large", Country: "RU", LegalEntity: "TD"}},
 	})
-	if !hasIssue(issues, "МП-01", 336) || !HasBlocking(issues) {
+	if !mpHasIssue(issues, "МП-01", 336) || !HasBlocking(issues) {
 		t.Fatalf("ожидалось блокирующее МП-01, получено %+v", issues)
 	}
 }
@@ -54,7 +54,7 @@ func TestValidateMp_ShareSumOverHundred(t *testing.T) {
 		Conditions: map[int]MpConditions{337: cond},
 		Values:     map[int]map[string]float64{337: {BSalesManagerGross: 100}},
 	})
-	if !hasIssue(issues, "МП-03", 337) {
+	if !mpHasIssue(issues, "МП-03", 337) {
 		t.Fatalf("ожидалось МП-03 (сумма долей > 100 %%), получено %+v", issues)
 	}
 }
@@ -81,7 +81,7 @@ func TestValidateMp_CurrencyMustMatchPlatform(t *testing.T) {
 		Conditions: map[int]MpConditions{474: cond},
 		Values:     map[int]map[string]float64{474: {BSalesManagerGross: 1000}},
 	})
-	if !hasIssue(issues, "МП-10", 474) {
+	if !mpHasIssue(issues, "МП-10", 474) {
 		t.Fatalf("ожидалось МП-10 (валюта площадки KZT), получено %+v", issues)
 	}
 }
@@ -96,7 +96,7 @@ func TestValidateMp_DoubleCountOwnership(t *testing.T) {
 		Values:     map[int]map[string]float64{335: {BSalesManagerGross: 100}},
 		CalcOwner:  map[[2]int]string{{51, 335}: "TPL-CFO-EXP", {52, 335}: TemplateMP, {54, 335}: TemplateMP},
 	})
-	if !hasIssue(issues, "МП-08", 335) {
+	if !mpHasIssue(issues, "МП-08", 335) {
 		t.Fatalf("ожидалось МП-08 (владелец статьи 51 — ЦЗ 32), получено %+v", issues)
 	}
 }
@@ -107,7 +107,7 @@ func TestValidateMp_PLNameConflict(t *testing.T) {
 		Platforms: []MarketplaceRow{{CodeCFO: 335, NameCFO: "Wildberries", Segment: "large", Country: "RU", LegalEntity: "TD"}},
 		PLNames:   map[int]string{54: "Аренда помещений (стоянки)"},
 	})
-	if !hasIssue(issues, "МП-11", 335) {
+	if !mpHasIssue(issues, "МП-11", 335) {
 		t.Fatalf("ожидалось МП-11 (конфликт кода 54), получено %+v", issues)
 	}
 }
@@ -128,7 +128,7 @@ func TestValidateMp_WarningsNeedReasonNotBlocking(t *testing.T) {
 		Values:         map[int]map[string]float64{335: vals},
 		CalcOwner:      map[[2]int]string{{51, 335}: TemplateMP, {52, 335}: TemplateMP, {54, 335}: TemplateMP},
 	})
-	if !hasIssue(issues, "МП-W1", 335) || !hasIssue(issues, "МП-W2", 335) {
+	if !mpHasIssue(issues, "МП-W1", 335) || !mpHasIssue(issues, "МП-W2", 335) {
 		t.Fatalf("ожидались МП-W1 и МП-W2, получено %+v", issues)
 	}
 	need := NeedsExplanation(issues)
@@ -163,7 +163,7 @@ func TestValidateMp_PenaltiesWarning(t *testing.T) {
 		PenaltiesFact: map[int]float64{337: 150_000},
 		CalcOwner:     map[[2]int]string{{51, 337}: TemplateMP, {52, 337}: TemplateMP, {54, 337}: TemplateMP},
 	})
-	if !hasIssue(issues, "МП-W7", 337) {
+	if !mpHasIssue(issues, "МП-W7", 337) {
 		t.Fatalf("ожидалось МП-W7 (штрафы 0 при факте), получено %+v", issues)
 	}
 }
