@@ -235,7 +235,9 @@ func main() {
 	// FinDWH (переиспользуем mssqlDB ВГО-отчёта; при nil — fallback на mock).
 	plansFact := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactTable, cfg.PlansMpPlanTable, cfg.PlansMpTaktTable, cfg.PlansMpPenaltyView)
 	plansScope := plans.NewPgScopeStore(pool)
-	plansSvc := plans.NewService(plans.NewPgStore(pool), plansFact, plansScope)
+	plansStore := plans.NewPgStore(pool)
+	plansCalendar := plans.NewCalendarStore(pool)
+	plansSvc := plans.NewService(plansStore, plansFact, plansScope).WithCalendar(plansCalendar)
 	// Principal для ABAC: id пользователя + признак админа планов (обходит ABAC).
 	plansPrincipal := func(r *http.Request) (plans.Principal, bool) {
 		u := auth.CurrentUser(r)
@@ -272,9 +274,28 @@ func main() {
 	plansH.SetJobPositions(plans.NewJobPositionStore(pool))
 	// Уведомления участникам заданий идут в общий поток кабинета (колокольчик +
 	// опциональное дублирование в B24) — тот же notifSvc, что у баг-трекера.
-	plansH.SetTaskStore(plans.NewTaskStore(pool, plansFact).WithNotifier(notifSvc))
+	plansTasks := plans.NewTaskStore(pool, plansFact).WithNotifier(notifSvc)
+	plansH.SetTaskStore(plansTasks)
 	// Фоновая синхронизация + прогрев кэша (DIR-03). Интервал из PLANS_SYNC_INTERVAL.
 	plansSyncer.Start(context.Background(), time.Duration(cfg.PlansSyncInterval)*time.Second)
+
+	// ── Общая оболочка процесса: карточки форм, версии, публикация ──
+	// Ставки НДС и курсы — из справочников (dir_vat/dir_fx_rate), не из кода:
+	// ТЗ МП §3.3/§3.4 прямо запрещают прошивать их в формулу.
+	plansRates := plans.NewRateBook(plansDir)
+	// Публикация: пишем только в таблицы из белого списка PLANS_PUBLISH_TARGETS и
+	// только когда PLANS_PUBLISH_ENABLED=1 (до ответов BI по §12 — лишь dry-run).
+	var plansPublisher plans.Publisher = plans.NewNopPublisher()
+	if cfg.PlansPublishEnabled && mssqlDB != nil {
+		plansPublisher = plans.NewMssqlPublisher(mssqlDB, cfg.PlansPublishTargets)
+	}
+	plansCards := plans.NewCardService(plans.NewCardStore(pool)).
+		WithPublisher(plansPublisher, plans.NewPublishStore(pool)).
+		WithOwners(plans.NewStageOwnerResolver(plansTasks)).
+		WithAudit(plansAudit)
+	plansCards.RegisterForm(plans.TemplateMP, plans.NewMpCardProvider(plansStore, plansRates), plans.NewMpCardProvider(plansStore, plansRates))
+	plansCardsH := plans.NewCardHandler(plansCards, plansScope, plansPrincipal).
+		WithPresets(plans.NewPresetStore(pool))
 
 	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
 	mux.HandleFunc("GET /api/plans/directories", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Directories))
@@ -294,6 +315,22 @@ func main() {
 	mux.HandleFunc("GET /api/plans/mp/export", auth.RequireRole(authSvc, auth.RolePlansUser, legacyMp(plansH.MpExport)))
 	mux.HandleFunc("POST /api/plans/mp/import", auth.RequireRole(authSvc, auth.RolePlansUser, legacyMp(plansH.MpImport)))
 	mux.HandleFunc("GET /api/plans/instances/{id}/approvals", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.ApprovalsList))
+	// Карточки форм: единая оболочка процесса (статусы, возвраты, версии, публикация).
+	mux.HandleFunc("GET /api/plans/forms", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.Forms))
+	mux.HandleFunc("GET /api/plans/instances/{id}/cards", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.CardsList))
+	mux.HandleFunc("GET /api/plans/cards/{cardId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.CardGet))
+	mux.HandleFunc("POST /api/plans/cards/{cardId}/action", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.CardAction))
+	mux.HandleFunc("GET /api/plans/cards/{cardId}/versions/{version}", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.CardVersionPayload))
+	mux.HandleFunc("PUT /api/plans/cards/{cardId}/calc-mode", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.CardCalcMode))
+	mux.HandleFunc("POST /api/plans/cards/{cardId}/publish", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.CardPublish))
+	mux.HandleFunc("GET /api/plans/cards/{cardId}/publish-log", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.CardPublishLog))
+	mux.HandleFunc("GET /api/plans/forms/{formCode}/route", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.FormRoute))
+	mux.HandleFunc("PUT /api/plans/forms/{formCode}/route", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.FormRouteSave))
+	mux.HandleFunc("GET /api/plans/forms/{formCode}/publish-mapping", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PublishMappings))
+	mux.HandleFunc("PUT /api/plans/forms/{formCode}/publish-mapping", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.PublishMappingSave))
+	mux.HandleFunc("GET /api/plans/forms/{formCode}/presets", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PresetsGet))
+	mux.HandleFunc("PUT /api/plans/forms/{formCode}/presets", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PresetsSave))
+	mux.HandleFunc("DELETE /api/plans/forms/{formCode}/presets", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PresetsDelete))
 	// Движок заданий процесса: список/генерация/действия/владелец этапа.
 	mux.HandleFunc("GET /api/plans/instances/{id}/tasks", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.TasksList))
 	mux.HandleFunc("POST /api/plans/instances/{id}/tasks/generate", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.TasksGenerate))

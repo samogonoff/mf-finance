@@ -82,6 +82,14 @@ type Config struct {
 	// со своим движком calc.go. Актуальная форма живёт на /api/plans/tasks/{id}/mp-form.
 	// По умолчанию 0 → эти ручки отвечают 410 Gone (заморожены до удаления).
 	PlansLegacyMpAPI bool
+	// Публикация утверждённого плана в приёмники Budgeting (ТЗ МП §9.3 / Розница §7.2).
+	// PlansPublishEnabled=0 (дефолт) → доступен только dry-run: сервис считает, что
+	// ушло бы, и сверяет с приёмником. Включать после ответов BI по §12 (какой
+	// «Параметр», агрегат vs детализация, BYN-пара, уникальный индекс приёмника).
+	// PlansPublishTargets — белый список таблиц: имя приёмника приходит из данных
+	// маппинга, поэтому произвольная таблица записи недопустима.
+	PlansPublishEnabled bool
+	PlansPublishTargets []string
 
 	// Справочники Лисы (ТЗ §«Справочники из Лисы»): MSSQL-БД Gpartner (FOX_*).
 	// LisaMock=1 → синхронизация из фикстур (как PLANS_MOCK), без сети к FOX.
@@ -142,13 +150,16 @@ func Load() Config {
 		DebtArhCpartyCol:    env("MSSQL_DEBT_ARH_CPARTY_COL", ""),
 		DebtArhSyncInterval: atoiDef(env("DEBTARH_SYNC_INTERVAL", "0"), 0),
 
-		PlansMock:          env("PLANS_MOCK", "0") == "1",
-		PlansMpFactTable:   env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),
-		PlansMpPlanTable:   env("PLANS_MP_PLAN_TABLE", "Budgeting.dbo.FormToLoadPlan"),
-		PlansMpTaktTable:   env("PLANS_MP_TAKT_TABLE", "Budgeting.dbo.FormToLoaTaktTarget"),
-		PlansMpPenaltyView: env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
-		PlansAuditEnabled:  env("PLANS_AUDIT_ENABLED", "0") == "1",
-		PlansLegacyMpAPI:   env("PLANS_LEGACY_MP_API", "0") == "1",
+		PlansMock:           env("PLANS_MOCK", "0") == "1",
+		PlansMpFactTable:    env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),
+		PlansMpPlanTable:    env("PLANS_MP_PLAN_TABLE", "Budgeting.dbo.FormToLoadPlan"),
+		PlansMpTaktTable:    env("PLANS_MP_TAKT_TABLE", "Budgeting.dbo.FormToLoaTaktTarget"),
+		PlansMpPenaltyView:  env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
+		PlansAuditEnabled:   env("PLANS_AUDIT_ENABLED", "0") == "1",
+		PlansLegacyMpAPI:    env("PLANS_LEGACY_MP_API", "0") == "1",
+		PlansPublishEnabled: env("PLANS_PUBLISH_ENABLED", "0") == "1",
+		PlansPublishTargets: splitCSV(env("PLANS_PUBLISH_TARGETS",
+			"Budgeting.dbo.VFORMTOLOADTAKTTARGET,Budgeting.dbo.FormToLoaTaktTarget")),
 
 		LisaHost:          env("FOX_HOST", ""),
 		LisaPort:          env("FOX_PORT", "1433"),

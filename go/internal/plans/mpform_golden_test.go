@@ -45,7 +45,7 @@ func TestGolden_MpCascade_Legacy(t *testing.T) {
 // (ТЗ МП §3.4: СС_отп = S_пл / (1 + Наценка)) — а не только подставляется в вывод.
 func TestComputeMpPlatform_MarkupOverrideDrivesCost(t *testing.T) {
 	base := map[string]float64{
-		BSalesManagerGross: 120, // менеджер без НДС 100
+		BSalesManagerGross: 120,  // менеджер без НДС 100
 		BSPP:               0.15, // площадка без НДС 85
 		BShipments:         50,
 		BCogsTotal:         55,

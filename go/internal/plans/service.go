@@ -13,12 +13,18 @@ type Service struct {
 	store MetricStore
 	fact  MpFactSource
 	scope ScopeStore
+	// cal — календари стран из БД (plans_country_calendar). nil → CalendarSeed().
+	cal CalendarStore
 }
 
 // NewService — конструктор.
 func NewService(store MetricStore, fact MpFactSource, scope ScopeStore) *Service {
 	return &Service{store: store, fact: fact, scope: scope}
 }
+
+// WithCalendar подключает календари стран из БД: сроки этапов считаются по
+// настраиваемому производственному календарю, а не по seed из кода.
+func (s *Service) WithCalendar(c CalendarStore) *Service { s.cal = c; return s }
 
 // allowedFor — ABAC-набор разрешённых code_cfo (nil для админа — без фильтра).
 func (s *Service) allowedFor(ctx context.Context, p Principal) (map[int]bool, error) {
@@ -123,7 +129,7 @@ func (s *Service) Stages(ctx context.Context, plID int64, year, month int, count
 	}
 	if len(stages) == 0 {
 		resp, _ := s.store.RouteConfig(ctx)
-		stages = initStages(year, month, country, CalendarSeed(), resp)
+		stages = initStages(year, month, country, calendarsOrSeed(ctx, s.cal, year), resp)
 		if err := s.store.StagesInit(ctx, plID, stages); err != nil {
 			return nil, err
 		}
