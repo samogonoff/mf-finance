@@ -506,7 +506,7 @@
                   :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
                   :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
-                  @change="onRetailPriceSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
+                  @change="onRetailPriceSelect(row, ($event.target as HTMLSelectElement).value)"
                 >
                   <option value="">—</option>
                   <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp">{{ fmt(rp) }}</option>
@@ -516,11 +516,11 @@
               <td v-if="isVisible('retail_markup')">
                 <select
                   class="price-select"
-                  :value="markupSelections[getOriginalIndex(row)] || ''"
+                  :value="markupSelections[calcRowKey(row)] || ''"
                   :disabled="isFkssRow(row) || !row['avg_Розничная цена по уровню, руб.'] || !can('cost:edit_price') || isRowLocked(row)"
                   :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
-                  @change="onMarkupSelect(getOriginalIndex(row), ($event.target as HTMLSelectElement).value)"
+                  @change="onMarkupSelect(row, ($event.target as HTMLSelectElement).value)"
                 >
                   <option value="">—</option>
                   <option v-for="opt in getMarkupOptions(row)" :key="opt.value" :value="opt.value">
@@ -530,43 +530,43 @@
               </td>
               <td v-if="isVisible('price_rf')">
                  <input class="price-input" type="number"
-                  :value="priceRF[getOriginalIndex(row)] ?? ''"
+                  :value="priceRF[calcRowKey(row)] ?? ''"
                   placeholder="Цена РФ"
                   :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
                   :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
-                  @input="onPriceRFInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
+                  @input="onPriceRFInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
               <td v-if="isVisible('price_kz')">
                  <input class="price-input" type="number"
-                  :value="priceKZ[getOriginalIndex(row)] ?? ''"
+                  :value="priceKZ[calcRowKey(row)] ?? ''"
                   placeholder="Цена КЗ"
                   :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
                   :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
-                  @input="onPriceKZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
+                  @input="onPriceKZInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
               <td v-if="isVisible('price_uz')">
                  <input class="price-input" type="number"
-                  :value="priceUZ[getOriginalIndex(row)] ?? ''"
+                  :value="priceUZ[calcRowKey(row)] ?? ''"
                   placeholder="Цена УЗ"
                   :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
                   :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
-                  @input="onPriceUZInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
+                  @input="onPriceUZInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
               <td v-if="isVisible('mp_price_rub')" class="col-num num">{{ fmt(row['mp_price_rub']) }}</td>
               <td v-if="isVisible('comment')">
                 <input class="comment-input" type="text"
-                  :value="comments[getOriginalIndex(row)] ?? ''"
+                  :value="comments[calcRowKey(row)] ?? ''"
                   placeholder="..."
                   :disabled="isFkssRow(row) || isRowLocked(row)"
                   :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
-                  @input="onCommentInput(getOriginalIndex(row), ($event.target as HTMLInputElement).value)"
+                  @input="onCommentInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
               <td v-if="isVisible('avg_wholesale') && !showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
@@ -2194,19 +2194,41 @@ async function loadData() {
     mpFormulaInputs.value = result.mp_formula_inputs || null;
     currentPage.value = 0;
     selectedRowIndex.value = -1;
-    changedRows.clear();
     clearPeoSelection();
     lastError.value = "";
-    // Populate price_rf/kz/uz, comments and markup selections from response
-    for (let i = 0; i < allAggregated.value.length; i++) {
-      const r = allAggregated.value[i];
-      if (r.price_rf != null) priceRF[i] = r.price_rf;
-      if (r.price_kz != null) priceKZ[i] = r.price_kz;
-      if (r.price_uz != null) priceUZ[i] = r.price_uz;
-      if (r.comment != null) comments[i] = r.comment;
+    // Значения с сервера раскладываем по ключу калькуляции, а не по номеру
+    // строки. Раньше здесь оставались значения от предыдущей выдачи: очистки
+    // не было, а перезапись шла только там, где сервер вернул непустое поле, —
+    // из-за этого чужой комментарий «прилипал» к строке, попавшей на тот же
+    // номер. Несохранённый ввод не трогаем: он остаётся при своей калькуляции,
+    // даже если та ушла под фильтр.
+    for (const r of allAggregated.value) {
+      const k = calcRowKey(r);
+      if (changedRows.has(k)) {
+        // Правка ещё не сохранена — обновляем только ссылку на свежую строку,
+        // чтобы сохранение ушло с актуальными суммами.
+        changedRows.set(k, r);
+        continue;
+      }
+      // Отсутствующее значение именно УДАЛЯЕМ, а не пишем нулём: пустое поле
+      // ввода в таблице отличается от введённого нуля.
+      if (r.price_rf != null) priceRF[k] = r.price_rf; else delete priceRF[k];
+      if (r.price_kz != null) priceKZ[k] = r.price_kz; else delete priceKZ[k];
+      if (r.price_uz != null) priceUZ[k] = r.price_uz; else delete priceUZ[k];
+      if (r.comment != null) comments[k] = r.comment; else delete comments[k];
       // Авто-вычисляем наценку из розничной и оптовой цен строки
       const markup = computeMarkupFromRow(r);
-      if (markup) markupSelections[i] = markup;
+      if (markup) markupSelections[k] = markup; else delete markupSelections[k];
+    }
+    // Ключи калькуляций, которых в новой выдаче нет, выбрасываем — иначе за
+    // сессию с десятком фильтров они накапливаются, а при возврате строки
+    // показали бы значение, устаревшее относительно БД. Несохранённый ввод
+    // (`changedRows`) остаётся: его ещё не с чем сверять.
+    const liveKeys = new Set(allAggregated.value.map(calcRowKey));
+    for (const store of [priceRF, priceKZ, priceUZ, comments, markupSelections] as Record<string, any>[]) {
+      for (const k of Object.keys(store)) {
+        if (!liveKeys.has(k) && !changedRows.has(k)) delete store[k];
+      }
     }
     // Досчитываем USD-цены, если API вернуло их нулями
     const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -3472,7 +3494,40 @@ function refreshCacheFull() {
 // ── Price levels & save ─────────────────────────────────────────────────────
 
 const priceLevels = ref<PriceLevel[]>([]);
-const changedRows = reactive<Set<number>>(new Set());
+
+/** Ключ цены/комментария: модель + артикул + план + признак калькуляции.
+ *
+ * Ввод пользователя (цены РФ/КЗ/УЗ, комментарий, выбранная наценка) раньше
+ * лежал в объектах, где ключом был НОМЕР строки в `allAggregated`. Любая смена
+ * фильтра перезагружает выдачу — состав и порядок строк меняются, а номера в
+ * этих объектах остаются прежними и начинают указывать на чужие строки. Отсюда
+ * жалобы 24.08.2026: комментарий «испарился» из своей строки, «появился в
+ * другой модели» и «перекочевал к другому БМ». Хуже того, `changedRows` тоже
+ * держал номера, поэтому сохранение могло записать правку в чужой артикул.
+ *
+ * Состав ключа — ровно `uq_pending_row` из миграции 0005, то есть то, по чему
+ * бэкенд действительно хранит цену и комментарий (`ON CONFLICT` в
+ * `upsert_pending_changes_batch`). Номер задания в ключ НЕ входит, хотя
+ * агрегация главной таблицы группирует и по нему: у одной калькуляции может
+ * быть несколько заданий, а цена и комментарий у них общие — иначе UI показывал
+ * бы по заданиям разные значения там, где в БД лежит одна запись. Тем же
+ * составом синхронизирует строки `findSiblingRows`. Ключ ПЭО шире (там есть
+ * задание) — это отдельная сущность, см. `peoKeyFields`.
+ *
+ * Разделитель U+0001 взят потому, что в данных источника он не встречается:
+ * склейка без разделителя дала бы коллизии на соседних значениях. */
+const calcRowKey = (row: any): string => [
+  (row?.['Модель'] ?? '').toString().trim(),
+  (row?.['Артикул'] ?? '').toString().trim(),
+  (row?.['PLAN_ID'] ?? '').toString().trim(),
+  (row?.['Признак калькуляции'] ?? '').toString().trim(),
+].join('');
+
+/** Несохранённые правки: ключ калькуляции → строка выдачи.
+ *
+ * Строка хранится вместе с ключом, чтобы сохранение собирало payload даже
+ * когда правленая калькуляция ушла из текущей выдачи под фильтр. */
+const changedRows = reactive<Map<string, any>>(new Map());
 const saving = ref(false);
 
 function discardChanges() {
@@ -3486,13 +3541,13 @@ const uniqueRetailPrices = computed(() => {
   return Array.from(prices).sort((a, b) => a - b);
 });
 
-/** Выбранное значение «Розничная наценка» по строке (индекс → value). */
-const markupSelections = reactive<Record<number, string>>({});
+/** Выбранное значение «Розничная наценка» по строке (ключ калькуляции → value). */
+const markupSelections = reactive<Record<string, string>>({});
 
-/** Реактивные значения цен РФ, КЗ, УЗ по строке (индекс → value). Заполняются из price_type4/5/6 при выборе наценки, переопределяются пользователем. */
-const priceRF = reactive<Record<number, number>>({});
-const priceKZ = reactive<Record<number, number>>({});
-const priceUZ = reactive<Record<number, number>>({});
+/** Реактивные значения цен РФ, КЗ, УЗ по строке (ключ калькуляции → value). Заполняются из price_type4/5/6 при выборе наценки, переопределяются пользователем. */
+const priceRF = reactive<Record<string, number>>({});
+const priceKZ = reactive<Record<string, number>>({});
+const priceUZ = reactive<Record<string, number>>({});
 
 const editingVersion = ref<{
   model: string;
@@ -3514,7 +3569,8 @@ const loadingVersionData = ref(false);
 /** Индекс строки, для которой открыт dropdown типа (-1 = ни одна). */
 const editingTypeCell = ref<number>(-1);
 
-const comments = reactive<Record<number, string>>({});
+/** Комментарий по строке (ключ калькуляции → текст). */
+const comments = reactive<Record<string, string>>({});
 
 async function loadPriceLevels() {
   try {
@@ -3600,34 +3656,33 @@ function findClosestMarkup(
   });
 }
 
-/** Обработчики ввода цен РФ, КЗ, УЗ. */
-const onPriceRFInput = (absoluteIdx: number, value: string) => {
-  const row = allAggregated.value[absoluteIdx];
-  if (row && isRowLocked(row)) return;
+/** Обработчики ввода цен РФ, КЗ, УЗ.
+ *
+ * Принимают саму строку, а не её номер: номер живёт только внутри текущей
+ * выдачи и после смены фильтра указывает на чужую калькуляцию. */
+const onPriceRFInput = (row: any, value: string) => {
+  if (!row || isRowLocked(row)) return;
   const v = parseFloat(value);
-  priceRF[absoluteIdx] = isNaN(v) ? 0 : v;
-  changedRows.add(absoluteIdx);
+  priceRF[calcRowKey(row)] = isNaN(v) ? 0 : v;
+  changedRows.set(calcRowKey(row), row);
 };
-const onPriceKZInput = (absoluteIdx: number, value: string) => {
-  const row = allAggregated.value[absoluteIdx];
-  if (row && isRowLocked(row)) return;
+const onPriceKZInput = (row: any, value: string) => {
+  if (!row || isRowLocked(row)) return;
   const v = parseFloat(value);
-  priceKZ[absoluteIdx] = isNaN(v) ? 0 : v;
-  changedRows.add(absoluteIdx);
+  priceKZ[calcRowKey(row)] = isNaN(v) ? 0 : v;
+  changedRows.set(calcRowKey(row), row);
 };
-const onPriceUZInput = (absoluteIdx: number, value: string) => {
-  const row = allAggregated.value[absoluteIdx];
-  if (row && isRowLocked(row)) return;
+const onPriceUZInput = (row: any, value: string) => {
+  if (!row || isRowLocked(row)) return;
   const v = parseFloat(value);
-  priceUZ[absoluteIdx] = isNaN(v) ? 0 : v;
-  changedRows.add(absoluteIdx);
+  priceUZ[calcRowKey(row)] = isNaN(v) ? 0 : v;
+  changedRows.set(calcRowKey(row), row);
 };
 
-const onCommentInput = (absoluteIdx: number, value: string) => {
-  const row = allAggregated.value[absoluteIdx];
-  if (row && isRowLocked(row)) return;
-  comments[absoluteIdx] = value || "";
-  changedRows.add(absoluteIdx);
+const onCommentInput = (row: any, value: string) => {
+  if (!row || isRowLocked(row)) return;
+  comments[calcRowKey(row)] = value || "";
+  changedRows.set(calcRowKey(row), row);
 };
 
 // ── Цены предыдущих этапов калькулирования ──────────────────────────────────
@@ -3728,8 +3783,7 @@ async function loadStagePrices(row: any) {
 }
 
 const openVersionEditor = async (row: any) => {
-  const idx = getOriginalIndex(row);
-  const r = allAggregated.value[idx];
+  const r = row;
   if (!r) return;
   // Номер задания входит в ключ версии (миграция 0032): главная таблица
   // группирует с ним, поэтому и версия должна относиться к конкретному заданию,
@@ -4107,6 +4161,9 @@ const onVersionRowEdit = (row: any, event: Event, field: string) => {
     }
   }
   // Материал/операция/декор(призн) → денежный бакет (зеркалит _recalc_cost_buckets в db.py)
+  // Зеркалит _BUCKET_BY_MAT_TYPE в db.py: канонические значения дропдауна плюс
+  // легаси-коды источника, которые могут остаться в строке несмигрированной
+  // версии. Без легаси-кодов сумма по строке не пересчитывалась на живом вводе.
   const BUCKET_BY_MAT_TYPE: Record<string, string> = {
     'Материал основной': 'Основные материалы',
     'Материал вспомогательный': 'Вспомогательные материалы',
@@ -4114,6 +4171,15 @@ const onVersionRowEdit = (row: any, event: Event, field: string) => {
     'Пошив': 'Пошив',
     'Раскрой': 'Раскрой',
     'Вязание': 'Вязание',
+    'Всп': 'Вспомогательные материалы',
+    'Осн': 'Основные материалы',
+    'себестоимость лиса всп': 'Вспомогательные материалы',
+    'себестоимость лиса осн': 'Основные материалы',
+    'декор': 'Декоры',
+    'материал': 'Основные материалы',
+    'шт': 'Декоры',
+    'Декоры лиса': 'Декоры',
+    'пошив': 'Пошив',
   };
   const MANAGED_BUCKETS = ['Основные материалы', 'Вспомогательные материалы', 'Декоры', 'Пошив', 'Раскрой', 'Вязание'];
   // When type field changes, zero out ALL managed buckets first
@@ -4152,6 +4218,12 @@ function normalizeVersionRow(rr: any): any {
   const typeMap: Record<string, string> = {
     'материал': 'Материал основной',
     'декор': 'Декор',
+    // Коды этапа ПКПСС (ключи здесь в нижнем регистре — см. raw ниже).
+    // Зеркалят _LEGACY_TYPE_ALIASES в db.py.
+    'всп': 'Материал вспомогательный',
+    'осн': 'Материал основной',
+    'себестоимость лиса всп': 'Материал вспомогательный',
+    'себестоимость лиса осн': 'Материал основной',
     // 'техоперация' — легаси-тип без разбиения на Пошив/Раскрой/Вязание,
     // не мапим: строки с ним мигрируются на бэкенде (см. migrate_split_technoperation),
     // а не-мигрированные остатки должны остаться нетронутыми, а не тихо стать одним из трёх.
@@ -4237,74 +4309,70 @@ function nameDisplayValue(row: any): string {
 }
 
 /** Найти индексы строк с тем же Модель+Артикул+PLAN_ID+Признак калькуляции (исключая excludeIdx). */
-function findSiblingIndices(row: any, excludeIdx: number): number[] {
+/** Строки той же калькуляции (модель+артикул+план+признак), кроме самой `row`.
+ *
+ * Возвращает строки, а не их номера: номер после смены фильтра указывает на
+ * другую калькуляцию, а ссылка на строку остаётся верной. */
+function findSiblingRows(row: any): any[] {
   const model = row['Модель'];
   const articul = row['Артикул'];
   const planId = row['PLAN_ID'];
   const calcSign = row['Признак калькуляции'];
   if (!model || !articul || !planId || !calcSign) return [];
   const key = `${model}|${articul}|${planId}|${calcSign}`;
-  return allAggregated.value.reduce<number[]>((acc, r, i) => {
-    if (i === excludeIdx) return acc;
-    if (`${r['Модель']}|${r['Артикул']}|${r['PLAN_ID']}|${r['Признак калькуляции']}` === key) {
-      acc.push(i);
-    }
-    return acc;
-  }, []);
+  return allAggregated.value.filter(
+    (r) => r !== row
+      && `${r['Модель']}|${r['Артикул']}|${r['PLAN_ID']}|${r['Признак калькуляции']}` === key
+  );
 }
 
 /** Выбор розничной цены из выпадающего списка: синхронизируем по всем строкам с тем же model+articul+plan_id+calc_sign. */
-const onRetailPriceSelect = (absoluteIdx: number, value: string) => {
-  const row = allAggregated.value[absoluteIdx];
+const onRetailPriceSelect = (row: any, value: string) => {
   if (!row || isRowLocked(row)) return;
-  const siblings = findSiblingIndices(row, absoluteIdx);
-  const allIndices = [absoluteIdx, ...siblings];
+  const targets = [row, ...findSiblingRows(row)];
   const numVal = parseFloat(value);
 
-  const clearRow = (idx: number) => {
-    const r = allAggregated.value[idx];
+  const clearRow = (r: any) => {
     r["avg_Розничная цена по уровню, руб."] = 0;
     r["avg_Отпускная цена по уровню, руб"] = 0;
     r["Уровень цен"] = "";
     r["avg_Розничная цена по уровню, USD."] = 0;
     r["avg_Отпускная цена по уровню, USD."] = 0;
     r["mp_price_rub"] = null;
-    markupSelections[idx] = "";
-    changedRows.add(idx);
+    markupSelections[calcRowKey(r)] = "";
+    changedRows.set(calcRowKey(r), r);
   };
-  const updateRow = (idx: number, val: number) => {
-    const r = allAggregated.value[idx];
+  const updateRow = (r: any, val: number) => {
     r["avg_Розничная цена по уровню, руб."] = val;
     r["avg_Отпускная цена по уровню, руб"] = 0;
     r["Уровень цен"] = "";
     r["avg_Розничная цена по уровню, USD."] = 0;
     r["avg_Отпускная цена по уровню, USD."] = 0;
     r["mp_price_rub"] = null;
-    markupSelections[idx] = "";
-    changedRows.add(idx);
+    markupSelections[calcRowKey(r)] = "";
+    changedRows.set(calcRowKey(r), r);
   };
 
   if (isNaN(numVal) || numVal <= 0) {
-    allIndices.forEach(i => clearRow(i));
+    targets.forEach(clearRow);
     return;
   }
-  allIndices.forEach(i => updateRow(i, numVal));
+  targets.forEach(r => updateRow(r, numVal));
 
   // Автовыбор наценки по category level01 (только для текущей строки, onMarkupSelect синхронизирует сам)
   const options = getMarkupOptions(row);
   if (options.length === 1) {
-    onMarkupSelect(absoluteIdx, options[0].value);
+    onMarkupSelect(row, options[0].value);
   } else if (options.length > 1) {
     const target = getTargetMarkup(row["Level 01"]);
     const closest = findClosestMarkup(options, target);
-    onMarkupSelect(absoluteIdx, closest.value);
+    onMarkupSelect(row, closest.value);
   }
 };
 
 /** Выбор наценки: находим соответствующий уровень цен, обновляем строку и сохраняем. */
-const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
+const onMarkupSelect = async (row: any, markupValue: string) => {
   if (!markupValue) return;
-  const row = allAggregated.value[absoluteIdx];
   if (!row || isRowLocked(row)) return;
 
   const retailPrice = Number(row['avg_Розничная цена по уровню, руб.']);
@@ -4347,10 +4415,8 @@ const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
   const wholesaleUsd = r2(wholesaleVal / rate);
 
   // Синхронизируем все строки с тем же model+articul+plan_id+calc_sign
-  const siblings = findSiblingIndices(row, absoluteIdx);
-  const allIndices = [absoluteIdx, ...siblings];
-  for (const idx of allIndices) {
-    const r = allAggregated.value[idx];
+  for (const r of [row, ...findSiblingRows(row)]) {
+    const k = calcRowKey(r);
     r["avg_Розничная цена по уровню, руб."] = retailVal;
     r["avg_Отпускная цена по уровню, руб"] = wholesaleVal;
     r["Уровень цен"] = matchedLevel ? matchedLevel.name : "";
@@ -4358,12 +4424,12 @@ const onMarkupSelect = async (absoluteIdx: number, markupValue: string) => {
     r["avg_Отпускная цена по уровню, USD."] = wholesaleUsd;
     r["mp_price_rub"] = computeMpPriceJs(r);
     if (matchedLevel) {
-      priceRF[idx] = matchedLevel.price_type4;
-      priceKZ[idx] = matchedLevel.price_type5;
-      priceUZ[idx] = matchedLevel.price_type6;
+      priceRF[k] = matchedLevel.price_type4;
+      priceKZ[k] = matchedLevel.price_type5;
+      priceUZ[k] = matchedLevel.price_type6;
     }
-    markupSelections[idx] = markupValue;
-    changedRows.add(idx);
+    markupSelections[k] = markupValue;
+    changedRows.set(k, r);
   }
 };
 
@@ -4371,8 +4437,7 @@ const saveAllChanges = async () => {
   if (!changedRows.size) return;
   saving.value = true;
   try {
-    const changes = Array.from(changedRows).map((idx) => {
-      const row = allAggregated.value[idx];
+    const changes = Array.from(changedRows.entries()).map(([key, row]) => {
       return {
         model: row["Модель"],
         articul: row["Артикул"],
@@ -4409,10 +4474,10 @@ const saveAllChanges = async () => {
         knitting_usd: row["sum_Вязание, USD."],
         cost_rub: row["sum_Себестоимость, руб."],
         cost_usd: row["sum_Себестоимость, USD."],
-        price_rf: priceRF[idx] || 0,
-        price_kz: priceKZ[idx] || 0,
-        price_uz: priceUZ[idx] || 0,
-        comment: comments[idx] || "",
+        price_rf: priceRF[key] || 0,
+        price_kz: priceKZ[key] || 0,
+        price_uz: priceUZ[key] || 0,
+        comment: comments[key] || "",
       };
     });
     const result = await $fetch<{ success: boolean; count: number; error?: string; mock?: boolean }>(
@@ -4570,16 +4635,19 @@ const peoKeyFields = (row: any) => ({
   articul: (row['Артикул'] ?? '').toString().trim(),
   calc_sign: (row['Признак калькуляции'] ?? '').toString().trim(),
   plan_id: (row['PLAN_ID'] ?? '').toString().trim(),
-  // Пустое задание шлём как null — так делал одиночный попап до массового режима.
-  task_number: (row['Номер задания производства'] ?? '').toString().trim() || null,
+  // Пустое задание шлём пустой строкой, а НЕ null: в cost_calc_approvals
+  // task_number NOT NULL DEFAULT '' (миграция 0038). Пока сюда уходил null,
+  // UNIQUE не срабатывал (NULLS DISTINCT) и каждое согласование плодило новую
+  // запись, а join в /aggregated её не находил — зелёная отметка ПЭО пропадала
+  // после перезагрузки данных.
+  task_number: (row['Номер задания производства'] ?? '').toString().trim(),
 });
 
 const setApproval = async (status: 'approved' | 'rejected') => {
   if (!approvalTarget.value) return;
   approving.value = true;
   try {
-    const idx = getOriginalIndex(approvalTarget.value);
-    const r = allAggregated.value[idx];
+    const r = approvalTarget.value;
     await fetch(`${apiBase.value}/api/cost/approve-calculation`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json', ...fetchHeaders.value},
@@ -4850,10 +4918,10 @@ const exportToExcel = () => {
       formatDate(row["дата расчета"]),
       row["Признак калькуляции"] || "",
       row["Уровень цен"] || "",
-      fmt(priceRF[ei] ?? ''),
-      fmt(priceKZ[ei] ?? ''),
-      fmt(priceUZ[ei] ?? ''),
-      comments[ei] || "",
+      fmt(priceRF[calcRowKey(row)] ?? ''),
+      fmt(priceKZ[calcRowKey(row)] ?? ''),
+      fmt(priceUZ[calcRowKey(row)] ?? ''),
+      comments[calcRowKey(row)] || "",
       fmt(row["avg_Розничная цена по уровню, руб."]),
       fmt(row["avg_Отпускная цена по уровню, руб"]),
       fmt(row["avg_Розничная цена по уровню, USD."]),

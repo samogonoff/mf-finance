@@ -256,6 +256,11 @@ async def load_data(payload: dict, _: str = Depends(_require_perm("cost:view")))
         '  AND TRIM(cd."Артикул") = ca.articul'
         '  AND TRIM(cd."Признак калькуляции") = ca.calc_sign'
         '  AND TRIM(cd."PLAN_ID") = ca.plan_id'
+        # Задание в ключе обязательно: без него строка с несогласованным
+        # заданием подхватывала статус соседнего согласованного, и один и тот же
+        # ряд показывал разный статус здесь и в /aggregated.
+        '  AND TRIM(COALESCE(cd."Номер задания производства", \'\'))'
+        '      = COALESCE(ca.task_number, \'\')'
     )
 
     async with pool().acquire() as conn:
@@ -386,8 +391,11 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         where_parts.append(f'"дата расчета" <= ${len(params) + 1}')
         params.append(date.fromisoformat(payload["date_to"]))
 
-    if payload.get("no_wholesale_only"):
-        where_parts.append('("Отпускная цена по уровню, руб" IS NULL OR "Отпускная цена по уровню, руб" = 0)')
+    # Фильтр «только строки без оптовой цены» здесь НЕ применяется: цены не
+    # хранятся в cost_data_cache, а накладываются на выдачу из pending/DWH ниже.
+    # Условие в WHERE отсекало по пустой цене источника и пропускало калькуляции,
+    # где цена уже установлена и видна в таблице. Фильтр перенесён после
+    # наложения цен — см. блок «Фильтр по отсутствию отпускной цены».
 
     for key, col in MULTI_FILTER_COLUMNS.items():
         values = payload.get(key) or []
@@ -403,7 +411,14 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         '  AND TRIM(cd."Артикул") = ca.articul'
         '  AND TRIM(cd."Признак калькуляции") = ca.calc_sign'
         '  AND TRIM(cd."PLAN_ID") = ca.plan_id'
-        '  AND (TRIM(cd."Номер задания производства") IS NOT DISTINCT FROM ca.task_number)'
+        # Пустое задание в кэше — пустая СТРОКА, а не NULL (на dev: 2 582 строки
+        # против 2 с NULL), поэтому сравнение без COALESCE теряло согласования
+        # всех калькуляций без номера задания: '' IS NOT DISTINCT FROM NULL даёт
+        # FALSE. С 24.08.2026 в cost_calc_approvals task_number NOT NULL
+        # DEFAULT '' (миграция 0038), но COALESCE оставлен с обеих сторон — в
+        # кэше NULL всё ещё встречается, он приходит из источника.
+        '  AND TRIM(COALESCE(cd."Номер задания производства", \'\'))'
+        '      = COALESCE(ca.task_number, \'\')'
     )
     select_parts.append(
         "CASE WHEN BOOL_AND(ca.status = 'approved') THEN 'approved'"
@@ -942,6 +957,23 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     except Exception:
         pass  # lock state is advisory — don't break the page
 
+    # ── Фильтр по отсутствию отпускной цены ────────────────────────────────
+    # Считаем по ИТОГОВОМУ значению, то есть после наложения цен из
+    # cost_price_pending и CostHistory_Changes: в самом кэше отпускной цены нет
+    # почти нигде, и фильтр по источнику показывал строки с уже установленной
+    # ценой (в таблице у них заполнен «Сред. опт» и стоит значок 📤).
+    if payload.get("no_wholesale_only"):
+        def _has_no_wholesale(row: dict) -> bool:
+            value = row.get("avg_Отпускная цена по уровню, руб")
+            if value is None:
+                return True
+            try:
+                return float(value) == 0
+            except (TypeError, ValueError):
+                return True
+
+        data = [r for r in data if _has_no_wholesale(r)]
+
     # ── Filter by PEO approval status (sent by frontend peoFilter) ─────────
     peo_filter = (payload.get("peo_filter") or "").strip()
     if peo_filter and peo_filter != "all":
@@ -1204,13 +1236,16 @@ async def _check_save_locks(
 
     lock_keys: set[tuple[str, str, str, str]] = set()
     # Map 4-tuple → set of task_numbers seen in the data
-    group_tasks: dict[tuple[str, str, str, str], set[str | None]] = {}
+    group_tasks: dict[tuple[str, str, str, str], set[str]] = {}
     for r in rows:
         m = str(r.get("model", "") or "").strip()
         a = str(r.get("articul", "") or "").strip()
         cs = str(r.get("calc_sign") or r.get("Признак калькуляции", "") or "").strip()
         pi = str(r.get("plan_id", "") or "").strip()
-        tn = str(r.get("task_number") or r.get("Номер задания производства", "") or "").strip() or None
+        # Пустое задание — пустая строка, как и в cost_calc_approvals после
+        # миграции 0038. Раньше здесь было `or None`, и ключ группы не
+        # совпадал с тем, что реально записано в согласованиях.
+        tn = str(r.get("task_number") or r.get("Номер задания производства", "") or "").strip()
         if m and a:
             key4 = (m, a, cs, pi)
             lock_keys.add(key4)
@@ -1258,13 +1293,13 @@ async def _check_save_locks(
                     WHERE (model, articul, calc_sign, plan_id) IN (VALUES {appr_ph})""",
                 *appr_params,
             )
-        group_approval: dict[tuple[str, str, str, str], dict[str | None, str]] = {}
+        group_approval: dict[tuple[str, str, str, str], dict[str, str]] = {}
         for r in appr_rows:
             key4 = (
                 str(r["model"]).strip(), str(r["articul"]).strip(),
                 str(r["calc_sign"] or "").strip(), str(r["plan_id"] or "").strip(),
             )
-            tn_val = str(r["task_number"] or "").strip() or None
+            tn_val = str(r["task_number"] or "").strip()
             group_approval.setdefault(key4, {})[tn_val] = r["status"]
         for key4, expected_tasks in group_tasks.items():
             approvals = group_approval.get(key4, {})
@@ -1541,7 +1576,7 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
                 ids,
             )
         for pr in pending_rows:
-            tn = str(pr.get("Номер задания производства", "") or "").strip() or None
+            tn = str(pr.get("Номер задания производства", "") or "").strip()
             await save_approval(
                 pr["Модель"], pr["Артикул"], pr["Признак калькуляции"], pr["PLAN_ID"],
                 "approved", reviewed_by, task_number=tn,
