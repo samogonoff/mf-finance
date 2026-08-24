@@ -15,7 +15,15 @@ Finance Cabinet — изолированный кабинет финансист
 
 ## Команды
 
-Все команды запускаются из `swarm/`:
+Все команды запускаются из `swarm/`.
+
+**Контур поднимается под именем проекта `finance` (`docker compose -p finance …`).**
+Без `-p` compose берёт имя проекта из каталога — `swarm`, — а такой же каталог есть
+у соседних кабинетов на машине разработчика: подъём finance останавливает и
+пересоздаёт ЧУЖИЕ `swarm-postgres-1` / `swarm-redis-1`. Makefile это делает сам;
+если запускаете compose руками — не забудьте `-p finance`. Контейнеры называются
+`finance-postgres-1`, `finance-go-api-1`, `finance-nuxt-1` и т.д.
+
 
 ```bash
 make up               # поднять основной dev-контур (Go + Nuxt + PG + Redis + analytics)
@@ -227,6 +235,7 @@ Python `os.environ`, Nuxt `process.env.*` / `runtimeConfig`), ОБЯЗАНА п�
 
 ## Часто встречающиеся ошибки
 
+- **«`make up` уронил соседний кабинет / `Conflict. The container name "/swarm-postgres-1" is already in use`»** → compose поднят без явного имени проекта: имя бралось из каталога `swarm`, которое совпадает с другими кабинетами на машине. Makefile уже использует `-p finance`; если запускали `docker compose` руками — добавьте `-p finance`. Пострадавшие чужие контейнеры поднимаются обратно `docker start swarm-postgres-1 swarm-redis-1`.
 - **«Auth callback ломается локально»** → проверь `NUXT_INTERNAL_API_BASE=http://go-api:8080` в env Nuxt. Server-route bypasses nginx по докер-сети.
 - **«502 на /api/cost/* в основном контуре»** → cost-стек не поднят. `default_dev.conf` явно отдаёт 502, чтобы это было видно. Подними `make cost-up`.
 - **«Миграции не накатываются после `make up`»** → init-db.sh запускается только при ПЕРВОМ старте volume. На существующем — `make migrate` (повтор init-блока) или `swarm/migrate.dev.sh` (golang-migrate).
