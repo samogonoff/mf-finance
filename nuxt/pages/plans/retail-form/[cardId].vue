@@ -49,7 +49,7 @@
           <Icon name="lucide:upload" /> Импорт
         </button>
         <input ref="fileInput" type="file" accept=".xlsx" class="hidden-file" @change="doImport" />
-        <button class="btn btn-sm btn-ghost" :disabled="busy" @click="runValidate">
+        <button class="btn btn-sm btn-ghost" :disabled="busy" @click="runValidate()">
           <Icon name="lucide:shield-check" /> Проверить
         </button>
         <button class="btn btn-sm btn-primary" :disabled="busy || !editable || !dirty" @click="save">
@@ -250,13 +250,13 @@
       />
 
       <!-- ===== Отчёт валидаций (§6) ===== -->
-      <section v-if="report" class="card val-card">
+      <section v-if="report && reportOpen" class="card val-card">
         <div class="card-header">
           <span class="card-title">Проверка формы</span>
           <span class="badge" :class="report.can_submit ? 'badge-pos' : 'badge-neg'">
             {{ report.can_submit ? "можно отправлять на согласование" : "отправка заблокирована" }}
           </span>
-          <button type="button" class="link-btn" @click="report = null">скрыть</button>
+          <button type="button" class="link-btn" @click="reportOpen = false">скрыть</button>
         </div>
         <p v-if="!report.blocking.length && !report.warnings.length" class="val-ok">
           Замечаний нет.
@@ -534,6 +534,9 @@ const { hasRole, isAdmin } = useScope();
 const form = ref<RetailForm | null>(null);
 const card = ref<PlanCard | null>(null);
 const report = ref<RetailValidationReport | null>(null);
+// Видимость панели отделена от самого результата: «скрыть отчёт» не должно
+// разблокировать отправку на согласование — иначе запрет обходится одним кликом.
+const reportOpen = ref(true);
 const loading = ref(true);
 const busy = ref(false);
 const error = ref("");
@@ -843,64 +846,94 @@ const totals = computed<AggRow>(() => aggregate(filteredRows.value, "Итого"
 
 // ─────────── виртуализация ───────────
 // 375 строк × 12 месяцев — это 4500 полей ввода; без виртуализации браузер
-// умирает на первой же прокрутке. Пакет подключается динамически: node_modules
-// в репозитории нет, и страница обязана открываться даже до пересборки образа.
-const ROW_H = 32;
-const scrollEl = ref<HTMLElement | null>(null);
-const virtualizer = shallowRef<{ getVirtualItems: () => { index: number; start: number; end: number }[]; getTotalSize: () => number; scrollToIndex: (i: number, o?: unknown) => void } | null>(null);
-const virtOn = computed(() => !!virtualizer.value);
+// умирает на первой же прокрутке. Отрисовываем окно видимых строк, а место
+// остальных занимают две пустые строки-распорки (padTop/padBottom): с <table>
+// это единственный способ виртуализации, не ломающий вёрстку колонок.
+//
+// Импорт динамический и обёрнут в try/catch: если пакет по какой-то причине не
+// поднялся (образ собран до появления зависимости, сбой чанка), форма обязана
+// открыться и работать — просто отрисует все строки и скажет об этом в консоль.
 
-const virtualItems = computed(() => (virtualizer.value ? virtualizer.value.getVirtualItems() : []));
+/** Минимальный контракт виртуализатора — ровно то, что здесь используется. */
+interface VirtualItem { index: number; start: number; end: number }
+interface VirtualizerLike {
+  getVirtualItems: () => VirtualItem[];
+  getTotalSize: () => number;
+  scrollToIndex: (i: number, o?: unknown) => void;
+}
+
+const ROW_H_FALLBACK = 33;
+const scrollEl = ref<HTMLElement | null>(null);
+/** Высота строки: измеряется по факту — оценка мимо приводит к дрожанию прокрутки. */
+const rowH = ref(ROW_H_FALLBACK);
+/**
+ * Источник — тот самый shallowRef, который вернул useVirtualizer. Держим именно
+ * ref, а не его содержимое: vue-virtual сообщает об изменениях через triggerRef,
+ * то есть по ссылке объект тот же. Если скопировать значение наружу, computed'ы
+ * ниже больше никогда не пересчитаются, и окно рендера замрёт на первом кадре.
+ */
+const virtSource = shallowRef<{ value: VirtualizerLike } | null>(null);
+const virtOn = computed(() => !!virtSource.value);
+
+// Каждый computed читает virtSource.value.value САМ — так все они подписаны на
+// внутренний ref и инвалидируются при прокрутке.
+const virtualItems = computed<VirtualItem[]>(() => virtSource.value?.value.getVirtualItems() ?? []);
+const virtTotalSize = computed(() => virtSource.value?.value.getTotalSize() ?? 0);
+
 const renderRows = computed<LiveRow[]>(() => {
   const all = liveRows.value;
-  if (!virtualizer.value) return all;
+  if (!virtOn.value) return all;
   return virtualItems.value.map((vi) => all[vi.index]).filter(Boolean);
 });
-const padTop = computed(() => (virtualizer.value && virtualItems.value.length ? virtualItems.value[0].start : 0));
+const padTop = computed(() => (virtualItems.value.length ? virtualItems.value[0].start : 0));
 const padBottom = computed(() => {
-  if (!virtualizer.value || !virtualItems.value.length) return 0;
-  return Math.max(0, virtualizer.value.getTotalSize() - virtualItems.value[virtualItems.value.length - 1].end);
+  const items = virtualItems.value;
+  if (!items.length) return 0;
+  return Math.max(0, virtTotalSize.value - items[items.length - 1].end);
 });
+
+const scrollToRow = (row: number) => virtSource.value?.value.scrollToIndex(row, { align: "auto" });
 
 let virtScope: ReturnType<typeof effectScope> | null = null;
 const initVirtualizer = async () => {
-  // @vite-ignore + переменная-спецификатор: Vite не пытается разрешить пакет на
-  // этапе сборки, поэтому отсутствие зависимости даёт перехватываемую ошибку в
-  // рантайме, а не падение сборки.
-  const spec = "@tanstack/vue-virtual";
   try {
-    const mod = (await import(/* @vite-ignore */ spec)) as {
-      useVirtualizer: (o: unknown) => { value: NonNullable<typeof virtualizer.value> };
-    };
+    const mod = await import("@tanstack/vue-virtual");
+    // useVirtualizer заводит watch'и и onScopeDispose. onMounted он не использует,
+    // поэтому его можно поднять в собственном effectScope уже после монтирования —
+    // нам это и нужно, ведь сам импорт асинхронный.
     virtScope = effectScope();
     virtScope.run(() => {
-      const v = mod.useVirtualizer(
+      virtSource.value = mod.useVirtualizer(
         computed(() => ({
           count: liveRows.value.length,
           getScrollElement: () => scrollEl.value,
-          estimateSize: () => ROW_H,
+          estimateSize: () => rowH.value,
           overscan: 14
         }))
-      );
-      // Отдаём наружу «живой» объект: у vue-virtual это ref, читаем .value.
-      watchEffect(() => {
-        virtualizer.value = v.value;
-      });
+      ) as unknown as { value: VirtualizerLike };
     });
+    await nextTick();
+    measureRowHeight();
   } catch (e) {
     console.warn(
-      "[розница] Пакет @tanstack/vue-virtual недоступен — форма отрисует все строки без виртуализации. " +
-        "Добавьте зависимость и пересоберите образ nuxt.",
+      "[розница] Пакет @tanstack/vue-virtual не поднялся — форма отрисует все строки без виртуализации. " +
+        "Проверьте зависимость в nuxt/package.json и пересоберите образ nuxt.",
       e
     );
   }
+};
+
+/** Реальная высота строки сетки: зависит от темы, плотности и набора колонок. */
+const measureRowHeight = () => {
+  const tr = scrollEl.value?.querySelector<HTMLElement>("tbody tr:not(.pad-row)");
+  if (tr && tr.offsetHeight > 0) rowH.value = tr.offsetHeight;
 };
 
 // ─────────── навигация «как в Excel» (§4.3) ───────────
 const nav = useGridNav({
   rows: () => (detail.value ? liveRows.value.length : 0),
   cols: () => monthCols.value.length,
-  ensureVisible: (row) => virtualizer.value?.scrollToIndex(row, { align: "auto" }),
+  ensureVisible: (row) => scrollToRow(row),
   onPaste: (anchor, matrix) => {
     const rows = liveRows.value;
     const months = monthCols.value;
@@ -1305,12 +1338,18 @@ const reload = async () => {
   }
 };
 
-const runValidate = async () => {
-  busy.value = true;
+/**
+ * Проверка формы. silent=true — фоновый прогон при открытии: результат нужен,
+ * чтобы кнопка отправки сразу была в правильном состоянии, но разворачивать
+ * список из 119 «не заполнен план» никто не просил.
+ */
+const runValidate = async (silent = false) => {
+  if (!silent) busy.value = true;
   try {
     report.value = await api.validate(cardId);
+    if (!silent) reportOpen.value = true;
   } catch (e) {
-    error.value = retailErrText(e, "Проверка не выполнена");
+    if (!silent) error.value = retailErrText(e, "Проверка не выполнена");
   } finally {
     busy.value = false;
   }
@@ -1337,9 +1376,9 @@ const save = async () => {
     form.value = await api.saveForm(cardId, { cells, comments });
     dropDraft();
     note.value = `Сохранено: ячеек ${cells.length}, комментариев ${comments.length}.`;
-    // Пересчёт валидаций после сохранения: отчёт на экране должен относиться к
-    // тому, что в базе, а не к тому, что было до сохранения.
-    if (report.value) await runValidate();
+    // Пересчёт валидаций после сохранения: отчёт должен относиться к тому, что
+    // в базе, а не к тому, что было до сохранения (от него зависит can_submit).
+    await runValidate(!reportOpen.value);
   } catch (e) {
     error.value = retailErrText(e, "Не удалось сохранить ввод");
   } finally {
@@ -1389,6 +1428,9 @@ const doImport = async (e: Event) => {
 onMounted(async () => {
   await load();
   restoreDraft();
+  // Сетка появляется по v-if="form" — виртуализатору нужен уже существующий
+  // контейнер прокрутки, иначе getScrollElement() вернёт null на старте.
+  await nextTick();
   await initVirtualizer();
   api.presets(RETAIL_FORM_CODE)
     .then((list) => {
@@ -1399,7 +1441,8 @@ onMounted(async () => {
     .catch(() => {
       /* пресетов может не быть — открываемся на дефолтном представлении */
     });
-  runValidate();
+  reportOpen.value = false;
+  runValidate(true);
 });
 
 onBeforeUnmount(() => {

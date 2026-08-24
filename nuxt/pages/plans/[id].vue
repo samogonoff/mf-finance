@@ -129,7 +129,10 @@
             <span v-if="c.locked" class="fc-lock"><Icon name="lucide:lock" /> закрыт</span>
           </div>
           <div class="fc-links">
-            <NuxtLink v-if="formTaskId(c)" :to="`/plans/mp-form/${formTaskId(c)}`" class="fc-link">
+            <!-- /plans/mp-form — экран МП, а не общий: задание по рознице открывать
+                 им нельзя (у розницы своя форма ниже). Без проверки form_code
+                 карточка розницы получала вторую ссылку «Форма», ведущую на форму МП. -->
+            <NuxtLink v-if="c.form_code === 'TPL-MP' && formTaskId(c)" :to="`/plans/mp-form/${formTaskId(c)}`" class="fc-link">
               <Icon name="lucide:file-input" /> Форма
             </NuxtLink>
             <NuxtLink v-if="c.form_code === 'TPL-MP'" :to="`/plans/mp-conditions/${c.id}`" class="fc-link">

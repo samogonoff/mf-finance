@@ -165,7 +165,14 @@ export function useGridNav(opts: GridNavOptions) {
     const matrix = lines.map((l) => l.split("\t"));
     if (matrix.length === 1 && matrix[0].length === 1) return;
     e.preventDefault();
-    opts.onPaste(active.value, matrix);
+    const anchor = active.value;
+    // Поле в фокусе показывает СВОЙ черновик ввода, а не значение модели, и на
+    // blur возвращает его наружу. Если не снять фокус до записи, вставленное в
+    // якорную ячейку значение будет затёрто её же старым текстом при уходе с
+    // поля — то есть вставка молча потеряет одну ячейку.
+    (document.activeElement as HTMLElement | null)?.blur();
+    opts.onPaste(anchor, matrix);
+    void focusCell(anchor.row, anchor.col);
   };
 
   /**
