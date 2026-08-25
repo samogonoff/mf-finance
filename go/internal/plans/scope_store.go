@@ -54,3 +54,29 @@ func (s *pgScopeStore) UpsertScope(ctx context.Context, sc UserScope) error {
 		sc.UserID, sc.Role, sc.StageCode, sc.Country, sc.LegalEntity, codes)
 	return err
 }
+
+// UserScopes — полный срез пользователя (страна, ЮЛ, этап, набор ЦФО).
+// В отличие от UserCodeCFOs не сплющивает правила: измерения нужны формам,
+// где доступ определяется страной и ЮЛ (розница), а не только площадкой.
+func (s *pgScopeStore) UserScopes(ctx context.Context, userID int64) ([]UserScope, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT role, stage_code, country, legal_entity, code_cfo
+		  FROM plans_user_scope WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]UserScope, 0)
+	for rows.Next() {
+		sc := UserScope{UserID: userID}
+		var raw []byte
+		if err := rows.Scan(&sc.Role, &sc.StageCode, &sc.Country, &sc.LegalEntity, &raw); err != nil {
+			return nil, err
+		}
+		if len(raw) > 0 {
+			_ = json.Unmarshal(raw, &sc.CodeCFO)
+		}
+		out = append(out, sc)
+	}
+	return out, rows.Err()
+}

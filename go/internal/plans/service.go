@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 )
 
 // Service — бизнес-логика формы TPL-MP (VS3): сборка матрицы (факт + тактика)
@@ -12,12 +13,18 @@ type Service struct {
 	store MetricStore
 	fact  MpFactSource
 	scope ScopeStore
+	// cal — календари стран из БД (plans_country_calendar). nil → CalendarSeed().
+	cal CalendarStore
 }
 
 // NewService — конструктор.
 func NewService(store MetricStore, fact MpFactSource, scope ScopeStore) *Service {
 	return &Service{store: store, fact: fact, scope: scope}
 }
+
+// WithCalendar подключает календари стран из БД: сроки этапов считаются по
+// настраиваемому производственному календарю, а не по seed из кода.
+func (s *Service) WithCalendar(c CalendarStore) *Service { s.cal = c; return s }
 
 // allowedFor — ABAC-набор разрешённых code_cfo (nil для админа — без фильтра).
 func (s *Service) allowedFor(ctx context.Context, p Principal) (map[int]bool, error) {
@@ -122,7 +129,7 @@ func (s *Service) Stages(ctx context.Context, plID int64, year, month int, count
 	}
 	if len(stages) == 0 {
 		resp, _ := s.store.RouteConfig(ctx)
-		stages = initStages(year, month, country, CalendarSeed(), resp)
+		stages = initStages(year, month, country, calendarsOrSeed(ctx, s.cal, year), resp)
 		if err := s.store.StagesInit(ctx, plID, stages); err != nil {
 			return nil, err
 		}
@@ -170,7 +177,12 @@ func (s *Service) SetRoute(ctx context.Context, code, responsible string) error 
 
 // StageAction — действие WF-03 (start/submit/approve/return) с проверкой
 // зависимостей (WF-DEP); согласование пишет лист (pl_approval).
-func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year, month int, country, code, action, target string) ([]StageState, error) {
+// Возврат требует целевого этапа И комментария (ТЗ МП §2.3, Розница §2.3, V-06);
+// решения от целевого этапа и выше аннулируются с пометкой revoked.
+func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year, month int, country, code, action, target, comment string) ([]StageState, error) {
+	if action == "return" && strings.TrimSpace(comment) == "" {
+		return nil, errors.New("возврат без комментария невозможен")
+	}
 	stages, err := s.Stages(ctx, plID, year, month, country)
 	if err != nil {
 		return nil, err
@@ -183,9 +195,27 @@ func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year
 		return nil, err
 	}
 	if action == "approve" || action == "return" {
-		_ = s.store.RecordApproval(ctx, plID, code, p.UserID, action, "")
+		// Лист согласования — часть контракта, а не побочный эффект: ошибку записи
+		// возвращаем (раньше глушилась и таблицы pl_approval вовсе не было).
+		if err := s.store.RecordApproval(ctx, plID, ApprovalEntry{
+			StageCode: code, UserID: p.UserID, Decision: action,
+			TargetStage: target, Comment: comment,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if action == "return" && target != "" {
+		if err := s.store.RevokeApprovalsFrom(ctx, plID, target,
+			"возврат на этап "+target+" с этапа "+code); err != nil {
+			return nil, err
+		}
 	}
 	return next, nil
+}
+
+// Approvals — лист согласования экземпляра (история решений, включая revoked).
+func (s *Service) Approvals(ctx context.Context, plID int64) ([]ApprovalEntry, error) {
+	return s.store.Approvals(ctx, plID)
 }
 
 // MpForm собирает форму: read-only факт (OLAP/FinDWH) + сохранённая тактика,

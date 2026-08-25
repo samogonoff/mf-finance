@@ -31,7 +31,7 @@ type Task struct {
 	DelegateID   *int64 `json:"delegate_user_id"`
 	DelegateName string `json:"delegate_name"`
 	Status       string `json:"status"`
-	Year         int    `json:"year,omitempty"`  // период карточки (в обзоре всех заданий)
+	Year         int    `json:"year,omitempty"` // период карточки (в обзоре всех заданий)
 	Month        int    `json:"month,omitempty"`
 }
 
@@ -39,7 +39,13 @@ type Task struct {
 type TaskStore struct {
 	pool   *pgxpool.Pool
 	notify TaskNotifier // канал уведомлений участникам (может быть nil)
-	fact MpFactSource // источник факта МП (read-only) для формы
+	fact   MpFactSource // источник факта МП (read-only) для формы
+	// Контекст расчёта: режим карточки (legacy/inverse), условия площадок и
+	// справочные ставки. Всё опционально — без них форма считается как раньше
+	// (legacy-каскад «суммы → доли»).
+	cards CardStore
+	cond  MpConditionsStore
+	rates *RateBook
 }
 
 // NewTaskStore — конструктор. fact может быть nil (факт тогда пуст).
@@ -47,14 +53,45 @@ func NewTaskStore(pool *pgxpool.Pool, fact MpFactSource) *TaskStore {
 	return &TaskStore{pool: pool, fact: fact}
 }
 
+// WithCalcContext подключает инверсию расчёта (ТЗ МП §3.1): если карточка формы
+// в режиме inverse и по площадке заданы условия, расходная часть считается из
+// условий, а не подтягивается суммами.
+func (s *TaskStore) WithCalcContext(cards CardStore, cond MpConditionsStore, rates *RateBook) *TaskStore {
+	s.cards, s.cond, s.rates = cards, cond, rates
+	return s
+}
+
+// calcModeFor — режим расчёта карточки МП периода. Карточка ищется по сегменту
+// задания; при её отсутствии (старые периоды) остаётся legacy.
+func (s *TaskStore) calcModeFor(ctx context.Context, plID int64, segment string) (string, Card) {
+	if s.cards == nil {
+		return CalcLegacy, Card{}
+	}
+	scopes := []string{segment}
+	if segment == "" || segment == "all" {
+		// Объединённая форма: режим берём из карточки large (обе группы идут в
+		// одном режиме — иначе числа в своде будут несопоставимы).
+		scopes = []string{"large", "small"}
+	}
+	for _, sc := range scopes {
+		if c, err := s.cards.CardByScope(ctx, plID, TemplateMP, sc); err == nil {
+			if c.CalcMode == CalcInverse {
+				return CalcInverse, c
+			}
+			return CalcLegacy, c
+		}
+	}
+	return CalcLegacy, Card{}
+}
+
 type taskTemplate struct {
-	ID        int64
-	Stage     string
-	Form      string
-	Title     string
-	Filter    CfoFilter
-	Role      string
-	GroupBy   string
+	ID      int64
+	Stage   string
+	Form    string
+	Title   string
+	Filter  CfoFilter
+	Role    string
+	GroupBy string
 }
 
 func (s *TaskStore) templates(ctx context.Context) ([]taskTemplate, error) {
@@ -225,8 +262,8 @@ func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 			}
 			if len(unassigned) > 0 {
 				// «без ТОПа» — внутренний жаргон: у ЦФО не задана должность-владелец.
-			// В UI пишем то, что от человека требуется: назначить исполнителя.
-			queue(t, t.Title+" · исполнитель не назначен", unassigned, nil, nil, "")
+				// В UI пишем то, что от человека требуется: назначить исполнителя.
+				queue(t, t.Title+" · исполнитель не назначен", unassigned, nil, nil, "")
 			}
 		}
 	}
@@ -437,13 +474,13 @@ type TaskDataRow struct {
 	LineCode    int      `json:"line_code"`
 	ExpenseName string   `json:"expense_name"`
 	BlockType   string   `json:"block_type"`
-	Fact        *float64 `json:"fact"`     // факт (read-only)
-	Strategy    *float64 `json:"strategy"` // стратегия (read-only)
-	Tactic      *float64 `json:"tactic"`   // тактика (ввод)
-	Calc        *float64 `json:"calc"`     // расчёт CALC
-	IsManual    bool     `json:"is_manual"`// ручная корректировка (ADJ-04)
-	Reason      string   `json:"reason"`   // основание корректировки (ADJ-02)
-	Original    *float64 `json:"original"` // значение до корректировки (diff ADJ-05)
+	Fact        *float64 `json:"fact"`      // факт (read-only)
+	Strategy    *float64 `json:"strategy"`  // стратегия (read-only)
+	Tactic      *float64 `json:"tactic"`    // тактика (ввод)
+	Calc        *float64 `json:"calc"`      // расчёт CALC
+	IsManual    bool     `json:"is_manual"` // ручная корректировка (ADJ-04)
+	Reason      string   `json:"reason"`    // основание корректировки (ADJ-02)
+	Original    *float64 `json:"original"`  // значение до корректировки (diff ADJ-05)
 }
 
 // TaskData — данные задания: метаданные + строки + признак наличия данных.

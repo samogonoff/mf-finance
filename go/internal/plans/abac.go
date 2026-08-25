@@ -38,6 +38,33 @@ type ScopeStore interface {
 	UpsertScope(ctx context.Context, sc UserScope) error
 }
 
+// FullScopeStore — срез со всеми измерениями (страна, ЮЛ, этап, ЦФО).
+// Отдельным интерфейсом, чтобы существующие реализации ScopeStore (в т.ч.
+// тестовые) продолжали работать: код проверяет приведение типа.
+type FullScopeStore interface {
+	UserScopes(ctx context.Context, userID int64) ([]UserScope, error)
+}
+
+// scopeFilterFor — полный ABAC-фильтр пользователя. Если хранилище отдаёт только
+// набор ЦФО (старый интерфейс), фильтр собирается из него — поведение прежнее.
+func scopeFilterFor(ctx context.Context, store ScopeStore, p Principal) (ScopeFilter, error) {
+	if p.PlansAdmin {
+		return NewScopeFilter(true, nil), nil
+	}
+	if full, ok := store.(FullScopeStore); ok {
+		rules, err := full.UserScopes(ctx, p.UserID)
+		if err != nil {
+			return ScopeFilter{}, err
+		}
+		return NewScopeFilter(false, rules), nil
+	}
+	codes, err := store.UserCodeCFOs(ctx, p.UserID)
+	if err != nil {
+		return ScopeFilter{}, err
+	}
+	return NewScopeFilter(false, []UserScope{{UserID: p.UserID, CodeCFO: codes}}), nil
+}
+
 func allowedSet(codes []int) map[int]bool {
 	m := make(map[int]bool, len(codes))
 	for _, c := range codes {

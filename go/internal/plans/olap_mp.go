@@ -127,16 +127,28 @@ func (s *OlapFactSource) formRows(ctx context.Context, table string, year, month
 	return out, rows.Err()
 }
 
-// penaltyRows — штрафы МП из FINDWHACCESSGROUP (Наименование LIKE '%Штраф%'), RUB.
+// penaltyRows — факт штрафов МП, RUB. Источник задаётся конфигом:
+//   - PLANS_MP_PENALTIES_VIEW=DWH.dbo.wb_dimensions_penalty — отдельный источник
+//     штрафов, названный в скорректированном ТЗ (§6.2, §9.1, ответ C5): Страна,
+//     Месяц, CodePL(66), CodeCFO, GroupCFO1, CFO, суммы в 4 валютах, Наименование;
+//   - FINDWHACCESSGROUP — исходный источник первой редакции (совместимость).
+//
+// Различаются только именем колонки суммы, поэтому запрос собирается по имени вью.
 // Фильтр по CodeCFO площадок отсекает не-МП штрафы (УФК, аренда и т.п.).
 func (s *OlapFactSource) penaltyRows(ctx context.Context, year, month int, platforms map[int]string) ([]FactRow, error) {
+	amountCol := "[Сумма без НДС_RUR]"
+	if strings.Contains(strings.ToLower(s.penaltyView), "wb_dimensions_penalty") {
+		// В источнике ТЗ колонка названа по-другому (ответ C5: «Сумма без НДС» в
+		// нац./BYN/USD/RUR). Берём рублёвую.
+		amountCol = "[Сумма без НДС RUR]"
+	}
 	q := fmt.Sprintf(`
-		SELECT TRY_CONVERT(int, [CodeCFO]) AS cfo, SUM([Сумма без НДС_RUR]) AS amt
+		SELECT TRY_CONVERT(int, [CodeCFO]) AS cfo, SUM(%s) AS amt
 		FROM [%s]
 		WHERE CAST([Наименование] AS nvarchar(max)) LIKE N'%%Штраф%%'
 		  AND YEAR([Месяц]) = @p1 AND MONTH([Месяц]) = @p2
 		  AND TRY_CONVERT(int, [CodeCFO]) IN (%s)
-		GROUP BY TRY_CONVERT(int, [CodeCFO])`, s.penaltyView, platformIDs(platforms))
+		GROUP BY TRY_CONVERT(int, [CodeCFO])`, amountCol, s.penaltyView, platformIDs(platforms))
 	rows, err := s.db.QueryContext(ctx, q, year, month)
 	if err != nil {
 		return nil, err

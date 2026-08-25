@@ -664,6 +664,7 @@ func (h *Handler) StageAction(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Action  string `json:"action"`
 		Target  string `json:"target"`
+		Comment string `json:"comment"`
 		Year    int    `json:"year"`
 		Month   int    `json:"month"`
 		Country string `json:"country"`
@@ -697,13 +698,32 @@ func (h *Handler) StageAction(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	stages, err := h.form.StageAction(r.Context(), h.prin(r), plID, body.Year, body.Month, body.Country, code, body.Action, body.Target)
+	stages, err := h.form.StageAction(r.Context(), h.prin(r), plID, body.Year, body.Month, body.Country, code, body.Action, body.Target, body.Comment)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	h.rec(r, "stage_"+body.Action, "pl_instance", plID)
 	writeJSON(w, http.StatusOK, stages)
+}
+
+// ApprovalsList — GET /api/plans/instances/{id}/approvals. Лист согласования:
+// решения по этапам, включая аннулированные (revoked) — ТЗ МП §2.3.
+func (h *Handler) ApprovalsList(w http.ResponseWriter, r *http.Request) {
+	plID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || plID <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	list, err := h.form.Approvals(r.Context(), plID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if list == nil {
+		list = []ApprovalEntry{}
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 // InstancesList — GET /api/plans/instances. Список экземпляров PL.

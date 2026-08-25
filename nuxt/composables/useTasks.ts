@@ -4,6 +4,8 @@
  * submit → review → accept → done). Владелец этапа двигает этап.
  */
 
+import type { MpConditions } from "./useMpCascade";
+
 export interface CfoFilter {
   entity_type?: string;
   group_cfo1?: string;
@@ -87,6 +89,19 @@ export interface MpTaskForm {
   platforms: MpFormPlatform[];
   lines: MpLine[];
   cells: MpFormCell[];
+  /**
+   * Направление расчёта карточки: legacy («суммы → доли») либо inverse
+   * («условия → суммы», ТЗ МП §3.1). Клиент обязан его учитывать: в inverse
+   * живой пересчёт идёт из условий площадки, а не из введённых сумм.
+   */
+  calc_mode: string;
+  /** Карточка процесса этой формы; 0/undefined — старый период без карточки. */
+  card_id?: number;
+  /**
+   * Условия площадок (приходят только в inverse): ключ — code_cfo. Нужны и для
+   * пересчёта, и чтобы показать долю статьи рядом с суммой.
+   */
+  conditions?: Record<number, MpConditions>;
 }
 export interface MpSaveRow { code_cfo: number; block_type: string; code_pl: number; amount: number; is_manual: boolean; comment: string }
 

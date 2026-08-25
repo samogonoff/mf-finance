@@ -1,69 +1,76 @@
 .DEFAULT_GOAL := help
 
+# Имя compose-проекта задаём ЯВНО. Без него docker compose берёт его из имени
+# каталога («swarm»), а такой же каталог есть у соседних кабинетов на этой машине —
+# и подъём finance останавливает и пересоздаёт ЧУЖИЕ контейнеры соседнего
+# кабинета (swarm-postgres-1, swarm-redis-1). С -p finance контейнеры называются
+# finance-*, и конфликта нет.
+COMPOSE := docker compose -p finance --env-file ../.env -f docker-compose.dev.yml
+
 help:                  ## список команд
 	@fgrep -h "##" $(MAKEFILE_LIST) | fgrep -v fgrep | sed -e 's/\\$$//' | sed -e 's/##//'
 
 up:                    ## поднять dev-контур
-	docker compose --env-file ../.env -f docker-compose.dev.yml up --build -d
+	$(COMPOSE) up --build -d
 	@echo "→ Nuxt:   http://finance.local       (или http://localhost:3001 без nginx)"
 	@echo "→ API:    http://api.finance.local   (или http://localhost:8081 без nginx)"
 	@echo "→ PG:     psql -h localhost -p 55432 -U finance finance"
 	@echo "→ Redis:  redis-cli -h localhost -p 63791"
 
 down:                  ## остановить контур
-	docker compose --env-file ../.env -f docker-compose.dev.yml down
+	$(COMPOSE) down
 
 down-remove:           ## остановить + убрать orphan-ов
-	docker compose --env-file ../.env -f docker-compose.dev.yml down --remove-orphans
+	$(COMPOSE) down --remove-orphans
 
 down-volumes:          ## ⚠ остановить и удалить volume'ы (БД пропадёт)
-	docker compose --env-file ../.env -f docker-compose.dev.yml down -v
+	$(COMPOSE) down -v
 
 logs:                  ## tail логов всех сервисов
-	docker compose --env-file ../.env -f docker-compose.dev.yml logs -f --tail=200
+	$(COMPOSE) logs -f --tail=200
 
 logs-go:               ## логи go-api
-	docker compose --env-file ../.env -f docker-compose.dev.yml logs -f go-api
+	$(COMPOSE) logs -f go-api
 
 logs-nuxt:             ## логи nuxt
-	docker compose --env-file ../.env -f docker-compose.dev.yml logs -f nuxt
+	$(COMPOSE) logs -f nuxt
 
 ps:                    ## статус контейнеров
-	docker compose --env-file ../.env -f docker-compose.dev.yml ps
+	$(COMPOSE) ps
 
 console-go:            ## shell в go-api
-	docker exec -it swarm-go-api-1 sh
+	docker exec -it finance-go-api-1 sh
 
 console-nuxt:          ## shell в nuxt
-	docker exec -it swarm-nuxt-1 sh
+	docker exec -it finance-nuxt-1 sh
 
 console-py:            ## shell в python-analytics
-	docker exec -it swarm-python-analytics-1 sh
+	docker exec -it finance-python-analytics-1 sh
 
 psql:                  ## psql в БД finance
-	docker exec -it swarm-postgres-1 psql -U finance finance
+	docker exec -it finance-postgres-1 psql -U finance finance
 
 migrate:               ## применить миграции (заново — для существующего volume)
-	docker exec -it swarm-postgres-1 sh -c \
+	docker exec -it finance-postgres-1 sh -c \
 	  'for f in /docker-entrypoint-initdb.d/migrations/*.up.sql; do echo "applying $$f"; psql -U finance -d finance -f "$$f"; done'
 
 reset-db:              ## ⚠ полностью пересоздать БД (drop volume + миграции)
-	docker compose --env-file ../.env -f docker-compose.dev.yml stop postgres
-	docker compose --env-file ../.env -f docker-compose.dev.yml rm -fv postgres
-	docker volume rm swarm_db_data || true
-	docker compose --env-file ../.env -f docker-compose.dev.yml up -d postgres
+	$(COMPOSE) stop postgres
+	$(COMPOSE) rm -fv postgres
+	docker volume rm finance_db_data || true
+	$(COMPOSE) up -d postgres
 
 build:                 ## пересобрать все образы без кэша
-	docker compose --env-file ../.env -f docker-compose.dev.yml build --no-cache
+	$(COMPOSE) build --no-cache
 
 restart-%:             ## перезапустить сервис: make restart-go-api
-	docker compose --env-file ../.env -f docker-compose.dev.yml restart $*
+	$(COMPOSE) restart $*
 
 logship-test:          ## послать тестовые строки в Logstash (настройка индекса ELK)
 	docker exec \
 	  -e LOGSTASH_HOST="$$(grep -E '^LOGSTASH_HOST=' ../.env | cut -d= -f2-)" \
 	  -e LOGSTASH_PORT="$$(grep -E '^LOGSTASH_PORT=' ../.env | cut -d= -f2-)" \
-	  swarm-go-api-1 go run ./cmd/logship-test
+	  finance-go-api-1 go run ./cmd/logship-test
 
 # === Раздел «Себестоимость» — изолированный контур ============================
 # Запускается отдельно от основного dev-контура: своя БД, свой env, свой nginx.
