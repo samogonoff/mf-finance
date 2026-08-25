@@ -408,8 +408,19 @@ func retailStoreOpenedAfter(dateOpen string, year, month int) bool {
 	return d.After(start)
 }
 
+// retailDateMinYear — граница «дата не задана». В [001 CodeCFO] отсутствие даты
+// записано НЕ пустым значением и не NULL, а сентинелом 1900-01-01: так помечены
+// 196 из 206 действующих магазинов РБ (и 134 из 201 по остальным странам). Без
+// этой отсечки V-09 читает сентинел как «закрыт в 1900 году» и выбрасывает из
+// формы весь справочник — на проде форма открывалась пустой («0 из 0 магазинов»).
+// Граница безопасна: самый ранний реальный DateOpen в справочнике — 2014-06-01,
+// а дат закрытия раньше 2000 года, кроме сентинела, нет вовсе. Заодно
+// отсекается Excel-сентинел 1899-12-30.
+const retailDateMinYear = 2000
+
 // parseRetailDate — дата атрибута магазина. Принимаем и YYYY-MM-DD, и
 // YYYY-MM-DDTHH:MM:SSZ: источник MSSQL отдаёт datetime, а снапшот — date.
+// Сентинел «даты нет» (год < retailDateMinYear) — это не дата: ok=false.
 func parseRetailDate(s string) (time.Time, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -422,7 +433,33 @@ func parseRetailDate(s string) (time.Time, bool) {
 	if err != nil {
 		return time.Time{}, false
 	}
+	if d.Year() < retailDateMinYear {
+		return time.Time{}, false
+	}
 	return d, true
+}
+
+// retailDateOrEmpty — дата атрибута магазина к виду YYYY-MM-DD; сентинел и
+// мусор → пустая строка. Нормализуем НА ГРАНИЦЕ (источник, мок, чтение
+// снапшота из БД), потому что «закрыт» проверяется не только через
+// retailStoreClosedBefore, но и сравнением DateClose != "" (§8 разрезы, V-03):
+// оставь сентинел в поле — и все действующие магазины уедут в «закрытые».
+func retailDateOrEmpty(s string) string {
+	d, ok := parseRetailDate(s)
+	if !ok {
+		return ""
+	}
+	return d.Format("2006-01-02")
+}
+
+// retailSnapshotDate — дата снапшота строки, прочитанная из tp_row. Строки,
+// записанные до отсечки сентинела, хранят date_close = 1900-01-01 — читаем их
+// как «не задано», иначе магазин остаётся «закрытым» до следующего синка.
+func retailSnapshotDate(t *time.Time) string {
+	if t == nil || t.Year() < retailDateMinYear {
+		return ""
+	}
+	return t.Format("2006-01-02")
 }
 
 // retailPrevMonth — предыдущий месяц с переходом через год (ТЗ §4: «для января —

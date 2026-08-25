@@ -58,11 +58,22 @@ func mockRetailStores() []mockRetailStore {
 	return append(out, mockRetailGeneratedStores()...)
 }
 
+// retailNoDate — как источник записывает «даты нет»: сентинел 1900-01-01, а не
+// пустая строка (см. retailDateMinYear). В фикстуре им помечена часть
+// действующих магазинов, чтобы регресс V-09 ловился тестом, а не проверкой на
+// проде — там сентинел выбросил из формы весь справочник.
+const retailNoDate = "1900-01-01"
+
+// mockRetailClosed — магазин фикстуры закрыт. Сравнивать m.close с "" напрямую
+// нельзя: «даты нет» источник пишет сентинелом retailNoDate, и такой магазин
+// действующий (ровно на этом форма и опустела на проде).
+func mockRetailClosed(m mockRetailStore) bool { return retailDateOrEmpty(m.close) != "" }
+
 // mockRetailCoreStores — 18 магазинов РБ (CodeCFO и адреса — из dir_cfo, 0028).
 func mockRetailCoreStores() []mockRetailStore {
 	return []mockRetailStore{
-		{100, "б-р Шевченко, 9", "Минск", "1641", LFLYes, "стрит", "B", "Смолер О.В.", 133.7, "2019-04-12", "", 168000, "BY"},
-		{113, "ТЦ Манеж, Вильнюсское шоссе, 1", "Полоцк", "1669", LFLYes, "ТЦ", "A", "Смолер О.В.", 148.1, "2019-08-01", "", 152000, "BY"},
+		{100, "б-р Шевченко, 9", "Минск", "1641", LFLYes, "стрит", "B", "Смолер О.В.", 133.7, "2019-04-12", retailNoDate, 168000, "BY"},
+		{113, "ТЦ Манеж, Вильнюсское шоссе, 1", "Полоцк", "1669", LFLYes, "ТЦ", "A", "Смолер О.В.", 148.1, "2019-08-01", retailNoDate, 152000, "BY"},
 		{114, "ул.Ленина, 57", "Береза", "2246", LFLYes, "стрит", "A", "Смолер О.В.", 124.1, "2020-03-14", "", 121000, "BY"},
 		{115, "м-н Первомайский, 3", "Светлогорск", "1676", LFLYes, "стрит", "B", "Смолер О.В.", 164, "2019-11-02", "", 134000, "BY"},
 		{117, "ул.Ленина, 13", "Кобрин", "1721", LFLYes, "стрит", "B", "Смолер О.В.", 165.8, "2020-06-20", "", 129000, "BY"},
@@ -136,14 +147,18 @@ func (s *MockRetailSource) Stores(_ context.Context, country string) ([]RetailSt
 			continue
 		}
 		le, _ := retailLegalEntity(c)
+		// Даты фикстуры проходят ту же нормализацию, что и живой источник:
+		// в [001 CodeCFO] «не закрыт» записан сентинелом 1900-01-01, и мок обязан
+		// вести себя так же, иначе регресс V-09 виден только на проде.
+		dateOpen, dateClose := retailDateOrEmpty(m.open), retailDateOrEmpty(m.close)
 		stage := "действующий"
-		if m.close != "" {
+		if dateClose != "" {
 			stage = "закрыт"
 		}
 		out = append(out, RetailStore{
 			CodeCFO: m.code, KlientID: m.klient, NameCFO: m.name, GroupCFO1: "Магазины",
 			City: m.city, Country: c, CodeFOX: "FOX" + itoa(int64(m.code)),
-			Ploschad: m.area, StoreType: m.storeType, DateOpen: m.open, DateClose: m.close,
+			Ploschad: m.area, StoreType: m.storeType, DateOpen: dateOpen, DateClose: dateClose,
 			Stage: stage, CompanyMF: le, Channel: "Розница", Category: m.category,
 			LFLStatus: m.lfl, RegManager: m.rm, Manager: m.rm,
 			PLAnalytic: "Розница " + c,
@@ -172,7 +187,7 @@ func (s *MockRetailSource) Fact(_ context.Context, country string, years []int) 
 				if retailStoreOpenedAfter(m.open, y, mo) {
 					continue
 				}
-				if m.close != "" && retailStoreClosedBefore(m.close, y, mo) {
+				if mockRetailClosed(m) && retailStoreClosedBefore(m.close, y, mo) {
 					continue
 				}
 				amt := m.base * season[mo] * mockRetailYearFactor(y)
@@ -196,7 +211,7 @@ func (s *MockRetailSource) Strategy(_ context.Context, country string, year int)
 		if country != "" && country != mockRetailCountryOf(m) {
 			continue
 		}
-		if m.base == 0 || m.close != "" {
+		if m.base == 0 || mockRetailClosed(m) {
 			continue
 		}
 		for mo := 1; mo <= 12; mo++ {

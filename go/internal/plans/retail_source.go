@@ -124,7 +124,7 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 		st = RetailStore{
 			CodeCFO: codeNum, GroupCFO1: g1.String, City: g2.String, NameCFO: cfo.String,
 			Country: ctry.String, CodeFOX: fox.String, Ploschad: plo.Float64, StoreType: typ.String,
-			DateOpen: normalizeSourceDate(open.String), DateClose: normalizeSourceDate(close_.String),
+			DateOpen: retailDateOrEmpty(open.String), DateClose: retailDateOrEmpty(close_.String),
 			Stage: stage.String, CompanyMF: comp.String, Channel: ch.String, CFOold: old.String,
 			Category: cat.String, LFLStatus: retailLFLStatus(lfl.String), RegManager: rm.String,
 			Manager: mgr.String, PLAnalytic: pla.String,
@@ -268,17 +268,6 @@ func intList(vals []int) string {
 		parts = append(parts, fmt.Sprintf("%d", v))
 	}
 	return strings.Join(parts, ",")
-}
-
-// normalizeSourceDate — дата из MSSQL к виду YYYY-MM-DD. Источник отдаёт datetime
-// строкой, а снапшот атрибутов хранит date; сравнения V-03/V-09/W-05 работают по
-// первым 10 символам, поэтому приводим тут, а не в каждой проверке.
-func normalizeSourceDate(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) >= 10 {
-		return s[:10]
-	}
-	return ""
 }
 
 // numericCFO — код ЦФО целиком из цифр. В справочнике [001 CodeCFO] попадаются
