@@ -418,6 +418,10 @@ func main() {
 	mux.HandleFunc("GET /api/plans/tasks/{taskId}/mp-form/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormExport))
 	mux.HandleFunc("POST /api/plans/tasks/{taskId}/mp-form/import", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormImport))
 	mux.HandleFunc("POST /api/plans/tasks/{taskId}/action", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.TaskAction))
+	// История задания: кто взял, кто кому передал, с каким пояснением и сроком.
+	// Доступна исполнителю, а не только аудитору — иначе «почему это задание у
+	// меня» остаётся без ответа (прозрачность передачи работы).
+	mux.HandleFunc("GET /api/plans/tasks/{taskId}/events", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.TaskEvents))
 	mux.HandleFunc("GET /api/plans/instances/{id}/stage-owners", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.StageOwnersList))
 	mux.HandleFunc("PUT /api/plans/instances/{id}/stages/{code}/owner", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.StageOwnerSet))
 	mux.HandleFunc("GET /api/plans/instances/{id}/stages/{code}/readiness", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.StageReadiness))

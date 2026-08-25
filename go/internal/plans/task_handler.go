@@ -249,22 +249,41 @@ func (h *Handler) TaskAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "движок заданий недоступен")
 		return
 	}
-	var body struct {
-		Action         string `json:"action"`
-		DelegateUserID int64  `json:"delegate_user_id"`
-	}
+	var body TaskActionInput
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	taskID := parseInt64(r.PathValue("taskId"))
 	prin := h.prin(r)
-	if err := h.tasks.Action(r.Context(), taskID, prin.UserID, prin.PlansAdmin, body.Action, body.DelegateUserID); err != nil {
+	if err := h.tasks.Action(r.Context(), taskID, prin.UserID, prin.PlansAdmin, body); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	h.rec(r, "task_"+body.Action, "task", taskID)
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	// Отдаём обновлённое задание и его историю: список заданий должен показать
+	// нового держателя и причину передачи сразу, без второго запроса.
+	events, _ := h.tasks.TaskEvents(r.Context(), taskID)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "events": events})
+}
+
+// TaskEvents — GET /api/plans/tasks/{taskId}/events.
+// История одного задания: кто взял, кто кому передал, с каким пояснением и
+// сроком, кто вернул. Доступна исполнителю, а не только аудитору.
+func (h *Handler) TaskEvents(w http.ResponseWriter, r *http.Request) {
+	if h.tasks == nil {
+		writeErr(w, http.StatusServiceUnavailable, "движок заданий недоступен")
+		return
+	}
+	events, err := h.tasks.TaskEvents(r.Context(), parseInt64(r.PathValue("taskId")))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if events == nil {
+		events = []TaskEvent{}
+	}
+	writeJSON(w, http.StatusOK, events)
 }
 
 // --- Конструктор шаблонов ---

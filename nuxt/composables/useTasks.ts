@@ -40,6 +40,14 @@ export interface Task {
   assignee_name: string;
   delegate_user_id: number | null;
   delegate_name: string;
+  // Кто передал задание, когда, с каким пояснением и сроком. Без этих полей в
+  // списке виден только конечный держатель — вопрос «почему задание у него»
+  // остаётся без ответа.
+  delegated_by?: number | null;
+  delegated_by_name?: string;
+  delegated_at?: string | null;
+  delegate_note?: string;
+  due_at?: string | null;
   status: string;
 }
 
@@ -57,6 +65,32 @@ export interface TaskDataRow {
   reason: string;
   original: number | null;
 }
+/** Запись истории задания (pl_task_event): одно действие с исполнителями. */
+export interface TaskEvent {
+  id: number;
+  action: string;
+  actor_id?: number | null;
+  actor_name: string;
+  target_id?: number | null;
+  target_name?: string;
+  status_from: string;
+  status_to: string;
+  comment: string;
+  due_at?: string | null;
+  created_at: string;
+}
+
+/** Человеческие подписи действий: списки заданий читают исполнители. */
+export const TASK_ACTION_LABEL: Record<string, string> = {
+  start: "взял(а) в работу",
+  delegate: "передал(а) в работу",
+  submit: "сдал(а)",
+  accept: "принял(а)",
+  return: "вернул(а) на доработку",
+  reopen: "переоткрыл(а)",
+  assign: "назначил(а) исполнителя"
+};
+
 export interface TaskData {
   task: Task;
   rows: TaskDataRow[];
@@ -164,12 +198,30 @@ export const useTasks = () => {
   const setAssignee = (taskId: number, userId: number): Promise<{ ok: boolean }> =>
     $fetch(`${base}/api/plans/tasks/${taskId}/assignee`, { method: "PUT", body: { user_id: userId }, headers: h() });
 
-  const action = (taskId: number, act: string, delegateUserId = 0): Promise<{ ok: boolean }> =>
+  /**
+   * Действие над заданием. Комментарий обязателен при `delegate` и `return` —
+   * сервер отклонит запрос без него: передача работы без объяснения теряет
+   * контекст, ради которого процесс и переносили из Excel.
+   */
+  const action = (
+    taskId: number,
+    act: string,
+    opts: { delegateUserId?: number; comment?: string; dueAt?: string } = {}
+  ): Promise<{ ok: boolean; events?: TaskEvent[] }> =>
     $fetch(`${base}/api/plans/tasks/${taskId}/action`, {
       method: "POST",
-      body: { action: act, delegate_user_id: delegateUserId },
+      body: {
+        action: act,
+        delegate_user_id: opts.delegateUserId ?? 0,
+        comment: opts.comment ?? "",
+        due_at: opts.dueAt ?? ""
+      },
       headers: h()
     });
+
+  /** История задания: кто взял, кто кому передал, с каким пояснением и сроком. */
+  const taskEvents = (taskId: number): Promise<TaskEvent[]> =>
+    $fetch(`${base}/api/plans/tasks/${taskId}/events`, { headers: h() });
 
   const setOwner = (plId: number, stageCode: string, userId: number): Promise<{ ok: boolean }> =>
     $fetch(`${base}/api/plans/instances/${plId}/stages/${stageCode}/owner`, {
@@ -193,5 +245,5 @@ export const useTasks = () => {
   const deleteTemplate = (id: number): Promise<{ ok: boolean }> =>
     $fetch(`${base}/api/plans/task-templates/${id}`, { method: "DELETE", headers: h() });
 
-  return { mine, all, pnl, importStrategy, data, mpForm, saveMpForm, exportMpForm, importMpForm, byInstance, generate, action, setAssignee, setOwner, readiness, stageOwners, advanceStage, templates, saveTemplate, deleteTemplate };
+  return { mine, all, pnl, importStrategy, data, mpForm, saveMpForm, exportMpForm, importMpForm, byInstance, generate, action, taskEvents, setAssignee, setOwner, readiness, stageOwners, advanceStage, templates, saveTemplate, deleteTemplate };
 };
