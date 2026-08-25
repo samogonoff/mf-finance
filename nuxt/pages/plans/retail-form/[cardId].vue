@@ -45,6 +45,14 @@
         <button class="btn btn-sm btn-ghost" :disabled="busy" @click="doExport">
           <Icon name="lucide:download" /> Экспорт
         </button>
+        <button
+          class="btn btn-sm btn-ghost"
+          :disabled="busy"
+          title="Скачать пример .xlsx: нужные колонки, месяцы периода и подсказки по заполнению"
+          @click="doImportTemplate"
+        >
+          <Icon name="lucide:file-down" /> Пример импорта
+        </button>
         <button class="btn btn-sm btn-ghost" :disabled="busy || !editable" @click="fileInput?.click()">
           <Icon name="lucide:upload" /> Импорт
         </button>
@@ -1401,6 +1409,27 @@ const doExport = async () => {
     URL.revokeObjectURL(url);
   } catch (e) {
     error.value = retailErrText(e, "Экспорт не выполнен");
+  } finally {
+    busy.value = false;
+  }
+};
+
+// Пример файла для импорта: те же колонки, что ждёт разбор, плюс подсказки
+// строками-комментариями. Загрузка примера без правок ничего не меняет.
+const doImportTemplate = async () => {
+  busy.value = true;
+  error.value = "";
+  try {
+    const blob = await api.importTemplateXlsx(cardId);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `retail-import-example-${form.value?.country || cardId}-${form.value?.year}-${String(form.value?.month).padStart(2, "0")}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+    note.value = "Пример скачан: заполните колонки месяцев по своим магазинам и загрузите файл кнопкой «Импорт».";
+  } catch (e) {
+    error.value = retailErrText(e, "Не удалось скачать пример файла");
   } finally {
     busy.value = false;
   }

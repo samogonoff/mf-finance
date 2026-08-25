@@ -338,6 +338,14 @@ export function useRetail() {
       responseType: "blob"
     });
 
+  /** Пример .xlsx для импорта: колонки-ключи, месяцы периода и подсказки. */
+  const importTemplateXlsx = (cardId: number, currency = ""): Promise<Blob> =>
+    $fetch<Blob>(url(cardId, "import-template"), {
+      params: currency ? { currency } : {},
+      headers: authHeader(),
+      responseType: "blob"
+    });
+
   const importXlsx = (cardId: number, file: File): Promise<RetailImportResult> => {
     const fd = new FormData();
     fd.append("file", file);
@@ -368,7 +376,7 @@ export function useRetail() {
 
   return {
     form, saveForm, bulk, params, saveParams, lflOverride,
-    summary, validate, exportXlsx, importXlsx,
+    summary, validate, exportXlsx, importXlsx, importTemplateXlsx,
     presets, savePreset, deletePreset
   };
 }
