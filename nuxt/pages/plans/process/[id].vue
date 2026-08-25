@@ -48,11 +48,20 @@
                 <Icon name="lucide:user-round" /> {{ t.assignee_name || "не назначен" }}
                 <button v-if="canAdmin" class="chip-edit" title="Переназначить исполнителя" @click="assignTask = t"><Icon name="lucide:pencil" /></button>
               </span>
-              <span v-if="t.delegate_name" class="assignee-chip del"><Icon name="lucide:share" /> {{ t.delegate_name }}</span>
+              <span v-if="t.delegate_name" class="assignee-chip del" :title="delegateTitle(t)">
+                <Icon name="lucide:share" /> {{ t.delegate_name }}
+              </span>
               <span class="t-form">{{ t.form_code }}</span>
             </div>
             <div class="t-meta">
               <span v-if="t.cfo_count">{{ t.cfo_count }} ЦФО</span>
+              <!-- Кто держит задание СЕЙЧАС и от кого оно пришло: без этого в
+                   списке виден только конечный исполнитель. -->
+              <span v-if="t.delegate_name" class="hold">
+                держит {{ t.delegate_name }}<template v-if="t.delegated_by_name">, передал(а) {{ t.delegated_by_name }}</template>
+              </span>
+              <span v-if="t.due_at" class="due"><Icon name="lucide:calendar-clock" /> срок {{ t.due_at.slice(0, 10) }}</span>
+              <span v-if="t.delegate_note" class="note" :title="t.delegate_note">«{{ t.delegate_note }}»</span>
             </div>
           </div>
           <div class="t-side">
@@ -60,6 +69,9 @@
             <div class="t-actions">
               <NuxtLink v-if="t.form_code === 'TPL-MP'" :to="`/plans/mp-form/${t.id}`" class="btn btn-sm btn-ghost"><Icon name="lucide:pencil" /> Форма</NuxtLink>
               <button class="btn btn-sm btn-ghost" @click="openData(t)"><Icon name="lucide:table" /> Данные</button>
+              <button class="btn btn-sm btn-ghost" title="Кто взял, кто кому передал и зачем" @click="openHistory(t)">
+                <Icon name="lucide:history" /> История
+              </button>
               <button v-for="a in actionsFor(t)" :key="a.act" class="btn btn-sm" :class="a.primary ? 'btn-primary' : 'btn-ghost'" @click="run(t, a.act)">{{ a.label }}</button>
             </div>
           </div>
@@ -113,21 +125,64 @@
       </div>
     </div>
 
-    <div v-if="delegateTask" class="modal-overlay" @click.self="delegateTask = null">
+    <div v-if="delegateTask" class="modal-overlay" @click.self="closeDelegate">
       <div class="modal">
-        <h3>Делегировать · {{ delegateTask.title }}</h3>
+        <h3>Передать задание · {{ delegateTask.title }}</h3>
         <div class="modal-body">
-          <p class="hint">Делегат выполнит и сдаст на проверку — исполнитель примет.</p>
-          <ClientOnly><UserPicker placeholder="Фамилия делегата…" @picked="onDelegate" /></ClientOnly>
+          <p class="hint">Делегат выполнит и сдаст на проверку — исполнитель примет работу.</p>
+          <label class="fld">
+            <span class="fld-lbl">Кому <span class="req">*</span></span>
+            <ClientOnly><UserPicker placeholder="Фамилия делегата…" @picked="onDelegatePick" /></ClientOnly>
+            <span v-if="delegateTo" class="picked">выбран: {{ delegateTo.name }}</span>
+          </label>
+          <label class="fld">
+            <span class="fld-lbl">Что нужно сделать <span class="req">*</span></span>
+            <textarea v-model="delegateNote" class="select textarea" rows="3" placeholder="например: заполни продажи по мелким МП"></textarea>
+            <span class="fld-hint">Обязательно: сервер отклоняет передачу без пояснения — принимающий должен понимать задачу.</span>
+          </label>
+          <label class="fld">
+            <span class="fld-lbl">Срок</span>
+            <input v-model="delegateDue" type="date" class="select" />
+            <span class="fld-hint">Необязательно. Срок увидит принимающий в своём списке заданий.</span>
+          </label>
         </div>
-        <div class="modal-foot"><button class="btn btn-ghost" @click="delegateTask = null">Отмена</button></div>
+        <div class="modal-foot">
+          <button class="btn btn-ghost" @click="closeDelegate">Отмена</button>
+          <button class="btn btn-primary" :disabled="!delegateTo || !delegateNote.trim()" @click="submitDelegate">
+            <Icon name="lucide:share" /> Передать
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- История задания: кто взял, кто кому передал, зачем и к какому сроку. -->
+    <div v-if="historyTask" class="modal-overlay" @click.self="historyTask = null">
+      <div class="modal modal-wide">
+        <h3>История задания · {{ historyTask.title }}</h3>
+        <div class="modal-body">
+          <p v-if="!history.length" class="hint">Действий пока не было.</p>
+          <table v-else class="data-table">
+            <thead><tr><th>Когда</th><th>Кто</th><th>Действие</th><th>Кому</th><th>Срок</th><th>Комментарий</th></tr></thead>
+            <tbody>
+              <tr v-for="e in history" :key="e.id">
+                <td class="mono">{{ fmtWhen(e.created_at) }}</td>
+                <td>{{ e.actor_name || "—" }}</td>
+                <td>{{ actionLabel(e.action) }} <span class="st">{{ e.status_from }} → {{ e.status_to }}</span></td>
+                <td>{{ e.target_name || "—" }}</td>
+                <td class="mono">{{ e.due_at ? e.due_at.slice(0, 10) : "—" }}</td>
+                <td>{{ e.comment || "—" }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="modal-foot"><button class="btn btn-ghost" @click="historyTask = null">Закрыть</button></div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { useTasks, type Task, type TaskData, type TaskDataRow } from "~/composables/useTasks";
+import { useTasks, TASK_ACTION_LABEL, type Task, type TaskData, type TaskDataRow, type TaskEvent } from "~/composables/useTasks";
 import { num } from "~/utils/format";
 import { usePlans } from "~/composables/usePlans";
 import UserPicker from "~/components/plans/UserPicker.vue";
@@ -148,6 +203,11 @@ const error = ref("");
 const note = ref("");
 const busy = ref(false);
 const delegateTask = ref<Task | null>(null);
+const delegateTo = ref<{ id: number; name: string } | null>(null);
+const delegateNote = ref("");
+const delegateDue = ref("");
+const historyTask = ref<Task | null>(null);
+const history = ref<TaskEvent[]>([]);
 const assignTask = ref<Task | null>(null);
 const dataModal = ref<TaskData | null>(null);
 const fmt = (v: number | null) => (v === null || v === undefined ? "—" : num(v, 0));
@@ -205,13 +265,58 @@ const advance = async (stage: string) => {
   try { await api.advanceStage(plId, stage, { action: "submit", year: period.value.year, month: period.value.month, country: "RU" }); note.value = `Этап ${stage} продвинут`; } catch (e) { errShow(e); }
 };
 const run = async (t: Task, act: string) => {
-  if (act === "delegate") { delegateTask.value = t; return; }
+  if (act === "delegate") { openDelegate(t); return; }
+  if (act === "return") {
+    // Вернуть работу молча нельзя: сервер отклонит, а исполнитель не поймёт,
+    // что переделывать. Спрашиваем причину здесь же.
+    const reason = window.prompt("Причина возврата задания:")?.trim();
+    if (!reason) return;
+    try { await api.action(t.id, act, { comment: reason }); await load(); } catch (e) { errShow(e); }
+    return;
+  }
   try { await api.action(t.id, act); await load(); } catch (e) { errShow(e); }
 };
-const onDelegate = async (u: { id: number; name: string }) => {
-  if (!delegateTask.value) return;
-  try { await api.action(delegateTask.value.id, "delegate", u.id); delegateTask.value = null; await load(); } catch (e) { errShow(e); }
+
+const openDelegate = (t: Task) => {
+  delegateTask.value = t;
+  delegateTo.value = null;
+  delegateNote.value = "";
+  delegateDue.value = "";
 };
+const closeDelegate = () => { delegateTask.value = null; };
+const onDelegatePick = (u: { id: number; name: string }) => { delegateTo.value = u; };
+
+const submitDelegate = async () => {
+  if (!delegateTask.value || !delegateTo.value || !delegateNote.value.trim()) return;
+  try {
+    await api.action(delegateTask.value.id, "delegate", {
+      delegateUserId: delegateTo.value.id,
+      comment: delegateNote.value.trim(),
+      dueAt: delegateDue.value
+    });
+    delegateTask.value = null;
+    await load();
+  } catch (e) { errShow(e); }
+};
+
+const openHistory = async (t: Task) => {
+  historyTask.value = t;
+  history.value = [];
+  try { history.value = await api.taskEvents(t.id); } catch (e) { errShow(e); }
+};
+
+const actionLabel = (a: string) => TASK_ACTION_LABEL[a] || a;
+
+/** Тултип делегата: от кого пришло задание, когда и с каким пояснением. */
+const delegateTitle = (t: Task): string => {
+  const parts: string[] = [];
+  if (t.delegated_by_name) parts.push(`передал(а): ${t.delegated_by_name}`);
+  if (t.delegated_at) parts.push(`когда: ${fmtWhen(t.delegated_at)}`);
+  if (t.due_at) parts.push(`срок: ${t.due_at.slice(0, 10)}`);
+  if (t.delegate_note) parts.push(`задача: ${t.delegate_note}`);
+  return parts.join(" · ") || "делегат";
+};
+const fmtWhen = (iso: string) => (iso || "").replace("T", " ").slice(0, 16);
 const onAssign = async (u: { id: number; name: string }) => {
   if (!assignTask.value) return;
   try { await api.setAssignee(assignTask.value.id, u.id); assignTask.value = null; await load(); } catch (e) { errShow(e); }
@@ -221,6 +326,17 @@ onMounted(load);
 </script>
 
 <style scoped>
+.t-meta .hold { color: var(--text-secondary); }
+.t-meta .due { color: var(--warn); }
+.t-meta .note { color: var(--text-muted); font-style: italic; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fld { display: block; margin-bottom: var(--sp-5); }
+.fld-lbl { display: block; font-size: var(--fs-sm); color: var(--text-secondary); margin-bottom: var(--sp-3); }
+.fld-hint { display: block; margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--text-muted); }
+.req { color: var(--neg); }
+.picked { display: block; margin-top: var(--sp-2); font-size: var(--fs-sm); color: var(--accent); }
+.modal-wide { max-width: 900px; }
+.st { color: var(--text-muted); font-size: var(--fs-xs); }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .banner { padding: var(--sp-4) var(--sp-5); border-radius: var(--rd-4, 6px); margin-bottom: var(--sp-5); font-size: var(--fs-sm); }
 .banner-neg { background: var(--neg-soft); color: var(--neg-strong); }
 .banner-pos { background: var(--pos-soft); color: var(--pos-strong); }

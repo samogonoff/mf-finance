@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,6 +34,41 @@ type Task struct {
 	Status       string `json:"status"`
 	Year         int    `json:"year,omitempty"` // период карточки (в обзоре всех заданий)
 	Month        int    `json:"month,omitempty"`
+	// Кто и когда передал задание, с каким сроком и пояснением. Без этих полей
+	// в списке видно только конечного держателя — «почему задание у него»
+	// ответить нельзя (ux-redesign §7c, требование прозрачности передачи).
+	DelegatedBy   *int64     `json:"delegated_by,omitempty"`
+	DelegatedName string     `json:"delegated_by_name,omitempty"`
+	DelegatedAt   *time.Time `json:"delegated_at,omitempty"`
+	DelegateNote  string     `json:"delegate_note,omitempty"`
+	DueAt         *time.Time `json:"due_at,omitempty"`
+}
+
+// TaskEvent — запись журнала действий по заданию (pl_task_event).
+// История передач: кто, кому, когда, с какой формулировкой и сроком.
+type TaskEvent struct {
+	ID         int64      `json:"id"`
+	Action     string     `json:"action"`
+	ActorID    *int64     `json:"actor_id,omitempty"`
+	ActorName  string     `json:"actor_name"`
+	TargetID   *int64     `json:"target_id,omitempty"`
+	TargetName string     `json:"target_name,omitempty"`
+	StatusFrom string     `json:"status_from"`
+	StatusTo   string     `json:"status_to"`
+	Comment    string     `json:"comment"`
+	DueAt      *time.Time `json:"due_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+// TaskActionInput — параметры действия над заданием.
+type TaskActionInput struct {
+	Action         string `json:"action"`
+	DelegateUserID int64  `json:"delegate_user_id"`
+	// Comment обязателен при делегировании и возврате: передача работы без
+	// объяснения — главная причина, по которой в Excel-процессе терялся контекст.
+	Comment string `json:"comment"`
+	// DueAt — срок, который передающий называет принимающему (RFC3339 или пусто).
+	DueAt string `json:"due_at"`
 }
 
 // TaskStore — доступ к заданиям.
@@ -288,10 +324,13 @@ const taskSelect = `
 SELECT t.id, t.pl_id, t.stage_code, t.form_code, t.title, t.cfo_codes, t.task_role,
        t.position_id, t.legal_entity, t.assignee_user_id,
        TRIM(COALESCE(au.last_name,'')||' '||COALESCE(au.name,'')),
-       t.delegate_user_id, TRIM(COALESCE(du.last_name,'')||' '||COALESCE(du.name,'')), t.status
+       t.delegate_user_id, TRIM(COALESCE(du.last_name,'')||' '||COALESCE(du.name,'')), t.status,
+       t.delegated_by, TRIM(COALESCE(bu.last_name,'')||' '||COALESCE(bu.name,'')),
+       t.delegated_at, t.delegate_note, t.due_at
 FROM pl_task t
 LEFT JOIN users au ON au.id=t.assignee_user_id
-LEFT JOIN users du ON du.id=t.delegate_user_id`
+LEFT JOIN users du ON du.id=t.delegate_user_id
+LEFT JOIN users bu ON bu.id=t.delegated_by`
 
 func scanTasks(rows pgx.Rows) ([]Task, error) {
 	defer rows.Close()
@@ -301,7 +340,8 @@ func scanTasks(rows pgx.Rows) ([]Task, error) {
 		var raw []byte
 		if err := rows.Scan(&t.ID, &t.PlID, &t.StageCode, &t.FormCode, &t.Title, &raw, &t.Role,
 			&t.PositionID, &t.LegalEntity, &t.AssigneeID, &t.AssigneeName,
-			&t.DelegateID, &t.DelegateName, &t.Status); err != nil {
+			&t.DelegateID, &t.DelegateName, &t.Status,
+			&t.DelegatedBy, &t.DelegatedName, &t.DelegatedAt, &t.DelegateNote, &t.DueAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(raw, &t.CfoCodes)
@@ -327,10 +367,13 @@ SELECT t.id, t.pl_id, t.stage_code, t.form_code, t.title, t.cfo_codes, t.task_ro
        t.position_id, t.legal_entity, t.assignee_user_id,
        TRIM(COALESCE(au.last_name,'')||' '||COALESCE(au.name,'')),
        t.delegate_user_id, TRIM(COALESCE(du.last_name,'')||' '||COALESCE(du.name,'')), t.status,
+       t.delegated_by, TRIM(COALESCE(bu.last_name,'')||' '||COALESCE(bu.name,'')),
+       t.delegated_at, t.delegate_note, t.due_at,
        COALESCE(pli.period_year,0), COALESCE(pli.period_month,0)
 FROM pl_task t
 LEFT JOIN users au ON au.id=t.assignee_user_id
 LEFT JOIN users du ON du.id=t.delegate_user_id
+LEFT JOIN users bu ON bu.id=t.delegated_by
 LEFT JOIN pl_instance pli ON pli.id=t.pl_id`
 
 func scanTasksPeriod(rows pgx.Rows) ([]Task, error) {
@@ -341,7 +384,9 @@ func scanTasksPeriod(rows pgx.Rows) ([]Task, error) {
 		var raw []byte
 		if err := rows.Scan(&t.ID, &t.PlID, &t.StageCode, &t.FormCode, &t.Title, &raw, &t.Role,
 			&t.PositionID, &t.LegalEntity, &t.AssigneeID, &t.AssigneeName,
-			&t.DelegateID, &t.DelegateName, &t.Status, &t.Year, &t.Month); err != nil {
+			&t.DelegateID, &t.DelegateName, &t.Status,
+			&t.DelegatedBy, &t.DelegatedName, &t.DelegatedAt, &t.DelegateNote, &t.DueAt,
+			&t.Year, &t.Month); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(raw, &t.CfoCodes)
@@ -390,8 +435,15 @@ func taskActorCan(action string, actor int64, isAdmin bool, assignee, delegate, 
 	return false
 }
 
-// Action применяет действие к заданию с проверкой прав. delegateUserID>0 для delegate.
-func (s *TaskStore) Action(ctx context.Context, taskID, actorUserID int64, isAdmin bool, action string, delegateUserID int64) error {
+// Action применяет действие к заданию с проверкой прав.
+//
+// Каждое действие попадает в журнал pl_task_event: кто, кому, из какого статуса
+// в какой, с каким комментарием и сроком. Без журнала цепочка передач
+// невосстановима — в задании хранится только текущий держатель.
+func (s *TaskStore) Action(ctx context.Context, taskID, actorUserID int64, isAdmin bool, in TaskActionInput) error {
+	action := strings.TrimSpace(in.Action)
+	delegateUserID := in.DelegateUserID
+	comment := strings.TrimSpace(in.Comment)
 	var status string
 	var assignee, delegate, owner *int64
 	err := s.pool.QueryRow(ctx, `
@@ -409,17 +461,36 @@ func (s *TaskStore) Action(ctx context.Context, taskID, actorUserID int64, isAdm
 		if delegateUserID == 0 {
 			return fmt.Errorf("нужен делегат")
 		}
+		// Передача работы без объяснения — то, из-за чего в Excel-процессе
+		// терялся контекст: принимающий не знает, что именно от него хотят.
+		if comment == "" {
+			return fmt.Errorf("укажите, что нужно сделать: делегирование без комментария не принимается")
+		}
+		due, err := parseTaskDue(in.DueAt)
+		if err != nil {
+			return err
+		}
 		next, err := applyTaskAction(status, action, true)
 		if err != nil {
 			return err
 		}
-		if _, err = s.pool.Exec(ctx, `UPDATE pl_task SET delegate_user_id=$2, status=$3, updated_at=NOW() WHERE id=$1`, taskID, delegateUserID, next); err != nil {
+		if _, err = s.pool.Exec(ctx, `
+			UPDATE pl_task
+			   SET delegate_user_id=$2, status=$3, delegated_by=$4, delegated_at=NOW(),
+			       delegate_note=$5, due_at=COALESCE($6, due_at), updated_at=NOW()
+			 WHERE id=$1`,
+			taskID, delegateUserID, next, actorUserID, comment, due); err != nil {
 			return err
 		}
+		s.logTaskEvent(ctx, taskID, action, actorUserID, &delegateUserID, status, next, comment, due)
 		if t, e := s.taskByID(ctx, taskID); e == nil {
 			s.notifyDelegated(delegateUserID, t, t.AssigneeName)
 		}
 		return nil
+	}
+	if action == "return" && comment == "" {
+		// Симметрично возврату этапа (ТЗ §2.3): вернуть работу молча нельзя.
+		return fmt.Errorf("возврат задания без комментария невозможен")
 	}
 	next, err := applyTaskAction(status, action, delegate != nil)
 	if err != nil {
@@ -428,6 +499,7 @@ func (s *TaskStore) Action(ctx context.Context, taskID, actorUserID int64, isAdm
 	if _, err = s.pool.Exec(ctx, `UPDATE pl_task SET status=$2, updated_at=NOW() WHERE id=$1`, taskID, next); err != nil {
 		return err
 	}
+	s.logTaskEvent(ctx, taskID, action, actorUserID, nil, status, next, comment, nil)
 	// Кого касается смена состояния: возврат — того, кто работает; сдача — того,
 	// кто принимает (исполнитель, если сдавал делегат).
 	if t, e := s.taskByID(ctx, taskID); e == nil {

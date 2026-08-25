@@ -240,9 +240,16 @@ func TestMockRetailSource(t *testing.T) {
 		}
 	}
 
-	// Другая страна — пусто (mock покрывает РБ).
-	if other, _ := src.Stores(ctx, "KZ"); len(other) != 0 {
-		t.Errorf("для KZ фикстура должна быть пустой, got %d", len(other))
+	// Другая страна отдаёт СВОИ магазины и только их: фикстура покрывает все
+	// четыре страны в объёме ТЗ (Приложение Б), а формы независимы по странам.
+	other, _ := src.Stores(ctx, "KZ")
+	if len(other) == 0 {
+		t.Error("для KZ фикстура пуста — объёмы ТЗ должны покрывать все четыре страны")
+	}
+	for _, o := range other {
+		if o.Country != "KZ" {
+			t.Errorf("в выборке KZ магазин страны %s (ЦФО %d)", o.Country, o.CodeCFO)
+		}
 	}
 
 	fact, err := src.Fact(ctx, "BY", []int{2025, 2026})
