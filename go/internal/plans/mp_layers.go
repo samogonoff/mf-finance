@@ -60,10 +60,15 @@ func (s *TaskStore) segmentsByCfo(ctx context.Context, codes []int) map[int]stri
 	if len(codes) == 0 {
 		return out
 	}
+	// Приводим к int только строки, которые действительно числовые: в
+	// справочнике ЦФО прода есть коды вида «40RUBK», и приведение всей колонки
+	// роняет запрос целиком (та же причина, что у падавшего синка).
 	rows, err := s.pool.Query(ctx, `
 		SELECT (r.payload_json->>'code_cfo')::int, COALESCE(r.payload_json->>'segment','')
 		FROM plans_directory_row r JOIN plans_directory d ON d.id=r.directory_id
-		WHERE d.code='dir_marketplace' AND (r.payload_json->>'code_cfo')::int = ANY($1)`, codes)
+		WHERE d.code='dir_marketplace'
+		  AND r.payload_json->>'code_cfo' ~ '^[0-9]+$'
+		  AND (r.payload_json->>'code_cfo')::int = ANY($1)`, codes)
 	if err != nil {
 		// Фолбэк на seed: справочник может быть ещё не наполнен.
 		for _, m := range MarketplaceSeed() {

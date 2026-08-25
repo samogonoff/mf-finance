@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -135,7 +136,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// writeErr — ошибка клиенту. Для 5xx ещё и в лог: access-лог пишет только статус,
+// поэтому «500» в проде до сих пор приходилось разбирать вслепую — по коду и
+// времени, без причины. Текст 4xx не логируем: это ожидаемые отказы валидации,
+// они и так возвращаются пользователю.
 func writeErr(w http.ResponseWriter, status int, msg string) {
+	if status >= 500 {
+		slog.Error("plans: запрос завершился ошибкой", "status", status, "error", msg)
+	}
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
