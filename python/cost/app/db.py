@@ -2572,7 +2572,7 @@ async def save_approval(model, articul, calc_sign, plan_id, status, approved_by,
                 INSERT INTO cost_calc_approvals
                     (model, articul, calc_sign, plan_id, task_number, status, approved_by, approved_at, comment)
                 VALUES ($1, $2, $3, $4, $5, $6, $7,
-                        CASE WHEN $6 IN ('approved', 'rejected') THEN NOW() ELSE NULL END,
+                        CASE WHEN $6 IN ('approved', 'rejected', 'returned') THEN NOW() ELSE NULL END,
                         $8)
                 ON CONFLICT (model, articul, calc_sign, plan_id, task_number) DO UPDATE SET
                     status = EXCLUDED.status,
@@ -2627,7 +2627,7 @@ async def save_approvals_batch(approvals: list[dict]) -> list[dict]:
                 INSERT INTO cost_calc_approvals
                     (model, articul, calc_sign, plan_id, task_number, status, approved_by, approved_at, comment)
                 SELECT u.model, u.articul, u.calc_sign, u.plan_id, u.task_number, u.status, u.approved_by,
-                       CASE WHEN u.status IN ('approved', 'rejected') THEN NOW() ELSE NULL END,
+                       CASE WHEN u.status IN ('approved', 'rejected', 'returned') THEN NOW() ELSE NULL END,
                        u.comment
                 FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
                             $6::text[], $7::text[], $8::text[])
@@ -2763,6 +2763,14 @@ async def get_reopened_keys(
     """Ключи с ДЕЙСТВУЮЩИМ переоткрытием — из числа переданных.
 
     Действующее = не отозвано и новее последней записи цен по этому ключу.
+
+    Время последней записи берём из cost_price_history (source='app'), а НЕ из
+    cost_price_changes_audit.changed_at. Причина: changed_at приходит из OLAP,
+    где GETDATE() отдаёт наивное московское время, а колонка у нас TIMESTAMPTZ —
+    значение уезжает в будущее на 3 часа (на dev 30 записей из 312 «в будущем»).
+    Сравнение с таким временем гасило бы свежее переоткрытие сразу же: админ
+    нажал «вернуть на корректировку», а блокировка не снялась. В истории цен
+    approved_at пишется локально, поэтому оно достоверно.
     Последняя запись берётся из cost_price_changes_audit: это локальное зеркало
     CostHistory_Changes, синхронизируемое при обновлении кэша.
     """
@@ -2780,11 +2788,11 @@ async def get_reopened_keys(
              AND k.calc_sign = r.calc_sign AND k.plan_id = r.plan_id
             WHERE r.revoked_at IS NULL
               AND r.reopened_at > COALESCE((
-                    SELECT MAX(a.changed_at)
-                    FROM cost_price_changes_audit a
-                    WHERE a.model = r.model AND a.articul = r.articul
-                      AND COALESCE(a.calc_sign, '') = r.calc_sign
-                      AND COALESCE(a.plan_id, '') = r.plan_id
+                    SELECT MAX(h.approved_at)
+                    FROM cost_price_history h
+                    WHERE h.model = r.model AND h.articul = r.articul
+                      AND h.calc_sign = r.calc_sign AND h.plan_id = r.plan_id
+                      AND h.source = 'app'
                   ), '-infinity'::timestamptz)
             """,
             [k[0] for k in uniq], [k[1] for k in uniq],
@@ -2861,15 +2869,15 @@ async def list_dwh_reopens(limit: int = 200) -> list[dict]:
         rows = await conn.fetch(
             """
             SELECT r.*,
-                   (SELECT MAX(a.changed_at) FROM cost_price_changes_audit a
-                     WHERE a.model = r.model AND a.articul = r.articul
-                       AND COALESCE(a.calc_sign, '') = r.calc_sign
-                       AND COALESCE(a.plan_id, '') = r.plan_id) AS last_dwh_write,
+                   (SELECT MAX(h.approved_at) FROM cost_price_history h
+                     WHERE h.model = r.model AND h.articul = r.articul
+                       AND h.calc_sign = r.calc_sign AND h.plan_id = r.plan_id
+                       AND h.source = 'app') AS last_price_write,
                    (r.revoked_at IS NULL AND r.reopened_at > COALESCE((
-                       SELECT MAX(a.changed_at) FROM cost_price_changes_audit a
-                        WHERE a.model = r.model AND a.articul = r.articul
-                          AND COALESCE(a.calc_sign, '') = r.calc_sign
-                          AND COALESCE(a.plan_id, '') = r.plan_id
+                       SELECT MAX(h.approved_at) FROM cost_price_history h
+                        WHERE h.model = r.model AND h.articul = r.articul
+                          AND h.calc_sign = r.calc_sign AND h.plan_id = r.plan_id
+                          AND h.source = 'app'
                    ), '-infinity'::timestamptz)) AS is_active
             FROM cost_dwh_reopen r
             ORDER BY r.reopened_at DESC
