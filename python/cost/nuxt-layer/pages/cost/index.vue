@@ -21,9 +21,25 @@
     <!-- Фильтры -->
     <section class="card filters-card">
       <div class="card-header">
-        <div>
-          <div class="card-title">Фильтры</div>
-          <div class="card-subtitle">Top-down каскад — вышестоящие фильтры ограничивают нижестоящие</div>
+        <!-- По клику на заголовок панель складывается: на широкой таблице она
+             занимает половину первого экрана, а после загрузки данных нужна
+             редко. Кнопки «Сбросить» и «Загрузить данные» остаются доступны и в
+             свёрнутом виде — за ними панель разворачивать не нужно. -->
+        <div class="filters-toggle" role="button" tabindex="0"
+          :aria-expanded="filtersOpen ? 'true' : 'false'"
+          :title="filtersOpen ? 'Свернуть фильтры' : 'Развернуть фильтры'"
+          @click="toggleFilters" @keydown.enter.prevent="toggleFilters" @keydown.space.prevent="toggleFilters">
+          <Icon :name="filtersOpen ? 'lucide:chevron-down' : 'lucide:chevron-right'" class="filters-chevron" />
+          <div>
+            <div class="card-title">
+              Фильтры<span v-if="!filtersOpen && activeFilterCount" class="filters-badge">{{ activeFilterCount }}</span>
+            </div>
+            <div class="card-subtitle">
+              {{ filtersOpen
+                ? 'Top-down каскад — вышестоящие фильтры ограничивают нижестоящие'
+                : (activeFilterCount ? 'Свёрнуто, фильтры применены' : 'Свёрнуто') }}
+            </div>
+          </div>
         </div>
         <div class="card-actions">
           <button class="btn btn-ghost btn-sm" @click="resetFilters">
@@ -36,7 +52,7 @@
         </div>
       </div>
 
-      <div class="card-body filters-body" :class="{ 'is-busy': cascadeBusy }">
+      <div v-show="filtersOpen" class="card-body filters-body" :class="{ 'is-busy': cascadeBusy }">
         <div class="dates-row">
           <label>Период с
             <input v-model="dateFrom" type="date" />
@@ -90,6 +106,7 @@
               <option value="approved">🟢 Согласовано</option>
               <option value="none">Не согласовано</option>
               <option value="rejected">🔴 Отклонено</option>
+              <option value="returned">🟠 Возврат на корректировку</option>
             </select>
           </label>
         </div>
@@ -172,8 +189,14 @@
         <button v-if="can('cost:approve')" class="btn btn-ghost" @click="navigateTo('/cost/approvals')">
           <Icon name="lucide:clipboard-check" /> Страница согласования
         </button>
-        <button v-if="can('cost:export')" class="btn btn-ghost" :disabled="!totalAllRecords" @click="exportToExcel">
-          <Icon name="lucide:download" /> Экспорт в Excel
+        <!-- Считаем по sortedRows, а не по totalAllRecords: выгружается
+             отфильтрованный диапазон, и кнопка должна гаснуть, когда фильтры
+             колонок не оставили ни одной строки. Число в подписи показываем
+             только когда выгрузка уже, чем загруженная выдача, — чтобы было
+             видно, что уедет подмножество. -->
+        <button v-if="can('cost:export')" class="btn btn-ghost" :disabled="!sortedRows.length"
+          :title="`Выгрузить строки с учётом всех фильтров: ${sortedRows.length}`" @click="exportToExcel">
+          <Icon name="lucide:download" /> Экспорт в Excel<template v-if="sortedRows.length && sortedRows.length !== totalAllRecords"> ({{ sortedRows.length }})</template>
         </button>
         <button v-if="can('cost:admin')" class="btn btn-ghost" @click="navigateTo('/cost/admin/roles')">
           <Icon name="lucide:settings" /> Администрирование
@@ -225,18 +248,32 @@
             Показано {{ pageRange }} из {{ filteredAggregated.length.toLocaleString("ru-RU") }}{{ columnFiltersActive ? ' (отфильтровано из ' + totalAllRecords.toLocaleString("ru-RU") + ')' : '' }}
           </div>
         </div>
-        <div class="card-actions" v-if="totalPages > 1">
-          <button class="btn btn-ghost btn-sm" :disabled="currentPage === 0" @click="prevPage">
-            <Icon name="lucide:chevron-left" /> Назад
-          </button>
-          <span class="muted">Стр. {{ currentPage + 1 }} / {{ totalPages }}</span>
-          <button
-            class="btn btn-ghost btn-sm"
-            :disabled="currentPage >= totalPages - 1"
-            @click="nextPage"
-          >
-            Вперёд <Icon name="lucide:chevron-right" />
-          </button>
+        <div class="card-actions">
+          <!-- Размер страницы доступен всегда, даже когда страница одна: иначе
+               из 25 строк нельзя было бы «раскрыть» таблицу на 200. -->
+          <label class="page-size">
+            <span class="muted">Строк:</span>
+            <select
+              class="page-size-select"
+              :value="pageSize"
+              @change="onPageSizeChange(($event.target as HTMLSelectElement).value)"
+            >
+              <option v-for="n in PAGE_SIZE_OPTIONS" :key="n" :value="n">{{ n }}</option>
+            </select>
+          </label>
+          <template v-if="totalPages > 1">
+            <button class="btn btn-ghost btn-sm" :disabled="currentPage === 0" @click="prevPage">
+              <Icon name="lucide:chevron-left" /> Назад
+            </button>
+            <span class="muted">Стр. {{ currentPage + 1 }} / {{ totalPages }}</span>
+            <button
+              class="btn btn-ghost btn-sm"
+              :disabled="currentPage >= totalPages - 1"
+              @click="nextPage"
+            >
+              Вперёд <Icon name="lucide:chevron-right" />
+            </button>
+          </template>
         </div>
       </div>
       <div v-if="allAggregated.length > 0" class="col-filters" :class="{ 'is-active': columnFiltersActive }">
@@ -360,6 +397,7 @@
               <th v-if="isVisible('planned_retail')" class="col-num">План. розница</th>
               <th v-if="isVisible('planned_wholesale')" class="col-num">План. опт</th>
               <th v-if="isVisible('planned_cost')" class="col-num">План. с/с</th>
+              <th v-if="isVisible('planned_profitability')" class="col-num col-metric col-metric-hl" title="План. опт / План. с/с − 1">План. рентаб. (%)</th>
               <th v-if="isVisible('avg_retail_rub')" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
                 Сред. розница (руб)<span v-if="sortField === 'avg_Розничная цена по уровню, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
@@ -437,10 +475,10 @@
               <th v-if="isVisible('calc_markup')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
                 Рентабельность <template v-if="showUSD">($)</template><template v-else>(руб)</template><span v-if="sortField === 'calc_markup_rub'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('calc_markup_pct')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
+              <th v-if="isVisible('calc_markup_pct')" class="col-num col-metric col-metric-hl" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
                 Рентабельность (%)<span v-if="sortField === 'calc_markup_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('calc_margin_pct')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
+              <th v-if="isVisible('calc_margin_pct')" class="col-num col-metric col-metric-hl" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
                 Маржа (%)<span v-if="sortField === 'calc_margin_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
               <th v-if="isVisible('calc_margin_deviation')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
@@ -479,7 +517,17 @@
               <td :class="stickyClasses('actions')" :style="stickyStyle('actions')">
                 <span v-if="isRowLocked(row) && !row._has_pending && !row._has_audit" class="lock-icon" title="Строка заблокирована">🔒</span>
                 <span v-if="row._has_pending" class="state-badge state-badge--pending" title="Ожидает согласования">⏳</span>
-                <span v-if="row._has_audit" class="state-badge state-badge--audit" title="Записано в DWH">📤</span>
+                <!-- Значок «в DWH» показываем по факту записи (_in_dwh), а не по
+                     блокировке: переоткрытая калькуляция всё ещё записана, но
+                     правку уже разрешили. Админу значок кликабелен — открывает
+                     переоткрытие/отзыв. -->
+                <span v-if="row._in_dwh ?? row._has_audit"
+                  class="state-badge"
+                  :class="[row._reopened ? 'state-badge--reopened' : 'state-badge--audit', { 'state-badge--action': can('cost:admin') }]"
+                  :title="row._reopened
+                    ? 'Записано в DWH, открыто на исправление' + (can('cost:admin') ? ' — клик, чтобы отозвать' : '')
+                    : 'Записано в DWH' + (can('cost:admin') ? ' — клик, чтобы вернуть на корректировку' : '')"
+                  @click.stop="can('cost:admin') ? openReopenModal(row) : null">{{ row._reopened ? '🔓' : '📤' }}</span>
                 <button class="btn-details" @click.stop="openDetails(row)">🔍</button>
                 <button v-if="!isRowLocked(row) && !row._has_audit" class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">🖊</button>
               </td>
@@ -499,6 +547,10 @@
               <td v-if="isVisible('planned_retail')" class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
               <td v-if="isVisible('planned_wholesale')" class="col-num num">{{ row.planned_wholesale != null ? fmt(row.planned_wholesale) : '—' }}</td>
               <td v-if="isVisible('planned_cost')" class="col-num num">{{ row.planned_cost != null ? fmt(row.planned_cost) : '—' }}</td>
+              <td v-if="isVisible('planned_profitability')" class="col-num num col-metric col-metric-hl"
+                  :class="plannedProfitabilityPct(row) == null ? '' : (plannedProfitabilityPct(row)! >= 0 ? 'delta-pos' : 'delta-neg')">
+                {{ plannedProfitabilityPct(row) == null ? '—' : plannedProfitabilityPct(row)!.toFixed(1) + '%' }}
+              </td>
               <td v-if="isVisible('avg_retail_rub')">
                 <select
                   class="price-select"
@@ -590,14 +642,18 @@
               <td v-if="isVisible('sum_cost') && !showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
               <td v-if="isVisible('sum_cost') && showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
               <td v-if="isVisible('calc_markup')" class="col-num num col-metric">{{ fmt(calc(row, showUSD).markupRub) }}</td>
-              <td v-if="isVisible('calc_markup_pct')" class="col-num num col-metric" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
+              <td v-if="isVisible('calc_markup_pct')" class="col-num num col-metric col-metric-hl" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
                 {{ calc(row, showUSD).markupPct.toFixed(1) }}%
               </td>
-              <td v-if="isVisible('calc_margin_pct')" class="col-num num col-metric">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
+              <td v-if="isVisible('calc_margin_pct')" class="col-num num col-metric col-metric-hl">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
               <td v-if="isVisible('calc_margin_deviation')" class="col-num num col-metric" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
               <td v-if="isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark'), 'peo-active': approvalTarget === row }">
                 <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟢</span>
                 <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🔴</span>
+                <!-- Возврат на корректировку: не «отклонено», а «жду исправленную
+                     цену». Введённое бренд-менеджером значение при возврате
+                     сохраняется, поэтому строка остаётся с заполненной ценой. -->
+                <span v-else-if="row.peo_status === 'returned'" class="peo-badge peo-returned" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Возврат на корректировку' + (row.peo_approved_by ? ': ' + row.peo_approved_by : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟠</span>
                 <span v-else class="peo-badge peo-none" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">⚪</span>
               </td>
             </tr>
@@ -1370,6 +1426,62 @@
     </Teleport>
 
     <!-- PEO approval popup modal -->
+    <!-- Возврат калькуляции на корректировку после записи в DWH.
+         Только админ раздела: операция нежелательная, требует причины и не
+         откатывает прейскурант в учётной системе — новая установка цен создаст
+         новый прейскурант, он перекроет прежний. -->
+    <Teleport to="body">
+      <div v-if="reopenTarget" class="modal-overlay" @click.self="closeReopenModal">
+        <div class="modal approval-modal">
+          <div class="modal-header">
+            <span>{{ reopenTarget._reopened ? 'Отозвать разрешение на правку' : 'Вернуть на корректировку' }}</span>
+            <span class="modal-subtitle">{{ reopenTarget['Модель'] || '—' }} / {{ reopenTarget['Артикул'] || '—' }}</span>
+            <button class="modal-close" @click="closeReopenModal">✕</button>
+          </div>
+          <div class="approval-body">
+            <div class="approval-info-row">
+              <span class="approval-label">Калькуляция:</span>
+              <span>{{ reopenTarget['Признак калькуляции'] || '—' }}, план {{ reopenTarget['PLAN_ID'] || '—' }}</span>
+            </div>
+
+            <template v-if="reopenTarget._reopened">
+              <p class="reopen-note">
+                Калькуляция открыта на исправление. Отзыв вернёт блокировку —
+                записи в DWH при этом не меняются.
+              </p>
+              <div class="approval-actions">
+                <button class="btn btn-sm btn-ghost" :disabled="reopenBusy" @click="closeReopenModal">Отмена</button>
+                <button class="btn btn-sm btn-danger" :disabled="reopenBusy" @click="submitRevokeReopen">
+                  {{ reopenBusy ? 'Отзыв…' : 'Отозвать' }}
+                </button>
+              </div>
+            </template>
+
+            <template v-else>
+              <p class="reopen-note reopen-note--warn">
+                Цены этой калькуляции уже переданы в учётную систему. Отменить их
+                нельзя: правка создаст <b>новый прейскурант</b>, который перекроет
+                прежний. Прошлые значения останутся в истории цен.
+              </p>
+              <div class="approval-comment-row">
+                <label>Причина (обязательно):</label>
+                <textarea v-model="reopenReason" class="approval-comment" rows="2"
+                  placeholder="Например: ошибка в цене материала, пересчёт по требованию ПЭО"></textarea>
+              </div>
+              <div v-if="reopenError" class="reopen-error">{{ reopenError }}</div>
+              <div class="approval-actions">
+                <button class="btn btn-sm btn-ghost" :disabled="reopenBusy" @click="closeReopenModal">Отмена</button>
+                <button class="btn btn-sm btn-primary" :disabled="reopenBusy || reopenReason.trim().length < 5"
+                  @click="submitReopen">
+                  {{ reopenBusy ? 'Открытие…' : 'Вернуть на корректировку' }}
+                </button>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <Teleport to="body">
       <div v-if="approvalTarget" class="modal-overlay" @click.self="closeApprovalPopup">
         <div class="modal approval-modal">
@@ -1383,6 +1495,7 @@
               <span class="approval-label">Статус ПЭО:</span>
               <span v-if="approvalTarget.peo_status === 'approved'" class="peo-badge peo-approved">🟢 Согласовано</span>
               <span v-else-if="approvalTarget.peo_status === 'rejected'" class="peo-badge peo-rejected">🔴 Отклонено</span>
+              <span v-else-if="approvalTarget.peo_status === 'returned'" class="peo-badge peo-returned">🟠 Возврат на корректировку</span>
               <span v-else class="peo-badge peo-none">⚪ Нет статуса</span>
             </div>
             <div v-if="approvalTarget.peo_approved_by" class="approval-info-row">
@@ -1565,6 +1678,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'planned_retail', label: 'План. розница' },
   { key: 'planned_wholesale', label: 'План. опт' },
   { key: 'planned_cost', label: 'План. с/с' },
+  { key: 'planned_profitability', label: 'План. рентабельность (%)' },
   { key: 'avg_retail_rub', label: 'Сред. розница (руб)' },
   { key: 'avg_rate', label: 'Курс (руб)' },
   { key: 'retail_markup', label: 'Розничная наценка' },
@@ -1594,7 +1708,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
 
 // Column groupings for the settings modal
 const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','plan_id'];
-const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment'];
+const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
 const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost'];
@@ -1789,6 +1903,33 @@ const dateTo = ref("");
 const cascadeBusy = ref(false);
 const loading = ref(false);
 const lastError = ref("");
+
+/** Свёрнута ли верхняя панель фильтров. Состояние запоминается: у кого таблица
+ *  открыта весь день, тому панель после загрузки данных только мешает. */
+const FILTERS_OPEN_STORAGE_KEY = 'cost_filters_open';
+const filtersOpen = ref(true);
+onMounted(() => {
+  try {
+    if (localStorage.getItem(FILTERS_OPEN_STORAGE_KEY) === '0') filtersOpen.value = false;
+  } catch { /* приватный режим — оставляем развёрнутой */ }
+});
+function toggleFilters() {
+  filtersOpen.value = !filtersOpen.value;
+  try {
+    localStorage.setItem(FILTERS_OPEN_STORAGE_KEY, filtersOpen.value ? '1' : '0');
+  } catch { /* ignore */ }
+}
+
+/** Сколько условий задано в верхней панели — показываем счётчик в свёрнутом
+ *  виде, чтобы «пустая» выдача не выглядела загадкой при спрятанных фильтрах.
+ *  Период считаем одним условием, даже если заданы обе даты. */
+const activeFilterCount = computed(() => {
+  let n = filterConfig.reduce((acc, f) => acc + (selected[f.key]?.length ? 1 : 0), 0);
+  if (dateFrom.value || dateTo.value) n += 1;
+  if (noWholesaleOnly.value) n += 1;
+  if (peoFilter.value !== 'all') n += 1;
+  return n;
+});
 
 
 // ── Helper: normalize level options ─────────────────────────────────────────
@@ -2010,7 +2151,34 @@ const dwhSentHiddenCount = computed(() =>
 
 const allAggregated = ref<any[]>([]);
 const totalAllRecords = ref(0);
-const pageSize = 25;
+
+/** Сколько строк показывать на странице — выбор пользователя, запоминается.
+ *
+ * Пагинация здесь клиентская: выдача уже в памяти, поэтому смена размера
+ * страницы ничего не перезапрашивает. Верхнее значение держим на 500 — таблица
+ * широкая, и на больших числах отрисовка заметно тяжелеет. */
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 200, 500];
+const PAGE_SIZE_STORAGE_KEY = 'cost_page_size';
+
+function loadPageSize(): number {
+  try {
+    const stored = Number(localStorage.getItem(PAGE_SIZE_STORAGE_KEY));
+    if (PAGE_SIZE_OPTIONS.includes(stored)) return stored;
+  } catch { /* приватный режим — просто берём значение по умолчанию */ }
+  return 25;
+}
+
+const pageSize = ref<number>(loadPageSize());
+
+function onPageSizeChange(value: string | number) {
+  const next = Number(value);
+  if (!PAGE_SIZE_OPTIONS.includes(next)) return;
+  pageSize.value = next;
+  // Страница сбрасывается на первую: иначе после укрупнения строк текущий
+  // номер мог указывать за пределы выборки.
+  currentPage.value = 0;
+  try { localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(next)); } catch { /* ignore */ }
+}
 
 // ── Column filters (client-side, top-down cascade) ──────────────────────────
 type ColFilterKey = 'col_bm' | 'col_model' | 'col_articul' | 'col_model_name' | 'col_plan_id' | 'col_calc_sign' | 'col_country' | 'col_season' | 'col_date';
@@ -2154,20 +2322,20 @@ function getOriginalIndex(row: any): number {
 }
 
 watch(() => sortedRows.value.length, (newLen) => {
-  if (currentPage.value * pageSize >= newLen && newLen > 0) {
+  if (currentPage.value * pageSize.value >= newLen && newLen > 0) {
     currentPage.value = 0;
   }
 });
 
 const currentPage = ref(0);
-const totalPages = computed(() => Math.max(1, Math.ceil(sortedRows.value.length / pageSize)));
-const pageStart = computed(() => currentPage.value * pageSize);
-const pageRows = computed(() => sortedRows.value.slice(pageStart.value, pageStart.value + pageSize));
+const totalPages = computed(() => Math.max(1, Math.ceil(sortedRows.value.length / pageSize.value)));
+const pageStart = computed(() => currentPage.value * pageSize.value);
+const pageRows = computed(() => sortedRows.value.slice(pageStart.value, pageStart.value + pageSize.value));
 const pageRange = computed(() => {
   const filteredCount = sortedRows.value.length;
   if (!filteredCount) return "0";
   const a = pageStart.value + 1;
-  const b = Math.min(pageStart.value + pageSize, filteredCount);
+  const b = Math.min(pageStart.value + pageSize.value, filteredCount);
   return `${a}–${b}`;
 });
 
@@ -4549,6 +4717,20 @@ const formatDateTime = (v: string | null): string => {
   });
 };
 
+/** Плановая рентабельность, % — план. опт / план. с/с − 1.
+ *
+ * Считается по той же логике, что и фактическая рентабельность в `calc`, но на
+ * плановых цифрах, поэтому валюта не переключается: `planned_*` приходят с
+ * бэкенда только в рублях. Возвращает null, если плановой себестоимости нет
+ * или она нулевая — делить не на что, и в таблице честнее показать «—», чем 0%.
+ */
+const plannedProfitabilityPct = (row: any): number | null => {
+  const wholesale = Number(row?.planned_wholesale ?? NaN);
+  const cost = Number(row?.planned_cost ?? NaN);
+  if (!isFinite(wholesale) || !isFinite(cost) || cost === 0) return null;
+  return (wholesale / cost - 1) * 100;
+};
+
 const calc = (row: any, useUsd: boolean = false) => {
   const wholesale = useUsd
     ? Number(row["avg_Отпускная цена по уровню, USD."] || 0)
@@ -4608,6 +4790,86 @@ const isRowLocked = (row: any): boolean => {
   }
   return false;
 };
+
+/** Возврат калькуляции на корректировку после записи в DWH (только cost:admin).
+ *
+ * Ничего не удаляет: снимает блокировку, чтобы прошёл второй цикл
+ * «правка → согласование ПЭО → установка цен». Разрешение самоистекающее —
+ * после повторной установки цен блокировка возвращается сама. */
+const reopenTarget = ref<any | null>(null);
+const reopenReason = ref('');
+const reopenBusy = ref(false);
+const reopenError = ref('');
+
+const openReopenModal = (row: any) => {
+  if (!can('cost:admin')) return;
+  reopenTarget.value = row;
+  reopenReason.value = '';
+  reopenError.value = '';
+};
+const closeReopenModal = () => { reopenTarget.value = null; reopenError.value = ''; };
+
+/** Ключ калькуляции для админских операций с DWH — те же 4 поля, что в
+ *  cost_dwh_reopen и в ключе записи цен. */
+const reopenPayload = (row: any) => ({
+  model: (row['Модель'] ?? '').toString().trim(),
+  articul: (row['Артикул'] ?? '').toString().trim(),
+  calc_sign: (row['Признак калькуляции'] ?? '').toString().trim(),
+  plan_id: (row['PLAN_ID'] ?? '').toString().trim(),
+});
+
+/** Локально снимаем/возвращаем блокировку у всех строк той же калькуляции —
+ *  иначе до перезагрузки данных таблица показывала бы прежнее состояние. */
+const applyReopenLocally = (row: any, reopened: boolean) => {
+  const k = reopenPayload(row);
+  for (const r of allAggregated.value) {
+    if ((r['Модель'] ?? '').toString().trim() !== k.model) continue;
+    if ((r['Артикул'] ?? '').toString().trim() !== k.articul) continue;
+    if ((r['Признак калькуляции'] ?? '').toString().trim() !== k.calc_sign) continue;
+    if ((r['PLAN_ID'] ?? '').toString().trim() !== k.plan_id) continue;
+    r._reopened = reopened;
+    r._in_dwh = true;
+    r._has_audit = !reopened;
+  }
+};
+
+async function submitReopen() {
+  if (!reopenTarget.value) return;
+  reopenBusy.value = true;
+  reopenError.value = '';
+  try {
+    await $fetch(`${apiBase.value}/api/cost/admin/dwh-reopen`, {
+      method: 'POST',
+      body: { ...reopenPayload(reopenTarget.value), reason: reopenReason.value.trim() },
+      headers: fetchHeaders.value,
+    });
+    applyReopenLocally(reopenTarget.value, true);
+    closeReopenModal();
+  } catch (e: any) {
+    reopenError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    reopenBusy.value = false;
+  }
+}
+
+async function submitRevokeReopen() {
+  if (!reopenTarget.value) return;
+  reopenBusy.value = true;
+  reopenError.value = '';
+  try {
+    await $fetch(`${apiBase.value}/api/cost/admin/dwh-reopen/revoke`, {
+      method: 'POST',
+      body: reopenPayload(reopenTarget.value),
+      headers: fetchHeaders.value,
+    });
+    applyReopenLocally(reopenTarget.value, false);
+    closeReopenModal();
+  } catch (e: any) {
+    reopenError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    reopenBusy.value = false;
+  }
+}
 
 const openApprovalPopup = (row: any) => { if (!can('cost:approve') && !can('cost:peo_mark')) return; approvalTarget.value = row; approvalComment.value = ''; };
 const closeApprovalPopup = () => { approvalTarget.value = null; };
@@ -4897,12 +5159,20 @@ const headers = [
 ];
 
 const exportToExcel = () => {
-  if (!totalAllRecords.value) return;
+  // Выгружаем ровно то, что видит пользователь в таблице, а не всю загруженную
+  // выдачу. `sortedRows` — конец цепочки: верхняя панель фильтров уходит в
+  // запрос и уже отсечена сервером, `filteredAggregated` добавляет фильтры
+  // колонок (нижняя панель) и «скрыть отправленные в DWH», а сортировка даёт
+  // тот же порядок строк, что на экране. Раньше здесь стоял `allAggregated`,
+  // поэтому фильтры колонок в файл не попадали: отфильтровав до одного плана,
+  // пользователь всё равно получал выгрузку по всем (замечание заказчика
+  // 25.08.2026).
+  const rows = sortedRows.value;
+  if (!rows.length) return;
   let html = '<table border="1"><tr>';
   headers.forEach((h) => (html += `<th>${h}</th>`));
   html += "</tr>";
-  for (let ei = 0; ei < allAggregated.value.length; ei++) {
-    const row = allAggregated.value[ei];
+  for (const row of rows) {
     const c = calc(row);
     const cells = [
       "",
@@ -5779,6 +6049,57 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 }
 .filters-body { position: relative; padding: var(--sp-4) var(--sp-5); }
 .filters-body.is-busy { pointer-events: none; opacity: 0.6; }
+
+/* Заголовок «Фильтры» работает как кнопка сворачивания — вся зона вместе с
+   подписью кликабельна, чтобы не искать мелкую иконку. */
+.filters-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--radius-sm, 4px);
+}
+.filters-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.filters-chevron {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--text-muted);
+}
+/* Счётчик заданных условий — виден только когда панель свёрнута, иначе
+   непонятно, почему выдача сузилась. */
+.filters-badge {
+  display: inline-block;
+  margin-left: var(--sp-2);
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: var(--fs-2xs, 10px);
+  font-weight: var(--fw-bold, 700);
+  line-height: 16px;
+  vertical-align: middle;
+}
+
+/* Выбор числа строк на странице — рядом с постраничной навигацией. */
+.page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+}
+.page-size-select {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-surface);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
 .filters-overlay {
   position: absolute;
   inset: 0;
@@ -6021,13 +6342,32 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   cursor: pointer;
   user-select: none;
   white-space: normal;
-  word-break: break-word;
+  /* Не `break-word`: он разрешал рвать заголовок ПО БУКВАМ. Когда в колонке нет
+     данных, браузер сжимал её до минимума контента — то есть до одного символа,
+     — а заголовок вытягивался в вертикальный столбик и вся шапка вырастала на
+     высоту самого длинного слова. `normal` рвёт только по пробелам. */
+  word-break: normal;
+  overflow-wrap: break-word;
   padding: 4px 6px;
   font-size: var(--fs-2xs, 10px);
   line-height: 1.25;
   vertical-align: bottom;
   text-align: left;
-  min-width: 0;
+}
+/* Высота шапки фиксирована: она больше не «дышит» при смене фильтров и набора
+   колонок. Расчёт: шрифт 10px при line-height 1.25 даёт 12.5px на строку, три
+   строки — 37.5px, плюс паддинги 4+4 = 45.5px. Берём 48px, чтобы самые длинные
+   заголовки («Вспом. материалы (руб)») укладывались в три строки с запасом. */
+.data-table thead th {
+  height: 48px;
+  box-sizing: border-box;
+}
+/* Минимальная ширина, чтобы пустая колонка не съезжала в один символ. На
+   закреплённые колонки не распространяется — их ширина задаётся inline и
+   настраивается ресайзом (служебные вроде «ПЭО-выбор» и вовсе уже 34px). */
+.data-table th:not(.sticky-col),
+.data-table td:not(.sticky-col) {
+  min-width: 68px;
 }
 .data-table th.col-num { text-align: right; }
 .data-table th:hover { background: var(--bg-surface-3); }
@@ -6103,6 +6443,27 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   font-weight: var(--fw-semibold, 600);
 }
 .data-table th.col-metric {
+  font-weight: var(--fw-bold, 700);
+}
+
+/* Рентабельность, маржа и плановая рентабельность — то, на что смотрят в первую
+   очередь, поэтому помимо жирного шрифта у них мягкая жёлтая заливка: колонку
+   видно сразу, без пересчёта столбцов глазами (просьба заказчика 25.08.2026).
+   Цвет берём из токена --warn-soft, а не хардкодом, — он определён и для тёмной
+   темы. Фон ставим на саму ячейку: подсветка строк по отклонению маржи красит
+   <tr> с !important, но фон <td> рисуется поверх, поэтому заливка сохраняется и
+   на подсвеченных строках, и под курсором. */
+.data-table .col-metric-hl {
+  background: var(--warn-soft, #fdf3e3);
+  font-weight: var(--fw-bold, 700);
+}
+.data-table th.col-metric-hl {
+  background: var(--warn-soft, #fdf3e3);
+}
+/* Знаковая раскраска процентов внутри залитой ячейки должна оставаться
+   читаемой, поэтому цифры там тоже жирные. */
+.data-table td.col-metric-hl.delta-pos,
+.data-table td.col-metric-hl.delta-neg {
   font-weight: var(--fw-bold, 700);
 }
 
@@ -6454,6 +6815,13 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .state-badge { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:4px; font-size:12px; margin-right:2px; vertical-align:middle; cursor:help; }
 .state-badge--pending { background:#fef3c7; color:#92400e; }
 .state-badge--audit { background:#d1fae5; color:#065f46; }
+/* Переоткрытая калькуляция: в DWH записана, но правка разрешена. */
+.state-badge--reopened { background: var(--warn-soft, #fdf3e3); color: var(--warn, #b76e00); }
+.state-badge--action { cursor: pointer; }
+.state-badge--action:hover { filter: brightness(0.95); }
+.reopen-note { margin: var(--sp-2) 0; font-size: var(--fs-xs); color: var(--text-muted); }
+.reopen-note--warn { color: var(--warn, #b76e00); }
+.reopen-error { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--neg, #dc2626); }
 .version-editor-toolbar { display:flex; gap:8px; align-items:center; padding:8px 16px; border-bottom:1px solid var(--border-color, #e5e7eb); }
 .version-editor-toolbar .spacer { flex:1; }
 .version-selector-bar { display:flex; gap:8px; align-items:center; padding:8px 16px; border-bottom:1px solid var(--border-color, #e5e7eb); font-size:13px; }
