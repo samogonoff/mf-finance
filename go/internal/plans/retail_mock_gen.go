@@ -86,7 +86,7 @@ func mockRetailGeneratedStores() []mockRetailStore {
 		coreActive := 0
 		if p.country == "BY" {
 			for _, m := range mockRetailCoreStores() {
-				if m.close == "" {
+				if !mockRetailClosed(m) {
 					coreActive++
 				}
 			}

@@ -124,12 +124,8 @@ func (r *pgRetailRepo) Rows(ctx context.Context, instanceID int64) ([]RetailRow,
 			&rr.PLAnalytic, &rr.Comment, &rr.RowVersion, &ovStatus, &ovReason); err != nil {
 			return nil, err
 		}
-		if open != nil {
-			rr.DateOpen = open.Format("2006-01-02")
-		}
-		if close_ != nil {
-			rr.DateClose = close_.Format("2006-01-02")
-		}
+		rr.DateOpen = retailSnapshotDate(open)
+		rr.DateClose = retailSnapshotDate(close_)
 		// Эффективный LFL: переопределение финансиста поверх снапшота (ТЗ §3).
 		rr.LFLEffective = rr.LFLStatus
 		if ovStatus != nil && *ovStatus != "" {
