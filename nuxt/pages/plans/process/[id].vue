@@ -67,7 +67,9 @@
           <div class="t-side">
             <span class="badge badge-dot" :class="statusTone(t.status)">{{ statusLabel(t.status) }}</span>
             <div class="t-actions">
-              <NuxtLink v-if="t.form_code === 'TPL-MP'" :to="`/plans/mp-form/${t.id}`" class="btn btn-sm btn-ghost"><Icon name="lucide:pencil" /> Форма</NuxtLink>
+              <!-- Адрес формы приходит с сервера (form_path): у розницы форм четыре
+                   (по стране), и вычислить её на клиенте по form_code нельзя. -->
+              <NuxtLink v-if="t.form_path" :to="t.form_path" class="btn btn-sm btn-ghost"><Icon name="lucide:pencil" /> Форма</NuxtLink>
               <button class="btn btn-sm btn-ghost" @click="openData(t)"><Icon name="lucide:table" /> Данные</button>
               <button class="btn btn-sm btn-ghost" title="Кто взял, кто кому передал и зачем" @click="openHistory(t)">
                 <Icon name="lucide:history" /> История

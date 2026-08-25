@@ -80,7 +80,8 @@
             </div>
           </div>
           <div class="ti-act">
-            <NuxtLink v-if="t.form_code === 'TPL-MP'" :to="`/plans/mp-form/${t.id}`" class="btn btn-sm btn-primary">
+            <!-- Адрес формы даёт сервер: у розницы форм четыре (по стране). -->
+            <NuxtLink v-if="t.form_path" :to="t.form_path" class="btn btn-sm btn-primary">
               <Icon name="lucide:pencil" /> {{ t.task_role === "approve" ? "Проверить" : "Заполнить" }}
             </NuxtLink>
             <NuxtLink :to="`/plans/${t.pl_id}`" class="btn btn-sm btn-ghost">Карточка</NuxtLink>

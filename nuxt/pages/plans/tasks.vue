@@ -74,7 +74,7 @@
           <div class="t-side">
             <span class="badge badge-dot" :class="statusTone(t.status)">{{ statusLabel(t.status) }}</span>
             <div class="t-actions">
-              <NuxtLink v-if="t.form_code === 'TPL-MP'" :to="`/plans/mp-form/${t.id}`" class="btn btn-sm btn-ghost"><Icon name="lucide:pencil" /> Форма</NuxtLink>
+              <NuxtLink v-if="t.form_path" :to="t.form_path" class="btn btn-sm btn-ghost"><Icon name="lucide:pencil" /> Форма</NuxtLink>
               <button v-for="a in actionsFor(t)" :key="a.act" class="btn btn-sm" :class="a.primary ? 'btn-primary' : 'btn-ghost'" @click="run(t, a.act)">{{ a.label }}</button>
             </div>
           </div>

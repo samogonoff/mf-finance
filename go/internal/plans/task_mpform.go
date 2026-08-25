@@ -95,7 +95,8 @@ func (s *TaskStore) taskBrief(ctx context.Context, taskID int64) (Task, int, int
 	err := s.pool.QueryRow(ctx, taskSelect+` WHERE t.id=$1`, taskID).Scan(
 		&t.ID, &t.PlID, &t.StageCode, &t.FormCode, &t.Title, &raw, &t.Role,
 		&t.PositionID, &t.LegalEntity, &t.AssigneeID, &t.AssigneeName,
-		&t.DelegateID, &t.DelegateName, &t.Status)
+		&t.DelegateID, &t.DelegateName, &t.Status,
+		&t.DelegatedBy, &t.DelegatedName, &t.DelegatedAt, &t.DelegateNote, &t.DueAt)
 	if err != nil {
 		return t, 0, 0, "", err
 	}
@@ -105,9 +106,13 @@ func (s *TaskStore) taskBrief(ctx context.Context, taskID int64) (Task, int, int
 	_ = s.pool.QueryRow(ctx, `SELECT period_year, period_month FROM pl_instance WHERE id=$1`, t.PlID).Scan(&year, &month)
 	var segment string
 	if len(t.CfoCodes) > 0 {
+		// Сравниваем код КАК ТЕКСТ, а не приводим колонку к int: в реальном
+		// справочнике ЦФО встречаются нечисловые коды (в проде на «40RUBK»
+		// падал синк dir_retail_store). Приведение всей колонки роняет запрос
+		// целиком — даже когда искомая строка числовая.
 		_ = s.pool.QueryRow(ctx, `
 			SELECT COALESCE(payload_json->>'segment','') FROM plans_directory_row r JOIN plans_directory d ON d.id=r.directory_id
-			WHERE d.code='dir_marketplace' AND (payload_json->>'code_cfo')::int = $1 LIMIT 1`, t.CfoCodes[0]).Scan(&segment)
+			WHERE d.code='dir_marketplace' AND payload_json->>'code_cfo' = $1::text LIMIT 1`, t.CfoCodes[0]).Scan(&segment)
 	}
 	return t, year, month, segment, nil
 }

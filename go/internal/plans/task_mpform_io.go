@@ -152,7 +152,8 @@ func (s *TaskStore) ImportStrategy(ctx context.Context, plID int64, data []byte)
 	segByCfo := map[int]string{}
 	if mr, e := s.pool.Query(ctx, `
 		SELECT (payload_json->>'code_cfo')::int, COALESCE(payload_json->>'segment','')
-		FROM plans_directory_row r JOIN plans_directory d ON d.id=r.directory_id WHERE d.code='dir_marketplace'`); e == nil {
+		FROM plans_directory_row r JOIN plans_directory d ON d.id=r.directory_id
+		WHERE d.code='dir_marketplace' AND payload_json->>'code_cfo' ~ '^[0-9]+$'`); e == nil {
 		for mr.Next() {
 			var c int
 			var sg string

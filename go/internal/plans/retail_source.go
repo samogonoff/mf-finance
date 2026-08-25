@@ -101,20 +101,28 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 	}
 	defer rows.Close()
 	out := make([]RetailStore, 0, 400)
+	skipped := 0
 	for rows.Next() {
 		var st RetailStore
 		var g1, g2, cfo, ctry, fox, typ, open, close_, stage, comp, ch, old, cat, lfl, rm, mgr, pla sql.NullString
-		var code sql.NullInt64
+		// CodeCFO читаем СТРОКОЙ, а не int64: в справочнике встречаются
+		// нечисловые коды («40RUBK»), и на первом же таком синк падал целиком —
+		// вместе с ним пропадали все магазины, а не одна битая строка.
+		var code sql.NullString
 		var plo sql.NullFloat64
 		if err := rows.Scan(&g1, &g2, &code, &cfo, &ctry, &fox, &plo, &typ, &open, &close_,
 			&stage, &comp, &ch, &old, &cat, &lfl, &rm, &mgr, &pla); err != nil {
 			return nil, err
 		}
-		if !code.Valid {
-			continue // строка без CodeCFO бесполезна: это ключ строки формы (V-04)
+		codeNum, ok := parseNumericCFO(code.String)
+		if !code.Valid || !ok {
+			// Строка формы ключуется числовым CodeCFO (V-04). Нечисловой код —
+			// это не магазин розницы (валютные/технические ЦФО), пропускаем.
+			skipped++
+			continue
 		}
 		st = RetailStore{
-			CodeCFO: int(code.Int64), GroupCFO1: g1.String, City: g2.String, NameCFO: cfo.String,
+			CodeCFO: codeNum, GroupCFO1: g1.String, City: g2.String, NameCFO: cfo.String,
 			Country: ctry.String, CodeFOX: fox.String, Ploschad: plo.Float64, StoreType: typ.String,
 			DateOpen: normalizeSourceDate(open.String), DateClose: normalizeSourceDate(close_.String),
 			Stage: stage.String, CompanyMF: comp.String, Channel: ch.String, CFOold: old.String,
@@ -125,6 +133,11 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if skipped > 0 {
+		// Молча терять строки нельзя: расхождение «в справочнике N, в форме N−k»
+		// иначе всплывёт только в контрольной сверке полноты (ТЗ §7).
+		log.Printf("plans retail: пропущено строк справочника с нечисловым CodeCFO: %d", skipped)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CodeCFO < out[j].CodeCFO })
 	return out, nil
@@ -266,4 +279,25 @@ func normalizeSourceDate(s string) string {
 		return s[:10]
 	}
 	return ""
+}
+
+// numericCFO — код ЦФО целиком из цифр. В справочнике [001 CodeCFO] попадаются
+// технические коды вида «40RUBK» (валютные разрезы, а не магазины): строка формы
+// ключуется числовым кодом (V-04), поэтому такие записи в розницу не берём.
+var numericCFO = regexp.MustCompile(`^[0-9]+$`)
+
+// parseNumericCFO — число из кода ЦФО; ok=false, если код нечисловой.
+func parseNumericCFO(raw string) (int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !numericCFO.MatchString(raw) {
+		return 0, false
+	}
+	n := 0
+	for _, ch := range raw {
+		n = n*10 + int(ch-'0')
+		if n > 1_000_000_000 { // защита от абсурдно длинных строк
+			return 0, false
+		}
+	}
+	return n, true
 }

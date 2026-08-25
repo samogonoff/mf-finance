@@ -49,6 +49,10 @@ export interface Task {
   delegate_note?: string;
   due_at?: string | null;
   status: string;
+  /** Карточка формы задания и готовый адрес экрана ввода — считает сервер:
+   *  у розницы форм четыре (по стране), по form_code её не выбрать. */
+  card_id?: number;
+  form_path?: string;
 }
 
 export interface TaskDataRow {

@@ -42,6 +42,12 @@ type Task struct {
 	DelegatedAt   *time.Time `json:"delegated_at,omitempty"`
 	DelegateNote  string     `json:"delegate_note,omitempty"`
 	DueAt         *time.Time `json:"due_at,omitempty"`
+	// CardID — карточка формы, к которой ведёт это задание. Без неё интерфейс не
+	// знает, какую форму открывать: у розницы карточек четыре (по стране), и
+	// раньше кнопки перехода в форму у неё просто не было.
+	CardID int64 `json:"card_id,omitempty"`
+	// FormPath — готовый адрес формы для перехода из списка заданий.
+	FormPath string `json:"form_path,omitempty"`
 }
 
 // TaskEvent — запись журнала действий по заданию (pl_task_event).
@@ -189,6 +195,9 @@ func (s *TaskStore) matchingCfo(ctx context.Context, f CfoFilter) ([]cfoRowLite,
 			JOIN plans_directory dm ON dm.id=mp.directory_id
 			WHERE dm.code='dir_marketplace' AND mp.payload_json->>'segment'=$%d)`, len(args)))
 	}
+	// Нечисловые коды ЦФО (в справочнике прода есть «40RUBK») отсеиваем ДО
+	// приведения: иначе падает весь запрос, а не одна строка.
+	conds = append(conds, `r.external_id ~ '^[0-9]+$'`)
 	rows, err := s.pool.Query(ctx, `
 		SELECT (r.external_id)::int, cp.position_id, jp.holder_user_id, COALESCE(r.payload_json->>'legal_entity','')
 		FROM plans_directory_row r JOIN plans_directory d ON d.id=r.directory_id
@@ -357,7 +366,12 @@ func (s *TaskStore) ListByInstance(ctx context.Context, plID int64) ([]Task, err
 	if err != nil {
 		return nil, err
 	}
-	return scanTasks(rows)
+	list, err := scanTasks(rows)
+	if err != nil {
+		return nil, err
+	}
+	s.attachFormLinks(ctx, list)
+	return list, nil
 }
 
 // taskSelectPeriod — тот же набор колонок + период карточки: рабочему столу и
@@ -403,7 +417,12 @@ func (s *TaskStore) ListAll(ctx context.Context) ([]Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return scanTasksPeriod(rows)
+	list, err := scanTasksPeriod(rows)
+	if err != nil {
+		return nil, err
+	}
+	s.attachFormLinks(ctx, list)
+	return list, nil
 }
 
 // ListByUser — мои задания (я исполнитель или делегат), с периодом карточки.
@@ -414,7 +433,12 @@ func (s *TaskStore) ListByUser(ctx context.Context, userID int64) ([]Task, error
 	if err != nil {
 		return nil, err
 	}
-	return scanTasksPeriod(rows)
+	list, err := scanTasksPeriod(rows)
+	if err != nil {
+		return nil, err
+	}
+	s.attachFormLinks(ctx, list)
+	return list, nil
 }
 
 // taskActorCan — права на действие (тонкие): admin — всё; исполнитель делегирует
@@ -595,7 +619,8 @@ func (s *TaskStore) TaskData(ctx context.Context, taskID int64) (TaskData, error
 	err := s.pool.QueryRow(ctx, taskSelect+` WHERE t.id=$1`, taskID).Scan(
 		&t.ID, &t.PlID, &t.StageCode, &t.FormCode, &t.Title, &raw, &t.Role,
 		&t.PositionID, &t.LegalEntity, &t.AssigneeID, &t.AssigneeName,
-		&t.DelegateID, &t.DelegateName, &t.Status)
+		&t.DelegateID, &t.DelegateName, &t.Status,
+		&t.DelegatedBy, &t.DelegatedName, &t.DelegatedAt, &t.DelegateNote, &t.DueAt)
 	if err != nil {
 		return out, err
 	}
@@ -607,7 +632,9 @@ func (s *TaskStore) TaskData(ctx context.Context, taskID int64) (TaskData, error
 	if len(codes) == 0 && t.LegalEntity != "" {
 		lr, _ := s.pool.Query(ctx, `
 			SELECT (r.external_id)::int FROM plans_directory_row r JOIN plans_directory d ON d.id=r.directory_id
-			WHERE d.code='dir_cfo' AND r.payload_json->>'legal_entity'=$1 AND COALESCE(r.external_id,'') NOT IN ('','0')`, t.LegalEntity)
+			WHERE d.code='dir_cfo' AND r.payload_json->>'legal_entity'=$1
+			  AND COALESCE(r.external_id,'') NOT IN ('','0')
+			  AND r.external_id ~ '^[0-9]+$'`, t.LegalEntity)
 		for lr.Next() {
 			var c int
 			if lr.Scan(&c) == nil {
