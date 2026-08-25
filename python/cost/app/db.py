@@ -1384,6 +1384,34 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
 
     now = datetime.datetime.now()
 
+    # Какие из этих калькуляций устанавливаются повторно, после переоткрытия
+    # админом (миграция 0039). Нужно ровно для пометки is_correction в истории:
+    # на дашборде исправление цены и первичная установка — разные события.
+    # Считаем ДО записи, потому что новая строка истории сама погасит
+    # переоткрытие (оно действует, пока reopened_at новее последней записи цен).
+    corrected_ids: set[int] = set()
+    try:
+        reopened = await get_reopened_keys([
+            (
+                (rec.get("Модель") or "").strip(),
+                (rec.get("Артикул") or "").strip(),
+                (rec.get("Признак калькуляции") or "").strip(),
+                (rec.get("PLAN_ID") or "").strip(),
+            )
+            for rec in records
+        ])
+        for rec in records:
+            key = (
+                (rec.get("Модель") or "").strip(),
+                (rec.get("Артикул") or "").strip(),
+                (rec.get("Признак калькуляции") or "").strip(),
+                (rec.get("PLAN_ID") or "").strip(),
+            )
+            if key in reopened:
+                corrected_ids.add(rec["id"])
+    except Exception:
+        pass  # пометка необязательная — утверждение цен из-за неё не валим
+
     # Цена для МП, рос. руб. — считается заново прямо сейчас, на момент
     # утверждения (курс Gpartner.valuta1 и константы cost_mp_constants —
     # "как сейчас", не то, что было при создании pending-записи; см.
@@ -1484,6 +1512,43 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
                     rec.get("Признак калькуляции"),
                     rec.get("PLAN_ID"),
                     mp_prices.get(rec["id"]),
+                )
+                # Append-история для BI (миграция 0039). Отдельно от
+                # cost_price_changes_audit: тот перезаписывается синхронизацией с
+                # OLAP и хранит одну актуальную запись на ключ, а здесь строки
+                # только накапливаются. is_correction помечает установку цен
+                # после переоткрытия — на дашборде это исправление, а не
+                # первичная установка.
+                await conn2.execute(
+                    """
+                    INSERT INTO cost_price_history
+                        (model, articul, calc_sign, plan_id, task_number, price_level,
+                         retail_rub, wholesale_rub, price_rf, price_kz, price_uz,
+                         mp_price_rub, cost_rub, cost_usd, comment,
+                         changed_by, approved_by, approved_at, is_correction, source)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                            $16, $17, $18, $19, 'app')
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (rec.get("Модель") or "").strip(),
+                    (rec.get("Артикул") or "").strip(),
+                    (rec.get("Признак калькуляции") or "").strip(),
+                    (rec.get("PLAN_ID") or "").strip(),
+                    (rec.get("Номер задания производства") or "").strip(),
+                    rec.get("Уровень цен"),
+                    rec.get("Розничная цена по уровню, руб."),
+                    rec.get("Отпускная цена по уровню, руб"),
+                    rec.get("Цена РФ"),
+                    rec.get("Цена КЗ"),
+                    rec.get("Цена УЗ"),
+                    mp_prices.get(rec["id"]),
+                    rec.get("Себестоимость, руб."),
+                    rec.get("Себестоимость, USD."),
+                    comment_val,
+                    rec.get("username") or reviewed_by,
+                    reviewed_by,
+                    now,
+                    rec["id"] in corrected_ids,
                 )
             await conn2.execute(
                 "DELETE FROM cost_price_pending WHERE id = ANY($1::bigint[])",
@@ -2358,45 +2423,56 @@ _PRICE_FIELDS = [
 ]
 
 
-async def reset_price_fields(model, articul, calc_sign, plan_id, raw_date) -> None:
+async def reset_price_fields(
+    model, articul, calc_sign, plan_id, raw_date, returned_by: str = "system",
+) -> None:
+    """Вернуть цену бренд-менеджеру на корректировку.
+
+    Раньше функция ОБНУЛЯЛА поля цен в кэше и в черновике версии, а запись из
+    cost_price_pending удаляла — то есть введённая цена стиралась начисто, и
+    бренд-менеджер видел пустое поле и вводил всё заново. По решению заказчика
+    (25.08.2026) цена остаётся: возврат означает «поправь это значение», а не
+    «введи заново с нуля». Наложение цен на выдачу отдаёт pending наивысший
+    приоритет, поэтому сохранённой записи достаточно, чтобы поля в таблице были
+    заполнены прежними значениями.
+
+    Вместо стирания ставим статус ПЭО 'returned' (миграция 0040) — по нему в
+    таблице виден оранжевый кружок «возврат на корректировку», и по нему же
+    строка снова доступна бренд-менеджеру для правки.
+    """
     if isinstance(raw_date, str) and raw_date:
         d = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
     else:
         d = raw_date
-    set_clause = ", ".join(f"{c} = NULL" for c in _PRICE_FIELDS)
     async with pool().acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                f"""UPDATE cost_data_cache SET {set_clause}
-                    WHERE "Модель" = $1 AND "Артикул" = $2
-                      AND "Признак калькуляции" IS NOT DISTINCT FROM $3
-                      AND "PLAN_ID" IS NOT DISTINCT FROM $4
-                      AND "дата расчета" = $5""",
-                model, articul, calc_sign, plan_id, d,
+            # Задания берём из кэша — по ним главная таблица джойнит
+            # согласования. pending может быть пуст (возврат уже записанной в
+            # DWH калькуляции), и статус на пустом задании тогда не нашёлся бы.
+            task_numbers = await _calc_task_numbers(
+                conn, (model or "").strip(), (articul or "").strip(),
+                (calc_sign or "").strip(), (plan_id or "").strip(),
             )
-            ver = await conn.fetchrow(
-                """SELECT id FROM cost_calc_versions
-                   WHERE model = $1 AND articul = $2
-                     AND calc_sign IS NOT DISTINCT FROM $3
-                     AND plan_id IS NOT DISTINCT FROM $4
-                     AND "дата расчета" = $5
-                     AND status = 'draft'
-                   ORDER BY created_at DESC LIMIT 1""",
-                model, articul, calc_sign, plan_id, d,
-            )
-            if ver:
+            for tn in task_numbers:
                 await conn.execute(
-                    f"""UPDATE cost_calc_version_rows SET {set_clause}
-                        WHERE version_id = $1""",
-                    ver["id"],
+                    """
+                    INSERT INTO cost_calc_approvals
+                        (model, articul, calc_sign, plan_id, task_number,
+                         status, approved_by, approved_at)
+                    VALUES ($1, $2, $3, $4, $5, 'returned', $6, NOW())
+                    ON CONFLICT (model, articul, calc_sign, plan_id, task_number)
+                    DO UPDATE SET status = 'returned', approved_by = EXCLUDED.approved_by,
+                                  approved_at = NOW(), updated_at = NOW()
+                    """,
+                    (model or "").strip(), (articul or "").strip(),
+                    (calc_sign or "").strip(), (plan_id or "").strip(),
+                    tn, returned_by,
                 )
-            await conn.execute(
-                """DELETE FROM cost_price_pending
-                   WHERE "Модель" = $1 AND "Артикул" = $2
-                     AND "Признак калькуляции" IS NOT DISTINCT FROM $3
-                     AND "PLAN_ID" IS NOT DISTINCT FROM $4""",
-                model, articul, calc_sign, plan_id,
-            )
+            # Черновик версии и цены в кэше не трогаем: они и есть то, что
+            # бренд-менеджер будет править. Дата участвует только в поиске
+            # черновика, поэтому здесь она больше не нужна — оставлена в
+            # сигнатуре, чтобы не менять вызов из /reject-price.
+            _ = d
 
 
 async def delete_pending_by_key(model, articul, calc_sign, plan_id) -> int:
@@ -2496,7 +2572,7 @@ async def save_approval(model, articul, calc_sign, plan_id, status, approved_by,
                 INSERT INTO cost_calc_approvals
                     (model, articul, calc_sign, plan_id, task_number, status, approved_by, approved_at, comment)
                 VALUES ($1, $2, $3, $4, $5, $6, $7,
-                        CASE WHEN $6 IN ('approved', 'rejected') THEN NOW() ELSE NULL END,
+                        CASE WHEN $6 IN ('approved', 'rejected', 'returned') THEN NOW() ELSE NULL END,
                         $8)
                 ON CONFLICT (model, articul, calc_sign, plan_id, task_number) DO UPDATE SET
                     status = EXCLUDED.status,
@@ -2551,7 +2627,7 @@ async def save_approvals_batch(approvals: list[dict]) -> list[dict]:
                 INSERT INTO cost_calc_approvals
                     (model, articul, calc_sign, plan_id, task_number, status, approved_by, approved_at, comment)
                 SELECT u.model, u.articul, u.calc_sign, u.plan_id, u.task_number, u.status, u.approved_by,
-                       CASE WHEN u.status IN ('approved', 'rejected') THEN NOW() ELSE NULL END,
+                       CASE WHEN u.status IN ('approved', 'rejected', 'returned') THEN NOW() ELSE NULL END,
                        u.comment
                 FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
                             $6::text[], $7::text[], $8::text[])
@@ -2639,6 +2715,252 @@ async def get_approval_status(filters: dict | None = None) -> list[dict]:
     async with pool().acquire() as conn:
         rows = await conn.fetch(f"SELECT * FROM cost_calc_approvals{where} ORDER BY updated_at DESC", *params)
         return [dict(r) for r in rows]
+
+
+# ── Переоткрытие калькуляции после записи в DWH (миграция 0039) ──────────────
+#
+# Записанная в DWH калькуляция блокируется (`_has_audit`), и второй цикл
+# «правка → согласование ПЭО → установка цен» пройти нельзя. Админ раздела может
+# снять эту блокировку точечно. Записи в DWH при этом НЕ удаляются: новая
+# установка цен добавит ещё одну строку, а в учётной системе более новый
+# прейскурант перекрывает старый.
+#
+# Разрешение самоистекающее: действует, пока `reopened_at` новее последней
+# записи цен по этому ключу. После повторной установки цен блокировка
+# возвращается сама, вычищать таблицу не нужно.
+
+
+async def _calc_task_numbers(conn, model: str, articul: str, calc_sign: str, plan_id: str) -> list[str]:
+    """Номера заданий калькуляции — те, что реально есть в выдаче.
+
+    Ключ согласования включает номер задания, поэтому статус нужно ставить на
+    ТЕ ЖЕ задания, по которым главная таблица джойнит согласования. Берём их из
+    кэша: pending и approvals могут быть пустыми (например, при возврате уже
+    записанной в DWH калькуляции), а кэш — источник строк выдачи.
+    """
+    rows = await conn.fetch(
+        """SELECT DISTINCT trim(COALESCE("Номер задания производства", '')) AS tn
+           FROM cost_data_cache
+           WHERE trim("Модель") = $1 AND trim("Артикул") = $2
+             AND trim(COALESCE("Признак калькуляции", '')) = $3
+             AND trim(COALESCE("PLAN_ID", '')) = $4""",
+        model, articul, calc_sign, plan_id,
+    )
+    tasks = [str(r["tn"] or "").strip() for r in rows]
+    return tasks or [""]
+
+
+def _reopen_key(model, articul, calc_sign, plan_id) -> tuple[str, str, str, str]:
+    return (
+        (model or "").strip(), (articul or "").strip(),
+        (calc_sign or "").strip(), (plan_id or "").strip(),
+    )
+
+
+async def get_reopened_keys(
+    keys: list[tuple[str, str, str, str]],
+) -> set[tuple[str, str, str, str]]:
+    """Ключи с ДЕЙСТВУЮЩИМ переоткрытием — из числа переданных.
+
+    Действующее = не отозвано и новее последней записи цен по этому ключу.
+
+    Время последней записи берём из cost_price_history (source='app'), а НЕ из
+    cost_price_changes_audit.changed_at. Причина: changed_at приходит из OLAP,
+    где GETDATE() отдаёт наивное московское время, а колонка у нас TIMESTAMPTZ —
+    значение уезжает в будущее на 3 часа (на dev 30 записей из 312 «в будущем»).
+    Сравнение с таким временем гасило бы свежее переоткрытие сразу же: админ
+    нажал «вернуть на корректировку», а блокировка не снялась. В истории цен
+    approved_at пишется локально, поэтому оно достоверно.
+    Последняя запись берётся из cost_price_changes_audit: это локальное зеркало
+    CostHistory_Changes, синхронизируемое при обновлении кэша.
+    """
+    if not keys:
+        return set()
+    uniq = list({_reopen_key(*k) for k in keys})
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT r.model, r.articul, r.calc_sign, r.plan_id
+            FROM cost_dwh_reopen r
+            JOIN unnest($1::text[], $2::text[], $3::text[], $4::text[])
+                 AS k(model, articul, calc_sign, plan_id)
+              ON k.model = r.model AND k.articul = r.articul
+             AND k.calc_sign = r.calc_sign AND k.plan_id = r.plan_id
+            WHERE r.revoked_at IS NULL
+              AND r.reopened_at > COALESCE((
+                    SELECT MAX(h.approved_at)
+                    FROM cost_price_history h
+                    WHERE h.model = r.model AND h.articul = r.articul
+                      AND h.calc_sign = r.calc_sign AND h.plan_id = r.plan_id
+                      AND h.source = 'app'
+                  ), '-infinity'::timestamptz)
+            """,
+            [k[0] for k in uniq], [k[1] for k in uniq],
+            [k[2] for k in uniq], [k[3] for k in uniq],
+        )
+    return {
+        (str(r["model"]).strip(), str(r["articul"]).strip(),
+         str(r["calc_sign"]).strip(), str(r["plan_id"]).strip())
+        for r in rows
+    }
+
+
+async def reopen_dwh_calculation(
+    model, articul, calc_sign, plan_id, reopened_by: str, reason: str,
+) -> dict:
+    """Разрешить повторную правку калькуляции, уже записанной в DWH."""
+    m, a, cs, pi = _reopen_key(model, articul, calc_sign, plan_id)
+    async with pool().acquire() as conn:
+        # Прежние разрешения по этому ключу отзываем: активным должно быть одно,
+        # иначе в журнале не понять, по какой причине строка открыта сейчас.
+        await conn.execute(
+            """UPDATE cost_dwh_reopen
+               SET revoked_at = now(), revoked_by = $5
+               WHERE model = $1 AND articul = $2 AND calc_sign = $3 AND plan_id = $4
+                 AND revoked_at IS NULL""",
+            m, a, cs, pi, reopened_by,
+        )
+        row = await conn.fetchrow(
+            """INSERT INTO cost_dwh_reopen
+                   (model, articul, calc_sign, plan_id, reopened_by, reason)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               RETURNING id, reopened_at""",
+            m, a, cs, pi, reopened_by, reason,
+        )
+        # Статус ПЭО — «возврат на корректировку» (миграция 0040): в таблице это
+        # оранжевый кружок, и по нему видно, что калькуляция ждёт исправления, а
+        # не просто разблокирована. Ставим по всем заданиям этой калькуляции —
+        # ключ согласования включает номер задания, а возврат относится к
+        # калькуляции целиком.
+        for tn in await _calc_task_numbers(conn, m, a, cs, pi):
+            await conn.execute(
+                """
+                INSERT INTO cost_calc_approvals
+                    (model, articul, calc_sign, plan_id, task_number,
+                     status, approved_by, approved_at)
+                VALUES ($1, $2, $3, $4, $5, 'returned', $6, NOW())
+                ON CONFLICT (model, articul, calc_sign, plan_id, task_number)
+                DO UPDATE SET status = 'returned', approved_by = EXCLUDED.approved_by,
+                              approved_at = NOW(), updated_at = NOW()
+                """,
+                m, a, cs, pi, tn, reopened_by,
+            )
+    return {"id": row["id"], "reopened_at": row["reopened_at"]}
+
+
+async def revoke_dwh_reopen(model, articul, calc_sign, plan_id, revoked_by: str) -> int:
+    """Отозвать переоткрытие досрочно, не дожидаясь повторной установки цен."""
+    m, a, cs, pi = _reopen_key(model, articul, calc_sign, plan_id)
+    async with pool().acquire() as conn:
+        result = await conn.execute(
+            """UPDATE cost_dwh_reopen
+               SET revoked_at = now(), revoked_by = $5
+               WHERE model = $1 AND articul = $2 AND calc_sign = $3 AND plan_id = $4
+                 AND revoked_at IS NULL""",
+            m, a, cs, pi, revoked_by,
+        )
+    parts = (result or "").split()
+    return int(parts[-1]) if parts and parts[-1].isdigit() else 0
+
+
+async def list_dwh_reopens(limit: int = 200) -> list[dict]:
+    """Журнал переоткрытий — кто, когда, зачем и действует ли ещё."""
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT r.*,
+                   (SELECT MAX(h.approved_at) FROM cost_price_history h
+                     WHERE h.model = r.model AND h.articul = r.articul
+                       AND h.calc_sign = r.calc_sign AND h.plan_id = r.plan_id
+                       AND h.source = 'app') AS last_price_write,
+                   (r.revoked_at IS NULL AND r.reopened_at > COALESCE((
+                       SELECT MAX(h.approved_at) FROM cost_price_history h
+                        WHERE h.model = r.model AND h.articul = r.articul
+                          AND h.calc_sign = r.calc_sign AND h.plan_id = r.plan_id
+                          AND h.source = 'app'
+                   ), '-infinity'::timestamptz)) AS is_active
+            FROM cost_dwh_reopen r
+            ORDER BY r.reopened_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_price_history(
+    model=None, articul=None, calc_sign=None, plan_id=None, limit: int = 500,
+) -> list[dict]:
+    """История установленных цен — для показа в интерфейсе и проверки BI."""
+    conds: list[str] = []
+    params: list = []
+    for col, val in (("model", model), ("articul", articul),
+                     ("calc_sign", calc_sign), ("plan_id", plan_id)):
+        if val:
+            params.append(str(val).strip())
+            conds.append(f"{col} = ${len(params)}")
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
+    params.append(limit)
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            f"SELECT * FROM cost_price_history{where} "
+            f"ORDER BY approved_at DESC, id DESC LIMIT ${len(params)}",
+            *params,
+        )
+    return [dict(r) for r in rows]
+
+
+async def backfill_price_history_from_olap() -> dict:
+    """Разово перенести существующие записи из CostHistory_Changes в историю.
+
+    Нужно, чтобы у дашборда была предыстория: до 0039 полная история жила только
+    в OLAP. Повторный запуск безопасен — вставка идёт с ON CONFLICT DO NOTHING по
+    уникальному индексу (ключ + approved_at + source).
+    """
+    def _fetch() -> list[tuple]:
+        olap = get_olap_conn()
+        cursor = olap.cursor()
+        try:
+            cursor.execute("""
+                SELECT Модель, Артикул, ISNULL(calc_sign, ''), ISNULL(plan_id, ''),
+                       Уровень_цен, Розничная_цена_руб, Отпускная_цена_руб,
+                       price_rf, price_kz, price_uz, mp_price_rub,
+                       sebestoimost_rub, sebestoimost_usd, comment,
+                       Пользователь, approved_by,
+                       COALESCE(approved_at, changed_at)
+                FROM CostHistory_Changes
+            """)
+            return [tuple(r) for r in cursor.fetchall()]
+        finally:
+            olap.close()
+
+    src = await asyncio.get_running_loop().run_in_executor(None, _fetch)
+    if not src:
+        return {"fetched": 0, "inserted": 0}
+
+    inserted = 0
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            for r in src:
+                result = await conn.execute(
+                    """
+                    INSERT INTO cost_price_history
+                        (model, articul, calc_sign, plan_id, price_level,
+                         retail_rub, wholesale_rub, price_rf, price_kz, price_uz,
+                         mp_price_rub, cost_rub, cost_usd, comment,
+                         changed_by, approved_by, approved_at, source)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                            $15, $16, $17, 'olap_backfill')
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (r[0] or "").strip(), (r[1] or "").strip(),
+                    (r[2] or "").strip(), (r[3] or "").strip(),
+                    r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13],
+                    r[14], r[15], r[16],
+                )
+                if result.endswith("1"):
+                    inserted += 1
+    return {"fetched": len(src), "inserted": inserted}
 
 
 async def delete_dwh_record(model, articul, calc_sign, plan_id) -> dict:

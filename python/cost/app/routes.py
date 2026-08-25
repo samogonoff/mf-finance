@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import commercial, mocks
-from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices)
+from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_reopened_keys, reopen_dwh_calculation, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -420,9 +420,15 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         '  AND TRIM(COALESCE(cd."Номер задания производства", \'\'))'
         '      = COALESCE(ca.task_number, \'\')'
     )
+    # Порядок ветвей важен: «согласовано» только когда согласованы ВСЕ задания
+    # калькуляции, дальше — самый весомый негативный сигнал. Возврат на
+    # корректировку (миграция 0040) мягче отклонения, поэтому идёт после него;
+    # без этой ветви статус 'returned' проваливался в ELSE и приходил как NULL —
+    # оранжевый кружок в таблице не появлялся вовсе.
     select_parts.append(
         "CASE WHEN BOOL_AND(ca.status = 'approved') THEN 'approved'"
         "     WHEN BOOL_OR(ca.status = 'rejected') THEN 'rejected'"
+        "     WHEN BOOL_OR(ca.status = 'returned') THEN 'returned'"
         "     ELSE NULL END AS peo_status"
     )
     query = f"SELECT {', '.join(select_parts)} FROM cost_data_cache cd {join} WHERE {where} GROUP BY {', '.join(f'cd."{f}"' for f in AGG_GROUP_FIELDS)}"
@@ -441,14 +447,25 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         (r.get("PLAN_ID") or "").strip(),
     )
     _group_all_approved: dict[tuple, bool] = {}
+    # Возврат на корректировку (статус 'returned', миграция 0040) тоже открывает
+    # строку бренд-менеджеру: смысл возврата в том, чтобы он поправил цену.
+    # Иначе ПЭО вернул бы калькуляцию, а править её было бы некому.
+    _group_returned: dict[tuple, bool] = {}
     for row in data:
         k = _gkey(row)
         if k not in _group_all_approved:
             _group_all_approved[k] = True
+            _group_returned[k] = False
         if row.get("peo_status") != "approved":
             _group_all_approved[k] = False
+        if row.get("peo_status") == "returned":
+            _group_returned[k] = True
     for row in data:
-        row["_group_approved"] = _group_all_approved.get(_gkey(row), False)
+        k = _gkey(row)
+        row["_group_returned"] = _group_returned.get(k, False)
+        row["_group_approved"] = (
+            _group_all_approved.get(k, False) or _group_returned.get(k, False)
+        )
 
     for row in data:
         row["sum_Себестоимость, руб."] = _sum_components(row, SEBEST_COMPONENTS_RUB)
@@ -938,6 +955,12 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 else:
                     audit_legacy.add(m_a)
 
+            # 3. Переоткрытые админом калькуляции (миграция 0039). Запись в DWH
+            # остаётся на месте, но блокировку с строки снимаем: админ разрешил
+            # второй цикл «правка → ПЭО → установка цен». Разрешение истекает
+            # само, как только цены установлены заново.
+            reopened_keys = await get_reopened_keys(lock_list)
+
             for row in data:
                 m = str(row.get("Модель", "") or "").strip()
                 a = str(row.get("Артикул", "") or "").strip()
@@ -946,9 +969,16 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
 
                 has_pending = (m, a, cs, pi) in pending_set
                 has_audit = (m, a, cs, pi) in audit_set or (m, a) in audit_legacy
+                is_reopened = (m, a, cs, pi) in reopened_keys
 
                 row["_has_pending"] = has_pending
-                row["_has_audit"] = has_audit
+                # Значок «записано в DWH» оставляем — факт записи никуда не
+                # делся, — но отдельным флагом сообщаем фронту, что правка
+                # разрешена. Так видно и то, что калькуляция уже в DWH, и то,
+                # что она открыта на исправление.
+                row["_has_audit"] = has_audit and not is_reopened
+                row["_in_dwh"] = has_audit
+                row["_reopened"] = is_reopened
 
                 if has_pending:
                     row["_lock_reason"] = "pending_changes"
@@ -1277,7 +1307,13 @@ async def _check_save_locks(
                 str(r["calc_sign"] or "").strip(), str(r["plan_id"] or "").strip(),
             ))
 
+    # Действующие переоткрытия — по ним снимается запрет «уже передано в DWH».
+    reopened_keys: set[tuple[str, str, str, str]] = (
+        await get_reopened_keys(lock_list) if lock_list else set()
+    )
+
     approved_groups: set[tuple[str, str, str, str]] = set()
+    returned_groups: set[tuple[str, str, str, str]] = set()
     if lock_list:
         appr_ph = ", ".join(
             f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
@@ -1301,6 +1337,8 @@ async def _check_save_locks(
             )
             tn_val = str(r["task_number"] or "").strip()
             group_approval.setdefault(key4, {})[tn_val] = r["status"]
+            if r["status"] == "returned":
+                returned_groups.add(key4)
         for key4, expected_tasks in group_tasks.items():
             approvals = group_approval.get(key4, {})
             if all(approvals.get(tn) == "approved" for tn in expected_tasks):
@@ -1319,7 +1357,10 @@ async def _check_save_locks(
 
         key4 = (model, articul, cs, pi)
 
-        if key4 in audit_set:
+        # Переоткрытая админом калькуляция сохраняется, хотя в DWH уже уехала:
+        # именно для этого переоткрытие и существует. Без этой проверки правку
+        # можно было бы ввести в таблице, но не сохранить.
+        if key4 in audit_set and key4 not in reopened_keys:
             locked_rows.append({
                 "model": model, "articul": articul,
                 "calc_sign": cs, "plan_id": pi,
@@ -1328,7 +1369,9 @@ async def _check_save_locks(
             continue
 
         if not await _can_approve_or_peo(user_email):
-            if key4 not in approved_groups:
+            # 'returned' — это и есть просьба поправить цену, поэтому запрет
+            # «только после согласования ПЭО» на такие строки не действует.
+            if key4 not in approved_groups and key4 not in returned_groups:
                 locked_rows.append({
                     "model": model, "articul": articul,
                     "calc_sign": cs, "plan_id": pi,
@@ -1910,6 +1953,80 @@ async def admin_delete_dwh_record(payload: dict, _: str = Depends(_require_perm(
     return {"success": True, **result, "warning": "Цены уже переданы в Fox ERP и не могут быть откачены"}
 
 
+# ── Переоткрытие калькуляции после записи в DWH (миграция 0039) ───────────────
+#
+# Только админ раздела (`cost:admin`) — решение заказчика 25.08.2026. Записи в
+# DWH не удаляются: повторная установка цен добавит новую строку, а в учётной
+# системе более новый прейскурант перекрывает старый.
+
+
+@router.post("/admin/dwh-reopen")
+async def admin_reopen_dwh(payload: dict, user_email: str = Depends(_require_perm("cost:admin"))) -> dict:
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    calc_sign = (payload.get("calc_sign") or "").strip()
+    plan_id = (payload.get("plan_id") or "").strip()
+    reason = (payload.get("reason") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    # Причина обязательна: операция нежелательная, и без неё журнал бесполезен.
+    if len(reason) < 5:
+        raise HTTPException(400, "Нужна причина переоткрытия (не короче 5 символов)")
+    if _is_mock():
+        return {"success": True, "mock": True}
+    result = await reopen_dwh_calculation(
+        model, articul, calc_sign, plan_id, user_email or "system", reason,
+    )
+    return {
+        "success": True, **result,
+        "warning": "Прейскурант в учётной системе не откатывается — "
+                   "повторная установка цен создаст новый, он перекроет прежний",
+    }
+
+
+@router.post("/admin/dwh-reopen/revoke")
+async def admin_revoke_dwh_reopen(payload: dict, user_email: str = Depends(_require_perm("cost:admin"))) -> dict:
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return {"success": True, "revoked": 0, "mock": True}
+    revoked = await revoke_dwh_reopen(
+        model, articul, (payload.get("calc_sign") or "").strip(),
+        (payload.get("plan_id") or "").strip(), user_email or "system",
+    )
+    return {"success": True, "revoked": revoked}
+
+
+@router.get("/admin/dwh-reopen")
+async def admin_list_dwh_reopens(request: Request, _: str = Depends(_require_perm("cost:admin"))) -> dict:
+    if _is_mock():
+        return {"data": [], "mock": True}
+    limit = min(int(request.query_params.get("limit") or 200), 1000)
+    return {"data": await list_dwh_reopens(limit)}
+
+
+@router.post("/admin/price-history/backfill")
+async def admin_backfill_price_history(_: str = Depends(_require_perm("cost:admin"))) -> dict:
+    """Разово подтянуть предысторию цен из CostHistory_Changes. Идемпотентно."""
+    if _is_mock():
+        return {"success": True, "fetched": 0, "inserted": 0, "mock": True}
+    return {"success": True, **await backfill_price_history_from_olap()}
+
+
+@router.get("/price-history")
+async def price_history(request: Request, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """История установленных цен по калькуляции — то, что раньше было только в OLAP."""
+    if _is_mock():
+        return {"data": [], "mock": True}
+    q = request.query_params
+    limit = min(int(q.get("limit") or 500), 5000)
+    return {"data": await get_price_history(
+        q.get("model"), q.get("articul"), q.get("calc_sign"), q.get("plan_id"), limit,
+    )}
+
+
 # ── PEO approval (Stream H) ────────────────────────────────────────────────
 
 
@@ -1929,7 +2046,10 @@ async def approve_calculation(payload: dict, _: str = Depends(_require_any_perm(
     for a in approvals:
         if not a.get("model") or not a.get("articul"):
             raise HTTPException(400, "model and articul required for every approval")
-        if a.get("status") not in ("approved", "rejected", "pending"):
+        # 'returned' — возврат на корректировку (миграция 0040). Штатно его
+        # ставят /reject-price и /admin/dwh-reopen, но принимаем и здесь: иначе
+        # массовая простановка этого статуса упиралась бы в валидацию.
+        if a.get("status") not in ("approved", "rejected", "pending", "returned"):
             raise HTTPException(400, f"Недопустимый статус: {a.get('status')!r}")
         a.setdefault("approved_by", approved_by)
     if _is_mock():
