@@ -391,6 +391,7 @@ func main() {
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/summary", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.SummaryGet))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/validate", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.ValidateGet))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.Export))
+	mux.HandleFunc("GET /api/plans/retail/{cardId}/import-template", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.ImportTemplate))
 	mux.HandleFunc("POST /api/plans/retail/{cardId}/import", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.Import))
 	// Соответствие «пользователь ↔ RegManager» (ТЗ Розница §9). Без него ни один
 	// РМ не увидит своих магазинов: в справочнике хранится ФИО, а не логин, а

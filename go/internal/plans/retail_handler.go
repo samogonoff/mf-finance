@@ -254,6 +254,25 @@ func (h *RetailHandler) Export(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+// ImportTemplate — GET /api/plans/retail/{cardId}/import-template?currency=
+// Пример файла для импорта: колонки-ключи, колонки месяцев периода и подсказки
+// строками-комментариями.
+func (h *RetailHandler) ImportTemplate(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	data, name, err := h.svc.ImportTemplate(r.Context(), h.principal(r), id, r.URL.Query().Get("currency"))
+	if err != nil {
+		retailErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
+}
+
 // retailImportMaxBytes — предел размера загружаемого файла. 375 магазинов × 12
 // месяцев в минимальном xlsx — сотни килобайт; 16 МБ с запасом, но не «сколько
 // пришлют».
