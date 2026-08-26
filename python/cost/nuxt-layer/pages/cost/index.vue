@@ -1744,6 +1744,102 @@ const STICKY_MAX_WIDTH = 600;
 const WIDTH_STORAGE_KEY = 'cost_sticky_col_widths';
 const STORAGE_KEY = 'cost_column_visibility';
 
+/** Настройки таблицы: браузер + сервер (миграция 0041).
+ *
+ * Пожелания № 9 и № 14: настроил под себя — настройка живёт, в том числе при
+ * входе с другого компьютера. Поэтому у настроек два хранилища:
+ *   • localStorage — мгновенное, чтобы таблица рисовалась настроенной ещё до
+ *     ответа сервера (и работала, если сервер недоступен);
+ *   • cost_user_table_prefs через GET/PUT /api/cost/table-prefs — переносимое.
+ *
+ * Сервер главнее: как только приходит его документ, он применяется поверх
+ * локального. Пустой серверный документ локальные настройки НЕ затирает —
+ * иначе первый вход с новой машины обнулил бы всё, что человек настроил здесь.
+ *
+ * Запись на сервер отложенная: ресайз колонки мышью иначе давал бы по запросу
+ * на каждый пиксель. */
+const PREFS_PUSH_DELAY_MS = 900;
+let prefsPushTimer: ReturnType<typeof setTimeout> | null = null;
+/** Пока не применили серверный документ, свои изменения на сервер не пишем:
+ *  иначе гонка при старте перезапишет настройки дефолтами. */
+const prefsReady = ref(false);
+
+function collectPrefs() {
+  return {
+    columns: {
+      visibility: { ...columnVisibility },
+      widths: { ...stickyWidths },
+    },
+    pageSize: pageSize.value,
+    filtersOpen: filtersOpen.value,
+    hideDwhSent: hideDwhSentManual.value,
+  };
+}
+
+function schedulePrefsPush() {
+  if (!prefsReady.value) return;
+  if (prefsPushTimer) clearTimeout(prefsPushTimer);
+  prefsPushTimer = setTimeout(async () => {
+    prefsPushTimer = null;
+    try {
+      await $fetch(`${apiBase.value}/api/cost/table-prefs`, {
+        method: 'PUT',
+        body: { prefs: collectPrefs() },
+        headers: fetchHeaders.value,
+      });
+    } catch (e) {
+      // Настройки не данные: молча продолжаем на локальной копии, но в консоль
+      // пишем, иначе «у меня настройки не переносятся» будет неотлаживаемо.
+      console.warn('[cost] не удалось сохранить настройки таблицы на сервере', e);
+    }
+  }, PREFS_PUSH_DELAY_MS);
+}
+
+/** Применить серверный документ. Незнакомые и пустые разделы игнорируем. */
+function applyPrefs(doc: any) {
+  if (!doc || typeof doc !== 'object') return;
+  const cols = doc.columns || {};
+  if (cols.visibility && typeof cols.visibility === 'object') {
+    for (const c of COLUMNS_CONFIG) {
+      if (typeof cols.visibility[c.key] === 'boolean') columnVisibility[c.key] = cols.visibility[c.key];
+    }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(columnVisibility)); } catch { /* ignore */ }
+  }
+  if (cols.widths && typeof cols.widths === 'object') {
+    for (const k of STICKY_COL_KEYS) {
+      const v = Number(cols.widths[k]);
+      if (isFinite(v) && v > 0) stickyWidths[k] = clampStickyWidth(k, v);
+    }
+    try { localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify(stickyWidths)); } catch { /* ignore */ }
+  schedulePrefsPush();
+  schedulePrefsPush();
+  }
+  if (PAGE_SIZE_OPTIONS.includes(Number(doc.pageSize))) {
+    pageSize.value = Number(doc.pageSize);
+    try { localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(doc.pageSize)); } catch { /* ignore */ }
+  }
+  if (typeof doc.filtersOpen === 'boolean') {
+    filtersOpen.value = doc.filtersOpen;
+    try { localStorage.setItem(FILTERS_OPEN_STORAGE_KEY, doc.filtersOpen ? '1' : '0'); } catch { /* ignore */ }
+  }
+  if (typeof doc.hideDwhSent === 'boolean' || doc.hideDwhSent === null) {
+    hideDwhSentManual.value = doc.hideDwhSent;
+  }
+}
+
+onMounted(async () => {
+  try {
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/table-prefs`, { headers: fetchHeaders.value });
+    applyPrefs(resp?.prefs);
+  } catch (e) {
+    console.warn('[cost] настройки таблицы с сервера не получены, работаем на локальных', e);
+  } finally {
+    // Разрешаем запись только после попытки чтения — иначе первый же отложенный
+    // пуш мог бы отправить дефолты и затереть сохранённое.
+    prefsReady.value = true;
+  }
+});
+
 function loadColumnVisibility(): Record<string, boolean> {
   const stored = localStorage.getItem(STORAGE_KEY);
   if (stored) {
@@ -1780,6 +1876,7 @@ function openColumnSettings() {
 function applyColumnVisibility() {
   Object.assign(columnVisibility, pendingVisibility.value);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(columnVisibility));
+  schedulePrefsPush();
   showColumnSettings.value = false;
 }
 
@@ -1933,6 +2030,7 @@ function toggleFilters() {
   filtersOpen.value = !filtersOpen.value;
   try {
     localStorage.setItem(FILTERS_OPEN_STORAGE_KEY, filtersOpen.value ? '1' : '0');
+    schedulePrefsPush();
   } catch { /* ignore */ }
 }
 
@@ -2178,6 +2276,7 @@ const hideDwhSent = computed(() =>
 function setHideDwhSent(checked: boolean) {
   hideDwhSentManual.value = checked;
   try { localStorage.setItem(HIDE_DWH_STORAGE_KEY, checked ? '1' : '0'); } catch { /* ignore */ }
+  schedulePrefsPush();
 }
 
 /** Сколько строк текущей выборки скрыто фильтром — иначе «пропажа» строк выглядит
@@ -2217,6 +2316,7 @@ function onPageSizeChange(value: string | number) {
   // номер мог указывать за пределы выборки.
   currentPage.value = 0;
   try { localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(next)); } catch { /* ignore */ }
+  schedulePrefsPush();
 }
 
 // ── Column filters (client-side, top-down cascade) ──────────────────────────
