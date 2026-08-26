@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import commercial, mocks
-from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap)
+from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -1981,7 +1981,13 @@ async def reject_price(payload: dict, user_email: str = Depends(_require_perm("c
         parsed_date = date_str
     if _is_mock():
         return {"success": True, "mock": True}
-    await reset_price_fields(model, articul, calc_sign, plan_id, parsed_date)
+    # Задание пробрасываем: статус «возврат на корректировку» ставится ровно
+    # тому заданию, которое вернули, а не всем заданиям калькуляции.
+    await reset_price_fields(
+        model, articul, calc_sign, plan_id, parsed_date,
+        returned_by=user_email or "system",
+        task_number=(payload.get("task_number") or "").strip() or None,
+    )
     return {"success": True, "reset_by": user_email or "system"}
 
 
@@ -2022,11 +2028,42 @@ async def admin_reopen_dwh(payload: dict, user_email: str = Depends(_require_per
         return {"success": True, "mock": True}
     result = await reopen_dwh_calculation(
         model, articul, calc_sign, plan_id, user_email or "system", reason,
+        task_number=(payload.get("task_number") or "").strip() or None,
     )
     return {
         "success": True, **result,
         "warning": "Прейскурант в учётной системе не откатывается — "
                    "повторная установка цен создаст новый, он перекроет прежний",
+    }
+
+
+# Потолок на пачку возврата. Возврат — операция нежелательная и ручная: пачка в
+# несколько сотен калькуляций означает, что человек выделил не то, и лучше
+# отказать, чем открыть половину плана.
+DWH_REOPEN_BATCH_LIMIT = 500
+
+
+@router.post("/admin/dwh-reopen/batch")
+async def admin_reopen_dwh_batch(payload: dict, user_email: str = Depends(_require_perm("cost:admin"))) -> dict:
+    """Массовый возврат из DWH: много калькуляций с одной причиной (пункт 15)."""
+    items = payload.get("items") or []
+    reason = (payload.get("reason") or "").strip()
+    if not items:
+        raise HTTPException(400, "items list required")
+    if len(items) > DWH_REOPEN_BATCH_LIMIT:
+        raise HTTPException(400, f"Слишком большая пачка: {len(items)} > {DWH_REOPEN_BATCH_LIMIT}")
+    if len(reason) < 5:
+        raise HTTPException(400, "Нужна причина возврата (не короче 5 символов)")
+    for it in items:
+        if not (it.get("model") or "").strip() or not (it.get("articul") or "").strip():
+            raise HTTPException(400, "у каждой калькуляции нужны model и articul")
+    if _is_mock():
+        return {"success": True, "reopened": len(items), "mock": True}
+    result = await reopen_dwh_calculations_batch(items, user_email or "system", reason)
+    return {
+        "success": True, **result,
+        "warning": "Прейскуранты в учётной системе не откатываются — повторная "
+                   "установка цен создаст новые, они перекроют прежние",
     }
 
 

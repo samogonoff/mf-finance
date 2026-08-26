@@ -319,6 +319,13 @@
           <button class="btn btn-danger btn-sm" :disabled="peoBulkBusy" @click="runPeoBulk('rejected')">
             ✗ {{ peoBulkBusy && peoBulkAction === 'rejected' ? 'Отклонение…' : 'Отклонить' }}
           </button>
+          <!-- Массовый возврат из DWH (пункт 15): только админ и только для
+               строк, уже записанных в DWH. Причина вводится один раз на всю
+               пачку — ради этого пункт и заводился. -->
+          <button v-if="can('cost:admin') && reopenSelectedCount" class="btn btn-danger btn-sm"
+                  :disabled="peoBulkBusy || reopenBusy" @click="openReopenBulk">
+            ↩ Вернуть из DWH ({{ reopenSelectedCount }})
+          </button>
           <button class="btn btn-ghost btn-sm" :disabled="peoBulkBusy" @click="runPeoBulk('revoke')">
             ↩ {{ peoBulkBusy && peoBulkAction === 'revoke' ? 'Снятие…' : 'Снять согласование' }}
           </button>
@@ -508,8 +515,10 @@
                 <input
                   type="checkbox"
                   :checked="isPeoSelected(row)"
-                  :disabled="!canSelectForPeo(row)"
-                  :title="canSelectForPeo(row) ? 'Выбрать для массового согласования (Shift — диапазон)' : 'Строка недоступна для согласования'"
+                  :disabled="!isSelectableRow(row)"
+                  :title="canSelectForReopen(row)
+                    ? 'Выбрать для массового возврата из DWH (Shift — диапазон)'
+                    : (canSelectForPeo(row) ? 'Выбрать для массового согласования (Shift — диапазон)' : 'Строка недоступна для выделения')"
                   @click.stop="onPeoCheckboxClick"
                   @change="onPeoCheckboxChange(row, idx, ($event.target as HTMLInputElement).checked)"
                 />
@@ -1458,20 +1467,44 @@
          откатывает прейскурант в учётной системе — новая установка цен создаст
          новый прейскурант, он перекроет прежний. -->
     <Teleport to="body">
-      <div v-if="reopenTarget" class="modal-overlay" @click.self="closeReopenModal">
+      <div v-if="reopenTarget || reopenBulkRows.length" class="modal-overlay" @click.self="closeReopenModal">
         <div class="modal approval-modal">
           <div class="modal-header">
-            <span>{{ reopenTarget._reopened ? 'Отозвать разрешение на правку' : 'Вернуть на корректировку' }}</span>
-            <span class="modal-subtitle">{{ reopenTarget['Модель'] || '—' }} / {{ reopenTarget['Артикул'] || '—' }}</span>
+            <span v-if="reopenBulkRows.length">Вернуть на корректировку: {{ reopenSelectedCount }} калькуляций</span>
+            <span v-else>{{ reopenTarget._reopened ? 'Отозвать разрешение на правку' : 'Вернуть на корректировку' }}</span>
+            <span v-if="!reopenBulkRows.length" class="modal-subtitle">{{ reopenTarget['Модель'] || '—' }} / {{ reopenTarget['Артикул'] || '—' }}</span>
+            <span v-else class="modal-subtitle">строк (заданий): {{ reopenBulkRows.length }}</span>
             <button class="modal-close" @click="closeReopenModal">✕</button>
           </div>
           <div class="approval-body">
-            <div class="approval-info-row">
+            <div v-if="!reopenBulkRows.length" class="approval-info-row">
               <span class="approval-label">Калькуляция:</span>
               <span>{{ reopenTarget['Признак калькуляции'] || '—' }}, план {{ reopenTarget['PLAN_ID'] || '—' }}</span>
             </div>
 
-            <template v-if="reopenTarget._reopened">
+            <!-- Режим пачки: одна причина на всё выделенное. -->
+            <template v-if="reopenBulkRows.length">
+              <p class="reopen-note reopen-note--warn">
+                Цены этих калькуляций уже переданы в учётную систему. Отменить их
+                нельзя: правка создаст <b>новые прейскуранты</b>, они перекроют
+                прежние. Прошлые значения останутся в истории цен.
+              </p>
+              <div class="approval-comment-row">
+                <label>Причина — одна на всю пачку (обязательно):</label>
+                <textarea v-model="reopenReason" class="approval-comment" rows="2"
+                  placeholder="Например: перемаркировка плана, пересчёт по требованию ПЭО"></textarea>
+              </div>
+              <div v-if="reopenError" class="reopen-error">{{ reopenError }}</div>
+              <div class="approval-actions">
+                <button class="btn btn-sm btn-ghost" :disabled="reopenBusy" @click="closeReopenModal">Отмена</button>
+                <button class="btn btn-sm btn-primary" :disabled="reopenBusy || reopenReason.trim().length < 5"
+                  @click="submitReopenBulk">
+                  {{ reopenBusy ? 'Возврат…' : `Вернуть ${reopenSelectedCount}` }}
+                </button>
+              </div>
+            </template>
+
+            <template v-else-if="reopenTarget && reopenTarget._reopened">
               <p class="reopen-note">
                 Калькуляция открыта на исправление. Отзыв вернёт блокировку —
                 записи в DWH при этом не меняются.
@@ -1484,7 +1517,7 @@
               </div>
             </template>
 
-            <template v-else>
+            <template v-else-if="reopenTarget">
               <p class="reopen-note reopen-note--warn">
                 Цены этой калькуляции уже переданы в учётную систему. Отменить их
                 нельзя: правка создаст <b>новый прейскурант</b>, который перекроет
@@ -4988,13 +5021,53 @@ const reopenReason = ref('');
 const reopenBusy = ref(false);
 const reopenError = ref('');
 
+/** Строки, выбранные для массового возврата (пункт 15). Непустой массив
+ *  переключает модалку в режим пачки: одна причина на все калькуляции. */
+const reopenBulkRows = ref<any[]>([]);
+
+const openReopenBulk = () => {
+  if (!can('cost:admin')) return;
+  reopenBulkRows.value = reopenSelectedRows.value.slice();
+  reopenTarget.value = null;
+  reopenReason.value = '';
+  reopenError.value = '';
+};
+
+async function submitReopenBulk() {
+  if (!reopenBulkRows.value.length) return;
+  reopenBusy.value = true;
+  reopenError.value = '';
+  try {
+    // Шлём по строке на КАЖДОЕ задание: разрешение схлопнется по калькуляции на
+    // сервере, а статус «возврат» встанет ровно тем заданиям, что выделены.
+    const items = reopenBulkRows.value.map(reopenPayload);
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/admin/dwh-reopen/batch`, {
+      method: 'POST',
+      body: { items, reason: reopenReason.value.trim() },
+      headers: fetchHeaders.value,
+    });
+    for (const r of reopenBulkRows.value) applyReopenLocally(r, true);
+    peoBulkStatus.value = `Возвращено на корректировку калькуляций: ${resp?.reopened ?? items.length}`;
+    clearPeoSelection();
+    closeReopenModal();
+  } catch (e: any) {
+    reopenError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    reopenBusy.value = false;
+  }
+}
+
 const openReopenModal = (row: any) => {
   if (!can('cost:admin')) return;
   reopenTarget.value = row;
   reopenReason.value = '';
   reopenError.value = '';
 };
-const closeReopenModal = () => { reopenTarget.value = null; reopenError.value = ''; };
+const closeReopenModal = () => {
+  reopenTarget.value = null;
+  reopenBulkRows.value = [];
+  reopenError.value = '';
+};
 
 /** Ключ калькуляции для админских операций с DWH — те же 4 поля, что в
  *  cost_dwh_reopen и в ключе записи цен. */
@@ -5003,6 +5076,10 @@ const reopenPayload = (row: any) => ({
   articul: (row['Артикул'] ?? '').toString().trim(),
   calc_sign: (row['Признак калькуляции'] ?? '').toString().trim(),
   plan_id: (row['PLAN_ID'] ?? '').toString().trim(),
+  // Задание нужно, чтобы статус «возврат на корректировку» встал ровно этому
+  // заданию: согласование ведётся по заданиям, и согласовывать скопом нельзя —
+  // себестоимость по заданиям разная, часть может быть верной, часть нет.
+  task_number: (row['Номер задания производства'] ?? '').toString().trim(),
 });
 
 /** Локально снимаем/возвращаем блокировку у всех строк той же калькуляции —
@@ -5162,6 +5239,11 @@ const peoItemKey = (it: any): string =>
 const canSelectForPeo = (row: any): boolean =>
   peoBulkEnabled.value && !isRowLocked(row) && !row._has_audit;
 
+/** Строки, записанные в DWH: их выделяет админ для массового возврата (пункт 15).
+ *  Для остальных ролей такие строки по-прежнему недоступны для выделения. */
+const canSelectForReopen = (row: any): boolean =>
+  can('cost:admin') && Boolean(row._in_dwh ?? row._has_audit) && !row._reopened;
+
 const peoSelectedKeys = ref<Set<string>>(new Set());
 const peoBulkBusy = ref(false);
 const peoBulkAction = ref<'' | 'approved' | 'rejected' | 'revoke'>('');
@@ -5172,8 +5254,23 @@ const peoBulkComment = ref('');
 
 const isPeoSelected = (row: any): boolean => peoSelectedKeys.value.has(peoKey(row));
 
-const peoSelectableRows = computed(() => sortedRows.value.filter(canSelectForPeo));
-const peoPageSelectableRows = computed(() => pageRows.value.filter(canSelectForPeo));
+/** Строка доступна для выделения: либо для массового согласования, либо (у
+ *  админа) для массового возврата из DWH. */
+const isSelectableRow = (row: any): boolean => canSelectForPeo(row) || canSelectForReopen(row);
+
+const peoSelectableRows = computed(() => sortedRows.value.filter(isSelectableRow));
+
+/** Выделенные строки, записанные в DWH — материал для массового возврата. */
+const reopenSelectedRows = computed(() =>
+  peoSelectableRows.value.filter((r) => isPeoSelected(r) && canSelectForReopen(r))
+);
+/** Уникальные калькуляции среди них — столько разрешений уйдёт на сервер. */
+const reopenSelectedCount = computed(() => {
+  const seen = new Set<string>();
+  for (const r of reopenSelectedRows.value) seen.add(peoKey(r));
+  return seen.size;
+});
+const peoPageSelectableRows = computed(() => pageRows.value.filter(isSelectableRow));
 
 const peoPageAllSelected = computed(
   () => peoPageSelectableRows.value.length > 0 && peoPageSelectableRows.value.every(isPeoSelected)
@@ -5213,7 +5310,7 @@ const onPeoCheckboxChange = (row: any, pageIdx: number, checked: boolean) => {
     const to = Math.max(peoLastClickedIdx, pageIdx);
     for (let i = from; i <= to; i++) {
       const r = pageRows.value[i];
-      if (r && canSelectForPeo(r)) apply(r);
+      if (r && isSelectableRow(r)) apply(r);
     }
   } else {
     apply(row);

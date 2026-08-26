@@ -2600,6 +2600,7 @@ _PRICE_FIELDS = [
 
 async def reset_price_fields(
     model, articul, calc_sign, plan_id, raw_date, returned_by: str = "system",
+    task_number: str | None = None,
 ) -> None:
     """Вернуть цену бренд-менеджеру на корректировку.
 
@@ -2621,10 +2622,17 @@ async def reset_price_fields(
         d = raw_date
     async with acquire() as conn:
         async with conn.transaction():
-            # Задания берём из кэша — по ним главная таблица джойнит
-            # согласования. pending может быть пуст (возврат уже записанной в
-            # DWH калькуляции), и статус на пустом задании тогда не нашёлся бы.
-            task_numbers = await _calc_task_numbers(
+            # Статус ставим ТОЛЬКО на возвращаемое задание: согласование ведётся
+            # по заданиям, и это принципиально — себестоимость по заданиям разная,
+            # поэтому ПЭО может принять цену для одного задания и не принять для
+            # другого. Возвращать скопом все задания нельзя (уточнение заказчика
+            # 26.08.2026).
+            #
+            # Задание не передали — берём все задания калькуляции из кэша. Это
+            # фолбэк для калькуляций, у которых задания в источнике нет (ПКПСС):
+            # на пустом задании статус не нашёлся бы джойном главной таблицы.
+            tn_given = (task_number or "").strip()
+            task_numbers = [tn_given] if tn_given else await _calc_task_numbers(
                 conn, (model or "").strip(), (articul or "").strip(),
                 (calc_sign or "").strip(), (plan_id or "").strip(),
             )
@@ -2982,8 +2990,25 @@ async def get_reopened_keys(
 
 async def reopen_dwh_calculation(
     model, articul, calc_sign, plan_id, reopened_by: str, reason: str,
+    task_number: str | None = None,
 ) -> dict:
-    """Разрешить повторную правку калькуляции, уже записанной в DWH."""
+    """Разрешить повторную правку калькуляции, уже записанной в DWH.
+
+    task_number — задание, которое возвращают. Статус ПЭО ставится ТОЛЬКО на него:
+    согласование ведётся по заданиям, и это не формальность — себестоимость по
+    заданиям разная (на 26.08.2026 расхождение у 276 калькуляций из 314, до
+    +211 %), значит и рентабельность разная, и ПЭО может принять цену для одного
+    задания и не принять для другого. Ставить статус на все задания скопом
+    нельзя: часть могла быть верной, часть нет (уточнение заказчика 26.08.2026).
+
+    Если задание не передано, статус ставится по всем заданиям калькуляции —
+    это фолбэк для калькуляций, у которых задания в источнике нет вовсе (ПКПСС).
+
+    Само РАЗРЕШЕНИЕ на правку остаётся на калькуляции целиком: блокировка
+    «записано в DWH» считается по ключу аудита, а в CostHistory_Changes колонки
+    задания не существует. То есть разблокируется вся калькуляция, а статус
+    «возврат на корректировку» появляется у того задания, которое вернули.
+    """
     m, a, cs, pi = _reopen_key(model, articul, calc_sign, plan_id)
     async with acquire() as conn:
         # Прежние разрешения по этому ключу отзываем: активным должно быть одно,
@@ -3007,7 +3032,9 @@ async def reopen_dwh_calculation(
         # не просто разблокирована. Ставим по всем заданиям этой калькуляции —
         # ключ согласования включает номер задания, а возврат относится к
         # калькуляции целиком.
-        for tn in await _calc_task_numbers(conn, m, a, cs, pi):
+        tn_given = (task_number or "").strip()
+        tasks = [tn_given] if tn_given else await _calc_task_numbers(conn, m, a, cs, pi)
+        for tn in tasks:
             await conn.execute(
                 """
                 INSERT INTO cost_calc_approvals
@@ -3020,7 +3047,82 @@ async def reopen_dwh_calculation(
                 """,
                 m, a, cs, pi, tn, reopened_by,
             )
-    return {"id": row["id"], "reopened_at": row["reopened_at"]}
+    return {"id": row["id"], "reopened_at": row["reopened_at"], "tasks": tasks}
+
+
+async def reopen_dwh_calculations_batch(
+    items: list[dict], reopened_by: str, reason: str,
+) -> dict:
+    """Массовый возврат из DWH: много калькуляций, одна причина.
+
+    Пункт 15 «Списка доработок». Поштучный возврат уже был, но перемаркировки и
+    пересчёты идут пачками по плану, и админ вводил одну и ту же причину десятки
+    раз.
+
+    Всё делается в ОДНОЙ транзакции: либо возвращаются все калькуляции пачки,
+    либо ни одна. Половинчатый результат здесь хуже отказа — часть строк
+    осталась бы заблокированной без видимой причины, а в журнале лежало бы
+    разрешение, ничего не открывающее.
+
+    Дубли по ключу схлопываем заранее: две одинаковые калькуляции в одной пачке
+    иначе дали бы два разрешения, из которых первое сразу же отозвано вторым.
+    """
+    if not items:
+        return {"reopened": 0, "keys": []}
+
+    # Ключ разрешения — 4 поля (в DWH задания нет), а задания собираем отдельно:
+    # статус «возврат» ставится ровно тем заданиям, которые выделил человек.
+    deduped: dict[tuple[str, str, str, str], set[str]] = {}
+    for it in items:
+        key = _reopen_key(
+            it.get("model"), it.get("articul"), it.get("calc_sign"), it.get("plan_id"),
+        )
+        tn = (it.get("task_number") or "").strip()
+        deduped.setdefault(key, set())
+        if tn:
+            deduped[key].add(tn)
+    keys = list(deduped.keys())
+
+    async with acquire() as conn:
+        async with conn.transaction():
+            for m, a, cs, pi in keys:
+                await conn.execute(
+                    """UPDATE cost_dwh_reopen
+                       SET revoked_at = now(), revoked_by = $5
+                       WHERE model = $1 AND articul = $2 AND calc_sign = $3
+                         AND plan_id = $4 AND revoked_at IS NULL""",
+                    m, a, cs, pi, reopened_by,
+                )
+                await conn.execute(
+                    """INSERT INTO cost_dwh_reopen
+                           (model, articul, calc_sign, plan_id, reopened_by, reason)
+                       VALUES ($1, $2, $3, $4, $5, $6)""",
+                    m, a, cs, pi, reopened_by, reason,
+                )
+                tasks = sorted(deduped[(m, a, cs, pi)])
+                if not tasks:
+                    # Заданий не передали — калькуляция без задания в источнике.
+                    tasks = await _calc_task_numbers(conn, m, a, cs, pi)
+                for tn in tasks:
+                    await conn.execute(
+                        """
+                        INSERT INTO cost_calc_approvals
+                            (model, articul, calc_sign, plan_id, task_number,
+                             status, approved_by, approved_at)
+                        VALUES ($1, $2, $3, $4, $5, 'returned', $6, NOW())
+                        ON CONFLICT (model, articul, calc_sign, plan_id, task_number)
+                        DO UPDATE SET status = 'returned', approved_by = EXCLUDED.approved_by,
+                                      approved_at = NOW(), updated_at = NOW()
+                        """,
+                        m, a, cs, pi, tn, reopened_by,
+                    )
+    return {
+        "reopened": len(keys),
+        "keys": [
+            {"model": m, "articul": a, "calc_sign": cs, "plan_id": pi}
+            for m, a, cs, pi in keys
+        ],
+    }
 
 
 async def revoke_dwh_reopen(model, articul, calc_sign, plan_id, revoked_by: str) -> int:
