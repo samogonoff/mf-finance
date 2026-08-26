@@ -467,6 +467,8 @@
               <th v-if="isVisible('sum_cost') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
                 Себест. (руб)<span v-if="sortField === 'sum_Себестоимость, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
+              <th v-if="isVisible('cost_deviation')" class="col-num col-metric"
+                  title="(Себест. − План. с/с) / План. с/с. Заливка — превышение плана больше 5%">Откл. с/с от плана (%)</th>
               <th v-if="isVisible('sum_cost') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, USD.' }" @click="toggleSort('sum_Себестоимость, USD.')">
                 Себест. ($)<span v-if="sortField === 'sum_Себестоимость, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
@@ -638,6 +640,10 @@
               <td v-if="isVisible('sum_knitting') && !showUSD" class="col-num num">{{ fmt(row['sum_Вязание, руб.']) }}</td>
               <td v-if="isVisible('sum_knitting') && showUSD" class="col-num num">{{ fmt(row['sum_Вязание, USD.']) }}</td>
               <td v-if="isVisible('sum_cost') && !showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
+              <td v-if="isVisible('cost_deviation')" class="col-num num col-metric" :class="costDeviationClass(row)"
+                  :title="costDeviationPct(row) == null ? 'Плановая себестоимость не задана' : ''">
+                {{ costDeviationPct(row) == null ? '—' : (costDeviationPct(row)! > 0 ? '+' : '') + costDeviationPct(row)!.toFixed(1) + '%' }}
+              </td>
               <td v-if="isVisible('sum_cost') && showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
               <td v-if="isVisible('calc_markup')" class="col-num num col-metric">{{ fmt(calc(row, showUSD).markupRub) }}</td>
               <td v-if="isVisible('calc_markup_pct')" class="col-num num col-metric col-metric-hl" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
@@ -1708,6 +1714,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'sum_decors', label: 'Декоры' },
   { key: 'sum_knitting', label: 'Вязание' },
   { key: 'sum_cost', label: 'Себестоимость' },
+  { key: 'cost_deviation', label: 'Откл. с/с от плана (%)' },
   { key: 'calc_markup', label: 'Рентабельность' },
   { key: 'calc_markup_pct', label: 'Рентабельность (%)' },
   { key: 'calc_margin_pct', label: 'Маржа (%)' },
@@ -1720,7 +1727,7 @@ const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','
 const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
-const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost'];
+const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation'];
 const calcColumnKeys = ['calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 
 const mainColumns = computed(() => COLUMNS_CONFIG.filter(c => mainColumnKeys.includes(c.key)));
@@ -6502,6 +6509,10 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .data-table .col-metric-hl {
   background: var(--warn-soft, #fdf3e3);
   font-weight: var(--fw-bold, 700);
+  /* Кегль тоже больше базового: просили не только выделить, но и «увеличить
+     шрифт» (пункт 12 «Списка доработок»). База таблицы — 11px, поэтому 13px
+     заметно, но строка по высоте не разъезжается. */
+  font-size: 13px;
 }
 .data-table th.col-metric-hl {
   background: var(--warn-soft, #fdf3e3);
@@ -6615,6 +6626,15 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .data-table .col-num { text-align: right; }
 .delta-pos { color: var(--pos, #16a34a); font-weight: var(--fw-medium, 500); }
 .delta-neg { color: var(--neg, #dc2626); font-weight: var(--fw-medium, 500); }
+
+/* Условное форматирование ячейки: отклонение вышло за порог — заливаем.
+   Красный берём из токена --neg, чтобы работало и в тёмной теме; цифры внутри
+   остаются читаемыми за счёт полупрозрачной заливки, а не сплошного цвета. */
+.data-table td.cell-alert {
+  background: color-mix(in srgb, var(--neg, #dc2626) 18%, transparent);
+  color: var(--neg, #dc2626);
+  font-weight: var(--fw-bold, 700);
+}
 
 /* Row-level margin deviation conditional formatting */
 .row-margin-ok {
