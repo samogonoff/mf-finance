@@ -1422,6 +1422,84 @@ async def get_pending_filter_options(selected: dict[str, list[str]]) -> dict[str
     return result
 
 
+# Статьи, из которых складывается себестоимость строки кэша. Имена без префикса
+# sum_ — в кэше колонки называются так; в выдаче /aggregated те же статьи идут
+# как sum_*, потому что там они уже просуммированы по группе.
+_COST_PARTS_RUB = [
+    "Основные материалы, руб.", "Вспомогательные материалы, руб.", "Декоры, руб.",
+    "Пошив, руб.", "Раскрой, руб.", "Вязание, руб.",
+]
+_COST_PARTS_USD = [
+    "Основные материалы, USD.", "Вспомогательные материалы, USD.", "Декоры, USD.",
+    "Пошив, USD.", "Раскрой, USD.", "Вязание, USD.",
+]
+
+
+async def get_max_calc_cost(
+    keys: list[tuple[str, str, str, str]],
+) -> dict[tuple[str, str, str, str], dict[str, float]]:
+    """Максимальная себестоимость калькуляции среди её заданий.
+
+    Зачем. Цена ставится на (план, модель, артикул) и действует на все задания
+    сразу — заявка `cost_price_pending` уникальна без номера задания. А
+    себестоимость по заданиям объективно РАЗНАЯ: на 26.08.2026 из 314 калькуляций
+    с несколькими заданиями расхождение было у 276, доходя до +211 % (модель
+    187895 / 26Е-49400Ц-2 / КПСС / план 9518 — от 4,05 до 12,58 руб).
+
+    До этого в DWH и в процедуру прейскуранта уходило значение, записанное в
+    заявку ПОСЛЕДНИМ, без всякого правила: рентабельность в учётной системе для
+    остальных заданий считалась от чужой себестоимости. По решению заказчика
+    (26.08.2026) берём максимум по набору (модель, артикул, признак, план) —
+    осторожная оценка: цена, оправданная для самого дорогого задания, оправдана
+    и для остальных.
+
+    Рублёвый и долларовый максимум берём из ОДНОГО задания — того, где выше
+    рублёвая себестоимость. Иначе пара «руб/USD» перестала бы соответствовать
+    друг другу и курсу строки.
+    """
+    if not keys:
+        return {}
+    uniq = list({
+        ((m or "").strip(), (a or "").strip(), (cs or "").strip(), (pi or "").strip())
+        for m, a, cs, pi in keys
+    })
+    rub_sum = " + ".join(f'COALESCE(c."{p}", 0)' for p in _COST_PARTS_RUB)
+    usd_sum = " + ".join(f'COALESCE(c."{p}", 0)' for p in _COST_PARTS_USD)
+    async with acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            WITH per_task AS (
+                SELECT trim(c."Модель") AS m,
+                       trim(c."Артикул") AS a,
+                       trim(COALESCE(c."Признак калькуляции", '')) AS cs,
+                       trim(COALESCE(c."PLAN_ID", '')) AS pid,
+                       trim(COALESCE(c."Номер задания производства", '')) AS task,
+                       SUM({rub_sum}) AS rub,
+                       SUM({usd_sum}) AS usd
+                FROM cost_data_cache c
+                JOIN unnest($1::text[], $2::text[], $3::text[], $4::text[])
+                     AS k(m, a, cs, pid)
+                  ON k.m = trim(c."Модель")
+                 AND k.a = trim(c."Артикул")
+                 AND k.cs = trim(COALESCE(c."Признак калькуляции", ''))
+                 AND k.pid = trim(COALESCE(c."PLAN_ID", ''))
+                GROUP BY 1, 2, 3, 4, 5
+            )
+            SELECT DISTINCT ON (m, a, cs, pid) m, a, cs, pid, rub, usd
+            FROM per_task
+            ORDER BY m, a, cs, pid, rub DESC
+            """,
+            [k[0] for k in uniq], [k[1] for k in uniq],
+            [k[2] for k in uniq], [k[3] for k in uniq],
+        )
+    return {
+        (r["m"], r["a"], r["cs"], r["pid"]): {
+            "rub": float(r["rub"] or 0), "usd": float(r["usd"] or 0),
+        }
+        for r in rows
+    }
+
+
 async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
     """Apply (approve) pending changes: write to OLAP + local audit, delete from pending.
 
@@ -1442,6 +1520,44 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
         records = [dict(r) for r in rows]
 
     now = datetime.datetime.now()
+
+    # Себестоимость, которая уедет в DWH и в прейскурант, — МАКСИМАЛЬНАЯ по
+    # заданиям калькуляции (решение заказчика 26.08.2026). В заявке лежит
+    # себестоимость того задания, по которому строку сохранили последней; при
+    # нескольких заданиях это случайная величина, а разброс доходит до +211 %.
+    # Подменяем один раз здесь, чтобы DWH, локальный аудит и история цен несли
+    # одно и то же значение.
+    try:
+        max_cost = await get_max_calc_cost([
+            (
+                (rec.get("Модель") or "").strip(),
+                (rec.get("Артикул") or "").strip(),
+                (rec.get("Признак калькуляции") or "").strip(),
+                (rec.get("PLAN_ID") or "").strip(),
+            )
+            for rec in records
+        ])
+        for rec in records:
+            key = (
+                (rec.get("Модель") or "").strip(),
+                (rec.get("Артикул") or "").strip(),
+                (rec.get("Признак калькуляции") or "").strip(),
+                (rec.get("PLAN_ID") or "").strip(),
+            )
+            mx = max_cost.get(key)
+            if not mx:
+                continue
+            # Заменяем только вверх: если в заявке почему-то оказалась цифра
+            # больше расчётной (правка версии, ещё не попавшая в кэш), не
+            # занижаем её.
+            cur_rub = float(rec.get("Себестоимость, руб.") or 0)
+            if mx["rub"] > cur_rub:
+                rec["Себестоимость, руб."] = mx["rub"]
+                rec["Себестоимость, USD."] = mx["usd"]
+    except Exception as exc:
+        # Не смогли посчитать максимум — пишем то, что в заявке. Утверждение цен
+        # из-за этого валить нельзя, но в логах должно быть видно.
+        print(f"[cost] максимум себестоимости не посчитан: {exc!r}", flush=True)
 
     # Какие из этих калькуляций устанавливаются повторно, после переоткрытия
     # админом (миграция 0039). Нужно ровно для пометки is_correction в истории:

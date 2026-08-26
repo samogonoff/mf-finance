@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import commercial, mocks
-from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap)
+from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -1641,6 +1641,44 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
 
     count = await apply_pending_changes(ids, reviewed_by)
     result = {"success": True, "applied": count}
+
+    # Себестоимость для прейскуранта — та же максимальная по заданиям, что уходит
+    # в DWH (см. get_max_calc_cost). Фронт присылает в proc_payload значение
+    # конкретной строки таблицы, то есть одного задания; без подмены прейскурант
+    # и DWH расходились бы между собой.
+    if proc_payload and not _is_mock():
+        try:
+            max_cost = await get_max_calc_cost([
+                (
+                    str(it.get("model", "") or "").strip(),
+                    str(it.get("articul", "") or "").strip(),
+                    str(it.get("calc_sign", "") or "").strip(),
+                    str(it.get("plan_id", "") or "").strip(),
+                )
+                for it in proc_payload
+            ])
+            for it in proc_payload:
+                key = (
+                    str(it.get("model", "") or "").strip(),
+                    str(it.get("articul", "") or "").strip(),
+                    str(it.get("calc_sign", "") or "").strip(),
+                    str(it.get("plan_id", "") or "").strip(),
+                )
+                mx = max_cost.get(key)
+                if not mx:
+                    continue
+                try:
+                    cur = float(it.get("cost_rub") or it.get("Себестоимость, руб.") or 0)
+                except (TypeError, ValueError):
+                    cur = 0.0
+                if mx["rub"] > cur:
+                    it["cost_rub"] = mx["rub"]
+        except Exception:
+            print(
+                "[cost] максимум себестоимости для прейскуранта не посчитан:\n"
+                f"{traceback.format_exc()}",
+                flush=True,
+            )
 
     if proc_payload:
         import json as _json
