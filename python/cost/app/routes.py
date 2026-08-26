@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 import traceback
+import json
 from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
@@ -11,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import commercial, mocks
-from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_reopened_keys, reopen_dwh_calculation, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap)
+from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -2366,6 +2367,38 @@ async def calc_stage_prices_endpoint(request: Request) -> dict:
     )
     return {"stages": stages, "count": sum(len(s["rows"]) for s in stages)}
 
+
+# ── Настройки таблицы на пользователя (миграция 0041) ────────────────────────
+#
+# Своими настройками распоряжается сам пользователь, поэтому право — cost:view,
+# то же, что на просмотр раздела. Email берём из заголовка X-Cost-User, а не из
+# тела запроса: иначе один пользователь мог бы перезаписать настройки другого.
+
+# Потолок на документ настроек. 41 колонка с видимостью, порядком и шириной
+# укладывается в ~4 КБ; 64 КБ дают запас на будущие настройки и одновременно
+# не позволяют использовать таблицу как хранилище чего попало.
+TABLE_PREFS_MAX_BYTES = 64 * 1024
+
+
+@router.get("/table-prefs")
+async def get_table_prefs(user_email: str = Depends(_require_perm("cost:view"))) -> dict:
+    if _is_mock():
+        return {"prefs": {}, "mock": True}
+    return {"prefs": await get_user_table_prefs(user_email or "")}
+
+
+@router.put("/table-prefs")
+async def put_table_prefs(payload: dict, user_email: str = Depends(_require_perm("cost:view"))) -> dict:
+    prefs = payload.get("prefs")
+    if not isinstance(prefs, dict):
+        raise HTTPException(400, "prefs должен быть объектом")
+    size = len(json.dumps(prefs, ensure_ascii=False).encode())
+    if size > TABLE_PREFS_MAX_BYTES:
+        raise HTTPException(413, f"Настройки слишком большие: {size} Б > {TABLE_PREFS_MAX_BYTES} Б")
+    if _is_mock():
+        return {"success": True, "mock": True}
+    await save_user_table_prefs(user_email or "", prefs)
+    return {"success": True, "bytes": size}
 
 @router.get("/plan-materials")
 async def plan_materials_endpoint(request: Request, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:

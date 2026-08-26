@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import os
 
 import asyncpg
@@ -3021,6 +3022,45 @@ async def delete_dwh_record(model, articul, calc_sign, plan_id) -> dict:
 
     return {"audit_deleted": audit_deleted, "olap_deleted": olap_deleted}
 
+
+# ── Настройки таблицы на пользователя (миграция 0041) ────────────────────────
+#
+# Видимость, порядок и ширины колонок главной таблицы. Раньше жили только в
+# localStorage и терялись при входе с другого компьютера или в другом браузере —
+# пожелания № 9 и № 14 из «Списка доработок». Документ храним как есть (JSONB):
+# состав настроек меняется вместе с интерфейсом, и каждая новая настройка не
+# должна требовать миграции.
+
+
+async def get_user_table_prefs(email: str) -> dict:
+    """Настройки таблицы пользователя. Нет записи — пустой документ."""
+    key = (email or "").strip()
+    if not key:
+        return {}
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT prefs FROM cost_user_table_prefs WHERE email = $1", key,
+        )
+    if row is None or row["prefs"] is None:
+        return {}
+    raw = row["prefs"]
+    # asyncpg отдаёт jsonb строкой — как в app/roles.py с permissions.
+    return json.loads(raw) if isinstance(raw, str) else dict(raw)
+
+
+async def save_user_table_prefs(email: str, prefs: dict) -> None:
+    """Перезаписать настройки целиком: фронт присылает полный документ."""
+    key = (email or "").strip()
+    if not key:
+        raise ValueError("email обязателен")
+    async with acquire() as conn:
+        await conn.execute(
+            """INSERT INTO cost_user_table_prefs (email, prefs, updated_at)
+               VALUES ($1, $2::jsonb, now())
+               ON CONFLICT (email) DO UPDATE
+                   SET prefs = EXCLUDED.prefs, updated_at = now()""",
+            key, json.dumps(prefs, ensure_ascii=False),
+        )
 
 # ── Наборы цен на материалы для плана (миграция 0033) ─────────────────────────
 #
