@@ -54,6 +54,30 @@ def pool() -> asyncpg.Pool:
         raise RuntimeError("DB pool is not initialised")
     return _pool
 
+# Сколько ждать свободное соединение в пуле, прежде чем сдаться. Пул небольшой
+# (max_size=8), а `/aggregated` на широких выборках держит соединение долго —
+# при нескольких одновременных пользователях лёгкая операция вроде сохранения
+# набора цен вставала в очередь и висела БЕЗ таймаута. Снаружи это выглядело
+# так: пользователь жмёт «Создать набор», nginx через свои 60 с рвёт соединение,
+# а в интерфейсе ничего не происходит — «кнопка не нажимается» (жалоба
+# 26.08.2026; со второй попытки набор создался). Лучше честно ответить «занято,
+# повторите» через несколько секунд, чем оборвать запрос молча.
+POOL_ACQUIRE_TIMEOUT = float(os.environ.get("COST_POOL_ACQUIRE_TIMEOUT", "15"))
+
+
+def acquire(timeout: float | None = None):
+    """Соединение из пула с ограниченным ожиданием.
+
+    Использовать в операциях, ответ на которые ждёт человек в интерфейсе и
+    работа в которых лёгкая (сохранение цен, согласование, наборы цен). Для
+    заведомо долгих задач — обновление кэша, бэкфилл — берите
+    `pool().acquire()` напрямую: там ожидание оправдано.
+
+    При исчерпании ожидания asyncpg поднимает `asyncio.TimeoutError`; в
+    HTTP-слое он превращается в 503 с внятным текстом (см. app/main.py).
+    """
+    return pool().acquire(timeout=POOL_ACQUIRE_TIMEOUT if timeout is None else timeout)
+
 
 # ── MSSQL / OLAP (pyodbc) ────────────────────────────────────────────────────
 
@@ -1091,7 +1115,7 @@ async def upsert_pending_change(row_data: dict, username: str) -> int:
     Уникальный ключ: (Модель, Артикул, PLAN_ID, Признак калькуляции).
     При повторном сохранении — обновляются все поля.
     """
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         # Извлекаем значения из row_data для всех _PENDING_CACHE_COLS
         values = [row_data.get(c) for c in _PENDING_CACHE_COLS]
         # Добавляем служебные поля: id (serial, not needed), username, comment, timestamp (default now)
@@ -1128,7 +1152,7 @@ async def upsert_pending_change(row_data: dict, username: str) -> int:
 async def upsert_pending_changes_batch(changes: list[dict], username: str) -> list[int]:
     """Upsert нескольких строк в cost_price_pending. Возвращает список id."""
     ids: list[int] = []
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         for c in changes:
             values = [c.get(col) for col in _PENDING_CACHE_COLS]
             comment = c.get("Комментарий") or ""
@@ -2444,7 +2468,7 @@ async def reset_price_fields(
         d = datetime.datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
     else:
         d = raw_date
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         async with conn.transaction():
             # Задания берём из кэша — по ним главная таблица джойнит
             # согласования. pending может быть пуст (возврат уже записанной в
@@ -2565,7 +2589,7 @@ def _norm_task(value) -> str:
 
 
 async def save_approval(model, articul, calc_sign, plan_id, status, approved_by, comment=None, task_number=None) -> dict:
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
                 """
@@ -2620,7 +2644,7 @@ async def save_approvals_batch(approvals: list[dict]) -> list[dict]:
     approved_bys = [a.get("approved_by") for a in items]
     comments = [a.get("comment") for a in items]
 
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         async with conn.transaction():
             rows = await conn.fetch(
                 """
@@ -2656,7 +2680,7 @@ async def revoke_approvals_batch(items: list[dict]) -> int:
         deduped[_approval_key(it)] = it
     uniq = list(deduped.values())
 
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         async with conn.transaction():
             result = await conn.execute(
                 """
@@ -2681,7 +2705,7 @@ async def revoke_approvals_batch(items: list[dict]) -> int:
 
 
 async def revoke_approval(model, articul, calc_sign, plan_id, task_number=None) -> None:
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         await conn.execute(
             "DELETE FROM cost_calc_approvals WHERE model=$1 AND articul=$2 AND calc_sign IS NOT DISTINCT FROM $3 AND plan_id IS NOT DISTINCT FROM $4 AND task_number IS NOT DISTINCT FROM $5",
             model, articul, calc_sign, plan_id, _norm_task(task_number),
@@ -2777,7 +2801,7 @@ async def get_reopened_keys(
     if not keys:
         return set()
     uniq = list({_reopen_key(*k) for k in keys})
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT r.model, r.articul, r.calc_sign, r.plan_id
@@ -2810,7 +2834,7 @@ async def reopen_dwh_calculation(
 ) -> dict:
     """Разрешить повторную правку калькуляции, уже записанной в DWH."""
     m, a, cs, pi = _reopen_key(model, articul, calc_sign, plan_id)
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         # Прежние разрешения по этому ключу отзываем: активным должно быть одно,
         # иначе в журнале не понять, по какой причине строка открыта сейчас.
         await conn.execute(
@@ -2851,7 +2875,7 @@ async def reopen_dwh_calculation(
 async def revoke_dwh_reopen(model, articul, calc_sign, plan_id, revoked_by: str) -> int:
     """Отозвать переоткрытие досрочно, не дожидаясь повторной установки цен."""
     m, a, cs, pi = _reopen_key(model, articul, calc_sign, plan_id)
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         result = await conn.execute(
             """UPDATE cost_dwh_reopen
                SET revoked_at = now(), revoked_by = $5
@@ -2865,7 +2889,7 @@ async def revoke_dwh_reopen(model, articul, calc_sign, plan_id, revoked_by: str)
 
 async def list_dwh_reopens(limit: int = 200) -> list[dict]:
     """Журнал переоткрытий — кто, когда, зачем и действует ли ещё."""
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT r.*,
@@ -2901,7 +2925,7 @@ async def get_price_history(
             conds.append(f"{col} = ${len(params)}")
     where = (" WHERE " + " AND ".join(conds)) if conds else ""
     params.append(limit)
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         rows = await conn.fetch(
             f"SELECT * FROM cost_price_history{where} "
             f"ORDER BY approved_at DESC, id DESC LIMIT ${len(params)}",
@@ -3262,7 +3286,7 @@ async def list_plan_price_sets(plan_id: str | None = None) -> list[dict]:
     plan = (plan_id or "").strip()
     where = "WHERE s.plan_id = $1" if plan else ""
     params = [plan] if plan else []
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         rows = await conn.fetch(
             f"""SELECT s.id, s.plan_id, s.title, s.status, s.rate, s.comment,
                        s.created_by, s.created_at::text, s.updated_at::text,
@@ -3278,7 +3302,7 @@ async def list_plan_price_sets(plan_id: str | None = None) -> list[dict]:
 
 
 async def get_plan_price_set(set_id: int) -> dict | None:
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         s = await conn.fetchrow(
             """SELECT id, plan_id, title, status, rate, comment, created_by,
                       created_at::text, updated_at::text, applied_by, applied_at::text
@@ -3310,7 +3334,7 @@ async def save_plan_price_set(
     plan = (plan_id or "").strip()
     if not plan:
         raise ValueError("plan_id обязателен")
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         async with conn.transaction():
             if set_id is None:
                 set_id = await conn.fetchval(
@@ -3365,7 +3389,7 @@ async def save_plan_price_set(
 async def delete_plan_price_set(set_id: int) -> None:
     """Удаляет набор. Применённый — только после снятия, иначе его цены остались
     бы в кэше без какого-либо следа происхождения."""
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         status = await conn.fetchval(
             "SELECT status FROM cost_plan_price_sets WHERE id = $1", set_id
         )
@@ -3580,7 +3604,7 @@ async def apply_plan_price_set(set_id: int, username: str) -> dict:
     остаться помеченным applied при неудачной перестройке. Чтение из MSSQL идёт
     до транзакции, чтобы не держать её открытой на время сетевого запроса.
     """
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         row = await conn.fetchrow(
             "SELECT plan_id, status FROM cost_plan_price_sets WHERE id = $1", set_id
         )
@@ -3588,7 +3612,7 @@ async def apply_plan_price_set(set_id: int, username: str) -> dict:
         raise ValueError("набор не найден")
     plan = (row["plan_id"] or "").strip()
     cols, records = await _fetch_plan_source_records(plan)
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 """UPDATE cost_plan_price_sets SET status = 'archived'
@@ -3608,7 +3632,7 @@ async def unapply_plan_price_set(set_id: int) -> dict:
     """Исключает набор из расчёта: статус возвращается в draft, а строки плана
     перезаливаются из источника (вернуть среднюю цену недостаточно — внутри
     группы цены могли различаться). Тоже одной транзакцией, см. apply."""
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         row = await conn.fetchrow(
             "SELECT plan_id, status FROM cost_plan_price_sets WHERE id = $1", set_id
         )
@@ -3618,7 +3642,7 @@ async def unapply_plan_price_set(set_id: int) -> dict:
         raise ValueError("набор не применён")
     plan = (row["plan_id"] or "").strip()
     cols, records = await _fetch_plan_source_records(plan)
-    async with pool().acquire() as conn:
+    async with acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 """UPDATE cost_plan_price_sets
