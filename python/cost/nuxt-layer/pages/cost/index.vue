@@ -82,20 +82,18 @@
           </label>
 
           <label class="filter-checkbox"
-                 :class="{ 'is-forced': hideDwhSentForced }"
-                 :title="hideDwhSentForced
-                   ? 'Для роли Калькулятор и ПЭО фильтр включён постоянно: в отправленных в DWH калькуляциях править и согласовывать нечего'
+                 :title="hideDwhSentDefault
+                   ? 'Для роли Калькулятор и ПЭО включён по умолчанию: в отправленных в DWH калькуляциях править и согласовывать нечего. Снять можно'
                    : 'Скрыть калькуляции, уже отправленные в DWH (📤)'">
             <input
               type="checkbox"
               :checked="hideDwhSent"
-              :disabled="hideDwhSentForced"
-              @change="hideDwhSentManual = ($event.target as HTMLInputElement).checked"
+              @change="setHideDwhSent(($event.target as HTMLInputElement).checked)"
             />
             <span>
               Скрыть отправленные в DWH
               <template v-if="dwhSentHiddenCount"> ({{ dwhSentHiddenCount }})</template>
-              <template v-if="hideDwhSentForced"> · для вашей роли всегда</template>
+              <template v-if="hideDwhSentDefault && hideDwhSent"> · по умолчанию для вашей роли</template>
             </span>
           </label>
 
@@ -2127,19 +2125,42 @@ watch(roles, (list) => {
 /** Скрыть калькуляции, уже отправленные в DWH (значок 📤, флаг `_has_audit`).
  *
  * Калькулятору и ПЭО такие строки в работе только мешают: править в них нечего
- * (строка заблокирована) и статус ПЭО уже не поставить — поэтому у этих ролей
- * фильтр включён постоянно и не отключается. Остальным даём обычный переключатель,
- * по умолчанию выключенный, чтобы картина базы не менялась у них незаметно.
+ * и статус ПЭО уже не поставить, — поэтому у этих ролей фильтр включён ПО
+ * УМОЛЧАНИЮ. Но снять его можно: сначала он был жёстко зафиксирован и чекбокс
+ * стоял `disabled`, и это оказалось лишним — иногда нужно посмотреть и
+ * отправленное (замечание заказчика 26.08.2026). Остальным ролям фильтр по
+ * умолчанию выключен, чтобы картина базы не менялась у них незаметно.
+ *
+ * Выбор пользователя запоминается и перекрывает роль: `null` означает «человек
+ * ещё не трогал переключатель, действует значение по роли».
  *
  * Роль, как и у дефолта бренд-менеджера, определяем по имени системной роли:
  * права админ может переназначить, а имя не меняют. */
 const DWH_HIDDEN_ROLES = ['Калькулятор', 'ПЭО'];
+const HIDE_DWH_STORAGE_KEY = 'cost_hide_dwh_sent';
 
-const hideDwhSentForced = computed(() =>
+/** Значение по умолчанию для текущей роли. */
+const hideDwhSentDefault = computed(() =>
   (roles.value || []).some((r: any) => DWH_HIDDEN_ROLES.includes(String(r?.role_name || '').trim()))
 );
-const hideDwhSentManual = ref(false);
-const hideDwhSent = computed(() => hideDwhSentForced.value || hideDwhSentManual.value);
+
+const hideDwhSentManual = ref<boolean | null>(null);
+onMounted(() => {
+  try {
+    const stored = localStorage.getItem(HIDE_DWH_STORAGE_KEY);
+    if (stored === '1') hideDwhSentManual.value = true;
+    else if (stored === '0') hideDwhSentManual.value = false;
+  } catch { /* приватный режим — остаётся значение по роли */ }
+});
+
+const hideDwhSent = computed(() =>
+  hideDwhSentManual.value === null ? hideDwhSentDefault.value : hideDwhSentManual.value
+);
+
+function setHideDwhSent(checked: boolean) {
+  hideDwhSentManual.value = checked;
+  try { localStorage.setItem(HIDE_DWH_STORAGE_KEY, checked ? '1' : '0'); } catch { /* ignore */ }
+}
 
 /** Сколько строк текущей выборки скрыто фильтром — иначе «пропажа» строк выглядит
  * как потеря данных. */
@@ -6760,8 +6781,6 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 }
 /* Фильтр, включённый ролью: видно, что он не выключается, но выглядит не
    «сломанным», а обязательным. */
-.filter-checkbox.is-forced { cursor: default; color: var(--text-muted); }
-.filter-checkbox.is-forced input[type="checkbox"] { cursor: default; }
 .peo-filter-label {
   display: inline-flex;
   align-items: center;
