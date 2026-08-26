@@ -147,6 +147,46 @@ async def pool_timeout_handler(request: Request, exc: asyncio.TimeoutError) -> J
         status_code=503,
         content={"detail": "Сервис занят: не удалось получить соединение к базе. "
                            "Повторите попытку через несколько секунд."},
+        # См. пояснение про CORS в unhandled_error_handler: обработчики исключений
+        # живут вне CORSMiddleware, заголовок нужен явно.
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Любая необработанная ошибка — ответом, а не обрывом.
+
+    Зачем это нужно именно здесь. Раздел на проде живёт на другом домене, чем
+    фронт (finance.markformelle.ru → api-finance.markformelle.ru), то есть все
+    запросы кросс-доменные. Необработанное исключение FastAPI отдаёт через
+    ServerErrorMiddleware — в обход CORSMiddleware, поэтому в ответе НЕ появляется
+    Access-Control-Allow-Origin. Браузер такой ответ не показывает вовсе: в
+    консоли видно только «<no response> Failed to fetch», а статус и текст
+    скрыты. Ровно это пользователь и видел, пытаясь сохранить набор цен по плану
+    9346 (26.08.2026): причина отказа была недоступна ни ему, ни нам.
+
+    Обработчик возвращает JSONResponse с CORS-заголовком, выставленным вручную
+    (почему именно так — см. комментарий у самого return): в интерфейсе появляется
+    человеческий текст, а request_id связывает жалобу с записью в логе и в ELK.
+    Сам traceback пишем в лог — молча глотать его нельзя.
+    """
+    rid = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    logging.getLogger("cost").error(
+        "unhandled error: %s", exc,
+        exc_info=exc,
+        extra={"request_id": rid, "route": f"{request.method} {request.url.path}",
+               "user": request.headers.get("X-Cost-User") or None},
+    )
+    # CORS-заголовок ставим РУКАМИ. FastAPI регистрирует обработчик Exception в
+    # самом внешнем ServerErrorMiddleware — то есть ответ не проходит через
+    # CORSMiddleware и без этой строки уходит без Access-Control-Allow-Origin.
+    # Проверено: тогда браузер снова показывает «Failed to fetch» вместо текста.
+    # Значение совпадает с настройкой CORSMiddleware выше (allow_origins=["*"]).
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Внутренняя ошибка сервиса. Код обращения: {rid}"},
+        headers={"X-Request-Id": rid, "Access-Control-Allow-Origin": "*"},
     )
 
 
