@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import close_pool, get_cache_status, init_pool, load_cost_data_to_cache
@@ -121,6 +122,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(asyncio.TimeoutError)
+async def pool_timeout_handler(request: Request, exc: asyncio.TimeoutError) -> JSONResponse:
+    """Не дождались свободного соединения к БД — отвечаем внятно.
+
+    Пул небольшой, а тяжёлые выборки держат соединения долго. Раньше лёгкая
+    операция вроде сохранения набора цен просто вставала в очередь без таймаута:
+    nginx обрывал запрос по своим 60 с, интерфейс молчал, и для пользователя это
+    выглядело как «кнопка не нажимается» (жалоба 26.08.2026). Теперь клиент
+    получает 503 с текстом, который можно показать человеку, и понятную запись в
+    логе — по ней видно, что упёрлись в пул, а не в саму операцию.
+
+    Ограничение ожидания ставится в `db.acquire()`; сюда прилетает только то, что
+    оттуда не дождалось.
+    """
+    logging.getLogger("cost").warning(
+        "pool acquire timeout",
+        extra={"route": f"{request.method} {request.url.path}",
+               "user": request.headers.get("X-Cost-User") or None},
+    )
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Сервис занят: не удалось получить соединение к базе. "
+                           "Повторите попытку через несколько секунд."},
+    )
 
 
 @app.middleware("http")

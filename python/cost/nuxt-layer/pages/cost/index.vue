@@ -82,20 +82,18 @@
           </label>
 
           <label class="filter-checkbox"
-                 :class="{ 'is-forced': hideDwhSentForced }"
-                 :title="hideDwhSentForced
-                   ? 'Для роли Калькулятор и ПЭО фильтр включён постоянно: в отправленных в DWH калькуляциях править и согласовывать нечего'
+                 :title="hideDwhSentDefault
+                   ? 'Для роли Калькулятор и ПЭО включён по умолчанию: в отправленных в DWH калькуляциях править и согласовывать нечего. Снять можно'
                    : 'Скрыть калькуляции, уже отправленные в DWH (📤)'">
             <input
               type="checkbox"
               :checked="hideDwhSent"
-              :disabled="hideDwhSentForced"
-              @change="hideDwhSentManual = ($event.target as HTMLInputElement).checked"
+              @change="setHideDwhSent(($event.target as HTMLInputElement).checked)"
             />
             <span>
               Скрыть отправленные в DWH
               <template v-if="dwhSentHiddenCount"> ({{ dwhSentHiddenCount }})</template>
-              <template v-if="hideDwhSentForced"> · для вашей роли всегда</template>
+              <template v-if="hideDwhSentDefault && hideDwhSent"> · по умолчанию для вашей роли</template>
             </span>
           </label>
 
@@ -937,6 +935,14 @@
             <span v-if="planPricesStatus" style="font-size:var(--fs-xs);color:var(--text-muted)">{{ planPricesStatus }}</span>
           </div>
 
+          <!-- Ошибка операций показывается ЗДЕСЬ, внутри модалки: баннер
+               страницы она перекрывает, и раньше отказ выглядел как
+               «кнопка не нажимается». -->
+          <div v-if="planPricesError" class="plan-prices-error">
+            <span>{{ planPricesError }}</span>
+            <button class="cost-error-x" aria-label="Закрыть" @click="planPricesError = ''">×</button>
+          </div>
+
           <div v-if="planPricesLoading" class="muted" style="text-align:center;padding:24px">Загрузка…</div>
 
           <template v-else-if="planPricesLoaded">
@@ -1004,8 +1010,11 @@
               <button class="btn btn-primary btn-sm" :disabled="planPricesSaving || planPriceFormLocked"
                       :title="`В набор уйдут только строки с ценой, отличной от источника: ${planPriceOverriddenCount}`"
                       @click="savePlanPriceSet">
-                {{ planPriceForm.set_id ? 'Сохранить набор' : 'Создать набор' }}
-                <template v-if="planPriceOverriddenCount"> ({{ planPriceOverriddenCount }})</template>
+                <template v-if="planPricesSaving">Сохранение…</template>
+                <template v-else>
+                  {{ planPriceForm.set_id ? 'Сохранить набор' : 'Создать набор' }}
+                  <template v-if="planPriceOverriddenCount"> ({{ planPriceOverriddenCount }})</template>
+                </template>
               </button>
               <button v-if="planPriceForm.set_id" class="btn btn-ghost btn-sm"
                       :disabled="planPricesSaving" @click="resetPlanPriceForm">Новый набор</button>
@@ -2127,19 +2136,42 @@ watch(roles, (list) => {
 /** Скрыть калькуляции, уже отправленные в DWH (значок 📤, флаг `_has_audit`).
  *
  * Калькулятору и ПЭО такие строки в работе только мешают: править в них нечего
- * (строка заблокирована) и статус ПЭО уже не поставить — поэтому у этих ролей
- * фильтр включён постоянно и не отключается. Остальным даём обычный переключатель,
- * по умолчанию выключенный, чтобы картина базы не менялась у них незаметно.
+ * и статус ПЭО уже не поставить, — поэтому у этих ролей фильтр включён ПО
+ * УМОЛЧАНИЮ. Но снять его можно: сначала он был жёстко зафиксирован и чекбокс
+ * стоял `disabled`, и это оказалось лишним — иногда нужно посмотреть и
+ * отправленное (замечание заказчика 26.08.2026). Остальным ролям фильтр по
+ * умолчанию выключен, чтобы картина базы не менялась у них незаметно.
+ *
+ * Выбор пользователя запоминается и перекрывает роль: `null` означает «человек
+ * ещё не трогал переключатель, действует значение по роли».
  *
  * Роль, как и у дефолта бренд-менеджера, определяем по имени системной роли:
  * права админ может переназначить, а имя не меняют. */
 const DWH_HIDDEN_ROLES = ['Калькулятор', 'ПЭО'];
+const HIDE_DWH_STORAGE_KEY = 'cost_hide_dwh_sent';
 
-const hideDwhSentForced = computed(() =>
+/** Значение по умолчанию для текущей роли. */
+const hideDwhSentDefault = computed(() =>
   (roles.value || []).some((r: any) => DWH_HIDDEN_ROLES.includes(String(r?.role_name || '').trim()))
 );
-const hideDwhSentManual = ref(false);
-const hideDwhSent = computed(() => hideDwhSentForced.value || hideDwhSentManual.value);
+
+const hideDwhSentManual = ref<boolean | null>(null);
+onMounted(() => {
+  try {
+    const stored = localStorage.getItem(HIDE_DWH_STORAGE_KEY);
+    if (stored === '1') hideDwhSentManual.value = true;
+    else if (stored === '0') hideDwhSentManual.value = false;
+  } catch { /* приватный режим — остаётся значение по роли */ }
+});
+
+const hideDwhSent = computed(() =>
+  hideDwhSentManual.value === null ? hideDwhSentDefault.value : hideDwhSentManual.value
+);
+
+function setHideDwhSent(checked: boolean) {
+  hideDwhSentManual.value = checked;
+  try { localStorage.setItem(HIDE_DWH_STORAGE_KEY, checked ? '1' : '0'); } catch { /* ignore */ }
+}
 
 /** Сколько строк текущей выборки скрыто фильтром — иначе «пропажа» строк выглядит
  * как потеря данных. */
@@ -2588,6 +2620,14 @@ const planPricesLoading = ref(false);
 const planPricesSaving = ref(false);
 const planPricesLoaded = ref(false);
 const planPricesStatus = ref('');
+
+/** Ошибка операций модалки цен по плану — показывается ВНУТРИ модалки.
+ *
+ * Раньше всё писалось в `lastError`, чей баннер отрисован на странице и
+ * перекрыт модалкой: любой отказ (403, 503, обрыв запроса) выглядел как
+ * «нажал — ничего не произошло». Именно так пришла жалоба 26.08.2026 про
+ * кнопку «Создать набор». */
+const planPricesError = ref('');
 const planPriceSets = ref<PlanPriceSet[]>([]);
 const planPriceRows = ref<PlanPriceRow[]>([]);
 /** Декоры набора. Отдельным списком, потому что ключ у них другой
@@ -2662,7 +2702,7 @@ async function loadPlanPrices() {
       : 'Ни один набор не применён — действуют исходные данные';
   } catch (e: any) {
     console.error('[cost] load plan prices failed', e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    planPricesError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     planPricesLoading.value = false;
   }
@@ -2722,7 +2762,7 @@ async function openPlanPriceSet(setId: number) {
     planPricesStatus.value = `Открыт набор «${data.set.title || data.set.id}» (${data.set.status})`;
   } catch (e: any) {
     console.error('[cost] open plan price set failed', e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    planPricesError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     planPricesLoading.value = false;
   }
@@ -2823,7 +2863,13 @@ function onPlanRateChange(raw?: string) {
 
 async function savePlanPriceSet() {
   const plan = planPricesPlanId.value.trim();
-  if (!plan) return;
+  // Раньше здесь стоял молчаливый return: без номера плана кнопка «работала»,
+  // но ничего не делала и ничего не говорила.
+  if (!plan) {
+    planPricesError.value = 'Укажите номер плана и нажмите «Показать»';
+    return;
+  }
+  planPricesError.value = '';
   planPricesSaving.value = true;
   try {
     const resp = await $fetch<{ set_id: number }>(`${apiBase.value}/api/cost/plan-price-sets`, {
@@ -2873,7 +2919,7 @@ async function savePlanPriceSet() {
     await reloadPlanPriceSets();
   } catch (e: any) {
     console.error('[cost] save plan price set failed', e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    planPricesError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     planPricesSaving.value = false;
   }
@@ -2902,7 +2948,7 @@ async function applyPlanPriceSet(setId: number) {
     await loadData();
   } catch (e: any) {
     console.error('[cost] apply plan price set failed', e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    planPricesError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     planPricesSaving.value = false;
   }
@@ -2920,7 +2966,7 @@ async function unapplyPlanPriceSet(setId: number) {
     await loadData();
   } catch (e: any) {
     console.error('[cost] unapply plan price set failed', e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    planPricesError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     planPricesSaving.value = false;
   }
@@ -2938,7 +2984,7 @@ async function deletePlanPriceSet(setId: number) {
     await reloadPlanPriceSets();
   } catch (e: any) {
     console.error('[cost] delete plan price set failed', e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    planPricesError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     planPricesSaving.value = false;
   }
@@ -6760,8 +6806,6 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 }
 /* Фильтр, включённый ролью: видно, что он не выключается, но выглядит не
    «сломанным», а обязательным. */
-.filter-checkbox.is-forced { cursor: default; color: var(--text-muted); }
-.filter-checkbox.is-forced input[type="checkbox"] { cursor: default; }
 .peo-filter-label {
   display: inline-flex;
   align-items: center;
@@ -6943,6 +6987,21 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .plan-set-badge { color: var(--accent); font-weight: var(--fw-semibold, 600); font-size: var(--fs-xs); white-space: nowrap; }
 /* Грид материалов набора. Фиксированная раскладка: ширины задаёт colgroup,
    иначе длинные наименования съедают место у колонок с ценами. */
+/* Ошибка операций модалки цен по плану — заметная, но не модальная поверх
+   модалки: пользователь должен увидеть причину, не теряя введённые цены. */
+.plan-prices-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  padding: 8px 10px;
+  border: 1px solid var(--neg, #dc2626);
+  border-radius: var(--radius-sm, 4px);
+  background: color-mix(in srgb, var(--neg, #dc2626) 8%, transparent);
+  color: var(--neg, #dc2626);
+  font-size: var(--fs-xs);
+}
+.plan-prices-error .cost-error-x { margin-left: auto; }
 .plan-prices-table { width: 100%; table-layout: fixed; }
 /* Текстовые колонки переносятся по словам вместо растягивания в одну строку
    (общий стиль .data-table td ставит nowrap). Полный текст — в title. */
