@@ -1201,15 +1201,22 @@
             <div v-if="approvalFilterBusy" class="af-busy">Обновление…</div>
           </div>
 
+          <!-- Ошибка живёт вне цепочки состояний: её нужно видеть и во время
+               загрузки, и поверх таблицы, не подменяя содержимое окна. -->
+          <div v-if="approvalError" class="plan-prices-error" style="margin:var(--sp-3) var(--sp-4) 0">
+            <span>{{ approvalError }}</span>
+            <button class="cost-error-x" aria-label="Закрыть" @click="approvalError = ''">×</button>
+          </div>
+
           <div v-if="approvalLoading" class="muted" style="text-align:center;padding:24px">Загрузка…</div>
-          <div v-else-if="!approvalPendingChanges.length" class="muted" style="text-align:center;padding:24px">
+          <div v-else-if="!approvalVisibleChanges.length" class="muted" style="text-align:center;padding:24px">
             Нет ожидающих согласования изменений
           </div>
           <div class="approval-table-scroll" v-else>
             <table class="data-table compact approval-table">
               <thead>
                 <tr>
-                  <th><input type="checkbox" :checked="selectedPendingIds.length === approvalPendingChanges.length && approvalPendingChanges.length > 0" @change="toggleSelectAllPending" /></th>
+                  <th><input type="checkbox" :checked="selectedPendingIds.length === approvalVisibleChanges.length && approvalVisibleChanges.length > 0" @change="toggleSelectAllPending" /></th>
                   <th>Модель</th>
                   <th>Артикул</th>
                   <th>План</th>
@@ -1231,7 +1238,7 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="pc in approvalPendingChanges" :key="pc.id" :class="modalApprovalRowClass(pc)">
+                <tr v-for="pc in approvalVisibleChanges" :key="pc.id" :class="modalApprovalRowClass(pc)">
                   <td><input type="checkbox" :value="pc.id" v-model="selectedPendingIds" /></td>
                   <td>{{ pc['Модель'] || pc.model || '—' }}</td>
                   <td>{{ pc['Артикул'] || pc.articul || '—' }}</td>
@@ -1258,7 +1265,11 @@
         </div>
         <div class="approval-modal-footer">
           <span style="font-size:var(--fs-xs);color:var(--text-muted)">
-            Выбрано: {{ selectedPendingIds.length }} / {{ approvalPendingChanges.length }}
+            Выбрано: {{ selectedPendingIds.length }} / {{ approvalVisibleChanges.length }}
+            <label v-if="approvalReturnedCount" style="margin-left:var(--sp-3);cursor:pointer">
+              <input type="checkbox" v-model="approvalShowReturned" />
+              показать возвращённые на корректировку ({{ approvalReturnedCount }})
+            </label>
           </span>
           <div style="display:flex;gap:var(--sp-3)">
             <button class="btn btn-ghost btn-sm" @click="showApprovalModal = false">Закрыть</button>
@@ -5715,6 +5726,34 @@ watch(currentPage, () => {
 
 const showApprovalModal = ref(false);
 const approvalPendingChanges = ref<any[]>([]);
+
+/** Ошибка операций окна согласования — показывается ВНУТРИ окна.
+ *
+ * Раньше всё шло в lastError, чей баннер отрисован на странице и модалкой
+ * перекрыт: отказ выглядел как «нажимаем кнопку, а ничего не происходит». */
+const approvalError = ref('');
+
+/** Показывать ли в окне заявки, уже возвращённые на корректировку.
+ *
+ * Возврат с 25.08.2026 НЕ удаляет заявку — иначе терялась введённая цена. Но
+ * такая заявка ждёт правки бренд-менеджера, а не решения ПЭО, поэтому в окне
+ * согласования она по умолчанию скрыта: пользователь нажимал «Отклонить
+ * выбранные», а строки оставались на месте, и это читалось как «кнопка не
+ * работает» (жалоба 26.08.2026). Переключатель оставлен, чтобы можно было
+ * увидеть, что именно уже отправлено на корректировку. */
+const approvalShowReturned = ref(false);
+
+/** Заявки, которые реально ждут решения ПЭО. */
+const approvalVisibleChanges = computed(() =>
+  approvalShowReturned.value
+    ? approvalPendingChanges.value
+    : approvalPendingChanges.value.filter((pc: any) => pc.peo_status !== 'returned')
+);
+
+/** Сколько заявок скрыто как возвращённые — иначе «пропажа» строк выглядит как потеря. */
+const approvalReturnedCount = computed(() =>
+  approvalPendingChanges.value.filter((pc: any) => pc.peo_status === 'returned').length
+);
 const selectedPendingIds = ref<number[]>([]);
 const approvalLoading = ref(false);
 const approvalApplying = ref(false);
@@ -5731,6 +5770,8 @@ async function openApprovalModal() {
 }
 
 async function loadApprovalPendingChanges() {
+  // Прошлая ошибка не должна висеть над новой попыткой.
+  approvalError.value = '';
   approvalLoading.value = true;
   try {
     const params = buildApprovalFilterParams();
@@ -5742,7 +5783,7 @@ async function loadApprovalPendingChanges() {
     selectedPendingIds.value = [];
   } catch (e: any) {
     console.error("[cost] load approval pending changes failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    approvalError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     approvalLoading.value = false;
   }
@@ -5751,13 +5792,15 @@ async function loadApprovalPendingChanges() {
 function toggleSelectAllPending(e: Event) {
   const checked = (e.target as HTMLInputElement).checked;
   if (checked) {
-    selectedPendingIds.value = approvalPendingChanges.value.map((p) => p.id);
+    selectedPendingIds.value = approvalVisibleChanges.value.map((p) => p.id);
   } else {
     selectedPendingIds.value = [];
   }
 }
 
 async function applyPendingChanges() {
+  // Прошлая ошибка не должна висеть над новой попыткой.
+  approvalError.value = '';
   if (!selectedPendingIds.value.length) return;
   approvalApplying.value = true;
   try {
@@ -5801,13 +5844,15 @@ async function applyPendingChanges() {
     await loadApprovalPendingChanges();
   } catch (e: any) {
     console.error("[cost] apply pending changes failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    approvalError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     approvalApplying.value = false;
   }
 }
 
 async function clearAllPendingChanges() {
+  // Прошлая ошибка не должна висеть над новой попыткой.
+  approvalError.value = '';
   if (!confirm('Очистить таблицу согласования? Все необработанные изменения будут удалены.')) return;
   approvalClearing.value = true;
   try {
@@ -5818,13 +5863,15 @@ async function clearAllPendingChanges() {
     await loadApprovalPendingChanges();
   } catch (e: any) {
     console.error("[cost] clear pending changes failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    approvalError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     approvalClearing.value = false;
   }
 }
 
 async function rejectPendingChanges() {
+  // Прошлая ошибка не должна висеть над новой попыткой.
+  approvalError.value = '';
   if (!selectedPendingIds.value.length) return;
   approvalRejecting.value = true;
   try {
@@ -5847,7 +5894,7 @@ async function rejectPendingChanges() {
     await loadApprovalPendingChanges();
   } catch (e: any) {
     console.error("[cost] reject pending changes failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    approvalError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     approvalRejecting.value = false;
   }

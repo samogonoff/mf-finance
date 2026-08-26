@@ -1244,7 +1244,41 @@ async def get_pending_changes(filters: dict | None = None) -> list[dict]:
     if conditions:
         where_clause = " WHERE " + " AND ".join(conditions)
 
-    query = f"SELECT * FROM cost_price_pending{where_clause} ORDER BY created_at DESC"
+    # peo_status подтягиваем, чтобы окно согласования могло отличить заявку,
+    # ждущую решения ПЭО, от возвращённой на корректировку. С 25.08.2026 возврат
+    # НЕ удаляет заявку (иначе терялась введённая цена), поэтому без этого
+    # признака возвращённые строки продолжали висеть в списке согласования, и
+    # выглядело это как «нажимаем кнопку, а модели остаются» (жалоба 26.08.2026).
+    # Джойн идёт по ЧЕТЫРЁМ полям, без номера задания, и через агрегат.
+    #
+    # Причина: у заявки и у согласования разные ключи. cost_price_pending
+    # уникален по (Модель, Артикул, PLAN_ID, Признак калькуляции) — задание в
+    # ключ не входит и в заявке остаётся пустым (uq_pending_row, миграция 0005).
+    # А cost_calc_approvals ведётся ПО ЗАДАНИЯМ, и статус пишется на те задания,
+    # что есть в кэше. Прямое сравнение задания с заданием не находило ничего:
+    # '' против 'М26.5.1899'.
+    #
+    # Поэтому берём статус калькуляции целиком, той же логикой, что и главная
+    # таблица: согласовано — когда согласованы все задания; иначе самый весомый
+    # сигнал. LATERAL с агрегатом даёт ровно одну строку на заявку, так что
+    # список не размножается по заданиям.
+    join_sql = (
+        " LEFT JOIN LATERAL ("
+        "   SELECT CASE WHEN BOOL_AND(a0.status = 'approved') THEN 'approved'"
+        "               WHEN BOOL_OR(a0.status = 'rejected') THEN 'rejected'"
+        "               WHEN BOOL_OR(a0.status = 'returned') THEN 'returned'"
+        "               ELSE NULL END AS status"
+        "   FROM cost_calc_approvals a0"
+        '   WHERE a0.model = trim(p."Модель")'
+        '     AND a0.articul = trim(p."Артикул")'
+        "     AND COALESCE(a0.calc_sign, '') = trim(COALESCE(p.\"Признак калькуляции\", ''))"
+        "     AND COALESCE(a0.plan_id, '') = trim(COALESCE(p.\"PLAN_ID\", ''))"
+        " ) a ON TRUE"
+    )
+    query = (
+        "SELECT p.*, a.status AS peo_status FROM cost_price_pending p"
+        + join_sql + where_clause + " ORDER BY p.created_at DESC"
+    )
 
     async with pool().acquire() as conn:
         rows = await conn.fetch(query, *params)
