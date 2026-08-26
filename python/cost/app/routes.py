@@ -981,7 +981,14 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 row["_in_dwh"] = has_audit
                 row["_reopened"] = is_reopened
 
-                if has_pending:
+                # Возвращённая на корректировку калькуляция НЕ блокируется
+                # незакрытой заявкой. Заявка там и остаётся специально: с
+                # 25.08.2026 возврат сохраняет введённую бренд-менеджером цену
+                # вместо обнуления, и он же должен её править. Без этого условия
+                # ПЭО отправляла строку на корректировку, а у бренд-менеджера
+                # она оставалась неактивной — жалоба 26.08.2026 по плану 9518.
+                is_returned = row.get("peo_status") == "returned"
+                if has_pending and not is_returned:
                     row["_lock_reason"] = "pending_changes"
                 else:
                     row["_lock_reason"] = None

@@ -515,8 +515,9 @@
                 />
               </td>
               <td :class="stickyClasses('actions')" :style="stickyStyle('actions')">
-                <span v-if="isRowLocked(row) && !row._has_pending && !row._has_audit" class="lock-icon" title="Строка заблокирована">🔒</span>
-                <span v-if="row._has_pending" class="state-badge state-badge--pending" title="Ожидает согласования">⏳</span>
+                <span v-if="isRowLocked(row) && !row._has_pending && !row._has_audit" class="lock-icon" :title="lockReasonText(row)">🔒</span>
+                <span v-if="row._has_pending" class="state-badge state-badge--pending"
+                  :title="isRowLocked(row) ? lockReasonText(row) : 'Ожидает согласования ПЭО'">⏳</span>
                 <!-- Значок «в DWH» показываем по факту записи (_in_dwh), а не по
                      блокировке: переоткрытая калькуляция всё ещё записана, но
                      правку уже разрешили. Админу значок кликабелен — открывает
@@ -4933,6 +4934,28 @@ const marginRowClass = (row: any): Record<string, boolean> => {
 const FKSS_HINT = 'ФКСС — история себестоимости: цены не редактируются и в DWH не пишутся';
 const isFkssRow = (row: any): boolean =>
   (row?.['Признак калькуляции'] ?? '').toString().trim() === 'ФКСС';
+
+/** Почему строка недоступна для правки — текстом, а не молчащим замком.
+ *
+ * Замок без объяснения регулярно приходит как жалоба «строки не активны»
+ * (последняя — 26.08.2026 по плану 9518): пользователь видит, что править
+ * нельзя, но не видит, кого просить и что сделать. */
+const lockReasonText = (row: any): string => {
+  if (!isRowLocked(row)) return '';
+  if (row._lock_reason === 'pending_changes') {
+    return 'Заявка на изменение цены ждёт согласования ПЭО. Пока она не согласована '
+      + 'или не отклонена, править строку нельзя';
+  }
+  if (row._has_audit) {
+    return 'Цены уже переданы в DWH. Вернуть калькуляцию на корректировку может '
+      + 'администратор раздела — кликом по значку 📤';
+  }
+  if (can('cost:edit_price') && !can('cost:approve') && !can('cost:peo_mark') && !row._group_approved) {
+    return 'Бренд-менеджер может править цены только после согласования ПЭО '
+      + 'или после возврата на корректировку';
+  }
+  return 'Строка заблокирована';
+};
 
 const isRowLocked = (row: any): boolean => {
   if (can('cost:admin')) return false;
