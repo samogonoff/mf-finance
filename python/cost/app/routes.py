@@ -1172,9 +1172,23 @@ async def get_details(payload: dict) -> dict:
 # ── Raw rows (исходные строки по агрегированной строке) ─────────────────────
 
 
+# «Уровень цен» — единственное поле группировки, которое агрегат ПЕРЕЗАПИСЫВАЕТ
+# наложением наших данных (см. row["Уровень цен"] = rec["price_level"] ниже в
+# get_aggregated). В кэше у такой калькуляции уровень может быть пустым, поэтому
+# фильтр по нему не находил ни одной строки, и «Исходные строки» открывались
+# пустыми — ровно у тех калькуляций, где уровень уже установлен, то есть у всех,
+# с которыми работает бренд-менеджер. Проверено 27.08.2026 на 111997 /
+# 26Е-6528Ц-0 (план 9568): в кэше 66 строк с пустым уровнем, в аудите
+# «уровень 22», агрегат отдаёт «уровень 22», поиск возвращал 0.
+RAW_ROWS_SKIP_FILTER = {"Уровень цен"}
+
+
 @router.post("/raw-rows")
 async def get_raw_rows(payload: dict) -> dict:
-    """Сырые строки из кеша, отфильтрованные по полям группировки агрегированной строки."""
+    """Сырые строки калькуляции, отфильтрованные по полям группировки агрегата.
+
+    Кроме накладываемых полей — см. RAW_ROWS_SKIP_FILTER.
+    """
     if _is_mock():
         return mocks.raw_rows(payload)
 
@@ -1183,6 +1197,8 @@ async def get_raw_rows(payload: dict) -> dict:
     parsed_date = None
 
     for field in AGG_GROUP_FIELDS:
+        if field in RAW_ROWS_SKIP_FILTER:
+            continue
         value = payload.get(field)
         if value is not None and value != "" and value != "—":
             if field == "дата расчета" and isinstance(value, str):
@@ -1192,7 +1208,10 @@ async def get_raw_rows(payload: dict) -> dict:
             params.append(value)
 
     where = " AND ".join(where_parts) if where_parts else "TRUE"
-    query = f"SELECT * FROM cost_data_cache WHERE {where} ORDER BY id"
+    # cost_data_all, а не cost_data_cache: иначе у калькуляций, созданных в
+    # приложении копией с другим признаком (пункт 1), исходные строки пусты —
+    # они лежат в cost_manual_calc.
+    query = f"SELECT * FROM cost_data_all WHERE {where} ORDER BY id"
 
     try:
         async with pool().acquire() as conn:

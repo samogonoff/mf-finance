@@ -583,7 +583,12 @@
                   :title="manualCopyTitle(row)"
                   @click.stop="can('cost:calc_sign_copy') ? openCalcCopyDelete(row) : null">⧉</span>
                 <button class="btn-details" @click.stop="openDetails(row)">🔍</button>
-                <button v-if="!isRowLocked(row) && !row._has_audit" class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">🖊</button>
+                <!-- Право проверяем и здесь: без cost:edit_materials сервер
+                     отклоняет сохранение (403), то есть кнопка обещала то, чего
+                     сделать нельзя. Бренд-менеджеру расчёт доступен для
+                     просмотра — «Исходные строки» и «Детализация» остаются. -->
+                <button v-if="(can('cost:edit_materials') || can('cost:admin')) && !isRowLocked(row) && !row._has_audit"
+                  class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">🖊</button>
                 <!-- Значок отличается от пометки копии (⧉) намеренно: одинаковые
                      символы читались как одно и то же действие. -->
                 <button v-if="canCopyCalcSign(row)" class="btn-edit" @click.stop="openCalcCopy(row)"
