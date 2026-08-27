@@ -411,7 +411,10 @@ const loading = ref(false)
 const error = ref('')
 
 const supersetUrl = computed(() => (config.public.supersetMarginEmbedUrl as string) || '')
-const showSuperset = ref(false)
+// Раскрыт по умолчанию, как на коммерческом дашборде: свёрнутый блок читался как
+// «в Superset ничего не собрано». Ключ supersetMarginEmbedUrl появляется в
+// runtimeConfig только после перезапуска dev-сервера nuxt-cost.
+const showSuperset = ref(true)
 const supersetEmbedSrc = computed(() => {
   const u = supersetUrl.value
   return u ? u + (u.includes('?') ? '&' : '?') + 'standalone=1' : ''
