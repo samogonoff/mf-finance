@@ -528,64 +528,81 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 if not pairs:
                     continue
 
+                # $1 занят признаком калькуляции, поэтому ключи нумеруются С $2.
+                # Раньше и признак, и первая модель претендовали на $1: asyncpg
+                # отвечал «server expects N arguments, N+1 were passed», запрос
+                # падал ВСЕГДА при непустом наборе пар, а внешний except это
+                # проглатывал. В итоге вся цепочка плановых цен
+                # (ПКПСС → КПСС → ПФКСС → ФКСС) не работала ни разу, и planned_*
+                # заполнялись только фолбэком из Gpartner. Проверено 27.08.2026:
+                # с правильной нумерацией по парам, которые есть и в ПКПСС, и в
+                # КПСС, цены находятся (например 112866 / 26-47073Б-0 —
+                # розница 19.99, опт 11.90).
+                #
+                # Батчами — предел 32767 параметров, см. KEYS_PER_QUERY.
                 async with pool().acquire() as conn:
                     if target_cs == "КПСС":
-                        # КПСС → ПКПСС: match by model+articul only (no plan_id)
-                        values_list = ", ".join(
-                            f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(pairs))
-                        )
-                        flat_params: list[str] = []
-                        for m, a, _ in pairs:
-                            flat_params.extend([m, a])
-
-                        rows = await conn.fetch(
-                            f"""SELECT DISTINCT ON (cd."Модель", cd."Артикул")
-                                cd."Модель", cd."Артикул",
-                                cd."Розничная цена по уровню, руб.",
-                                cd."Отпускная цена по уровню, руб"
-                                FROM cost_data_cache cd
-                                WHERE cd."Признак калькуляции" = $1
-                                  AND (cd."Модель", cd."Артикул") IN (VALUES {values_list})
-                                ORDER BY cd."Модель", cd."Артикул", cd."дата расчета" DESC
-                            """,
-                            source_cs,
-                            *flat_params,
-                        )
-                        for r in rows:
-                            key = (str(r["Модель"]).strip(), str(r["Артикул"]).strip(), "")
-                            lookup_cache[key] = (
-                                r["Розничная цена по уровню, руб."],
-                                r["Отпускная цена по уровню, руб"],
+                        # КПСС → ПКПСС: сопоставление по модели и артикулу, без плана
+                        for _batch in _key_batches(pairs):
+                            values_list = ", ".join(
+                                f"(${i*2+2}::text, ${i*2+3}::text)" for i in range(len(_batch))
                             )
+                            flat_params: list[str] = []
+                            for m, a, _ in _batch:
+                                flat_params.extend([m, a])
+
+                            rows = await conn.fetch(
+                                f"""SELECT DISTINCT ON (cd."Модель", cd."Артикул")
+                                    cd."Модель", cd."Артикул",
+                                    cd."Розничная цена по уровню, руб.",
+                                    cd."Отпускная цена по уровню, руб"
+                                    FROM cost_data_cache cd
+                                    WHERE cd."Признак калькуляции" = $1
+                                      AND (cd."Модель", cd."Артикул") IN (VALUES {values_list})
+                                    ORDER BY cd."Модель", cd."Артикул", cd."дата расчета" DESC
+                                """,
+                                source_cs,
+                                *flat_params,
+                            )
+                            for r in rows:
+                                key = (str(r["Модель"]).strip(), str(r["Артикул"]).strip(), "")
+                                lookup_cache[key] = (
+                                    r["Розничная цена по уровню, руб."],
+                                    r["Отпускная цена по уровню, руб"],
+                                )
                     else:
-                        # ПФКСС → КПСС / ФКСС → ПФКСС: match by model+articul+plan_id
-                        values_list = ", ".join(
-                            f"(${i*3+1}::text, ${i*3+2}::text, ${i*3+3}::text)" for i in range(len(pairs))
-                        )
-                        flat_params = []
-                        for m, a, p in pairs:
-                            flat_params.extend([m, a, p])
-
-                        rows = await conn.fetch(
-                            f"""SELECT DISTINCT ON (cd."Модель", cd."Артикул", cd."PLAN_ID")
-                                cd."Модель", cd."Артикул", cd."PLAN_ID",
-                                cd."Розничная цена по уровню, руб.",
-                                cd."Отпускная цена по уровню, руб"
-                                FROM cost_data_cache cd
-                                WHERE cd."Признак калькуляции" = $1
-                                  AND (cd."Модель", cd."Артикул", cd."PLAN_ID") IN (VALUES {values_list})
-                                ORDER BY cd."Модель", cd."Артикул", cd."PLAN_ID", cd."дата расчета" DESC
-                            """,
-                            source_cs,
-                            *flat_params,
-                        )
-                        for r in rows:
-                            key = (str(r["Модель"]).strip(), str(r["Артикул"]).strip(), str(r["PLAN_ID"]).strip())
-                            lookup_cache[key] = (
-                                r["Розничная цена по уровню, руб."],
-                                r["Отпускная цена по уровню, руб"],
+                        # ПФКСС → КПСС / ФКСС → ПФКСС: сопоставление с планом
+                        for _batch in _key_batches(pairs):
+                            values_list = ", ".join(
+                                f"(${i*3+2}::text, ${i*3+3}::text, ${i*3+4}::text)"
+                                for i in range(len(_batch))
                             )
+                            flat_params = []
+                            for m, a, pl in _batch:
+                                flat_params.extend([m, a, pl])
 
+                            rows = await conn.fetch(
+                                f"""SELECT DISTINCT ON (cd."Модель", cd."Артикул", cd."PLAN_ID")
+                                    cd."Модель", cd."Артикул", cd."PLAN_ID",
+                                    cd."Розничная цена по уровню, руб.",
+                                    cd."Отпускная цена по уровню, руб"
+                                    FROM cost_data_cache cd
+                                    WHERE cd."Признак калькуляции" = $1
+                                      AND (cd."Модель", cd."Артикул", cd."PLAN_ID") IN (VALUES {values_list})
+                                    ORDER BY cd."Модель", cd."Артикул", cd."PLAN_ID", cd."дата расчета" DESC
+                                """,
+                                source_cs,
+                                *flat_params,
+                            )
+                            for r in rows:
+                                key = (
+                                    str(r["Модель"]).strip(), str(r["Артикул"]).strip(),
+                                    str(r["PLAN_ID"]).strip(),
+                                )
+                                lookup_cache[key] = (
+                                    r["Розничная цена по уровню, руб."],
+                                    r["Отпускная цена по уровню, руб"],
+                                )
             # Assign planned prices
             for row in data:
                 cs = str(row.get("Признак калькуляции", "") or "").strip()
@@ -746,26 +763,30 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
 
             # 1. PENDING (local, unapproved) — highest priority
             async with pool().acquire() as conn:
-                pending_ph = ", ".join(
-                    f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
-                    for i in range(len(keys))
-                )
-                pending_params: list[str] = []
-                for m, a, cs, pi in keys:
-                    pending_params.extend([m, a, cs, pi])
+                # Батчами: иначе на широких срезах запрос упирается в предел
+                # 32767 параметров и цены не накладываются вовсе (см. KEYS_PER_QUERY).
+                pending_rows = []
+                for batch in _key_batches(keys):
+                    pending_ph = ", ".join(
+                        f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
+                        for i in range(len(batch))
+                    )
+                    pending_params: list[str] = []
+                    for m, a, cs, pi in batch:
+                        pending_params.extend([m, a, cs, pi])
 
-                pending_rows = await conn.fetch(
-                    f"""SELECT DISTINCT ON ("Модель", "Артикул", "PLAN_ID", "Признак калькуляции")
-                        "Модель", "Артикул", "PLAN_ID", "Признак калькуляции",
-                        "Уровень цен",
-                        "Розничная цена по уровню, руб.", "Отпускная цена по уровню, руб",
-                        "Цена РФ", "Цена КЗ", "Цена УЗ", "Комментарий"
-                        FROM cost_price_pending
-                        WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {pending_ph})
-                        ORDER BY "Модель", "Артикул", "PLAN_ID", "Признак калькуляции", created_at DESC
-                    """,
-                    *pending_params,
-                )
+                    pending_rows.extend(await conn.fetch(
+                        f"""SELECT DISTINCT ON ("Модель", "Артикул", "PLAN_ID", "Признак калькуляции")
+                            "Модель", "Артикул", "PLAN_ID", "Признак калькуляции",
+                            "Уровень цен",
+                            "Розничная цена по уровню, руб.", "Отпускная цена по уровню, руб",
+                            "Цена РФ", "Цена КЗ", "Цена УЗ", "Комментарий"
+                            FROM cost_price_pending
+                            WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {pending_ph})
+                            ORDER BY "Модель", "Артикул", "PLAN_ID", "Признак калькуляции", created_at DESC
+                        """,
+                        *pending_params,
+                    ))
                 for r in pending_rows:
                     key = (
                         str(r["Модель"]).strip(), str(r["Артикул"]).strip(),
@@ -815,47 +836,67 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                         flush=True,
                     )
 
-            # 3. LOCAL AUDIT (fallback if OLAP unavailable)
+            # 3. LOCAL AUDIT — запасной источник, когда OLAP недоступен.
+            #
+             # Сюда попадают реальные отказы: 27.08.2026 в логах
+            # «fetch_olap_changes упал на 20 ключах — откат на локальный аудит»,
+            # причина HYT00 Login timeout expired. То есть ветка рабочая, и от её
+            # точности напрямую зависит, увидит ли пользователь свои цены.
+            #
+            # Раньше здесь было две ошибки. Первая: ключом служила пара
+            # (модель, артикул) — одна запись раздавалась ВСЕМ признакам
+            # калькуляции и всем планам этой пары, то есть цена КПСС могла
+            # подмениться ценой ПФКСС. Вторая: в SELECT не было price_level,
+            # хотя код ниже его читает, — уровень цен всегда оставался пустым.
+            # Теперь ключ полный, как в основной ветке, и уровень выбирается.
             if not olap_ok:
                 async with pool().acquire() as conn:
-                    audit_pairs = list(set((m, a) for m, a, _, _ in keys))
-                    audit_ph = ", ".join(
-                        f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(audit_pairs))
-                    )
-                    audit_params: list[str] = []
-                    for m, a in audit_pairs:
-                        audit_params.extend([m, a])
+                    audit_rows = []
+                    for batch in _key_batches(keys):
+                        audit_ph = ", ".join(
+                            f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
+                            for i in range(len(batch))
+                        )
+                        audit_params: list[str] = []
+                        for m, a, cs, pi in batch:
+                            audit_params.extend([m, a, cs, pi])
+                        audit_rows.extend(await conn.fetch(
+                            f"""SELECT DISTINCT ON (model, articul, COALESCE(calc_sign, ''), COALESCE(plan_id, ''))
+                                model, articul, calc_sign, plan_id, price_level,
+                                retail_rub, wholesale_rub,
+                                price_rf, price_kz, price_uz, comment
+                                FROM cost_price_changes_audit
+                                WHERE (model, articul, COALESCE(calc_sign, ''), COALESCE(plan_id, ''))
+                                      IN (VALUES {audit_ph})
+                                ORDER BY model, articul, COALESCE(calc_sign, ''), COALESCE(plan_id, ''),
+                                         changed_at DESC
+                            """,
+                            *audit_params,
+                        ))
 
-                    audit_rows = await conn.fetch(
-                        f"""SELECT DISTINCT ON (model, articul)
-                            model, articul, retail_rub, wholesale_rub,
-                            price_rf, price_kz, price_uz, comment
-                            FROM cost_price_changes_audit
-                            WHERE (model, articul) IN (VALUES {audit_ph})
-                            ORDER BY model, articul, changed_at DESC
-                        """,
-                        *audit_params,
-                    )
-                    audit_map: dict[tuple[str, str], dict] = {}
+                    audit_map: dict[tuple[str, str, str, str], dict] = {}
                     for r in audit_rows:
-                        k = (str(r["model"]).strip(), str(r["articul"]).strip())
+                        k = (
+                            str(r["model"]).strip(), str(r["articul"]).strip(),
+                            str(r["calc_sign"] or "").strip(), str(r["plan_id"] or "").strip(),
+                        )
                         if k not in audit_map:
                             audit_map[k] = dict(r)
 
-                    for m, a, cs, pi in keys:
-                        if (m, a, cs, pi) not in override_map:
-                            rec = audit_map.get((m, a))
-                            if rec:
-                                override_map[(m, a, cs, pi)] = {
-                                    "price_level": str(rec.get("price_level") or "").strip() or None,
-                                    "retail_rub": rec.get("retail_rub"),
-                                    "wholesale_rub": rec.get("wholesale_rub"),
-                                    "price_rf": rec.get("price_rf"),
-                                    "price_kz": rec.get("price_kz"),
-                                    "price_uz": rec.get("price_uz"),
-                                    "comment": str(rec.get("comment") or ""),
-                                }
-
+                    for ky in keys:
+                        if ky in override_map:
+                            continue
+                        rec = audit_map.get(ky)
+                        if rec:
+                            override_map[ky] = {
+                                "price_level": str(rec.get("price_level") or "").strip() or None,
+                                "retail_rub": rec.get("retail_rub"),
+                                "wholesale_rub": rec.get("wholesale_rub"),
+                                "price_rf": rec.get("price_rf"),
+                                "price_kz": rec.get("price_kz"),
+                                "price_uz": rec.get("price_uz"),
+                                "comment": str(rec.get("comment") or ""),
+                            }
             # Apply overrides to ALL rows
             for row in data:
                 m = str(row.get("Модель", "") or "").strip()
@@ -902,20 +943,23 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
             lock_list = list(lock_keys)
 
             # 1. Pending changes — full tuple match
-            pend_ph = ", ".join(
-                f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
-                for i in range(len(lock_list))
-            )
-            pend_params: list[str] = []
-            for m, a, cs, pi in lock_list:
-                pend_params.extend([m, a, cs, pi])
+            # Батчами — тот же предел 32767 параметров, что и в наложении цен.
+            pend_rows = []
             async with pool().acquire() as conn:
-                pend_rows = await conn.fetch(
-                    f"""SELECT DISTINCT "Модель", "Артикул", "Признак калькуляции", "PLAN_ID"
-                        FROM cost_price_pending
-                        WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {pend_ph})""",
-                    *pend_params,
-                )
+                for batch in _key_batches(lock_list):
+                    pend_ph = ", ".join(
+                        f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
+                        for i in range(len(batch))
+                    )
+                    pend_params: list[str] = []
+                    for m, a, cs, pi in batch:
+                        pend_params.extend([m, a, cs, pi])
+                    pend_rows.extend(await conn.fetch(
+                        f"""SELECT DISTINCT "Модель", "Артикул", "Признак калькуляции", "PLAN_ID"
+                            FROM cost_price_pending
+                            WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {pend_ph})""",
+                        *pend_params,
+                    ))
             pending_set: set[tuple[str, str, str, str]] = set()
             for r in pend_rows:
                 pending_set.add((
@@ -932,19 +976,21 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
             # У записей до миграции 0022 признака и плана нет: для них оставляем
             # прежнее поведение, иначе с легаси-строк блокировка исчезла бы вовсе.
             audit_pairs = list(set((m, a) for m, a, _, _ in lock_list))
-            audit_ph = ", ".join(
-                f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(audit_pairs))
-            )
-            audit_params: list[str] = []
-            for m, a in audit_pairs:
-                audit_params.extend([m, a])
+            audit_rows = []
             async with pool().acquire() as conn:
-                audit_rows = await conn.fetch(
-                    f"""SELECT DISTINCT model, articul, calc_sign, plan_id
-                        FROM cost_price_changes_audit
-                        WHERE (model, articul) IN (VALUES {audit_ph})""",
-                    *audit_params,
-                )
+                for batch in _key_batches(audit_pairs):
+                    audit_ph = ", ".join(
+                        f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(batch))
+                    )
+                    audit_params: list[str] = []
+                    for m, a in batch:
+                        audit_params.extend([m, a])
+                    audit_rows.extend(await conn.fetch(
+                        f"""SELECT DISTINCT model, articul, calc_sign, plan_id
+                            FROM cost_price_changes_audit
+                            WHERE (model, articul) IN (VALUES {audit_ph})""",
+                        *audit_params,
+                    ))
             audit_set: set[tuple[str, str, str, str]] = set()
             audit_legacy: set[tuple[str, str]] = set()
             for r in audit_rows:
@@ -1295,20 +1341,24 @@ async def _check_save_locks(
 
     audit_set: set[tuple[str, str, str, str]] = set()
     if lock_list:
-        audit_ph = ", ".join(
-            f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
-            for i in range(len(lock_list))
-        )
-        audit_params: list[str] = []
-        for m, a, cs, pi in lock_list:
-            audit_params.extend([m, a, cs, pi])
-        async with pool().acquire() as conn:
-            audit_rows = await conn.fetch(
-                f"""SELECT DISTINCT model, articul, calc_sign, plan_id
-                    FROM cost_price_changes_audit
-                    WHERE (model, articul, calc_sign, plan_id) IN (VALUES {audit_ph})""",
-                *audit_params,
-            )
+        # Батчами: save-batch присылает до 1000 строк, но предел параметров общий,
+        # и на широкой пачке запрос упал бы так же, как в наложении цен.
+        audit_rows: list = []
+        async with acquire() as conn:
+            for _batch in _key_batches(lock_list):
+                audit_ph = ", ".join(
+                    f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
+                    for i in range(len(_batch))
+                )
+                audit_params: list[str] = []
+                for m, a, cs, pi in _batch:
+                    audit_params.extend([m, a, cs, pi])
+                audit_rows.extend(await conn.fetch(
+                    f"""SELECT DISTINCT model, articul, calc_sign, plan_id
+                        FROM cost_price_changes_audit
+                        WHERE (model, articul, calc_sign, plan_id) IN (VALUES {audit_ph})""",
+                    *audit_params,
+                ))
         for r in audit_rows:
             audit_set.add((
                 str(r["model"]).strip(), str(r["articul"]).strip(),
@@ -1323,20 +1373,23 @@ async def _check_save_locks(
     approved_groups: set[tuple[str, str, str, str]] = set()
     returned_groups: set[tuple[str, str, str, str]] = set()
     if lock_list:
-        appr_ph = ", ".join(
-            f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
-            for i in range(len(lock_list))
-        )
-        appr_params: list[str] = []
-        for m, a, cs, pi in lock_list:
-            appr_params.extend([m, a, cs, pi])
-        async with pool().acquire() as conn:
-            appr_rows = await conn.fetch(
-                f"""SELECT DISTINCT model, articul, calc_sign, plan_id, task_number, status
-                    FROM cost_calc_approvals
-                    WHERE (model, articul, calc_sign, plan_id) IN (VALUES {appr_ph})""",
-                *appr_params,
-            )
+        # Батчами — тот же предел параметров, см. KEYS_PER_QUERY.
+        appr_rows: list = []
+        async with acquire() as conn:
+            for _batch in _key_batches(lock_list):
+                appr_ph = ", ".join(
+                    f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
+                    for i in range(len(_batch))
+                )
+                appr_params: list[str] = []
+                for m, a, cs, pi in _batch:
+                    appr_params.extend([m, a, cs, pi])
+                appr_rows.extend(await conn.fetch(
+                    f"""SELECT DISTINCT model, articul, calc_sign, plan_id, task_number, status
+                        FROM cost_calc_approvals
+                        WHERE (model, articul, calc_sign, plan_id) IN (VALUES {appr_ph})""",
+                    *appr_params,
+                ))
         group_approval: dict[tuple[str, str, str, str], dict[str, str]] = {}
         for r in appr_rows:
             key4 = (
@@ -2116,6 +2169,27 @@ async def price_history(request: Request, _: str = Depends(_require_perm("cost:v
 # Потолок на одну пачку: массовое согласование с главной таблицы шлётся чанками,
 # лимит защищает от «согласовать весь кеш одним запросом».
 APPROVALS_BATCH_LIMIT = 1000
+
+# Сколько ключей отдавать одному SQL-запросу.
+#
+# Postgres не принимает больше 32767 параметров на запрос. Ключи калькуляций
+# передаются списком VALUES по 4 параметра на ключ, поэтому предел наступает уже
+# на 8192 ключах — а полная выдача даёт 27 647 ключей (110 588 параметров).
+# Запрос падал, внешний try проглатывал ошибку, и пользователь получал таблицу
+# БЕЗ своих цен и комментариев со статусом 200: в логах «наложение утверждённых
+# цен не выполнено», на экране — молча пустые цены. По замерам заказчика это
+# каждый ~14-й запрос /aggregated (14 из 204 за сутки), с 10.07.2026.
+#
+# 2000 ключей = 8000 параметров: вчетверо ниже предела, с запасом на случай, если
+# в запрос добавят ещё поле ключа. Ключи между батчами не пересекаются, поэтому
+# DISTINCT ON внутри батча остаётся корректным.
+KEYS_PER_QUERY = 2000
+
+
+def _key_batches(items: list, per_query: int = KEYS_PER_QUERY):
+    """Разбить список ключей на порции, помещающиеся в один SQL-запрос."""
+    for i in range(0, len(items), per_query):
+        yield items[i:i + per_query]
 
 
 @router.post("/approve-calculation")
