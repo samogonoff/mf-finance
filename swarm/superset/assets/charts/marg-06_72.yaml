@@ -1,0 +1,24 @@
+slice_name: "marg-06 \xB7 \u0420\u0435\u043D\u0442\u0430\u0431\u0435\u043B\u044C\u043D\
+  \u043E\u0441\u0442\u044C, %"
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 14__table
+  viz_type: big_number_total
+  metric: profit_pct_cur
+  y_axis_format: ',.2f'
+  subheader: "\u043C\u0430\u0440\u0436\u0430 / \u0441\u0435\u0431\u0435\u0441\u0442\
+    \u043E\u0438\u043C\u043E\u0441\u0442\u044C \u0432\u044B\u043F\u0443\u0441\u043A\
+    \u0430"
+  force_timestamp_formatting: false
+  header_font_size: 0.4
+  subheader_font_size: 0.125
+  adhoc_filters: []
+  extra_form_data: {}
+query_context: null
+cache_timeout: null
+uuid: 7adaf591-9689-4148-bec5-005a7021962f
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2

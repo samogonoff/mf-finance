@@ -1,0 +1,25 @@
+slice_name: "marg-20 \xB7 \u041A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\
+  \u0439"
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 14__table
+  viz_type: big_number_total
+  metric: calc_count
+  y_axis_format: ',.0f'
+  subheader: "\u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0439 \u0424\
+    \u041A\u0421\u0421 \u0441 \u043E\u0431\u044A\u0451\u043C\u043E\u043C, \u0446\u0435\
+    \u043D\u043E\u0439 \u0438 \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\
+    \u043E\u0441\u0442\u044C\u044E"
+  force_timestamp_formatting: false
+  header_font_size: 0.4
+  subheader_font_size: 0.125
+  adhoc_filters: []
+  extra_form_data: {}
+query_context: null
+cache_timeout: null
+uuid: 7ccc1c06-b72b-4d8d-896d-45d1a94e81a8
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2
