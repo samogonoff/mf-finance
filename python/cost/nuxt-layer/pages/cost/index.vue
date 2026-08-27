@@ -584,8 +584,10 @@
                   @click.stop="can('cost:calc_sign_copy') ? openCalcCopyDelete(row) : null">⧉</span>
                 <button class="btn-details" @click.stop="openDetails(row)">🔍</button>
                 <button v-if="!isRowLocked(row) && !row._has_audit" class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">🖊</button>
+                <!-- Значок отличается от пометки копии (⧉) намеренно: одинаковые
+                     символы читались как одно и то же действие. -->
                 <button v-if="canCopyCalcSign(row)" class="btn-edit" @click.stop="openCalcCopy(row)"
-                  title="Создать калькуляцию с другим признаком (копия расчёта)">⧉</button>
+                  title="Создать калькуляцию с другим признаком (копия расчёта)">⇄</button>
               </td>
               <td :class="stickyClasses('raw_rows')" :style="stickyStyle('raw_rows')"><button class="btn-details" @click.stop="openRawRows(row)" title="Исходные строки">📋</button></td>
               <td v-if="isVisible('bm')" :class="stickyClasses('bm')" :style="stickyStyle('bm')">{{ row['Бренд-менеджер'] || '—' }}</td>
@@ -1917,7 +1919,7 @@ const STICKY_COL_KEYS = ['peo_sel','actions','raw_rows','bm','model','articul','
  *  min-width 68px, текстовые растягивались под содержимое — это и записано. */
 const COL_DEFAULT_WIDTHS: Record<string, number> = {
   // закреплённые слева
-  peo_sel: 34, actions: 110, raw_rows: 40, bm: 160, model: 120, articul: 90,
+  peo_sel: 34, actions: 150, raw_rows: 40, bm: 160, model: 120, articul: 90,
   model_name: 228, color: 120, task_num: 90, plan_id: 70,
   // информационные
   country: 90, family: 110, season: 80, date: 76, calc_sign: 76,
@@ -1935,7 +1937,7 @@ const COL_DEFAULT_WIDTHS: Record<string, number> = {
   calc_markup: 92, calc_markup_pct: 116, calc_margin_pct: 96,
   calc_margin_deviation: 96, peo: 68,
 };
-const COL_MIN_WIDTHS: Record<string, number> = { peo_sel: 30, actions: 70, raw_rows: 32, bm: 80, model: 70, articul: 60, model_name: 90, color: 60, task_num: 60, plan_id: 50 };
+const COL_MIN_WIDTHS: Record<string, number> = { peo_sel: 30, actions: 140, raw_rows: 32, bm: 80, model: 70, articul: 60, model_name: 90, color: 60, task_num: 60, plan_id: 50 };
 /** Ниже этого колонку не сжать: у заголовка есть три строки по 10px, и на 40px
  *  он перестаёт читаться совсем. */
 const COL_MIN_WIDTH_DEFAULT = 56;
@@ -7309,6 +7311,11 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 #cost-table-1.data-table tbody td {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* В служебных колонках многоточие вместо кнопки читается как ошибка вёрстки —
+   там лучше обрезать сам значок. */
+#cost-table-1.data-table tbody td.sticky-col {
+  text-overflow: clip;
 }
 
 /* Пометка калькуляции, созданной в приложении (пункт 1). Индиго, чтобы не
