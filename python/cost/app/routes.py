@@ -1305,17 +1305,24 @@ async def margin_dashboard(
 
     default_period=1 — если год не выбран, взять последний год с выпуском
     (первая загрузка страницы). Без флага пустой год означает «все годы».
+
+    cost_basis — база себестоимости: fact (фактическая стоимость минуты, где
+    есть, иначе норматив; по умолчанию) или norm (нормативная).
     """
     if _is_mock():
         return mocks.margin_dashboard()
 
     qp = request.query_params
     filters: dict = {key: qp.getlist(key) for key in margin.FILTER_KEYS if qp.getlist(key)}
-    return await margin.dashboard(
-        filters,
-        matrix_path=qp.getlist("matrix_path"),
-        default_period=qp.get("default_period") in ("1", "true"),
-    )
+    try:
+        return await margin.dashboard(
+            filters,
+            matrix_path=qp.getlist("matrix_path"),
+            default_period=qp.get("default_period") in ("1", "true"),
+            cost_basis=(qp.get("cost_basis") or margin.DEFAULT_COST_BASIS).strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.get("/price-levels")

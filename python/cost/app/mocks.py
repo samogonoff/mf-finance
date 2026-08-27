@@ -805,10 +805,17 @@ def margin_dashboard() -> dict:
             "vol": vol, "rev_b": rev, "rev_u": rev / 3.2, "cost_b": cost, "cost_u": cost / 3.2,
             "raw_b": raw, "raw_u": raw / 3.2, "sew_min": vol * 4.2, "sew_vol": vol * 0.6,
             "target_num": rev * 0.6 * 0.48, "target_den": rev * 0.6,
+            # Норматив против факта: факт есть у 90% выпуска и на 3% дороже норматива.
+            "vol_f": vol * 0.9, "rev_f_b": rev * 0.9, "rev_f_u": rev * 0.9 / 3.2,
+            "cost_f_b": cost * 0.9 * 1.03, "cost_f_u": cost * 0.9 * 1.03 / 3.2,
+            "cost_n_b": cost * 0.9, "cost_n_u": cost * 0.9 / 3.2,
         }
         for suffix, mult in (("_pm", 0.93 * k), ("_py", 0.81 * k)):
             for key in ("vol", "rev_b", "rev_u", "cost_b", "cost_u", "raw_b", "raw_u", "sew_min", "sew_vol"):
                 row[key + suffix] = row[key] * mult if prev else None
+            # Прошлого года по факту нет (до 2026 факт не вели) — как в бою.
+            for key in ("vol_f", "rev_f_b", "rev_f_u", "cost_f_b", "cost_f_u", "cost_n_b", "cost_n_u"):
+                row[key + suffix] = row[key] * mult if (prev and suffix == "_pm") else None
         return row
 
     months = [f"2026-{m:02d}" for m in range(1, 9)]
@@ -855,6 +862,9 @@ def margin_dashboard() -> dict:
             "volume_sign": margin.VOLUME_SIGN,
             "period": {"year": ["2026"], "month": []},
             "year_defaulted": True,
+            "cost_basis": margin.DEFAULT_COST_BASIS,
+            "cost_basis_label": margin.COST_BASES[margin.DEFAULT_COST_BASIS],
+            "cost_bases": [{"key": k, "label": v} for k, v in margin.COST_BASES.items()],
             "matrix_dim": "level01",
             "matrix_label": "Level 01",
             "matrix_path": [],

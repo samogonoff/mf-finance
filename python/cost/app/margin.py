@@ -87,6 +87,41 @@ MATRIX_LEVELS: list[tuple[str, str]] = [
 ]
 MATRIX_ROW_LIMIT = 300
 
+# База себестоимости. С 01.01.2026 Лиса ведёт ФАКТИЧЕСКУЮ стоимость минуты пошива
+# и раскроя помесячно, и источник считает по ней вторую себестоимость
+# (cost_fact_*, миграция 0042). Заказчик (27.08.2026): дашборды маржи — по факту,
+# отклонение фактической маржи от нормативной — отдельным листом.
+#
+# Где факта нет (до 2026 года — его не вели), берётся норматив. Подмена обязана
+# быть видна: meta и плитки отдают fact_coverage_pct — доля выпуска периода,
+# посчитанная по факту. Для 2025 года это 0%, и «пред. год» при базе «факт» —
+# это норматив прошлого года против факта текущего; честнее сравнения у нас нет.
+COST_BASES: dict[str, str] = {
+    "fact": "фактической стоимости минуты",
+    "norm": "нормативной стоимости минуты",
+}
+DEFAULT_COST_BASIS = "fact"
+
+# ГОДНОСТЬ ФАКТА. Источник считает «Себестоимость факт» даже там, где фактическая
+# ставка минуты в Лисе НЕ ЗАВЕДЕНА: минуты умножаются на ноль, и «факт» получается
+# равным нормативу минус пошив. У фирмы 166 констант *_MIN_F нет вовсе, у 152 и
+# 455 они появились только с мая 2026 — в январе-апреле 2026 таких строк 43%
+# выпуска, и они занижали «фактическую» себестоимость на 30%, поднимая
+# маржинальность на 7,5 пп (проверено 27.08.2026).
+#
+# Поэтому факт считается годным, только если у каждой операции с нормативом > 0
+# факт тоже > 0. Остальное — норматив, и доля годного факта отдаётся рядом
+# (fact_coverage_pct): в 2026 году это 50-56% выпуска в январе-апреле и 95-98%
+# с мая. coalesce на нормативе обязателен: у 56% строк минут пошива нет вовсе
+# (NULL), и без coalesce они выпадали бы из годных — проверено, так и было.
+_FACT_OK = (
+    "cost_fact_byn IS NOT NULL"
+    " AND NOT (coalesce(sewing_byn, 0) > 0 AND coalesce(sewing_fact_byn, 0) = 0)"
+    " AND NOT (coalesce(cutting_byn, 0) > 0 AND coalesce(cutting_fact_byn, 0) = 0)"
+)
+_FACT_B = f"CASE WHEN {_FACT_OK} THEN cost_fact_byn END"
+_FACT_U = f"CASE WHEN {_FACT_OK} THEN cost_fact_usd END"
+
 # Выпуск — только строки с объёмом и только по признаку выпуска. Остальные
 # условия общие с коммерческим дашбордом (без цены и себестоимости наценки нет,
 # выбросы, полуфабрикаты).
@@ -109,6 +144,10 @@ _VALUE_COLS = (
     # Минуты пошива на выпуск и объём тех строк, где минуты известны — иначе
     # «минут на штуку» занизят строки без минут (их 56%).
     "sew_min", "sew_vol",
+    # Лист «норматив против факта»: обе себестоимости на ОДНИХ И ТЕХ ЖЕ строках —
+    # тех, где факт есть. Иначе разница «факт − норматив» смешалась бы с разницей
+    # состава строк. vol_f / rev_f — объём и выручка этих строк.
+    "vol_f", "rev_f_b", "rev_f_u", "cost_f_b", "cost_f_u", "cost_n_b", "cost_n_u",
 )
 _PERIODS = (("", "cur"), ("_pm", "pm"), ("_py", "py"))
 
@@ -186,6 +225,35 @@ def _derive(row: dict) -> dict:
         out.pop(f"sew_min{suffix}", None)
         out.pop(f"sew_vol{suffix}", None)
 
+        # Норматив против факта — на строках, где факт есть (см. _VALUE_COLS).
+        # Доля выпуска с фактом обязана быть рядом с любой цифрой «по факту»:
+        # до 2026 года она 0%, и «факт» там — это норматив.
+        vol_f = row.get(f"vol_f{suffix}")
+        out[f"fact_coverage_pct{suffix}"] = _pct(vol_f or 0, vol)
+        rev_f_b, cost_f_b, cost_n_b = (row.get(f"{x}{suffix}") for x in ("rev_f_b", "cost_f_b", "cost_n_b"))
+        out[f"margin_pct_fact{suffix}"] = _pct(_sub(rev_f_b, cost_f_b), rev_f_b)
+        out[f"margin_pct_norm{suffix}"] = _pct(_sub(rev_f_b, cost_n_b), rev_f_b)
+        out[f"fact_dev_pp{suffix}"] = _sub(out[f"margin_pct_fact{suffix}"], out[f"margin_pct_norm{suffix}"])
+        for c in ("b", "u"):
+            cur = "byn" if c == "b" else "usd"
+            rev_f, cost_f, cost_n = (row.get(f"{x}_{c}{suffix}") for x in ("rev_f", "cost_f", "cost_n"))
+            out[f"cost_fact_{cur}{suffix}"] = None if cost_f is None else float(cost_f)
+            out[f"cost_norm_{cur}{suffix}"] = None if cost_n is None else float(cost_n)
+            out[f"margin_fact_{cur}{suffix}"] = _sub(rev_f, cost_f)
+            out[f"margin_norm_{cur}{suffix}"] = _sub(rev_f, cost_n)
+            # Отклонение маржи факт − норматив = −(себестоимость факт − норматив).
+            out[f"fact_dev_{cur}{suffix}"] = _sub(out[f"margin_fact_{cur}{suffix}"], out[f"margin_norm_{cur}{suffix}"])
+            out[f"unit_cost_fact_{cur}{suffix}"] = _ratio(cost_f, vol_f)
+            out[f"unit_cost_norm_{cur}{suffix}"] = _ratio(cost_n, vol_f)
+            n = out[f"unit_cost_norm_{cur}{suffix}"]
+            out[f"unit_cost_fact_dev_pct_{cur}{suffix}"] = (
+                None if n in (None, 0) or out[f"unit_cost_fact_{cur}{suffix}"] is None
+                else 100.0 * (out[f"unit_cost_fact_{cur}{suffix}"] / n - 1)
+            )
+            for x in ("rev_f", "cost_f", "cost_n"):
+                out.pop(f"{x}_{c}{suffix}", None)
+        out.pop(f"vol_f{suffix}", None)
+
     # Отклонения: маржинальность — в процентных пунктах, суммы — в валюте,
     # себестоимость штуки — в процентах к прошлому периоду.
     for suffix in ("_pm", "_py"):
@@ -236,6 +304,7 @@ async def dashboard(
     filters: dict,
     matrix_path: list[str] | None = None,
     default_period: bool = False,
+    cost_basis: str = DEFAULT_COST_BASIS,
 ) -> dict:
     """Весь дашборд одним запросом.
 
@@ -243,7 +312,18 @@ async def dashboard(
     Сравнения «с прошлым месяцем/годом» без ограниченного периода определены,
     но бессмысленны, поэтому первая загрузка страницы просит период по
     умолчанию; дальше фильтры приходят явно, и снятый год означает «все годы».
+
+    cost_basis — по какой себестоимости считать: fact (факт, где есть, иначе
+    норматив) или norm. См. COST_BASES.
     """
+    if cost_basis not in COST_BASES:
+        raise ValueError(f"недопустимая база себестоимости: {cost_basis}")
+    if cost_basis == "fact":
+        # Годный факт, иначе норматив — см. _FACT_OK.
+        cost_expr_b, cost_expr_u = f"coalesce({_FACT_B}, cost_byn)", f"coalesce({_FACT_U}, cost_usd)"
+    else:
+        cost_expr_b, cost_expr_u = "cost_byn", "cost_usd"
+
     filters = {k: v for k, v in filters.items() if v}
     year_defaulted = False
 
@@ -313,12 +393,22 @@ async def dashboard(
                 volume_pcs                                              AS vol,
                 volume_pcs * wholesale_price_byn                        AS rev_b,
                 volume_pcs * wholesale_price_usd                        AS rev_u,
-                volume_pcs * cost_byn                                   AS cost_b,
-                volume_pcs * cost_usd                                   AS cost_u,
+                -- Себестоимость по выбранной базе: факт, где он есть, иначе норматив
+                -- (или всегда норматив) — см. COST_BASES.
+                volume_pcs * {cost_expr_b}                              AS cost_b,
+                volume_pcs * {cost_expr_u}                              AS cost_u,
                 volume_pcs * (coalesce(mat_main_byn, 0) + coalesce(mat_aux_byn, 0)) AS raw_b,
                 volume_pcs * (coalesce(mat_main_usd, 0) + coalesce(mat_aux_usd, 0)) AS raw_u,
                 volume_pcs * sewing_minutes                             AS sew_min,
                 CASE WHEN sewing_minutes IS NOT NULL THEN volume_pcs END AS sew_vol,
+                -- Норматив против факта на одних строках — тех, где факт ГОДЕН (_FACT_OK).
+                CASE WHEN {_FACT_OK} THEN volume_pcs END                       AS vol_f,
+                CASE WHEN {_FACT_OK} THEN volume_pcs * wholesale_price_byn END AS rev_f_b,
+                CASE WHEN {_FACT_OK} THEN volume_pcs * wholesale_price_usd END AS rev_f_u,
+                volume_pcs * ({_FACT_B})                                       AS cost_f_b,
+                volume_pcs * ({_FACT_U})                                       AS cost_f_u,
+                CASE WHEN {_FACT_OK} THEN volume_pcs * cost_byn END            AS cost_n_b,
+                CASE WHEN {_FACT_OK} THEN volume_pcs * cost_usd END            AS cost_n_u,
                 t.target_margin_pct / 100.0                             AS target_frac
             FROM cost_calc_mv c
             LEFT JOIN cost_margin_targets t
@@ -445,6 +535,11 @@ async def dashboard(
         # с тем же набором месяцев, сдвинутым на месяц и на год назад.
         "period": {"year": filters.get("year") or [], "month": filters.get("month") or []},
         "year_defaulted": year_defaulted,
+        # По какой себестоимости посчитано. Подпись обязана быть на странице: цифры
+        # по факту и по нормативу выглядят одинаково, а различаются на проценты.
+        "cost_basis": cost_basis,
+        "cost_basis_label": COST_BASES[cost_basis],
+        "cost_bases": [{"key": k, "label": v} for k, v in COST_BASES.items()],
         # Состояние проваливания по матрице.
         "matrix_dim": matrix_dim,
         "matrix_label": MATRIX_LEVELS[len(path)][1],

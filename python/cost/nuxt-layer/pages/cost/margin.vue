@@ -25,6 +25,13 @@
         <NuxtLink to="/cost/commercial" class="btn btn-ghost btn-sm">
           <Icon name="lucide:chart-pie" /> Коммерческая эффективность
         </NuxtLink>
+        <!-- База себестоимости: факт (стоимость минуты, которую Лиса ведёт с
+             января 2026) или норматив. Ходит на сервер — по базе считаются суммы. -->
+        <div class="currency-switch" role="group" aria-label="База себестоимости" title="Себестоимость: по фактической или нормативной стоимости минуты">
+          <button v-for="b in (meta.cost_bases || [])" :key="b.key" class="btn btn-sm"
+                  :class="b.key === costBasis ? 'btn-primary' : 'btn-ghost'"
+                  @click="setBasis(b.key)">{{ b.key === 'fact' ? 'Факт' : 'Норматив' }}</button>
+        </div>
         <div class="currency-switch" role="group" aria-label="Валюта">
           <button v-for="c in ['BYN', 'USD']" :key="c" class="btn btn-sm"
                   :class="c === currency ? 'btn-primary' : 'btn-ghost'"
@@ -46,6 +53,17 @@
       по дате производства
       <span class="dot">·</span>
       проценты — в BYN при любой валюте
+      <span class="dot">·</span>
+      <!-- Факт есть не везде: у части фирм ставка минуты в Лисе не заведена, и
+           источник считает по ней ноль. Такие строки — норматив, и доля годного
+           факта обязана стоять рядом с базой. -->
+      себестоимость — по <strong>{{ meta.cost_basis_label || 'фактической стоимости минуты' }}</strong>
+      <template v-if="costBasis === 'fact'">
+        <span :class="{ warn: factCoverage !== null && factCoverage < 100 }">
+          (факт годен у {{ factCoverage === null ? '—' : fmtPct(factCoverage, 0) }} выпуска периода,
+          остальное — норматив)
+        </span>
+      </template>
     </p>
 
     <section class="filters">
@@ -209,6 +227,57 @@
       </div>
     </section>
 
+    <!-- Норматив против факта. Сравнение только на строках с ГОДНЫМ фактом: там,
+         где ставка минуты в Лисе не заведена, источник считает по ней ноль, и
+         такой «факт» сравнивать не с чем (см. app/margin.py, _FACT_OK). -->
+    <h2 class="section-title">Норматив против факта</h2>
+    <p v-if="factCoverage === null || factCoverage === 0" class="card-note">
+      В выбранном периоде фактической стоимости минуты нет — Лиса ведёт её с января 2026.
+    </p>
+    <template v-else>
+      <p class="basis">
+        Сравнение на строках с годным фактом — {{ fmtPct(factCoverage, 0) }} выпуска периода.
+        Факт считается годным, если у каждой операции с нормативом есть фактическая ставка;
+        иначе источник даёт по операции ноль, и такой «факт» — это норматив без пошива.
+      </p>
+      <section class="tiles">
+        <article v-for="t in factTileList" :key="t.label" class="tile">
+          <span class="tile-label">{{ t.label }}</span>
+          <span class="tile-value" :class="{ empty: t.value === null }">{{ t.value === null ? '—' : t.value }}</span>
+          <span v-if="t.note" class="tile-note">{{ t.note }}</span>
+          <ul class="cmp">
+            <li v-for="c in t.lines" :key="c.label" class="cmp-line">
+              <span class="cmp-label">{{ c.label }}</span>
+              <span class="cmp-value">{{ c.value ?? '—' }}</span>
+              <span v-if="c.delta" class="cmp-delta" :class="c.good === null ? '' : (c.good ? 'pos' : 'neg')">{{ c.delta }}</span>
+            </li>
+          </ul>
+        </article>
+      </section>
+      <section class="charts">
+        <article class="card">
+          <div class="card-head">
+            <h3 class="card-title">Маржинальность по нормативу и по факту, %</h3>
+            <span class="hint">клик по месяцу — фильтр</span>
+          </div>
+          <p class="card-note">Обе линии — по одним и тем же строкам с годным фактом. Разрыв — эффект фактической ставки минуты.</p>
+          <div class="chart-box">
+            <ClientOnly><Line v-if="factDynData" :data="factDynData" :options="pctDynOptions" /></ClientOnly>
+          </div>
+        </article>
+        <article class="card">
+          <div class="card-head">
+            <h3 class="card-title">Отклонение маржинальности факт − норматив по бренд-менеджерам, пп</h3>
+            <span class="hint">клик по столбцу — фильтр</span>
+          </div>
+          <p class="card-note">Ниже нуля — факт дороже норматива. Детализация до артикула — в матрице, колонки «Норматив / факт».</p>
+          <div class="chart-box">
+            <ClientOnly><Bar v-if="factBmData" :data="factBmData" :options="bmOptions('пп')" /></ClientOnly>
+          </div>
+        </article>
+      </section>
+    </template>
+
     <h2 class="section-title">Динамика себестоимости</h2>
     <section class="charts">
       <article class="card">
@@ -324,11 +393,19 @@ const currency = ref<'BYN' | 'USD'>('BYN')
 const cur = computed(() => (currency.value === 'BYN' ? 'byn' : 'usd'))
 /** Путь проваливания по матрице — применяется только к ней и к водопадам. */
 const matrixPath = ref<string[]>([])
-const matrixView = ref<'margin' | 'cost'>('margin')
+const matrixView = ref<'margin' | 'cost' | 'fact'>('margin')
 const matrixViews = [
   { key: 'margin' as const, label: 'Маржа' },
   { key: 'cost' as const, label: 'Себестоимость' },
+  { key: 'fact' as const, label: 'Норматив / факт' },
 ]
+/** База себестоимости — см. COST_BASES в app/margin.py. Ходит на сервер. */
+const costBasis = ref<'fact' | 'norm'>('fact')
+function setBasis(key: string) {
+  if (key !== 'fact' && key !== 'norm') return
+  costBasis.value = key
+  reload()
+}
 
 const loading = ref(false)
 const error = ref('')
@@ -355,6 +432,7 @@ function buildParams(defaultPeriod: boolean): string {
   for (const f of filterConfig) for (const v of selected[f.key] || []) p.append(f.key, v)
   for (const v of matrixPath.value) p.append('matrix_path', v)
   if (defaultPeriod) p.set('default_period', '1')
+  p.set('cost_basis', costBasis.value)
   return p.toString()
 }
 
@@ -557,6 +635,84 @@ const tileList = computed(() => {
   ]
 })
 
+// ── Норматив против факта ───────────────────────────────────────────────────
+// Всё — на строках с годным фактом (fact_coverage_pct). См. _FACT_OK в app/margin.py.
+
+const factCoverage = computed<number | null>(() =>
+  isNum(tiles.value.fact_coverage_pct) ? Number(tiles.value.fact_coverage_pct) : null)
+
+const factTileList = computed(() => {
+  const t = tiles.value, c = cur.value, C = currency.value
+  return [
+    {
+      label: 'Маржинальность по факту, %', value: isNum(t.margin_pct_fact) ? fmtPct(t.margin_pct_fact) : null,
+      note: 'на строках с годным фактом',
+      lines: [
+        cmp('по нормативу', t.margin_pct_norm, t.fact_dev_pp, fmtPct, fmtPp),
+        cmp('пред. месяц, факт', t.margin_pct_fact_pm,
+            isNum(t.margin_pct_fact) && isNum(t.margin_pct_fact_pm) ? t.margin_pct_fact - t.margin_pct_fact_pm : null, fmtPct, fmtPp),
+      ],
+    },
+    {
+      label: `Себестоимость выпуска по факту, ${C}`, value: isNum(t[`cost_fact_${c}`]) ? fmtCompact(t[`cost_fact_${c}`]) : null,
+      note: isNum(t[`cost_fact_${c}`]) ? fmtMoney(t[`cost_fact_${c}`]) : '',
+      lines: [
+        cmp('по нормативу', t[`cost_norm_${c}`],
+            isNum(t[`cost_fact_${c}`]) && t[`cost_norm_${c}`] ? 100 * (t[`cost_fact_${c}`] / t[`cost_norm_${c}`] - 1) : null,
+            fmtCompact, fmtSignedPct, false),
+      ],
+    },
+    {
+      label: `Себестоимость штуки по факту, ${C}`, value: isNum(t[`unit_cost_fact_${c}`]) ? fmtMoney(t[`unit_cost_fact_${c}`]) : null,
+      note: 'себестоимость выпуска / штуки, строки с годным фактом',
+      lines: [
+        cmp('по нормативу', t[`unit_cost_norm_${c}`], t[`unit_cost_fact_dev_pct_${c}`], fmtMoney, fmtSignedPct, false),
+      ],
+    },
+    {
+      label: `Δ маржи факт − норматив, ${C}`, value: isNum(t[`fact_dev_${c}`]) ? fmtSigned(t[`fact_dev_${c}`], fmtCompact) : null,
+      note: 'отрицательная — факт дороже норматива',
+      lines: [
+        cmp('маржа по факту', t[`margin_fact_${c}`], null, fmtCompact, () => ''),
+        cmp('маржа по нормативу', t[`margin_norm_${c}`], null, fmtCompact, () => ''),
+      ],
+    },
+    {
+      label: 'Факт годен, % выпуска', value: factCoverage.value === null ? null : fmtPct(factCoverage.value, 1),
+      note: 'у остальных строк фактическая ставка минуты в Лисе не заведена',
+      lines: [
+        cmp('пред. месяц', t.fact_coverage_pct_pm, null, (v: any) => fmtPct(v, 1), () => ''),
+        cmp('пред. год', t.fact_coverage_pct_py, null, (v: any) => fmtPct(v, 1), () => ''),
+      ],
+    },
+  ]
+})
+
+const factDynData = computed(() => {
+  if (!months.value.length) return null
+  return {
+    labels: monthLabels.value,
+    datasets: [
+      { label: 'По факту, %', data: months.value.map(m => num(m.margin_pct_fact)),
+        borderColor: accent.value, backgroundColor: accent.value, tension: 0.25 },
+      { label: 'По нормативу, %', data: months.value.map(m => num(m.margin_pct_norm)),
+        borderColor: withAlpha(accent.value, 0.5), backgroundColor: withAlpha(accent.value, 0.5), tension: 0.25, borderDash: [4, 4] },
+    ],
+  }
+})
+
+const factBmData = computed(() => {
+  // Строки не фильтруем: клик по столбцу берёт byBm[idx] (см. bmOptions), и при
+  // выкинутых строках индексы разъехались бы. Без факта — пустой столбец.
+  if (!byBm.value.length || !byBm.value.some(r => isNum(r.fact_dev_pp))) return null
+  const vals = byBm.value.map(r => num(r.fact_dev_pp))
+  return {
+    labels: bmLabels.value,
+    datasets: [{ label: 'Δ маржинальности факт − норматив, пп', data: vals,
+                 backgroundColor: vals.map(v => (v !== null && v >= 0 ? pos.value : neg.value)) }],
+  }
+})
+
 // ── Тема графиков ───────────────────────────────────────────────────────────
 
 const { ink, grid, accent, info, pos, neg, color, withAlpha, pointerOnHover } = useChartTheme()
@@ -708,6 +864,24 @@ const matrixColumns = computed<Col[]>(() => {
       { key: 'dev_py', label: 'Δ к пред. году, пп', fmt: r => fmtPp(r.margin_pct_dev_py), cls: r => devCls(r.margin_pct_dev_py) },
       { key: 'target', label: 'Норма, %', title: 'норма маржинальности по Level 01', fmt: r => fmtPct(r.target_pct, 0),
         cls: r => (r.below_target ? 'neg' : '') },
+    ]
+  }
+  if (matrixView.value === 'fact') {
+    // Только строки с годным фактом: объём и суммы здесь — по ним, а не по всему выпуску.
+    return [
+      { key: 'cov', label: 'Факт годен, % выпуска', fmt: r => fmtPct(r.fact_coverage_pct, 0),
+        cls: r => (isNum(r.fact_coverage_pct) && r.fact_coverage_pct < 100 ? 'neg' : '') },
+      { key: 'unit_norm', label: `С/с шт норматив, ${C}`, fmt: r => fmtMoney(r[`unit_cost_norm_${c}`]) },
+      { key: 'unit_fact', label: `С/с шт факт, ${C}`, fmt: r => fmtMoney(r[`unit_cost_fact_${c}`]) },
+      { key: 'unit_dev', label: 'Δ с/с, %', title: 'факт / норматив − 1', fmt: r => fmtSignedPct(r[`unit_cost_fact_dev_pct_${c}`]),
+        cls: r => devCls(r[`unit_cost_fact_dev_pct_${c}`], false) },
+      { key: 'margin_norm', label: `Маржа норматив, ${C}`, fmt: r => fmtInt(r[`margin_norm_${c}`]) },
+      { key: 'margin_fact', label: `Маржа факт, ${C}`, fmt: r => fmtInt(r[`margin_fact_${c}`]) },
+      { key: 'margin_dev', label: `Δ маржи, ${C}`, fmt: r => fmtSigned(r[`fact_dev_${c}`], x => nf0.format(x)) || '—',
+        cls: r => devCls(r[`fact_dev_${c}`]) },
+      { key: 'pct_norm', label: 'Маржин. норматив, %', fmt: r => fmtPct(r.margin_pct_norm, 1) },
+      { key: 'pct_fact', label: 'Маржин. факт, %', fmt: r => fmtPct(r.margin_pct_fact, 1) },
+      { key: 'pct_dev', label: 'Δ, пп', fmt: r => fmtPp(r.fact_dev_pp), cls: r => devCls(r.fact_dev_pp) },
     ]
   }
   return [
