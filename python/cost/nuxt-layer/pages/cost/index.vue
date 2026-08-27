@@ -384,114 +384,116 @@
                 PLAN_ID<span v-if="sortField === 'PLAN_ID'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize('plan_id', $event)" @dblclick.stop.prevent="resetColWidth('plan_id')" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('country')" :class="{ sorted: sortField === 'Страна пр-ва' }" @click="toggleSort('Страна пр-ва')">
+              <template v-for="ck in orderedMovableKeys" :key="'h-' + ck">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'country' && isVisible('country')" :class="{ sorted: sortField === 'Страна пр-ва' }" @click="toggleSort('Страна пр-ва')">
                 Страна<span v-if="sortField === 'Страна пр-ва'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('family')" :class="{ sorted: sortField === 'Семья' }" @click="toggleSort('Семья')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'family' && isVisible('family')" :class="{ sorted: sortField === 'Семья' }" @click="toggleSort('Семья')">
                 Семья<span v-if="sortField === 'Семья'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('season')" :class="{ sorted: sortField === 'Сезон' }" @click="toggleSort('Сезон')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'season' && isVisible('season')" :class="{ sorted: sortField === 'Сезон' }" @click="toggleSort('Сезон')">
                 Сезон<span v-if="sortField === 'Сезон'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('date')" :class="{ sorted: sortField === 'дата расчета' }" @click="toggleSort('дата расчета')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'date' && isVisible('date')" :class="{ sorted: sortField === 'дата расчета' }" @click="toggleSort('дата расчета')">
                 Дата<span v-if="sortField === 'дата расчета'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('calc_sign')" :class="{ sorted: sortField === 'Признак калькуляции' }" @click="toggleSort('Признак калькуляции')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'calc_sign' && isVisible('calc_sign')" :class="{ sorted: sortField === 'Признак калькуляции' }" @click="toggleSort('Признак калькуляции')">
                 Пр.кальк<span v-if="sortField === 'Признак калькуляции'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('planned_retail')" class="col-num">План. розница</th>
-              <th v-if="isVisible('planned_wholesale')" class="col-num">План. опт</th>
-              <th v-if="isVisible('planned_cost')" class="col-num">План. с/с</th>
-              <th v-if="isVisible('planned_profitability')" class="col-num col-metric col-metric-hl" title="План. опт / План. с/с − 1">План. рентаб. (%)</th>
-              <th v-if="isVisible('avg_retail_rub')" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'planned_retail' && isVisible('planned_retail')" class="col-num">План. розница</th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'planned_wholesale' && isVisible('planned_wholesale')" class="col-num">План. опт</th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'planned_cost' && isVisible('planned_cost')" class="col-num">План. с/с</th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'planned_profitability' && isVisible('planned_profitability')" class="col-num col-metric col-metric-hl" title="План. опт / План. с/с − 1">План. рентаб. (%)</th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'avg_retail_rub' && isVisible('avg_retail_rub')" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
                 Сред. розница (руб)<span v-if="sortField === 'avg_Розничная цена по уровню, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('avg_rate')" class="col-num" :class="{ sorted: sortField === 'avg_Курс на дату расчета' }" @click="toggleSort('avg_Курс на дату расчета')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'avg_rate' && isVisible('avg_rate')" class="col-num" :class="{ sorted: sortField === 'avg_Курс на дату расчета' }" @click="toggleSort('avg_Курс на дату расчета')">
                 Курс (руб)<span v-if="sortField === 'avg_Курс на дату расчета'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('retail_markup')" class="col-num">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'retail_markup' && isVisible('retail_markup')" class="col-num">
                 Розничная наценка
               </th>
-              <th v-if="isVisible('price_rf')" class="col-num">Цена РФ</th>
-              <th v-if="isVisible('price_kz')" class="col-num">Цена КЗ</th>
-              <th v-if="isVisible('price_uz')" class="col-num">Цена УЗ</th>
-              <th v-if="isVisible('mp_price_rub')" class="col-num">Цена для МП, рос. руб.</th>
-              <th v-if="isVisible('comment')">Комментарий</th>
-              <th v-if="isVisible('avg_wholesale') && !showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'price_rf' && isVisible('price_rf')" class="col-num">Цена РФ</th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'price_kz' && isVisible('price_kz')" class="col-num">Цена КЗ</th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'price_uz' && isVisible('price_uz')" class="col-num">Цена УЗ</th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'mp_price_rub' && isVisible('mp_price_rub')" class="col-num">Цена для МП, рос. руб.</th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'comment' && isVisible('comment')">Комментарий</th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'avg_wholesale' && isVisible('avg_wholesale') && !showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
                 Сред. опт (руб)<span v-if="sortField === 'avg_Отпускная цена по уровню, руб'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('price_level')" :class="{ sorted: sortField === 'Уровень цен' }" @click="toggleSort('Уровень цен')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'price_level' && isVisible('price_level')" :class="{ sorted: sortField === 'Уровень цен' }" @click="toggleSort('Уровень цен')">
                 Уровень цен<span v-if="sortField === 'Уровень цен'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('avg_retail_usd') && showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, USD.' }" @click="toggleSort('avg_Розничная цена по уровню, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, USD.' }" @click="toggleSort('avg_Розничная цена по уровню, USD.')">
                 Сред. розница ($)<span v-if="sortField === 'avg_Розничная цена по уровню, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('avg_retail_usd') && showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, USD.' }" @click="toggleSort('avg_Отпускная цена по уровню, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, USD.' }" @click="toggleSort('avg_Отпускная цена по уровню, USD.')">
                 Сред. опт ($)<span v-if="sortField === 'avg_Отпускная цена по уровню, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_materials') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, руб.' }" @click="toggleSort('sum_Основные материалы, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_materials' && isVisible('sum_materials') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, руб.' }" @click="toggleSort('sum_Основные материалы, руб.')">
                 Осн. материалы (руб)<span v-if="sortField === 'sum_Основные материалы, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_materials') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, USD.' }" @click="toggleSort('sum_Основные материалы, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_materials' && isVisible('sum_materials') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, USD.' }" @click="toggleSort('sum_Основные материалы, USD.')">
                 Осн. материалы ($)<span v-if="sortField === 'sum_Основные материалы, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_aux_materials') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, руб.' }" @click="toggleSort('sum_Вспомогательные материалы, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_aux_materials' && isVisible('sum_aux_materials') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, руб.' }" @click="toggleSort('sum_Вспомогательные материалы, руб.')">
                 Вспом. (руб)<span v-if="sortField === 'sum_Вспомогательные материалы, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_aux_materials') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, USD.' }" @click="toggleSort('sum_Вспомогательные материалы, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_aux_materials' && isVisible('sum_aux_materials') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, USD.' }" @click="toggleSort('sum_Вспомогательные материалы, USD.')">
                 Вспом. ($)<span v-if="sortField === 'sum_Вспомогательные материалы, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('avg_sewing_min')" class="col-num" :class="{ sorted: sortField === 'avg_Пошив, минуты' }" @click="toggleSort('avg_Пошив, минуты')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'avg_sewing_min' && isVisible('avg_sewing_min')" class="col-num" :class="{ sorted: sortField === 'avg_Пошив, минуты' }" @click="toggleSort('avg_Пошив, минуты')">
                 Пошив (мин)<span v-if="sortField === 'avg_Пошив, минуты'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_sewing') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, руб.' }" @click="toggleSort('sum_Пошив, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_sewing' && isVisible('sum_sewing') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, руб.' }" @click="toggleSort('sum_Пошив, руб.')">
                 Пошив (руб)<span v-if="sortField === 'sum_Пошив, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_sewing') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, USD.' }" @click="toggleSort('sum_Пошив, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_sewing' && isVisible('sum_sewing') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, USD.' }" @click="toggleSort('sum_Пошив, USD.')">
                 Пошив ($)<span v-if="sortField === 'sum_Пошив, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('avg_cutting_min')" class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, минуты' }" @click="toggleSort('avg_Раскрой, минуты')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'avg_cutting_min' && isVisible('avg_cutting_min')" class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, минуты' }" @click="toggleSort('avg_Раскрой, минуты')">
                 Раскрой (мин)<span v-if="sortField === 'avg_Раскрой, минуты'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_cutting') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, руб.' }" @click="toggleSort('sum_Раскрой, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, руб.' }" @click="toggleSort('sum_Раскрой, руб.')">
                 Раскрой (руб)<span v-if="sortField === 'sum_Раскрой, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_cutting') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, USD.' }" @click="toggleSort('sum_Раскрой, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, USD.' }" @click="toggleSort('sum_Раскрой, USD.')">
                 Раскрой ($)<span v-if="sortField === 'sum_Раскрой, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_decors') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_decors' && isVisible('sum_decors') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
                 Декоры (руб)<span v-if="sortField === 'sum_Декоры, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_decors') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, USD.' }" @click="toggleSort('sum_Декоры, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_decors' && isVisible('sum_decors') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, USD.' }" @click="toggleSort('sum_Декоры, USD.')">
                 Декоры ($)<span v-if="sortField === 'sum_Декоры, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_knitting') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, руб.' }" @click="toggleSort('sum_Вязание, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_knitting' && isVisible('sum_knitting') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, руб.' }" @click="toggleSort('sum_Вязание, руб.')">
                 Вязание (руб)<span v-if="sortField === 'sum_Вязание, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_knitting') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, USD.' }" @click="toggleSort('sum_Вязание, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_knitting' && isVisible('sum_knitting') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, USD.' }" @click="toggleSort('sum_Вязание, USD.')">
                 Вязание ($)<span v-if="sortField === 'sum_Вязание, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('sum_cost') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_cost' && isVisible('sum_cost') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
                 Себест. (руб)<span v-if="sortField === 'sum_Себестоимость, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('cost_deviation')" class="col-num col-metric"
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'cost_deviation' && isVisible('cost_deviation')" class="col-num col-metric"
                   title="(Себест. − План. с/с) / План. с/с. Заливка — превышение плана больше 5%">Откл. с/с от плана (%)</th>
-              <th v-if="isVisible('sum_cost') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, USD.' }" @click="toggleSort('sum_Себестоимость, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'sum_cost' && isVisible('sum_cost') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, USD.' }" @click="toggleSort('sum_Себестоимость, USD.')">
                 Себест. ($)<span v-if="sortField === 'sum_Себестоимость, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('calc_markup')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'calc_markup' && isVisible('calc_markup')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
                 Рентабельность <template v-if="showUSD">($)</template><template v-else>(руб)</template><span v-if="sortField === 'calc_markup_rub'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('calc_markup_pct')" class="col-num col-metric col-metric-hl" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'calc_markup_pct' && isVisible('calc_markup_pct')" class="col-num col-metric col-metric-hl" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
                 Рентабельность (%)<span v-if="sortField === 'calc_markup_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('calc_margin_pct')" class="col-num col-metric col-metric-hl" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'calc_margin_pct' && isVisible('calc_margin_pct')" class="col-num col-metric col-metric-hl" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
                 Маржа (%)<span v-if="sortField === 'calc_margin_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('calc_margin_deviation')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'calc_margin_deviation' && isVisible('calc_margin_deviation')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
                 Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
-              <th v-if="isVisible('peo')" class="col-peo">ПЭО</th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" v-if="ck === 'peo' && isVisible('peo')" class="col-peo">ПЭО</th>
+              </template>
             </tr>
           </thead>
           <tbody>
@@ -549,19 +551,20 @@
               <td v-if="isVisible('color')" :class="stickyClasses('color')" :style="stickyStyle('color')">{{ row['color'] || '—' }}</td>
               <td v-if="isVisible('task_num')" :class="stickyClasses('task_num')" :style="stickyStyle('task_num')">{{ row['Номер задания производства'] || '—' }}</td>
               <td v-if="isVisible('plan_id')" :class="stickyClasses('plan_id')" :style="stickyStyle('plan_id')">{{ row['PLAN_ID'] || '—' }}</td>
-              <td v-if="isVisible('country')">{{ row['Страна пр-ва'] || '—' }}</td>
-              <td v-if="isVisible('family')">{{ row['Семья'] || '—' }}</td>
-              <td v-if="isVisible('season')">{{ row['Сезон'] || '—' }}</td>
-              <td v-if="isVisible('date')" class="num">{{ formatDate(row['дата расчета']) }}</td>
-              <td v-if="isVisible('calc_sign')">{{ row['Признак калькуляции'] || '—' }}</td>
-              <td v-if="isVisible('planned_retail')" class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
-              <td v-if="isVisible('planned_wholesale')" class="col-num num">{{ row.planned_wholesale != null ? fmt(row.planned_wholesale) : '—' }}</td>
-              <td v-if="isVisible('planned_cost')" class="col-num num">{{ row.planned_cost != null ? fmt(row.planned_cost) : '—' }}</td>
-              <td v-if="isVisible('planned_profitability')" class="col-num num col-metric col-metric-hl"
+              <template v-for="ck in orderedMovableKeys" :key="'c-' + ck">
+              <td v-if="ck === 'country' && isVisible('country')">{{ row['Страна пр-ва'] || '—' }}</td>
+              <td v-if="ck === 'family' && isVisible('family')">{{ row['Семья'] || '—' }}</td>
+              <td v-if="ck === 'season' && isVisible('season')">{{ row['Сезон'] || '—' }}</td>
+              <td v-if="ck === 'date' && isVisible('date')" class="num">{{ formatDate(row['дата расчета']) }}</td>
+              <td v-if="ck === 'calc_sign' && isVisible('calc_sign')">{{ row['Признак калькуляции'] || '—' }}</td>
+              <td v-if="ck === 'planned_retail' && isVisible('planned_retail')" class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
+              <td v-if="ck === 'planned_wholesale' && isVisible('planned_wholesale')" class="col-num num">{{ row.planned_wholesale != null ? fmt(row.planned_wholesale) : '—' }}</td>
+              <td v-if="ck === 'planned_cost' && isVisible('planned_cost')" class="col-num num">{{ row.planned_cost != null ? fmt(row.planned_cost) : '—' }}</td>
+              <td v-if="ck === 'planned_profitability' && isVisible('planned_profitability')" class="col-num num col-metric col-metric-hl"
                   :class="plannedProfitabilityPct(row) == null ? '' : (plannedProfitabilityPct(row)! >= 0 ? 'delta-pos' : 'delta-neg')">
                 {{ plannedProfitabilityPct(row) == null ? '—' : plannedProfitabilityPct(row)!.toFixed(1) + '%' }}
               </td>
-              <td v-if="isVisible('avg_retail_rub')">
+              <td v-if="ck === 'avg_retail_rub' && isVisible('avg_retail_rub')">
                 <select
                   class="price-select"
                   :value="Number(row['avg_Розничная цена по уровню, руб.']) || ''"
@@ -574,8 +577,8 @@
                   <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp">{{ fmt(rp) }}</option>
                 </select>
               </td>
-              <td v-if="isVisible('avg_rate')" class="col-num num">{{ row['avg_Курс на дату расчета'] != null ? fmt(row['avg_Курс на дату расчета']) : '—' }}</td>
-              <td v-if="isVisible('retail_markup')">
+              <td v-if="ck === 'avg_rate' && isVisible('avg_rate')" class="col-num num">{{ row['avg_Курс на дату расчета'] != null ? fmt(row['avg_Курс на дату расчета']) : '—' }}</td>
+              <td v-if="ck === 'retail_markup' && isVisible('retail_markup')">
                 <select
                   class="price-select"
                   :value="markupSelections[calcRowKey(row)] || ''"
@@ -590,7 +593,7 @@
                   </option>
                 </select>
               </td>
-              <td v-if="isVisible('price_rf')">
+              <td v-if="ck === 'price_rf' && isVisible('price_rf')">
                  <input class="price-input" type="number"
                   :value="priceRF[calcRowKey(row)] ?? ''"
                   placeholder="Цена РФ"
@@ -600,7 +603,7 @@
                   @input="onPriceRFInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td v-if="isVisible('price_kz')">
+              <td v-if="ck === 'price_kz' && isVisible('price_kz')">
                  <input class="price-input" type="number"
                   :value="priceKZ[calcRowKey(row)] ?? ''"
                   placeholder="Цена КЗ"
@@ -610,7 +613,7 @@
                   @input="onPriceKZInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td v-if="isVisible('price_uz')">
+              <td v-if="ck === 'price_uz' && isVisible('price_uz')">
                  <input class="price-input" type="number"
                   :value="priceUZ[calcRowKey(row)] ?? ''"
                   placeholder="Цена УЗ"
@@ -620,8 +623,8 @@
                   @input="onPriceUZInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td v-if="isVisible('mp_price_rub')" class="col-num num">{{ fmt(row['mp_price_rub']) }}</td>
-              <td v-if="isVisible('comment')">
+              <td v-if="ck === 'mp_price_rub' && isVisible('mp_price_rub')" class="col-num num">{{ fmt(row['mp_price_rub']) }}</td>
+              <td v-if="ck === 'comment' && isVisible('comment')">
                 <input class="comment-input" type="text"
                   :value="comments[calcRowKey(row)] ?? ''"
                   placeholder="..."
@@ -631,37 +634,37 @@
                   @input="onCommentInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td v-if="isVisible('avg_wholesale') && !showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
-              <td v-if="isVisible('price_level')">{{ row['Уровень цен'] || '—' }}</td>
-              <td v-if="isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
-              <td v-if="isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, USD.']) }}</td>
-              <td v-if="isVisible('sum_materials') && !showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, руб.']) }}</td>
-              <td v-if="isVisible('sum_materials') && showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, USD.']) }}</td>
-              <td v-if="isVisible('sum_aux_materials') && !showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, руб.']) }}</td>
-              <td v-if="isVisible('sum_aux_materials') && showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, USD.']) }}</td>
-              <td v-if="isVisible('avg_sewing_min')" class="col-num num">{{ fmt(row['avg_Пошив, минуты']) }}</td>
-              <td v-if="isVisible('sum_sewing') && !showUSD" class="col-num num">{{ fmt(row['sum_Пошив, руб.']) }}</td>
-              <td v-if="isVisible('sum_sewing') && showUSD" class="col-num num">{{ fmt(row['sum_Пошив, USD.']) }}</td>
-              <td v-if="isVisible('avg_cutting_min')" class="col-num num">{{ fmt(row['avg_Раскрой, минуты']) }}</td>
-              <td v-if="isVisible('sum_cutting') && !showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, руб.']) }}</td>
-              <td v-if="isVisible('sum_cutting') && showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, USD.']) }}</td>
-              <td v-if="isVisible('sum_decors') && !showUSD" class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
-              <td v-if="isVisible('sum_decors') && showUSD" class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
-              <td v-if="isVisible('sum_knitting') && !showUSD" class="col-num num">{{ fmt(row['sum_Вязание, руб.']) }}</td>
-              <td v-if="isVisible('sum_knitting') && showUSD" class="col-num num">{{ fmt(row['sum_Вязание, USD.']) }}</td>
-              <td v-if="isVisible('sum_cost') && !showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
-              <td v-if="isVisible('cost_deviation')" class="col-num num col-metric" :class="costDeviationClass(row)"
+              <td v-if="ck === 'avg_wholesale' && isVisible('avg_wholesale') && !showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
+              <td v-if="ck === 'price_level' && isVisible('price_level')">{{ row['Уровень цен'] || '—' }}</td>
+              <td v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
+              <td v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, USD.']) }}</td>
+              <td v-if="ck === 'sum_materials' && isVisible('sum_materials') && !showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, руб.']) }}</td>
+              <td v-if="ck === 'sum_materials' && isVisible('sum_materials') && showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, USD.']) }}</td>
+              <td v-if="ck === 'sum_aux_materials' && isVisible('sum_aux_materials') && !showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, руб.']) }}</td>
+              <td v-if="ck === 'sum_aux_materials' && isVisible('sum_aux_materials') && showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, USD.']) }}</td>
+              <td v-if="ck === 'avg_sewing_min' && isVisible('avg_sewing_min')" class="col-num num">{{ fmt(row['avg_Пошив, минуты']) }}</td>
+              <td v-if="ck === 'sum_sewing' && isVisible('sum_sewing') && !showUSD" class="col-num num">{{ fmt(row['sum_Пошив, руб.']) }}</td>
+              <td v-if="ck === 'sum_sewing' && isVisible('sum_sewing') && showUSD" class="col-num num">{{ fmt(row['sum_Пошив, USD.']) }}</td>
+              <td v-if="ck === 'avg_cutting_min' && isVisible('avg_cutting_min')" class="col-num num">{{ fmt(row['avg_Раскрой, минуты']) }}</td>
+              <td v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && !showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, руб.']) }}</td>
+              <td v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, USD.']) }}</td>
+              <td v-if="ck === 'sum_decors' && isVisible('sum_decors') && !showUSD" class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
+              <td v-if="ck === 'sum_decors' && isVisible('sum_decors') && showUSD" class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
+              <td v-if="ck === 'sum_knitting' && isVisible('sum_knitting') && !showUSD" class="col-num num">{{ fmt(row['sum_Вязание, руб.']) }}</td>
+              <td v-if="ck === 'sum_knitting' && isVisible('sum_knitting') && showUSD" class="col-num num">{{ fmt(row['sum_Вязание, USD.']) }}</td>
+              <td v-if="ck === 'sum_cost' && isVisible('sum_cost') && !showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
+              <td v-if="ck === 'cost_deviation' && isVisible('cost_deviation')" class="col-num num col-metric" :class="costDeviationClass(row)"
                   :title="costDeviationPct(row) == null ? 'Плановая себестоимость не задана' : ''">
                 {{ costDeviationPct(row) == null ? '—' : (costDeviationPct(row)! > 0 ? '+' : '') + costDeviationPct(row)!.toFixed(1) + '%' }}
               </td>
-              <td v-if="isVisible('sum_cost') && showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
-              <td v-if="isVisible('calc_markup')" class="col-num num col-metric">{{ fmt(calc(row, showUSD).markupRub) }}</td>
-              <td v-if="isVisible('calc_markup_pct')" class="col-num num col-metric col-metric-hl" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
+              <td v-if="ck === 'sum_cost' && isVisible('sum_cost') && showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
+              <td v-if="ck === 'calc_markup' && isVisible('calc_markup')" class="col-num num col-metric">{{ fmt(calc(row, showUSD).markupRub) }}</td>
+              <td v-if="ck === 'calc_markup_pct' && isVisible('calc_markup_pct')" class="col-num num col-metric col-metric-hl" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
                 {{ calc(row, showUSD).markupPct.toFixed(1) }}%
               </td>
-              <td v-if="isVisible('calc_margin_pct')" class="col-num num col-metric col-metric-hl">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
-              <td v-if="isVisible('calc_margin_deviation')" class="col-num num col-metric" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
-              <td v-if="isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark'), 'peo-active': approvalTarget === row }">
+              <td v-if="ck === 'calc_margin_pct' && isVisible('calc_margin_pct')" class="col-num num col-metric col-metric-hl">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
+              <td v-if="ck === 'calc_margin_deviation' && isVisible('calc_margin_deviation')" class="col-num num col-metric" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
+              <td v-if="ck === 'peo' && isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark'), 'peo-active': approvalTarget === row }">
                 <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟢</span>
                 <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🔴</span>
                 <!-- Возврат на корректировку: не «отклонено», а «жду исправленную
@@ -670,6 +673,7 @@
                 <span v-else-if="row.peo_status === 'returned'" class="peo-badge peo-returned" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Возврат на корректировку' + (row.peo_approved_by ? ': ' + row.peo_approved_by : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟠</span>
                 <span v-else class="peo-badge peo-none" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">⚪</span>
               </td>
+              </template>
             </tr>
           </tbody>
         </table>
@@ -1586,6 +1590,7 @@
         <div class="modal-content colvis-modal" @click.stop>
           <div class="modal-header">
             <h2>Настройка колонок</h2>
+            <span class="colvis-hint">порядок меняется перетаскиванием заголовка в таблице</span>
             <button class="modal-close" @click="cancelColumnVisibility">×</button>
           </div>
           <div class="colvis-body">
@@ -1637,6 +1642,12 @@
               <button class="btn btn-ghost btn-xs" @click="selectAllColumns">Все</button>
               <button class="btn btn-ghost btn-xs" @click="deselectAllColumns">Снять все</button>
               <button class="btn btn-ghost btn-xs" @click="resetColumnVisibility">Сбросить</button>
+              <button
+                v-if="columnOrderChanged"
+                class="btn btn-ghost btn-xs"
+                title="Вернуть колонки в исходный порядок"
+                @click="resetColumnOrder"
+              >Сбросить порядок</button>
             </div>
             <div class="colvis-footer-buttons">
               <button class="btn btn-ghost btn-sm" @click="cancelColumnVisibility">Отмена</button>
@@ -1789,6 +1800,117 @@ const STICKY_MAX_WIDTH = 600;
 const WIDTH_STORAGE_KEY = 'cost_sticky_col_widths';
 const STORAGE_KEY = 'cost_column_visibility';
 
+/** Порядок колонок — пожелания № 9 и № 14: «двигать в нужном порядке столбцы».
+ *
+ * Двигаются только НЕзакреплённые колонки. Закреплённые слева
+ * (STICKY_COL_KEYS) остаются на месте: их left-отступ считается сложением
+ * ширин предыдущих по фиксированному порядку, и чужая колонка, вставленная в
+ * середину группы, разъехалась бы поверх соседей при горизонтальной прокрутке.
+ *
+ * Порядок хранится списком ключей, а не индексами: список ключей переживает
+ * добавление и удаление колонок в коде, а индексы — нет. */
+const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
+const ORDER_STORAGE_KEY = 'cost_column_order';
+
+function normalizeColumnOrder(saved: unknown): string[] {
+  const known = new Set(MOVABLE_COL_KEYS);
+  const out: string[] = [];
+  if (Array.isArray(saved)) {
+    for (const k of saved) {
+      if (typeof k === 'string' && known.has(k) && !out.includes(k)) out.push(k);
+    }
+  }
+  // Колонку, появившуюся в коде уже после того, как человек сохранил свой
+  // порядок, возвращаем на место по соседям слева, а не в конец: иначе новая
+  // метрика уезжала бы в хвост таблицы у всех, кто когда-либо двигал колонки.
+  for (let i = 0; i < MOVABLE_COL_KEYS.length; i++) {
+    const k = MOVABLE_COL_KEYS[i];
+    if (out.includes(k)) continue;
+    let at = out.length;
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = out.indexOf(MOVABLE_COL_KEYS[j]);
+      if (prev >= 0) { at = prev + 1; break; }
+    }
+    out.splice(at, 0, k);
+  }
+  return out;
+}
+
+function loadColumnOrder(): string[] {
+  try {
+    return normalizeColumnOrder(JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || 'null'));
+  } catch {
+    return [...MOVABLE_COL_KEYS];
+  }
+}
+const columnOrder = ref<string[]>(loadColumnOrder());
+/** Ключи для v-for в шапке и в строках. Один и тот же список — иначе заголовки
+ *  разъехались бы с ячейками, а это молчаливая порча данных на экране. */
+const orderedMovableKeys = computed(() => columnOrder.value);
+
+function persistColumnOrder() {
+  try { localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(columnOrder.value)); } catch { /* ignore */ }
+  schedulePrefsPush();
+}
+
+const dragColKey = ref<string | null>(null);
+const dragOverColKey = ref<string | null>(null);
+
+/** Атрибуты и обработчики переноса вешаются через v-bind/v-on объектом:
+ *  у заголовков уже есть свои :class и @click (сортировка), и второй :class
+ *  на том же теге Vue не соберёт. */
+function colDragBind(key: string): Record<string, unknown> {
+  return {
+    draggable: 'true',
+    'data-drag': dragColKey.value === key ? 'src' : (dragOverColKey.value === key ? 'over' : null),
+  };
+}
+function colDragOn(key: string): Record<string, (e: DragEvent) => void> {
+  return {
+    dragstart: (e: DragEvent) => {
+      dragColKey.value = key;
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        // Без данных в dataTransfer Firefox не начинает перенос вообще.
+        e.dataTransfer.setData('text/plain', key);
+      }
+    },
+    dragover: (e: DragEvent) => {
+      if (!dragColKey.value || dragColKey.value === key) return;
+      e.preventDefault();
+      dragOverColKey.value = key;
+    },
+    dragleave: () => { if (dragOverColKey.value === key) dragOverColKey.value = null; },
+    drop: (e: DragEvent) => {
+      e.preventDefault();
+      const from = dragColKey.value;
+      dragColKey.value = null;
+      dragOverColKey.value = null;
+      if (!from || from === key) return;
+      const order = [...columnOrder.value];
+      const i = order.indexOf(from);
+      const j = order.indexOf(key);
+      if (i < 0 || j < 0) return;
+      order.splice(i, 1);
+      const at = order.indexOf(key);
+      // Тянут слева направо — колонка встаёт ПОСЛЕ цели, справа налево — ПЕРЕД.
+      // Так место приземления совпадает с тем, куда человек ведёт мышь.
+      order.splice(i < j ? at + 1 : at, 0, from);
+      columnOrder.value = order;
+      persistColumnOrder();
+    },
+    dragend: () => { dragColKey.value = null; dragOverColKey.value = null; },
+  };
+}
+
+function resetColumnOrder() {
+  columnOrder.value = [...MOVABLE_COL_KEYS];
+  persistColumnOrder();
+}
+const columnOrderChanged = computed(
+  () => columnOrder.value.join('|') !== MOVABLE_COL_KEYS.join('|'),
+);
+
 /** Настройки таблицы: браузер + сервер (миграция 0041).
  *
  * Пожелания № 9 и № 14: настроил под себя — настройка живёт, в том числе при
@@ -1814,6 +1936,7 @@ function collectPrefs() {
     columns: {
       visibility: { ...columnVisibility },
       widths: { ...stickyWidths },
+      order: [...columnOrder.value],
     },
     pageSize: pageSize.value,
     filtersOpen: filtersOpen.value,
@@ -1850,14 +1973,16 @@ function applyPrefs(doc: any) {
     }
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(columnVisibility)); } catch { /* ignore */ }
   }
+  if (Array.isArray(cols.order)) {
+    columnOrder.value = normalizeColumnOrder(cols.order);
+    try { localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(columnOrder.value)); } catch { /* ignore */ }
+  }
   if (cols.widths && typeof cols.widths === 'object') {
     for (const k of STICKY_COL_KEYS) {
       const v = Number(cols.widths[k]);
       if (isFinite(v) && v > 0) stickyWidths[k] = clampStickyWidth(k, v);
     }
     try { localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify(stickyWidths)); } catch { /* ignore */ }
-  schedulePrefsPush();
-  schedulePrefsPush();
   }
   if (PAGE_SIZE_OPTIONS.includes(Number(doc.pageSize))) {
     pageSize.value = Number(doc.pageSize);
@@ -6848,6 +6973,32 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 #cost-table-1.data-table th.sticky-col.sorted {
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
 }
+.colvis-hint {
+  margin-left: var(--sp-3, 12px);
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+  font-weight: 400;
+}
+
+/* Перенос колонок мышью (пожелания № 9 и № 14).
+   Тянуть можно только незакреплённые заголовки — у закреплённых слева порядок
+   задаёт раскладку sticky-отступов, поэтому они не draggable. */
+#cost-table-1.data-table thead th[draggable="true"] {
+  cursor: grab;
+}
+#cost-table-1.data-table thead th[draggable="true"]:active {
+  cursor: grabbing;
+}
+/* Колонка, которую несут: приглушаем, чтобы взгляд держался на месте вставки. */
+#cost-table-1.data-table thead th[data-drag="src"] {
+  opacity: 0.45;
+}
+/* Место приземления — полоса акцентом по краю заголовка. Тень внутрь, а не
+   рамка: рамка сдвинула бы содержимое ячейки на пиксель и шапка дрожала бы. */
+#cost-table-1.data-table thead th[data-drag="over"] {
+  box-shadow: inset 3px 0 0 var(--accent), inset -3px 0 0 var(--accent);
+}
+
 /* Resize handle on pinned column headers */
 #cost-table-1.data-table .col-resize-handle {
   position: absolute;
