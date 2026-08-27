@@ -58,6 +58,12 @@ const (
 	IndexBaseStrategy      = "strategy"
 )
 
+// Базы ограничения ФОТ (порог 106 %). ТЗ §5 базу не называл — это был открытый
+// вопрос §12 п.12. Ответ финблока (27.08.2026): «Верхняя граница ФОТ 106 % от
+// плана продаж на текущий месяц», поэтому дефолт — план текущего месяца, а
+// прежние варианты остались как совместимость для закрытых периодов.
+const PayrollBasePlanCurrent = "plan_current_month"
+
 // RetailBulkRequest — запрос массовой операции.
 type RetailBulkRequest struct {
 	Op      string `json:"op"`
@@ -85,9 +91,15 @@ type RetailBulkRequest struct {
 	IndexBase string `json:"index_base"` // fact_prev_month (дефолт)|fact_prev_year|approved_prev|strategy
 
 	// --- payroll ---
-	// PayrollBase — база для ограничения ФОТ. ТЗ §5 её не называет, поэтому
-	// выбирается явно; дефолт — стратегия (плановая величина того же месяца).
-	PayrollBase string `json:"payroll_base"` // strategy|fact_prev_year|approved_prev
+	// PayrollBase — база для ограничения ФОТ. Дефолт — план продаж текущего
+	// месяца (ответ финблока §12 п.12); остальные варианты — совместимость.
+	PayrollBase string `json:"payroll_base"` // plan_current_month|strategy|fact_prev_year|approved_prev
+
+	// --- rent ---
+	// RentTurnover — считать оборотную часть аренды. По ответу финблока
+	// (§12 п.13) этап 1 — только факт аренды предыдущего месяца, поэтому
+	// оборотная часть по умолчанию ВЫКЛЮЧЕНА и включается явно.
+	RentTurnover bool `json:"rent_turnover"`
 }
 
 // RetailBulkDiff — одно изменение «было → будет» (ТЗ §5: предпросмотр).
@@ -128,6 +140,10 @@ type RetailBulkContext struct {
 	Rows       []RetailRow
 	Series     RetailSeries
 	Params     RetailParamSet
+	// VatRate — эффективная ставка НДС страны из справочника dir_vat. Нужна ФОТ:
+	// ввод формы — выручка С НДС, а удельный вес применяется к продажам БЕЗ НДС
+	// (ответ финблока §12 п.12). 0 → берётся seed-ставка страны.
+	VatRate float64
 	// RentPrevFact — факт аренды предыдущего периода по магазинам (ТЗ §5, этап 1:
 	// «фикс = факт аренды предыдущего периода»). Отдельного источника аренды в
 	// ТЗ §11 нет, поэтому берётся из значений metric='rent' предыдущего
@@ -380,6 +396,14 @@ func bulkSalesIndex(res *RetailBulkResult, req RetailBulkRequest, ctx RetailBulk
 		res.Notes = append(res.Notes,
 			fmt.Sprintf("нет базы или индекса по %d ячейкам — они остались без изменений", res.SkippedNoBase))
 	}
+	// Ответ финблока (§12 п.11): для розницы индекс утверждается НА УРОВНЕ
+	// СТРАНЫ, переопределения по городу/LFL/типу/магазину — только уточнение.
+	// Работа на одних переопределениях — повод предупредить, а не запретить.
+	if !ctx.Params.HasScope(ParamSalesIndex, ParamScopeCountry, ctx.Country) &&
+		!ctx.Params.HasScope(ParamSalesIndex, ParamScopeCountry, "") {
+		res.Notes = append(res.Notes,
+			"страновое значение индекса не задано: по ответу финблока (§12 п.11) индекс роста утверждается на уровне страны, а переопределения — уточнение к нему")
+	}
 	return nil
 }
 
@@ -403,42 +427,105 @@ func indexBaseValue(kind string, ctx RetailBulkContext, row RetailRow, month int
 	return 0, false
 }
 
-// bulkPayroll — «ФОТ от продаж» (ТЗ §5):
-// ФОТ[магазин,M] = MIN(План_продаж; База_для_ограничения × Порог) × Удельный_вес.
+// bulkPayroll — «ФОТ от продаж» (ТЗ §5 + ответ финблока §12 п.12 от 27.08.2026).
 //
-// Порог по умолчанию 106 % — «выше 106 % планы не выплачивают». Порог и удельный
-// вес — ПАРАМЕТРЫ ПЕРИОДА, а не константы в формуле. При срабатывании порога
-// строка помечается пояснением (ТЗ §5).
+// ТЗ оставляло в формуле три неизвестных, и все три закрыты ответом финблока:
+//  1. база порога 106 % — ПЛАН ПРОДАЖ ТЕКУЩЕГО МЕСЯЦА (не факт прошлого года);
+//  2. удельный вес применяется к продажам БЕЗ НДС текущего периода — форма
+//     вводит выручку С НДС, поэтому база делится на (1 + ставка НДС страны);
+//  3. удельный вес задаётся ПО СТРАНЕ, а по магазинам «детализируется в
+//     пропорции ср. факта за последний квартал».
+//
+// Отсюда расчёт в два шага на каждый месяц:
+//
+//	База  = MIN(Продажи_без_НДС(магазин, месяц); Порог × База_ограничения_без_НДС)
+//	Фонд  = Σ уд.вес(магазин) × База(магазин)
+//	Доля  = ср.факт_квартала(магазин) / Σ ср.факт_квартала
+//	ФОТ   = Фонд × Доля
+//
+// Порог 106 % стоит на БАЗЕ НАЧИСЛЕНИЯ, как в формуле ТЗ §5
+// (MIN(План_продаж; База × Порог)), а не на итоговой сумме ФОТ. Это важно:
+// уд.вес — единицы процентов, поэтому порог на сумме ФОТ либо не сработал бы
+// никогда (сравнение с оборотом), либо — с множителем уд.веса — зажал бы
+// распределение в полосу ±6 % и обнулил бы саму «пропорцию ср. факта» из
+// ответа финблока. С базой ограничения по умолчанию (план текущего месяца)
+// порог не срабатывает — он и предназначен для случаев, когда база начисления
+// не совпадает с планом (режимы совместимости: стратегия, факт прошлого года).
+//
+// Магазины без факта за последний закрытый квартал (новые точки) в фонд и в
+// распределение не входят — им ФОТ считается напрямую от базы, с пометкой.
 func bulkPayroll(res *RetailBulkResult, req RetailBulkRequest, ctx RetailBulkContext,
 	rows []RetailRow, months []int) error {
-	capped := 0
+	vat := retailVatRate(ctx)
+	capped, direct := 0, 0
+
+	// Пропорция детализации — одна на период (ср. факт последнего квартала),
+	// а не своя на каждый месяц: детализируется удельный вес, а не сезонность.
+	qbase := make(map[int]float64, len(rows))
 	for _, row := range rows {
-		share, ok := ctx.Params.Resolve(ParamPayrollShare, row, ctx.Country)
-		if !ok {
-			res.SkippedNoBase++
-			continue
+		qbase[row.CodeCFO] = payrollQuarterBase(ctx, row)
+	}
+
+	for _, m := range months {
+		// Шаг 1: фонд страны на месяц и база распределения. В обоих участвуют
+		// только строки с планом месяца И историей квартала.
+		fund, baseTotal := 0.0, 0.0
+		for _, row := range rows {
+			share, hasShare := ctx.Params.Resolve(ParamPayrollShare, row, ctx.Country)
+			base, hasBase, _ := payrollBase(req, ctx, row, m, vat)
+			if !hasShare || !hasBase || qbase[row.CodeCFO] <= 0 {
+				continue
+			}
+			fund += share * base
+			baseTotal += qbase[row.CodeCFO]
 		}
-		threshold := ctx.Params.ResolveOr(ParamPayrollCap, row, ctx.Country, DefaultPayrollCap)
-		for _, m := range months {
-			plan := row.valueOf(ctx.Year, m)
-			if plan == nil {
+
+		// Шаг 2: раскладка фонда по магазинам в пропорции ср. факта квартала.
+		for _, row := range rows {
+			share, hasShare := ctx.Params.Resolve(ParamPayrollShare, row, ctx.Country)
+			if !hasShare {
 				res.SkippedNoBase++
 				continue
 			}
-			limitBase, hasLimit := payrollLimitBase(req.PayrollBase, ctx, row, m)
-			basis, note := *plan, ""
-			if hasLimit {
-				if limit := limitBase * threshold; limit < basis {
-					basis = limit
-					note = fmt.Sprintf("ФОТ ограничен порогом %.0f %%", threshold*100)
-					capped++
-				}
+			base, hasBase, capNote := payrollBase(req, ctx, row, m, vat)
+			if !hasBase {
+				res.SkippedNoBase++
+				continue
 			}
-			bulkSet(res, req, row, MetricPayroll, ctx.Year, m, basis*share, ValuePayrollShare, note)
+			if capNote != "" {
+				capped++
+			}
+
+			value, note := share*base, capNote
+			if qbase[row.CodeCFO] > 0 && baseTotal > 0 {
+				value = fund * qbase[row.CodeCFO] / baseTotal
+			} else {
+				direct++
+				note = joinNotes(note, "нет факта за последний закрытый квартал: ФОТ посчитан напрямую от базы магазина")
+			}
+			bulkSet(res, req, row, MetricPayroll, ctx.Year, m, value, ValuePayrollShare, note)
 		}
 	}
+
+	if len(res.Diff) > 0 {
+		res.Notes = append(res.Notes, fmt.Sprintf(
+			"удельный вес применён к продажам без НДС (ставка %.2f %%); фонд страны распределён пропорционально ср. факту за последний закрытый квартал (§12 п.12)",
+			vat*100))
+	}
+	// Ответ финблока (§12 п.12): удельный вес устанавливается ПО СТРАНЕ. Как и с
+	// индексом роста, работа на одних переопределениях допустима, но заметна.
+	if len(res.Diff) > 0 &&
+		!ctx.Params.HasScope(ParamPayrollShare, ParamScopeCountry, ctx.Country) &&
+		!ctx.Params.HasScope(ParamPayrollShare, ParamScopeCountry, "") {
+		res.Notes = append(res.Notes,
+			"страновой удельный вес ФОТ не задан: по ответу финблока (§12 п.12) он устанавливается по каждой стране розницы, а переопределения — уточнение к нему")
+	}
 	if capped > 0 {
-		res.Notes = append(res.Notes, fmt.Sprintf("порог сработал по %d ячейкам", capped))
+		res.Notes = append(res.Notes, fmt.Sprintf("порог базы начисления сработал по %d ячейкам", capped))
+	}
+	if direct > 0 {
+		res.Notes = append(res.Notes, fmt.Sprintf(
+			"%d ячеек посчитаны напрямую от базы магазина: нет факта за последний закрытый квартал", direct))
 	}
 	if res.SkippedNoBase > 0 {
 		res.Notes = append(res.Notes,
@@ -447,12 +534,94 @@ func bulkPayroll(res *RetailBulkResult, req RetailBulkRequest, ctx RetailBulkCon
 	return nil
 }
 
-// payrollLimitBase — «База_для_ограничения» ФОТ. ТЗ §5 её источник не называет,
-// поэтому он выбирается запросом; дефолт — стратегия того же месяца (плановая
-// величина, с которой и сравнивают «выше 106 %»). Открытый вопрос к финблоку.
+// payrollBase — база начисления ФОТ по магазину за месяц: продажи БЕЗ НДС с
+// порогом ТЗ §5. Ввод формы — выручка С НДС (§11: эталон «Выручка с НДС»), а
+// удельный вес по ответу финблока (§12 п.12) применяется к продажам без НДС.
+// Третий результат — пояснение, если порог сработал (ТЗ §5 требует пометку).
+func payrollBase(req RetailBulkRequest, ctx RetailBulkContext, row RetailRow,
+	month int, vat float64) (float64, bool, string) {
+	plan := row.valueOf(ctx.Year, month)
+	if plan == nil {
+		return 0, false, ""
+	}
+	base := *plan / (1 + vat)
+	threshold := ctx.Params.ResolveOr(ParamPayrollCap, row, ctx.Country, DefaultPayrollCap)
+	limitBase, hasLimit := payrollLimitBase(req.PayrollBase, ctx, row, month)
+	if !hasLimit {
+		return base, true, ""
+	}
+	if limit := threshold * limitBase / (1 + vat); limit < base {
+		return limit, true, fmt.Sprintf("база ФОТ ограничена порогом %.0f %%", threshold*100)
+	}
+	return base, true, ""
+}
+
+// joinNotes — склейка пояснений к одной ячейке (порог + отсутствие истории).
+func joinNotes(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + "; " + b
+}
+
+// retailVatRate — ставка НДС страны формы. Значение из справочника dir_vat
+// подставляет сервис; если справочник недоступен, работаем на seed-ставках —
+// форма не должна падать из-за НСИ (тот же принцип, что в RateBook).
+func retailVatRate(ctx RetailBulkContext) float64 {
+	if ctx.VatRate > 0 {
+		return ctx.VatRate
+	}
+	return pickVat(VatSeed(), ctx.Country, 0)
+}
+
+// payrollQuarterBase — средний факт продаж магазина за последний закрытый
+// квартал: база детализации удельного веса по магазинам (ответ §12 п.12).
+// Закрытые месяцы берутся ТОЛЬКО из календаря (тот же инвариант, что у
+// «ожидания года», ТЗ §4.4).
+func payrollQuarterBase(ctx RetailBulkContext, row RetailRow) float64 {
+	sum, n := 0.0, 0
+	for _, ym := range retailLastClosedMonths(ctx, 3) {
+		if v, ok := retailFactAt(ctx.Series, row.CodeCFO, ym[0], ym[1]); ok {
+			sum += v
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return sum / float64(n)
+}
+
+// retailLastClosedMonths — последние n закрытых месяцев перед периодом карточки.
+// Месяцы прошлых лет закрыты по определению; месяцы года периода — только если
+// календарь их закрыл. Ограничение по глубине не даёт уйти дальше прошлого года.
+func retailLastClosedMonths(ctx RetailBulkContext, n int) [][2]int {
+	out := make([][2]int, 0, n)
+	y, m := ctx.Year, ctx.Month
+	for i := 0; i < 24 && len(out) < n; i++ {
+		y, m = retailPrevMonth(y, m)
+		if y == ctx.Year && !ctx.Series.ClosedMonths[m] {
+			continue
+		}
+		out = append(out, [2]int{y, m})
+	}
+	return out
+}
+
+// payrollLimitBase — «База_для_ограничения» ФОТ. По ответу финблока (§12 п.12)
+// дефолт — план продаж ТЕКУЩЕГО месяца; прежние варианты оставлены для
+// периодов, утверждённых до ответа, и выбираются полем запроса.
 func payrollLimitBase(kind string, ctx RetailBulkContext, row RetailRow, month int) (float64, bool) {
 	switch kind {
-	case "", IndexBaseStrategy:
+	case "", PayrollBasePlanCurrent:
+		if plan := row.valueOf(ctx.Year, month); plan != nil {
+			return *plan, true
+		}
+		return 0, false
+	case IndexBaseStrategy:
 		v, ok := ctx.Series.Strategy[RetailCellKey{row.CodeCFO, ctx.Year, month}]
 		return v, ok
 	case IndexBaseFactPrevYear:
@@ -464,30 +633,32 @@ func payrollLimitBase(kind string, ctx RetailBulkContext, row RetailRow, month i
 	return 0, false
 }
 
-// bulkRent — «Аренда» (ТЗ §5):
-// Аренда = Фикс_часть + MAX(0; Выручка − Порог_оборота) × Ставка_оборотной_части.
+// bulkRent — «Аренда» (ТЗ §5 + ответ финблока §12 п.13 от 27.08.2026).
 //
-// Этап 1: фикс-часть = факт аренды предыдущего периода. Если параметров по
-// магазину нет — ставим ТОЛЬКО факт предыдущего периода и помечаем строку
-// (ТЗ §5), а не считаем оборотную часть по нулевым ставкам.
+// Ответ финблока: «применяем пока факт предыдущего месяца; надо будет
+// перестроить расчёт от каждого условия договора там, где есть привязка».
+// Поэтому оборотная часть по умолчанию НЕ считается: этап 1 — перенос факта
+// аренды предыдущего месяца. Формула ТЗ
+// Аренда = Фикс + MAX(0; Выручка − Порог_оборота) × Ставка
+// осталась в коде и включается явным RentTurnover=true (пороги и ставки —
+// параметры периода) — это переходный режим до этапа 2, где аренда считается от
+// условий договора.
 func bulkRent(res *RetailBulkResult, req RetailBulkRequest, ctx RetailBulkContext,
 	rows []RetailRow, months []int) error {
-	noParams := 0
+	noParams, stage1 := 0, 0
 	for _, row := range rows {
 		fixed, hasFixed := ctx.RentPrevFact[row.CodeCFO]
 		threshold, hasThreshold := ctx.Params.Resolve(ParamRentThresh, row, ctx.Country)
 		rate, hasRate := ctx.Params.Resolve(ParamRentRate, row, ctx.Country)
-		if !hasFixed && !hasRate {
+		turnover := req.RentTurnover && hasThreshold && hasRate
+		if !hasFixed && !turnover {
 			res.SkippedNoBase++
 			continue
 		}
 		for _, m := range months {
 			value, note := fixed, ""
-			if !hasRate || !hasThreshold {
-				// Этап 1 без параметров оборотной части: только перенос факта.
-				note = "только факт аренды предыдущего периода: ставка/порог оборотной части не заданы"
-				noParams++
-			} else {
+			switch {
+			case turnover:
 				revenue := 0.0
 				if plan := row.valueOf(ctx.Year, m); plan != nil {
 					revenue = *plan
@@ -495,17 +666,28 @@ func bulkRent(res *RetailBulkResult, req RetailBulkRequest, ctx RetailBulkContex
 				if over := revenue - threshold; over > 0 {
 					value += over * rate
 				}
+			case req.RentTurnover:
+				// Оборотную часть запросили, но параметров магазина нет.
+				note = "только факт аренды предыдущего месяца: ставка/порог оборотной части не заданы"
+				noParams++
+			default:
+				note = "этап 1: факт аренды предыдущего месяца (расчёт от условий договора — этап 2, §12 п.13)"
+				stage1++
 			}
 			bulkSet(res, req, row, MetricRent, ctx.Year, m, value, ValueRentCarryover, note)
 		}
 	}
+	if stage1 > 0 {
+		res.Notes = append(res.Notes, fmt.Sprintf(
+			"%d ячеек — факт аренды предыдущего месяца: по ответу финблока (§12 п.13) оборотная часть на этапе 1 не считается", stage1))
+	}
 	if noParams > 0 {
 		res.Notes = append(res.Notes,
-			fmt.Sprintf("%d ячеек посчитаны только по факту предыдущего периода (нет ставки/порога оборотной части)", noParams))
+			fmt.Sprintf("%d ячеек посчитаны только по факту предыдущего месяца (нет ставки/порога оборотной части)", noParams))
 	}
 	if res.SkippedNoBase > 0 {
 		res.Notes = append(res.Notes,
-			fmt.Sprintf("у %d магазинов нет ни факта аренды предыдущего периода, ни ставки — аренда не посчитана", res.SkippedNoBase))
+			fmt.Sprintf("у %d магазинов нет ни факта аренды предыдущего месяца, ни ставки — аренда не посчитана", res.SkippedNoBase))
 	}
 	return nil
 }
@@ -543,6 +725,13 @@ func ValidateBulkRequest(req RetailBulkRequest) error {
 		case IndexBaseFactPrevMonth, IndexBaseFactPrevYear, IndexBaseApprovedPrev, IndexBaseStrategy:
 		default:
 			return fmt.Errorf("неизвестная база индекса %q", req.IndexBase)
+		}
+	}
+	if req.Op == BulkPayroll && req.PayrollBase != "" {
+		switch req.PayrollBase {
+		case PayrollBasePlanCurrent, IndexBaseStrategy, IndexBaseFactPrevYear, IndexBaseApprovedPrev:
+		default:
+			return fmt.Errorf("неизвестная база ограничения ФОТ %q", req.PayrollBase)
 		}
 	}
 	if req.Op == BulkCopyScenario && strings.TrimSpace(req.Source) == "" {
