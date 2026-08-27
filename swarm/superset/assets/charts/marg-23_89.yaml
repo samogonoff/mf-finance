@@ -1,0 +1,24 @@
+slice_name: "marg-23 \xB7 \u0394 \u0444\u0430\u043A\u0442 \u2212 \u043D\u043E\u0440\
+  \u043C\u0430\u0442\u0438\u0432, \u043F\u043F"
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 14__table
+  viz_type: big_number_total
+  metric: fact_dev_pp
+  y_axis_format: +,.2f
+  subheader: "\u043D\u0438\u0436\u0435 \u043D\u0443\u043B\u044F \u2014 \u0444\u0430\
+    \u043A\u0442 \u0434\u043E\u0440\u043E\u0436\u0435 \u043D\u043E\u0440\u043C\u0430\
+    \u0442\u0438\u0432\u0430"
+  force_timestamp_formatting: false
+  header_font_size: 0.4
+  subheader_font_size: 0.125
+  adhoc_filters: []
+  extra_form_data: {}
+query_context: null
+cache_timeout: null
+uuid: ee54869c-0a57-4880-820e-ece33d64fd87
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2
