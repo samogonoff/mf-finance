@@ -787,3 +787,78 @@ def commercial_dashboard() -> dict:
             "date_basis_label": commercial.DATE_BASES[commercial.DEFAULT_DATE_BASIS][0],
         },
     }
+
+
+def margin_dashboard() -> dict:
+    """Заглушка дашборда «Маржа выпуска» для COST_MOCK=1.
+
+    Суммы выдуманные, производные показатели считаются той же функцией, что и
+    в бою (margin._derive) — иначе мок расходился бы с боевым ответом набором
+    ключей при первой же правке формул. Прошлый год у части строк пуст: фронт
+    обязан уметь показывать сравнение, которого нет.
+    """
+    from app import margin
+
+    def sums(vol, rev, cost, raw, k=1.0, prev=True):
+        # k — множитель для сдвинутых периодов; prev=False — сравнения нет.
+        row = {
+            "vol": vol, "rev_b": rev, "rev_u": rev / 3.2, "cost_b": cost, "cost_u": cost / 3.2,
+            "raw_b": raw, "raw_u": raw / 3.2, "sew_min": vol * 4.2, "sew_vol": vol * 0.6,
+            "target_num": rev * 0.6 * 0.48, "target_den": rev * 0.6,
+        }
+        for suffix, mult in (("_pm", 0.93 * k), ("_py", 0.81 * k)):
+            for key in ("vol", "rev_b", "rev_u", "cost_b", "cost_u", "raw_b", "raw_u", "sew_min", "sew_vol"):
+                row[key + suffix] = row[key] * mult if prev else None
+        return row
+
+    months = [f"2026-{m:02d}" for m in range(1, 9)]
+    return {
+        "tiles": margin._derive({**sums(2_877_939, 39_356_047, 18_026_135, 9_100_000),
+                                 "calc_count": 2376, "model_count": 640}),
+        "months": [
+            margin._derive({"ym": ym, **sums(2_800_000 + i * 90_000, 37e6 + i * 0.9e6, 17e6 + i * 0.3e6, 8.5e6)})
+            for i, ym in enumerate(months)
+        ],
+        "by_bm": [
+            margin._derive({"label": name, **sums(900_000 - i * 120_000, 12e6 - i * 1.6e6, 5.4e6 - i * 0.6e6, 2.7e6,
+                                                   prev=i != 2)})
+            for i, name in enumerate(("ИВАНОВА И.И.", "ПЕТРОВ П.П.", "СИДОРОВА А.А.", "КОЗЛОВ К.К."))
+        ],
+        "by_level01": [
+            margin._derive({"label": name, **sums(1_200_000 - i * 300_000, 16e6 - i * 4e6, 7e6 - i * 1.5e6, 3.5e6)})
+            for i, name in enumerate(("Носки&Колготки", "Женщинам", "Мужчинам", "Девочкам"))
+        ],
+        "matrix": [
+            margin._derive({"label": name, "name": None,
+                            **sums(1_200_000 - i * 300_000, 16e6 - i * 4e6, 7e6 - i * 1.5e6, 3.5e6)})
+            for i, name in enumerate(("Носки&Колготки", "Женщинам", "Мужчинам", "Девочкам", ""))
+        ],
+        "options": {
+            "model_name": ["ТРУСЫ МУЖСКИЕ", "НОСКИ МУЖСКИЕ", "ЛЕГИНСЫ"],
+            "model": ["417760-3", "583002", "447706"],
+            "articul": ["A-1", "A-2"],
+            "country": ["Беларусь", "Узбекистан"],
+            "season": ["SS2025", "SS2026", "AW2025"],
+            "level01": ["Женщинам", "Мужчинам", "Носки&Колготки"],
+            "level02": ["Бельё", "Одежда"],
+            "level03": ["Трусы", "Носки"],
+            "brand_manager": ["ИВАНОВА И.И.", "ПЕТРОВ П.П."],
+            "year": ["2025", "2026"],
+            "month": [f"{m:02d}" for m in range(1, 9)],
+        },
+        "meta": {
+            "options_truncated": [],
+            "matrix_truncated": False,
+            "matrix_row_limit": margin.MATRIX_ROW_LIMIT,
+            "calc_total": 30_000,
+            "cache_refreshed_at": "2026-08-12T06:00:00+00:00",
+            "volume_sign": margin.VOLUME_SIGN,
+            "period": {"year": ["2026"], "month": []},
+            "year_defaulted": True,
+            "matrix_dim": "level01",
+            "matrix_label": "Level 01",
+            "matrix_path": [],
+            "matrix_can_drill": True,
+            "matrix_levels": [{"key": k, "label": v} for k, v in margin.MATRIX_LEVELS],
+        },
+    }

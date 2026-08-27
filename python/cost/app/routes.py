@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app import commercial, mocks
+from app import commercial, margin, mocks
 from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap)
 from app.middleware import require_perm
 from app.notify import notify_admins
@@ -1283,6 +1283,39 @@ async def commercial_dashboard(
     except ValueError as exc:
         # Измерение или мера вне белого списка — это ошибка клиента, а не 500.
         raise HTTPException(400, str(exc))
+
+
+@router.get("/margin")
+async def margin_dashboard(
+    request: Request, _: str = Depends(_require_perm("cost:view"))
+) -> dict:
+    """Дашборд «Маржа выпуска» одним запросом — перенос отчётов Power BI
+    заказчика на витрину проекта (docs/bi/pbi-margin-port.md).
+
+    Плитки, динамика по месяцам, разрезы по бренд-менеджерам и Level 01,
+    матрица с проваливанием и варианты фильтров приходят вместе, в обеих
+    валютах. Сравнение с прошлым месяцем и годом — для того же набора месяцев,
+    что выбран фильтрами, сдвинутого назад (семантика DATEADD из Power BI).
+
+    Фильтры — повторяющимся параметром (?year=2026&month=07&level01=Женщинам).
+    Имена колонок берутся из белого списка, из запроса — только значения.
+
+    matrix_path — путь проваливания по матрице, в порядке уровней
+    (?matrix_path=Женщинам&matrix_path=Бельё). Применяется только к матрице.
+
+    default_period=1 — если год не выбран, взять последний год с выпуском
+    (первая загрузка страницы). Без флага пустой год означает «все годы».
+    """
+    if _is_mock():
+        return mocks.margin_dashboard()
+
+    qp = request.query_params
+    filters: dict = {key: qp.getlist(key) for key in margin.FILTER_KEYS if qp.getlist(key)}
+    return await margin.dashboard(
+        filters,
+        matrix_path=qp.getlist("matrix_path"),
+        default_period=qp.get("default_period") in ("1", "true"),
+    )
 
 
 @router.get("/price-levels")

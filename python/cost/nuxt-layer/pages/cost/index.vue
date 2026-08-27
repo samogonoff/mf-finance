@@ -15,6 +15,9 @@
         <NuxtLink to="/cost/commercial" class="btn btn-ghost btn-sm">
           <Icon name="lucide:chart-pie" /> Коммерческая эффективность
         </NuxtLink>
+        <NuxtLink to="/cost/margin" class="btn btn-ghost btn-sm">
+          <Icon name="lucide:trending-up" /> Маржа выпуска
+        </NuxtLink>
       </div>
     </header>
 
