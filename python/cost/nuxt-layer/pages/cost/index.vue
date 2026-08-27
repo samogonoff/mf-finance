@@ -575,8 +575,17 @@
                     ? 'Записано в DWH, открыто на исправление' + (can('cost:admin') ? ' — клик, чтобы отозвать' : '')
                     : 'Записано в DWH' + (can('cost:admin') ? ' — клик, чтобы вернуть на корректировку' : '')"
                   @click.stop="can('cost:admin') ? openReopenModal(row) : null">{{ row._reopened ? '🔓' : '📤' }}</span>
+                <!-- Калькуляция, созданная в приложении копией с другим признаком
+                     (пункт 1). Значок кликабелен для тех, кто вправе её удалить. -->
+                <span v-if="row.is_manual"
+                  class="state-badge state-badge--manual"
+                  :class="{ 'state-badge--action': can('cost:calc_sign_copy') }"
+                  :title="manualCopyTitle(row)"
+                  @click.stop="can('cost:calc_sign_copy') ? openCalcCopyDelete(row) : null">⧉</span>
                 <button class="btn-details" @click.stop="openDetails(row)">🔍</button>
                 <button v-if="!isRowLocked(row) && !row._has_audit" class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">🖊</button>
+                <button v-if="canCopyCalcSign(row)" class="btn-edit" @click.stop="openCalcCopy(row)"
+                  title="Создать калькуляцию с другим признаком (копия расчёта)">⧉</button>
               </td>
               <td :class="stickyClasses('raw_rows')" :style="stickyStyle('raw_rows')"><button class="btn-details" @click.stop="openRawRows(row)" title="Исходные строки">📋</button></td>
               <td v-if="isVisible('bm')" :class="stickyClasses('bm')" :style="stickyStyle('bm')">{{ row['Бренд-менеджер'] || '—' }}</td>
@@ -1621,6 +1630,78 @@
 
     <!-- Column visibility settings modal -->
     <Teleport to="body">
+      <!-- Калькуляция с другим признаком (пункт 1 «Списка доработок»).
+           Исходную не меняем: создаётся новая калькуляция, и дальше она проходит
+           обычный путь — правки, цена бренд-менеджера, согласование ПЭО, DWH. -->
+      <div v-if="calcCopyRow" class="modal-overlay" @click.self="closeCalcCopy">
+        <div class="modal-content" style="max-width:560px" @click.stop>
+          <div class="modal-header">
+            <h2>Калькуляция с другим признаком</h2>
+            <button class="modal-close" @click="closeCalcCopy">×</button>
+          </div>
+          <div style="padding:var(--sp-4) var(--sp-5)">
+            <p class="muted" style="margin-top:0">
+              Исходная калькуляция останется без изменений. Появится новая — копия
+              этого расчёта с выбранным признаком, её нужно будет провести обычным
+              порядком: правки, цена, согласование ПЭО.
+            </p>
+            <div style="margin:var(--sp-3) 0; font-size:13px">
+              <div><b>Модель:</b> {{ calcCopyRow['Модель'] }} · <b>Артикул:</b> {{ calcCopyRow['Артикул'] }}</div>
+              <div><b>План:</b> {{ calcCopyRow['PLAN_ID'] || '—' }} · <b>Признак сейчас:</b> {{ calcCopyRow['Признак калькуляции'] }}</div>
+              <div v-if="calcCopyRow['Номер задания производства']">
+                <b>Задание:</b> {{ calcCopyRow['Номер задания производства'] }}
+                <span class="muted">— копируются строки только этого задания</span>
+              </div>
+            </div>
+            <label style="display:block; font-size:13px; margin-bottom:4px">Новый признак</label>
+            <div style="display:flex; gap:var(--sp-3); margin-bottom:var(--sp-3)">
+              <label v-for="sign in calcCopyTargets" :key="sign" style="display:flex; align-items:center; gap:4px; font-size:13px">
+                <input type="radio" :value="sign" v-model="calcCopyTarget" />
+                <span>{{ sign }}</span>
+              </label>
+            </div>
+            <label style="display:block; font-size:13px; margin-bottom:4px">Причина (необязательно)</label>
+            <textarea v-model="calcCopyReason" class="approval-comment" rows="2"
+              placeholder="Перемаркировка, расценка ЧНИ…"></textarea>
+            <div v-if="calcCopyError" class="cost-error" style="margin-top:var(--sp-3)">{{ calcCopyError }}</div>
+          </div>
+          <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:var(--sp-3); padding:var(--sp-3) var(--sp-5)">
+            <button class="btn btn-ghost btn-sm" @click="closeCalcCopy">Отмена</button>
+            <button class="btn btn-primary btn-sm" :disabled="calcCopyBusy || !calcCopyTarget" @click="submitCalcCopy">
+              {{ calcCopyBusy ? 'Создаём…' : 'Создать калькуляцию' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="calcCopyDeleteRow" class="modal-overlay" @click.self="closeCalcCopyDelete">
+        <div class="modal-content" style="max-width:520px" @click.stop>
+          <div class="modal-header">
+            <h2>Удалить созданную калькуляцию</h2>
+            <button class="modal-close" @click="closeCalcCopyDelete">×</button>
+          </div>
+          <div style="padding:var(--sp-4) var(--sp-5); font-size:13px">
+            <p style="margin-top:0">
+              {{ calcCopyDeleteRow['Модель'] }} · {{ calcCopyDeleteRow['Артикул'] }} ·
+              план {{ calcCopyDeleteRow['PLAN_ID'] || '—' }} ·
+              признак {{ calcCopyDeleteRow['Признак калькуляции'] }}
+            </p>
+            <p class="muted">
+              Удалится вся калькуляция целиком, вместе со строками материалов.
+              Если по ней уже введена цена или стоит отметка ПЭО, удаление не
+              выполнится — сначала снимите их.
+            </p>
+            <div v-if="calcCopyDeleteError" class="cost-error" style="margin-top:var(--sp-3)">{{ calcCopyDeleteError }}</div>
+          </div>
+          <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:var(--sp-3); padding:var(--sp-3) var(--sp-5)">
+            <button class="btn btn-ghost btn-sm" @click="closeCalcCopyDelete">Отмена</button>
+            <button class="btn btn-primary btn-sm" :disabled="calcCopyDeleteBusy" @click="submitCalcCopyDelete">
+              {{ calcCopyDeleteBusy ? 'Удаляем…' : 'Удалить' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div v-if="showColumnSettings" class="modal-overlay" @click.self="cancelColumnVisibility">
         <div class="modal-content colvis-modal" @click.stop>
           <div class="modal-header">
@@ -5287,13 +5368,139 @@ async function submitReopenBulk() {
       headers: fetchHeaders.value,
     });
     for (const r of reopenBulkRows.value) applyReopenLocally(r, true);
-    peoBulkStatus.value = `Возвращено на корректировку калькуляций: ${resp?.reopened ?? items.length}`;
+    // Порядок важен: clearPeoSelection() обнуляет peoBulkStatus, поэтому
+    // сообщение ставим после сброса выделения, а не до него.
     clearPeoSelection();
+    peoBulkStatus.value = `Возвращено на корректировку калькуляций: ${resp?.reopened ?? items.length}`;
     closeReopenModal();
   } catch (e: any) {
     reopenError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     reopenBusy.value = false;
+  }
+}
+
+/* Калькуляция с другим признаком — пункт 1 «Списка доработок».
+ *
+ * Заказчик уточнил 27.08.2026: признак у исходной калькуляции не меняем, а
+ * создаём НОВУЮ калькуляцию с другим признаком, и дальше она живёт как обычная.
+ * Право есть только у калькулятора и админа: бренд-менеджеру и ПЭО эта кнопка
+ * не показывается вовсе. */
+const CALC_SIGN_COPY_SIGNS = ['ПКПСС', 'КПСС', 'ПФКСС'];
+const calcCopyRow = ref<any | null>(null);
+const calcCopyTarget = ref('');
+const calcCopyReason = ref('');
+const calcCopyBusy = ref(false);
+const calcCopyError = ref('');
+const calcCopyDeleteRow = ref<any | null>(null);
+const calcCopyDeleteBusy = ref(false);
+const calcCopyDeleteError = ref('');
+
+const calcCopyTargets = computed(() => {
+  const cur = String(calcCopyRow.value?.['Признак калькуляции'] || '').trim();
+  return CALC_SIGN_COPY_SIGNS.filter(s => s !== cur);
+});
+
+function canCopyCalcSign(row: any): boolean {
+  if (!can('cost:calc_sign_copy')) return false;
+  // Копию делаем из расчёта источника: сервер копирует строки из кэша, поэтому
+  // копия копии технически невозможна.
+  if (row?.is_manual) return false;
+  if (!CALC_SIGN_COPY_SIGNS.includes(String(row?.['Признак калькуляции'] || '').trim())) return false;
+  // «Этап калькулятора»: до цены и согласования. Ту же проверку делает сервер.
+  return !isRowLocked(row) && !row._has_audit && !row._has_pending;
+}
+
+function manualCopyTitle(row: any): string {
+  const from = row?.manual_source_sign ? `создана из ${row.manual_source_sign}` : 'создана в приложении';
+  const who = row?.manual_created_by ? `, ${row.manual_created_by}` : '';
+  const tail = can('cost:calc_sign_copy') ? ' — клик, чтобы удалить' : '';
+  return `Калькуляция ${from}${who}${tail}`;
+}
+
+function openCalcCopy(row: any) {
+  if (!canCopyCalcSign(row)) return;
+  calcCopyRow.value = row;
+  calcCopyTarget.value = calcCopyTargets.value[0] || '';
+  calcCopyReason.value = '';
+  calcCopyError.value = '';
+}
+function closeCalcCopy() {
+  calcCopyRow.value = null;
+  calcCopyError.value = '';
+}
+
+async function submitCalcCopy() {
+  const row = calcCopyRow.value;
+  if (!row || !calcCopyTarget.value) {
+    calcCopyError.value = 'Выберите новый признак калькуляции';
+    return;
+  }
+  calcCopyBusy.value = true;
+  calcCopyError.value = '';
+  try {
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/calc-sign-copy`, {
+      method: 'POST',
+      headers: fetchHeaders.value,
+      body: {
+        model: row['Модель'],
+        articul: row['Артикул'],
+        plan_id: row['PLAN_ID'] || '',
+        calc_sign: row['Признак калькуляции'],
+        task_number: row['Номер задания производства'] || '',
+        target_calc_sign: calcCopyTarget.value,
+        reason: calcCopyReason.value.trim(),
+      },
+    });
+    // Предупреждение о совпадении ключа показываем явно: цена в разделе
+    // ставится на модель, артикул, план и признак, поэтому у копии и у
+    // калькуляции источника с тем же признаком она будет общей.
+    closeCalcCopy();
+    // Сообщение ставим ПОСЛЕ перезагрузки: loadData() вызывает
+    // clearPeoSelection(), а тот обнуляет peoBulkStatus — успех был бы тихим.
+    await loadData();
+    peoBulkStatus.value = `Создана калькуляция ${resp?.target_calc_sign}: строк ${resp?.rows}`
+      + (resp?.clash_with_source
+        ? '. Внимание: калькуляция с этим признаком уже есть в источнике — цена у них будет общая'
+        : '');
+  } catch (e: any) {
+    calcCopyError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    calcCopyBusy.value = false;
+  }
+}
+
+function openCalcCopyDelete(row: any) {
+  if (!can('cost:calc_sign_copy') || !row?.is_manual) return;
+  calcCopyDeleteRow.value = row;
+  calcCopyDeleteError.value = '';
+}
+function closeCalcCopyDelete() {
+  calcCopyDeleteRow.value = null;
+  calcCopyDeleteError.value = '';
+}
+
+async function submitCalcCopyDelete() {
+  const row = calcCopyDeleteRow.value;
+  const batch = row?.manual_batch_id;
+  if (!batch) {
+    calcCopyDeleteError.value = 'Не удалось определить, какую калькуляцию удалять — обновите данные';
+    return;
+  }
+  calcCopyDeleteBusy.value = true;
+  calcCopyDeleteError.value = '';
+  try {
+    await $fetch(`${apiBase.value}/api/cost/calc-sign-copy/${batch}`, {
+      method: 'DELETE',
+      headers: fetchHeaders.value,
+    });
+    closeCalcCopyDelete();
+    await loadData();
+    peoBulkStatus.value = 'Созданная калькуляция удалена';
+  } catch (e: any) {
+    calcCopyDeleteError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    calcCopyDeleteBusy.value = false;
   }
 }
 
@@ -7102,6 +7309,12 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 #cost-table-1.data-table tbody td {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Пометка калькуляции, созданной в приложении (пункт 1). Индиго, чтобы не
+   спутать с оранжевым «возврат» и синим «в DWH». */
+.state-badge--manual {
+  color: var(--accent);
 }
 
 /* Перенос колонок мышью (пожелания № 9 и № 14).

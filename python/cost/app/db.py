@@ -19,6 +19,7 @@ import asyncio
 import datetime
 import json
 import os
+import uuid
 
 import asyncpg
 import pyodbc
@@ -1489,7 +1490,7 @@ async def get_max_calc_cost(
                        trim(COALESCE(c."Номер задания производства", '')) AS task,
                        SUM({rub_sum}) AS rub,
                        SUM({usd_sum}) AS usd
-                FROM cost_data_cache c
+                FROM cost_data_all c
                 JOIN unnest($1::text[], $2::text[], $3::text[], $4::text[])
                      AS k(m, a, cs, pid)
                   ON k.m = trim(c."Модель")
@@ -1791,7 +1792,7 @@ async def checkout_calculation(model, articul, calc_sign, plan_id, raw_date, use
 
         # Verify cache has data for this key
         cache_count = await conn.fetchval(
-            """SELECT COUNT(*) FROM cost_data_cache
+            """SELECT COUNT(*) FROM cost_data_all
                WHERE "Модель"=$1 AND "Артикул"=$2
                  AND "Признак калькуляции" IS NOT DISTINCT FROM $3
                  AND "PLAN_ID" IS NOT DISTINCT FROM $4 AND "дата расчета"=$5""",
@@ -1825,7 +1826,7 @@ async def checkout_calculation(model, articul, calc_sign, plan_id, raw_date, use
 
         col_list = ", ".join(f'"{c}"' for c in CACHE_COLUMNS)
         cache_rows = await conn.fetch(
-            f"""SELECT {col_list} FROM cost_data_cache
+            f"""SELECT {col_list} FROM cost_data_all
                 WHERE "Модель"=$1 AND "Артикул"=$2
                   AND "Признак калькуляции" IS NOT DISTINCT FROM $3
                   AND "PLAN_ID" IS NOT DISTINCT FROM $4
@@ -2149,11 +2150,15 @@ async def _apply_version_rows_to_cache(conn, version_id) -> None:
     )
     if ver is None:
         return
+    target = await _calc_table(
+        conn, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"]
+    )
     current_date = await _current_cache_date(
-        conn, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], ver["task_number"]
+        conn, ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], ver["task_number"],
+        table=target,
     )
     if current_date is None:
-        return  # для ключа сейчас нет данных в кэше — применять некуда
+        return  # для ключа сейчас нет данных — применять некуда
 
     # Область замены ограничиваем заданием (миграция 0032). Пустой task_number —
     # версия старого формата: она охватывала все задания ключа, поэтому и
@@ -2161,11 +2166,26 @@ async def _apply_version_rows_to_cache(conn, version_id) -> None:
     # следующем сохранении.
     task = ver["task_number"] or ""
     task_filter = "" if task == "" else ' AND trim("Номер задания производства") = $6'
+    # Служебные поля копии (пакет, исходный признак, автор) читаем ДО удаления
+    # строк — после DELETE взять их уже негде, а они NOT NULL при вставке.
+    meta = None
+    if target == "cost_manual_calc":
+        meta = await conn.fetchrow(
+            """SELECT batch_id, source_calc_sign, source_task, created_by, reason
+                 FROM cost_manual_calc
+                WHERE "Модель"=$1 AND "Артикул"=$2
+                  AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+                  AND "PLAN_ID" IS NOT DISTINCT FROM $4
+                LIMIT 1""",
+            ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"],
+        )
+        if meta is None:
+            return  # копию удалили, пока версия ждала согласования
     params = [ver["model"], ver["articul"], ver["calc_sign"], ver["plan_id"], current_date]
     if task != "":
         params.append(task)
     await conn.execute(
-        f"""DELETE FROM cost_data_cache
+        f"""DELETE FROM {target}
            WHERE "Модель"=$1 AND "Артикул"=$2
              AND "Признак калькуляции" IS NOT DISTINCT FROM $3
              AND "PLAN_ID" IS NOT DISTINCT FROM $4
@@ -2184,13 +2204,27 @@ async def _apply_version_rows_to_cache(conn, version_id) -> None:
         else:
             select_items.append(f'"{c}"')
     select_list = ", ".join(select_items)
-    await conn.execute(
-        f"""INSERT INTO cost_data_cache ({col_list})
-            SELECT {select_list}
-            FROM cost_calc_version_rows
-            WHERE version_id=$1""",
-        version_id, current_date,
-    )
+    if target == "cost_manual_calc":
+        # Пакет, исходный признак и автор не меняются от того, что материалы
+        # пересчитали, — переносим их на новые строки как есть.
+        await conn.execute(
+            f"""INSERT INTO cost_manual_calc ({col_list}, batch_id, source_calc_sign,
+                                              source_task, created_by, reason)
+                SELECT {select_list}, $3, $4, $5, $6, $7
+                FROM cost_calc_version_rows
+                WHERE version_id=$1""",
+            version_id, current_date,
+            meta["batch_id"], meta["source_calc_sign"], meta["source_task"],
+            meta["created_by"], meta["reason"],
+        )
+    else:
+        await conn.execute(
+            f"""INSERT INTO cost_data_cache ({col_list})
+                SELECT {select_list}
+                FROM cost_calc_version_rows
+                WHERE version_id=$1""",
+            version_id, current_date,
+        )
 
 
 async def _reapply_active_versions_to_cache(conn) -> int:
@@ -2348,7 +2382,7 @@ async def get_raw_cache_rows(model, articul, calc_sign, plan_id, raw_date=None, 
             cache_params.append(task)
         rows = await conn.fetch(
             f"""SELECT {", ".join(f'"{c}"' for c in CACHE_COLUMNS)}
-               FROM cost_data_cache
+               FROM cost_data_all
                WHERE "Модель"=$1 AND "Артикул"=$2
                  AND "Признак калькуляции" IS NOT DISTINCT FROM $3
                  AND "PLAN_ID" IS NOT DISTINCT FROM $4
@@ -2416,8 +2450,27 @@ def _task_match_sql(task_number, param_idx: int, column: str = "task_number") ->
     return f" AND ({column} = ${param_idx} OR {column} = '')", [task]
 
 
-async def _current_cache_date(conn, model, articul, calc_sign, plan_id, task_number=None):
-    """Самая свежая "дата расчета" для этого ключа в cost_data_cache — источник
+async def _calc_table(conn, model, articul, calc_sign, plan_id) -> str:
+    """Таблица, где лежат строки этой калькуляции.
+
+    Калькуляции, созданные в приложении копией с другим признаком (миграция
+    0043), лежат в cost_manual_calc, а не в кэше источника. Правки материалов
+    идут через DELETE+INSERT строк, поэтому таблицу надо выбирать по ключу —
+    иначе согласованная версия по копии применилась бы в пустоту.
+    """
+    found = await conn.fetchval(
+        """SELECT 1 FROM cost_manual_calc
+           WHERE "Модель" = $1 AND "Артикул" = $2
+             AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+             AND "PLAN_ID" IS NOT DISTINCT FROM $4
+           LIMIT 1""",
+        model, articul, calc_sign, plan_id,
+    )
+    return "cost_manual_calc" if found else "cost_data_cache"
+
+
+async def _current_cache_date(conn, model, articul, calc_sign, plan_id, task_number=None, table=None):
+    """Самая свежая "дата расчета" для этого ключа — источник
     (MSSQL CostHistory) регулярно пересчитывает задание заново, оставляя старые
     даты как историю; "актуальная" калькуляция — всегда самая свежая из них.
     None, если для ключа в кэше сейчас вообще нет строк.
@@ -2431,8 +2484,9 @@ async def _current_cache_date(conn, model, articul, calc_sign, plan_id, task_num
     params = [model, articul, calc_sign, plan_id]
     if task != "":
         params.append(task)
+    src = table or await _calc_table(conn, model, articul, calc_sign, plan_id)
     return await conn.fetchval(
-        f"""SELECT max("дата расчета") FROM cost_data_cache
+        f"""SELECT max("дата расчета") FROM {src}
            WHERE "Модель"=$1 AND "Артикул"=$2
              AND "Признак калькуляции" IS NOT DISTINCT FROM $3
              AND "PLAN_ID" IS NOT DISTINCT FROM $4{task_filter}""",
@@ -2480,7 +2534,7 @@ async def _ensure_original_version(conn, model, articul, calc_sign, plan_id, use
     if task != "":
         cache_params.append(task)
     cache_rows = await conn.fetch(
-        f"""SELECT {col_list} FROM cost_data_cache
+        f"""SELECT {col_list} FROM cost_data_all
             WHERE "Модель"=$1 AND "Артикул"=$2
               AND "Признак калькуляции" IS NOT DISTINCT FROM $3
               AND "PLAN_ID" IS NOT DISTINCT FROM $4
@@ -2947,7 +3001,7 @@ async def _calc_task_numbers(conn, model: str, articul: str, calc_sign: str, pla
     """
     rows = await conn.fetch(
         """SELECT DISTINCT trim(COALESCE("Номер задания производства", '')) AS tn
-           FROM cost_data_cache
+           FROM cost_data_all
            WHERE trim("Модель") = $1 AND trim("Артикул") = $2
              AND trim(COALESCE("Признак калькуляции", '')) = $3
              AND trim(COALESCE("PLAN_ID", '')) = $4""",
@@ -3438,7 +3492,7 @@ async def get_prev_stage_prices(
                        count(*) AS rows_count,
                        count(DISTINCT "цена материала, руб.") AS distinct_prices,
                        max("дата расчета")::text AS last_date
-                FROM cost_data_cache
+                FROM cost_data_all
                 WHERE trim(COALESCE("Модель", '')) = $1
                   AND trim(COALESCE("Артикул", '')) = $2
                   AND trim(COALESCE("Признак калькуляции", '')) = $3
@@ -3960,3 +4014,253 @@ async def unapply_plan_price_set(set_id: int) -> dict:
                 set_id,
             )
             return await _rebuild_plan_cache(conn, plan, cols, records)
+
+
+# ── Калькуляция с другим признаком (пункт 1 «Списка доработок») ───────────────
+
+# Признаки, между которыми разрешено копировать. ФКСС не участвует: это история
+# факта, её признак менять незачем, а в DWH она не пишется вовсе.
+CALC_SIGN_COPY_ALLOWED = ("ПКПСС", "КПСС", "ПФКСС")
+_TASK_COND_SQL = ' AND trim(COALESCE("Номер задания производства", \'\')) = $11'
+
+# Колонки cost_data_cache читаем из системного каталога один раз: перечислять
+# шестьдесят имён в коде — значит разойтись со схемой после первой же миграции,
+# добавляющей поле.
+_manual_calc_cols: list[str] | None = None
+
+
+async def _cache_columns(conn) -> list[str]:
+    global _manual_calc_cols
+    if _manual_calc_cols is None:
+        rows = await conn.fetch(
+            """SELECT column_name FROM information_schema.columns
+               WHERE table_schema = 'public' AND table_name = 'cost_data_cache'
+                 AND column_name <> 'id'
+               ORDER BY ordinal_position"""
+        )
+        _manual_calc_cols = [r["column_name"] for r in rows]
+    return _manual_calc_cols
+
+
+async def create_manual_calc(
+    *,
+    model: str,
+    articul: str,
+    plan_id: str,
+    source_calc_sign: str,
+    source_task: str,
+    target_calc_sign: str,
+    username: str,
+    reason: str = "",
+) -> dict:
+    """Создать новую калькуляцию как копию расчёта с другим признаком.
+
+    Исходная калькуляция не меняется — так решил заказчик 27.08.2026: «исходные
+    остаются исходными, а появляется новая калькуляция с другим признаком».
+    Дальше копия проходит обычный путь: правки материалов, цена
+    бренд-менеджера, согласование ПЭО, запись в DWH.
+
+    Копируются ВСЕ строки исходной калькуляции: строка кэша — это построчная
+    детализация (материал, операция, декор), и калькуляция без части своих строк
+    не имеет смысла. Если у источника есть номер задания, берём строки только
+    этого задания — иначе копия удвоилась бы на числе заданий.
+
+    Номер задания у копии пустой: согласование ПЭО по ней идёт как по одной
+    калькуляции (решение заказчика), да и у ПКПСС задания не бывает вовсе.
+    """
+    model = (model or "").strip()
+    articul = (articul or "").strip()
+    plan_id = (plan_id or "").strip()
+    source_calc_sign = (source_calc_sign or "").strip()
+    source_task = (source_task or "").strip()
+    target_calc_sign = (target_calc_sign or "").strip()
+
+    if not model or not articul:
+        raise ValueError("не указаны модель и артикул")
+    if source_calc_sign not in CALC_SIGN_COPY_ALLOWED:
+        raise ValueError(
+            "копировать можно только калькуляции "
+            + ", ".join(CALC_SIGN_COPY_ALLOWED)
+            + f", а не «{source_calc_sign or '—'}»"
+        )
+    if target_calc_sign not in CALC_SIGN_COPY_ALLOWED:
+        raise ValueError(
+            "новый признак должен быть одним из: " + ", ".join(CALC_SIGN_COPY_ALLOWED)
+        )
+    if target_calc_sign == source_calc_sign:
+        raise ValueError("новый признак совпадает с исходным — копия не нужна")
+
+    batch = uuid.uuid4()
+    async with acquire() as conn:
+        cols = await _cache_columns(conn)
+
+        # Копию с таким признаком второй раз не плодим. Настоящая калькуляция из
+        # источника с тем же признаком созданию НЕ мешает: заказчик решил, что
+        # обе строки должны быть видны — пересчёт может понадобиться и после
+        # того, как источник свою калькуляцию прислал.
+        dup = await conn.fetchval(
+            """SELECT batch_id FROM cost_manual_calc
+               WHERE trim("Модель") = $1 AND trim("Артикул") = $2
+                 AND trim(COALESCE("PLAN_ID", '')) = $3
+                 AND trim(COALESCE("Признак калькуляции", '')) = $4
+               LIMIT 1""",
+            model, articul, plan_id, target_calc_sign,
+        )
+        if dup is not None:
+            raise ValueError(
+                f"калькуляция {target_calc_sign} по этой модели, артикулу и плану "
+                "уже создавалась в приложении"
+            )
+
+        # «Этап калькулятора»: копию делают из ещё не расценённой калькуляции.
+        priced = await conn.fetchval(
+            """SELECT 1 FROM cost_price_pending
+               WHERE trim("Модель") = $1 AND trim("Артикул") = $2
+                 AND trim(COALESCE("PLAN_ID", '')) = $3
+                 AND trim(COALESCE("Признак калькуляции", '')) = $4
+               LIMIT 1""",
+            model, articul, plan_id, source_calc_sign,
+        )
+        if priced:
+            raise ValueError(
+                "по исходной калькуляции уже введена цена — копию делают до расценки"
+            )
+        approved = await conn.fetchval(
+            """SELECT 1 FROM cost_calc_approvals
+               WHERE model = $1 AND articul = $2
+                 AND COALESCE(plan_id, '') = $3 AND COALESCE(calc_sign, '') = $4
+                 AND status = 'approved'
+               LIMIT 1""",
+            model, articul, plan_id, source_calc_sign,
+        )
+        if approved:
+            raise ValueError(
+                "исходная калькуляция уже согласована ПЭО — копию делают до согласования"
+            )
+
+        col_list = ", ".join('"' + c + '"' for c in cols)
+        select_parts = []
+        for c in cols:
+            if c == "Признак калькуляции":
+                select_parts.append("$5")
+            elif c == "Номер задания производства":
+                select_parts.append("NULL")
+            else:
+                select_parts.append('"' + c + '"')
+
+        params = [
+            model, articul, plan_id, source_calc_sign, target_calc_sign,
+            batch, source_calc_sign, source_task or None, username, reason or None,
+        ]
+        task_cond = ""
+        if source_task:
+            task_cond = _TASK_COND_SQL
+            params.append(source_task)
+
+        inserted = await conn.fetch(
+            f"""INSERT INTO cost_manual_calc ({col_list}, batch_id, source_calc_sign,
+                                              source_task, created_by, reason)
+                SELECT {', '.join(select_parts)}, $6, $7, $8, $9, $10
+                  FROM cost_data_cache
+                 WHERE trim("Модель") = $1 AND trim("Артикул") = $2
+                   AND trim(COALESCE("PLAN_ID", '')) = $3
+                   AND trim(COALESCE("Признак калькуляции", '')) = $4
+                   {task_cond}
+                RETURNING id""",
+            *params,
+        )
+        if not inserted:
+            raise ValueError("исходная калькуляция не найдена в данных")
+
+        # Настоящая калькуляция с этим признаком уже есть — вернём как
+        # предупреждение: цена в разделе ставится на модель, артикул, план и
+        # признак, значит она будет общей у копии и у неё.
+        clash = await conn.fetchval(
+            """SELECT count(*) FROM cost_data_cache
+               WHERE trim("Модель") = $1 AND trim("Артикул") = $2
+                 AND trim(COALESCE("PLAN_ID", '')) = $3
+                 AND trim(COALESCE("Признак калькуляции", '')) = $4""",
+            model, articul, plan_id, target_calc_sign,
+        )
+
+    return {
+        "batch_id": str(batch),
+        "rows": len(inserted),
+        "source_calc_sign": source_calc_sign,
+        "target_calc_sign": target_calc_sign,
+        "source_task": source_task,
+        "clash_with_source": int(clash or 0) > 0,
+    }
+
+
+async def list_manual_calcs(limit: int = 500) -> list[dict]:
+    """Журнал созданных копий: одна запись на операцию, а не на строку."""
+    async with acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT batch_id::text AS batch_id,
+                      min(created_at)                       AS created_at,
+                      min(created_by)                       AS created_by,
+                      min(reason)                           AS reason,
+                      min(source_calc_sign)                 AS source_calc_sign,
+                      min(COALESCE(source_task, ''))        AS source_task,
+                      min(trim("Модель"))                   AS model,
+                      min(trim("Артикул"))                  AS articul,
+                      min(trim(COALESCE("PLAN_ID", '')))    AS plan_id,
+                      min(trim(COALESCE("Признак калькуляции", ''))) AS calc_sign,
+                      count(*)                              AS rows_count,
+                      max("Себестоимость, руб.")            AS cost_rub
+                 FROM cost_manual_calc
+                GROUP BY batch_id
+                ORDER BY min(created_at) DESC
+                LIMIT $1""",
+            limit,
+        )
+    return [dict(r) for r in rows]
+
+
+async def delete_manual_calc(batch_id: str, *, force: bool = False) -> dict:
+    """Удалить созданную копию целиком.
+
+    По умолчанию не удаляем, если по копии уже пошёл процесс: введена цена или
+    стоит отметка ПЭО. Иначе исчезла бы калькуляция, на которую уже сослались
+    цена и согласование. force оставлен админу — разбирать ошибочные копии.
+    """
+    async with acquire() as conn:
+        head = await conn.fetchrow(
+            """SELECT min(trim("Модель")) AS model,
+                      min(trim("Артикул")) AS articul,
+                      min(trim(COALESCE("PLAN_ID", ''))) AS plan_id,
+                      min(trim(COALESCE("Признак калькуляции", ''))) AS calc_sign,
+                      count(*) AS rows_count
+                 FROM cost_manual_calc WHERE batch_id = $1::uuid""",
+            batch_id,
+        )
+        if head is None or not head["rows_count"]:
+            raise ValueError("копия не найдена")
+
+        if not force:
+            priced = await conn.fetchval(
+                """SELECT 1 FROM cost_price_pending
+                   WHERE trim("Модель") = $1 AND trim("Артикул") = $2
+                     AND trim(COALESCE("PLAN_ID", '')) = $3
+                     AND trim(COALESCE("Признак калькуляции", '')) = $4
+                   LIMIT 1""",
+                head["model"], head["articul"], head["plan_id"], head["calc_sign"],
+            )
+            marked = await conn.fetchval(
+                """SELECT 1 FROM cost_calc_approvals
+                   WHERE model = $1 AND articul = $2
+                     AND COALESCE(plan_id, '') = $3 AND COALESCE(calc_sign, '') = $4
+                   LIMIT 1""",
+                head["model"], head["articul"], head["plan_id"], head["calc_sign"],
+            )
+            if priced or marked:
+                raise ValueError(
+                    "по этой калькуляции уже введена цена или стоит отметка ПЭО — "
+                    "сначала снимите их"
+                )
+
+        await conn.execute(
+            "DELETE FROM cost_manual_calc WHERE batch_id = $1::uuid", batch_id
+        )
+    return {"batch_id": batch_id, "rows": int(head["rows_count"])}

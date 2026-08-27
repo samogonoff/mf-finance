@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import commercial, margin, mocks
-from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap)
+from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -195,7 +195,7 @@ async def get_filter_options(request: Request) -> dict:
     try:
         async with pool().acquire() as conn:
             rows = await conn.fetch(
-                'SELECT DISTINCT TRIM("PLAN_ID") AS val FROM cost_data_cache'
+                'SELECT DISTINCT TRIM("PLAN_ID") AS val FROM cost_data_all'
                 ' WHERE "PLAN_ID" IS NOT NULL AND "PLAN_ID" != \'\' ORDER BY val'
             )
             result["plan_id"] = [row["val"] for row in rows if row["val"]]
@@ -266,14 +266,14 @@ async def load_data(payload: dict, _: str = Depends(_require_perm("cost:view")))
 
     async with pool().acquire() as conn:
         total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM cost_data_cache cd {join} WHERE {where}", *params
+            f"SELECT COUNT(*) FROM cost_data_all cd {join} WHERE {where}", *params
         ) or 0
 
         paginated_params = params + [limit, offset]
         query = (
             f'SELECT cd.*, ca.status AS peo_status, ca.approved_by AS peo_approved_by,'
             f'  ca.approved_at AS peo_approved_at'
-            f' FROM cost_data_cache cd {join} WHERE {where}'
+            f' FROM cost_data_all cd {join} WHERE {where}'
             f' ORDER BY cd.id LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}'
         )
         rows = await conn.fetch(query, *paginated_params)
@@ -426,13 +426,20 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     # корректировку (миграция 0040) мягче отклонения, поэтому идёт после него;
     # без этой ветви статус 'returned' проваливался в ELSE и приходил как NULL —
     # оранжевый кружок в таблице не появлялся вовсе.
+    # Пометка копии (пункт 1): строки агрегата собираются из строк ОДНОЙ
+    # калькуляции, поэтому BOOL_OR здесь означает «калькуляция создана в
+    # приложении», а не «среди строк есть копия».
+    select_parts.append("BOOL_OR(cd.is_manual) AS is_manual")
+    select_parts.append("MIN(cd.manual_source_sign) AS manual_source_sign")
+    select_parts.append("MIN(cd.manual_created_by) AS manual_created_by")
+    select_parts.append("MIN(cd.manual_batch_id) AS manual_batch_id")
     select_parts.append(
         "CASE WHEN BOOL_AND(ca.status = 'approved') THEN 'approved'"
         "     WHEN BOOL_OR(ca.status = 'rejected') THEN 'rejected'"
         "     WHEN BOOL_OR(ca.status = 'returned') THEN 'returned'"
         "     ELSE NULL END AS peo_status"
     )
-    query = f"SELECT {', '.join(select_parts)} FROM cost_data_cache cd {join} WHERE {where} GROUP BY {', '.join(f'cd."{f}"' for f in AGG_GROUP_FIELDS)}"
+    query = f"SELECT {', '.join(select_parts)} FROM cost_data_all cd {join} WHERE {where} GROUP BY {', '.join(f'cd."{f}"' for f in AGG_GROUP_FIELDS)}"
 
     async with pool().acquire() as conn:
         rows = await conn.fetch(query, *params)
@@ -556,7 +563,7 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                                     cd."Модель", cd."Артикул",
                                     cd."Розничная цена по уровню, руб.",
                                     cd."Отпускная цена по уровню, руб"
-                                    FROM cost_data_cache cd
+                                    FROM cost_data_all cd
                                     WHERE cd."Признак калькуляции" = $1
                                       AND (cd."Модель", cd."Артикул") IN (VALUES {values_list})
                                     ORDER BY cd."Модель", cd."Артикул", cd."дата расчета" DESC
@@ -586,7 +593,7 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                                     cd."Модель", cd."Артикул", cd."PLAN_ID",
                                     cd."Розничная цена по уровню, руб.",
                                     cd."Отпускная цена по уровню, руб"
-                                    FROM cost_data_cache cd
+                                    FROM cost_data_all cd
                                     WHERE cd."Признак калькуляции" = $1
                                       AND (cd."Модель", cd."Артикул", cd."PLAN_ID") IN (VALUES {values_list})
                                     ORDER BY cd."Модель", cd."Артикул", cd."PLAN_ID", cd."дата расчета" DESC
@@ -1128,7 +1135,7 @@ async def get_details(payload: dict) -> dict:
             COALESCE(SUM("Раскрой, руб."), 0) AS "Раскрой, руб.",
             COALESCE(SUM("Декоры, руб."), 0) AS "Декор, руб.",
             COALESCE(SUM("Вязание, руб."), 0) AS "Вязание, руб."
-        FROM cost_data_cache
+        FROM cost_data_all
         WHERE {where}
         GROUP BY
             "дата расчета",
@@ -2595,6 +2602,69 @@ async def put_table_prefs(payload: dict, user_email: str = Depends(_require_perm
         return {"success": True, "mock": True}
     await save_user_table_prefs(user_email or "", prefs)
     return {"success": True, "bytes": size}
+
+@router.post("/calc-sign-copy")
+async def create_calc_sign_copy(
+    payload: dict, user_email: str = Depends(_require_perm("cost:calc_sign_copy"))
+) -> dict:
+    """Создать калькуляцию с другим признаком — копией существующей.
+
+    Пункт 1 «Списка доработок». Исходная калькуляция не меняется: заказчик
+    решил, что появляется НОВАЯ калькуляция, которая дальше живёт обычным
+    циклом. Право есть только у калькулятора и админа — бренд-менеджеру и ПЭО
+    признак менять нельзя.
+
+    Тело: model, articul, plan_id, calc_sign (исходный), task_number
+    (необязательно), target_calc_sign, reason (необязательно).
+    """
+    if _is_mock():
+        return {"success": True, "mock": True, "batch_id": "00000000-0000-0000-0000-000000000000"}
+    try:
+        result = await create_manual_calc(
+            model=str(payload.get("model") or ""),
+            articul=str(payload.get("articul") or ""),
+            plan_id=str(payload.get("plan_id") or ""),
+            source_calc_sign=str(payload.get("calc_sign") or ""),
+            source_task=str(payload.get("task_number") or ""),
+            target_calc_sign=str(payload.get("target_calc_sign") or ""),
+            username=user_email or "",
+            reason=str(payload.get("reason") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"success": True, **result}
+
+
+@router.get("/calc-sign-copy")
+async def list_calc_sign_copies(_: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Журнал созданных копий: кто, когда, из чего и с каким признаком."""
+    if _is_mock():
+        return {"data": [], "mock": True}
+    return {"data": await list_manual_calcs(), "allowed_signs": list(CALC_SIGN_COPY_ALLOWED)}
+
+
+@router.delete("/calc-sign-copy/{batch_id}")
+async def remove_calc_sign_copy(
+    batch_id: str,
+    request: Request,
+    user_email: str = Depends(_require_perm("cost:calc_sign_copy")),
+) -> dict:
+    """Удалить созданную копию целиком.
+
+    force=1 — только для админа: снести копию, по которой уже успели ввести цену
+    или поставить отметку ПЭО (разбор ошибочно созданных).
+    """
+    if _is_mock():
+        return {"success": True, "mock": True}
+    force = (request.query_params.get("force") or "").strip() == "1"
+    if force and not await _is_cost_admin(user_email):
+        raise HTTPException(403, "принудительное удаление доступно только администратору")
+    try:
+        result = await delete_manual_calc(batch_id, force=force)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"success": True, **result}
+
 
 @router.get("/plan-materials")
 async def plan_materials_endpoint(request: Request, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:
