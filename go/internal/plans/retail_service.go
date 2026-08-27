@@ -469,6 +469,11 @@ func (s *RetailService) Bulk(ctx context.Context, p Principal, cardID int64, req
 		PlanMonths: retailPlanMonths(a.card.Month), Rows: visible, Series: ser,
 		Params: RetailParamSet{Params: params},
 	}
+	if req.Op == BulkPayroll && s.rates != nil {
+		// Удельный вес ФОТ применяется к продажам БЕЗ НДС (ответ финблока
+		// §12 п.12), поэтому операции нужна ставка страны из справочника.
+		bctx.VatRate = s.rates.Vat(ctx, a.card.Country, 0)
+	}
 	if req.Op == BulkRent {
 		py, pm := retailPrevMonth(a.card.Year, a.card.Month)
 		if prev, err := s.repo.PrevMetric(ctx, a.card.Country, MetricRent, py, pm); err != nil {

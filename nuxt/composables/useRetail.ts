@@ -155,8 +155,11 @@ export interface RetailBulkRequest {
   base_months?: number[];
   // sales_index
   index_base?: "fact_prev_month" | "fact_prev_year" | "approved_prev" | "strategy";
-  // payroll
-  payroll_base?: "strategy" | "fact_prev_year" | "approved_prev";
+  // payroll: дефолт — план текущего месяца (ответ финблока §12 п.12);
+  // остальные базы оставлены для периодов, утверждённых до ответа.
+  payroll_base?: "plan_current_month" | "strategy" | "fact_prev_year" | "approved_prev";
+  // rent: оборотная часть на этапе 1 не считается (§12 п.13) — только по запросу.
+  rent_turnover?: boolean;
 }
 
 export interface RetailBulkDiff {

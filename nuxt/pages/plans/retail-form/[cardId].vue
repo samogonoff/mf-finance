@@ -157,7 +157,8 @@
           <span class="card-title">Массовая операция</span>
           <span class="hdr-hint">
             Величины (индекс роста, удельный вес ФОТ, пороги аренды) берутся из параметров периода,
-            а не из этой панели — задайте их в «Параметрах периода».
+            а не из этой панели — задайте их в «Параметрах периода». Индекс роста и удельный вес ФОТ
+            утверждаются на уровне страны, переопределения — уточнение к ним.
           </span>
         </div>
         <div class="bulk-form">
@@ -227,13 +228,25 @@
             </select>
           </label>
 
-          <label v-if="bulkOp === 'payroll'" class="form-field">
-            <span class="form-label">База ограничения ФОТ</span>
-            <select v-model="bulkPayrollBase" class="select" @change="invalidatePreview">
-              <option value="strategy">стратегия</option>
-              <option value="fact_prev_year">факт прошлого года</option>
-              <option value="approved_prev">утверждённая тактика</option>
-            </select>
+          <template v-if="bulkOp === 'payroll'">
+            <label class="form-field">
+              <span class="form-label">База порога 106 %</span>
+              <select v-model="bulkPayrollBase" class="select" @change="invalidatePreview">
+                <option value="plan_current_month">план продаж текущего месяца</option>
+                <option value="strategy">стратегия</option>
+                <option value="fact_prev_year">факт прошлого года</option>
+                <option value="approved_prev">утверждённая тактика</option>
+              </select>
+            </label>
+            <span class="form-field wide bulk-note">
+              Удельный вес применяется к продажам без НДС; фонд страны распределяется по магазинам
+              в пропорции среднего факта за последний закрытый квартал.
+            </span>
+          </template>
+
+          <label v-if="bulkOp === 'rent'" class="checkbox bulk-chk">
+            <input v-model="bulkRentTurnover" type="checkbox" @change="invalidatePreview" />
+            считать оборотную часть (иначе — только факт аренды предыдущего месяца)
           </label>
 
           <label class="checkbox bulk-chk">
@@ -1243,7 +1256,9 @@ const bulkPctDelta = ref<number | null>(null);
 const bulkTarget = ref<number | null>(null);
 const bulkBaseMonths = ref("");
 const bulkIndexBase = ref<"fact_prev_month" | "fact_prev_year" | "approved_prev" | "strategy">("fact_prev_month");
-const bulkPayrollBase = ref<"strategy" | "fact_prev_year" | "approved_prev">("strategy");
+const bulkPayrollBase = ref<NonNullable<RetailBulkRequest["payroll_base"]>>("plan_current_month");
+/** Оборотная часть аренды — переходный режим до расчёта от условий договора (§12 п.13). */
+const bulkRentTurnover = ref(false);
 const bulkResetManual = ref(false);
 const bulkPreview = ref<RetailBulkResult | null>(null);
 /** Подпись параметров, на которых сделан предпросмотр: применять можно только её. */
@@ -1271,6 +1286,7 @@ const bulkRequest = (preview: boolean): RetailBulkRequest => {
   }
   if (bulkOp.value === "sales_index") req.index_base = bulkIndexBase.value;
   if (bulkOp.value === "payroll") req.payroll_base = bulkPayrollBase.value;
+  if (bulkOp.value === "rent") req.rent_turnover = bulkRentTurnover.value;
   return req;
 };
 
@@ -1562,6 +1578,8 @@ onBeforeUnmount(() => {
 .bulk-form .form-field { min-width: 170px; }
 .bulk-form .form-field.wide { min-width: 240px; }
 .bulk-chk { white-space: nowrap; }
+/* Пояснение к формуле ФОТ: подпись в потоке панели, не поле ввода. */
+.bulk-note { font-size: var(--fs-sm); color: var(--text-muted); max-width: 420px; }
 .bulk-go { margin-left: auto; }
 
 /* ─── валидации ─── */

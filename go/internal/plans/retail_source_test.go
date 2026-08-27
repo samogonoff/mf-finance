@@ -60,3 +60,25 @@ func TestRetailStoreClosedBefore_Sentinel(t *testing.T) {
 		t.Error("магазин, закрываемый позже начала периода, остаётся в форме")
 	}
 }
+
+// TestRetailPlanVersionLabel — формат метки VERSION (§12 п.8, наше решение):
+// период + номер версии, лексикографический порядок = хронологический.
+func TestRetailPlanVersionLabel(t *testing.T) {
+	if got := RetailPlanVersionLabel(2026, 7, 3); got != "TAKT-2026-07-v003" {
+		t.Errorf("метка версии: got %q, want TAKT-2026-07-v003", got)
+	}
+	// Ключевое свойство: MAX([VERSION]) в PlanHistory берёт последнюю итерацию,
+	// поэтому строковое сравнение обязано совпадать с порядком версий.
+	prev := ""
+	for _, v := range []int{1, 2, 9, 10, 99, 100} {
+		cur := RetailPlanVersionLabel(2026, 7, v)
+		if prev >= cur {
+			t.Fatalf("порядок меток нарушен: %q >= %q", prev, cur)
+		}
+		prev = cur
+	}
+	// Разные месяцы одного года тоже сортируются по времени.
+	if RetailPlanVersionLabel(2026, 9, 1) >= RetailPlanVersionLabel(2026, 10, 1) {
+		t.Error("метка сентября должна сортироваться раньше октябрьской")
+	}
+}

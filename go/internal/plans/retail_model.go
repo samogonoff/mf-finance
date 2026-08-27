@@ -280,6 +280,18 @@ func (ps RetailParamSet) Resolve(code string, row RetailRow, country string) (fl
 	return 0, false
 }
 
+// HasScope — задан ли параметр именно на указанном уровне. Нужен контролю
+// §12 п.11: индекс роста утверждается на уровне страны, и работа на одних
+// переопределениях — повод предупредить пользователя.
+func (ps RetailParamSet) HasScope(code, kind, value string) bool {
+	for _, p := range ps.Params {
+		if p.ParamCode == code && p.ScopeKind == kind && strings.EqualFold(p.ScopeValue, value) {
+			return true
+		}
+	}
+	return false
+}
+
 // ResolveOr — значение параметра с дефолтом.
 func (ps RetailParamSet) ResolveOr(code string, row RetailRow, country string, def float64) float64 {
 	if v, ok := ps.Resolve(code, row, country); ok {

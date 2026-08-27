@@ -2,6 +2,7 @@ package plans
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -196,80 +197,210 @@ func TestBulk_Distribute(t *testing.T) {
 	}
 }
 
-// TestBulk_PayrollCap — «ФОТ от продаж» (ТЗ §5): MIN(План; База × Порог) × Уд.вес,
-// порог по умолчанию 106 %, при срабатывании — пояснение в ячейке.
-func TestBulk_PayrollCap(t *testing.T) {
+// bulkFact — факт магазина за последний закрытый квартал (по умолчанию календарь
+// пуст, поэтому закрытыми считаются месяцы прошлого года: 2025-10..12).
+func bulkFact(ser RetailSeries, code int, oct, nov, dec float64) {
+	ser.AddFact([]RetailFactCell{
+		{CodeCFO: code, Year: 2025, Month: 10, Amount: oct},
+		{CodeCFO: code, Year: 2025, Month: 11, Amount: nov},
+		{CodeCFO: code, Year: 2025, Month: 12, Amount: dec},
+	})
+}
+
+// TestBulk_PayrollCountryFund — «ФОТ от продаж» по ответу финблока (§12 п.12):
+// фонд страны = уд.вес × Σ продажи БЕЗ НДС, дальше распределение по магазинам в
+// пропорции среднего факта за последний закрытый квартал.
+func TestBulk_PayrollCountryFund(t *testing.T) {
 	ser := NewRetailSeries()
-	// База ограничения — стратегия июля = 1000; порог 106 % → предел 1060.
-	ser.AddStrategy([]RetailFactCell{{CodeCFO: 100, Year: 2026, Month: 7, Amount: 1000}})
+	bulkFact(ser, 100, 900, 1200, 1500) // ср. факт квартала 1200
+	bulkFact(ser, 101, 300, 400, 500)   // ср. факт квартала 400 → доли 0,75 / 0,25
 	params := []RetailParam{
 		{ParamCode: ParamPayrollShare, ScopeKind: ParamScopeCountry, ScopeValue: "BY", Value: 0.10},
 	}
+	rows := []RetailRow{
+		rowWithCell(100, LFLYes, 7, 1200, ValueManual), // без НДС 1000
+		rowWithCell(101, LFLYes, 7, 2400, ValueManual), // без НДС 2000
+	}
 
-	// План 2000 > 1060 → ФОТ = 1060 × 0.10 = 106, с пометкой о пороге.
-	over := rowWithCell(100, LFLYes, 7, 2000, ValueManual)
 	req := RetailBulkRequest{Op: BulkPayroll, Scope: BulkScopeAll, Months: []int{7}, Preview: true}
-	res, err := ApplyRetailBulk(req, bulkCtx([]RetailRow{over}, ser, params))
+	res, err := ApplyRetailBulk(req, bulkCtx(rows, ser, params))
 	if err != nil {
 		t.Fatalf("операция вернула ошибку: %v", err)
 	}
-	if len(res.Diff) != 1 {
-		t.Fatalf("ожидалась одна ячейка ФОТ, got %d", len(res.Diff))
+	if len(res.Diff) != 2 {
+		t.Fatalf("ожидались две ячейки ФОТ, got %d", len(res.Diff))
 	}
+	// Фонд = 0,10 × (1000 + 2000) = 300; доли 0,75 и 0,25.
+	want := map[int]float64{100: 225, 101: 75}
+	total := 0.0
+	for _, d := range res.Diff {
+		if math.Abs(d.After-want[d.CodeCFO]) > 1e-9 {
+			t.Errorf("ФОТ магазина %d: got %.2f, want %.2f", d.CodeCFO, d.After, want[d.CodeCFO])
+		}
+		if d.Metric != MetricPayroll {
+			t.Errorf("метрика: got %q, want %q", d.Metric, MetricPayroll)
+		}
+		if d.Note != "" {
+			t.Errorf("порог не должен срабатывать на базе «план текущего месяца», got %q", d.Note)
+		}
+		total += d.After
+	}
+	// Распределение не создаёт и не теряет денег: сумма = фонд страны.
+	if math.Abs(total-300) > 1e-9 {
+		t.Errorf("сумма ФОТ по стране: got %.2f, want 300 (фонд)", total)
+	}
+}
+
+// TestBulk_PayrollNetOfVat — удельный вес применяется к продажам БЕЗ НДС
+// (§12 п.12), а магазин без факта за последний квартал считается напрямую от
+// своей базы и несёт об этом пометку.
+func TestBulk_PayrollNetOfVat(t *testing.T) {
+	ser := NewRetailSeries() // истории нет вообще
+	params := []RetailParam{
+		{ParamCode: ParamPayrollShare, ScopeKind: ParamScopeCountry, ScopeValue: "BY", Value: 0.10},
+	}
+	row := rowWithCell(100, LFLYes, 7, 1200, ValueManual)
+
+	req := RetailBulkRequest{Op: BulkPayroll, Scope: BulkScopeAll, Months: []int{7}, Preview: true}
+	res, err := ApplyRetailBulk(req, bulkCtx([]RetailRow{row}, ser, params))
+	if err != nil {
+		t.Fatalf("операция вернула ошибку: %v", err)
+	}
+	// 1200 с НДС → 1000 без НДС (ставка BY 20 %) → ФОТ = 100, а не 120.
+	if math.Abs(res.Diff[0].After-100) > 1e-9 {
+		t.Errorf("ФОТ от продаж без НДС: got %.2f, want 100", res.Diff[0].After)
+	}
+	if res.Diff[0].Note == "" {
+		t.Error("без факта за квартал ячейка должна нести пометку о прямом расчёте")
+	}
+}
+
+// TestBulk_PayrollCapLegacyBase — порог 106 % стоит на БАЗЕ НАЧИСЛЕНИЯ (ТЗ §5) и
+// срабатывает, когда база ограничения не совпадает с планом месяца: для
+// закрытых периодов остаются старые базы (стратегия, факт прошлого года).
+func TestBulk_PayrollCapLegacyBase(t *testing.T) {
+	ser := NewRetailSeries()
+	ser.AddStrategy([]RetailFactCell{{CodeCFO: 100, Year: 2026, Month: 7, Amount: 1200}})
+	params := []RetailParam{
+		{ParamCode: ParamPayrollShare, ScopeKind: ParamScopeCountry, ScopeValue: "BY", Value: 0.10},
+	}
+	row := rowWithCell(100, LFLYes, 7, 2400, ValueManual) // без НДС 2000
+
+	req := RetailBulkRequest{Op: BulkPayroll, Scope: BulkScopeAll, Months: []int{7},
+		Preview: true, PayrollBase: IndexBaseStrategy}
+	res, err := ApplyRetailBulk(req, bulkCtx([]RetailRow{row}, ser, params))
+	if err != nil {
+		t.Fatalf("операция вернула ошибку: %v", err)
+	}
+	// База = MIN(2000; 1,06 × 1000) = 1060 → ФОТ = 106.
 	if math.Abs(res.Diff[0].After-106) > 1e-9 {
 		t.Errorf("ФОТ при сработавшем пороге: got %.2f, want 106", res.Diff[0].After)
 	}
 	if res.Diff[0].Note == "" {
 		t.Error("при срабатывании порога ячейка должна нести пояснение (ТЗ §5)")
 	}
-	if res.Diff[0].Metric != MetricPayroll {
-		t.Errorf("метрика ФОТ: got %q, want %q", res.Diff[0].Metric, MetricPayroll)
-	}
 
-	// План 500 < 1060 → порог не срабатывает: ФОТ = 500 × 0.10 = 50, без пометки.
-	under := rowWithCell(100, LFLYes, 7, 500, ValueManual)
+	// План ниже порога → порог не срабатывает: ФОТ = 0,10 × 1200/1,2 = 100.
+	under := rowWithCell(100, LFLYes, 7, 1200, ValueManual)
 	res, err = ApplyRetailBulk(req, bulkCtx([]RetailRow{under}, ser, params))
 	if err != nil {
 		t.Fatalf("операция вернула ошибку: %v", err)
 	}
-	if math.Abs(res.Diff[0].After-50) > 1e-9 {
-		t.Errorf("ФОТ без порога: got %.2f, want 50", res.Diff[0].After)
+	if math.Abs(res.Diff[0].After-100) > 1e-9 {
+		t.Errorf("ФОТ без порога: got %.2f, want 100", res.Diff[0].After)
 	}
-	if res.Diff[0].Note != "" {
-		t.Errorf("без срабатывания порога пометки быть не должно, got %q", res.Diff[0].Note)
+	if strings.Contains(res.Diff[0].Note, "порог") {
+		t.Errorf("без срабатывания порога пометки о пороге быть не должно, got %q", res.Diff[0].Note)
 	}
 }
 
-// TestBulk_Rent — «Аренда» (ТЗ §5): Фикс + MAX(0; Выручка − Порог) × Ставка;
-// без параметров оборотной части — только факт предыдущего периода с пометкой.
+// TestBulk_SalesIndexCountryLevel — ответ финблока §12 п.11: индекс роста
+// утверждается на уровне страны. Работа на одних переопределениях допустима, но
+// операция об этом предупреждает.
+func TestBulk_SalesIndexCountryLevel(t *testing.T) {
+	ser := NewRetailSeries()
+	ser.AddFact([]RetailFactCell{{CodeCFO: 100, Year: 2026, Month: 6, Amount: 1000}})
+	row := rowWithCell(100, LFLYes, 7, 0, ValueManual)
+	req := RetailBulkRequest{Op: BulkSalesIndex, Scope: BulkScopeAll, Months: []int{7},
+		Preview: true, ResetManual: true}
+
+	onlyStore := []RetailParam{
+		{ParamCode: ParamSalesIndex, ScopeKind: ParamScopeStore, ScopeValue: "100", Value: 0.10},
+	}
+	res, err := ApplyRetailBulk(req, bulkCtx([]RetailRow{row}, ser, onlyStore))
+	if err != nil {
+		t.Fatalf("операция вернула ошибку: %v", err)
+	}
+	if !notesContain(res.Notes, "страновое значение индекса не задано") {
+		t.Errorf("ожидалось предупреждение об уровне задания индекса, got %v", res.Notes)
+	}
+
+	withCountry := append(onlyStore,
+		RetailParam{ParamCode: ParamSalesIndex, ScopeKind: ParamScopeCountry, ScopeValue: "BY", Value: 0.05})
+	res, err = ApplyRetailBulk(req, bulkCtx([]RetailRow{row}, ser, withCountry))
+	if err != nil {
+		t.Fatalf("операция вернула ошибку: %v", err)
+	}
+	if notesContain(res.Notes, "страновое значение индекса не задано") {
+		t.Errorf("со страновым значением предупреждения быть не должно, got %v", res.Notes)
+	}
+}
+
+func notesContain(notes []string, sub string) bool {
+	for _, n := range notes {
+		if strings.Contains(n, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBulk_Rent — «Аренда» по ответу финблока §12 п.13: этап 1 — только факт
+// аренды предыдущего месяца; оборотная часть считается лишь по явному запросу.
 func TestBulk_Rent(t *testing.T) {
 	ser := NewRetailSeries()
 	row := rowWithCell(100, LFLYes, 7, 5000, ValueManual)
-	ctx := bulkCtx([]RetailRow{row}, ser, []RetailParam{
+	params := []RetailParam{
 		{ParamCode: ParamRentThresh, ScopeKind: ParamScopeCountry, ScopeValue: "BY", Value: 4000},
 		{ParamCode: ParamRentRate, ScopeKind: ParamScopeCountry, ScopeValue: "BY", Value: 0.05},
-	})
-	ctx.RentPrevFact = map[int]float64{100: 700}
+	}
 
+	// Этап 1 (дефолт): параметры оборотной части заданы, но не запрошены.
+	ctx := bulkCtx([]RetailRow{row}, ser, params)
+	ctx.RentPrevFact = map[int]float64{100: 700}
 	req := RetailBulkRequest{Op: BulkRent, Scope: BulkScopeAll, Months: []int{7}, Preview: true}
 	res, err := ApplyRetailBulk(req, ctx)
 	if err != nil {
 		t.Fatalf("операция вернула ошибку: %v", err)
 	}
-	// 700 + MAX(0; 5000 − 4000) × 0.05 = 700 + 50 = 750.
-	if math.Abs(res.Diff[0].After-750) > 1e-9 {
-		t.Errorf("аренда: got %.2f, want 750", res.Diff[0].After)
+	if math.Abs(res.Diff[0].After-700) > 1e-9 {
+		t.Errorf("аренда этапа 1: got %.2f, want 700 (факт предыдущего месяца)", res.Diff[0].After)
+	}
+	if res.Diff[0].Note == "" {
+		t.Error("на этапе 1 ячейка должна нести пометку о переносе факта (§12 п.13)")
 	}
 
-	// Этап 1 без параметров оборотной части: только фикс, с пометкой.
+	// Явный переходный режим: оборотная часть по параметрам периода.
+	reqTurnover := req
+	reqTurnover.RentTurnover = true
+	res, err = ApplyRetailBulk(reqTurnover, ctx)
+	if err != nil {
+		t.Fatalf("операция вернула ошибку: %v", err)
+	}
+	// 700 + MAX(0; 5000 − 4000) × 0,05 = 750.
+	if math.Abs(res.Diff[0].After-750) > 1e-9 {
+		t.Errorf("аренда с оборотной частью: got %.2f, want 750", res.Diff[0].After)
+	}
+
+	// Оборотная часть запрошена, но параметров нет → только факт, с пометкой.
 	ctx2 := bulkCtx([]RetailRow{row}, ser, nil)
 	ctx2.RentPrevFact = map[int]float64{100: 700}
-	res, err = ApplyRetailBulk(req, ctx2)
+	res, err = ApplyRetailBulk(reqTurnover, ctx2)
 	if err != nil {
 		t.Fatalf("операция без параметров вернула ошибку: %v", err)
 	}
 	if math.Abs(res.Diff[0].After-700) > 1e-9 {
-		t.Errorf("аренда без ставки: got %.2f, want 700 (только факт пред. периода)", res.Diff[0].After)
+		t.Errorf("аренда без ставки: got %.2f, want 700 (только факт пред. месяца)", res.Diff[0].After)
 	}
 	if res.Diff[0].Note == "" {
 		t.Error("без параметров оборотной части ячейка должна нести пометку (ТЗ §5)")
