@@ -319,6 +319,13 @@
           <button class="btn btn-danger btn-sm" :disabled="peoBulkBusy" @click="runPeoBulk('rejected')">
             ✗ {{ peoBulkBusy && peoBulkAction === 'rejected' ? 'Отклонение…' : 'Отклонить' }}
           </button>
+          <!-- Массовый возврат из DWH (пункт 15): только админ и только для
+               строк, уже записанных в DWH. Причина вводится один раз на всю
+               пачку — ради этого пункт и заводился. -->
+          <button v-if="can('cost:admin') && reopenSelectedCount" class="btn btn-danger btn-sm"
+                  :disabled="peoBulkBusy || reopenBusy" @click="openReopenBulk">
+            ↩ Вернуть из DWH ({{ reopenSelectedCount }})
+          </button>
           <button class="btn btn-ghost btn-sm" :disabled="peoBulkBusy" @click="runPeoBulk('revoke')">
             ↩ {{ peoBulkBusy && peoBulkAction === 'revoke' ? 'Снятие…' : 'Снять согласование' }}
           </button>
@@ -467,6 +474,8 @@
               <th v-if="isVisible('sum_cost') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
                 Себест. (руб)<span v-if="sortField === 'sum_Себестоимость, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
+              <th v-if="isVisible('cost_deviation')" class="col-num col-metric"
+                  title="(Себест. − План. с/с) / План. с/с. Заливка — превышение плана больше 5%">Откл. с/с от плана (%)</th>
               <th v-if="isVisible('sum_cost') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, USD.' }" @click="toggleSort('sum_Себестоимость, USD.')">
                 Себест. ($)<span v-if="sortField === 'sum_Себестоимость, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
               </th>
@@ -506,15 +515,18 @@
                 <input
                   type="checkbox"
                   :checked="isPeoSelected(row)"
-                  :disabled="!canSelectForPeo(row)"
-                  :title="canSelectForPeo(row) ? 'Выбрать для массового согласования (Shift — диапазон)' : 'Строка недоступна для согласования'"
+                  :disabled="!isSelectableRow(row)"
+                  :title="canSelectForReopen(row)
+                    ? 'Выбрать для массового возврата из DWH (Shift — диапазон)'
+                    : (canSelectForPeo(row) ? 'Выбрать для массового согласования (Shift — диапазон)' : 'Строка недоступна для выделения')"
                   @click.stop="onPeoCheckboxClick"
                   @change="onPeoCheckboxChange(row, idx, ($event.target as HTMLInputElement).checked)"
                 />
               </td>
               <td :class="stickyClasses('actions')" :style="stickyStyle('actions')">
-                <span v-if="isRowLocked(row) && !row._has_pending && !row._has_audit" class="lock-icon" title="Строка заблокирована">🔒</span>
-                <span v-if="row._has_pending" class="state-badge state-badge--pending" title="Ожидает согласования">⏳</span>
+                <span v-if="isRowLocked(row) && !row._has_pending && !row._has_audit" class="lock-icon" :title="lockReasonText(row)">🔒</span>
+                <span v-if="row._has_pending" class="state-badge state-badge--pending"
+                  :title="isRowLocked(row) ? lockReasonText(row) : 'Ожидает согласования ПЭО'">⏳</span>
                 <!-- Значок «в DWH» показываем по факту записи (_in_dwh), а не по
                      блокировке: переоткрытая калькуляция всё ещё записана, но
                      правку уже разрешили. Админу значок кликабелен — открывает
@@ -638,6 +650,10 @@
               <td v-if="isVisible('sum_knitting') && !showUSD" class="col-num num">{{ fmt(row['sum_Вязание, руб.']) }}</td>
               <td v-if="isVisible('sum_knitting') && showUSD" class="col-num num">{{ fmt(row['sum_Вязание, USD.']) }}</td>
               <td v-if="isVisible('sum_cost') && !showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
+              <td v-if="isVisible('cost_deviation')" class="col-num num col-metric" :class="costDeviationClass(row)"
+                  :title="costDeviationPct(row) == null ? 'Плановая себестоимость не задана' : ''">
+                {{ costDeviationPct(row) == null ? '—' : (costDeviationPct(row)! > 0 ? '+' : '') + costDeviationPct(row)!.toFixed(1) + '%' }}
+              </td>
               <td v-if="isVisible('sum_cost') && showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
               <td v-if="isVisible('calc_markup')" class="col-num num col-metric">{{ fmt(calc(row, showUSD).markupRub) }}</td>
               <td v-if="isVisible('calc_markup_pct')" class="col-num num col-metric col-metric-hl" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
@@ -1194,15 +1210,22 @@
             <div v-if="approvalFilterBusy" class="af-busy">Обновление…</div>
           </div>
 
+          <!-- Ошибка живёт вне цепочки состояний: её нужно видеть и во время
+               загрузки, и поверх таблицы, не подменяя содержимое окна. -->
+          <div v-if="approvalError" class="plan-prices-error" style="margin:var(--sp-3) var(--sp-4) 0">
+            <span>{{ approvalError }}</span>
+            <button class="cost-error-x" aria-label="Закрыть" @click="approvalError = ''">×</button>
+          </div>
+
           <div v-if="approvalLoading" class="muted" style="text-align:center;padding:24px">Загрузка…</div>
-          <div v-else-if="!approvalPendingChanges.length" class="muted" style="text-align:center;padding:24px">
+          <div v-else-if="!approvalVisibleChanges.length" class="muted" style="text-align:center;padding:24px">
             Нет ожидающих согласования изменений
           </div>
           <div class="approval-table-scroll" v-else>
             <table class="data-table compact approval-table">
               <thead>
                 <tr>
-                  <th><input type="checkbox" :checked="selectedPendingIds.length === approvalPendingChanges.length && approvalPendingChanges.length > 0" @change="toggleSelectAllPending" /></th>
+                  <th><input type="checkbox" :checked="selectedPendingIds.length === approvalVisibleChanges.length && approvalVisibleChanges.length > 0" @change="toggleSelectAllPending" /></th>
                   <th>Модель</th>
                   <th>Артикул</th>
                   <th>План</th>
@@ -1224,7 +1247,7 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="pc in approvalPendingChanges" :key="pc.id" :class="modalApprovalRowClass(pc)">
+                <tr v-for="pc in approvalVisibleChanges" :key="pc.id" :class="modalApprovalRowClass(pc)">
                   <td><input type="checkbox" :value="pc.id" v-model="selectedPendingIds" /></td>
                   <td>{{ pc['Модель'] || pc.model || '—' }}</td>
                   <td>{{ pc['Артикул'] || pc.articul || '—' }}</td>
@@ -1251,7 +1274,11 @@
         </div>
         <div class="approval-modal-footer">
           <span style="font-size:var(--fs-xs);color:var(--text-muted)">
-            Выбрано: {{ selectedPendingIds.length }} / {{ approvalPendingChanges.length }}
+            Выбрано: {{ selectedPendingIds.length }} / {{ approvalVisibleChanges.length }}
+            <label v-if="approvalReturnedCount" style="margin-left:var(--sp-3);cursor:pointer">
+              <input type="checkbox" v-model="approvalShowReturned" />
+              показать возвращённые на корректировку ({{ approvalReturnedCount }})
+            </label>
           </span>
           <div style="display:flex;gap:var(--sp-3)">
             <button class="btn btn-ghost btn-sm" @click="showApprovalModal = false">Закрыть</button>
@@ -1440,20 +1467,44 @@
          откатывает прейскурант в учётной системе — новая установка цен создаст
          новый прейскурант, он перекроет прежний. -->
     <Teleport to="body">
-      <div v-if="reopenTarget" class="modal-overlay" @click.self="closeReopenModal">
+      <div v-if="reopenTarget || reopenBulkRows.length" class="modal-overlay" @click.self="closeReopenModal">
         <div class="modal approval-modal">
           <div class="modal-header">
-            <span>{{ reopenTarget._reopened ? 'Отозвать разрешение на правку' : 'Вернуть на корректировку' }}</span>
-            <span class="modal-subtitle">{{ reopenTarget['Модель'] || '—' }} / {{ reopenTarget['Артикул'] || '—' }}</span>
+            <span v-if="reopenBulkRows.length">Вернуть на корректировку: {{ reopenSelectedCount }} калькуляций</span>
+            <span v-else>{{ reopenTarget._reopened ? 'Отозвать разрешение на правку' : 'Вернуть на корректировку' }}</span>
+            <span v-if="!reopenBulkRows.length" class="modal-subtitle">{{ reopenTarget['Модель'] || '—' }} / {{ reopenTarget['Артикул'] || '—' }}</span>
+            <span v-else class="modal-subtitle">строк (заданий): {{ reopenBulkRows.length }}</span>
             <button class="modal-close" @click="closeReopenModal">✕</button>
           </div>
           <div class="approval-body">
-            <div class="approval-info-row">
+            <div v-if="!reopenBulkRows.length" class="approval-info-row">
               <span class="approval-label">Калькуляция:</span>
               <span>{{ reopenTarget['Признак калькуляции'] || '—' }}, план {{ reopenTarget['PLAN_ID'] || '—' }}</span>
             </div>
 
-            <template v-if="reopenTarget._reopened">
+            <!-- Режим пачки: одна причина на всё выделенное. -->
+            <template v-if="reopenBulkRows.length">
+              <p class="reopen-note reopen-note--warn">
+                Цены этих калькуляций уже переданы в учётную систему. Отменить их
+                нельзя: правка создаст <b>новые прейскуранты</b>, они перекроют
+                прежние. Прошлые значения останутся в истории цен.
+              </p>
+              <div class="approval-comment-row">
+                <label>Причина — одна на всю пачку (обязательно):</label>
+                <textarea v-model="reopenReason" class="approval-comment" rows="2"
+                  placeholder="Например: перемаркировка плана, пересчёт по требованию ПЭО"></textarea>
+              </div>
+              <div v-if="reopenError" class="reopen-error">{{ reopenError }}</div>
+              <div class="approval-actions">
+                <button class="btn btn-sm btn-ghost" :disabled="reopenBusy" @click="closeReopenModal">Отмена</button>
+                <button class="btn btn-sm btn-primary" :disabled="reopenBusy || reopenReason.trim().length < 5"
+                  @click="submitReopenBulk">
+                  {{ reopenBusy ? 'Возврат…' : `Вернуть ${reopenSelectedCount}` }}
+                </button>
+              </div>
+            </template>
+
+            <template v-else-if="reopenTarget && reopenTarget._reopened">
               <p class="reopen-note">
                 Калькуляция открыта на исправление. Отзыв вернёт блокировку —
                 записи в DWH при этом не меняются.
@@ -1466,7 +1517,7 @@
               </div>
             </template>
 
-            <template v-else>
+            <template v-else-if="reopenTarget">
               <p class="reopen-note reopen-note--warn">
                 Цены этой калькуляции уже переданы в учётную систему. Отменить их
                 нельзя: правка создаст <b>новый прейскурант</b>, который перекроет
@@ -1708,6 +1759,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'sum_decors', label: 'Декоры' },
   { key: 'sum_knitting', label: 'Вязание' },
   { key: 'sum_cost', label: 'Себестоимость' },
+  { key: 'cost_deviation', label: 'Откл. с/с от плана (%)' },
   { key: 'calc_markup', label: 'Рентабельность' },
   { key: 'calc_markup_pct', label: 'Рентабельность (%)' },
   { key: 'calc_margin_pct', label: 'Маржа (%)' },
@@ -1720,7 +1772,7 @@ const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','
 const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
-const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost'];
+const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation'];
 const calcColumnKeys = ['calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 
 const mainColumns = computed(() => COLUMNS_CONFIG.filter(c => mainColumnKeys.includes(c.key)));
@@ -1736,6 +1788,102 @@ const STICKY_MIN_WIDTHS: Record<string, number> = { peo_sel: 30, actions: 70, ra
 const STICKY_MAX_WIDTH = 600;
 const WIDTH_STORAGE_KEY = 'cost_sticky_col_widths';
 const STORAGE_KEY = 'cost_column_visibility';
+
+/** Настройки таблицы: браузер + сервер (миграция 0041).
+ *
+ * Пожелания № 9 и № 14: настроил под себя — настройка живёт, в том числе при
+ * входе с другого компьютера. Поэтому у настроек два хранилища:
+ *   • localStorage — мгновенное, чтобы таблица рисовалась настроенной ещё до
+ *     ответа сервера (и работала, если сервер недоступен);
+ *   • cost_user_table_prefs через GET/PUT /api/cost/table-prefs — переносимое.
+ *
+ * Сервер главнее: как только приходит его документ, он применяется поверх
+ * локального. Пустой серверный документ локальные настройки НЕ затирает —
+ * иначе первый вход с новой машины обнулил бы всё, что человек настроил здесь.
+ *
+ * Запись на сервер отложенная: ресайз колонки мышью иначе давал бы по запросу
+ * на каждый пиксель. */
+const PREFS_PUSH_DELAY_MS = 900;
+let prefsPushTimer: ReturnType<typeof setTimeout> | null = null;
+/** Пока не применили серверный документ, свои изменения на сервер не пишем:
+ *  иначе гонка при старте перезапишет настройки дефолтами. */
+const prefsReady = ref(false);
+
+function collectPrefs() {
+  return {
+    columns: {
+      visibility: { ...columnVisibility },
+      widths: { ...stickyWidths },
+    },
+    pageSize: pageSize.value,
+    filtersOpen: filtersOpen.value,
+    hideDwhSent: hideDwhSentManual.value,
+  };
+}
+
+function schedulePrefsPush() {
+  if (!prefsReady.value) return;
+  if (prefsPushTimer) clearTimeout(prefsPushTimer);
+  prefsPushTimer = setTimeout(async () => {
+    prefsPushTimer = null;
+    try {
+      await $fetch(`${apiBase.value}/api/cost/table-prefs`, {
+        method: 'PUT',
+        body: { prefs: collectPrefs() },
+        headers: fetchHeaders.value,
+      });
+    } catch (e) {
+      // Настройки не данные: молча продолжаем на локальной копии, но в консоль
+      // пишем, иначе «у меня настройки не переносятся» будет неотлаживаемо.
+      console.warn('[cost] не удалось сохранить настройки таблицы на сервере', e);
+    }
+  }, PREFS_PUSH_DELAY_MS);
+}
+
+/** Применить серверный документ. Незнакомые и пустые разделы игнорируем. */
+function applyPrefs(doc: any) {
+  if (!doc || typeof doc !== 'object') return;
+  const cols = doc.columns || {};
+  if (cols.visibility && typeof cols.visibility === 'object') {
+    for (const c of COLUMNS_CONFIG) {
+      if (typeof cols.visibility[c.key] === 'boolean') columnVisibility[c.key] = cols.visibility[c.key];
+    }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(columnVisibility)); } catch { /* ignore */ }
+  }
+  if (cols.widths && typeof cols.widths === 'object') {
+    for (const k of STICKY_COL_KEYS) {
+      const v = Number(cols.widths[k]);
+      if (isFinite(v) && v > 0) stickyWidths[k] = clampStickyWidth(k, v);
+    }
+    try { localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify(stickyWidths)); } catch { /* ignore */ }
+  schedulePrefsPush();
+  schedulePrefsPush();
+  }
+  if (PAGE_SIZE_OPTIONS.includes(Number(doc.pageSize))) {
+    pageSize.value = Number(doc.pageSize);
+    try { localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(doc.pageSize)); } catch { /* ignore */ }
+  }
+  if (typeof doc.filtersOpen === 'boolean') {
+    filtersOpen.value = doc.filtersOpen;
+    try { localStorage.setItem(FILTERS_OPEN_STORAGE_KEY, doc.filtersOpen ? '1' : '0'); } catch { /* ignore */ }
+  }
+  if (typeof doc.hideDwhSent === 'boolean' || doc.hideDwhSent === null) {
+    hideDwhSentManual.value = doc.hideDwhSent;
+  }
+}
+
+onMounted(async () => {
+  try {
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/table-prefs`, { headers: fetchHeaders.value });
+    applyPrefs(resp?.prefs);
+  } catch (e) {
+    console.warn('[cost] настройки таблицы с сервера не получены, работаем на локальных', e);
+  } finally {
+    // Разрешаем запись только после попытки чтения — иначе первый же отложенный
+    // пуш мог бы отправить дефолты и затереть сохранённое.
+    prefsReady.value = true;
+  }
+});
 
 function loadColumnVisibility(): Record<string, boolean> {
   const stored = localStorage.getItem(STORAGE_KEY);
@@ -1773,6 +1921,7 @@ function openColumnSettings() {
 function applyColumnVisibility() {
   Object.assign(columnVisibility, pendingVisibility.value);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(columnVisibility));
+  schedulePrefsPush();
   showColumnSettings.value = false;
 }
 
@@ -1926,6 +2075,7 @@ function toggleFilters() {
   filtersOpen.value = !filtersOpen.value;
   try {
     localStorage.setItem(FILTERS_OPEN_STORAGE_KEY, filtersOpen.value ? '1' : '0');
+    schedulePrefsPush();
   } catch { /* ignore */ }
 }
 
@@ -2171,6 +2321,7 @@ const hideDwhSent = computed(() =>
 function setHideDwhSent(checked: boolean) {
   hideDwhSentManual.value = checked;
   try { localStorage.setItem(HIDE_DWH_STORAGE_KEY, checked ? '1' : '0'); } catch { /* ignore */ }
+  schedulePrefsPush();
 }
 
 /** Сколько строк текущей выборки скрыто фильтром — иначе «пропажа» строк выглядит
@@ -2210,6 +2361,7 @@ function onPageSizeChange(value: string | number) {
   // номер мог указывать за пределы выборки.
   currentPage.value = 0;
   try { localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(next)); } catch { /* ignore */ }
+  schedulePrefsPush();
 }
 
 // ── Column filters (client-side, top-down cascade) ──────────────────────────
@@ -4827,6 +4979,28 @@ const FKSS_HINT = 'ФКСС — история себестоимости: це�
 const isFkssRow = (row: any): boolean =>
   (row?.['Признак калькуляции'] ?? '').toString().trim() === 'ФКСС';
 
+/** Почему строка недоступна для правки — текстом, а не молчащим замком.
+ *
+ * Замок без объяснения регулярно приходит как жалоба «строки не активны»
+ * (последняя — 26.08.2026 по плану 9518): пользователь видит, что править
+ * нельзя, но не видит, кого просить и что сделать. */
+const lockReasonText = (row: any): string => {
+  if (!isRowLocked(row)) return '';
+  if (row._lock_reason === 'pending_changes') {
+    return 'Заявка на изменение цены ждёт согласования ПЭО. Пока она не согласована '
+      + 'или не отклонена, править строку нельзя';
+  }
+  if (row._has_audit) {
+    return 'Цены уже переданы в DWH. Вернуть калькуляцию на корректировку может '
+      + 'администратор раздела — кликом по значку 📤';
+  }
+  if (can('cost:edit_price') && !can('cost:approve') && !can('cost:peo_mark') && !row._group_approved) {
+    return 'Бренд-менеджер может править цены только после согласования ПЭО '
+      + 'или после возврата на корректировку';
+  }
+  return 'Строка заблокирована';
+};
+
 const isRowLocked = (row: any): boolean => {
   if (can('cost:admin')) return false;
   if (row._lock_reason) return true;
@@ -4847,13 +5021,53 @@ const reopenReason = ref('');
 const reopenBusy = ref(false);
 const reopenError = ref('');
 
+/** Строки, выбранные для массового возврата (пункт 15). Непустой массив
+ *  переключает модалку в режим пачки: одна причина на все калькуляции. */
+const reopenBulkRows = ref<any[]>([]);
+
+const openReopenBulk = () => {
+  if (!can('cost:admin')) return;
+  reopenBulkRows.value = reopenSelectedRows.value.slice();
+  reopenTarget.value = null;
+  reopenReason.value = '';
+  reopenError.value = '';
+};
+
+async function submitReopenBulk() {
+  if (!reopenBulkRows.value.length) return;
+  reopenBusy.value = true;
+  reopenError.value = '';
+  try {
+    // Шлём по строке на КАЖДОЕ задание: разрешение схлопнется по калькуляции на
+    // сервере, а статус «возврат» встанет ровно тем заданиям, что выделены.
+    const items = reopenBulkRows.value.map(reopenPayload);
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/admin/dwh-reopen/batch`, {
+      method: 'POST',
+      body: { items, reason: reopenReason.value.trim() },
+      headers: fetchHeaders.value,
+    });
+    for (const r of reopenBulkRows.value) applyReopenLocally(r, true);
+    peoBulkStatus.value = `Возвращено на корректировку калькуляций: ${resp?.reopened ?? items.length}`;
+    clearPeoSelection();
+    closeReopenModal();
+  } catch (e: any) {
+    reopenError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    reopenBusy.value = false;
+  }
+}
+
 const openReopenModal = (row: any) => {
   if (!can('cost:admin')) return;
   reopenTarget.value = row;
   reopenReason.value = '';
   reopenError.value = '';
 };
-const closeReopenModal = () => { reopenTarget.value = null; reopenError.value = ''; };
+const closeReopenModal = () => {
+  reopenTarget.value = null;
+  reopenBulkRows.value = [];
+  reopenError.value = '';
+};
 
 /** Ключ калькуляции для админских операций с DWH — те же 4 поля, что в
  *  cost_dwh_reopen и в ключе записи цен. */
@@ -4862,6 +5076,10 @@ const reopenPayload = (row: any) => ({
   articul: (row['Артикул'] ?? '').toString().trim(),
   calc_sign: (row['Признак калькуляции'] ?? '').toString().trim(),
   plan_id: (row['PLAN_ID'] ?? '').toString().trim(),
+  // Задание нужно, чтобы статус «возврат на корректировку» встал ровно этому
+  // заданию: согласование ведётся по заданиям, и согласовывать скопом нельзя —
+  // себестоимость по заданиям разная, часть может быть верной, часть нет.
+  task_number: (row['Номер задания производства'] ?? '').toString().trim(),
 });
 
 /** Локально снимаем/возвращаем блокировку у всех строк той же калькуляции —
@@ -5021,6 +5239,11 @@ const peoItemKey = (it: any): string =>
 const canSelectForPeo = (row: any): boolean =>
   peoBulkEnabled.value && !isRowLocked(row) && !row._has_audit;
 
+/** Строки, записанные в DWH: их выделяет админ для массового возврата (пункт 15).
+ *  Для остальных ролей такие строки по-прежнему недоступны для выделения. */
+const canSelectForReopen = (row: any): boolean =>
+  can('cost:admin') && Boolean(row._in_dwh ?? row._has_audit) && !row._reopened;
+
 const peoSelectedKeys = ref<Set<string>>(new Set());
 const peoBulkBusy = ref(false);
 const peoBulkAction = ref<'' | 'approved' | 'rejected' | 'revoke'>('');
@@ -5031,8 +5254,23 @@ const peoBulkComment = ref('');
 
 const isPeoSelected = (row: any): boolean => peoSelectedKeys.value.has(peoKey(row));
 
-const peoSelectableRows = computed(() => sortedRows.value.filter(canSelectForPeo));
-const peoPageSelectableRows = computed(() => pageRows.value.filter(canSelectForPeo));
+/** Строка доступна для выделения: либо для массового согласования, либо (у
+ *  админа) для массового возврата из DWH. */
+const isSelectableRow = (row: any): boolean => canSelectForPeo(row) || canSelectForReopen(row);
+
+const peoSelectableRows = computed(() => sortedRows.value.filter(isSelectableRow));
+
+/** Выделенные строки, записанные в DWH — материал для массового возврата. */
+const reopenSelectedRows = computed(() =>
+  peoSelectableRows.value.filter((r) => isPeoSelected(r) && canSelectForReopen(r))
+);
+/** Уникальные калькуляции среди них — столько разрешений уйдёт на сервер. */
+const reopenSelectedCount = computed(() => {
+  const seen = new Set<string>();
+  for (const r of reopenSelectedRows.value) seen.add(peoKey(r));
+  return seen.size;
+});
+const peoPageSelectableRows = computed(() => pageRows.value.filter(isSelectableRow));
 
 const peoPageAllSelected = computed(
   () => peoPageSelectableRows.value.length > 0 && peoPageSelectableRows.value.every(isPeoSelected)
@@ -5072,7 +5310,7 @@ const onPeoCheckboxChange = (row: any, pageIdx: number, checked: boolean) => {
     const to = Math.max(peoLastClickedIdx, pageIdx);
     for (let i = from; i <= to; i++) {
       const r = pageRows.value[i];
-      if (r && canSelectForPeo(r)) apply(r);
+      if (r && isSelectableRow(r)) apply(r);
     }
   } else {
     apply(row);
@@ -5585,6 +5823,34 @@ watch(currentPage, () => {
 
 const showApprovalModal = ref(false);
 const approvalPendingChanges = ref<any[]>([]);
+
+/** Ошибка операций окна согласования — показывается ВНУТРИ окна.
+ *
+ * Раньше всё шло в lastError, чей баннер отрисован на странице и модалкой
+ * перекрыт: отказ выглядел как «нажимаем кнопку, а ничего не происходит». */
+const approvalError = ref('');
+
+/** Показывать ли в окне заявки, уже возвращённые на корректировку.
+ *
+ * Возврат с 25.08.2026 НЕ удаляет заявку — иначе терялась введённая цена. Но
+ * такая заявка ждёт правки бренд-менеджера, а не решения ПЭО, поэтому в окне
+ * согласования она по умолчанию скрыта: пользователь нажимал «Отклонить
+ * выбранные», а строки оставались на месте, и это читалось как «кнопка не
+ * работает» (жалоба 26.08.2026). Переключатель оставлен, чтобы можно было
+ * увидеть, что именно уже отправлено на корректировку. */
+const approvalShowReturned = ref(false);
+
+/** Заявки, которые реально ждут решения ПЭО. */
+const approvalVisibleChanges = computed(() =>
+  approvalShowReturned.value
+    ? approvalPendingChanges.value
+    : approvalPendingChanges.value.filter((pc: any) => pc.peo_status !== 'returned')
+);
+
+/** Сколько заявок скрыто как возвращённые — иначе «пропажа» строк выглядит как потеря. */
+const approvalReturnedCount = computed(() =>
+  approvalPendingChanges.value.filter((pc: any) => pc.peo_status === 'returned').length
+);
 const selectedPendingIds = ref<number[]>([]);
 const approvalLoading = ref(false);
 const approvalApplying = ref(false);
@@ -5601,6 +5867,8 @@ async function openApprovalModal() {
 }
 
 async function loadApprovalPendingChanges() {
+  // Прошлая ошибка не должна висеть над новой попыткой.
+  approvalError.value = '';
   approvalLoading.value = true;
   try {
     const params = buildApprovalFilterParams();
@@ -5612,7 +5880,7 @@ async function loadApprovalPendingChanges() {
     selectedPendingIds.value = [];
   } catch (e: any) {
     console.error("[cost] load approval pending changes failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    approvalError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     approvalLoading.value = false;
   }
@@ -5621,13 +5889,15 @@ async function loadApprovalPendingChanges() {
 function toggleSelectAllPending(e: Event) {
   const checked = (e.target as HTMLInputElement).checked;
   if (checked) {
-    selectedPendingIds.value = approvalPendingChanges.value.map((p) => p.id);
+    selectedPendingIds.value = approvalVisibleChanges.value.map((p) => p.id);
   } else {
     selectedPendingIds.value = [];
   }
 }
 
 async function applyPendingChanges() {
+  // Прошлая ошибка не должна висеть над новой попыткой.
+  approvalError.value = '';
   if (!selectedPendingIds.value.length) return;
   approvalApplying.value = true;
   try {
@@ -5671,13 +5941,15 @@ async function applyPendingChanges() {
     await loadApprovalPendingChanges();
   } catch (e: any) {
     console.error("[cost] apply pending changes failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    approvalError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     approvalApplying.value = false;
   }
 }
 
 async function clearAllPendingChanges() {
+  // Прошлая ошибка не должна висеть над новой попыткой.
+  approvalError.value = '';
   if (!confirm('Очистить таблицу согласования? Все необработанные изменения будут удалены.')) return;
   approvalClearing.value = true;
   try {
@@ -5688,13 +5960,15 @@ async function clearAllPendingChanges() {
     await loadApprovalPendingChanges();
   } catch (e: any) {
     console.error("[cost] clear pending changes failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    approvalError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     approvalClearing.value = false;
   }
 }
 
 async function rejectPendingChanges() {
+  // Прошлая ошибка не должна висеть над новой попыткой.
+  approvalError.value = '';
   if (!selectedPendingIds.value.length) return;
   approvalRejecting.value = true;
   try {
@@ -5717,7 +5991,7 @@ async function rejectPendingChanges() {
     await loadApprovalPendingChanges();
   } catch (e: any) {
     console.error("[cost] reject pending changes failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    approvalError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     approvalRejecting.value = false;
   }
@@ -6502,6 +6776,10 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .data-table .col-metric-hl {
   background: var(--warn-soft, #fdf3e3);
   font-weight: var(--fw-bold, 700);
+  /* Кегль тоже больше базового: просили не только выделить, но и «увеличить
+     шрифт» (пункт 12 «Списка доработок»). База таблицы — 11px, поэтому 13px
+     заметно, но строка по высоте не разъезжается. */
+  font-size: 13px;
 }
 .data-table th.col-metric-hl {
   background: var(--warn-soft, #fdf3e3);
@@ -6615,6 +6893,15 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .data-table .col-num { text-align: right; }
 .delta-pos { color: var(--pos, #16a34a); font-weight: var(--fw-medium, 500); }
 .delta-neg { color: var(--neg, #dc2626); font-weight: var(--fw-medium, 500); }
+
+/* Условное форматирование ячейки: отклонение вышло за порог — заливаем.
+   Красный берём из токена --neg, чтобы работало и в тёмной теме; цифры внутри
+   остаются читаемыми за счёт полупрозрачной заливки, а не сплошного цвета. */
+.data-table td.cell-alert {
+  background: color-mix(in srgb, var(--neg, #dc2626) 18%, transparent);
+  color: var(--neg, #dc2626);
+  font-weight: var(--fw-bold, 700);
+}
 
 /* Row-level margin deviation conditional formatting */
 .row-margin-ok {

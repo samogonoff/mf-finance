@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import os
 
 import asyncpg
@@ -1243,7 +1244,41 @@ async def get_pending_changes(filters: dict | None = None) -> list[dict]:
     if conditions:
         where_clause = " WHERE " + " AND ".join(conditions)
 
-    query = f"SELECT * FROM cost_price_pending{where_clause} ORDER BY created_at DESC"
+    # peo_status подтягиваем, чтобы окно согласования могло отличить заявку,
+    # ждущую решения ПЭО, от возвращённой на корректировку. С 25.08.2026 возврат
+    # НЕ удаляет заявку (иначе терялась введённая цена), поэтому без этого
+    # признака возвращённые строки продолжали висеть в списке согласования, и
+    # выглядело это как «нажимаем кнопку, а модели остаются» (жалоба 26.08.2026).
+    # Джойн идёт по ЧЕТЫРЁМ полям, без номера задания, и через агрегат.
+    #
+    # Причина: у заявки и у согласования разные ключи. cost_price_pending
+    # уникален по (Модель, Артикул, PLAN_ID, Признак калькуляции) — задание в
+    # ключ не входит и в заявке остаётся пустым (uq_pending_row, миграция 0005).
+    # А cost_calc_approvals ведётся ПО ЗАДАНИЯМ, и статус пишется на те задания,
+    # что есть в кэше. Прямое сравнение задания с заданием не находило ничего:
+    # '' против 'М26.5.1899'.
+    #
+    # Поэтому берём статус калькуляции целиком, той же логикой, что и главная
+    # таблица: согласовано — когда согласованы все задания; иначе самый весомый
+    # сигнал. LATERAL с агрегатом даёт ровно одну строку на заявку, так что
+    # список не размножается по заданиям.
+    join_sql = (
+        " LEFT JOIN LATERAL ("
+        "   SELECT CASE WHEN BOOL_AND(a0.status = 'approved') THEN 'approved'"
+        "               WHEN BOOL_OR(a0.status = 'rejected') THEN 'rejected'"
+        "               WHEN BOOL_OR(a0.status = 'returned') THEN 'returned'"
+        "               ELSE NULL END AS status"
+        "   FROM cost_calc_approvals a0"
+        '   WHERE a0.model = trim(p."Модель")'
+        '     AND a0.articul = trim(p."Артикул")'
+        "     AND COALESCE(a0.calc_sign, '') = trim(COALESCE(p.\"Признак калькуляции\", ''))"
+        "     AND COALESCE(a0.plan_id, '') = trim(COALESCE(p.\"PLAN_ID\", ''))"
+        " ) a ON TRUE"
+    )
+    query = (
+        "SELECT p.*, a.status AS peo_status FROM cost_price_pending p"
+        + join_sql + where_clause + " ORDER BY p.created_at DESC"
+    )
 
     async with pool().acquire() as conn:
         rows = await conn.fetch(query, *params)
@@ -1387,6 +1422,84 @@ async def get_pending_filter_options(selected: dict[str, list[str]]) -> dict[str
     return result
 
 
+# Статьи, из которых складывается себестоимость строки кэша. Имена без префикса
+# sum_ — в кэше колонки называются так; в выдаче /aggregated те же статьи идут
+# как sum_*, потому что там они уже просуммированы по группе.
+_COST_PARTS_RUB = [
+    "Основные материалы, руб.", "Вспомогательные материалы, руб.", "Декоры, руб.",
+    "Пошив, руб.", "Раскрой, руб.", "Вязание, руб.",
+]
+_COST_PARTS_USD = [
+    "Основные материалы, USD.", "Вспомогательные материалы, USD.", "Декоры, USD.",
+    "Пошив, USD.", "Раскрой, USD.", "Вязание, USD.",
+]
+
+
+async def get_max_calc_cost(
+    keys: list[tuple[str, str, str, str]],
+) -> dict[tuple[str, str, str, str], dict[str, float]]:
+    """Максимальная себестоимость калькуляции среди её заданий.
+
+    Зачем. Цена ставится на (план, модель, артикул) и действует на все задания
+    сразу — заявка `cost_price_pending` уникальна без номера задания. А
+    себестоимость по заданиям объективно РАЗНАЯ: на 26.08.2026 из 314 калькуляций
+    с несколькими заданиями расхождение было у 276, доходя до +211 % (модель
+    187895 / 26Е-49400Ц-2 / КПСС / план 9518 — от 4,05 до 12,58 руб).
+
+    До этого в DWH и в процедуру прейскуранта уходило значение, записанное в
+    заявку ПОСЛЕДНИМ, без всякого правила: рентабельность в учётной системе для
+    остальных заданий считалась от чужой себестоимости. По решению заказчика
+    (26.08.2026) берём максимум по набору (модель, артикул, признак, план) —
+    осторожная оценка: цена, оправданная для самого дорогого задания, оправдана
+    и для остальных.
+
+    Рублёвый и долларовый максимум берём из ОДНОГО задания — того, где выше
+    рублёвая себестоимость. Иначе пара «руб/USD» перестала бы соответствовать
+    друг другу и курсу строки.
+    """
+    if not keys:
+        return {}
+    uniq = list({
+        ((m or "").strip(), (a or "").strip(), (cs or "").strip(), (pi or "").strip())
+        for m, a, cs, pi in keys
+    })
+    rub_sum = " + ".join(f'COALESCE(c."{p}", 0)' for p in _COST_PARTS_RUB)
+    usd_sum = " + ".join(f'COALESCE(c."{p}", 0)' for p in _COST_PARTS_USD)
+    async with acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            WITH per_task AS (
+                SELECT trim(c."Модель") AS m,
+                       trim(c."Артикул") AS a,
+                       trim(COALESCE(c."Признак калькуляции", '')) AS cs,
+                       trim(COALESCE(c."PLAN_ID", '')) AS pid,
+                       trim(COALESCE(c."Номер задания производства", '')) AS task,
+                       SUM({rub_sum}) AS rub,
+                       SUM({usd_sum}) AS usd
+                FROM cost_data_cache c
+                JOIN unnest($1::text[], $2::text[], $3::text[], $4::text[])
+                     AS k(m, a, cs, pid)
+                  ON k.m = trim(c."Модель")
+                 AND k.a = trim(c."Артикул")
+                 AND k.cs = trim(COALESCE(c."Признак калькуляции", ''))
+                 AND k.pid = trim(COALESCE(c."PLAN_ID", ''))
+                GROUP BY 1, 2, 3, 4, 5
+            )
+            SELECT DISTINCT ON (m, a, cs, pid) m, a, cs, pid, rub, usd
+            FROM per_task
+            ORDER BY m, a, cs, pid, rub DESC
+            """,
+            [k[0] for k in uniq], [k[1] for k in uniq],
+            [k[2] for k in uniq], [k[3] for k in uniq],
+        )
+    return {
+        (r["m"], r["a"], r["cs"], r["pid"]): {
+            "rub": float(r["rub"] or 0), "usd": float(r["usd"] or 0),
+        }
+        for r in rows
+    }
+
+
 async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
     """Apply (approve) pending changes: write to OLAP + local audit, delete from pending.
 
@@ -1407,6 +1520,44 @@ async def apply_pending_changes(change_ids: list[int], reviewed_by: str) -> int:
         records = [dict(r) for r in rows]
 
     now = datetime.datetime.now()
+
+    # Себестоимость, которая уедет в DWH и в прейскурант, — МАКСИМАЛЬНАЯ по
+    # заданиям калькуляции (решение заказчика 26.08.2026). В заявке лежит
+    # себестоимость того задания, по которому строку сохранили последней; при
+    # нескольких заданиях это случайная величина, а разброс доходит до +211 %.
+    # Подменяем один раз здесь, чтобы DWH, локальный аудит и история цен несли
+    # одно и то же значение.
+    try:
+        max_cost = await get_max_calc_cost([
+            (
+                (rec.get("Модель") or "").strip(),
+                (rec.get("Артикул") or "").strip(),
+                (rec.get("Признак калькуляции") or "").strip(),
+                (rec.get("PLAN_ID") or "").strip(),
+            )
+            for rec in records
+        ])
+        for rec in records:
+            key = (
+                (rec.get("Модель") or "").strip(),
+                (rec.get("Артикул") or "").strip(),
+                (rec.get("Признак калькуляции") or "").strip(),
+                (rec.get("PLAN_ID") or "").strip(),
+            )
+            mx = max_cost.get(key)
+            if not mx:
+                continue
+            # Заменяем только вверх: если в заявке почему-то оказалась цифра
+            # больше расчётной (правка версии, ещё не попавшая в кэш), не
+            # занижаем её.
+            cur_rub = float(rec.get("Себестоимость, руб.") or 0)
+            if mx["rub"] > cur_rub:
+                rec["Себестоимость, руб."] = mx["rub"]
+                rec["Себестоимость, USD."] = mx["usd"]
+    except Exception as exc:
+        # Не смогли посчитать максимум — пишем то, что в заявке. Утверждение цен
+        # из-за этого валить нельзя, но в логах должно быть видно.
+        print(f"[cost] максимум себестоимости не посчитан: {exc!r}", flush=True)
 
     # Какие из этих калькуляций устанавливаются повторно, после переоткрытия
     # админом (миграция 0039). Нужно ровно для пометки is_correction в истории:
@@ -2449,6 +2600,7 @@ _PRICE_FIELDS = [
 
 async def reset_price_fields(
     model, articul, calc_sign, plan_id, raw_date, returned_by: str = "system",
+    task_number: str | None = None,
 ) -> None:
     """Вернуть цену бренд-менеджеру на корректировку.
 
@@ -2470,9 +2622,27 @@ async def reset_price_fields(
         d = raw_date
     async with acquire() as conn:
         async with conn.transaction():
-            # Задания берём из кэша — по ним главная таблица джойнит
-            # согласования. pending может быть пуст (возврат уже записанной в
-            # DWH калькуляции), и статус на пустом задании тогда не нашёлся бы.
+            # Возврат поднимает ВСЕ задания калькуляции — и это не упрощение.
+            #
+            # Как устроен цикл (подтверждено кодом и заказчиком 26.08.2026):
+            #   • калькуляции считаются по заданиям, и ПЭО отмечает КАЖДОЕ:
+            #     `all(approvals.get(tn) == 'approved' for tn in expected_tasks)`
+            #     в _check_save_locks — пока согласованы не все задания,
+            #     бренд-менеджер к цене не допускается;
+            #   • цена же ставится на калькуляцию (модель, артикул, план,
+            #     признак) и подтягивается ко всем заданиям — наложение идёт по
+            #     ключу из четырёх полей;
+            #   • в окно согласования и в DWH уходит тоже калькуляция без
+            #     заданий.
+            #
+            # Значит возврат относится к калькуляции целиком: до возврата в
+            # таблице видны все её задания и все заблокированы, поэтому вернуть
+            # надо все. А дальше каждое задание снова проходит путь
+            # индивидуально — согласование, установка цены, запись в DWH.
+            #
+            # Параметр task_number сохранён в сигнатуре для вызывающего кода, но
+            # намеренно НЕ сужает набор: возврат одного задания оставил бы
+            # остальные заблокированными без причины.
             task_numbers = await _calc_task_numbers(
                 conn, (model or "").strip(), (articul or "").strip(),
                 (calc_sign or "").strip(), (plan_id or "").strip(),
@@ -2831,8 +3001,22 @@ async def get_reopened_keys(
 
 async def reopen_dwh_calculation(
     model, articul, calc_sign, plan_id, reopened_by: str, reason: str,
+    task_number: str | None = None,
 ) -> dict:
-    """Разрешить повторную правку калькуляции, уже записанной в DWH."""
+    """Разрешить повторную правку калькуляции, уже записанной в DWH.
+
+    Возвращается калькуляция ЦЕЛИКОМ, со всеми заданиями: цена ставится на
+    (модель, артикул, план, признак) и действует на все задания, в DWH запись
+    тоже без задания, а до возврата все задания в таблице заблокированы. Вернуть
+    одно задание значило бы оставить остальные запертыми без причины.
+
+    Дальше каждое задание проходит путь заново и по отдельности: ПЭО отмечает
+    каждое (пока согласованы не все, бренд-менеджер к цене не допускается),
+    затем цена и запись в DWH.
+
+    task_number принимается для совместимости с вызывающим кодом и на состав
+    возвращаемых заданий не влияет.
+    """
     m, a, cs, pi = _reopen_key(model, articul, calc_sign, plan_id)
     async with acquire() as conn:
         # Прежние разрешения по этому ключу отзываем: активным должно быть одно,
@@ -2856,7 +3040,11 @@ async def reopen_dwh_calculation(
         # не просто разблокирована. Ставим по всем заданиям этой калькуляции —
         # ключ согласования включает номер задания, а возврат относится к
         # калькуляции целиком.
-        for tn in await _calc_task_numbers(conn, m, a, cs, pi):
+        # Все задания калькуляции — см. пояснение в reset_price_fields: цена и
+        # запись в DWH живут на калькуляции, поэтому и возврат поднимает её
+        # целиком, иначе часть заданий осталась бы заблокированной.
+        tasks = await _calc_task_numbers(conn, m, a, cs, pi)
+        for tn in tasks:
             await conn.execute(
                 """
                 INSERT INTO cost_calc_approvals
@@ -2869,7 +3057,76 @@ async def reopen_dwh_calculation(
                 """,
                 m, a, cs, pi, tn, reopened_by,
             )
-    return {"id": row["id"], "reopened_at": row["reopened_at"]}
+    return {"id": row["id"], "reopened_at": row["reopened_at"], "tasks": tasks}
+
+
+async def reopen_dwh_calculations_batch(
+    items: list[dict], reopened_by: str, reason: str,
+) -> dict:
+    """Массовый возврат из DWH: много калькуляций, одна причина.
+
+    Пункт 15 «Списка доработок». Поштучный возврат уже был, но перемаркировки и
+    пересчёты идут пачками по плану, и админ вводил одну и ту же причину десятки
+    раз.
+
+    Всё делается в ОДНОЙ транзакции: либо возвращаются все калькуляции пачки,
+    либо ни одна. Половинчатый результат здесь хуже отказа — часть строк
+    осталась бы заблокированной без видимой причины, а в журнале лежало бы
+    разрешение, ничего не открывающее.
+
+    Дубли по ключу схлопываем заранее: две одинаковые калькуляции в одной пачке
+    иначе дали бы два разрешения, из которых первое сразу же отозвано вторым.
+    """
+    if not items:
+        return {"reopened": 0, "keys": []}
+
+    # Ключ разрешения — 4 поля, задания не учитываем: возврат поднимает
+    # калькуляцию целиком (см. пояснение в reset_price_fields). Выделив в
+    # таблице одну строку-задание, человек возвращает всю её калькуляцию — и это
+    # то, что нужно: остальные задания иначе остались бы заблокированными.
+    deduped: dict[tuple[str, str, str, str], None] = {}
+    for it in items:
+        deduped[_reopen_key(
+            it.get("model"), it.get("articul"), it.get("calc_sign"), it.get("plan_id"),
+        )] = None
+    keys = list(deduped.keys())
+
+    async with acquire() as conn:
+        async with conn.transaction():
+            for m, a, cs, pi in keys:
+                await conn.execute(
+                    """UPDATE cost_dwh_reopen
+                       SET revoked_at = now(), revoked_by = $5
+                       WHERE model = $1 AND articul = $2 AND calc_sign = $3
+                         AND plan_id = $4 AND revoked_at IS NULL""",
+                    m, a, cs, pi, reopened_by,
+                )
+                await conn.execute(
+                    """INSERT INTO cost_dwh_reopen
+                           (model, articul, calc_sign, plan_id, reopened_by, reason)
+                       VALUES ($1, $2, $3, $4, $5, $6)""",
+                    m, a, cs, pi, reopened_by, reason,
+                )
+                for tn in await _calc_task_numbers(conn, m, a, cs, pi):
+                    await conn.execute(
+                        """
+                        INSERT INTO cost_calc_approvals
+                            (model, articul, calc_sign, plan_id, task_number,
+                             status, approved_by, approved_at)
+                        VALUES ($1, $2, $3, $4, $5, 'returned', $6, NOW())
+                        ON CONFLICT (model, articul, calc_sign, plan_id, task_number)
+                        DO UPDATE SET status = 'returned', approved_by = EXCLUDED.approved_by,
+                                      approved_at = NOW(), updated_at = NOW()
+                        """,
+                        m, a, cs, pi, tn, reopened_by,
+                    )
+    return {
+        "reopened": len(keys),
+        "keys": [
+            {"model": m, "articul": a, "calc_sign": cs, "plan_id": pi}
+            for m, a, cs, pi in keys
+        ],
+    }
 
 
 async def revoke_dwh_reopen(model, articul, calc_sign, plan_id, revoked_by: str) -> int:
@@ -3021,6 +3278,45 @@ async def delete_dwh_record(model, articul, calc_sign, plan_id) -> dict:
 
     return {"audit_deleted": audit_deleted, "olap_deleted": olap_deleted}
 
+
+# ── Настройки таблицы на пользователя (миграция 0041) ────────────────────────
+#
+# Видимость, порядок и ширины колонок главной таблицы. Раньше жили только в
+# localStorage и терялись при входе с другого компьютера или в другом браузере —
+# пожелания № 9 и № 14 из «Списка доработок». Документ храним как есть (JSONB):
+# состав настроек меняется вместе с интерфейсом, и каждая новая настройка не
+# должна требовать миграции.
+
+
+async def get_user_table_prefs(email: str) -> dict:
+    """Настройки таблицы пользователя. Нет записи — пустой документ."""
+    key = (email or "").strip()
+    if not key:
+        return {}
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT prefs FROM cost_user_table_prefs WHERE email = $1", key,
+        )
+    if row is None or row["prefs"] is None:
+        return {}
+    raw = row["prefs"]
+    # asyncpg отдаёт jsonb строкой — как в app/roles.py с permissions.
+    return json.loads(raw) if isinstance(raw, str) else dict(raw)
+
+
+async def save_user_table_prefs(email: str, prefs: dict) -> None:
+    """Перезаписать настройки целиком: фронт присылает полный документ."""
+    key = (email or "").strip()
+    if not key:
+        raise ValueError("email обязателен")
+    async with acquire() as conn:
+        await conn.execute(
+            """INSERT INTO cost_user_table_prefs (email, prefs, updated_at)
+               VALUES ($1, $2::jsonb, now())
+               ON CONFLICT (email) DO UPDATE
+                   SET prefs = EXCLUDED.prefs, updated_at = now()""",
+            key, json.dumps(prefs, ensure_ascii=False),
+        )
 
 # ── Наборы цен на материалы для плана (миграция 0033) ─────────────────────────
 #
