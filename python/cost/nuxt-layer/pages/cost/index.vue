@@ -4922,6 +4922,35 @@ const formatDateTime = (v: string | null): string => {
  * бэкенда только в рублях. Возвращает null, если плановой себестоимости нет
  * или она нулевая — делить не на что, и в таблице честнее показать «—», чем 0%.
  */
+/** Отклонение себестоимости калькуляции от плановой, %.
+ *
+ * (Себест. − План. с/с) / План. с/с × 100. Просьба заказчика 26.08.2026
+ * (пункт 10 «Списка доработок»): нужен триггер проверки — при отклонении больше
+ * порога ячейка заливается цветом.
+ *
+ * Считаем в рублях независимо от переключателя `$`: плановая себестоимость
+ * приходит с бэкенда только в рублях, и сравнивать её с долларовым фактом было
+ * бы подменой основания. Возвращаем null, если плана нет или он нулевой.
+ */
+const costDeviationPct = (row: any): number | null => {
+  const plan = Number(row?.planned_cost ?? NaN);
+  const fact = Number(row?.['sum_Себестоимость, руб.'] ?? NaN);
+  if (!isFinite(plan) || !isFinite(fact) || plan === 0) return null;
+  return (fact / plan - 1) * 100;
+};
+
+/** Порог, после которого отклонение с/с подсвечивается. */
+const COST_DEVIATION_ALERT_PCT = 5;
+
+/** Класс ячейки отклонения: заливка только при превышении факта над планом
+ *  больше порога — это и есть повод проверить калькуляцию. Экономия против
+ *  плана (факт ниже) поводом не считается и не красится. */
+const costDeviationClass = (row: any): string => {
+  const d = costDeviationPct(row);
+  if (d === null) return '';
+  return d > COST_DEVIATION_ALERT_PCT ? 'cell-alert' : '';
+};
+
 const plannedProfitabilityPct = (row: any): number | null => {
   const wholesale = Number(row?.planned_wholesale ?? NaN);
   const cost = Number(row?.planned_cost ?? NaN);
