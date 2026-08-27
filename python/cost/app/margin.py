@@ -26,6 +26,11 @@
 оконных функций и самосоединений. Тот же приём воспроизводится в Superset
 обычными метриками датасета (см. swarm/superset/README.md).
 
+Одно отличие от DATEADD: копии с меткой позже последнего месяца с выпуском
+отбрасываются. Иначе «2026 год» при восьми месяцах данных сравнивался бы с
+ПОЛНЫМ 2025-м — Power BI так и делает, и для сумм это нечестно. Здесь январь-
+август 2026 сравнивается с январём-августом 2025.
+
 ЧТО СЧИТАЕТСЯ ВЫПУСКОМ
 ======================
 Только ФКСС (решение заказчика 14.08.2026) и только строки с объёмом: без тиража
@@ -320,14 +325,29 @@ async def dashboard(
                    ON t.level1 = c.level01 AND t.target_margin_pct > 0
             WHERE {where(with_dates=False)}
         ),
+        -- Горизонт данных: последний месяц с выпуском по всей витрине (без фильтров
+        -- измерений — иначе у бренд-менеджера, чей выпуск кончился в марте, горизонт
+        -- уехал бы на март).
+        horizon AS (
+            SELECT date_trunc('month', max(production_date))::date AS m
+            FROM cost_calc_mv WHERE {' AND '.join(_MARGIN_BASE)}
+        ),
         -- Три копии строк: текущая и сдвинутые вперёд на месяц и на год. Фильтр
         -- по году/месяцу ниже накладывается на метку m — см. докстринг модуля.
+        --
+        -- Копии с меткой ПОЗЖЕ горизонта отбрасываются: сравнивать их не с чем, а
+        -- без отсечки «2026 год» сравнивался бы с ПОЛНЫМ 2025-м при восьми
+        -- месяцах текущего. С отсечкой — январь-август 2026 против января-августа
+        -- 2025 и против декабря 2025 - июля 2026. Та же отсечка в витрине Superset.
         shifted AS MATERIALIZED (
-            SELECT m,                                'cur' AS k, {dims}, {values}, target_frac FROM src
-            UNION ALL
-            SELECT (m + interval '1 month')::date,  'pm',       {dims}, {values}, target_frac FROM src
-            UNION ALL
-            SELECT (m + interval '1 year')::date,   'py',       {dims}, {values}, target_frac FROM src
+            SELECT * FROM (
+                SELECT m,                                'cur' AS k, {dims}, {values}, target_frac FROM src
+                UNION ALL
+                SELECT (m + interval '1 month')::date,  'pm',       {dims}, {values}, target_frac FROM src
+                UNION ALL
+                SELECT (m + interval '1 year')::date,   'py',       {dims}, {values}, target_frac FROM src
+            ) u
+            WHERE u.m <= (SELECT m FROM horizon)
         ),
         period AS (SELECT * FROM shifted{on_label()}),
         tiles AS (
