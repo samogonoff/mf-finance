@@ -63,17 +63,38 @@ func NewRateBook(repo dirRowsSource) *RateBook {
 }
 
 // VatSeed — значения на случай недоступного справочника: законодательные ставки
-// по странам + эффективные по площадкам large (ТЗ МП §3.4).
+// по странам + эффективные по площадкам.
+//
+// Эффективные ставки — ответ аналитика от 28.08.2026 (правка ТЗ МП §1–2):
+// ставка привязана к КОДУ ЦФО и считается в контуре [ALL] парой кодов
+// 1 − КодPL 1006 / КодPL 1022. Прежние 20,36 % и 16,62 % из ТЗ §3.4 не
+// подтвердились: основной российский контур ≈ 19,6 %, ТЕКС ≈ 18,7 %,
+// Казахстан ровно 16 %, Узбекистан ровно 12 %. Из представления факта МП
+// ставку получить нельзя — суммы с НДС и без НДС там совпадают до копейки.
 func VatSeed() []VatRow {
+	const src = "1 − КодPL 1006/1022 (ответ 28.08.2026)"
 	return []VatRow{
 		{Country: "BY", VatRate: 0.20, Name: "Беларусь — базовая", SourceOf: "закон"},
 		{Country: "RU", VatRate: 0.20, Name: "Россия — базовая", SourceOf: "закон"},
 		{Country: "KZ", VatRate: 0.12, Name: "Казахстан — базовая", SourceOf: "закон"},
 		{Country: "UZ", VatRate: 0.12, Name: "Узбекистан — базовая", SourceOf: "закон"},
-		{Country: "RU", CodeCFO: 335, VatRate: 0.2036, Name: "Wildberries — эффективная", SourceOf: "ТЗ §3.4"},
-		{Country: "RU", CodeCFO: 336, VatRate: 0.2036, Name: "Lamoda — эффективная", SourceOf: "ТЗ §3.4"},
-		{Country: "RU", CodeCFO: 337, VatRate: 0.2036, Name: "Ozon — эффективная", SourceOf: "ТЗ §3.4"},
-		{Country: "RU", CodeCFO: 954, VatRate: 0.1662, Name: "Yandex Market — эффективная", SourceOf: "ТЗ §3.4"},
+		// Основной российский контур.
+		{Country: "RU", CodeCFO: 335, VatRate: 0.1960, Name: "Wildberries", SourceOf: src},
+		{Country: "RU", CodeCFO: 336, VatRate: 0.1965, Name: "Lamoda", SourceOf: src},
+		{Country: "RU", CodeCFO: 337, VatRate: 0.1960, Name: "Ozon", SourceOf: src},
+		// Контур ТЕКС.
+		{Country: "RU", CodeCFO: 953, VatRate: 0.1872, Name: "Детский мир", SourceOf: src},
+		{Country: "RU", CodeCFO: 954, VatRate: 0.1871, Name: "Yandex Market", SourceOf: src},
+		{Country: "RU", CodeCFO: 955, VatRate: 0.1868, Name: "Золотое яблоко", SourceOf: src},
+		{Country: "RU", CodeCFO: 957, VatRate: 0.1870, Name: "Yandex Market ТЕКС", SourceOf: src},
+		{Country: "RU", CodeCFO: 958, VatRate: 0.1869, Name: "Lamoda ТЕКС", SourceOf: src},
+		{Country: "RU", CodeCFO: 990, VatRate: 0.1868, Name: "Wildberries ТЕКС", SourceOf: src},
+		{Country: "RU", CodeCFO: 991, VatRate: 0.1868, Name: "Ozon ТЕКС", SourceOf: src},
+		// Казахстан и Узбекистан — ровные ставки.
+		{Country: "KZ", CodeCFO: 338, VatRate: 0.1600, Name: "Kaspi", SourceOf: src},
+		{Country: "KZ", CodeCFO: 474, VatRate: 0.1600, Name: "Ozon KZ", SourceOf: src},
+		{Country: "KZ", CodeCFO: 475, VatRate: 0.1600, Name: "Wildberries KZ", SourceOf: src},
+		{Country: "UZ", CodeCFO: 339, VatRate: 0.1200, Name: "Uzmarket", SourceOf: src},
 	}
 }
 

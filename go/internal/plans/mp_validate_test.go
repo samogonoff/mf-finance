@@ -101,9 +101,9 @@ func TestValidateMp_DoubleCountOwnership(t *testing.T) {
 	}
 }
 
-// МП-11: конфликт кода 54 блокирует (смысл статьи расходится — свод исказится),
-// а стилистическое расхождение названия только предупреждает. Замечание уровня
-// формы: наименование от площадки не зависит.
+// МП-11 только предупреждает (правка ТЗ МП §17 от 28.08.2026): справочник
+// авторитетен, расходятся подписи, а не коды, поэтому отправку это не
+// останавливает. Замечание уровня формы: наименование от площадки не зависит.
 func TestValidateMp_PLNameConflict(t *testing.T) {
 	issues := ValidateMpForm(MpValidationInput{
 		Platforms: []MarketplaceRow{
@@ -111,8 +111,9 @@ func TestValidateMp_PLNameConflict(t *testing.T) {
 			{CodeCFO: 336, NameCFO: "Lamoda", Segment: "large", Country: "RU", LegalEntity: "TD"},
 		},
 		PLNames: map[int]string{
-			54: "Аренда помещений (стоянки)",     // содержательный конфликт (ТЗ §8.1)
-			58: "Банковские расходы / эквайринг", // та же статья, другая формулировка
+			52: "Грузоперевозки развоз и перемещение", // совпадает с формой после правки §16
+			54: "Аренда помещений (стоянки)",          // совпадает с формой после правки §16
+			58: "Банковские расходы / эквайринг",      // та же статья, другая формулировка
 		},
 	})
 	var blocking, warning int
@@ -126,9 +127,6 @@ func TestValidateMp_PLNameConflict(t *testing.T) {
 		switch i.Level {
 		case MpBlocking:
 			blocking++
-			if i.Block != BCostLogWarehouse {
-				t.Errorf("блокировать должен только конфликт кода 54, получено %q", i.Block)
-			}
 		case MpWarning:
 			warning++
 			if i.Block != BCostAcquiring {
@@ -136,9 +134,11 @@ func TestValidateMp_PLNameConflict(t *testing.T) {
 			}
 		}
 	}
-	if blocking != 1 || warning != 1 {
-		t.Fatalf("ожидались 1 блокирующее (код 54) и 1 предупреждение (код 58), получено %d/%d: %+v",
-			blocking, warning, issues)
+	if blocking != 0 {
+		t.Errorf("МП-11 больше не блокирует отправку, получено %d блокирующих: %+v", blocking, issues)
+	}
+	if warning != 1 {
+		t.Fatalf("ожидалось одно предупреждение (код 58), получено %d: %+v", warning, issues)
 	}
 }
 

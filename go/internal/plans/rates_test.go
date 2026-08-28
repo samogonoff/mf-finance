@@ -5,17 +5,30 @@ import (
 	"testing"
 )
 
-// Эффективная ставка площадки перебивает страновой дефолт (ТЗ МП §3.4).
+// Эффективная ставка площадки перебивает страновой дефолт. Значения — ответ
+// аналитика от 28.08.2026 (1 − КодPL 1006/1022), а не ТЗ §3.4: основной
+// российский контур ≈ 19,6 %, ТЕКС ≈ 18,7 %, КЗ ровно 16 %, УЗ ровно 12 %.
 func TestPickVat_PlatformOverridesCountry(t *testing.T) {
 	rows := VatSeed()
-	if got := pickVat(rows, "RU", 954); got != 0.1662 {
-		t.Fatalf("Yandex Market: ожидалась эффективная 16,62 %%, получено %.4f", got)
-	}
-	if got := pickVat(rows, "RU", 335); got != 0.2036 {
-		t.Fatalf("Wildberries: ожидалась эффективная 20,36 %%, получено %.4f", got)
+	for _, c := range []struct {
+		country string
+		cfo     int
+		want    float64
+		name    string
+	}{
+		{"RU", 335, 0.1960, "Wildberries"},
+		{"RU", 336, 0.1965, "Lamoda"},
+		{"RU", 954, 0.1871, "Yandex Market"},
+		{"RU", 990, 0.1868, "Wildberries ТЕКС"},
+		{"KZ", 474, 0.1600, "Ozon KZ"},
+		{"UZ", 339, 0.1200, "Uzmarket"},
+	} {
+		if got := pickVat(rows, c.country, c.cfo); got != c.want {
+			t.Errorf("%s (ЦФО %d): ожидалось %.4f, получено %.4f", c.name, c.cfo, c.want, got)
+		}
 	}
 	// Площадка без своей строки — страновой дефолт.
-	if got := pickVat(rows, "KZ", 474); got != 0.12 {
+	if got := pickVat(rows, "KZ", 999); got != 0.12 {
 		t.Fatalf("KZ-площадка без своей ставки: ожидалось 12 %%, получено %.4f", got)
 	}
 	if got := pickVat(rows, "XX", 0); got != 0.20 {
