@@ -166,7 +166,7 @@ export const usePlans = () => {
   const stageAction = (
     id: number,
     code: string,
-    payload: { action: string; target?: string; year: number; month: number; country?: string }
+    payload: { action: string; target?: string; comment?: string; year: number; month: number; country?: string }
   ): Promise<StageState[]> =>
     $fetch<StageState[]>(`${base}/api/plans/instances/${id}/stages/${code}/action`, {
       method: "POST",

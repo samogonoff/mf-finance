@@ -1,0 +1,309 @@
+package plans
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+// Источники данных формы «Розница» (ТЗ §11). Онлайн — тот же *sql.DB MSSQL, что у
+// МП (FinDWH/Budgeting/Checks на 10.10.6.15); при PLANS_MOCK=1 или db==nil —
+// фикстуры retail_mock.go, чтобы форма и тесты работали без сети/VPN.
+//
+// Все запросы best-effort, как в olap_mp.go: сбой одного источника не роняет
+// остальные — форма откроется без стратегии или без истории плана, и это видно
+// в логе и в контрольных сверках §7 (недоступный источник помечается skipped,
+// а не «расхождение 0»).
+
+// RetailDataSource — данные ТЗ §11.
+type RetailDataSource interface {
+	// Stores — справочник магазинов страны (FinDWH.dbo.[001 CodeCFO]).
+	Stores(ctx context.Context, country string) ([]RetailStore, error)
+	// Fact — факт продаж (выручка с НДС) за указанные годы, все месяцы.
+	Fact(ctx context.Context, country string, years []int) ([]RetailFactCell, error)
+	// Strategy — стратегия года (Budgeting, нац. валюта).
+	Strategy(ctx context.Context, country string, year int) ([]RetailFactCell, error)
+	// PlanHistory — ранее утверждённая тактика (Checks.dbo.plan_saler_st*),
+	// только чтение. Второй результат — соответствие CodeCFO → KLIENT_ID:
+	// в [001 CodeCFO] колонки KLIENT_ID нет, а ТЗ §2 требует её как атрибут строки.
+	PlanHistory(ctx context.Context, country string, year int) ([]RetailFactCell, map[int]string, error)
+}
+
+// RetailTables — имена таблиц-источников (ТЗ §11: «все имена таблиц — через конфиг»).
+type RetailTables struct {
+	StoreTable       string // FinDWH.dbo.[001 CodeCFO]
+	StoreGroup       string // значение GroupCFO1 справочника: 'Магазины'
+	FactTable        string // FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail
+	FactColumns      string // CSV: колонка ЦФО, колонка даты, колонка суммы
+	StrategyTable    string // Budgeting.dbo.VFORMTOLOADPLAN (нац. валюта)
+	StrategyGroup    string // ГруппыЦФО1 таблицы плана: '3.Магазины'
+	PlanHistTable    string // Checks.dbo.plan_saler_st
+	PlanHistNewTable string // Checks.dbo.plan_saler_st_new_stores
+}
+
+// mssqlRetailSource — online-источник.
+type mssqlRetailSource struct {
+	db  *sql.DB
+	tbl RetailTables
+}
+
+// NewRetailSource — источник данных розницы. mock=true или db=nil → фикстуры.
+func NewRetailSource(mock bool, db *sql.DB, tbl RetailTables) RetailDataSource {
+	if mock || db == nil {
+		return NewMockRetailSource()
+	}
+	return &mssqlRetailSource{db: db, tbl: tbl}
+}
+
+// sqlIdent — допустимый идентификатор колонки. Имена колонок приходят из env
+// (FactColumns), поэтому подставлять их в SQL без проверки нельзя: env задаёт
+// администратор, но одна опечатка с кавычкой ломает запрос неотличимо от сбоя БД.
+var sqlIdent = regexp.MustCompile(`^[A-Za-zА-Яа-я_][A-Za-zА-Яа-я0-9_ ]*$`)
+
+// factColumns — колонки таблицы факта. ТЗ §11 называет ТАБЛИЦУ
+// (sales_and_COGG_from_FOX_offline_retail), но не её колонки, поэтому они
+// настраиваются: PLANS_RETAIL_FACT_COLUMNS="ЦФО,Дата,Сумма". Значения по
+// умолчанию — предположение, которое нужно подтвердить пробой
+// (cmd/mssql-probe с PROBE_SQL). Пока не подтверждено — работаем на mock'е.
+func (s *mssqlRetailSource) factColumns() (cfo, date, amount string, err error) {
+	parts := strings.Split(s.tbl.FactColumns, ",")
+	if len(parts) != 3 {
+		return "", "", "", fmt.Errorf("PLANS_RETAIL_FACT_COLUMNS должен содержать 3 имени через запятую, получено %q", s.tbl.FactColumns)
+	}
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+		if !sqlIdent.MatchString(parts[i]) {
+			return "", "", "", fmt.Errorf("недопустимое имя колонки %q в PLANS_RETAIL_FACT_COLUMNS", parts[i])
+		}
+	}
+	return parts[0], parts[1], parts[2], nil
+}
+
+// Stores — справочник магазинов (ТЗ §11). Фильтр GroupCFO1 берётся из конфига,
+// а не из строкового литерала: ТЗ прямо предупреждает, что в справочнике
+// 'Магазины', а в таблице плана '3.Магазины', и сопоставление идёт справочником.
+func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]RetailStore, error) {
+	q := fmt.Sprintf(`
+		SELECT [GroupCFO1], [GroupCFO2], [CodeCFO], [CFO], [Country], [CodeFOX],
+		       [Ploschad], [TypeOfStore], [DateOpen], [DateClose], [StadiyaOfStore],
+		       [CompanyMF], [Channel], [CFOold], [Category], [LfLStatus],
+		       [RegManager], [Manager], [PLAnalyticCFO1]
+		  FROM %s
+		 WHERE [GroupCFO1] = @p1
+		   AND (@p2 = '' OR [Country] = @p2)`, s.tbl.StoreTable)
+	rows, err := s.db.QueryContext(ctx, q, s.tbl.StoreGroup, country)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]RetailStore, 0, 400)
+	skipped := 0
+	for rows.Next() {
+		var st RetailStore
+		var g1, g2, cfo, ctry, fox, typ, open, close_, stage, comp, ch, old, cat, lfl, rm, mgr, pla sql.NullString
+		// CodeCFO читаем СТРОКОЙ, а не int64: в справочнике встречаются
+		// нечисловые коды («40RUBK»), и на первом же таком синк падал целиком —
+		// вместе с ним пропадали все магазины, а не одна битая строка.
+		var code sql.NullString
+		var plo sql.NullFloat64
+		if err := rows.Scan(&g1, &g2, &code, &cfo, &ctry, &fox, &plo, &typ, &open, &close_,
+			&stage, &comp, &ch, &old, &cat, &lfl, &rm, &mgr, &pla); err != nil {
+			return nil, err
+		}
+		codeNum, ok := parseNumericCFO(code.String)
+		if !code.Valid || !ok {
+			// Строка формы ключуется числовым CodeCFO (V-04). Нечисловой код —
+			// это не магазин розницы (валютные/технические ЦФО), пропускаем.
+			skipped++
+			continue
+		}
+		st = RetailStore{
+			CodeCFO: codeNum, GroupCFO1: g1.String, City: g2.String, NameCFO: cfo.String,
+			Country: ctry.String, CodeFOX: fox.String, Ploschad: plo.Float64, StoreType: typ.String,
+			DateOpen: retailDateOrEmpty(open.String), DateClose: retailDateOrEmpty(close_.String),
+			Stage: stage.String, CompanyMF: comp.String, Channel: ch.String, CFOold: old.String,
+			Category: cat.String, LFLStatus: retailLFLStatus(lfl.String), RegManager: rm.String,
+			Manager: mgr.String, PLAnalytic: pla.String,
+		}
+		out = append(out, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if skipped > 0 {
+		// Молча терять строки нельзя: расхождение «в справочнике N, в форме N−k»
+		// иначе всплывёт только в контрольной сверке полноты (ТЗ §7).
+		log.Printf("plans retail: пропущено строк справочника с нечисловым CodeCFO: %d", skipped)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CodeCFO < out[j].CodeCFO })
+	return out, nil
+}
+
+// Fact — факт продаж (выручка с НДС) по магазинам за годы (ТЗ §11).
+func (s *mssqlRetailSource) Fact(ctx context.Context, country string, years []int) ([]RetailFactCell, error) {
+	if len(years) == 0 || s.tbl.FactTable == "" {
+		return []RetailFactCell{}, nil
+	}
+	cfoCol, dateCol, amtCol, err := s.factColumns()
+	if err != nil {
+		return nil, err
+	}
+	q := fmt.Sprintf(`
+		SELECT TRY_CONVERT(int, [%s]) AS cfo, YEAR([%s]) AS y, MONTH([%s]) AS m, SUM([%s]) AS amt
+		  FROM %s
+		 WHERE YEAR([%s]) IN (%s)
+		 GROUP BY TRY_CONVERT(int, [%s]), YEAR([%s]), MONTH([%s])`,
+		cfoCol, dateCol, dateCol, amtCol, s.tbl.FactTable,
+		dateCol, intList(years), cfoCol, dateCol, dateCol)
+	return s.scanCells(ctx, q)
+}
+
+// Strategy — стратегия года (ТЗ §11). Читаем нац. валюту (VFORMTOLOADPLAN) и
+// ТОЛЬКО Параметр='ПРОДАЖИ'. Параметр 'ПРОДАЖИ с НДС с самовыв_' требует базы
+// «Сумма+самовывоз» = Значение / курс П.М / (1 − инд. самовывоза), а ни курса П.М,
+// ни индекса самовывоза ТЗ не определяет и в источниках их нет — эта база НЕ
+// реализована (см. отчёт: открытые вопросы к BI).
+func (s *mssqlRetailSource) Strategy(ctx context.Context, country string, year int) ([]RetailFactCell, error) {
+	if s.tbl.StrategyTable == "" {
+		return []RetailFactCell{}, nil
+	}
+	q := fmt.Sprintf(`
+		SELECT TRY_CONVERT(int, [КодЦФО]) AS cfo, YEAR([Дата]) AS y, MONTH([Дата]) AS m, SUM([Значение]) AS amt
+		  FROM %s
+		 WHERE [Параметр] = N'ПРОДАЖИ'
+		   AND [ГруппыЦФО1] = @p1
+		   AND YEAR([Дата]) = @p2
+		   AND (@p3 = '' OR [Страна] = @p3)
+		 GROUP BY TRY_CONVERT(int, [КодЦФО]), YEAR([Дата]), MONTH([Дата])`, s.tbl.StrategyTable)
+	return s.scanCells(ctx, q, s.tbl.StrategyGroup, year, country)
+}
+
+// RetailPlanVersionLabel — метка версии тактики при переносе истории плана.
+// Открытый вопрос §12 п.8 закрыт нашим решением (27.08.2026: «это что мы можем
+// сразу закрыть»), поэтому формат задаёт приложение:
+//
+//	TAKT-<год>-<месяц>-v<номер версии карточки>   →   TAKT-2026-07-v003
+//
+// Три свойства, ради которых формат именно такой:
+//   - лексикографический порядок совпадает с хронологическим, поэтому
+//     MAX([VERSION]) в PlanHistory возвращает последнюю итерацию согласования
+//     (номер версии дополнен нулями — иначе «v10» стало бы меньше «v9»);
+//   - метка несёт период и номер версии, то есть однозначно ведёт к строке
+//     card_version, из которой перенесена история;
+//   - фиксированная длина 18 символов — влезает в nvarchar-колонку источника.
+func RetailPlanVersionLabel(year, month, versionNo int) string {
+	return fmt.Sprintf("TAKT-%04d-%02d-v%03d", year, month, versionNo)
+}
+
+// PlanHistory — ранее утверждённая тактика (ТЗ §11, только чтение). Две таблицы:
+// действующие магазины и новые (plan_saler_st_new_stores) — у новых своя, потому
+// что KLIENT_ID у них ещё нет (те самые «ххх» из §2).
+//
+// Берётся МАКСИМАЛЬНАЯ версия (VERSION) по магазину и месяцу: история хранит все
+// итерации согласования, а «ранее утверждённая тактика» из §4 — последняя из них.
+func (s *mssqlRetailSource) PlanHistory(ctx context.Context, country string, year int) ([]RetailFactCell, map[int]string, error) {
+	klient := map[int]string{}
+	cells := make([]RetailFactCell, 0)
+	for _, table := range []string{s.tbl.PlanHistTable, s.tbl.PlanHistNewTable} {
+		if table == "" {
+			continue
+		}
+		q := fmt.Sprintf(`
+			SELECT TRY_CONVERT(int, h.[CFO]) AS cfo, h.[PYEAR] AS y, h.[PMONTH] AS m,
+			       SUM(h.[SUMMA]) AS amt, MAX(h.[KLIENT_ID]) AS klient
+			  FROM %s h
+			  JOIN (SELECT [CFO], [PYEAR], [PMONTH], MAX([VERSION]) AS v
+			          FROM %s WHERE [PYEAR] = @p1 GROUP BY [CFO], [PYEAR], [PMONTH]) last
+			    ON last.[CFO] = h.[CFO] AND last.[PYEAR] = h.[PYEAR]
+			   AND last.[PMONTH] = h.[PMONTH] AND last.v = h.[VERSION]
+			 WHERE h.[PYEAR] = @p1
+			 GROUP BY TRY_CONVERT(int, h.[CFO]), h.[PYEAR], h.[PMONTH]`, table, table)
+		rows, err := s.db.QueryContext(ctx, q, year)
+		if err != nil {
+			log.Printf("plans retail: история плана (%s): %v", table, err)
+			continue
+		}
+		for rows.Next() {
+			var cfo, y, m sql.NullInt64
+			var amt sql.NullFloat64
+			var kl sql.NullString
+			if err := rows.Scan(&cfo, &y, &m, &amt, &kl); err != nil {
+				rows.Close()
+				return cells, klient, err
+			}
+			if !cfo.Valid || !y.Valid || !m.Valid {
+				continue
+			}
+			cells = append(cells, RetailFactCell{
+				CodeCFO: int(cfo.Int64), Year: int(y.Int64), Month: int(m.Int64), Amount: amt.Float64,
+			})
+			if kl.Valid && strings.TrimSpace(kl.String) != "" {
+				klient[int(cfo.Int64)] = strings.TrimSpace(kl.String)
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return cells, klient, err
+		}
+	}
+	return cells, klient, nil
+}
+
+// scanCells — общий разбор запросов «(ЦФО, год, месяц) → сумма».
+func (s *mssqlRetailSource) scanCells(ctx context.Context, q string, args ...any) ([]RetailFactCell, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]RetailFactCell, 0, 4096)
+	for rows.Next() {
+		var cfo, y, m sql.NullInt64
+		var amt sql.NullFloat64
+		if err := rows.Scan(&cfo, &y, &m, &amt); err != nil {
+			return nil, err
+		}
+		if !cfo.Valid || !y.Valid || !m.Valid {
+			continue
+		}
+		out = append(out, RetailFactCell{
+			CodeCFO: int(cfo.Int64), Year: int(y.Int64), Month: int(m.Int64), Amount: amt.Float64,
+		})
+	}
+	return out, rows.Err()
+}
+
+// intList — список чисел через запятую (числа, безопасно для IN).
+func intList(vals []int) string {
+	parts := make([]string, 0, len(vals))
+	for _, v := range vals {
+		parts = append(parts, fmt.Sprintf("%d", v))
+	}
+	return strings.Join(parts, ",")
+}
+
+// numericCFO — код ЦФО целиком из цифр. В справочнике [001 CodeCFO] попадаются
+// технические коды вида «40RUBK» (валютные разрезы, а не магазины): строка формы
+// ключуется числовым кодом (V-04), поэтому такие записи в розницу не берём.
+var numericCFO = regexp.MustCompile(`^[0-9]+$`)
+
+// parseNumericCFO — число из кода ЦФО; ok=false, если код нечисловой.
+func parseNumericCFO(raw string) (int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !numericCFO.MatchString(raw) {
+		return 0, false
+	}
+	n := 0
+	for _, ch := range raw {
+		n = n*10 + int(ch-'0')
+		if n > 1_000_000_000 { // защита от абсурдно длинных строк
+			return 0, false
+		}
+	}
+	return n, true
+}

@@ -51,19 +51,30 @@ func computeMpPlatform(in map[string]float64, vat float64) map[string]float64 {
 	out[BSalesPlatGross] = platGross
 	out[BSalesPlatNet] = platNet
 
-	out[BShipments] = shipments
-	// Наценка% — расчётная (правка допускается: если задана вручную, берём её).
+	// Наценка% — расчётная, но правка допускается. Если задана вручную, она
+	// становится ведущей: себестоимость по отпускным ценам — производная от неё
+	// (ТЗ МП §3.4: СС_отп = S_пл / (1 + Наценка)). Раньше override подставлялся
+	// в вывод, но зависимые строки (СС, маржа) считались по старой СС — форма
+	// показывала несогласованный каскад.
 	if v, ok := in[BMarkup]; ok && v != 0 {
 		out[BMarkup] = v
+		shipments = safeDiv(platNet, 1+v)
 	} else {
 		out[BMarkup] = safeDiv(platNet, shipments) - boolToF(shipments != 0)
 	}
+	out[BShipments] = shipments
 
 	out[BRetailMargin] = platNet - shipments
 	out[BRetailMarginPct] = safeDiv(platNet-shipments, platNet)
 
+	// То же для наценки от общей себестоимости: СС_общ = S_пл / (1 + Наценка_общ).
+	if v, ok := in[BMarkupTotal]; ok && v != 0 {
+		out[BMarkupTotal] = v
+		cogs = safeDiv(platNet, 1+v)
+	} else {
+		out[BMarkupTotal] = safeDiv(platNet, cogs) - boolToF(cogs != 0)
+	}
 	out[BCogsTotal] = cogs
-	out[BMarkupTotal] = safeDiv(platNet, cogs) - boolToF(cogs != 0)
 	out[BGrossMargin] = platNet - cogs
 	out[BGrossMarginPct] = safeDiv(platNet-cogs, platNet)
 

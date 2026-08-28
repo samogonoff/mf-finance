@@ -1,5 +1,7 @@
 package plans
 
+import "time"
+
 // Модель формы TPL-MP (VS3). Матрица: площадка × блок (code_pl) × месяц.
 // Факт — read-only (источник OLAP/FinDWH); тактика — editable. Сценарий фиксирован
 // «Тактика бюджет (таргеты)». Расчётные блоки (наценка/маржа) и горизонт M±1 —
@@ -117,6 +119,21 @@ type Comment struct {
 	Body      string `json:"body"`
 	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
+}
+
+// ApprovalEntry — запись листа согласования этапа (pl_approval).
+// Комментарий обязателен при возврате (ТЗ МП §2.3 / Розница §2.3); аннулированные
+// решения (revoked) остаются в листе — их видно в истории.
+type ApprovalEntry struct {
+	StageCode     string    `json:"stage_code"`
+	UserID        int64     `json:"user_id"`
+	Decision      string    `json:"decision"` // approve|return|submit|start|auto_skipped
+	LegalEntity   string    `json:"legal_entity"`
+	TargetStage   string    `json:"target_stage"`
+	Comment       string    `json:"comment"`
+	Revoked       bool      `json:"revoked"`
+	RevokedReason string    `json:"revoked_reason"`
+	DecidedAt     time.Time `json:"decided_at"`
 }
 
 // StageRoute — этап маршрута с ответственными (для настройки/просмотра).

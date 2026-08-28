@@ -11,6 +11,7 @@
   "dependencies": {
     "@iconify-json/lucide": "^1.2.102",
     "@nuxt/icon": "^1.15.0",
+    "@tanstack/vue-virtual": "^3.10.8",
     "ag-grid-community": "^32.3.0",
     "ag-grid-enterprise": "^32.3.9",
     "ag-grid-vue3": "^32.3.0",

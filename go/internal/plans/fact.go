@@ -38,18 +38,6 @@ func NewMpFactSource(mock bool, db *sql.DB, factTable, planTable, taktTable, pen
 	return NewOlapFactSource(db, factTable, planTable, taktTable, penaltyView)
 }
 
-// segmentGroup — соответствие сегмента группе в источнике (Group_МП_new).
-func segmentGroup(segment string) (string, bool) {
-	switch segment {
-	case "large":
-		return "Маркетплейсы_large", true
-	case "small":
-		return "Маркетплейсы_small", true
-	default:
-		return "", false
-	}
-}
-
 // segmentPlatforms — площадки сегмента (code_cfo → name_cfo) из seed dir_marketplace.
 func segmentPlatforms(segment string) map[int]string {
 	out := map[int]string{}

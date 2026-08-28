@@ -25,6 +25,7 @@
           <summary class="btn btn-ghost"><Icon name="lucide:settings" /> Настройки</summary>
           <div class="more-menu">
             <NuxtLink to="/plans/admin/route" class="more-item"><Icon name="lucide:git-branch" /> Маршрут</NuxtLink>
+            <NuxtLink to="/plans/admin/form-route" class="more-item"><Icon name="lucide:route" /> Маршрут форм</NuxtLink>
             <NuxtLink to="/plans/admin/positions" class="more-item"><Icon name="lucide:briefcase" /> Должности</NuxtLink>
             <NuxtLink to="/plans/admin/task-templates" class="more-item"><Icon name="lucide:wrench" /> Конструктор заданий</NuxtLink>
             <NuxtLink to="/plans/audit" class="more-item"><Icon name="lucide:scroll-text" /> Аудит</NuxtLink>
@@ -79,7 +80,8 @@
             </div>
           </div>
           <div class="ti-act">
-            <NuxtLink v-if="t.form_code === 'TPL-MP'" :to="`/plans/mp-form/${t.id}`" class="btn btn-sm btn-primary">
+            <!-- Адрес формы даёт сервер: у розницы форм четыре (по стране). -->
+            <NuxtLink v-if="t.form_path" :to="t.form_path" class="btn btn-sm btn-primary">
               <Icon name="lucide:pencil" /> {{ t.task_role === "approve" ? "Проверить" : "Заполнить" }}
             </NuxtLink>
             <NuxtLink :to="`/plans/${t.pl_id}`" class="btn btn-sm btn-ghost">Карточка</NuxtLink>

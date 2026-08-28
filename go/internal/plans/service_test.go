@@ -17,6 +17,7 @@ type memStore struct {
 	overrides     map[int64]map[string]string
 	stages        map[int64][]StageState
 	approvals     map[int64][]string
+	approvalRows  map[int64][]ApprovalEntry
 	route         map[string]string
 }
 
@@ -34,8 +35,9 @@ func newMemStore() *memStore {
 		comments:    map[int64][]Comment{},
 		overrides:   map[int64]map[string]string{},
 		stages:      map[int64][]StageState{},
-		approvals:   map[int64][]string{},
-		route:       map[string]string{},
+		approvals:    map[int64][]string{},
+		approvalRows: map[int64][]ApprovalEntry{},
+		route:        map[string]string{},
 	}
 }
 
@@ -180,9 +182,25 @@ func (m *memStore) StagesSave(_ context.Context, plID int64, stages []StageState
 	return nil
 }
 
-func (m *memStore) RecordApproval(_ context.Context, plID int64, code string, userID int64, decision, le string) error {
-	m.approvals[plID] = append(m.approvals[plID], code+":"+decision)
+func (m *memStore) RecordApproval(_ context.Context, plID int64, e ApprovalEntry) error {
+	m.approvals[plID] = append(m.approvals[plID], e.StageCode+":"+e.Decision)
+	m.approvalRows[plID] = append(m.approvalRows[plID], e)
 	return nil
+}
+
+func (m *memStore) RevokeApprovalsFrom(_ context.Context, plID int64, fromStage, reason string) error {
+	for i := range m.approvalRows[plID] {
+		e := &m.approvalRows[plID][i]
+		if !e.Revoked && e.Decision == "approve" && e.StageCode >= fromStage {
+			e.Revoked = true
+			e.RevokedReason = reason
+		}
+	}
+	return nil
+}
+
+func (m *memStore) Approvals(_ context.Context, plID int64) ([]ApprovalEntry, error) {
+	return m.approvalRows[plID], nil
 }
 
 func (m *memStore) RouteConfig(_ context.Context) (map[string]string, error) {
@@ -456,7 +474,7 @@ func TestStages_LazyInitAndAction(t *testing.T) {
 		t.Fatalf("ожидалось %d этапов", len(stageDefs()))
 	}
 	// Действие submit на 1.1 сохраняется.
-	next, err := svc.StageAction(ctx, adminP, plID, 2026, 6, "RU", "1.1", "submit", "")
+	next, err := svc.StageAction(ctx, adminP, plID, 2026, 6, "RU", "1.1", "submit", "", "")
 	if err != nil {
 		t.Fatalf("StageAction: %v", err)
 	}
@@ -476,8 +494,8 @@ func TestStageAction_ApprovalRecorded(t *testing.T) {
 	ctx := context.Background()
 	plID, _ := store.EnsureInstance(ctx, 2026, 6)
 	_, _ = svc.Stages(ctx, plID, 2026, 6, "RU")
-	_, _ = svc.StageAction(ctx, adminP, plID, 2026, 6, "RU", "1.1", "submit", "")
-	if _, err := svc.StageAction(ctx, adminP, plID, 2026, 6, "RU", "1.2", "approve", ""); err != nil {
+	_, _ = svc.StageAction(ctx, adminP, plID, 2026, 6, "RU", "1.1", "submit", "", "")
+	if _, err := svc.StageAction(ctx, adminP, plID, 2026, 6, "RU", "1.2", "approve", "", ""); err != nil {
 		t.Fatalf("approve 1.2: %v", err)
 	}
 	if len(store.approvals[plID]) == 0 {

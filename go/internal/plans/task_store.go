@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,15 +32,62 @@ type Task struct {
 	DelegateID   *int64 `json:"delegate_user_id"`
 	DelegateName string `json:"delegate_name"`
 	Status       string `json:"status"`
-	Year         int    `json:"year,omitempty"`  // период карточки (в обзоре всех заданий)
+	Year         int    `json:"year,omitempty"` // период карточки (в обзоре всех заданий)
 	Month        int    `json:"month,omitempty"`
+	// Кто и когда передал задание, с каким сроком и пояснением. Без этих полей
+	// в списке видно только конечного держателя — «почему задание у него»
+	// ответить нельзя (ux-redesign §7c, требование прозрачности передачи).
+	DelegatedBy   *int64     `json:"delegated_by,omitempty"`
+	DelegatedName string     `json:"delegated_by_name,omitempty"`
+	DelegatedAt   *time.Time `json:"delegated_at,omitempty"`
+	DelegateNote  string     `json:"delegate_note,omitempty"`
+	DueAt         *time.Time `json:"due_at,omitempty"`
+	// CardID — карточка формы, к которой ведёт это задание. Без неё интерфейс не
+	// знает, какую форму открывать: у розницы карточек четыре (по стране), и
+	// раньше кнопки перехода в форму у неё просто не было.
+	CardID int64 `json:"card_id,omitempty"`
+	// FormPath — готовый адрес формы для перехода из списка заданий.
+	FormPath string `json:"form_path,omitempty"`
+}
+
+// TaskEvent — запись журнала действий по заданию (pl_task_event).
+// История передач: кто, кому, когда, с какой формулировкой и сроком.
+type TaskEvent struct {
+	ID         int64      `json:"id"`
+	Action     string     `json:"action"`
+	ActorID    *int64     `json:"actor_id,omitempty"`
+	ActorName  string     `json:"actor_name"`
+	TargetID   *int64     `json:"target_id,omitempty"`
+	TargetName string     `json:"target_name,omitempty"`
+	StatusFrom string     `json:"status_from"`
+	StatusTo   string     `json:"status_to"`
+	Comment    string     `json:"comment"`
+	DueAt      *time.Time `json:"due_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+// TaskActionInput — параметры действия над заданием.
+type TaskActionInput struct {
+	Action         string `json:"action"`
+	DelegateUserID int64  `json:"delegate_user_id"`
+	// Comment обязателен при делегировании и возврате: передача работы без
+	// объяснения — главная причина, по которой в Excel-процессе терялся контекст.
+	Comment string `json:"comment"`
+	// DueAt — срок, который передающий называет принимающему (RFC3339 или пусто).
+	DueAt string `json:"due_at"`
 }
 
 // TaskStore — доступ к заданиям.
 type TaskStore struct {
 	pool   *pgxpool.Pool
 	notify TaskNotifier // канал уведомлений участникам (может быть nil)
-	fact MpFactSource // источник факта МП (read-only) для формы
+	fact   MpFactSource // источник факта МП (read-only) для формы
+	// Контекст расчёта: режим карточки (legacy/inverse), условия площадок и
+	// справочные ставки. Всё опционально — без них форма считается как раньше
+	// (legacy-каскад «суммы → доли»).
+	cards CardStore
+	cond  MpConditionsStore
+	rates *RateBook
 }
 
 // NewTaskStore — конструктор. fact может быть nil (факт тогда пуст).
@@ -47,14 +95,45 @@ func NewTaskStore(pool *pgxpool.Pool, fact MpFactSource) *TaskStore {
 	return &TaskStore{pool: pool, fact: fact}
 }
 
+// WithCalcContext подключает инверсию расчёта (ТЗ МП §3.1): если карточка формы
+// в режиме inverse и по площадке заданы условия, расходная часть считается из
+// условий, а не подтягивается суммами.
+func (s *TaskStore) WithCalcContext(cards CardStore, cond MpConditionsStore, rates *RateBook) *TaskStore {
+	s.cards, s.cond, s.rates = cards, cond, rates
+	return s
+}
+
+// calcModeFor — режим расчёта карточки МП периода. Карточка ищется по сегменту
+// задания; при её отсутствии (старые периоды) остаётся legacy.
+func (s *TaskStore) calcModeFor(ctx context.Context, plID int64, segment string) (string, Card) {
+	if s.cards == nil {
+		return CalcLegacy, Card{}
+	}
+	scopes := []string{segment}
+	if segment == "" || segment == "all" {
+		// Объединённая форма: режим берём из карточки large (обе группы идут в
+		// одном режиме — иначе числа в своде будут несопоставимы).
+		scopes = []string{"large", "small"}
+	}
+	for _, sc := range scopes {
+		if c, err := s.cards.CardByScope(ctx, plID, TemplateMP, sc); err == nil {
+			if c.CalcMode == CalcInverse {
+				return CalcInverse, c
+			}
+			return CalcLegacy, c
+		}
+	}
+	return CalcLegacy, Card{}
+}
+
 type taskTemplate struct {
-	ID        int64
-	Stage     string
-	Form      string
-	Title     string
-	Filter    CfoFilter
-	Role      string
-	GroupBy   string
+	ID      int64
+	Stage   string
+	Form    string
+	Title   string
+	Filter  CfoFilter
+	Role    string
+	GroupBy string
 }
 
 func (s *TaskStore) templates(ctx context.Context) ([]taskTemplate, error) {
@@ -116,6 +195,9 @@ func (s *TaskStore) matchingCfo(ctx context.Context, f CfoFilter) ([]cfoRowLite,
 			JOIN plans_directory dm ON dm.id=mp.directory_id
 			WHERE dm.code='dir_marketplace' AND mp.payload_json->>'segment'=$%d)`, len(args)))
 	}
+	// Нечисловые коды ЦФО (в справочнике прода есть «40RUBK») отсеиваем ДО
+	// приведения: иначе падает весь запрос, а не одна строка.
+	conds = append(conds, `r.external_id ~ '^[0-9]+$'`)
 	rows, err := s.pool.Query(ctx, `
 		SELECT (r.external_id)::int, cp.position_id, jp.holder_user_id, COALESCE(r.payload_json->>'legal_entity','')
 		FROM plans_directory_row r JOIN plans_directory d ON d.id=r.directory_id
@@ -225,8 +307,8 @@ func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 			}
 			if len(unassigned) > 0 {
 				// «без ТОПа» — внутренний жаргон: у ЦФО не задана должность-владелец.
-			// В UI пишем то, что от человека требуется: назначить исполнителя.
-			queue(t, t.Title+" · исполнитель не назначен", unassigned, nil, nil, "")
+				// В UI пишем то, что от человека требуется: назначить исполнителя.
+				queue(t, t.Title+" · исполнитель не назначен", unassigned, nil, nil, "")
 			}
 		}
 	}
@@ -251,10 +333,13 @@ const taskSelect = `
 SELECT t.id, t.pl_id, t.stage_code, t.form_code, t.title, t.cfo_codes, t.task_role,
        t.position_id, t.legal_entity, t.assignee_user_id,
        TRIM(COALESCE(au.last_name,'')||' '||COALESCE(au.name,'')),
-       t.delegate_user_id, TRIM(COALESCE(du.last_name,'')||' '||COALESCE(du.name,'')), t.status
+       t.delegate_user_id, TRIM(COALESCE(du.last_name,'')||' '||COALESCE(du.name,'')), t.status,
+       t.delegated_by, TRIM(COALESCE(bu.last_name,'')||' '||COALESCE(bu.name,'')),
+       t.delegated_at, t.delegate_note, t.due_at
 FROM pl_task t
 LEFT JOIN users au ON au.id=t.assignee_user_id
-LEFT JOIN users du ON du.id=t.delegate_user_id`
+LEFT JOIN users du ON du.id=t.delegate_user_id
+LEFT JOIN users bu ON bu.id=t.delegated_by`
 
 func scanTasks(rows pgx.Rows) ([]Task, error) {
 	defer rows.Close()
@@ -264,7 +349,8 @@ func scanTasks(rows pgx.Rows) ([]Task, error) {
 		var raw []byte
 		if err := rows.Scan(&t.ID, &t.PlID, &t.StageCode, &t.FormCode, &t.Title, &raw, &t.Role,
 			&t.PositionID, &t.LegalEntity, &t.AssigneeID, &t.AssigneeName,
-			&t.DelegateID, &t.DelegateName, &t.Status); err != nil {
+			&t.DelegateID, &t.DelegateName, &t.Status,
+			&t.DelegatedBy, &t.DelegatedName, &t.DelegatedAt, &t.DelegateNote, &t.DueAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(raw, &t.CfoCodes)
@@ -280,7 +366,12 @@ func (s *TaskStore) ListByInstance(ctx context.Context, plID int64) ([]Task, err
 	if err != nil {
 		return nil, err
 	}
-	return scanTasks(rows)
+	list, err := scanTasks(rows)
+	if err != nil {
+		return nil, err
+	}
+	s.attachFormLinks(ctx, list)
+	return list, nil
 }
 
 // taskSelectPeriod — тот же набор колонок + период карточки: рабочему столу и
@@ -290,10 +381,13 @@ SELECT t.id, t.pl_id, t.stage_code, t.form_code, t.title, t.cfo_codes, t.task_ro
        t.position_id, t.legal_entity, t.assignee_user_id,
        TRIM(COALESCE(au.last_name,'')||' '||COALESCE(au.name,'')),
        t.delegate_user_id, TRIM(COALESCE(du.last_name,'')||' '||COALESCE(du.name,'')), t.status,
+       t.delegated_by, TRIM(COALESCE(bu.last_name,'')||' '||COALESCE(bu.name,'')),
+       t.delegated_at, t.delegate_note, t.due_at,
        COALESCE(pli.period_year,0), COALESCE(pli.period_month,0)
 FROM pl_task t
 LEFT JOIN users au ON au.id=t.assignee_user_id
 LEFT JOIN users du ON du.id=t.delegate_user_id
+LEFT JOIN users bu ON bu.id=t.delegated_by
 LEFT JOIN pl_instance pli ON pli.id=t.pl_id`
 
 func scanTasksPeriod(rows pgx.Rows) ([]Task, error) {
@@ -304,7 +398,9 @@ func scanTasksPeriod(rows pgx.Rows) ([]Task, error) {
 		var raw []byte
 		if err := rows.Scan(&t.ID, &t.PlID, &t.StageCode, &t.FormCode, &t.Title, &raw, &t.Role,
 			&t.PositionID, &t.LegalEntity, &t.AssigneeID, &t.AssigneeName,
-			&t.DelegateID, &t.DelegateName, &t.Status, &t.Year, &t.Month); err != nil {
+			&t.DelegateID, &t.DelegateName, &t.Status,
+			&t.DelegatedBy, &t.DelegatedName, &t.DelegatedAt, &t.DelegateNote, &t.DueAt,
+			&t.Year, &t.Month); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(raw, &t.CfoCodes)
@@ -321,7 +417,12 @@ func (s *TaskStore) ListAll(ctx context.Context) ([]Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return scanTasksPeriod(rows)
+	list, err := scanTasksPeriod(rows)
+	if err != nil {
+		return nil, err
+	}
+	s.attachFormLinks(ctx, list)
+	return list, nil
 }
 
 // ListByUser — мои задания (я исполнитель или делегат), с периодом карточки.
@@ -332,7 +433,12 @@ func (s *TaskStore) ListByUser(ctx context.Context, userID int64) ([]Task, error
 	if err != nil {
 		return nil, err
 	}
-	return scanTasksPeriod(rows)
+	list, err := scanTasksPeriod(rows)
+	if err != nil {
+		return nil, err
+	}
+	s.attachFormLinks(ctx, list)
+	return list, nil
 }
 
 // taskActorCan — права на действие (тонкие): admin — всё; исполнитель делегирует
@@ -353,8 +459,15 @@ func taskActorCan(action string, actor int64, isAdmin bool, assignee, delegate, 
 	return false
 }
 
-// Action применяет действие к заданию с проверкой прав. delegateUserID>0 для delegate.
-func (s *TaskStore) Action(ctx context.Context, taskID, actorUserID int64, isAdmin bool, action string, delegateUserID int64) error {
+// Action применяет действие к заданию с проверкой прав.
+//
+// Каждое действие попадает в журнал pl_task_event: кто, кому, из какого статуса
+// в какой, с каким комментарием и сроком. Без журнала цепочка передач
+// невосстановима — в задании хранится только текущий держатель.
+func (s *TaskStore) Action(ctx context.Context, taskID, actorUserID int64, isAdmin bool, in TaskActionInput) error {
+	action := strings.TrimSpace(in.Action)
+	delegateUserID := in.DelegateUserID
+	comment := strings.TrimSpace(in.Comment)
 	var status string
 	var assignee, delegate, owner *int64
 	err := s.pool.QueryRow(ctx, `
@@ -372,17 +485,36 @@ func (s *TaskStore) Action(ctx context.Context, taskID, actorUserID int64, isAdm
 		if delegateUserID == 0 {
 			return fmt.Errorf("нужен делегат")
 		}
+		// Передача работы без объяснения — то, из-за чего в Excel-процессе
+		// терялся контекст: принимающий не знает, что именно от него хотят.
+		if comment == "" {
+			return fmt.Errorf("укажите, что нужно сделать: делегирование без комментария не принимается")
+		}
+		due, err := parseTaskDue(in.DueAt)
+		if err != nil {
+			return err
+		}
 		next, err := applyTaskAction(status, action, true)
 		if err != nil {
 			return err
 		}
-		if _, err = s.pool.Exec(ctx, `UPDATE pl_task SET delegate_user_id=$2, status=$3, updated_at=NOW() WHERE id=$1`, taskID, delegateUserID, next); err != nil {
+		if _, err = s.pool.Exec(ctx, `
+			UPDATE pl_task
+			   SET delegate_user_id=$2, status=$3, delegated_by=$4, delegated_at=NOW(),
+			       delegate_note=$5, due_at=COALESCE($6, due_at), updated_at=NOW()
+			 WHERE id=$1`,
+			taskID, delegateUserID, next, actorUserID, comment, due); err != nil {
 			return err
 		}
+		s.logTaskEvent(ctx, taskID, action, actorUserID, &delegateUserID, status, next, comment, due)
 		if t, e := s.taskByID(ctx, taskID); e == nil {
 			s.notifyDelegated(delegateUserID, t, t.AssigneeName)
 		}
 		return nil
+	}
+	if action == "return" && comment == "" {
+		// Симметрично возврату этапа (ТЗ §2.3): вернуть работу молча нельзя.
+		return fmt.Errorf("возврат задания без комментария невозможен")
 	}
 	next, err := applyTaskAction(status, action, delegate != nil)
 	if err != nil {
@@ -391,6 +523,7 @@ func (s *TaskStore) Action(ctx context.Context, taskID, actorUserID int64, isAdm
 	if _, err = s.pool.Exec(ctx, `UPDATE pl_task SET status=$2, updated_at=NOW() WHERE id=$1`, taskID, next); err != nil {
 		return err
 	}
+	s.logTaskEvent(ctx, taskID, action, actorUserID, nil, status, next, comment, nil)
 	// Кого касается смена состояния: возврат — того, кто работает; сдача — того,
 	// кто принимает (исполнитель, если сдавал делегат).
 	if t, e := s.taskByID(ctx, taskID); e == nil {
@@ -437,13 +570,13 @@ type TaskDataRow struct {
 	LineCode    int      `json:"line_code"`
 	ExpenseName string   `json:"expense_name"`
 	BlockType   string   `json:"block_type"`
-	Fact        *float64 `json:"fact"`     // факт (read-only)
-	Strategy    *float64 `json:"strategy"` // стратегия (read-only)
-	Tactic      *float64 `json:"tactic"`   // тактика (ввод)
-	Calc        *float64 `json:"calc"`     // расчёт CALC
-	IsManual    bool     `json:"is_manual"`// ручная корректировка (ADJ-04)
-	Reason      string   `json:"reason"`   // основание корректировки (ADJ-02)
-	Original    *float64 `json:"original"` // значение до корректировки (diff ADJ-05)
+	Fact        *float64 `json:"fact"`      // факт (read-only)
+	Strategy    *float64 `json:"strategy"`  // стратегия (read-only)
+	Tactic      *float64 `json:"tactic"`    // тактика (ввод)
+	Calc        *float64 `json:"calc"`      // расчёт CALC
+	IsManual    bool     `json:"is_manual"` // ручная корректировка (ADJ-04)
+	Reason      string   `json:"reason"`    // основание корректировки (ADJ-02)
+	Original    *float64 `json:"original"`  // значение до корректировки (diff ADJ-05)
 }
 
 // TaskData — данные задания: метаданные + строки + признак наличия данных.
@@ -486,7 +619,8 @@ func (s *TaskStore) TaskData(ctx context.Context, taskID int64) (TaskData, error
 	err := s.pool.QueryRow(ctx, taskSelect+` WHERE t.id=$1`, taskID).Scan(
 		&t.ID, &t.PlID, &t.StageCode, &t.FormCode, &t.Title, &raw, &t.Role,
 		&t.PositionID, &t.LegalEntity, &t.AssigneeID, &t.AssigneeName,
-		&t.DelegateID, &t.DelegateName, &t.Status)
+		&t.DelegateID, &t.DelegateName, &t.Status,
+		&t.DelegatedBy, &t.DelegatedName, &t.DelegatedAt, &t.DelegateNote, &t.DueAt)
 	if err != nil {
 		return out, err
 	}
@@ -498,7 +632,9 @@ func (s *TaskStore) TaskData(ctx context.Context, taskID int64) (TaskData, error
 	if len(codes) == 0 && t.LegalEntity != "" {
 		lr, _ := s.pool.Query(ctx, `
 			SELECT (r.external_id)::int FROM plans_directory_row r JOIN plans_directory d ON d.id=r.directory_id
-			WHERE d.code='dir_cfo' AND r.payload_json->>'legal_entity'=$1 AND COALESCE(r.external_id,'') NOT IN ('','0')`, t.LegalEntity)
+			WHERE d.code='dir_cfo' AND r.payload_json->>'legal_entity'=$1
+			  AND COALESCE(r.external_id,'') NOT IN ('','0')
+			  AND r.external_id ~ '^[0-9]+$'`, t.LegalEntity)
 		for lr.Next() {
 			var c int
 			if lr.Scan(&c) == nil {
