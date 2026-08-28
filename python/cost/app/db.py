@@ -21,6 +21,8 @@ import json
 import os
 import uuid
 
+from typing import Any
+
 import asyncpg
 import pyodbc
 
@@ -3558,12 +3560,28 @@ async def aggregate_plan_materials(plan_id: str) -> list[dict]:
                 FROM cost_calc_versions
                 WHERE status IN ('pending', 'approved')
                   AND COALESCE(plan_id, '') = $1
+            ),
+            -- Строки ПРИМЕНЁННОГО набора: после apply в кэше уже лежат его цены,
+            -- и «исходная» из кэша равна правленой. Тогда фильтр «строка
+            -- переопределена» на фронте считал правку неизменённой, она не
+            -- попадала в сохранение, а в расчёт уходила старая цена (28.08, план
+            -- 9528). Исходник хранится в самом наборе с момента создания — им и
+            -- подменяем среднюю по кэшу для затронутых строк.
+            applied_rows AS (
+                SELECT r."Наименование" AS k0, r."артикул материала" AS k1,
+                       r."свойство1" AS k2, r."свойство2" AS k3, r."свойство3" AS k4,
+                       r.source_price_rub, r.source_price_usd
+                FROM cost_plan_price_set_rows r
+                JOIN cost_plan_price_sets s ON s.id = r.set_id
+                WHERE s.plan_id = $1 AND s.status = 'applied' AND r.row_kind = 'material'
             )
             SELECT mat.k0 AS "Наименование", mat.k1 AS "артикул материала",
                    mat.k2 AS "свойство1", mat.k3 AS "свойство2", mat.k4 AS "свойство3",
                    count(*) AS rows_count,
-                   round(avg(mat.pr), 4) AS avg_price_rub,
-                   round(avg(mat.pu), 4) AS avg_price_usd,
+                   COALESCE(max(ar.source_price_rub), round(avg(mat.pr), 4)) AS avg_price_rub,
+                   COALESCE(max(ar.source_price_usd), round(avg(mat.pu), 4)) AS avg_price_usd,
+                   -- что реально стоит в кэше сейчас (с учётом набора) — для справки
+                   round(avg(mat.pr), 4) AS cache_price_rub,
                    round(avg(mat.rate), 4) AS avg_rate,
                    count(DISTINCT mat.pr) AS distinct_prices,
                    round(min(mat.pr), 4) AS min_price_rub,
@@ -3576,6 +3594,9 @@ async def aggregate_plan_materials(plan_id: str) -> list[dict]:
                   -- Пустое task_number у версии = легаси-версия старого формата,
                   -- она охватывает все задания ключа (см. миграцию 0032).
                   AND (active.t = mat.t OR active.t = '')
+            LEFT JOIN applied_rows ar
+                   ON ar.k0 = mat.k0 AND ar.k1 = mat.k1 AND ar.k2 = mat.k2
+                  AND ar.k3 = mat.k3 AND ar.k4 = mat.k4
             GROUP BY mat.k0, mat.k1, mat.k2, mat.k3, mat.k4
             ORDER BY mat.k0, mat.k1, mat.k2, mat.k3, mat.k4
             """,
@@ -3685,6 +3706,30 @@ async def get_plan_price_set(set_id: int) -> dict | None:
         return {"set": dict(s), "rows": [dict(r) for r in rows]}
 
 
+def _plan_price_num(v, *, field: str, row_name: str):
+    """Число из формы набора цен: пустое поле — это NULL, а не пустая строка.
+
+    В ELK за 25–28.08.2026 — 51 падение POST /plan-price-sets с
+    «invalid input for query argument $8: ''»: человек стирал цену в поле, и
+    пустая строка уходила в numeric-колонку как есть. Ошибка приходила как
+    «Внутренняя ошибка сервиса», и это была та самая жалоба «не нажимается
+    создать набор» от 26.08, которую тогда не удалось воспроизвести.
+    """
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    # Excel вставляет неразрывный (U+00A0) и узкий (U+202F) пробел как
+    # разделитель разрядов: «1 234,50» должно стать 1234.5, а не 400.
+    t = str(v).strip().replace(",", ".").replace(" ", "").replace(" ", "").replace(" ", "")
+    if not t:
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        raise ValueError(f"«{row_name}»: {field} должна быть числом, получено {v!r}")
+
+
 async def save_plan_price_set(
     plan_id: str, title: str, rate, rows: list[dict], username: str,
     set_id: int | None = None, comment: str | None = None,
@@ -3723,12 +3768,23 @@ async def save_plan_price_set(
                 await conn.execute(
                     "DELETE FROM cost_plan_price_set_rows WHERE set_id = $1", set_id
                 )
+            saved = skipped = 0
             for r in rows:
                 # row_kind: 'material' (ключ из пяти полей) либо 'decor' —
                 # у декора ключ один, «Декоры, наименование», и кладётся он в
                 # колонку "Наименование" (см. миграцию 0035).
                 kind = "decor" if str(r.get("row_kind") or "") == "decor" else "material"
                 name = r.get("Декоры, наименование") if kind == "decor" else r.get("Наименование")
+                price_rub = _plan_price_num(r.get("price_rub"), field="цена, руб.", row_name=str(name or ""))
+                price_usd = _plan_price_num(r.get("price_usd"), field="цена, $", row_name=str(name or ""))
+                # Строка без обеих цен ничего не переопределяет: наложение идёт
+                # через COALESCE(r.price_rub, …), декоры — r.price_rub IS NOT NULL.
+                # Раньше такая строка писалась и была no-op; теперь не пишется, а
+                # в ответе честно считается пропущенной.
+                if price_rub is None and price_usd is None:
+                    skipped += 1
+                    continue
+                saved += 1
                 await conn.execute(
                     """INSERT INTO cost_plan_price_set_rows
                            (set_id, row_kind, "Наименование", "артикул материала",
@@ -3742,11 +3798,13 @@ async def save_plan_price_set(
                     str(r.get("свойство1") or "").strip(),
                     str(r.get("свойство2") or "").strip(),
                     str(r.get("свойство3") or "").strip(),
-                    r.get("price_rub"), r.get("price_usd"),
-                    r.get("source_price_rub"), r.get("source_price_usd"),
+                    price_rub,
+                    price_usd,
+                    _plan_price_num(r.get("source_price_rub"), field="исходная цена, руб.", row_name=str(name or "")),
+                    _plan_price_num(r.get("source_price_usd"), field="исходная цена, $", row_name=str(name or "")),
                     int(r.get("rows_count") or 0),
                 )
-    return set_id
+    return {"set_id": set_id, "rows_saved": saved, "skipped_empty": skipped}
 
 
 async def delete_plan_price_set(set_id: int) -> None:

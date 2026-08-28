@@ -3199,6 +3199,16 @@ async function openPlanPriceSet(setId: number) {
     };
     for (const r of planPriceRows.value) {
       const saved = byKey.get(planRowKey(r));
+      // Исходную цену берём из СТРОКИ НАБОРА, а не из кэша. После «Применить»
+      // в кэше уже лежат цены набора, и «исходная» из /plan-materials равна
+      // правленой — фильтр planPriceOverridden считал правку неизменённой,
+      // строка не попадала в сохранение, а в расчёт уходила старая цена
+      // (жалоба от 28.08, план 9528, наборы 145/147). Набор хранит исходник
+      // с момента создания — он и есть точка отсчёта.
+      if (saved && saved.source_price_rub !== null && saved.source_price_rub !== undefined) {
+        r.source_price_rub = saved.source_price_rub;
+        if (saved.source_price_usd !== null && saved.source_price_usd !== undefined) r.source_price_usd = saved.source_price_usd;
+      }
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
       r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
       // доллар в наборе задан явно — значит его правили вручную
@@ -3206,6 +3216,10 @@ async function openPlanPriceSet(setId: number) {
     }
     for (const r of planDecorRows.value) {
       const saved = byDecor.get(String(r['Декоры, наименование'] ?? '').trim());
+      if (saved && saved.source_price_rub !== null && saved.source_price_rub !== undefined) {
+        r.source_price_rub = saved.source_price_rub;
+        if (saved.source_price_usd !== null && saved.source_price_usd !== undefined) r.source_price_usd = saved.source_price_usd;
+      }
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
       r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
       (r as any)._usdManual = !!(saved && saved.price_usd !== null && saved.price_usd !== undefined);
@@ -3323,7 +3337,7 @@ async function savePlanPriceSet() {
   planPricesError.value = '';
   planPricesSaving.value = true;
   try {
-    const resp = await $fetch<{ set_id: number }>(`${apiBase.value}/api/cost/plan-price-sets`, {
+    const resp = await $fetch<{ set_id: number; rows_saved?: number; skipped_empty?: number }>(`${apiBase.value}/api/cost/plan-price-sets`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
       body: {
@@ -3342,7 +3356,8 @@ async function savePlanPriceSet() {
             'свойство1': r['свойство1'],
             'свойство2': r['свойство2'],
             'свойство3': r['свойство3'],
-            price_rub: r.price_rub,
+            // planPriceNorm: стёртое поле — это null, а не '' (см. ELK 25–28.08, 51 падение)
+            price_rub: planPriceNorm(r.price_rub),
             // null → сервер посчитает доллар из рубля по курсу набора
             price_usd: planUsdIsDerived(r) ? null : r.price_usd,
             source_price_rub: r.source_price_rub,
@@ -3354,8 +3369,9 @@ async function savePlanPriceSet() {
           ...planDecorRows.value.filter(planPriceOverridden).map(r => ({
             row_kind: 'decor',
             'Декоры, наименование': r['Декоры, наименование'],
-            price_rub: r.price_rub,
-            price_usd: r.price_usd,
+            // planPriceNorm: стёртое поле — это null, а не '' (см. ELK 25–28.08, 51 падение)
+            price_rub: planPriceNorm(r.price_rub),
+            price_usd: planPriceNorm(r.price_usd),
             source_price_rub: r.source_price_rub,
             source_price_usd: r.source_price_usd,
             rows_count: r.rows_count,
@@ -3364,9 +3380,17 @@ async function savePlanPriceSet() {
       },
     });
     planPriceForm.value.set_id = resp.set_id;
-    planPricesStatus.value = planPriceOverriddenCount.value
-      ? `Набор сохранён: строк с переопределённой ценой ${planPriceOverriddenCount.value}`
-      : 'Набор сохранён пустым — ни одна цена не отличается от источника';
+    // Считаем по ответу сервера, а не по локальному счётчику: строки со
+    // стёртой ценой сервер пропускает, и локальный счёт отчитался бы о
+    // сохранении строк, которых в наборе нет.
+    const saved = resp.rows_saved ?? planPriceOverriddenCount.value;
+    const skipped = resp.skipped_empty ?? 0;
+    planPricesStatus.value = saved
+      ? `Набор сохранён: строк с переопределённой ценой ${saved}`
+        + (skipped ? `, пропущено строк с пустой ценой ${skipped}` : '')
+      : (skipped
+        ? `Набор сохранён пустым: у ${skipped} строк цена стёрта — введите число или верните исходную`
+        : 'Набор сохранён пустым — ни одна цена не отличается от источника');
     await reloadPlanPriceSets();
   } catch (e: any) {
     console.error('[cost] save plan price set failed', e);
@@ -5145,22 +5169,45 @@ const saveAllChanges = async () => {
         comment: comments[key] || "",
       };
     });
-    const result = await $fetch<{ success: boolean; count: number; error?: string; mock?: boolean }>(
+    const result = await $fetch<{
+      success: boolean; count: number; error?: string; mock?: boolean;
+      failed?: { model?: string; articul?: string; plan_id?: string; calc_sign?: string; reason?: string }[];
+    }>(
       `${apiBase.value}/api/cost/save-batch`,
       { method: "POST", body: { changes, author_name: user.value?.email || '' }, headers: fetchHeaders.value }
     );
     if (result.mock) mockMode.value = true;
+    // Из списка правок убираем ТОЛЬКО сохранённое. Раньше здесь стоял
+    // changedRows.clear() во всех ветках, включая ошибку, — введённые цены
+    // пропадали, и человек вводил их заново. Теперь несохранённые строки
+    // остаются изменёнными, и «Сохранить» можно нажать повторно.
+    const failedKeys = new Set(
+      (result.failed || []).map(f => [
+        (f.model ?? '').toString().trim(),
+        (f.articul ?? '').toString().trim(),
+        (f.plan_id ?? '').toString().trim(),
+        (f.calc_sign ?? '').toString().trim(),
+      ].join(''))
+    );
+    for (const [key, row] of Array.from(changedRows.entries())) {
+      if (!failedKeys.has(calcRowKey(row))) changedRows.delete(key);
+    }
     if (result.success) {
       alert(`Сохранено ${result.count} записей${result.mock ? " (mock-режим)" : ""}`);
-      changedRows.clear();
     } else {
-      changedRows.clear();
-      alert("Ошибка: " + (result.error || "unknown"));
+      lastError.value = result.error || "Не удалось сохранить изменения";
+      alert(
+        `Сохранено ${result.count} записей, не сохранено ${result.failed?.length ?? 0}.
+`
+        + "Несохранённые строки остались отмеченными — можно нажать «Сохранить изменения» ещё раз."
+      );
     }
   } catch (e: any) {
-    changedRows.clear();
+    // Ничего не стираем: значения остаются на экране и в списке изменений,
+    // повторное нажатие «Сохранить» отправит их снова.
     console.error("[cost] save-batch failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    lastError.value = (e?.data?.detail || e?.message || String(e))
+      + " — введённые значения сохранены на экране, попробуйте нажать «Сохранить изменения» ещё раз";
   } finally {
     saving.value = false;
   }

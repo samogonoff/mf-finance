@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import commercial, margin, mocks
-from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, acquire, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
+from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -1581,14 +1581,33 @@ async def save_price_changes(payload: dict, user_email: str | None = Depends(_re
     return {"success": True, "pending_id": pending_id}
 
 
+def _parse_calc_date(raw):
+    """Дата расчёта из payload фронта — в любом виде, в каком её отдал JSON.
+
+    Раньше строка резалась по двум шаблонам: "T00:00:00Z" и "T00:00:00". Дата со
+    смещением («2026-08-21T00:00:00+00:00») превращалась в «2026-08-21+00:00»,
+    date.fromisoformat падал с ValueError, и весь пакет сохранения уходил в 500 —
+    а страница на ошибке стирала введённые цены.
+    """
+    if not isinstance(raw, str) or not raw:
+        return raw
+    v = raw.strip()
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(v).date()
+    except ValueError:
+        pass
+    try:
+        return date.fromisoformat(v[:10])
+    except ValueError as exc:
+        raise ValueError(f"не разобрать дату расчёта: {raw!r}") from exc
+
+
 def _row_data_from_payload(c: dict) -> dict:
     """Build full row snapshot dict from a change payload (for upsert into pending)."""
     calc_sign = c.get("calc_sign") or c.get("Признак калькуляции")
-    raw_date = c.get("date")
-    if isinstance(raw_date, str) and raw_date:
-        parsed_date = date.fromisoformat(raw_date.replace("T00:00:00Z", "").replace("T00:00:00", ""))
-    else:
-        parsed_date = raw_date
+    parsed_date = _parse_calc_date(c.get("date"))
     return {
         "Бренд-менеджер": c.get("brand_manager"),
         "Модель": c.get("model"),
@@ -1651,14 +1670,47 @@ async def save_batch_changes(payload: dict, user_email: str | None = Depends(_re
             details = "; ".join(f"«{l['model']} / {l['articul']}»: {l['reason']}" for l in locked)
             raise HTTPException(403, f"Некоторые строки заблокированы: {details}")
 
-    row_data_list = [_row_data_from_payload(c) for c in filtered]
+    # Построчно и с перехватом: раньше одна строка с неожиданным значением
+    # (дата в непривычном формате, число не того типа) роняла ВЕСЬ пакет с 500,
+    # а страница на ошибке стирала введённое — люди вводили цены заново.
+    # Теперь сохраняется всё, что сохранимо, а по остальному возвращается
+    # причина, и эти строки остаются на экране изменёнными.
+    saved_ids: list[int] = []
+    failed: list[dict] = []
+    for c in filtered:
+        try:
+            row_data = _row_data_from_payload(c)
+            ids = await upsert_pending_changes_batch([row_data], username)
+            saved_ids.extend(ids)
+        except Exception as exc:  # noqa: BLE001 — причину возвращаем пользователю
+            failed.append({
+                "model": c.get("model"),
+                "articul": c.get("articul"),
+                "plan_id": c.get("plan_id"),
+                "calc_sign": c.get("calc_sign") or c.get("Признак калькуляции"),
+                "reason": f"{type(exc).__name__}: {exc}"[:300],
+            })
+            print(
+                f"[cost] save-batch: строка {c.get('model')} / {c.get('articul')} "
+                f"не сохранена: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
+    result = {
+        "success": not failed,
+        "count": len(saved_ids),
+        "pending_ids": saved_ids,
+        "failed": failed,
+    }
     if _is_mock():
-        pending_ids = await upsert_pending_changes_batch(row_data_list, username)
-        return {"success": True, "count": len(pending_ids), "mock": True, "pending_ids": pending_ids}
-
-    pending_ids = await upsert_pending_changes_batch(row_data_list, username)
-    return {"success": True, "count": len(pending_ids), "pending_ids": pending_ids}
+        result["mock"] = True
+    if failed:
+        result["error"] = (
+            f"Сохранено строк: {len(saved_ids)}. Не сохранено: {len(failed)} — "
+            + "; ".join(f"{f['model']} / {f['articul']}: {f['reason']}" for f in failed[:3])
+            + (" …" if len(failed) > 3 else "")
+        )
+    return result
 
 
 # ── Price approval workflow ────────────────────────────────────────────────────
@@ -2749,7 +2801,7 @@ async def save_plan_price_set_endpoint(
     if _is_mock():
         return {"success": True, "set_id": 0, "mock": True}
     try:
-        set_id = await save_plan_price_set(
+        saved = await save_plan_price_set(
             plan_id,
             payload.get("title") or "",
             rate,
@@ -2760,7 +2812,7 @@ async def save_plan_price_set_endpoint(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"success": True, "set_id": set_id}
+    return {"success": True, **saved}
 
 
 @router.post("/plan-price-sets/{set_id}/apply")
