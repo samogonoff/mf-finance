@@ -3719,7 +3719,9 @@ def _plan_price_num(v, *, field: str, row_name: str):
         return None
     if isinstance(v, (int, float)):
         return v
-    t = str(v).strip().replace(",", ".").replace(" ", "")
+    # Excel вставляет неразрывный (U+00A0) и узкий (U+202F) пробел как
+    # разделитель разрядов: «1 234,50» должно стать 1234.5, а не 400.
+    t = str(v).strip().replace(",", ".").replace(" ", "").replace(" ", "").replace(" ", "")
     if not t:
         return None
     try:
@@ -3766,12 +3768,23 @@ async def save_plan_price_set(
                 await conn.execute(
                     "DELETE FROM cost_plan_price_set_rows WHERE set_id = $1", set_id
                 )
+            saved = skipped = 0
             for r in rows:
                 # row_kind: 'material' (ключ из пяти полей) либо 'decor' —
                 # у декора ключ один, «Декоры, наименование», и кладётся он в
                 # колонку "Наименование" (см. миграцию 0035).
                 kind = "decor" if str(r.get("row_kind") or "") == "decor" else "material"
                 name = r.get("Декоры, наименование") if kind == "decor" else r.get("Наименование")
+                price_rub = _plan_price_num(r.get("price_rub"), field="цена, руб.", row_name=str(name or ""))
+                price_usd = _plan_price_num(r.get("price_usd"), field="цена, $", row_name=str(name or ""))
+                # Строка без обеих цен ничего не переопределяет: наложение идёт
+                # через COALESCE(r.price_rub, …), декоры — r.price_rub IS NOT NULL.
+                # Раньше такая строка писалась и была no-op; теперь не пишется, а
+                # в ответе честно считается пропущенной.
+                if price_rub is None and price_usd is None:
+                    skipped += 1
+                    continue
+                saved += 1
                 await conn.execute(
                     """INSERT INTO cost_plan_price_set_rows
                            (set_id, row_kind, "Наименование", "артикул материала",
@@ -3785,13 +3798,13 @@ async def save_plan_price_set(
                     str(r.get("свойство1") or "").strip(),
                     str(r.get("свойство2") or "").strip(),
                     str(r.get("свойство3") or "").strip(),
-                    _plan_price_num(r.get("price_rub"), field="цена, руб.", row_name=str(name or "")),
-                    _plan_price_num(r.get("price_usd"), field="цена, $", row_name=str(name or "")),
+                    price_rub,
+                    price_usd,
                     _plan_price_num(r.get("source_price_rub"), field="исходная цена, руб.", row_name=str(name or "")),
                     _plan_price_num(r.get("source_price_usd"), field="исходная цена, $", row_name=str(name or "")),
                     int(r.get("rows_count") or 0),
                 )
-    return set_id
+    return {"set_id": set_id, "rows_saved": saved, "skipped_empty": skipped}
 
 
 async def delete_plan_price_set(set_id: int) -> None:

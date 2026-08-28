@@ -2801,7 +2801,7 @@ async def save_plan_price_set_endpoint(
     if _is_mock():
         return {"success": True, "set_id": 0, "mock": True}
     try:
-        set_id = await save_plan_price_set(
+        saved = await save_plan_price_set(
             plan_id,
             payload.get("title") or "",
             rate,
@@ -2812,7 +2812,7 @@ async def save_plan_price_set_endpoint(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"success": True, "set_id": set_id}
+    return {"success": True, **saved}
 
 
 @router.post("/plan-price-sets/{set_id}/apply")

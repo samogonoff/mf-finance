@@ -3337,7 +3337,7 @@ async function savePlanPriceSet() {
   planPricesError.value = '';
   planPricesSaving.value = true;
   try {
-    const resp = await $fetch<{ set_id: number }>(`${apiBase.value}/api/cost/plan-price-sets`, {
+    const resp = await $fetch<{ set_id: number; rows_saved?: number; skipped_empty?: number }>(`${apiBase.value}/api/cost/plan-price-sets`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
       body: {
@@ -3380,9 +3380,17 @@ async function savePlanPriceSet() {
       },
     });
     planPriceForm.value.set_id = resp.set_id;
-    planPricesStatus.value = planPriceOverriddenCount.value
-      ? `Набор сохранён: строк с переопределённой ценой ${planPriceOverriddenCount.value}`
-      : 'Набор сохранён пустым — ни одна цена не отличается от источника';
+    // Считаем по ответу сервера, а не по локальному счётчику: строки со
+    // стёртой ценой сервер пропускает, и локальный счёт отчитался бы о
+    // сохранении строк, которых в наборе нет.
+    const saved = resp.rows_saved ?? planPriceOverriddenCount.value;
+    const skipped = resp.skipped_empty ?? 0;
+    planPricesStatus.value = saved
+      ? `Набор сохранён: строк с переопределённой ценой ${saved}`
+        + (skipped ? `, пропущено строк с пустой ценой ${skipped}` : '')
+      : (skipped
+        ? `Набор сохранён пустым: у ${skipped} строк цена стёрта — введите число или верните исходную`
+        : 'Набор сохранён пустым — ни одна цена не отличается от источника');
     await reloadPlanPriceSets();
   } catch (e: any) {
     console.error('[cost] save plan price set failed', e);
