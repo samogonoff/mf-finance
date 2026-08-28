@@ -3560,12 +3560,28 @@ async def aggregate_plan_materials(plan_id: str) -> list[dict]:
                 FROM cost_calc_versions
                 WHERE status IN ('pending', 'approved')
                   AND COALESCE(plan_id, '') = $1
+            ),
+            -- Строки ПРИМЕНЁННОГО набора: после apply в кэше уже лежат его цены,
+            -- и «исходная» из кэша равна правленой. Тогда фильтр «строка
+            -- переопределена» на фронте считал правку неизменённой, она не
+            -- попадала в сохранение, а в расчёт уходила старая цена (28.08, план
+            -- 9528). Исходник хранится в самом наборе с момента создания — им и
+            -- подменяем среднюю по кэшу для затронутых строк.
+            applied_rows AS (
+                SELECT r."Наименование" AS k0, r."артикул материала" AS k1,
+                       r."свойство1" AS k2, r."свойство2" AS k3, r."свойство3" AS k4,
+                       r.source_price_rub, r.source_price_usd
+                FROM cost_plan_price_set_rows r
+                JOIN cost_plan_price_sets s ON s.id = r.set_id
+                WHERE s.plan_id = $1 AND s.status = 'applied' AND r.row_kind = 'material'
             )
             SELECT mat.k0 AS "Наименование", mat.k1 AS "артикул материала",
                    mat.k2 AS "свойство1", mat.k3 AS "свойство2", mat.k4 AS "свойство3",
                    count(*) AS rows_count,
-                   round(avg(mat.pr), 4) AS avg_price_rub,
-                   round(avg(mat.pu), 4) AS avg_price_usd,
+                   COALESCE(max(ar.source_price_rub), round(avg(mat.pr), 4)) AS avg_price_rub,
+                   COALESCE(max(ar.source_price_usd), round(avg(mat.pu), 4)) AS avg_price_usd,
+                   -- что реально стоит в кэше сейчас (с учётом набора) — для справки
+                   round(avg(mat.pr), 4) AS cache_price_rub,
                    round(avg(mat.rate), 4) AS avg_rate,
                    count(DISTINCT mat.pr) AS distinct_prices,
                    round(min(mat.pr), 4) AS min_price_rub,
@@ -3578,6 +3594,9 @@ async def aggregate_plan_materials(plan_id: str) -> list[dict]:
                   -- Пустое task_number у версии = легаси-версия старого формата,
                   -- она охватывает все задания ключа (см. миграцию 0032).
                   AND (active.t = mat.t OR active.t = '')
+            LEFT JOIN applied_rows ar
+                   ON ar.k0 = mat.k0 AND ar.k1 = mat.k1 AND ar.k2 = mat.k2
+                  AND ar.k3 = mat.k3 AND ar.k4 = mat.k4
             GROUP BY mat.k0, mat.k1, mat.k2, mat.k3, mat.k4
             ORDER BY mat.k0, mat.k1, mat.k2, mat.k3, mat.k4
             """,

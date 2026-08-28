@@ -3199,6 +3199,16 @@ async function openPlanPriceSet(setId: number) {
     };
     for (const r of planPriceRows.value) {
       const saved = byKey.get(planRowKey(r));
+      // Исходную цену берём из СТРОКИ НАБОРА, а не из кэша. После «Применить»
+      // в кэше уже лежат цены набора, и «исходная» из /plan-materials равна
+      // правленой — фильтр planPriceOverridden считал правку неизменённой,
+      // строка не попадала в сохранение, а в расчёт уходила старая цена
+      // (жалоба от 28.08, план 9528, наборы 145/147). Набор хранит исходник
+      // с момента создания — он и есть точка отсчёта.
+      if (saved && saved.source_price_rub !== null && saved.source_price_rub !== undefined) {
+        r.source_price_rub = saved.source_price_rub;
+        if (saved.source_price_usd !== null && saved.source_price_usd !== undefined) r.source_price_usd = saved.source_price_usd;
+      }
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
       r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
       // доллар в наборе задан явно — значит его правили вручную
@@ -3206,6 +3216,10 @@ async function openPlanPriceSet(setId: number) {
     }
     for (const r of planDecorRows.value) {
       const saved = byDecor.get(String(r['Декоры, наименование'] ?? '').trim());
+      if (saved && saved.source_price_rub !== null && saved.source_price_rub !== undefined) {
+        r.source_price_rub = saved.source_price_rub;
+        if (saved.source_price_usd !== null && saved.source_price_usd !== undefined) r.source_price_usd = saved.source_price_usd;
+      }
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
       r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
       (r as any)._usdManual = !!(saved && saved.price_usd !== null && saved.price_usd !== undefined);
