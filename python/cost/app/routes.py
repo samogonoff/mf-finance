@@ -1581,14 +1581,33 @@ async def save_price_changes(payload: dict, user_email: str | None = Depends(_re
     return {"success": True, "pending_id": pending_id}
 
 
+def _parse_calc_date(raw):
+    """Дата расчёта из payload фронта — в любом виде, в каком её отдал JSON.
+
+    Раньше строка резалась по двум шаблонам: "T00:00:00Z" и "T00:00:00". Дата со
+    смещением («2026-08-21T00:00:00+00:00») превращалась в «2026-08-21+00:00»,
+    date.fromisoformat падал с ValueError, и весь пакет сохранения уходил в 500 —
+    а страница на ошибке стирала введённые цены.
+    """
+    if not isinstance(raw, str) or not raw:
+        return raw
+    v = raw.strip()
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(v).date()
+    except ValueError:
+        pass
+    try:
+        return date.fromisoformat(v[:10])
+    except ValueError as exc:
+        raise ValueError(f"не разобрать дату расчёта: {raw!r}") from exc
+
+
 def _row_data_from_payload(c: dict) -> dict:
     """Build full row snapshot dict from a change payload (for upsert into pending)."""
     calc_sign = c.get("calc_sign") or c.get("Признак калькуляции")
-    raw_date = c.get("date")
-    if isinstance(raw_date, str) and raw_date:
-        parsed_date = date.fromisoformat(raw_date.replace("T00:00:00Z", "").replace("T00:00:00", ""))
-    else:
-        parsed_date = raw_date
+    parsed_date = _parse_calc_date(c.get("date"))
     return {
         "Бренд-менеджер": c.get("brand_manager"),
         "Модель": c.get("model"),
@@ -1651,14 +1670,47 @@ async def save_batch_changes(payload: dict, user_email: str | None = Depends(_re
             details = "; ".join(f"«{l['model']} / {l['articul']}»: {l['reason']}" for l in locked)
             raise HTTPException(403, f"Некоторые строки заблокированы: {details}")
 
-    row_data_list = [_row_data_from_payload(c) for c in filtered]
+    # Построчно и с перехватом: раньше одна строка с неожиданным значением
+    # (дата в непривычном формате, число не того типа) роняла ВЕСЬ пакет с 500,
+    # а страница на ошибке стирала введённое — люди вводили цены заново.
+    # Теперь сохраняется всё, что сохранимо, а по остальному возвращается
+    # причина, и эти строки остаются на экране изменёнными.
+    saved_ids: list[int] = []
+    failed: list[dict] = []
+    for c in filtered:
+        try:
+            row_data = _row_data_from_payload(c)
+            ids = await upsert_pending_changes_batch([row_data], username)
+            saved_ids.extend(ids)
+        except Exception as exc:  # noqa: BLE001 — причину возвращаем пользователю
+            failed.append({
+                "model": c.get("model"),
+                "articul": c.get("articul"),
+                "plan_id": c.get("plan_id"),
+                "calc_sign": c.get("calc_sign") or c.get("Признак калькуляции"),
+                "reason": f"{type(exc).__name__}: {exc}"[:300],
+            })
+            print(
+                f"[cost] save-batch: строка {c.get('model')} / {c.get('articul')} "
+                f"не сохранена: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
+    result = {
+        "success": not failed,
+        "count": len(saved_ids),
+        "pending_ids": saved_ids,
+        "failed": failed,
+    }
     if _is_mock():
-        pending_ids = await upsert_pending_changes_batch(row_data_list, username)
-        return {"success": True, "count": len(pending_ids), "mock": True, "pending_ids": pending_ids}
-
-    pending_ids = await upsert_pending_changes_batch(row_data_list, username)
-    return {"success": True, "count": len(pending_ids), "pending_ids": pending_ids}
+        result["mock"] = True
+    if failed:
+        result["error"] = (
+            f"Сохранено строк: {len(saved_ids)}. Не сохранено: {len(failed)} — "
+            + "; ".join(f"{f['model']} / {f['articul']}: {f['reason']}" for f in failed[:3])
+            + (" …" if len(failed) > 3 else "")
+        )
+    return result
 
 
 # ── Price approval workflow ────────────────────────────────────────────────────

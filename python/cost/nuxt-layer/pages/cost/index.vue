@@ -5145,22 +5145,45 @@ const saveAllChanges = async () => {
         comment: comments[key] || "",
       };
     });
-    const result = await $fetch<{ success: boolean; count: number; error?: string; mock?: boolean }>(
+    const result = await $fetch<{
+      success: boolean; count: number; error?: string; mock?: boolean;
+      failed?: { model?: string; articul?: string; plan_id?: string; calc_sign?: string; reason?: string }[];
+    }>(
       `${apiBase.value}/api/cost/save-batch`,
       { method: "POST", body: { changes, author_name: user.value?.email || '' }, headers: fetchHeaders.value }
     );
     if (result.mock) mockMode.value = true;
+    // Из списка правок убираем ТОЛЬКО сохранённое. Раньше здесь стоял
+    // changedRows.clear() во всех ветках, включая ошибку, — введённые цены
+    // пропадали, и человек вводил их заново. Теперь несохранённые строки
+    // остаются изменёнными, и «Сохранить» можно нажать повторно.
+    const failedKeys = new Set(
+      (result.failed || []).map(f => [
+        (f.model ?? '').toString().trim(),
+        (f.articul ?? '').toString().trim(),
+        (f.plan_id ?? '').toString().trim(),
+        (f.calc_sign ?? '').toString().trim(),
+      ].join(''))
+    );
+    for (const [key, row] of Array.from(changedRows.entries())) {
+      if (!failedKeys.has(calcRowKey(row))) changedRows.delete(key);
+    }
     if (result.success) {
       alert(`Сохранено ${result.count} записей${result.mock ? " (mock-режим)" : ""}`);
-      changedRows.clear();
     } else {
-      changedRows.clear();
-      alert("Ошибка: " + (result.error || "unknown"));
+      lastError.value = result.error || "Не удалось сохранить изменения";
+      alert(
+        `Сохранено ${result.count} записей, не сохранено ${result.failed?.length ?? 0}.
+`
+        + "Несохранённые строки остались отмеченными — можно нажать «Сохранить изменения» ещё раз."
+      );
     }
   } catch (e: any) {
-    changedRows.clear();
+    // Ничего не стираем: значения остаются на экране и в списке изменений,
+    // повторное нажатие «Сохранить» отправит их снова.
     console.error("[cost] save-batch failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    lastError.value = (e?.data?.detail || e?.message || String(e))
+      + " — введённые значения сохранены на экране, попробуйте нажать «Сохранить изменения» ещё раз";
   } finally {
     saving.value = false;
   }
