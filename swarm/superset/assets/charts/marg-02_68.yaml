@@ -1,0 +1,23 @@
+slice_name: "marg-02 \xB7 \u041D\u043E\u0440\u043C\u0430, %"
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 14__table
+  viz_type: big_number_total
+  metric: target_pct
+  y_axis_format: ',.2f'
+  subheader: "\u0442\u0430\u0440\u0433\u0435\u0442\u044B \u0440\u0430\u0437\u0434\u0435\
+    \u043B\u0430 \u043F\u043E Level 01, \u0432\u0437\u0432\u0435\u0448\u0435\u043D\
+    \u043E \u043F\u043E \u0432\u044B\u0440\u0443\u0447\u043A\u0435"
+  force_timestamp_formatting: false
+  header_font_size: 0.4
+  subheader_font_size: 0.125
+  adhoc_filters: []
+  extra_form_data: {}
+query_context: null
+cache_timeout: null
+uuid: b6a48940-90d7-4e30-9b7e-848084acb0e8
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2

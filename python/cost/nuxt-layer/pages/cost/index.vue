@@ -15,6 +15,9 @@
         <NuxtLink to="/cost/commercial" class="btn btn-ghost btn-sm">
           <Icon name="lucide:chart-pie" /> Коммерческая эффективность
         </NuxtLink>
+        <NuxtLink to="/cost/margin" class="btn btn-ghost btn-sm">
+          <Icon name="lucide:trending-up" /> Маржа выпуска
+        </NuxtLink>
       </div>
     </header>
 
@@ -384,114 +387,148 @@
                 PLAN_ID<span v-if="sortField === 'PLAN_ID'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize('plan_id', $event)" @dblclick.stop.prevent="resetColWidth('plan_id')" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('country')" :class="{ sorted: sortField === 'Страна пр-ва' }" @click="toggleSort('Страна пр-ва')">
+              <template v-for="ck in orderedMovableKeys" :key="'h-' + ck">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'country' && isVisible('country')" :class="{ sorted: sortField === 'Страна пр-ва' }" @click="toggleSort('Страна пр-ва')">
                 Страна<span v-if="sortField === 'Страна пр-ва'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('family')" :class="{ sorted: sortField === 'Семья' }" @click="toggleSort('Семья')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'family' && isVisible('family')" :class="{ sorted: sortField === 'Семья' }" @click="toggleSort('Семья')">
                 Семья<span v-if="sortField === 'Семья'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('season')" :class="{ sorted: sortField === 'Сезон' }" @click="toggleSort('Сезон')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'season' && isVisible('season')" :class="{ sorted: sortField === 'Сезон' }" @click="toggleSort('Сезон')">
                 Сезон<span v-if="sortField === 'Сезон'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('date')" :class="{ sorted: sortField === 'дата расчета' }" @click="toggleSort('дата расчета')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'date' && isVisible('date')" :class="{ sorted: sortField === 'дата расчета' }" @click="toggleSort('дата расчета')">
                 Дата<span v-if="sortField === 'дата расчета'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('calc_sign')" :class="{ sorted: sortField === 'Признак калькуляции' }" @click="toggleSort('Признак калькуляции')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'calc_sign' && isVisible('calc_sign')" :class="{ sorted: sortField === 'Признак калькуляции' }" @click="toggleSort('Признак калькуляции')">
                 Пр.кальк<span v-if="sortField === 'Признак калькуляции'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('planned_retail')" class="col-num">План. розница</th>
-              <th v-if="isVisible('planned_wholesale')" class="col-num">План. опт</th>
-              <th v-if="isVisible('planned_cost')" class="col-num">План. с/с</th>
-              <th v-if="isVisible('planned_profitability')" class="col-num col-metric col-metric-hl" title="План. опт / План. с/с − 1">План. рентаб. (%)</th>
-              <th v-if="isVisible('avg_retail_rub')" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'planned_retail' && isVisible('planned_retail')" class="col-num">План. розница<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'planned_wholesale' && isVisible('planned_wholesale')" class="col-num">План. опт<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'planned_cost' && isVisible('planned_cost')" class="col-num">План. с/с<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'planned_profitability' && isVisible('planned_profitability')" class="col-num col-metric col-metric-hl" title="План. опт / План. с/с − 1">План. рентаб. (%)<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'avg_retail_rub' && isVisible('avg_retail_rub')" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, руб.' }" @click="toggleSort('avg_Розничная цена по уровню, руб.')">
                 Сред. розница (руб)<span v-if="sortField === 'avg_Розничная цена по уровню, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('avg_rate')" class="col-num" :class="{ sorted: sortField === 'avg_Курс на дату расчета' }" @click="toggleSort('avg_Курс на дату расчета')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'avg_rate' && isVisible('avg_rate')" class="col-num" :class="{ sorted: sortField === 'avg_Курс на дату расчета' }" @click="toggleSort('avg_Курс на дату расчета')">
                 Курс (руб)<span v-if="sortField === 'avg_Курс на дату расчета'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('retail_markup')" class="col-num">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'retail_markup' && isVisible('retail_markup')" class="col-num">
                 Розничная наценка
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('price_rf')" class="col-num">Цена РФ</th>
-              <th v-if="isVisible('price_kz')" class="col-num">Цена КЗ</th>
-              <th v-if="isVisible('price_uz')" class="col-num">Цена УЗ</th>
-              <th v-if="isVisible('mp_price_rub')" class="col-num">Цена для МП, рос. руб.</th>
-              <th v-if="isVisible('comment')">Комментарий</th>
-              <th v-if="isVisible('avg_wholesale') && !showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'price_rf' && isVisible('price_rf')" class="col-num">Цена РФ<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'price_kz' && isVisible('price_kz')" class="col-num">Цена КЗ<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'price_uz' && isVisible('price_uz')" class="col-num">Цена УЗ<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'mp_price_rub' && isVisible('mp_price_rub')" class="col-num">Цена для МП, рос. руб.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'comment' && isVisible('comment')">Комментарий<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'avg_wholesale' && isVisible('avg_wholesale') && !showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
                 Сред. опт (руб)<span v-if="sortField === 'avg_Отпускная цена по уровню, руб'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('price_level')" :class="{ sorted: sortField === 'Уровень цен' }" @click="toggleSort('Уровень цен')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'price_level' && isVisible('price_level')" :class="{ sorted: sortField === 'Уровень цен' }" @click="toggleSort('Уровень цен')">
                 Уровень цен<span v-if="sortField === 'Уровень цен'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('avg_retail_usd') && showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, USD.' }" @click="toggleSort('avg_Розничная цена по уровню, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Розничная цена по уровню, USD.' }" @click="toggleSort('avg_Розничная цена по уровню, USD.')">
                 Сред. розница ($)<span v-if="sortField === 'avg_Розничная цена по уровню, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('avg_retail_usd') && showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, USD.' }" @click="toggleSort('avg_Отпускная цена по уровню, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, USD.' }" @click="toggleSort('avg_Отпускная цена по уровню, USD.')">
                 Сред. опт ($)<span v-if="sortField === 'avg_Отпускная цена по уровню, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_materials') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, руб.' }" @click="toggleSort('sum_Основные материалы, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_materials' && isVisible('sum_materials') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, руб.' }" @click="toggleSort('sum_Основные материалы, руб.')">
                 Осн. материалы (руб)<span v-if="sortField === 'sum_Основные материалы, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_materials') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, USD.' }" @click="toggleSort('sum_Основные материалы, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_materials' && isVisible('sum_materials') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Основные материалы, USD.' }" @click="toggleSort('sum_Основные материалы, USD.')">
                 Осн. материалы ($)<span v-if="sortField === 'sum_Основные материалы, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_aux_materials') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, руб.' }" @click="toggleSort('sum_Вспомогательные материалы, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_aux_materials' && isVisible('sum_aux_materials') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, руб.' }" @click="toggleSort('sum_Вспомогательные материалы, руб.')">
                 Вспом. (руб)<span v-if="sortField === 'sum_Вспомогательные материалы, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_aux_materials') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, USD.' }" @click="toggleSort('sum_Вспомогательные материалы, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_aux_materials' && isVisible('sum_aux_materials') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вспомогательные материалы, USD.' }" @click="toggleSort('sum_Вспомогательные материалы, USD.')">
                 Вспом. ($)<span v-if="sortField === 'sum_Вспомогательные материалы, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('avg_sewing_min')" class="col-num" :class="{ sorted: sortField === 'avg_Пошив, минуты' }" @click="toggleSort('avg_Пошив, минуты')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'avg_sewing_min' && isVisible('avg_sewing_min')" class="col-num" :class="{ sorted: sortField === 'avg_Пошив, минуты' }" @click="toggleSort('avg_Пошив, минуты')">
                 Пошив (мин)<span v-if="sortField === 'avg_Пошив, минуты'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_sewing') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, руб.' }" @click="toggleSort('sum_Пошив, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_sewing' && isVisible('sum_sewing') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, руб.' }" @click="toggleSort('sum_Пошив, руб.')">
                 Пошив (руб)<span v-if="sortField === 'sum_Пошив, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_sewing') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, USD.' }" @click="toggleSort('sum_Пошив, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_sewing' && isVisible('sum_sewing') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Пошив, USD.' }" @click="toggleSort('sum_Пошив, USD.')">
                 Пошив ($)<span v-if="sortField === 'sum_Пошив, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('avg_cutting_min')" class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, минуты' }" @click="toggleSort('avg_Раскрой, минуты')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'avg_cutting_min' && isVisible('avg_cutting_min')" class="col-num" :class="{ sorted: sortField === 'avg_Раскрой, минуты' }" @click="toggleSort('avg_Раскрой, минуты')">
                 Раскрой (мин)<span v-if="sortField === 'avg_Раскрой, минуты'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_cutting') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, руб.' }" @click="toggleSort('sum_Раскрой, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, руб.' }" @click="toggleSort('sum_Раскрой, руб.')">
                 Раскрой (руб)<span v-if="sortField === 'sum_Раскрой, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_cutting') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, USD.' }" @click="toggleSort('sum_Раскрой, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Раскрой, USD.' }" @click="toggleSort('sum_Раскрой, USD.')">
                 Раскрой ($)<span v-if="sortField === 'sum_Раскрой, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_decors') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_decors' && isVisible('sum_decors') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
                 Декоры (руб)<span v-if="sortField === 'sum_Декоры, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_decors') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, USD.' }" @click="toggleSort('sum_Декоры, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_decors' && isVisible('sum_decors') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, USD.' }" @click="toggleSort('sum_Декоры, USD.')">
                 Декоры ($)<span v-if="sortField === 'sum_Декоры, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_knitting') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, руб.' }" @click="toggleSort('sum_Вязание, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_knitting' && isVisible('sum_knitting') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, руб.' }" @click="toggleSort('sum_Вязание, руб.')">
                 Вязание (руб)<span v-if="sortField === 'sum_Вязание, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_knitting') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, USD.' }" @click="toggleSort('sum_Вязание, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_knitting' && isVisible('sum_knitting') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Вязание, USD.' }" @click="toggleSort('sum_Вязание, USD.')">
                 Вязание ($)<span v-if="sortField === 'sum_Вязание, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('sum_cost') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_cost' && isVisible('sum_cost') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, руб.' }" @click="toggleSort('sum_Себестоимость, руб.')">
                 Себест. (руб)<span v-if="sortField === 'sum_Себестоимость, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('cost_deviation')" class="col-num col-metric"
-                  title="(Себест. − План. с/с) / План. с/с. Заливка — превышение плана больше 5%">Откл. с/с от плана (%)</th>
-              <th v-if="isVisible('sum_cost') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, USD.' }" @click="toggleSort('sum_Себестоимость, USD.')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'cost_deviation' && isVisible('cost_deviation')" class="col-num col-metric"
+                  title="(Себест. − План. с/с) / План. с/с. Заливка — превышение плана больше 5%">Откл. с/с от плана (%)<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_cost' && isVisible('sum_cost') && showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Себестоимость, USD.' }" @click="toggleSort('sum_Себестоимость, USD.')">
                 Себест. ($)<span v-if="sortField === 'sum_Себестоимость, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('calc_markup')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'calc_markup' && isVisible('calc_markup')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_markup_rub' }" @click="toggleSort('calc_markup_rub')">
                 Рентабельность <template v-if="showUSD">($)</template><template v-else>(руб)</template><span v-if="sortField === 'calc_markup_rub'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('calc_markup_pct')" class="col-num col-metric col-metric-hl" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'calc_markup_pct' && isVisible('calc_markup_pct')" class="col-num col-metric col-metric-hl" :class="{ sorted: sortField === 'calc_markup_pct' }" @click="toggleSort('calc_markup_pct')">
                 Рентабельность (%)<span v-if="sortField === 'calc_markup_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('calc_margin_pct')" class="col-num col-metric col-metric-hl" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'calc_margin_pct' && isVisible('calc_margin_pct')" class="col-num col-metric col-metric-hl" :class="{ sorted: sortField === 'calc_margin_pct' }" @click="toggleSort('calc_margin_pct')">
                 Маржа (%)<span v-if="sortField === 'calc_margin_pct'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('calc_margin_deviation')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'calc_margin_deviation' && isVisible('calc_margin_deviation')" class="col-num col-metric" :class="{ sorted: sortField === 'calc_margin_deviation' }" @click="toggleSort('calc_margin_deviation')">
                 Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-if="isVisible('peo')" class="col-peo">ПЭО</th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'peo' && isVisible('peo')" class="col-peo">ПЭО<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              </template>
             </tr>
           </thead>
           <tbody>
@@ -538,8 +575,24 @@
                     ? 'Записано в DWH, открыто на исправление' + (can('cost:admin') ? ' — клик, чтобы отозвать' : '')
                     : 'Записано в DWH' + (can('cost:admin') ? ' — клик, чтобы вернуть на корректировку' : '')"
                   @click.stop="can('cost:admin') ? openReopenModal(row) : null">{{ row._reopened ? '🔓' : '📤' }}</span>
+                <!-- Калькуляция, созданная в приложении копией с другим признаком
+                     (пункт 1). Значок кликабелен для тех, кто вправе её удалить. -->
+                <span v-if="row.is_manual"
+                  class="state-badge state-badge--manual"
+                  :class="{ 'state-badge--action': can('cost:calc_sign_copy') }"
+                  :title="manualCopyTitle(row)"
+                  @click.stop="can('cost:calc_sign_copy') ? openCalcCopyDelete(row) : null">⧉</span>
                 <button class="btn-details" @click.stop="openDetails(row)">🔍</button>
-                <button v-if="!isRowLocked(row) && !row._has_audit" class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">🖊</button>
+                <!-- Право проверяем и здесь: без cost:edit_materials сервер
+                     отклоняет сохранение (403), то есть кнопка обещала то, чего
+                     сделать нельзя. Бренд-менеджеру расчёт доступен для
+                     просмотра — «Исходные строки» и «Детализация» остаются. -->
+                <button v-if="(can('cost:edit_materials') || can('cost:admin')) && !isRowLocked(row) && !row._has_audit"
+                  class="btn-edit" @click.stop="openVersionEditor(row)" title="Редактировать расчёт">🖊</button>
+                <!-- Значок отличается от пометки копии (⧉) намеренно: одинаковые
+                     символы читались как одно и то же действие. -->
+                <button v-if="canCopyCalcSign(row)" class="btn-edit" @click.stop="openCalcCopy(row)"
+                  title="Создать калькуляцию с другим признаком (копия расчёта)">⇄</button>
               </td>
               <td :class="stickyClasses('raw_rows')" :style="stickyStyle('raw_rows')"><button class="btn-details" @click.stop="openRawRows(row)" title="Исходные строки">📋</button></td>
               <td v-if="isVisible('bm')" :class="stickyClasses('bm')" :style="stickyStyle('bm')">{{ row['Бренд-менеджер'] || '—' }}</td>
@@ -549,19 +602,20 @@
               <td v-if="isVisible('color')" :class="stickyClasses('color')" :style="stickyStyle('color')">{{ row['color'] || '—' }}</td>
               <td v-if="isVisible('task_num')" :class="stickyClasses('task_num')" :style="stickyStyle('task_num')">{{ row['Номер задания производства'] || '—' }}</td>
               <td v-if="isVisible('plan_id')" :class="stickyClasses('plan_id')" :style="stickyStyle('plan_id')">{{ row['PLAN_ID'] || '—' }}</td>
-              <td v-if="isVisible('country')">{{ row['Страна пр-ва'] || '—' }}</td>
-              <td v-if="isVisible('family')">{{ row['Семья'] || '—' }}</td>
-              <td v-if="isVisible('season')">{{ row['Сезон'] || '—' }}</td>
-              <td v-if="isVisible('date')" class="num">{{ formatDate(row['дата расчета']) }}</td>
-              <td v-if="isVisible('calc_sign')">{{ row['Признак калькуляции'] || '—' }}</td>
-              <td v-if="isVisible('planned_retail')" class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
-              <td v-if="isVisible('planned_wholesale')" class="col-num num">{{ row.planned_wholesale != null ? fmt(row.planned_wholesale) : '—' }}</td>
-              <td v-if="isVisible('planned_cost')" class="col-num num">{{ row.planned_cost != null ? fmt(row.planned_cost) : '—' }}</td>
-              <td v-if="isVisible('planned_profitability')" class="col-num num col-metric col-metric-hl"
+              <template v-for="ck in orderedMovableKeys" :key="'c-' + ck">
+              <td v-if="ck === 'country' && isVisible('country')">{{ row['Страна пр-ва'] || '—' }}</td>
+              <td v-if="ck === 'family' && isVisible('family')">{{ row['Семья'] || '—' }}</td>
+              <td v-if="ck === 'season' && isVisible('season')">{{ row['Сезон'] || '—' }}</td>
+              <td v-if="ck === 'date' && isVisible('date')" class="num">{{ formatDate(row['дата расчета']) }}</td>
+              <td v-if="ck === 'calc_sign' && isVisible('calc_sign')">{{ row['Признак калькуляции'] || '—' }}</td>
+              <td v-if="ck === 'planned_retail' && isVisible('planned_retail')" class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
+              <td v-if="ck === 'planned_wholesale' && isVisible('planned_wholesale')" class="col-num num">{{ row.planned_wholesale != null ? fmt(row.planned_wholesale) : '—' }}</td>
+              <td v-if="ck === 'planned_cost' && isVisible('planned_cost')" class="col-num num">{{ row.planned_cost != null ? fmt(row.planned_cost) : '—' }}</td>
+              <td v-if="ck === 'planned_profitability' && isVisible('planned_profitability')" class="col-num num col-metric col-metric-hl"
                   :class="plannedProfitabilityPct(row) == null ? '' : (plannedProfitabilityPct(row)! >= 0 ? 'delta-pos' : 'delta-neg')">
                 {{ plannedProfitabilityPct(row) == null ? '—' : plannedProfitabilityPct(row)!.toFixed(1) + '%' }}
               </td>
-              <td v-if="isVisible('avg_retail_rub')">
+              <td v-if="ck === 'avg_retail_rub' && isVisible('avg_retail_rub')">
                 <select
                   class="price-select"
                   :value="Number(row['avg_Розничная цена по уровню, руб.']) || ''"
@@ -574,8 +628,8 @@
                   <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp">{{ fmt(rp) }}</option>
                 </select>
               </td>
-              <td v-if="isVisible('avg_rate')" class="col-num num">{{ row['avg_Курс на дату расчета'] != null ? fmt(row['avg_Курс на дату расчета']) : '—' }}</td>
-              <td v-if="isVisible('retail_markup')">
+              <td v-if="ck === 'avg_rate' && isVisible('avg_rate')" class="col-num num">{{ row['avg_Курс на дату расчета'] != null ? fmt(row['avg_Курс на дату расчета']) : '—' }}</td>
+              <td v-if="ck === 'retail_markup' && isVisible('retail_markup')">
                 <select
                   class="price-select"
                   :value="markupSelections[calcRowKey(row)] || ''"
@@ -590,7 +644,7 @@
                   </option>
                 </select>
               </td>
-              <td v-if="isVisible('price_rf')">
+              <td v-if="ck === 'price_rf' && isVisible('price_rf')">
                  <input class="price-input" type="number"
                   :value="priceRF[calcRowKey(row)] ?? ''"
                   placeholder="Цена РФ"
@@ -600,7 +654,7 @@
                   @input="onPriceRFInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td v-if="isVisible('price_kz')">
+              <td v-if="ck === 'price_kz' && isVisible('price_kz')">
                  <input class="price-input" type="number"
                   :value="priceKZ[calcRowKey(row)] ?? ''"
                   placeholder="Цена КЗ"
@@ -610,7 +664,7 @@
                   @input="onPriceKZInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td v-if="isVisible('price_uz')">
+              <td v-if="ck === 'price_uz' && isVisible('price_uz')">
                  <input class="price-input" type="number"
                   :value="priceUZ[calcRowKey(row)] ?? ''"
                   placeholder="Цена УЗ"
@@ -620,8 +674,8 @@
                   @input="onPriceUZInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td v-if="isVisible('mp_price_rub')" class="col-num num">{{ fmt(row['mp_price_rub']) }}</td>
-              <td v-if="isVisible('comment')">
+              <td v-if="ck === 'mp_price_rub' && isVisible('mp_price_rub')" class="col-num num">{{ fmt(row['mp_price_rub']) }}</td>
+              <td v-if="ck === 'comment' && isVisible('comment')">
                 <input class="comment-input" type="text"
                   :value="comments[calcRowKey(row)] ?? ''"
                   placeholder="..."
@@ -631,37 +685,37 @@
                   @input="onCommentInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
-              <td v-if="isVisible('avg_wholesale') && !showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
-              <td v-if="isVisible('price_level')">{{ row['Уровень цен'] || '—' }}</td>
-              <td v-if="isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
-              <td v-if="isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, USD.']) }}</td>
-              <td v-if="isVisible('sum_materials') && !showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, руб.']) }}</td>
-              <td v-if="isVisible('sum_materials') && showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, USD.']) }}</td>
-              <td v-if="isVisible('sum_aux_materials') && !showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, руб.']) }}</td>
-              <td v-if="isVisible('sum_aux_materials') && showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, USD.']) }}</td>
-              <td v-if="isVisible('avg_sewing_min')" class="col-num num">{{ fmt(row['avg_Пошив, минуты']) }}</td>
-              <td v-if="isVisible('sum_sewing') && !showUSD" class="col-num num">{{ fmt(row['sum_Пошив, руб.']) }}</td>
-              <td v-if="isVisible('sum_sewing') && showUSD" class="col-num num">{{ fmt(row['sum_Пошив, USD.']) }}</td>
-              <td v-if="isVisible('avg_cutting_min')" class="col-num num">{{ fmt(row['avg_Раскрой, минуты']) }}</td>
-              <td v-if="isVisible('sum_cutting') && !showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, руб.']) }}</td>
-              <td v-if="isVisible('sum_cutting') && showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, USD.']) }}</td>
-              <td v-if="isVisible('sum_decors') && !showUSD" class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
-              <td v-if="isVisible('sum_decors') && showUSD" class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
-              <td v-if="isVisible('sum_knitting') && !showUSD" class="col-num num">{{ fmt(row['sum_Вязание, руб.']) }}</td>
-              <td v-if="isVisible('sum_knitting') && showUSD" class="col-num num">{{ fmt(row['sum_Вязание, USD.']) }}</td>
-              <td v-if="isVisible('sum_cost') && !showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
-              <td v-if="isVisible('cost_deviation')" class="col-num num col-metric" :class="costDeviationClass(row)"
+              <td v-if="ck === 'avg_wholesale' && isVisible('avg_wholesale') && !showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
+              <td v-if="ck === 'price_level' && isVisible('price_level')">{{ row['Уровень цен'] || '—' }}</td>
+              <td v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
+              <td v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, USD.']) }}</td>
+              <td v-if="ck === 'sum_materials' && isVisible('sum_materials') && !showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, руб.']) }}</td>
+              <td v-if="ck === 'sum_materials' && isVisible('sum_materials') && showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, USD.']) }}</td>
+              <td v-if="ck === 'sum_aux_materials' && isVisible('sum_aux_materials') && !showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, руб.']) }}</td>
+              <td v-if="ck === 'sum_aux_materials' && isVisible('sum_aux_materials') && showUSD" class="col-num num">{{ fmt(row['sum_Вспомогательные материалы, USD.']) }}</td>
+              <td v-if="ck === 'avg_sewing_min' && isVisible('avg_sewing_min')" class="col-num num">{{ fmt(row['avg_Пошив, минуты']) }}</td>
+              <td v-if="ck === 'sum_sewing' && isVisible('sum_sewing') && !showUSD" class="col-num num">{{ fmt(row['sum_Пошив, руб.']) }}</td>
+              <td v-if="ck === 'sum_sewing' && isVisible('sum_sewing') && showUSD" class="col-num num">{{ fmt(row['sum_Пошив, USD.']) }}</td>
+              <td v-if="ck === 'avg_cutting_min' && isVisible('avg_cutting_min')" class="col-num num">{{ fmt(row['avg_Раскрой, минуты']) }}</td>
+              <td v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && !showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, руб.']) }}</td>
+              <td v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, USD.']) }}</td>
+              <td v-if="ck === 'sum_decors' && isVisible('sum_decors') && !showUSD" class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
+              <td v-if="ck === 'sum_decors' && isVisible('sum_decors') && showUSD" class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
+              <td v-if="ck === 'sum_knitting' && isVisible('sum_knitting') && !showUSD" class="col-num num">{{ fmt(row['sum_Вязание, руб.']) }}</td>
+              <td v-if="ck === 'sum_knitting' && isVisible('sum_knitting') && showUSD" class="col-num num">{{ fmt(row['sum_Вязание, USD.']) }}</td>
+              <td v-if="ck === 'sum_cost' && isVisible('sum_cost') && !showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, руб.']) }}</td>
+              <td v-if="ck === 'cost_deviation' && isVisible('cost_deviation')" class="col-num num col-metric" :class="costDeviationClass(row)"
                   :title="costDeviationPct(row) == null ? 'Плановая себестоимость не задана' : ''">
                 {{ costDeviationPct(row) == null ? '—' : (costDeviationPct(row)! > 0 ? '+' : '') + costDeviationPct(row)!.toFixed(1) + '%' }}
               </td>
-              <td v-if="isVisible('sum_cost') && showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
-              <td v-if="isVisible('calc_markup')" class="col-num num col-metric">{{ fmt(calc(row, showUSD).markupRub) }}</td>
-              <td v-if="isVisible('calc_markup_pct')" class="col-num num col-metric col-metric-hl" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
+              <td v-if="ck === 'sum_cost' && isVisible('sum_cost') && showUSD" class="col-num num-strong">{{ fmt(row['sum_Себестоимость, USD.']) }}</td>
+              <td v-if="ck === 'calc_markup' && isVisible('calc_markup')" class="col-num num col-metric">{{ fmt(calc(row, showUSD).markupRub) }}</td>
+              <td v-if="ck === 'calc_markup_pct' && isVisible('calc_markup_pct')" class="col-num num col-metric col-metric-hl" :class="calc(row, showUSD).markupPct >= 0 ? 'delta-pos' : 'delta-neg'">
                 {{ calc(row, showUSD).markupPct.toFixed(1) }}%
               </td>
-              <td v-if="isVisible('calc_margin_pct')" class="col-num num col-metric col-metric-hl">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
-              <td v-if="isVisible('calc_margin_deviation')" class="col-num num col-metric" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
-              <td v-if="isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark'), 'peo-active': approvalTarget === row }">
+              <td v-if="ck === 'calc_margin_pct' && isVisible('calc_margin_pct')" class="col-num num col-metric col-metric-hl">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
+              <td v-if="ck === 'calc_margin_deviation' && isVisible('calc_margin_deviation')" class="col-num num col-metric" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
+              <td v-if="ck === 'peo' && isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark'), 'peo-active': approvalTarget === row }">
                 <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟢</span>
                 <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🔴</span>
                 <!-- Возврат на корректировку: не «отклонено», а «жду исправленную
@@ -670,6 +724,7 @@
                 <span v-else-if="row.peo_status === 'returned'" class="peo-badge peo-returned" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Возврат на корректировку' + (row.peo_approved_by ? ': ' + row.peo_approved_by : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟠</span>
                 <span v-else class="peo-badge peo-none" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">⚪</span>
               </td>
+              </template>
             </tr>
           </tbody>
         </table>
@@ -1582,10 +1637,83 @@
 
     <!-- Column visibility settings modal -->
     <Teleport to="body">
+      <!-- Калькуляция с другим признаком (пункт 1 «Списка доработок»).
+           Исходную не меняем: создаётся новая калькуляция, и дальше она проходит
+           обычный путь — правки, цена бренд-менеджера, согласование ПЭО, DWH. -->
+      <div v-if="calcCopyRow" class="modal-overlay" @click.self="closeCalcCopy">
+        <div class="modal-content" style="max-width:560px" @click.stop>
+          <div class="modal-header">
+            <h2>Калькуляция с другим признаком</h2>
+            <button class="modal-close" @click="closeCalcCopy">×</button>
+          </div>
+          <div style="padding:var(--sp-4) var(--sp-5)">
+            <p class="muted" style="margin-top:0">
+              Исходная калькуляция останется без изменений. Появится новая — копия
+              этого расчёта с выбранным признаком, её нужно будет провести обычным
+              порядком: правки, цена, согласование ПЭО.
+            </p>
+            <div style="margin:var(--sp-3) 0; font-size:13px">
+              <div><b>Модель:</b> {{ calcCopyRow['Модель'] }} · <b>Артикул:</b> {{ calcCopyRow['Артикул'] }}</div>
+              <div><b>План:</b> {{ calcCopyRow['PLAN_ID'] || '—' }} · <b>Признак сейчас:</b> {{ calcCopyRow['Признак калькуляции'] }}</div>
+              <div v-if="calcCopyRow['Номер задания производства']">
+                <b>Задание:</b> {{ calcCopyRow['Номер задания производства'] }}
+                <span class="muted">— копируются строки только этого задания</span>
+              </div>
+            </div>
+            <label style="display:block; font-size:13px; margin-bottom:4px">Новый признак</label>
+            <div style="display:flex; gap:var(--sp-3); margin-bottom:var(--sp-3)">
+              <label v-for="sign in calcCopyTargets" :key="sign" style="display:flex; align-items:center; gap:4px; font-size:13px">
+                <input type="radio" :value="sign" v-model="calcCopyTarget" />
+                <span>{{ sign }}</span>
+              </label>
+            </div>
+            <label style="display:block; font-size:13px; margin-bottom:4px">Причина (необязательно)</label>
+            <textarea v-model="calcCopyReason" class="approval-comment" rows="2"
+              placeholder="Перемаркировка, расценка ЧНИ…"></textarea>
+            <div v-if="calcCopyError" class="cost-error" style="margin-top:var(--sp-3)">{{ calcCopyError }}</div>
+          </div>
+          <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:var(--sp-3); padding:var(--sp-3) var(--sp-5)">
+            <button class="btn btn-ghost btn-sm" @click="closeCalcCopy">Отмена</button>
+            <button class="btn btn-primary btn-sm" :disabled="calcCopyBusy || !calcCopyTarget" @click="submitCalcCopy">
+              {{ calcCopyBusy ? 'Создаём…' : 'Создать калькуляцию' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="calcCopyDeleteRow" class="modal-overlay" @click.self="closeCalcCopyDelete">
+        <div class="modal-content" style="max-width:520px" @click.stop>
+          <div class="modal-header">
+            <h2>Удалить созданную калькуляцию</h2>
+            <button class="modal-close" @click="closeCalcCopyDelete">×</button>
+          </div>
+          <div style="padding:var(--sp-4) var(--sp-5); font-size:13px">
+            <p style="margin-top:0">
+              {{ calcCopyDeleteRow['Модель'] }} · {{ calcCopyDeleteRow['Артикул'] }} ·
+              план {{ calcCopyDeleteRow['PLAN_ID'] || '—' }} ·
+              признак {{ calcCopyDeleteRow['Признак калькуляции'] }}
+            </p>
+            <p class="muted">
+              Удалится вся калькуляция целиком, вместе со строками материалов.
+              Если по ней уже введена цена или стоит отметка ПЭО, удаление не
+              выполнится — сначала снимите их.
+            </p>
+            <div v-if="calcCopyDeleteError" class="cost-error" style="margin-top:var(--sp-3)">{{ calcCopyDeleteError }}</div>
+          </div>
+          <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:var(--sp-3); padding:var(--sp-3) var(--sp-5)">
+            <button class="btn btn-ghost btn-sm" @click="closeCalcCopyDelete">Отмена</button>
+            <button class="btn btn-primary btn-sm" :disabled="calcCopyDeleteBusy" @click="submitCalcCopyDelete">
+              {{ calcCopyDeleteBusy ? 'Удаляем…' : 'Удалить' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div v-if="showColumnSettings" class="modal-overlay" @click.self="cancelColumnVisibility">
         <div class="modal-content colvis-modal" @click.stop>
           <div class="modal-header">
             <h2>Настройка колонок</h2>
+            <span class="colvis-hint">порядок меняется перетаскиванием заголовка в таблице</span>
             <button class="modal-close" @click="cancelColumnVisibility">×</button>
           </div>
           <div class="colvis-body">
@@ -1637,6 +1765,12 @@
               <button class="btn btn-ghost btn-xs" @click="selectAllColumns">Все</button>
               <button class="btn btn-ghost btn-xs" @click="deselectAllColumns">Снять все</button>
               <button class="btn btn-ghost btn-xs" @click="resetColumnVisibility">Сбросить</button>
+              <button
+                v-if="columnOrderChanged"
+                class="btn btn-ghost btn-xs"
+                title="Вернуть колонки в исходный порядок"
+                @click="resetColumnOrder"
+              >Сбросить порядок</button>
             </div>
             <div class="colvis-footer-buttons">
               <button class="btn btn-ghost btn-sm" @click="cancelColumnVisibility">Отмена</button>
@@ -1783,11 +1917,153 @@ const costColumns = computed(() => COLUMNS_CONFIG.filter(c => costColumnKeys.inc
 const calcColumns = computed(() => COLUMNS_CONFIG.filter(c => calcColumnKeys.includes(c.key)));
 
 const STICKY_COL_KEYS = ['peo_sel','actions','raw_rows','bm','model','articul','model_name','color','task_num','plan_id'];
-const STICKY_DEFAULT_WIDTHS: Record<string, number> = { peo_sel: 34, actions: 110, raw_rows: 40, bm: 160, model: 110, articul: 90, model_name: 200, color: 120, task_num: 120, plan_id: 90 };
-const STICKY_MIN_WIDTHS: Record<string, number> = { peo_sel: 30, actions: 70, raw_rows: 32, bm: 80, model: 70, articul: 60, model_name: 90, color: 60, task_num: 60, plan_id: 50 };
-const STICKY_MAX_WIDTH = 600;
+/** Ширины ВСЕХ колонок, а не только закреплённых (пожелание № 9: «высота
+ *  ширина данных в ячейке»). Значения по умолчанию сняты с живой таблицы
+ *  27.08.2026 (50 строк, 40 колонок): так переход на table-layout: fixed не
+ *  перекроил вид у тех, кто ничего не настраивал. Числовые колонки держались на
+ *  min-width 68px, текстовые растягивались под содержимое — это и записано. */
+const COL_DEFAULT_WIDTHS: Record<string, number> = {
+  // закреплённые слева
+  peo_sel: 34, actions: 150, raw_rows: 40, bm: 160, model: 120, articul: 90,
+  model_name: 228, color: 120, task_num: 90, plan_id: 70,
+  // информационные
+  country: 90, family: 110, season: 80, date: 76, calc_sign: 76,
+  planned_retail: 78, planned_wholesale: 78, planned_cost: 78,
+  planned_profitability: 92, avg_retail_rub: 92, avg_rate: 72,
+  retail_markup: 92, price_rf: 92, price_kz: 92, price_uz: 92,
+  mp_price_rub: 96, comment: 190,
+  // рубли и уровень цен
+  avg_wholesale: 92, price_level: 86,
+  // валютные и себестоимость
+  avg_retail_usd: 92, sum_materials: 92, sum_aux_materials: 92,
+  avg_sewing_min: 80, sum_sewing: 88, avg_cutting_min: 80, sum_cutting: 88,
+  sum_decors: 88, sum_knitting: 88, sum_cost: 92, cost_deviation: 92,
+  // расчётные метрики
+  calc_markup: 92, calc_markup_pct: 116, calc_margin_pct: 96,
+  calc_margin_deviation: 96, peo: 68,
+};
+const COL_MIN_WIDTHS: Record<string, number> = { peo_sel: 30, actions: 140, raw_rows: 32, bm: 80, model: 70, articul: 60, model_name: 90, color: 60, task_num: 60, plan_id: 50 };
+/** Ниже этого колонку не сжать: у заголовка есть три строки по 10px, и на 40px
+ *  он перестаёт читаться совсем. */
+const COL_MIN_WIDTH_DEFAULT = 56;
+const COL_MAX_WIDTH = 600;
+/** Имя ключа историческое: под ним у людей уже лежат настроенные ширины
+ *  закреплённых колонок, и переименование их обнулило бы. */
 const WIDTH_STORAGE_KEY = 'cost_sticky_col_widths';
 const STORAGE_KEY = 'cost_column_visibility';
+
+/** Порядок колонок — пожелания № 9 и № 14: «двигать в нужном порядке столбцы».
+ *
+ * Двигаются только НЕзакреплённые колонки. Закреплённые слева
+ * (STICKY_COL_KEYS) остаются на месте: их left-отступ считается сложением
+ * ширин предыдущих по фиксированному порядку, и чужая колонка, вставленная в
+ * середину группы, разъехалась бы поверх соседей при горизонтальной прокрутке.
+ *
+ * Порядок хранится списком ключей, а не индексами: список ключей переживает
+ * добавление и удаление колонок в коде, а индексы — нет. */
+const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
+const ORDER_STORAGE_KEY = 'cost_column_order';
+/** Все колонки таблицы: закреплённые слева плюс переносимые. */
+const ALL_COL_KEYS = [...STICKY_COL_KEYS, ...MOVABLE_COL_KEYS];
+
+function normalizeColumnOrder(saved: unknown): string[] {
+  const known = new Set(MOVABLE_COL_KEYS);
+  const out: string[] = [];
+  if (Array.isArray(saved)) {
+    for (const k of saved) {
+      if (typeof k === 'string' && known.has(k) && !out.includes(k)) out.push(k);
+    }
+  }
+  // Колонку, появившуюся в коде уже после того, как человек сохранил свой
+  // порядок, возвращаем на место по соседям слева, а не в конец: иначе новая
+  // метрика уезжала бы в хвост таблицы у всех, кто когда-либо двигал колонки.
+  for (let i = 0; i < MOVABLE_COL_KEYS.length; i++) {
+    const k = MOVABLE_COL_KEYS[i];
+    if (out.includes(k)) continue;
+    let at = out.length;
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = out.indexOf(MOVABLE_COL_KEYS[j]);
+      if (prev >= 0) { at = prev + 1; break; }
+    }
+    out.splice(at, 0, k);
+  }
+  return out;
+}
+
+function loadColumnOrder(): string[] {
+  try {
+    return normalizeColumnOrder(JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || 'null'));
+  } catch {
+    return [...MOVABLE_COL_KEYS];
+  }
+}
+const columnOrder = ref<string[]>(loadColumnOrder());
+/** Ключи для v-for в шапке и в строках. Один и тот же список — иначе заголовки
+ *  разъехались бы с ячейками, а это молчаливая порча данных на экране. */
+const orderedMovableKeys = computed(() => columnOrder.value);
+
+function persistColumnOrder() {
+  try { localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(columnOrder.value)); } catch { /* ignore */ }
+  schedulePrefsPush();
+}
+
+const dragColKey = ref<string | null>(null);
+const dragOverColKey = ref<string | null>(null);
+
+/** Атрибуты и обработчики переноса вешаются через v-bind/v-on объектом:
+ *  у заголовков уже есть свои :class и @click (сортировка), и второй :class
+ *  на том же теге Vue не соберёт. */
+function colDragBind(key: string): Record<string, unknown> {
+  return {
+    draggable: 'true',
+    'data-drag': dragColKey.value === key ? 'src' : (dragOverColKey.value === key ? 'over' : null),
+  };
+}
+function colDragOn(key: string): Record<string, (e: DragEvent) => void> {
+  return {
+    dragstart: (e: DragEvent) => {
+      dragColKey.value = key;
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        // Без данных в dataTransfer Firefox не начинает перенос вообще.
+        e.dataTransfer.setData('text/plain', key);
+      }
+    },
+    dragover: (e: DragEvent) => {
+      if (!dragColKey.value || dragColKey.value === key) return;
+      e.preventDefault();
+      dragOverColKey.value = key;
+    },
+    dragleave: () => { if (dragOverColKey.value === key) dragOverColKey.value = null; },
+    drop: (e: DragEvent) => {
+      e.preventDefault();
+      const from = dragColKey.value;
+      dragColKey.value = null;
+      dragOverColKey.value = null;
+      if (!from || from === key) return;
+      const order = [...columnOrder.value];
+      const i = order.indexOf(from);
+      const j = order.indexOf(key);
+      if (i < 0 || j < 0) return;
+      order.splice(i, 1);
+      const at = order.indexOf(key);
+      // Тянут слева направо — колонка встаёт ПОСЛЕ цели, справа налево — ПЕРЕД.
+      // Так место приземления совпадает с тем, куда человек ведёт мышь.
+      order.splice(i < j ? at + 1 : at, 0, from);
+      columnOrder.value = order;
+      persistColumnOrder();
+    },
+    dragend: () => { dragColKey.value = null; dragOverColKey.value = null; },
+  };
+}
+
+function resetColumnOrder() {
+  columnOrder.value = [...MOVABLE_COL_KEYS];
+  persistColumnOrder();
+}
+const columnOrderChanged = computed(
+  () => columnOrder.value.join('|') !== MOVABLE_COL_KEYS.join('|'),
+);
 
 /** Настройки таблицы: браузер + сервер (миграция 0041).
  *
@@ -1813,7 +2089,8 @@ function collectPrefs() {
   return {
     columns: {
       visibility: { ...columnVisibility },
-      widths: { ...stickyWidths },
+      widths: { ...colWidths },
+      order: [...columnOrder.value],
     },
     pageSize: pageSize.value,
     filtersOpen: filtersOpen.value,
@@ -1850,14 +2127,16 @@ function applyPrefs(doc: any) {
     }
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(columnVisibility)); } catch { /* ignore */ }
   }
+  if (Array.isArray(cols.order)) {
+    columnOrder.value = normalizeColumnOrder(cols.order);
+    try { localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(columnOrder.value)); } catch { /* ignore */ }
+  }
   if (cols.widths && typeof cols.widths === 'object') {
-    for (const k of STICKY_COL_KEYS) {
+    for (const k of ALL_COL_KEYS) {
       const v = Number(cols.widths[k]);
-      if (isFinite(v) && v > 0) stickyWidths[k] = clampStickyWidth(k, v);
+      if (isFinite(v) && v > 0) colWidths[k] = clampColWidth(k, v);
     }
-    try { localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify(stickyWidths)); } catch { /* ignore */ }
-  schedulePrefsPush();
-  schedulePrefsPush();
+    try { localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify(colWidths)); } catch { /* ignore */ }
   }
   if (PAGE_SIZE_OPTIONS.includes(Number(doc.pageSize))) {
     pageSize.value = Number(doc.pageSize);
@@ -1950,30 +2229,43 @@ const visibleColumnCount = computed(() => {
   return count;
 });
 
-function clampStickyWidth(key: string, w: number): number {
-  return Math.max(STICKY_MIN_WIDTHS[key] ?? 40, Math.min(STICKY_MAX_WIDTH, Math.round(w)));
+function clampColWidth(key: string, w: number): number {
+  return Math.max(
+    COL_MIN_WIDTHS[key] ?? COL_MIN_WIDTH_DEFAULT,
+    Math.min(COL_MAX_WIDTH, Math.round(w)),
+  );
 }
-function loadStickyWidths(): Record<string, number> {
-  const out = { ...STICKY_DEFAULT_WIDTHS };
+function loadColWidths(): Record<string, number> {
+  const out = { ...COL_DEFAULT_WIDTHS };
   try {
     const parsed = JSON.parse(localStorage.getItem(WIDTH_STORAGE_KEY) || '{}');
-    for (const k of STICKY_COL_KEYS) {
+    for (const k of ALL_COL_KEYS) {
       const w = Number(parsed[k]);
-      if (Number.isFinite(w) && w > 0) out[k] = clampStickyWidth(k, w);
+      if (Number.isFinite(w) && w > 0) out[k] = clampColWidth(k, w);
     }
-  } catch { /* defaults */ }
+  } catch { /* остаёмся на значениях по умолчанию */ }
   return out;
 }
-const stickyWidths = reactive<Record<string, number>>(loadStickyWidths());
+const colWidths = reactive<Record<string, number>>(loadColWidths());
+
+/** Ширина незакреплённой колонки. При table-layout: fixed браузер берёт
+ *  раскладку из первой строки таблицы, поэтому ширину достаточно поставить на
+ *  <th> — colgroup не нужен. Это сознательно: colgroup пришлось бы собирать
+ *  вторым списком колонок, повторяя условия видимости и режима $, а расхождение
+ *  двух списков сдвинуло бы заголовки относительно данных. */
+function colStyle(key: string): Record<string, string> {
+  const w = colWidths[key] + 'px';
+  return { width: w, minWidth: w, maxWidth: w };
+}
 
 /** left = сумма ширин ВИДИМЫХ закреплённых колонок до этой (по порядку STICKY_COL_KEYS) */
 function stickyStyle(key: string): Record<string, string> {
   let left = 0;
   for (const k of STICKY_COL_KEYS) {
     if (k === key) break;
-    if (isVisible(k)) left += stickyWidths[k];
+    if (isVisible(k)) left += colWidths[k];
   }
-  const w = stickyWidths[key];
+  const w = colWidths[key];
   return { left: left + 'px', width: w + 'px', minWidth: w + 'px' };
 }
 /** последняя ВИДИМАЯ закреплённая колонка получает тень-разделитель */
@@ -1990,7 +2282,7 @@ function stickyClasses(key: string): (string | Record<string, boolean>)[] {
 
 let resizing: { key: string; startX: number; startW: number } | null = null;
 function startColResize(key: string, e: MouseEvent) {
-  resizing = { key, startX: e.clientX, startW: stickyWidths[key] };
+  resizing = { key, startX: e.clientX, startW: colWidths[key] };
   document.body.style.userSelect = 'none';
   document.body.style.cursor = 'col-resize';
   window.addEventListener('mousemove', onColResizeMove);
@@ -1998,7 +2290,7 @@ function startColResize(key: string, e: MouseEvent) {
 }
 function onColResizeMove(e: MouseEvent) {
   if (!resizing) return;
-  stickyWidths[resizing.key] = clampStickyWidth(resizing.key, resizing.startW + (e.clientX - resizing.startX));
+  colWidths[resizing.key] = clampColWidth(resizing.key, resizing.startW + (e.clientX - resizing.startX));
 }
 function stopColResize() {
   if (!resizing) return;
@@ -2007,11 +2299,18 @@ function stopColResize() {
   document.body.style.cursor = '';
   window.removeEventListener('mousemove', onColResizeMove);
   window.removeEventListener('mouseup', stopColResize);
-  try { localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify(stickyWidths)); } catch { /* ignore */ }
+  persistColWidths();
 }
 function resetColWidth(key: string) {
-  stickyWidths[key] = STICKY_DEFAULT_WIDTHS[key];
-  try { localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify(stickyWidths)); } catch { /* ignore */ }
+  colWidths[key] = COL_DEFAULT_WIDTHS[key];
+  persistColWidths();
+}
+function persistColWidths() {
+  try { localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify(colWidths)); } catch { /* ignore */ }
+  // Раньше ширины оставались только в браузере: на сервер их отправляло лишь
+  // случайное следующее изменение настроек. Теперь уезжают сразу — иначе вход с
+  // другой машины возвращал старую раскладку.
+  schedulePrefsPush();
 }
 
 // ── Margin targets state ─────────────────────────────────────────────────────
@@ -5076,13 +5375,139 @@ async function submitReopenBulk() {
       headers: fetchHeaders.value,
     });
     for (const r of reopenBulkRows.value) applyReopenLocally(r, true);
-    peoBulkStatus.value = `Возвращено на корректировку калькуляций: ${resp?.reopened ?? items.length}`;
+    // Порядок важен: clearPeoSelection() обнуляет peoBulkStatus, поэтому
+    // сообщение ставим после сброса выделения, а не до него.
     clearPeoSelection();
+    peoBulkStatus.value = `Возвращено на корректировку калькуляций: ${resp?.reopened ?? items.length}`;
     closeReopenModal();
   } catch (e: any) {
     reopenError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     reopenBusy.value = false;
+  }
+}
+
+/* Калькуляция с другим признаком — пункт 1 «Списка доработок».
+ *
+ * Заказчик уточнил 27.08.2026: признак у исходной калькуляции не меняем, а
+ * создаём НОВУЮ калькуляцию с другим признаком, и дальше она живёт как обычная.
+ * Право есть только у калькулятора и админа: бренд-менеджеру и ПЭО эта кнопка
+ * не показывается вовсе. */
+const CALC_SIGN_COPY_SIGNS = ['ПКПСС', 'КПСС', 'ПФКСС'];
+const calcCopyRow = ref<any | null>(null);
+const calcCopyTarget = ref('');
+const calcCopyReason = ref('');
+const calcCopyBusy = ref(false);
+const calcCopyError = ref('');
+const calcCopyDeleteRow = ref<any | null>(null);
+const calcCopyDeleteBusy = ref(false);
+const calcCopyDeleteError = ref('');
+
+const calcCopyTargets = computed(() => {
+  const cur = String(calcCopyRow.value?.['Признак калькуляции'] || '').trim();
+  return CALC_SIGN_COPY_SIGNS.filter(s => s !== cur);
+});
+
+function canCopyCalcSign(row: any): boolean {
+  if (!can('cost:calc_sign_copy')) return false;
+  // Копию делаем из расчёта источника: сервер копирует строки из кэша, поэтому
+  // копия копии технически невозможна.
+  if (row?.is_manual) return false;
+  if (!CALC_SIGN_COPY_SIGNS.includes(String(row?.['Признак калькуляции'] || '').trim())) return false;
+  // «Этап калькулятора»: до цены и согласования. Ту же проверку делает сервер.
+  return !isRowLocked(row) && !row._has_audit && !row._has_pending;
+}
+
+function manualCopyTitle(row: any): string {
+  const from = row?.manual_source_sign ? `создана из ${row.manual_source_sign}` : 'создана в приложении';
+  const who = row?.manual_created_by ? `, ${row.manual_created_by}` : '';
+  const tail = can('cost:calc_sign_copy') ? ' — клик, чтобы удалить' : '';
+  return `Калькуляция ${from}${who}${tail}`;
+}
+
+function openCalcCopy(row: any) {
+  if (!canCopyCalcSign(row)) return;
+  calcCopyRow.value = row;
+  calcCopyTarget.value = calcCopyTargets.value[0] || '';
+  calcCopyReason.value = '';
+  calcCopyError.value = '';
+}
+function closeCalcCopy() {
+  calcCopyRow.value = null;
+  calcCopyError.value = '';
+}
+
+async function submitCalcCopy() {
+  const row = calcCopyRow.value;
+  if (!row || !calcCopyTarget.value) {
+    calcCopyError.value = 'Выберите новый признак калькуляции';
+    return;
+  }
+  calcCopyBusy.value = true;
+  calcCopyError.value = '';
+  try {
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/calc-sign-copy`, {
+      method: 'POST',
+      headers: fetchHeaders.value,
+      body: {
+        model: row['Модель'],
+        articul: row['Артикул'],
+        plan_id: row['PLAN_ID'] || '',
+        calc_sign: row['Признак калькуляции'],
+        task_number: row['Номер задания производства'] || '',
+        target_calc_sign: calcCopyTarget.value,
+        reason: calcCopyReason.value.trim(),
+      },
+    });
+    // Предупреждение о совпадении ключа показываем явно: цена в разделе
+    // ставится на модель, артикул, план и признак, поэтому у копии и у
+    // калькуляции источника с тем же признаком она будет общей.
+    closeCalcCopy();
+    // Сообщение ставим ПОСЛЕ перезагрузки: loadData() вызывает
+    // clearPeoSelection(), а тот обнуляет peoBulkStatus — успех был бы тихим.
+    await loadData();
+    peoBulkStatus.value = `Создана калькуляция ${resp?.target_calc_sign}: строк ${resp?.rows}`
+      + (resp?.clash_with_source
+        ? '. Внимание: калькуляция с этим признаком уже есть в источнике — цена у них будет общая'
+        : '');
+  } catch (e: any) {
+    calcCopyError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    calcCopyBusy.value = false;
+  }
+}
+
+function openCalcCopyDelete(row: any) {
+  if (!can('cost:calc_sign_copy') || !row?.is_manual) return;
+  calcCopyDeleteRow.value = row;
+  calcCopyDeleteError.value = '';
+}
+function closeCalcCopyDelete() {
+  calcCopyDeleteRow.value = null;
+  calcCopyDeleteError.value = '';
+}
+
+async function submitCalcCopyDelete() {
+  const row = calcCopyDeleteRow.value;
+  const batch = row?.manual_batch_id;
+  if (!batch) {
+    calcCopyDeleteError.value = 'Не удалось определить, какую калькуляцию удалять — обновите данные';
+    return;
+  }
+  calcCopyDeleteBusy.value = true;
+  calcCopyDeleteError.value = '';
+  try {
+    await $fetch(`${apiBase.value}/api/cost/calc-sign-copy/${batch}`, {
+      method: 'DELETE',
+      headers: fetchHeaders.value,
+    });
+    closeCalcCopyDelete();
+    await loadData();
+    peoBulkStatus.value = 'Созданная калькуляция удалена';
+  } catch (e: any) {
+    calcCopyDeleteError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    calcCopyDeleteBusy.value = false;
   }
 }
 
@@ -5684,7 +6109,7 @@ const gridRevealCell = (cell: GridCell) => {
   if (!wrap) return;
   const stickyWidth = STICKY_COL_KEYS
     .filter((k) => isVisible(k))
-    .reduce((sum, k) => sum + (stickyWidths[k] || 0), 0);
+    .reduce((sum, k) => sum + (colWidths[k] || 0), 0);
   const overlap = (wrap.getBoundingClientRect().left + stickyWidth) - cell.getBoundingClientRect().left;
   if (overlap > 0) wrap.scrollLeft -= overlap + 4;
 };
@@ -6848,11 +7273,88 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 #cost-table-1.data-table th.sticky-col.sorted {
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
 }
+.colvis-hint {
+  margin-left: var(--sp-3, 12px);
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+  font-weight: 400;
+}
+
+/* Ширина любой колонки настраивается мышью (пожелание № 9), поэтому главная
+   таблица переведена на фиксированную раскладку: при table-layout: auto
+   браузер сам подбирает ширины под содержимое и заданное значение остаётся
+   лишь пожеланием — колонку нельзя сделать уже её текста. При fixed раскладку
+   задаёт первая строка, то есть ширины на <th>.
+   Ширина таблицы — min-content, и это важно: при max-content браузер считает
+   ширину по содержимому (у полей ввода есть свой минимум), получает больше
+   суммы заданных колонок и раздаёт излишек всем колонкам поровну. Проверено
+   27.08.2026: колонка «Цена РФ» с заданными 56px рисовалась на 91px. При
+   min-content ширина таблицы равна сумме колонок, и заданное значение
+   соблюдается до пикселя.
+   min-width: 100% оставлено, чтобы при небольшом наборе колонок таблица не
+   висела узкой полосой у левого края; в этом случае колонки снова получат
+   надбавку, но там это и выглядит уместно. */
+#cost-table-1.data-table {
+  table-layout: fixed;
+  width: min-content;
+  min-width: 100%;
+}
+/* Общее min-width: 68px мешало бы сузить колонку — для главной таблицы снимаем.
+   Нижняя граница теперь одна и в коде (COL_MIN_WIDTH_DEFAULT). */
+#cost-table-1.data-table th:not(.sticky-col),
+#cost-table-1.data-table td:not(.sticky-col) {
+  min-width: 0;
+}
+/* Ручка ресайза позиционируется от заголовка. У закреплённых колонок контекст
+   создавал position: sticky, у остальных его не было. */
+#cost-table-1.data-table thead th {
+  position: relative;
+  overflow: hidden;
+}
+/* Содержимое узкой колонки не вылезает на соседнюю: обрезаем с многоточием.
+   Заголовки переносятся по словам, у них обрезка только по высоте. */
+#cost-table-1.data-table tbody td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* В служебных колонках многоточие вместо кнопки читается как ошибка вёрстки —
+   там лучше обрезать сам значок. */
+#cost-table-1.data-table tbody td.sticky-col {
+  text-overflow: clip;
+}
+
+/* Пометка калькуляции, созданной в приложении (пункт 1). Индиго, чтобы не
+   спутать с оранжевым «возврат» и синим «в DWH». */
+.state-badge--manual {
+  color: var(--accent);
+}
+
+/* Перенос колонок мышью (пожелания № 9 и № 14).
+   Тянуть можно только незакреплённые заголовки — у закреплённых слева порядок
+   задаёт раскладку sticky-отступов, поэтому они не draggable. */
+#cost-table-1.data-table thead th[draggable="true"] {
+  cursor: grab;
+}
+#cost-table-1.data-table thead th[draggable="true"]:active {
+  cursor: grabbing;
+}
+/* Колонка, которую несут: приглушаем, чтобы взгляд держался на месте вставки. */
+#cost-table-1.data-table thead th[data-drag="src"] {
+  opacity: 0.45;
+}
+/* Место приземления — полоса акцентом по краю заголовка. Тень внутрь, а не
+   рамка: рамка сдвинула бы содержимое ячейки на пиксель и шапка дрожала бы. */
+#cost-table-1.data-table thead th[data-drag="over"] {
+  box-shadow: inset 3px 0 0 var(--accent), inset -3px 0 0 var(--accent);
+}
+
 /* Resize handle on pinned column headers */
 #cost-table-1.data-table .col-resize-handle {
   position: absolute;
   top: 0;
-  right: -3px;
+  /* Не -3px: заголовки теперь с overflow: hidden, и вылет за край обрезался бы
+     вместе с ручкой. */
+  right: 0;
   width: 7px;
   height: 100%;
   cursor: col-resize;

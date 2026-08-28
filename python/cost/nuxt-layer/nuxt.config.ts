@@ -17,6 +17,11 @@ export default defineNuxtConfig({
       supersetEmbedUrl:
         process.env.NUXT_PUBLIC_SUPERSET_EMBED_URL ??
         "http://localhost:8093/superset/dashboard/cost-commercial/",
+      // Тот же макет «Маржа выпуска» в Superset — блок сравнения на /cost/margin.
+      // Пустая строка → блока нет.
+      supersetMarginEmbedUrl:
+        process.env.NUXT_PUBLIC_SUPERSET_MARGIN_EMBED_URL ??
+        "http://localhost:8093/superset/dashboard/cost-margin/",
     },
   },
 });

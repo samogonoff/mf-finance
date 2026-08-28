@@ -1,0 +1,47 @@
+slice_name: "marg-13 \xB7 \u041C\u0430\u0442\u0440\u0438\u0446\u0430 \u043C\u0430\u0440\
+  \u0436\u0438"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 14__table
+  viz_type: table
+  query_mode: aggregate
+  groupby:
+  - level01
+  metrics:
+  - vol_cur
+  - unit_cost_cur
+  - cost_cur
+  - rev_cur
+  - margin_cur
+  - margin_py
+  - margin_pct_cur
+  - margin_pct_dev_pm_pp
+  - margin_pct_dev_py_pp
+  - target_pct
+  - margin_pct_dev_target_pp
+  all_columns: []
+  percent_metrics: []
+  order_by_cols: []
+  timeseries_limit_metric: margin_cur
+  order_desc: true
+  row_limit: 300
+  server_page_length: 25
+  show_cell_bars: false
+  color_pn: true
+  table_timestamp_format: smart_date
+  conditional_formatting:
+  - colorScheme: '#EFA1AA'
+    column: margin_pct_dev_target_pp
+    operator: <
+    targetValue: 0
+  column_config: {}
+  adhoc_filters: []
+  extra_form_data: {}
+query_context: null
+cache_timeout: null
+uuid: caa02d92-c8ca-45b9-9189-0801b9c4cc4c
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2

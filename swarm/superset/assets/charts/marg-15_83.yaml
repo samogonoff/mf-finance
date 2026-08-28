@@ -1,0 +1,39 @@
+slice_name: "marg-15 \xB7 \u041F\u0440\u0438\u0440\u043E\u0441\u0442 \u0441\u0435\u0431\
+  \u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438 \u0448\u0442\u0443\u043A\
+  \u0438 \u043A \u043F\u0440\u043E\u0448\u043B\u043E\u043C\u0443 \u0433\u043E\u0434\
+  \u0443, %"
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_bar
+params:
+  datasource: 14__table
+  viz_type: echarts_timeseries_bar
+  metrics:
+  - unit_cost_dev_py_pct
+  groupby: []
+  x_axis: prod_month
+  time_grain_sqla: P1M
+  granularity_sqla: null
+  x_axis_sort: null
+  x_axis_sort_asc: true
+  order_desc: false
+  x_axis_sort_series_type: name
+  x_axis_sort_series_ascending: true
+  row_limit: 50
+  orientation: vertical
+  y_axis_title: '%'
+  y_axis_format: +,.1f
+  legend_orientation: bottom
+  show_legend: true
+  rich_tooltip: true
+  truncateYAxis: true
+  color_scheme: supersetColors
+  x_axis_time_format: '%m.%Y'
+  adhoc_filters: []
+  extra_form_data: {}
+query_context: null
+cache_timeout: null
+uuid: 12568b58-04f0-4e63-b561-6d323656fcb6
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2

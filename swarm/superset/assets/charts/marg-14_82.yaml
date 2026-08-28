@@ -1,0 +1,37 @@
+slice_name: "marg-14 \xB7 \u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\
+  \u0441\u0442\u044C \u0448\u0442\u0443\u043A\u0438 \u043F\u043E \u043C\u0435\u0441\
+  \u044F\u0446\u0430\u043C"
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 14__table
+  viz_type: echarts_timeseries_line
+  metrics:
+  - unit_cost_cur
+  - unit_cost_py
+  - unit_raw_cur
+  groupby: []
+  x_axis: prod_month
+  time_grain_sqla: P1M
+  x_axis_time_format: '%m.%Y'
+  x_axis_sort_series_type: name
+  x_axis_sort_series_ascending: true
+  row_limit: 1000
+  y_axis_title: ''
+  y_axis_format: ',.2f'
+  legend_orientation: bottom
+  show_legend: true
+  markerEnabled: true
+  markerSize: 5
+  rich_tooltip: true
+  truncateYAxis: true
+  color_scheme: supersetColors
+  adhoc_filters: []
+  extra_form_data: {}
+query_context: null
+cache_timeout: null
+uuid: b8c89006-037a-4082-af9d-dd7a031b37d5
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2

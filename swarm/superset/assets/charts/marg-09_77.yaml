@@ -1,0 +1,36 @@
+slice_name: "marg-09 \xB7 \u0414\u0438\u043D\u0430\u043C\u0438\u043A\u0430 \u043C\u0430\
+  \u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u0438, %"
+description: null
+certified_by: null
+certification_details: null
+viz_type: echarts_timeseries_line
+params:
+  datasource: 14__table
+  viz_type: echarts_timeseries_line
+  metrics:
+  - margin_pct_cur
+  - margin_pct_py
+  - target_pct
+  groupby: []
+  x_axis: prod_month
+  time_grain_sqla: P1M
+  x_axis_time_format: '%m.%Y'
+  x_axis_sort_series_type: name
+  x_axis_sort_series_ascending: true
+  row_limit: 1000
+  y_axis_title: '%'
+  y_axis_format: ',.2f'
+  legend_orientation: bottom
+  show_legend: true
+  markerEnabled: true
+  markerSize: 5
+  rich_tooltip: true
+  truncateYAxis: true
+  color_scheme: supersetColors
+  adhoc_filters: []
+  extra_form_data: {}
+query_context: null
+cache_timeout: null
+uuid: 1255cfde-4157-4f97-beca-e954bb645a40
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2

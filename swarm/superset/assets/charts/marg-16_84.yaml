@@ -1,0 +1,40 @@
+slice_name: "marg-16 \xB7 \u041C\u0430\u0442\u0440\u0438\u0446\u0430 \u0441\u0435\u0431\
+  \u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438"
+description: null
+certified_by: null
+certification_details: null
+viz_type: table
+params:
+  datasource: 14__table
+  viz_type: table
+  query_mode: aggregate
+  groupby:
+  - level01
+  metrics:
+  - vol_cur
+  - unit_cost_cur
+  - unit_cost_py
+  - unit_cost_dev_py_pct
+  - unit_raw_cur
+  - unit_raw_py
+  - unit_raw_dev_py_pct
+  - min_per_unit_cur
+  all_columns: []
+  percent_metrics: []
+  order_by_cols: []
+  timeseries_limit_metric: vol_cur
+  order_desc: true
+  row_limit: 300
+  server_page_length: 25
+  show_cell_bars: false
+  color_pn: true
+  table_timestamp_format: smart_date
+  conditional_formatting: []
+  column_config: {}
+  adhoc_filters: []
+  extra_form_data: {}
+query_context: null
+cache_timeout: null
+uuid: bef363ab-df44-4a7e-b9e6-bcd8c4ea3514
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2

@@ -1,0 +1,1121 @@
+table_name: mf_cost_margin
+main_dttm_col: prod_month
+currency_code_column: null
+description: "\u041C\u0430\u0440\u0436\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430\
+  : \u0441\u0442\u0440\u043E\u043A\u0438 \u0432\u044B\u043F\u0443\u0441\u043A\u0430\
+  \ \u0424\u041A\u0421\u0421 \u0441 \u043E\u0431\u044A\u0451\u043C\u043E\u043C, \u0442\
+  \u0440\u0438 \u043A\u043E\u043F\u0438\u0438 \u0441\u043E \u0441\u0434\u0432\u0438\
+  \u0433\u043E\u043C \u043C\u0435\u0442\u043A\u0438 \u043C\u0435\u0441\u044F\u0446\
+  \u0430 (k = cur / pm / py) \u0434\u043B\u044F \u0441\u0440\u0430\u0432\u043D\u0435\
+  \u043D\u0438\u044F \u0441 \u043F\u0440\u043E\u0448\u043B\u044B\u043C \u043C\u0435\
+  \u0441\u044F\u0446\u0435\u043C \u0438 \u0433\u043E\u0434\u043E\u043C; \u0432\u0430\
+  \u043B\u044E\u0442\u0430 \u2014 \u043F\u043E \u0444\u0438\u043B\u044C\u0442\u0440\
+  \u0443."
+default_endpoint: null
+offset: 0
+cache_timeout: 3600
+catalog: cost
+schema: public
+sql: "-- \u0412\u0438\u0442\u0440\u0438\u043D\u0430 \xAB\u041C\u0430\u0440\u0436\u0430\
+  \ \u0432\u044B\u043F\u0443\u0441\u043A\u0430\xBB: \u043F\u0435\u0440\u0435\u043D\
+  \u043E\u0441 \u043E\u0442\u0447\u0451\u0442\u043E\u0432 Power BI \u0437\u0430\u043A\
+  \u0430\u0437\u0447\u0438\u043A\u0430 \u043D\u0430 \u0434\u0430\u043D\u043D\u044B\
+  \u0435 \u043F\u0440\u043E\u0435\u043A\u0442\u0430.\n-- \u0424\u043E\u0440\u043C\u0443\
+  \u043B\u044B \u0438 \u0433\u0440\u0430\u043D\u0438\u0446\u044B \u2014 docs/bi/metrics.md,\
+  \ docs/bi/pbi-margin-port.md.\n--\n-- \u0412\u0410\u041B\u042E\u0422\u0410 \u041F\
+  \u0415\u0420\u0415\u041A\u041B\u042E\u0427\u0410\u0415\u0422\u0421\u042F \u0424\u0418\
+  \u041B\u042C\u0422\u0420\u041E\u041C \xAB\u0412\u0430\u043B\u044E\u0442\u0430\xBB\
+  \ (\u0434\u0430\u0442\u0430\u0441\u0435\u0442 mf_currency_pick): \u0437\u043D\u0430\
+  \u0447\u0435\u043D\u0438\u0435\n-- \u043F\u0440\u0438\u0445\u043E\u0434\u0438\u0442\
+  \ \u0447\u0435\u0440\u0435\u0437 filter_values() \u0438 \u0432\u044B\u0431\u0438\
+  \u0440\u0430\u0435\u0442 \u043A\u043E\u043B\u043E\u043D\u043A\u0438 *_byn \u0438\
+  \u043B\u0438 *_usd. \u0417\u043D\u0430\u0447\u0435\u043D\u0438\u0435\n-- \u0441\u0432\
+  \u0435\u0440\u044F\u0435\u0442\u0441\u044F \u0441 \u0431\u0435\u043B\u044B\u043C\
+  \ \u0441\u043F\u0438\u0441\u043A\u043E\u043C \u2014 filter_values() \u043E\u0442\
+  \u0434\u0430\u0451\u0442 \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\
+  \u043B\u044C\u0441\u043A\u0443\u044E \u0441\u0442\u0440\u043E\u043A\u0443,\n-- \u0431\
+  \u0435\u0437 \u0441\u0432\u0435\u0440\u043A\u0438 \u044D\u0442\u043E \u0438\u043D\
+  \u044A\u0435\u043A\u0446\u0438\u044F.\n{% set raw = filter_values('currency_pick')\
+  \ %}\n{% set cur = raw[0] if raw and raw[0] in ['BYN', 'USD'] else 'BYN' %}\n{%\
+  \ set sfx = 'usd' if cur == 'USD' else 'byn' %}\n-- \u0411\u0410\u0417\u0410 \u0421\
+  \u0415\u0411\u0415\u0421\u0422\u041E\u0418\u041C\u041E\u0421\u0422\u0418 \u2014\
+  \ \u0444\u0438\u043B\u044C\u0442\u0440 \xAB\u0421\u0435\u0431\u0435\u0441\u0442\u043E\
+  \u0438\u043C\u043E\u0441\u0442\u044C\xBB (\u0434\u0430\u0442\u0430\u0441\u0435\u0442\
+  \ mf_basis_pick): \u0444\u0430\u043A\u0442, \u0433\u0434\u0435 \u043E\u043D\n--\
+  \ \u0433\u043E\u0434\u0435\u043D, \u0438\u043D\u0430\u0447\u0435 \u043D\u043E\u0440\
+  \u043C\u0430\u0442\u0438\u0432; \u043B\u0438\u0431\u043E \u0432\u0441\u0435\u0433\
+  \u0434\u0430 \u043D\u043E\u0440\u043C\u0430\u0442\u0438\u0432.\n{% set rawb = filter_values('basis_pick')\
+  \ %}\n{% set basis = rawb[0] if rawb and rawb[0] in ['\u0424\u0430\u043A\u0442',\
+  \ '\u041D\u043E\u0440\u043C\u0430\u0442\u0438\u0432'] else '\u0424\u0430\u043A\u0442\
+  ' %}\n-- \u0413\u041E\u0414\u041D\u041E\u0421\u0422\u042C \u0424\u0410\u041A\u0422\
+  \u0410. \u0413\u0434\u0435 \u0444\u0430\u043A\u0442\u0438\u0447\u0435\u0441\u043A\
+  \u0430\u044F \u0441\u0442\u0430\u0432\u043A\u0430 \u043C\u0438\u043D\u0443\u0442\
+  \u044B \u0432 \u041B\u0438\u0441\u0435 \u043D\u0435 \u0437\u0430\u0432\u0435\u0434\
+  \u0435\u043D\u0430, \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\n-- \u0443\u043C\
+  \u043D\u043E\u0436\u0430\u0435\u0442 \u043C\u0438\u043D\u0443\u0442\u044B \u043D\
+  \u0430 \u043D\u043E\u043B\u044C \u0438 \xAB\u0421\u0435\u0431\u0435\u0441\u0442\u043E\
+  \u0438\u043C\u043E\u0441\u0442\u044C \u0444\u0430\u043A\u0442\xBB = \u043D\u043E\
+  \u0440\u043C\u0430\u0442\u0438\u0432 \u043C\u0438\u043D\u0443\u0441 \u043F\u043E\
+  \u0448\u0438\u0432 (\u0443 \u0444\u0438\u0440\u043C\u044B\n-- 166 \u043A\u043E\u043D\
+  \u0441\u0442\u0430\u043D\u0442 *_MIN_F \u043D\u0435\u0442, \u0443 152 \u0438 455\
+  \ \u2014 \u0442\u043E\u043B\u044C\u043A\u043E \u0441 \u043C\u0430\u044F 2026). \u0424\
+  \u0430\u043A\u0442 \u0433\u043E\u0434\u0435\u043D, \u0442\u043E\u043B\u044C\u043A\
+  \u043E\n-- \u0435\u0441\u043B\u0438 \u0443 \u043A\u0430\u0436\u0434\u043E\u0439\
+  \ \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438 \u0441 \u043D\u043E\u0440\u043C\
+  \u0430\u0442\u0438\u0432\u043E\u043C > 0 \u0444\u0430\u043A\u0442 \u0442\u043E\u0436\
+  \u0435 > 0. \u0421\u043C. docs/bi/metrics.md.\n{% set fact_ok = \"(c.cost_fact_byn\
+  \ IS NOT NULL AND NOT (coalesce(c.sewing_byn, 0) > 0 AND coalesce(c.sewing_fact_byn,\
+  \ 0) = 0) AND NOT (coalesce(c.cutting_byn, 0) > 0 AND coalesce(c.cutting_fact_byn,\
+  \ 0) = 0))\" %}\nWITH src AS (\n  SELECT\n    date_trunc('month', c.production_date)::date\
+  \ AS m,\n    c.brand_manager, c.level01, c.level02, c.level03, c.level04, c.level05,\
+  \ c.model_name, c.model, c.articul, c.country, c.season, c.zadanie,\n    c.volume_pcs\
+  \                                                         AS vol,\n    c.volume_pcs\
+  \ * c.wholesale_price_{{ sfx }}                               AS rev,\n    {% if\
+  \ basis == '\u0424\u0430\u043A\u0442' %}\n    c.volume_pcs * coalesce(CASE WHEN\
+  \ {{ fact_ok }} THEN c.cost_fact_{{ sfx }} END, c.cost_{{ sfx }}) AS cost,\n   \
+  \ {% else %}\n    c.volume_pcs * c.cost_{{ sfx }}                              \
+  \            AS cost,\n    {% endif %}\n    c.volume_pcs * (coalesce(c.mat_main_{{\
+  \ sfx }}, 0) + coalesce(c.mat_aux_{{ sfx }}, 0)) AS raw,\n    -- \u041F\u0440\u043E\
+  \u0446\u0435\u043D\u0442\u044B \u0441\u0447\u0438\u0442\u0430\u044E\u0442\u0441\u044F\
+  \ \u0432 BYN \u043F\u0440\u0438 \u043B\u044E\u0431\u043E\u0439 \u0432\u0430\u043B\
+  \u044E\u0442\u0435: \u0434\u043E\u043B\u043B\u0430\u0440 \u043F\u0435\u0440\u0435\
+  \u0441\u0447\u0438\u0442\u0430\u043D \u043F\u043E \u043A\u0443\u0440\u0441\u0443\
+  \n    -- \u0441\u0442\u0440\u043E\u043A\u0438, \u0438 \u043E\u0442\u043D\u043E\u0448\
+  \u0435\u043D\u0438\u0435 \u0441\u0443\u043C\u043C \u0432 USD \u0440\u0430\u0441\u0445\
+  \u043E\u0434\u0438\u0442\u0441\u044F \u0441 BYN \u043D\u0430 \u0434\u0435\u0441\u044F\
+  \u0442\u044B\u0435 \u0434\u043E\u043B\u0438.\n    c.volume_pcs * c.wholesale_price_byn\
+  \                                 AS rev_byn,\n    {% if basis == '\u0424\u0430\u043A\
+  \u0442' %}\n    c.volume_pcs * coalesce(CASE WHEN {{ fact_ok }} THEN c.cost_fact_byn\
+  \ END, c.cost_byn) AS cost_byn,\n    {% else %}\n    c.volume_pcs * c.cost_byn \
+  \                                           AS cost_byn,\n    {% endif %}\n    --\
+  \ \u041D\u043E\u0440\u043C\u0430\u0442\u0438\u0432 \u043F\u0440\u043E\u0442\u0438\
+  \u0432 \u0444\u0430\u043A\u0442\u0430 \u043D\u0430 \u043E\u0434\u043D\u0438\u0445\
+  \ \u0441\u0442\u0440\u043E\u043A\u0430\u0445 \u2014 \u0441 \u0433\u043E\u0434\u043D\
+  \u044B\u043C \u0444\u0430\u043A\u0442\u043E\u043C.\n    CASE WHEN {{ fact_ok }}\
+  \ THEN c.volume_pcs END                                    AS vol_f,\n    CASE WHEN\
+  \ {{ fact_ok }} THEN c.volume_pcs * c.wholesale_price_{{ sfx }} END       AS rev_f,\n\
+  \    CASE WHEN {{ fact_ok }} THEN c.volume_pcs * c.wholesale_price_byn END     \
+  \       AS rev_f_byn,\n    CASE WHEN {{ fact_ok }} THEN c.volume_pcs * c.cost_fact_{{\
+  \ sfx }} END             AS cost_f,\n    CASE WHEN {{ fact_ok }} THEN c.volume_pcs\
+  \ * c.cost_fact_byn END                  AS cost_f_byn,\n    CASE WHEN {{ fact_ok\
+  \ }} THEN c.volume_pcs * c.cost_{{ sfx }} END                  AS cost_n,\n    CASE\
+  \ WHEN {{ fact_ok }} THEN c.volume_pcs * c.cost_byn END                       AS\
+  \ cost_n_byn,\n    c.volume_pcs * c.sewing_minutes                             \
+  \         AS sew_min,\n    CASE WHEN c.sewing_minutes IS NOT NULL THEN c.volume_pcs\
+  \ END         AS sew_vol,\n    -- \u041D\u043E\u0440\u043C\u0430 \u043C\u0430\u0440\
+  \u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u0438 \u043F\u043E\
+  \ Level 01; 0 \u0432 \u0442\u0430\u0431\u043B\u0438\u0446\u0435 = \u043D\u0435 \u0437\
+  \u0430\u0434\u0430\u043D\u0430.\n    t.target_margin_pct / 100.0               \
+  \                           AS target_frac\n  FROM cost_calc_mv c\n  LEFT JOIN cost_margin_targets\
+  \ t ON t.level1 = c.level01 AND t.target_margin_pct > 0\n  -- \u0411\u0430\u0437\
+  \u0430 \u2014 \u043A\u0430\u043A \u0443 mf_cost_commercial, \u043F\u043B\u044E\u0441\
+  \ \u0432\u044B\u043F\u0443\u0441\u043A: \u0442\u043E\u043B\u044C\u043A\u043E \u0424\
+  \u041A\u0421\u0421 \u0438 \u0442\u043E\u043B\u044C\u043A\u043E \u0441\u0442\u0440\
+  \u043E\u043A\u0438 \u0441 \u043E\u0431\u044A\u0451\u043C\u043E\u043C.\n  WHERE c.cost_byn\
+  \ > 0 AND c.cost_byn < 1000 AND c.wholesale_price_byn > 0\n    AND c.level01 IS\
+  \ DISTINCT FROM '\u041F\u043E\u043B\u0443\u0444\u0430\u0431\u0440\u0438\u043A\u0430\
+  \u0442\u044B'\n    AND c.calc_sign = '\u0424\u041A\u0421\u0421' AND c.volume_pcs\
+  \ > 0 AND c.production_date IS NOT NULL\n)\n-- \u0421\u0414\u0412\u0418\u041D\u0423\
+  \u0422\u041E\u0415 \u041E\u0411\u042A\u0415\u0414\u0418\u041D\u0415\u041D\u0418\u0415\
+  : \u0442\u0440\u0438 \u043A\u043E\u043F\u0438\u0438 \u043A\u0430\u0436\u0434\u043E\
+  \u0439 \u0441\u0442\u0440\u043E\u043A\u0438 \u2014 \u0442\u0435\u043A\u0443\u0449\
+  \u0430\u044F (k = cur), \u0441 \u043C\u0435\u0442\u043A\u043E\u0439\n-- \u043C\u0435\
+  \u0441\u044F\u0446\u0430 \u043D\u0430 \u043C\u0435\u0441\u044F\u0446 \u0432\u043F\
+  \u0435\u0440\u0451\u0434 (pm) \u0438 \u043D\u0430 \u0433\u043E\u0434 \u0432\u043F\
+  \u0435\u0440\u0451\u0434 (py). \u0424\u0438\u043B\u044C\u0442\u0440 \u0434\u0430\
+  \u0448\u0431\u043E\u0440\u0434\u0430 \u043F\u043E \u0433\u043E\u0434\u0443 \u0438\
+  \n-- \u043C\u0435\u0441\u044F\u0446\u0443 \u043B\u043E\u0436\u0438\u0442\u0441\u044F\
+  \ \u043D\u0430 \u043C\u0435\u0442\u043A\u0443, \u043F\u043E\u044D\u0442\u043E\u043C\
+  \u0443 sum(x) FILTER (WHERE k = 'py') \u2014 \u044D\u0442\u043E \u0437\u043D\u0430\
+  \u0447\u0435\u043D\u0438\u0435\n-- \u043F\u0440\u043E\u0448\u043B\u043E\u0433\u043E\
+  \ \u0433\u043E\u0434\u0430 \u0440\u043E\u0432\u043D\u043E \u0434\u043B\u044F \u0432\
+  \u044B\u0431\u0440\u0430\u043D\u043D\u043E\u0433\u043E \u043F\u0435\u0440\u0438\u043E\
+  \u0434\u0430, \u043D\u0430 \u043B\u044E\u0431\u043E\u043C \u0440\u0430\u0437\u0440\
+  \u0435\u0437\u0435 (DATEADD Power BI).\nSELECT\n  '{{ cur }}'::text AS currency_pick,\
+  \   -- dummy-\u043A\u043E\u043B\u043E\u043D\u043A\u0430: \u0444\u0438\u043B\u044C\
+  \u0442\u0440 \xAB\u0412\u0430\u043B\u044E\u0442\u0430\xBB \u043F\u043E\u0434\u0441\
+  \u0442\u0430\u0432\u043B\u044F\u0435\u0442 WHERE currency_pick IN (...)\n  '{{ basis\
+  \ }}'::text AS basis_pick,    -- dummy-\u043A\u043E\u043B\u043E\u043D\u043A\u0430\
+  \ \u0444\u0438\u043B\u044C\u0442\u0440\u0430 \xAB\u0421\u0435\u0431\u0435\u0441\u0442\
+  \u043E\u0438\u043C\u043E\u0441\u0442\u044C\xBB\n  k,\n  m AS prod_month,\n  to_char(m,\
+  \ 'YYYY') AS prod_year,\n  to_char(m, 'MM') || ' \xB7 ' || (ARRAY['\u044F\u043D\u0432\
+  \u0430\u0440\u044C','\u0444\u0435\u0432\u0440\u0430\u043B\u044C','\u043C\u0430\u0440\
+  \u0442','\u0430\u043F\u0440\u0435\u043B\u044C','\u043C\u0430\u0439','\u0438\u044E\
+  \u043D\u044C','\u0438\u044E\u043B\u044C','\u0430\u0432\u0433\u0443\u0441\u0442','\u0441\
+  \u0435\u043D\u0442\u044F\u0431\u0440\u044C','\u043E\u043A\u0442\u044F\u0431\u0440\
+  \u044C','\u043D\u043E\u044F\u0431\u0440\u044C','\u0434\u0435\u043A\u0430\u0431\u0440\
+  \u044C'])[extract(month FROM m)::int] AS prod_month_name,\n  brand_manager, level01,\
+  \ level02, level03, level04, level05, model_name, model, articul, country, season,\
+  \ zadanie,\n  vol, rev, cost, raw, rev_byn, cost_byn, sew_min, sew_vol, target_frac,\
+  \ vol_f, rev_f, rev_f_byn, cost_f, cost_f_byn, cost_n, cost_n_byn\nFROM (\n  SELECT\
+  \ 'cur' AS k, m,                              brand_manager, level01, level02, level03,\
+  \ level04, level05, model_name, model, articul, country, season, zadanie, vol, rev,\
+  \ cost, raw, rev_byn, cost_byn, sew_min, sew_vol, target_frac, vol_f, rev_f, rev_f_byn,\
+  \ cost_f, cost_f_byn, cost_n, cost_n_byn FROM src\n  UNION ALL\n  SELECT 'pm', \
+  \       (m + interval '1 month')::date, brand_manager, level01, level02, level03,\
+  \ level04, level05, model_name, model, articul, country, season, zadanie, vol, rev,\
+  \ cost, raw, rev_byn, cost_byn, sew_min, sew_vol, target_frac, vol_f, rev_f, rev_f_byn,\
+  \ cost_f, cost_f_byn, cost_n, cost_n_byn FROM src\n  UNION ALL\n  SELECT 'py', \
+  \       (m + interval '1 year')::date,  brand_manager, level01, level02, level03,\
+  \ level04, level05, model_name, model, articul, country, season, zadanie, vol, rev,\
+  \ cost, raw, rev_byn, cost_byn, sew_min, sew_vol, target_frac, vol_f, rev_f, rev_f_byn,\
+  \ cost_f, cost_f_byn, cost_n, cost_n_byn FROM src\n) u\n-- \u0421\u0434\u0432\u0438\
+  \u043D\u0443\u0442\u044B\u0435 \u043A\u043E\u043F\u0438\u0438 \u0441 \u043C\u0435\
+  \u0442\u043A\u043E\u0439 \u043F\u043E\u0437\u0436\u0435 \u043F\u043E\u0441\u043B\
+  \u0435\u0434\u043D\u0435\u0433\u043E \u0440\u0435\u0430\u043B\u044C\u043D\u043E\u0433\
+  \u043E \u043C\u0435\u0441\u044F\u0446\u0430 \u0441\u0440\u0430\u0432\u043D\u0438\
+  \u0432\u0430\u0442\u044C \u043D\u0435 \u0441 \u0447\u0435\u043C:\n-- \u0431\u0435\
+  \u0437 \u044D\u0442\u043E\u0433\u043E \u0443\u0441\u043B\u043E\u0432\u0438\u044F\
+  \ \u0432 \u0444\u0438\u043B\u044C\u0442\u0440\u0435 \xAB\u0413\u043E\u0434\xBB \u043F\
+  \u043E\u044F\u0432\u043B\u044F\u043B\u0441\u044F \u0441\u043B\u0435\u0434\u0443\u044E\
+  \u0449\u0438\u0439 \u0433\u043E\u0434, \u0430 \u043B\u0438\u043D\u0438\u0438 \u0434\
+  \u0438\u043D\u0430\u043C\u0438\u043A\u0438\n-- \u0442\u044F\u043D\u0443\u043B\u0438\
+  \u0441\u044C \u0434\u043E \u0434\u0435\u043A\u0430\u0431\u0440\u044F \u043F\u0440\
+  \u043E\u0448\u043B\u043E\u0433\u043E\u0434\u043D\u0438\u043C\u0438 \u0437\u043D\u0430\
+  \u0447\u0435\u043D\u0438\u044F\u043C\u0438.\nWHERE u.m <= (SELECT max(m) FROM src)"
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+folders: null
+uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2
+metrics:
+- metric_name: margin_pct_dev_target_pp
+  verbose_name: "\u0394 \u043A \u043D\u043E\u0440\u043C\u0435, \u043F\u043F"
+  metric_type: null
+  expression: ((100.0 * sum(rev_byn - cost_byn) FILTER (WHERE k = 'cur') / nullif(sum(rev_byn)
+    FILTER (WHERE k = 'cur'), 0)) - 100.0 * sum(rev_byn * target_frac) FILTER (WHERE
+    k = 'cur' AND target_frac IS NOT NULL) / nullif(sum(rev_byn) FILTER (WHERE k =
+    'cur' AND target_frac IS NOT NULL), 0))
+  description: null
+  d3format: +,.1f
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: growth_py_pct
+  verbose_name: "\u0422\u0435\u043C\u043F \u0440\u043E\u0441\u0442\u0430 \u043C\u0430\
+    \u0440\u0436\u0438 \u043A \u043F\u0440\u0435\u0434. \u0433\u043E\u0434\u0443,\
+    \ %"
+  metric_type: null
+  expression: CASE WHEN sum(rev - cost) FILTER (WHERE k = 'py') > 0 THEN 100.0 * (sum(rev
+    - cost) FILTER (WHERE k = 'cur') / sum(rev - cost) FILTER (WHERE k = 'py') - 1)
+    END
+  description: "\u043F\u0440\u0438 \u043E\u0442\u0440\u0438\u0446\u0430\u0442\u0435\
+    \u043B\u044C\u043D\u043E\u0439 \u0438\u043B\u0438 \u043D\u0443\u043B\u0435\u0432\
+    \u043E\u0439 \u0431\u0430\u0437\u0435 \u043D\u0435 \u043E\u043F\u0440\u0435\u0434\
+    \u0435\u043B\u0451\u043D"
+  d3format: +,.1f
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_pct_dev_pm_pp
+  verbose_name: "\u0394 \u043C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\
+    \u043E\u0441\u0442\u0438 \u043A \u043F\u0440\u0435\u0434. \u043C\u0435\u0441\u044F\
+    \u0446\u0443, \u043F\u043F"
+  metric_type: null
+  expression: ((100.0 * sum(rev_byn - cost_byn) FILTER (WHERE k = 'cur') / nullif(sum(rev_byn)
+    FILTER (WHERE k = 'cur'), 0)) - (100.0 * sum(rev_byn - cost_byn) FILTER (WHERE
+    k = 'pm') / nullif(sum(rev_byn) FILTER (WHERE k = 'pm'), 0)))
+  description: null
+  d3format: +,.1f
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_pct_dev_py_pp
+  verbose_name: "\u0394 \u043C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\
+    \u043E\u0441\u0442\u0438 \u043A \u043F\u0440\u0435\u0434. \u0433\u043E\u0434\u0443\
+    , \u043F\u043F"
+  metric_type: null
+  expression: ((100.0 * sum(rev_byn - cost_byn) FILTER (WHERE k = 'cur') / nullif(sum(rev_byn)
+    FILTER (WHERE k = 'cur'), 0)) - (100.0 * sum(rev_byn - cost_byn) FILTER (WHERE
+    k = 'py') / nullif(sum(rev_byn) FILTER (WHERE k = 'py'), 0)))
+  description: null
+  d3format: +,.1f
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: fact_dev_pp
+  verbose_name: "\u0394 \u043C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\
+    \u043E\u0441\u0442\u0438 \u0444\u0430\u043A\u0442 \u2212 \u043D\u043E\u0440\u043C\
+    \u0430\u0442\u0438\u0432, \u043F\u043F"
+  metric_type: null
+  expression: (100.0 * sum(rev_f_byn - cost_f_byn) FILTER (WHERE k = 'cur') / nullif(sum(rev_f_byn)
+    FILTER (WHERE k = 'cur'), 0) - 100.0 * sum(rev_f_byn - cost_n_byn) FILTER (WHERE
+    k = 'cur') / nullif(sum(rev_f_byn) FILTER (WHERE k = 'cur'), 0))
+  description: null
+  d3format: +,.2f
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: unit_raw_dev_py_pct
+  verbose_name: "\u0394 \u0441\u044B\u0440\u044C\u044F \u043D\u0430 \u0448\u0442\u0443\
+    \u043A\u0443 \u043A \u043F\u0440\u0435\u0434. \u0433\u043E\u0434\u0443, %"
+  metric_type: null
+  expression: (100.0 * ((sum(raw) FILTER (WHERE k = 'cur') / nullif(sum(vol) FILTER
+    (WHERE k = 'cur'), 0)) / nullif((sum(raw) FILTER (WHERE k = 'py') / nullif(sum(vol)
+    FILTER (WHERE k = 'py'), 0)), 0) - 1))
+  description: null
+  d3format: +,.1f
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: target_pct
+  verbose_name: "\u041D\u043E\u0440\u043C\u0430 \u043C\u0430\u0440\u0436\u0438\u043D\
+    \u0430\u043B\u044C\u043D\u043E\u0441\u0442\u0438, %"
+  metric_type: null
+  expression: 100.0 * sum(rev_byn * target_frac) FILTER (WHERE k = 'cur' AND target_frac
+    IS NOT NULL) / nullif(sum(rev_byn) FILTER (WHERE k = 'cur' AND target_frac IS
+    NOT NULL), 0)
+  description: "\u0438\u0437 cost_margin_targets \u043F\u043E Level 01, \u0432\u0437\
+    \u0432\u0435\u0448\u0435\u043D\u043D\u0430\u044F \u043F\u043E \u0432\u044B\u0440\
+    \u0443\u0447\u043A\u0435; 0 = \u043D\u0435 \u0437\u0430\u0434\u0430\u043D\u0430"
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: unit_cost_dev_py_pct
+  verbose_name: "\u0394 \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\
+    \u0441\u0442\u0438 \u0448\u0442\u0443\u043A\u0438 \u043A \u043F\u0440\u0435\u0434\
+    . \u0433\u043E\u0434\u0443, %"
+  metric_type: null
+  expression: (100.0 * ((sum(cost) FILTER (WHERE k = 'cur') / nullif(sum(vol) FILTER
+    (WHERE k = 'cur'), 0)) / nullif((sum(cost) FILTER (WHERE k = 'py') / nullif(sum(vol)
+    FILTER (WHERE k = 'py'), 0)), 0) - 1))
+  description: null
+  d3format: +,.1f
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_pct_cur
+  verbose_name: "\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\
+    \u0441\u0442\u044C \u0432\u044B\u043F\u0443\u0441\u043A\u0430, %"
+  metric_type: null
+  expression: (100.0 * sum(rev_byn - cost_byn) FILTER (WHERE k = 'cur') / nullif(sum(rev_byn)
+    FILTER (WHERE k = 'cur'), 0))
+  description: "\u043C\u0430\u0440\u0436\u0430 / \u0432\u044B\u043F\u0443\u0441\u043A\
+    \ \u0432 \u043E\u0442\u043F\u0443\u0441\u043A\u043D\u044B\u0445 \u0446\u0435\u043D\
+    \u0430\u0445, \u0432\u0437\u0432\u0435\u0448\u0435\u043D\u043D\u0430\u044F \u043F\
+    \u043E \u0442\u0438\u0440\u0430\u0436\u0443, \u0432 BYN"
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: fact_coverage_pct_cur
+  verbose_name: "\u0424\u0430\u043A\u0442 \u0433\u043E\u0434\u0435\u043D, % \u0432\
+    \u044B\u043F\u0443\u0441\u043A\u0430"
+  metric_type: null
+  expression: (100.0 * sum(vol_f) FILTER (WHERE k = 'cur') / nullif(sum(vol) FILTER
+    (WHERE k = 'cur'), 0))
+  description: "\u0434\u043E\u043B\u044F \u0432\u044B\u043F\u0443\u0441\u043A\u0430\
+    \ \u043F\u0435\u0440\u0438\u043E\u0434\u0430, \u0433\u0434\u0435 \u0444\u0430\u043A\
+    \u0442\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0441\u0442\u0430\u0432\u043A\
+    \u0430 \u043C\u0438\u043D\u0443\u0442\u044B \u0437\u0430\u0432\u0435\u0434\u0435\
+    \u043D\u0430 \u043F\u043E \u0432\u0441\u0435\u043C \u043E\u043F\u0435\u0440\u0430\
+    \u0446\u0438\u044F\u043C"
+  d3format: ',.1f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: unit_cost_fact_dev_pct
+  verbose_name: "\u0394 \u0441/\u0441 \u0448\u0442\u0443\u043A\u0438 \u0444\u0430\u043A\
+    \u0442 / \u043D\u043E\u0440\u043C\u0430\u0442\u0438\u0432, %"
+  metric_type: null
+  expression: (100.0 * (sum(cost_f) FILTER (WHERE k = 'cur') / nullif(sum(cost_n)
+    FILTER (WHERE k = 'cur'), 0) - 1))
+  description: null
+  d3format: +,.1f
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_pct_pm
+  verbose_name: "\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\
+    \u0441\u0442\u044C \u043F\u0440\u0435\u0434. \u043C\u0435\u0441\u044F\u0446, %"
+  metric_type: null
+  expression: (100.0 * sum(rev_byn - cost_byn) FILTER (WHERE k = 'pm') / nullif(sum(rev_byn)
+    FILTER (WHERE k = 'pm'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_pct_py
+  verbose_name: "\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\
+    \u0441\u0442\u044C \u043F\u0440\u0435\u0434. \u0433\u043E\u0434, %"
+  metric_type: null
+  expression: (100.0 * sum(rev_byn - cost_byn) FILTER (WHERE k = 'py') / nullif(sum(rev_byn)
+    FILTER (WHERE k = 'py'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: profit_pct_py
+  verbose_name: "\u0420\u0435\u043D\u0442\u0430\u0431\u0435\u043B\u044C\u043D\u043E\
+    \u0441\u0442\u044C \u043F\u0440\u0435\u0434. \u0433\u043E\u0434, %"
+  metric_type: null
+  expression: (100.0 * sum(rev_byn - cost_byn) FILTER (WHERE k = 'py') / nullif(sum(cost_byn)
+    FILTER (WHERE k = 'py'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_pct_fact_cur
+  verbose_name: "\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\
+    \u0441\u0442\u044C \u043F\u043E \u0444\u0430\u043A\u0442\u0443, %"
+  metric_type: null
+  expression: (100.0 * sum(rev_f_byn - cost_f_byn) FILTER (WHERE k = 'cur') / nullif(sum(rev_f_byn)
+    FILTER (WHERE k = 'cur'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_pct_norm_cur
+  verbose_name: "\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\
+    \u0441\u0442\u044C \u043F\u043E \u043D\u043E\u0440\u043C\u0430\u0442\u0438\u0432\
+    \u0443, %"
+  metric_type: null
+  expression: (100.0 * sum(rev_f_byn - cost_n_byn) FILTER (WHERE k = 'cur') / nullif(sum(rev_f_byn)
+    FILTER (WHERE k = 'cur'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_dev_pm
+  verbose_name: "\u0394 \u043C\u0430\u0440\u0436\u0438 \u043A \u043F\u0440\u0435\u0434\
+    . \u043C\u0435\u0441\u044F\u0446\u0443"
+  metric_type: null
+  expression: (sum(rev - cost) FILTER (WHERE k = 'cur') - sum(rev - cost) FILTER (WHERE
+    k = 'pm'))
+  description: null
+  d3format: +,.0f
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_dev_py
+  verbose_name: "\u0394 \u043C\u0430\u0440\u0436\u0438 \u043A \u043F\u0440\u0435\u0434\
+    . \u0433\u043E\u0434\u0443"
+  metric_type: null
+  expression: (sum(rev - cost) FILTER (WHERE k = 'cur') - sum(rev - cost) FILTER (WHERE
+    k = 'py'))
+  description: null
+  d3format: +,.0f
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: profit_pct_cur
+  verbose_name: "\u0420\u0435\u043D\u0442\u0430\u0431\u0435\u043B\u044C\u043D\u043E\
+    \u0441\u0442\u044C \u0432\u044B\u043F\u0443\u0441\u043A\u0430, %"
+  metric_type: null
+  expression: (100.0 * sum(rev_byn - cost_byn) FILTER (WHERE k = 'cur') / nullif(sum(cost_byn)
+    FILTER (WHERE k = 'cur'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_cur
+  verbose_name: "\u041C\u0430\u0440\u0436\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\
+    \u0430"
+  metric_type: null
+  expression: sum(rev - cost) FILTER (WHERE k = 'cur')
+  description: "\u0432\u044B\u043F\u0443\u0441\u043A \u0432 \u043E\u0442\u043F\u0443\
+    \u0441\u043A\u043D\u044B\u0445 \u0446\u0435\u043D\u0430\u0445 \u2212 \u0441\u0435\
+    \u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C \u0432\u044B\
+    \u043F\u0443\u0441\u043A\u0430; \u0432\u0430\u043B\u044E\u0442\u0430 \u2014 \u043F\
+    \u043E \u0444\u0438\u043B\u044C\u0442\u0440\u0443 \xAB\u0412\u0430\u043B\u044E\
+    \u0442\u0430\xBB"
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: unit_raw_py
+  verbose_name: "\u0421\u044B\u0440\u044C\u0451 \u043D\u0430 \u0448\u0442\u0443\u043A\
+    \u0443 \u043F\u0440\u0435\u0434. \u0433\u043E\u0434"
+  metric_type: null
+  expression: (sum(raw) FILTER (WHERE k = 'py') / nullif(sum(vol) FILTER (WHERE k
+    = 'py'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: unit_cost_pm
+  verbose_name: "\u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\
+    \u0442\u044C \u0448\u0442\u0443\u043A\u0438 \u043F\u0440\u0435\u0434. \u043C\u0435\
+    \u0441\u044F\u0446"
+  metric_type: null
+  expression: (sum(cost) FILTER (WHERE k = 'pm') / nullif(sum(vol) FILTER (WHERE k
+    = 'pm'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: unit_cost_py
+  verbose_name: "\u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\
+    \u0442\u044C \u0448\u0442\u0443\u043A\u0438 \u043F\u0440\u0435\u0434. \u0433\u043E\
+    \u0434"
+  metric_type: null
+  expression: (sum(cost) FILTER (WHERE k = 'py') / nullif(sum(vol) FILTER (WHERE k
+    = 'py'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: unit_cost_fact_cur
+  verbose_name: "\u0421/\u0441 \u0448\u0442\u0443\u043A\u0438 \u043F\u043E \u0444\u0430\
+    \u043A\u0442\u0443"
+  metric_type: null
+  expression: (sum(cost_f) FILTER (WHERE k = 'cur') / nullif(sum(vol_f) FILTER (WHERE
+    k = 'cur'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: unit_cost_norm_cur
+  verbose_name: "\u0421/\u0441 \u0448\u0442\u0443\u043A\u0438 \u043F\u043E \u043D\u043E\
+    \u0440\u043C\u0430\u0442\u0438\u0432\u0443"
+  metric_type: null
+  expression: (sum(cost_n) FILTER (WHERE k = 'cur') / nullif(sum(vol_f) FILTER (WHERE
+    k = 'cur'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: min_per_unit_cur
+  verbose_name: "\u041C\u0438\u043D\u0443\u0442 \u043F\u043E\u0448\u0438\u0432\u0430\
+    \ \u043D\u0430 \u0448\u0442\u0443\u043A\u0443"
+  metric_type: null
+  expression: (sum(sew_min) FILTER (WHERE k = 'cur') / nullif(sum(sew_vol) FILTER
+    (WHERE k = 'cur'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: unit_raw_cur
+  verbose_name: "\u0421\u044B\u0440\u044C\u0451 \u043D\u0430 \u0448\u0442\u0443\u043A\
+    \u0443"
+  metric_type: null
+  expression: (sum(raw) FILTER (WHERE k = 'cur') / nullif(sum(vol) FILTER (WHERE k
+    = 'cur'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: unit_price_cur
+  verbose_name: "\u0421\u0440\u0435\u0434\u043D\u044F\u044F \u043E\u0442\u043F\u0443\
+    \u0441\u043A\u043D\u0430\u044F \u0446\u0435\u043D\u0430"
+  metric_type: null
+  expression: (sum(rev) FILTER (WHERE k = 'cur') / nullif(sum(vol) FILTER (WHERE k
+    = 'cur'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: fact_dev_cur
+  verbose_name: "\u0394 \u043C\u0430\u0440\u0436\u0438 \u0444\u0430\u043A\u0442 \u2212\
+    \ \u043D\u043E\u0440\u043C\u0430\u0442\u0438\u0432"
+  metric_type: null
+  expression: sum(cost_n - cost_f) FILTER (WHERE k = 'cur')
+  description: "\u043E\u0442\u0440\u0438\u0446\u0430\u0442\u0435\u043B\u044C\u043D\
+    \u0430\u044F \u2014 \u0444\u0430\u043A\u0442 \u0434\u043E\u0440\u043E\u0436\u0435\
+    \ \u043D\u043E\u0440\u043C\u0430\u0442\u0438\u0432\u0430"
+  d3format: +,.0f
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: unit_cost_cur
+  verbose_name: "\u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\
+    \u0442\u044C \u0448\u0442\u0443\u043A\u0438"
+  metric_type: null
+  expression: (sum(cost) FILTER (WHERE k = 'cur') / nullif(sum(vol) FILTER (WHERE
+    k = 'cur'), 0))
+  description: null
+  d3format: ',.2f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_pm
+  verbose_name: "\u041C\u0430\u0440\u0436\u0430 \u043F\u0440\u0435\u0434. \u043C\u0435\
+    \u0441\u044F\u0446"
+  metric_type: null
+  expression: sum(rev - cost) FILTER (WHERE k = 'pm')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_py
+  verbose_name: "\u041C\u0430\u0440\u0436\u0430 \u043F\u0440\u0435\u0434. \u0433\u043E\
+    \u0434"
+  metric_type: null
+  expression: sum(rev - cost) FILTER (WHERE k = 'py')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_fact_cur
+  verbose_name: "\u041C\u0430\u0440\u0436\u0430 \u043F\u043E \u0444\u0430\u043A\u0442\
+    \u0443"
+  metric_type: null
+  expression: sum(rev_f - cost_f) FILTER (WHERE k = 'cur')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: margin_norm_cur
+  verbose_name: "\u041C\u0430\u0440\u0436\u0430 \u043F\u043E \u043D\u043E\u0440\u043C\
+    \u0430\u0442\u0438\u0432\u0443"
+  metric_type: null
+  expression: sum(rev_f - cost_n) FILTER (WHERE k = 'cur')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: vol_pm
+  verbose_name: "\u0412\u044B\u043F\u0443\u0441\u043A \u043F\u0440\u0435\u0434. \u043C\
+    \u0435\u0441\u044F\u0446, \u0448\u0442"
+  metric_type: null
+  expression: sum(vol) FILTER (WHERE k = 'pm')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: vol_py
+  verbose_name: "\u0412\u044B\u043F\u0443\u0441\u043A \u043F\u0440\u0435\u0434. \u0433\
+    \u043E\u0434, \u0448\u0442"
+  metric_type: null
+  expression: sum(vol) FILTER (WHERE k = 'py')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: rev_cur
+  verbose_name: "\u0412\u044B\u043F\u0443\u0441\u043A \u0432 \u043E\u0442\u043F\u0443\
+    \u0441\u043A\u043D\u044B\u0445 \u0446\u0435\u043D\u0430\u0445"
+  metric_type: null
+  expression: sum(rev) FILTER (WHERE k = 'cur')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: calc_count
+  verbose_name: "\u041A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0439\
+    \ \u0432 \u0440\u0430\u0441\u0447\u0451\u0442\u0435"
+  metric_type: null
+  expression: count(*) FILTER (WHERE k = 'cur')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: raw_cur
+  verbose_name: "\u0421\u044B\u0440\u044C\u0451 \u043D\u0430 \u0432\u044B\u043F\u0443\
+    \u0441\u043A"
+  metric_type: null
+  expression: sum(raw) FILTER (WHERE k = 'cur')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: vol_cur
+  verbose_name: "\u0412\u044B\u043F\u0443\u0441\u043A, \u0448\u0442"
+  metric_type: null
+  expression: sum(vol) FILTER (WHERE k = 'cur')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: model_count
+  verbose_name: "\u041C\u043E\u0434\u0435\u043B\u0435\u0439"
+  metric_type: null
+  expression: count(DISTINCT model) FILTER (WHERE k = 'cur')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: cost_cur
+  verbose_name: "\u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\
+    \u0442\u044C \u0432\u044B\u043F\u0443\u0441\u043A\u0430"
+  metric_type: null
+  expression: sum(cost) FILTER (WHERE k = 'cur')
+  description: null
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: count
+  verbose_name: COUNT(*)
+  metric_type: null
+  expression: COUNT(*)
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+columns:
+- column_name: level01
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: level02
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: level03
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: level04
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: level05
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: target_frac
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: cost_byn
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: rev_byn
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: sew_min
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: sew_vol
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: raw
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: cost
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: rev
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: vol
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: prod_month
+  verbose_name: null
+  is_dttm: true
+  is_active: true
+  type: DATE
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: k
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: currency_pick
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: prod_month_name
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: brand_manager
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: model_name
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: prod_year
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: zadanie
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: articul
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: season
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: country
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: model
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: cost_f_byn
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: cost_n_byn
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: rev_f_byn
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: cost_f
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: cost_n
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: rev_f
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: vol_f
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: false
+  filterable: false
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: basis_pick
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: false
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+version: 1.0.0
+database_uuid: 9f1d4a10-0003-4c00-8b00-000000000003

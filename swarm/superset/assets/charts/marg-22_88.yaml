@@ -1,0 +1,24 @@
+slice_name: "marg-22 \xB7 \u041C\u0430\u0440\u0436\u0438\u043D. \u043F\u043E \u043D\
+  \u043E\u0440\u043C\u0430\u0442\u0438\u0432\u0443, %"
+description: null
+certified_by: null
+certification_details: null
+viz_type: big_number_total
+params:
+  datasource: 14__table
+  viz_type: big_number_total
+  metric: margin_pct_norm_cur
+  y_axis_format: ',.2f'
+  subheader: "\u0442\u0435 \u0436\u0435 \u0441\u0442\u0440\u043E\u043A\u0438, \u043D\
+    \u043E\u0440\u043C\u0430\u0442\u0438\u0432\u043D\u0430\u044F \u0441\u0442\u0430\
+    \u0432\u043A\u0430 \u043C\u0438\u043D\u0443\u0442\u044B"
+  force_timestamp_formatting: false
+  header_font_size: 0.4
+  subheader_font_size: 0.125
+  adhoc_filters: []
+  extra_form_data: {}
+query_context: null
+cache_timeout: null
+uuid: b8f3a6de-5c52-43cd-b324-3d936278f80b
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2
