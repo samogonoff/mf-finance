@@ -3687,6 +3687,28 @@ async def get_plan_price_set(set_id: int) -> dict | None:
         return {"set": dict(s), "rows": [dict(r) for r in rows]}
 
 
+def _plan_price_num(v, *, field: str, row_name: str):
+    """Число из формы набора цен: пустое поле — это NULL, а не пустая строка.
+
+    В ELK за 25–28.08.2026 — 51 падение POST /plan-price-sets с
+    «invalid input for query argument $8: ''»: человек стирал цену в поле, и
+    пустая строка уходила в numeric-колонку как есть. Ошибка приходила как
+    «Внутренняя ошибка сервиса», и это была та самая жалоба «не нажимается
+    создать набор» от 26.08, которую тогда не удалось воспроизвести.
+    """
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    t = str(v).strip().replace(",", ".").replace(" ", "")
+    if not t:
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        raise ValueError(f"«{row_name}»: {field} должна быть числом, получено {v!r}")
+
+
 async def save_plan_price_set(
     plan_id: str, title: str, rate, rows: list[dict], username: str,
     set_id: int | None = None, comment: str | None = None,
@@ -3744,8 +3766,10 @@ async def save_plan_price_set(
                     str(r.get("свойство1") or "").strip(),
                     str(r.get("свойство2") or "").strip(),
                     str(r.get("свойство3") or "").strip(),
-                    r.get("price_rub"), r.get("price_usd"),
-                    r.get("source_price_rub"), r.get("source_price_usd"),
+                    _plan_price_num(r.get("price_rub"), field="цена, руб.", row_name=str(name or "")),
+                    _plan_price_num(r.get("price_usd"), field="цена, $", row_name=str(name or "")),
+                    _plan_price_num(r.get("source_price_rub"), field="исходная цена, руб.", row_name=str(name or "")),
+                    _plan_price_num(r.get("source_price_usd"), field="исходная цена, $", row_name=str(name or "")),
                     int(r.get("rows_count") or 0),
                 )
     return set_id

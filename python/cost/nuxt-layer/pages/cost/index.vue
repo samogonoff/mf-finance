@@ -3342,7 +3342,8 @@ async function savePlanPriceSet() {
             'свойство1': r['свойство1'],
             'свойство2': r['свойство2'],
             'свойство3': r['свойство3'],
-            price_rub: r.price_rub,
+            // planPriceNorm: стёртое поле — это null, а не '' (см. ELK 25–28.08, 51 падение)
+            price_rub: planPriceNorm(r.price_rub),
             // null → сервер посчитает доллар из рубля по курсу набора
             price_usd: planUsdIsDerived(r) ? null : r.price_usd,
             source_price_rub: r.source_price_rub,
@@ -3354,8 +3355,9 @@ async function savePlanPriceSet() {
           ...planDecorRows.value.filter(planPriceOverridden).map(r => ({
             row_kind: 'decor',
             'Декоры, наименование': r['Декоры, наименование'],
-            price_rub: r.price_rub,
-            price_usd: r.price_usd,
+            // planPriceNorm: стёртое поле — это null, а не '' (см. ELK 25–28.08, 51 падение)
+            price_rub: planPriceNorm(r.price_rub),
+            price_usd: planPriceNorm(r.price_usd),
             source_price_rub: r.source_price_rub,
             source_price_usd: r.source_price_usd,
             rows_count: r.rows_count,
