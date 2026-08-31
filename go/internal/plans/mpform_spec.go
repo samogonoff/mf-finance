@@ -62,8 +62,8 @@ const (
 	BCommission        = "commission"               // Комиссия площадки — расчёт (1045−1006)
 	BCostAgent         = "cost_agent"               // 64 — Агентское вознаграждение (ввод)
 	BCostFreight       = "cost_freight"             // 51 — Грузоперевозки экспорт (ввод)
-	BCostLogTransport  = "cost_log_transport"       // 52 — Транспортная логистика (ввод)
-	BCostLogWarehouse  = "cost_log_warehouse"       // 54 — Складская логистика (ввод)
+	BCostLogTransport  = "cost_log_transport"       // 52 — Грузоперевозки развоз и перемещение (ввод)
+	BCostLogWarehouse  = "cost_log_warehouse"       // 54 — Аренда помещений (стоянки) (ввод)
 	BCostAds           = "cost_ads"                 // 13 — РЕКЛАМА И МАРКЕТИНГ (ввод)
 	BCostAdsSocial     = "cost_ads_social"          // 15 — Реклама-соц.сети (ввод)
 	BCostPackaging     = "cost_packaging"           // 45 — Расходы на упаковку (ввод)
@@ -131,8 +131,8 @@ func mpFormSpec() []MpLine {
 		{BlockType: BCommission, Name: "Комиссия площадки", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, CostLine: true, Formula: "= менеджер_без_НДС − площадка_без_НДС"},
 		{BlockType: BCostAgent, CodePL: 64, Name: "Агентское (комиссионное) вознаграждение", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 64 (источник), редактируется"},
 		{BlockType: BCostFreight, CodePL: 51, Name: "Грузоперевозки экспорт", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 51 (источник), редактируется"},
-		{BlockType: BCostLogTransport, CodePL: 52, Name: "Транспортная логистика", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 52 (источник), редактируется"},
-		{BlockType: BCostLogWarehouse, CodePL: 54, Name: "Складская логистика", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 54 (источник), редактируется"},
+		{BlockType: BCostLogTransport, CodePL: 52, Name: "Грузоперевозки развоз и перемещение", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 52 (источник), редактируется"},
+		{BlockType: BCostLogWarehouse, CodePL: 54, Name: "Аренда помещений (стоянки)", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 54 (источник), редактируется"},
 		{BlockType: BCostAds, CodePL: 13, Name: "РЕКЛАМА И МАРКЕТИНГ", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 13 (источник), редактируется"},
 		{BlockType: BCostAdsSocial, CodePL: 15, Name: "Реклама-соц.сети", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 15 (источник), редактируется"},
 		{BlockType: BCostPackaging, CodePL: 45, Name: "Расходы на упаковку (пакеты)", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 45 (источник), редактируется"},

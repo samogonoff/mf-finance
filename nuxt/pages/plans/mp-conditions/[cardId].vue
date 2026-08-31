@@ -243,8 +243,8 @@ interface EditableRow extends MpConditionsRow {
 const COST_LABELS: Record<string, [string, string]> = {
   cost_agent: ["Агент.", "Агентское (комиссионное) вознаграждение"],
   cost_freight: ["Груз.экс", "Грузоперевозки экспорт"],
-  cost_log_transport: ["Трансп.", "Транспортная логистика"],
-  cost_log_warehouse: ["Склад", "Складская логистика"],
+  cost_log_transport: ["Развоз", "Грузоперевозки развоз и перемещение"],
+  cost_log_warehouse: ["Аренда", "Аренда помещений (стоянки)"],
   cost_ads: ["Реклама", "РЕКЛАМА И МАРКЕТИНГ"],
   cost_ads_social: ["Соцсети", "Реклама — социальные сети"],
   cost_packaging: ["Упак.", "Расходы на упаковку (пакеты)"],
