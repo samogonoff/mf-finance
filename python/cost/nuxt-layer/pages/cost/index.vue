@@ -3127,20 +3127,25 @@ async function loadPlanPrices() {
     ]);
     planPriceSets.value = setsResp.data || [];
     // Грид заполняем средними ценами из источника — их и правит пользователь.
+    // «Цена» — то, что сейчас в расчёте (cache_*: с учётом применённого
+    // набора), «Исх. цена» — цена источника (avg_*: сервер подменяет её из
+    // применённого набора). Раньше обе колонки заполнялись avg, и после
+    // «Применить» форма показывала исходные цены — пользователь читал это как
+    // «цены вернулись, набор не применился» (31.08, планы 9572/9537).
     planPriceRows.value = (matsResp.data || []).map((m: any) => ({
       ...m,
       source_price_rub: m.avg_price_rub,
       source_price_usd: m.avg_price_usd,
-      price_rub: m.avg_price_rub,
-      price_usd: m.avg_price_usd,
+      price_rub: m.cache_price_rub ?? m.avg_price_rub,
+      price_usd: m.cache_price_usd ?? m.avg_price_usd,
     }));
     planDecorRows.value = (matsResp.decors || []).map((d: any) => ({
       ...d,
       row_kind: 'decor',
       source_price_rub: d.avg_price_rub,
       source_price_usd: d.avg_price_usd,
-      price_rub: d.avg_price_rub,
-      price_usd: d.avg_price_usd,
+      price_rub: d.cache_price_rub ?? d.avg_price_rub,
+      price_usd: d.cache_price_usd ?? d.avg_price_usd,
     }));
     resetPlanPriceForm();
     // Курс по умолчанию — средний по плану, если он один и тот же.

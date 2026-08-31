@@ -3580,8 +3580,12 @@ async def aggregate_plan_materials(plan_id: str) -> list[dict]:
                    count(*) AS rows_count,
                    COALESCE(max(ar.source_price_rub), round(avg(mat.pr), 4)) AS avg_price_rub,
                    COALESCE(max(ar.source_price_usd), round(avg(mat.pu), 4)) AS avg_price_usd,
-                   -- что реально стоит в кэше сейчас (с учётом набора) — для справки
+                   -- что реально стоит в кэше сейчас (с учётом набора): форма
+                   -- показывает это в колонке «Цена», иначе после применения
+                   -- набора она показывала исходную и читалась как «цены
+                   -- вернулись» (жалоба 31.08, планы 9572/9537)
                    round(avg(mat.pr), 4) AS cache_price_rub,
+                   round(avg(mat.pu), 4) AS cache_price_usd,
                    round(avg(mat.rate), 4) AS avg_rate,
                    count(DISTINCT mat.pr) AS distinct_prices,
                    round(min(mat.pr), 4) AS min_price_rub,
@@ -3642,11 +3646,22 @@ async def aggregate_plan_decors(plan_id: str) -> list[dict]:
                 FROM cost_calc_versions
                 WHERE status IN ('pending', 'approved')
                   AND COALESCE(plan_id, '') = $1
+            ),
+            -- Исходная цена декора при ПРИМЕНЁННОМ наборе — из самого набора:
+            -- в кэше после apply уже лежит правленая, и без подмены форма
+            -- зацикливалась так же, как у материалов (см. aggregate_plan_materials).
+            applied_rows AS (
+                SELECT r."Наименование" AS nm, r.source_price_rub, r.source_price_usd
+                FROM cost_plan_price_set_rows r
+                JOIN cost_plan_price_sets s ON s.id = r.set_id
+                WHERE s.plan_id = $1 AND s.status = 'applied' AND r.row_kind = 'decor'
             )
             SELECT dec.nm AS "Декоры, наименование",
                    count(*) AS rows_count,
-                   round(avg(dec.rub), 4) AS avg_price_rub,
-                   round(avg(dec.usd), 4) AS avg_price_usd,
+                   COALESCE(max(ar.source_price_rub), round(avg(dec.rub), 4)) AS avg_price_rub,
+                   COALESCE(max(ar.source_price_usd), round(avg(dec.usd), 4)) AS avg_price_usd,
+                   round(avg(dec.rub), 4) AS cache_price_rub,
+                   round(avg(dec.usd), 4) AS cache_price_usd,
                    round(avg(dec.rate), 4) AS avg_rate,
                    count(DISTINCT dec.rub) AS distinct_prices,
                    round(min(dec.rub), 4) AS min_price_rub,
@@ -3657,6 +3672,7 @@ async def aggregate_plan_decors(plan_id: str) -> list[dict]:
                    ON active.model = dec.m AND active.articul = dec.a
                   AND active.cs = dec.cs
                   AND (active.t = dec.t OR active.t = '')
+            LEFT JOIN applied_rows ar ON ar.nm = dec.nm
             GROUP BY dec.nm
             ORDER BY dec.nm
             """,
