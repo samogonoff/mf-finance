@@ -2095,6 +2095,7 @@ function collectPrefs() {
     pageSize: pageSize.value,
     filtersOpen: filtersOpen.value,
     hideDwhSent: hideDwhSentManual.value,
+    filters: collectFilterPrefs(),
   };
 }
 
@@ -2148,6 +2149,23 @@ function applyPrefs(doc: any) {
   }
   if (typeof doc.hideDwhSent === 'boolean' || doc.hideDwhSent === null) {
     hideDwhSentManual.value = doc.hideDwhSent;
+  }
+  // Фильтры с сервера — только когда на этом устройстве их ещё нет.
+  //
+  // Здесь сервер НЕ главнее, в отличие от колонок: последний набор фильтров —
+  // это состояние рабочего места, и локальная запись всегда свежее серверной
+  // (та приходит с задержкой и отстаёт на один сеанс). Пока приоритет был у
+  // сервера, документ с пустыми фильтрами, сохранённый при самом первом заходе,
+  // затирал восстановленный выбор через доли секунды после загрузки —
+  // мультиселекты обнулялись, а даты, которых в том документе не было,
+  // оставались. Серверная копия нужна для другого: первый вход с новой машины.
+  let hasLocalFilters = false;
+  try { hasLocalFilters = !!localStorage.getItem(FILTERS_STORAGE_KEY); } catch { /* ignore */ }
+  if (doc.filters && !hasLocalFilters && !filtersTouchedAfterMount) {
+    applyFilterPrefs(doc.filters);
+    try {
+      localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(collectFilterPrefs()));
+    } catch { /* ignore */ }
   }
 }
 
@@ -2605,6 +2623,89 @@ const hideDwhSentDefault = computed(() =>
 );
 
 const hideDwhSentManual = ref<boolean | null>(null);
+
+/* Последний набор фильтров запоминается (просьба пользователей 31.08.2026):
+ * человек настроил панель — после перезагрузки страницы она такая же, а изменил
+ * что-то — в следующий раз откроется новый вариант.
+ *
+ * Хранится там же, где остальные настройки таблицы: localStorage для мгновенного
+ * применения (фильтры нужны ДО первых запросов, иначе каскад уровней сходит с
+ * тех значений, которых человек не выбирал) плюс JSONB на сервере, чтобы
+ * настройка переезжала на другой компьютер (см. collectPrefs/applyPrefs).
+ *
+ * Данные автоматически НЕ загружаются: широкая выдача идёт десятки секунд, и
+ * тянуть её на каждое открытие страницы никто не просил. Восстанавливаются
+ * только фильтры — дальше «Загрузить данные». */
+const FILTERS_STORAGE_KEY = 'cost_filters';
+/** Пока восстанавливаем, наблюдатель молчит: иначе первое же присваивание
+ *  сохранило бы полупустое состояние поверх полного. */
+let filtersRestoring = false;
+/** Человек уже менял фильтры в этой сессии — значит серверный документ,
+ *  пришедший с задержкой, применять поверх нельзя. */
+let filtersTouchedAfterMount = false;
+
+function collectFilterPrefs() {
+  return {
+    selected: Object.fromEntries(filterConfig.map(f => [f.key, [...(selected[f.key] || [])]])),
+    dateFrom: dateFrom.value,
+    dateTo: dateTo.value,
+    noWholesaleOnly: noWholesaleOnly.value,
+    showUSD: showUSD.value,
+    // peoFilter храним вместе с признаком «человек трогал его сам»: иначе
+    // дефолт роли бренд-менеджера ('approved') каждый раз перебивал бы выбор.
+    peoFilter: peoFilter.value,
+    peoFilterTouched: peoFilterTouched.value,
+  };
+}
+
+function applyFilterPrefs(doc: any) {
+  if (!doc || typeof doc !== 'object') return;
+  filtersRestoring = true;
+  try {
+    const sel = doc.selected;
+    if (sel && typeof sel === 'object') {
+      for (const f of filterConfig) {
+        const vals = sel[f.key];
+        // Значения не сверяем со списком опций: опции подгружаются позже и
+        // каскадом, а отбросив сейчас, мы потеряли бы выбор пользователя.
+        if (Array.isArray(vals)) selected[f.key] = vals.filter(v => typeof v === 'string');
+      }
+    }
+    if (typeof doc.dateFrom === 'string') dateFrom.value = doc.dateFrom;
+    if (typeof doc.dateTo === 'string') dateTo.value = doc.dateTo;
+    if (typeof doc.noWholesaleOnly === 'boolean') noWholesaleOnly.value = doc.noWholesaleOnly;
+    if (typeof doc.showUSD === 'boolean') showUSD.value = doc.showUSD;
+    if (typeof doc.peoFilterTouched === 'boolean' && doc.peoFilterTouched) {
+      peoFilterTouched.value = true;
+      if (typeof doc.peoFilter === 'string') peoFilter.value = doc.peoFilter;
+    }
+  } finally {
+    filtersRestoring = false;
+  }
+}
+
+function persistFilterPrefs() {
+  if (filtersRestoring) return;
+  filtersTouchedAfterMount = true;
+  try {
+    localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(collectFilterPrefs()));
+  } catch { /* приватный режим — переживём, останется серверная копия */ }
+  schedulePrefsPush();
+}
+
+// Восстанавливаем СИНХРОННО, до onMounted и до первых запросов: loadFilters
+// строит каскад по текущему выбору, и опоздавшее восстановление дало бы
+// уровни, посчитанные без фильтров.
+try {
+  const raw = localStorage.getItem(FILTERS_STORAGE_KEY);
+  if (raw) applyFilterPrefs(JSON.parse(raw));
+} catch { /* повреждённая запись — открываемся с пустыми фильтрами */ }
+
+watch(
+  [selected, dateFrom, dateTo, noWholesaleOnly, showUSD, peoFilter],
+  () => persistFilterPrefs(),
+  { deep: true },
+);
 onMounted(() => {
   try {
     const stored = localStorage.getItem(HIDE_DWH_STORAGE_KEY);
