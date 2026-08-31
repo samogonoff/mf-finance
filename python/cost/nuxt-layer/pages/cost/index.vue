@@ -3167,8 +3167,16 @@ async function loadPlanPrices() {
 function resetPlanPriceForm() {
   planPriceForm.value = { set_id: null, title: '', rate: planPriceForm.value.rate, status: 'draft' };
   for (const r of [...planPriceRows.value, ...planDecorRows.value]) {
-    r.price_rub = r.source_price_rub;
-    r.price_usd = r.source_price_usd;
+    // Сбрасываем к тому, что СЕЙЧАС в расчёте (cache_*), а не к цене источника.
+    // Иначе после применения набора грид показывал исходные цены: loadPlanPrices
+    // заполняет строки применёнными ценами и сразу вызывает эту функцию, которая
+    // затирала их источником. Из-за этого правки выглядели «вернувшимися»
+    // (жалобы 28–31.08, планы 9528, 9537, 9565, 9572) — и предыдущий фикс
+    // 90aa756 на проде не давал эффекта, хотя данные уже были верные.
+    const cacheRub = (r as any).cache_price_rub;
+    const cacheUsd = (r as any).cache_price_usd;
+    r.price_rub = cacheRub ?? r.source_price_rub;
+    r.price_usd = cacheUsd ?? r.source_price_usd;
     (r as any)._usdManual = false; // доллары снова исходные, не заданные вручную
   }
 }
