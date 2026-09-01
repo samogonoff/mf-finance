@@ -303,9 +303,16 @@ func main() {
 	plansRates := plans.NewRateBook(plansDir)
 	// Публикация: пишем только в таблицы из белого списка PLANS_PUBLISH_TARGETS и
 	// только когда PLANS_PUBLISH_ENABLED=1 (до ответов BI по §12 — лишь dry-run).
+	// Приоритет — реальный приёмник; PLANS_PUBLISH_SANDBOX=1 подставляет вместо него
+	// PG-песочницу (publish_sandbox), чтобы путь записи можно было прогнать без
+	// Budgeting. В проде обе переменные вместе не задаются: песочница — dev/тест.
 	var plansPublisher plans.Publisher = plans.NewNopPublisher()
-	if cfg.PlansPublishEnabled && mssqlDB != nil {
+	switch {
+	case cfg.PlansPublishEnabled && mssqlDB != nil:
 		plansPublisher = plans.NewMssqlPublisher(mssqlDB, cfg.PlansPublishTargets)
+	case cfg.PlansPublishSandbox:
+		log.Printf("plans: публикация идёт в ПЕСОЧНИЦУ publish_sandbox (PLANS_PUBLISH_SANDBOX=1) — в Budgeting записи не будет")
+		plansPublisher = plans.NewSandboxPublisher(pool, cfg.PlansPublishTargets)
 	}
 	plansCards := plans.NewCardService(plans.NewCardStore(pool)).
 		WithPublisher(plansPublisher, plans.NewPublishStore(pool)).
@@ -364,6 +371,8 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/cards/{cardId}/calc-mode", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.CardCalcMode))
 	mux.HandleFunc("POST /api/plans/cards/{cardId}/publish", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.CardPublish))
 	mux.HandleFunc("GET /api/plans/cards/{cardId}/publish-log", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.CardPublishLog))
+	// Содержимое PG-песочницы приёмника (PLANS_PUBLISH_SANDBOX=1) — проверка записи.
+	mux.HandleFunc("GET /api/plans/publish-sandbox", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.PublishSandbox))
 	mux.HandleFunc("GET /api/plans/forms/{formCode}/route", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.FormRoute))
 	mux.HandleFunc("PUT /api/plans/forms/{formCode}/route", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.FormRouteSave))
 	mux.HandleFunc("GET /api/plans/forms/{formCode}/publish-mapping", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PublishMappings))

@@ -148,9 +148,23 @@ export interface PublishResult {
   sum_input: number;
   sum_target: number;
   diff: number;
+  /** Запись ушла в PG-песочницу (publish_sandbox), а не в Budgeting. */
+  sandbox?: boolean;
   error?: string;
   unmapped?: string[];
   pending?: string[];
+}
+
+/** Строка, реально лежащая в приёмнике-песочнице (девять колонок FormToLoad*). */
+export interface SandboxRow {
+  target_table: string;
+  param: string;
+  country: string;
+  code_cfo: number;
+  code_pl: number;
+  cfo: string;
+  date: string;
+  value: number;
 }
 
 // Токен там же, где у остальных composables модуля (usePlans.ts): localStorage
@@ -206,6 +220,14 @@ export function useMpConditions() {
 
   const publishLog = (cardId: number): Promise<Record<string, unknown>[]> =>
     $fetch(`${base}/api/plans/cards/${cardId}/publish-log`, { headers: authHeader() });
+
+  // Что реально записано в песочницу приёмника (PLANS_PUBLISH_SANDBOX=1). Только
+  // админ процессов: это срез «внешнего контура», в обычном процессе не нужен.
+  const publishSandbox = (target = "", limit = 50): Promise<SandboxRow[]> =>
+    $fetch<SandboxRow[]>(`${base}/api/plans/publish-sandbox`, {
+      params: { target, limit },
+      headers: authHeader()
+    });
 
   // ── Маршрут формы (шаг «Финансист» включается данными) ──
   const formRoute = (formCode: string): Promise<RouteStep[]> =>
@@ -265,7 +287,7 @@ export function useMpConditions() {
     });
 
   return {
-    cards, card, cardAction, setCalcMode, versionPayload, publish, publishLog,
+    cards, card, cardAction, setCalcMode, versionPayload, publish, publishLog, publishSandbox,
     formRoute, saveFormRoute,
     conditions, saveConditions, copyConditions,
     recalc, validate, commonCosts, saveCommonCosts
