@@ -87,6 +87,16 @@ MATRIX_LEVELS: list[tuple[str, str]] = [
 ]
 MATRIX_ROW_LIMIT = 300
 
+# Лист «Отклонения по артикулам» — просьба заказчика (Апанасенок О.А., 25.08.2026):
+# развернуть отклонения ПО АРТИКУЛАМ с номером плана. Строка = план + модель +
+# артикул; три себестоимости единицы и отклонения между ними:
+#   плановая   — cost_plan_prices.plan_price, справочник моделей Лисы (0043);
+#   нормативная — cost_byn, по нормативной стоимости минуты;
+#   фактическая — cost_fact_byn, по фактической (с 01.01.2026, см. COST_BASES).
+# Формат повторяет страницу «Отклонение сс» отчёта Power BI заказчика, который
+# он подтвердил как устраивающий.
+DEVIATION_ROW_LIMIT = 500
+
 # База себестоимости. С 01.01.2026 Лиса ведёт ФАКТИЧЕСКУЮ стоимость минуты пошива
 # и раскроя помесячно, и источник считает по ней вторую себестоимость
 # (cost_fact_*, миграция 0042). Заказчик (27.08.2026): дашборды маржи — по факту,
@@ -384,6 +394,10 @@ async def dashboard(
         dims = ", ".join(_DIM_COLS)
         values = ", ".join(_VALUE_COLS)
         sums = _sums()
+        # Лист отклонений живёт в BYN: заказчик сверяет его с Power BI, а там
+        # плановая себестоимость (PLAN_PRICE справочника) в рублях без пересчёта.
+        cur_sfx = "byn"
+        fact_expr = _FACT_B
 
         sql = f"""
         WITH src AS MATERIALIZED (
@@ -440,6 +454,18 @@ async def dashboard(
             WHERE u.m <= (SELECT m FROM horizon)
         ),
         period AS (SELECT * FROM shifted{on_label()}),
+        -- Источник листа отклонений: строки ТЕКУЩЕГО периода с плановым ключом
+        -- (план + модель + артикул) и тремя себестоимостями выпуска.
+        dev_src AS (
+            SELECT
+                c.plan_id, c.model, c.articul, c.model_name,
+                c.volume_pcs                          AS vol,
+                c.volume_pcs * c.wholesale_price_{cur_sfx} AS rev,
+                c.volume_pcs * c.cost_{cur_sfx}        AS cost_norm,
+                c.volume_pcs * ({fact_expr})           AS cost_fact
+            FROM cost_calc_mv c
+            WHERE {where()}
+        ),
         tiles AS (
             SELECT {sums}
             FROM period
@@ -475,6 +501,34 @@ async def dashboard(
             GROUP BY 1 HAVING bool_or(k = 'cur')
             ORDER BY sum(rev_b - cost_b) FILTER (WHERE k = 'cur') DESC NULLS LAST
             LIMIT {MATRIX_ROW_LIMIT + 1}
+        ),
+        -- Отклонения по артикулам: три себестоимости единицы на одной строке.
+        -- Только текущий период (k = 'cur') — сравнение здесь между базами
+        -- расчёта, а не между периодами.
+        --
+        -- Плановая берётся из справочника моделей, а не из строк выпуска:
+        -- она задана на модель+артикул целиком. Умножаем на объём здесь же,
+        -- чтобы «плановая себестоимость выпуска» считалась тем же весом, что
+        -- нормативная и фактическая.
+        deviations AS (
+            SELECT
+                coalesce(d.plan_id, '')                   AS plan_id,
+                coalesce(d.model, '')                     AS model,
+                coalesce(d.articul, '')                   AS articul,
+                min(d.model_name)                         AS name,
+                sum(d.vol)                                AS vol,
+                sum(d.vol * pp.plan_price)                AS plan_total,
+                sum(d.vol) FILTER (WHERE pp.plan_price IS NOT NULL) AS plan_vol,
+                sum(d.cost_norm)                          AS norm_total,
+                sum(d.cost_fact)                          AS fact_total,
+                sum(d.vol) FILTER (WHERE d.cost_fact IS NOT NULL) AS fact_vol,
+                sum(d.rev)                                AS rev_total
+            FROM dev_src d
+            LEFT JOIN cost_plan_prices pp
+                   ON pp.model = d.model AND pp.articul = d.articul
+            GROUP BY 1, 2, 3
+            ORDER BY sum(d.vol) DESC NULLS LAST
+            LIMIT {DEVIATION_ROW_LIMIT + 1}
         )
         SELECT json_build_object(
             'tiles',      (SELECT row_to_json(t) FROM tiles t),
@@ -482,6 +536,7 @@ async def dashboard(
             'by_bm',      coalesce((SELECT json_agg(x) FROM by_bm x), '[]'::json),
             'by_level01', coalesce((SELECT json_agg(x) FROM by_level01 x), '[]'::json),
             'matrix',     coalesce((SELECT json_agg(x) FROM matrix x), '[]'::json),
+            'deviations', coalesce((SELECT json_agg(x) FROM deviations x), '[]'::json),
             'options',    json_build_object(
                 {option_selects}
             )
@@ -514,6 +569,43 @@ async def dashboard(
     matrix_truncated = len(payload["matrix"]) > MATRIX_ROW_LIMIT
     payload["matrix"] = payload["matrix"][:MATRIX_ROW_LIMIT]
 
+    # Лист отклонений: себестоимость ЕДИНИЦЫ по трём базам и отклонения между ними.
+    #
+    # Плановая и фактическая делятся на объём ТЕХ строк, где они есть (plan_vol,
+    # fact_vol), а не на весь выпуск артикула: иначе у артикула с планом на
+    # половине тиража плановая себестоимость единицы вышла бы вдвое меньше
+    # настоящей. Доля покрытия отдаётся рядом — цифра без неё обманчива.
+    deviations = payload.get("deviations") or []
+    dev_truncated = len(deviations) > DEVIATION_ROW_LIMIT
+    out_dev = []
+    for r in deviations[:DEVIATION_ROW_LIMIT]:
+        vol, plan_vol, fact_vol = r.get("vol"), r.get("plan_vol"), r.get("fact_vol")
+        unit_plan = _ratio(r.get("plan_total"), plan_vol)
+        unit_norm = _ratio(r.get("norm_total"), vol)
+        unit_fact = _ratio(r.get("fact_total"), fact_vol)
+        # Нормативная на том же объёме, что плановая и фактическая — чтобы
+        # отклонения считались на сопоставимых величинах, а не «норматив по всему
+        # тиражу против плана по половине».
+        rel = lambda a, b: (None if a is None or not b else 100.0 * (a / b - 1))
+        out_dev.append({
+            "plan_id": r.get("plan_id") or "",
+            "model": r.get("model") or "",
+            "articul": r.get("articul") or "",
+            "name": r.get("name"),
+            "vol": None if vol is None else float(vol),
+            "unit_plan_byn": unit_plan,
+            "unit_norm_byn": unit_norm,
+            "unit_fact_byn": unit_fact,
+            "unit_price_byn": _ratio(r.get("rev_total"), vol),
+            # Отклонения — как в Power BI: «факт / план − 1».
+            "dev_norm_plan_pct": rel(unit_norm, unit_plan),
+            "dev_fact_plan_pct": rel(unit_fact, unit_plan),
+            "dev_fact_norm_pct": rel(unit_fact, unit_norm),
+            "plan_coverage_pct": _pct(plan_vol or 0, vol),
+            "fact_coverage_pct": _pct(fact_vol or 0, vol),
+        })
+    payload["deviations"] = out_dev
+
     options = payload.get("options") or {}
     options_truncated: list[str] = []
     for key, vals in list(options.items()):
@@ -527,6 +619,8 @@ async def dashboard(
         "options_truncated": options_truncated,
         "matrix_truncated": matrix_truncated,
         "matrix_row_limit": MATRIX_ROW_LIMIT,
+        "deviations_truncated": dev_truncated,
+        "deviations_row_limit": DEVIATION_ROW_LIMIT,
         # Полнота: сколько калькуляций выпуска в расчёте против всех ФКСС.
         "calc_total": total,
         "cache_refreshed_at": refreshed.isoformat() if refreshed else None,

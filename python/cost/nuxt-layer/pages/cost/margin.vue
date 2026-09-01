@@ -278,6 +278,59 @@
       </section>
     </template>
 
+    <!-- Лист «Отклонения по артикулам» — просьба заказчика 25.08.2026. Формат
+         повторяет страницу «Отклонение сс» его отчёта Power BI, плюс № плана. -->
+    <h2 class="section-title">Отклонения по артикулам</h2>
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <p class="card-note">
+            Строка — план + модель + артикул. Три себестоимости <strong>единицы</strong> в BYN:
+            плановая (справочник моделей Лисы), нормативная и фактическая (по стоимости минуты).
+            Отклонение — «что сравниваем / база − 1».
+            <span v-if="meta.deviations_truncated" class="warn">
+              Показаны {{ meta.deviations_row_limit }} артикулов с наибольшим выпуском — сузьте фильтры.</span>
+          </p>
+          <p class="card-note">
+            Плановая себестоимость ведётся не везде: в выбранном периоде она есть у
+            <strong>{{ devPlanCoverage === null ? '—' : fmtPct(devPlanCoverage, 0) }}</strong>
+            показанных артикулов<span v-if="devView === 'plan' && devPlanCoverage !== null && devPlanCoverage < 20">
+              — для носков и колготок план в Лисе не заводится, для них смысл имеет вкладка «Норматив / факт»</span>.
+          </p>
+        </div>
+        <div class="view-switch" role="group" aria-label="Что сравнивать">
+          <button v-for="v in devViews" :key="v.key" class="btn btn-sm"
+                  :class="v.key === devView ? 'btn-primary' : 'btn-ghost'"
+                  @click="devView = v.key">{{ v.label }}</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th v-for="c in devColumns" :key="c.key" :class="{ 'col-label': c.text }"
+                  :title="c.title" class="sortable" @click="sortDev(c.key)">
+                {{ c.label }}<span v-if="devSort.key === c.key">{{ devSort.asc ? ' ▲' : ' ▼' }}</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, i) in devRows" :key="i">
+              <td v-for="c in devColumns" :key="c.key" :class="[c.text ? 'col-label' : 'num', c.cls?.(row)]">
+                {{ c.fmt(row) }}
+              </td>
+            </tr>
+            <tr v-if="!devRows.length">
+              <td :colspan="devColumns.length" class="empty-row">
+                {{ devView === 'plan' ? 'Плановая себестоимость не заведена ни у одного артикула выборки'
+                                      : 'Нет артикулов с годной фактической себестоимостью' }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <h2 class="section-title">Динамика себестоимости</h2>
     <section class="charts">
       <article class="card">
@@ -454,6 +507,7 @@ async function reload(defaultPeriod = false) {
     byBm.value = res.by_bm || []
     byLevel01.value = res.by_level01 || []
     matrix.value = res.matrix || []
+    deviations.value = res.deviations || []
     meta.value = res.meta || { matrix_path: [], period: { year: [], month: [] } }
     filterOptions.value = res.options || {}
     truncatedFilters.value = res.meta?.options_truncated || []
@@ -635,6 +689,90 @@ const tileList = computed(() => {
         cmp('минут пошива на штуку', t.min_per_unit, null, (v: any) => nf2.format(Number(v)), () => ''),
       ],
     },
+  ]
+})
+
+// ── Отклонения по артикулам ─────────────────────────────────────────────────
+//
+// Две вкладки, как просил заказчик: «фактическая от плановой» и «нормативная от
+// фактической». Обе — на одних строках (план + модель + артикул), меняется
+// только набор колонок и то, по чему строки отбираются: показывать в отчёте
+// «Факт / план» артикул без плана бессмысленно.
+
+const deviations = ref<any[]>([])
+const devView = ref<'plan' | 'fact'>('plan')
+const devViews = [
+  { key: 'plan' as const, label: 'Факт / план' },
+  { key: 'fact' as const, label: 'Норматив / факт' },
+]
+/** Сортировка листа. По умолчанию — по отклонению, по убыванию: заказчик
+ * смотрит его как список «где разошлось сильнее всего» (так и в его Power BI). */
+const devSort = reactive<{ key: string; asc: boolean }>({ key: 'dev', asc: false })
+
+function sortDev(key: string) {
+  if (devSort.key === key) devSort.asc = !devSort.asc
+  else { devSort.key = key; devSort.asc = false }
+}
+
+/** Ключевая колонка отклонения для текущей вкладки — по ней сортируем и её
+ * подсвечиваем. */
+const devKey = computed(() => (devView.value === 'plan' ? 'dev_fact_plan_pct' : 'dev_fact_norm_pct'))
+
+const devRows = computed(() => {
+  // Во вкладке «Факт / план» строки без плана скрываем: пустая колонка сравнения
+  // — не информация, а шум на весь экран.
+  const rows = deviations.value.filter(r =>
+    devView.value === 'plan' ? isNum(r.unit_plan_byn) : isNum(r.unit_fact_byn))
+  const k = devSort.key === 'dev' ? devKey.value : devSort.key
+  const dir = devSort.asc ? 1 : -1
+  return [...rows].sort((a, b) => {
+    const x = a[k], y = b[k]
+    // Пустые всегда внизу, независимо от направления.
+    if (!isNum(x) && !isNum(y)) return 0
+    if (!isNum(x)) return 1
+    if (!isNum(y)) return -1
+    if (typeof x === 'string' || typeof y === 'string') return dir * String(x).localeCompare(String(y), 'ru')
+    return dir * (Number(x) - Number(y))
+  })
+})
+
+/** Доля показанных артикулов, у которых есть плановая себестоимость. */
+const devPlanCoverage = computed(() => {
+  const all = deviations.value.length
+  if (!all) return null
+  return (100 * deviations.value.filter(r => isNum(r.unit_plan_byn)).length) / all
+})
+
+const devColumns = computed<Col[]>(() => {
+  const devCls = (v: any, higherIsBetter = true) =>
+    !isNum(v) || Number(v) === 0 ? '' : (Number(v) > 0) === higherIsBetter ? 'pos' : 'neg'
+  const base: Col[] = [
+    { key: 'plan_id', label: '№ плана', text: true, fmt: r => r.plan_id || '—' },
+    { key: 'name', label: 'Наименование', text: true, fmt: r => r.name || '—' },
+    { key: 'articul', label: 'Артикул', text: true, fmt: r => r.articul || '—' },
+    { key: 'vol', label: 'Выпуск, шт', fmt: r => fmtInt(r.vol) },
+  ]
+  if (devView.value === 'plan') {
+    return [...base,
+      { key: 'unit_fact_byn', label: 'С/с штуки факт', title: 'по фактической стоимости минуты; где её нет — прочерк',
+        fmt: r => fmtMoney(r.unit_fact_byn) },
+      { key: 'unit_norm_byn', label: 'С/с штуки норматив', fmt: r => fmtMoney(r.unit_norm_byn) },
+      { key: 'unit_plan_byn', label: 'С/с штуки плановая', title: 'PLAN_PRICE справочника моделей Лисы',
+        fmt: r => fmtMoney(r.unit_plan_byn) },
+      { key: 'dev_fact_plan_pct', label: 'Отклонение факт / план, %', title: 'факт / план − 1; выше нуля — дороже плана',
+        fmt: r => fmtSignedPct(r.dev_fact_plan_pct), cls: r => devCls(r.dev_fact_plan_pct, false) },
+      { key: 'dev_norm_plan_pct', label: 'Норматив / план, %', fmt: r => fmtSignedPct(r.dev_norm_plan_pct),
+        cls: r => devCls(r.dev_norm_plan_pct, false) },
+    ]
+  }
+  return [...base,
+    { key: 'unit_norm_byn', label: 'С/с штуки норматив', fmt: r => fmtMoney(r.unit_norm_byn) },
+    { key: 'unit_fact_byn', label: 'С/с штуки факт', fmt: r => fmtMoney(r.unit_fact_byn) },
+    { key: 'dev_fact_norm_pct', label: 'Отклонение факт / норматив, %', title: 'факт / норматив − 1; выше нуля — факт дороже',
+      fmt: r => fmtSignedPct(r.dev_fact_norm_pct), cls: r => devCls(r.dev_fact_norm_pct, false) },
+    { key: 'fact_coverage_pct', label: 'Факт годен, % выпуска', title: 'у остальных строк артикула фактическая ставка минуты не заведена',
+      fmt: r => fmtPct(r.fact_coverage_pct, 0), cls: r => (isNum(r.fact_coverage_pct) && r.fact_coverage_pct < 100 ? 'neg' : '') },
+    { key: 'unit_price_byn', label: 'Отпускная цена', fmt: r => fmtMoney(r.unit_price_byn) },
   ]
 })
 
@@ -849,7 +987,7 @@ const waterfallPy = computed(() => waterfall(`margin_dev_${cur.value}_py`))
 
 // ── Матрица ─────────────────────────────────────────────────────────────────
 
-type Col = { key: string; label: string; title?: string; fmt: (r: any) => string; cls?: (r: any) => string }
+type Col = { key: string; label: string; title?: string; text?: boolean; fmt: (r: any) => string; cls?: (r: any) => string }
 const matrixColumns = computed<Col[]>(() => {
   const c = cur.value, C = currency.value
   const devCls = (v: any, higherIsBetter = true) =>
@@ -1066,6 +1204,8 @@ const waterfallOptions = computed(() => ({
 .table-wrap { overflow-x: auto; }
 .matrix { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
 .matrix th, .matrix td { padding: var(--sp-1) var(--sp-2); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.matrix th.sortable { cursor: pointer; user-select: none; }
+.matrix th.sortable:hover { color: var(--accent); }
 .matrix th { text-align: right; font-weight: var(--fw-medium); color: var(--text-muted); font-size: var(--fs-2xs); }
 .matrix th.col-label, .matrix td.col-label { text-align: left; }
 .matrix td.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }

@@ -567,6 +567,78 @@ async def set_cache_completed(row_count: int) -> None:
     # Строго ПОСЛЕ снятия is_refreshing: пересчёт может занять секунды, и
     # держать раздел в состоянии «обновляюсь» из-за аналитики незачем.
     await refresh_calc_mv()
+    # Плановые цены — независимый справочник Лисы, но обновлять их вместе с кэшем
+    # логично: дашборд сравнивает их с себестоимостью из кэша, и расхождение
+    # свежести читалось бы как расхождение данных.
+    await sync_plan_prices()
+
+
+async def sync_plan_prices() -> int:
+    """Справочник плановой себестоимости единицы из Gpartner.dbo.S_MODELI.
+
+    PLAN_PRICE — «План. себ-ть, руб.» отчётов Power BI заказчика; нужна листу
+    «Отклонения по артикулам» дашборда маржи (миграция 0043).
+
+    Ноль в источнике означает «план не заведён», а не «себестоимость нулевая» —
+    пишем NULL, иначе отклонение по таким артикулам вышло бы −100%.
+
+    Ошибка Лисы (VPN, недоступность) НЕ валит обновление кэша: прежние плановые
+    цены остаются, а расхождение свежести видно по synced_at. Возвращает число
+    синхронизированных пар, 0 — синхронизация не удалась.
+    """
+    try:
+        conn = get_gpartner_conn()
+    except Exception as exc:  # noqa: BLE001 — источник за VPN, причин отказа много
+        print(f"[cost] ВНИМАНИЕ: плановые цены не синхронизированы, нет связи с Gpartner: {exc}", flush=True)
+        return 0
+    try:
+        cursor = conn.cursor()
+        # На пару модель+артикул в справочнике бывает несколько записей (14 912 пар
+        # из 95 849): модель заводят заново, старая остаётся. Берём ПОСЛЕДНЮЮ по
+        # ITEM_ID — актуальную версию.
+        #
+        # Известное упрощение: Power BI джойнит справочник по MODEL_ID строки
+        # выпуска и берёт цену той самой версии, а у нас в кэше ITEM_ID модели нет,
+        # ключ — модель+артикул. Расходится это только там, где у версий РАЗНАЯ
+        # ненулевая плановая цена — 437 пар (0,5% справочника).
+        cursor.execute(
+            "SELECT MODEL, ART, PLAN_PRICE FROM ("
+            "  SELECT RTRIM(MODEL) AS MODEL, RTRIM(ART) AS ART, PLAN_PRICE,"
+            "         ROW_NUMBER() OVER (PARTITION BY RTRIM(MODEL), RTRIM(ART)"
+            "                            ORDER BY ITEM_ID DESC) AS rn"
+            "  FROM [dbo].[S_MODELI]"
+            "  WHERE MODEL IS NOT NULL AND ART IS NOT NULL"
+            ") t WHERE rn = 1"
+        )
+        rows = [
+            (m, a, float(p) if p is not None and float(p) > 0 else None)
+            for m, a, p in cursor.fetchall()
+            if m and a
+        ]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cost] ВНИМАНИЕ: запрос плановых цен к Gpartner упал: {exc}", flush=True)
+        return 0
+    finally:
+        conn.close()
+
+    if not rows:
+        print("[cost] ВНИМАНИЕ: S_MODELI вернул пусто — справочник плановых цен не трогаем", flush=True)
+        return 0
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    async with pool().acquire() as pg:
+        async with pg.transaction():
+            # Полная замена, а не UPSERT: модель могли удалить из справочника, и
+            # оставшаяся у нас плановая цена была бы призраком.
+            await pg.execute("TRUNCATE TABLE cost_plan_prices")
+            await pg.copy_records_to_table(
+                "cost_plan_prices",
+                records=[(m, a, p, now) for m, a, p in rows],
+                columns=["model", "articul", "plan_price", "synced_at"],
+            )
+    with_price = sum(1 for _, _, p in rows if p is not None)
+    print(f"[cost] плановые цены обновлены: {len(rows)} пар, с ценой {with_price}", flush=True)
+    return len(rows)
 
 
 async def try_acquire_refresh_lock() -> bool:
