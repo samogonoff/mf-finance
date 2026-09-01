@@ -89,7 +89,14 @@ type Config struct {
 	// «Параметр», агрегат vs детализация, BYN-пара, уникальный индекс приёмника).
 	// PlansPublishTargets — белый список таблиц: имя приёмника приходит из данных
 	// маппинга, поэтому произвольная таблица записи недопустима.
+	// PlansPublishSandbox=1 → при недоступном приёмнике (нет MSSQL / выключен
+	// PlansPublishEnabled) запись идёт в PG-песочницу publish_sandbox тем же
+	// алгоритмом (DELETE+INSERT в транзакции, обратное чтение суммы, контроль
+	// расхождения, идемпотентность). Нужна, чтобы путь записи можно было проверить
+	// целиком без Budgeting. ТОЛЬКО dev/тест: карточка получает статус published,
+	// хотя в приёмнике ничего нет. Прод-приёмник всегда приоритетнее песочницы.
 	PlansPublishEnabled bool
+	PlansPublishSandbox bool
 	PlansPublishTargets []string
 
 	// Форма «Розница» (TPL-TO-RETAIL, ТЗ Розница §11). Источники — тот же сервер
@@ -174,6 +181,7 @@ func Load() Config {
 		PlansAuditEnabled:   env("PLANS_AUDIT_ENABLED", "0") == "1",
 		PlansLegacyMpAPI:    env("PLANS_LEGACY_MP_API", "0") == "1",
 		PlansPublishEnabled: env("PLANS_PUBLISH_ENABLED", "0") == "1",
+		PlansPublishSandbox: env("PLANS_PUBLISH_SANDBOX", "0") == "1",
 		PlansPublishTargets: splitCSV(env("PLANS_PUBLISH_TARGETS",
 			"Budgeting.dbo.VFORMTOLOADTAKTTARGET,Budgeting.dbo.FormToLoaTaktTarget")),
 

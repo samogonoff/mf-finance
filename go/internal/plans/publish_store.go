@@ -83,7 +83,17 @@ func (s *pgPublishStore) LogPublish(ctx context.Context, r PublishResult, actorI
 
 // publishKey — ключ идемпотентности успешной записи версии в приёмник.
 func publishKey(r PublishResult) string {
-	return "card:" + itoa(r.CardID) + ":v" + itoa(int64(r.VersionNo)) + ":" + r.Target
+	return "card:" + itoa(r.CardID) + ":v" + itoa(int64(r.VersionNo)) + ":" + publishTargetKey(r)
+}
+
+// publishTargetKey — приёмник в ключе идемпотентности. Прогон в песочнице обязан
+// иметь СВОЙ ключ: иначе после проверки функционала реальная публикация той же
+// версии увидит «уже опубликовано» и в Budgeting не запишет ничего.
+func publishTargetKey(r PublishResult) string {
+	if r.Sandbox {
+		return "sandbox:" + r.Target
+	}
+	return r.Target
 }
 
 func (s *pgPublishStore) AlreadyPublished(ctx context.Context, key string) (bool, error) {
@@ -99,7 +109,8 @@ func (s *pgPublishStore) AlreadyPublished(ctx context.Context, key string) (bool
 
 func (s *pgPublishStore) PublishLog(ctx context.Context, cardID int64) ([]PublishLogItem, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, version_no, mode, target, status, rows_total, rows_written, diff, error_text, started_at
+		SELECT id, version_no, mode, target, status, rows_total, rows_written, diff, error_text,
+		       COALESCE((report->>'sandbox')::bool, FALSE), started_at
 		  FROM publish_log WHERE card_id = $1 ORDER BY started_at DESC LIMIT 100`, cardID)
 	if err != nil {
 		return nil, err
@@ -109,7 +120,7 @@ func (s *pgPublishStore) PublishLog(ctx context.Context, cardID int64) ([]Publis
 	for rows.Next() {
 		var it PublishLogItem
 		if err := rows.Scan(&it.ID, &it.VersionNo, &it.Mode, &it.Target, &it.Status,
-			&it.RowsTotal, &it.RowsOK, &it.Diff, &it.Error, &it.StartedAt); err != nil {
+			&it.RowsTotal, &it.RowsOK, &it.Diff, &it.Error, &it.Sandbox, &it.StartedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, it)

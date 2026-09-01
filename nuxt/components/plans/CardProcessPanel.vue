@@ -120,6 +120,9 @@
           Публикация — {{ pub.mode === "write" ? "запись" : "предпросмотр (ничего не записано)" }}
         </span>
         <span class="badge" :class="pubBadge">{{ pubStatus }}</span>
+        <!-- Песочница обязана быть видна: «опубликовано» в PG и «опубликовано» в
+             Budgeting — разные события, путать их нельзя. -->
+        <span v-if="pub.sandbox" class="badge badge-warn">песочница</span>
         <span v-if="pub.target" class="pub-target">приёмник: {{ pub.target }}</span>
       </div>
       <div class="pub-grid">
@@ -131,6 +134,44 @@
         <div class="pub-cell"><span class="pub-lbl">Расхождение</span><span class="pub-val" :class="pub.diff === 0 ? 'ok' : 'bad'">{{ num(pub.diff, 2) }}</span></div>
       </div>
       <p v-if="pub.error" class="cpp-banner neg">{{ pub.error }}</p>
+
+      <div v-if="pub.sandbox" class="pub-list warn">
+        <!-- В dry-run в песочницу ничего не пишется: сверка идёт с ней же, и путать
+             это с записью нельзя — отсюда разные подписи по режиму. -->
+        <span class="pl-title">
+          <Icon name="lucide:flask-conical" />
+          {{ pub.mode === "write" ? "Записано в песочницу, не в Budgeting" : "Сверка идёт с песочницей, не с Budgeting" }}
+        </span>
+        <span class="pl-hint">
+          Включён PLANS_PUBLISH_SANDBOX=1: приёмник изображает таблица publish_sandbox в БД finance.
+          <template v-if="pub.mode === 'write'">
+            Путь записи прогнан целиком (транзакция, контроль сумм, идемпотентность), но во внешнем
+            контуре плана НЕТ. Карточка при этом переходит в «опубликовано».
+          </template>
+          <template v-else>
+            «Σ в приёмнике» прочитана из песочницы — это проверка функционала, а не состояние Budgeting.
+          </template>
+        </span>
+        <button v-if="isPlansAdmin" class="btn btn-sm btn-ghost" :disabled="busy" @click="loadSandbox">
+          <Icon name="lucide:table-2" /> {{ sbx.rows.length ? "Обновить записанное" : "Показать записанное" }}
+        </button>
+        <table v-if="sbx.rows.length" class="data-table compact sbx-table">
+          <thead>
+            <tr><th>Параметр</th><th>Страна</th><th class="col-num">КодЦФО</th><th class="col-num">КодPL</th><th>Дата</th><th class="col-num">Значение</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(r, i) in sbx.rows" :key="'sb' + i">
+              <td>{{ r.param }}</td>
+              <td>{{ r.country || "—" }}</td>
+              <td class="col-num">{{ r.code_cfo }}</td>
+              <td class="col-num">{{ r.code_pl }}</td>
+              <td class="dt-cell">{{ r.date?.slice(0, 7) }}</td>
+              <td class="col-num">{{ num(r.value, 2) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <span v-if="sbx.loaded && !sbx.rows.length" class="pl-hint">Песочница пуста.</span>
+      </div>
 
       <div v-if="pub.pending?.length" class="pub-list warn">
         <span class="pl-title"><Icon name="lucide:clock" /> Ожидает подтверждения BI ({{ pub.pending.length }})</span>
@@ -271,7 +312,8 @@ import {
   type RouteStep,
   type CardApproval,
   type CardVersion,
-  type PublishResult
+  type PublishResult,
+  type SandboxRow
 } from "~/composables/useMpConditions";
 import { num } from "~/utils/format";
 
@@ -304,6 +346,8 @@ const note = ref("");
 const ret = reactive({ open: false, target: "", comment: "" });
 const reopen = reactive({ open: false, comment: "" });
 const ver = reactive({ open: false, no: 0, text: "" });
+// Содержимое песочницы приёмника — доказательство записи (а не «что собирались отправить»).
+const sbx = reactive({ rows: [] as SandboxRow[], loaded: false });
 
 // Порядок шагов — только включённые: выключенный «Финансист» не должен занимать
 // место в цепочке и мешать выбору шага возврата (ТЗ §2.1 — маршрут это данные).
@@ -485,6 +529,19 @@ const doPublish = async (mode: "dry_run" | "write") => {
   }
 };
 
+const loadSandbox = async () => {
+  busy.value = true;
+  error.value = "";
+  try {
+    sbx.rows = await api.publishSandbox(pub.value?.target || "", 50);
+    sbx.loaded = true;
+  } catch (e: unknown) {
+    error.value = errText(e, "Песочница приёмника недоступна");
+  } finally {
+    busy.value = false;
+  }
+};
+
 const openVersion = async (no: number) => {
   busy.value = true;
   try {
@@ -585,6 +642,9 @@ defineExpose({ reload: load });
 .pl-title { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
 .pl-hint { font-size: var(--fs-2xs); opacity: 0.85; }
 .pub-list ul { margin: var(--sp-2) 0 0; padding-left: var(--sp-6); font-size: var(--fs-2xs); font-family: var(--font-mono); }
+/* Срез песочницы — служебный, поэтому компактный и с собственным отступом. */
+.pub-list .btn { align-self: flex-start; margin-top: var(--sp-2); }
+.sbx-table { margin-top: var(--sp-2); background: var(--bg-surface); color: var(--text-primary); }
 
 .cpp-tabs { display: flex; gap: var(--sp-2); border-bottom: 1px solid var(--border); }
 .tb {

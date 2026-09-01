@@ -77,6 +77,7 @@ type PublishResult struct {
 	SumInput    float64          `json:"sum_input"`
 	SumTarget   float64          `json:"sum_target"`
 	Diff        float64          `json:"diff"`
+	Sandbox     bool             `json:"sandbox,omitempty"` // запись ушла в PG-песочницу, не в Budgeting
 	Error       string           `json:"error,omitempty"`
 	Unmapped    []string         `json:"unmapped,omitempty"` // строки формы без правила маппинга
 	Pending     []string         `json:"pending,omitempty"`  // правила есть, но выключены (ждут BI)
@@ -94,12 +95,14 @@ type PublishLogItem struct {
 	RowsTotal int       `json:"rows_total"`
 	RowsOK    int       `json:"rows_written"`
 	Diff      float64   `json:"diff"`
+	Sandbox   bool      `json:"sandbox,omitempty"`
 	Error     string    `json:"error,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 }
 
-// Publisher — запись строк в приёмник. Реализации: mssqlPublisher (прод) и
-// nopPublisher (dev/без MSSQL — только dry-run).
+// Publisher — запись строк в приёмник. Реализации: mssqlPublisher (прод),
+// sandboxPublisher (dev/тест — приёмник изображает таблица publish_sandbox в PG)
+// и nopPublisher (нет ни того, ни другого — только dry-run).
 type Publisher interface {
 	// Write — идемпотентная запись пачки строк в одну таблицу-приёмник.
 	// Возвращает число записанных строк и сумму значений, прочитанную ИЗ приёмника
@@ -109,6 +112,16 @@ type Publisher interface {
 	Probe(ctx context.Context, target string, rows []PublishRow) (sumTarget float64, err error)
 	// Available — есть ли соединение с приёмником.
 	Available() bool
+	// Sandbox — это заменитель приёмника, а не сам приёмник. Влияет только на
+	// маркировку результата и ключ идемпотентности: прогон в песочнице не должен
+	// потом считаться уже выполненной публикацией в Budgeting.
+	Sandbox() bool
+}
+
+// SandboxReader — публикатор, у которого можно прочитать записанное. Есть только
+// у песочницы: в Budgeting мы не читаем таблицу целиком, там это дело BI.
+type SandboxReader interface {
+	Rows(ctx context.Context, target string, limit int) ([]PublishRow, error)
 }
 
 // PublishStore — маппинг и журнал (миграция 0032).
@@ -184,10 +197,14 @@ func (s *CardService) Publish(ctx context.Context, cardID int64, mode string, ac
 	if s.publisher == nil || !s.publisher.Available() {
 		res.Mode = PublishModeDryRun
 		res.Status = "blocked"
-		res.Error = "приёмник недоступен (нет соединения с Budgeting) — доступен только предпросмотр"
+		res.Error = "приёмник недоступен (нет соединения с Budgeting или PLANS_PUBLISH_ENABLED=0) — " +
+			"доступен только предпросмотр; для сквозной проверки записи включите PLANS_PUBLISH_SANDBOX=1"
 		s.logPublish(ctx, res, actorID)
 		return res, nil
 	}
+	// Песочница — тот же путь записи, но приёмник изображает PG (publish_sandbox).
+	// Помечаем результат сразу: он уезжает и в отчёт, и в журнал, и в UI.
+	res.Sandbox = s.publisher.Sandbox()
 
 	if mode != PublishModeWrite {
 		res.Mode = PublishModeDryRun
@@ -204,7 +221,9 @@ func (s *CardService) Publish(ctx context.Context, cardID int64, mode string, ac
 	}
 
 	// Идемпотентность: одна успешная запись на (карточка, версия, приёмник).
-	key := fmt.Sprintf("card:%d:v%d:%s", cardID, c.CurrentVersion, res.Target)
+	// У песочницы ключ свой (префикс sandbox:), иначе после её прогона реальная
+	// публикация той же версии решила бы, что уже отработала, и не записала бы.
+	key := fmt.Sprintf("card:%d:v%d:%s", cardID, c.CurrentVersion, publishTargetKey(res))
 	if done, err := s.pubStore.AlreadyPublished(ctx, key); err == nil && done {
 		res.Status = "ok"
 		res.Error = "версия уже опубликована — повтор не выполняется"
@@ -223,10 +242,26 @@ func (s *CardService) Publish(ctx context.Context, cardID int64, mode string, ac
 			res.SumInput, res.SumTarget, res.Diff)
 	}
 	s.logPublishKey(ctx, res, actorID, key)
-	if err2 := s.cards.MarkPublished(ctx, cardID, res.Status == "ok", res.Error); err2 != nil {
+	note := res.Error
+	if res.Sandbox && res.Status == "ok" {
+		// В листе согласования обязано быть видно, что записи в Budgeting не было:
+		// иначе «published» у карточки читается как реально выгруженный план.
+		note = "ПЕСОЧНИЦА (PG publish_sandbox), в Budgeting не записано"
+	}
+	if err2 := s.cards.MarkPublished(ctx, cardID, res.Status == "ok", note); err2 != nil {
 		return res, err2
 	}
 	return res, err
+}
+
+// SandboxRows — что лежит в песочнице приёмника. Доступно только когда включён
+// PLANS_PUBLISH_SANDBOX: иначе это не «пусто», а «не тот режим», и молчать нельзя.
+func (s *CardService) SandboxRows(ctx context.Context, target string, limit int) ([]PublishRow, error) {
+	r, ok := s.publisher.(SandboxReader)
+	if !ok {
+		return nil, errors.New("песочница приёмника выключена (PLANS_PUBLISH_SANDBOX=0)")
+	}
+	return r.Rows(ctx, target, limit)
 }
 
 // PublishLog — журнал публикаций карточки.
@@ -273,6 +308,7 @@ func (s *CardService) logPublishKey(ctx context.Context, res PublishResult, acto
 		"pending":  res.Pending,
 		"preview":  res.Preview,
 		"key":      key,
+		"sandbox":  res.Sandbox,
 	})
 	if err := s.pubStore.LogPublish(ctx, res, actorID, report); err != nil {
 		// Журнал не должен ломать процесс, но молчать о потере тоже нельзя.
@@ -403,6 +439,7 @@ func (nopPublisher) Probe(context.Context, string, []PublishRow) (float64, error
 	return 0, errors.New("приёмник недоступен")
 }
 func (nopPublisher) Available() bool { return false }
+func (nopPublisher) Sandbox() bool   { return false }
 
 // mssqlPublisher — запись в приёмники Budgeting через тот же *sql.DB, что читает
 // факт (MSSQL_PREMASTER_*). Транзакция на пачку: DELETE по логическому ключу +
@@ -425,6 +462,7 @@ func NewMssqlPublisher(db *sql.DB, targets []string) Publisher {
 }
 
 func (p *mssqlPublisher) Available() bool { return p != nil && p.db != nil }
+func (p *mssqlPublisher) Sandbox() bool   { return false }
 
 // checkTarget — защита от инъекции через данные маппинга: пишем только в таблицы
 // из белого списка конфига.
