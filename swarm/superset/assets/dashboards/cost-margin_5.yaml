@@ -20,14 +20,14 @@ position:
     meta:
       text: "cost-margin \xB7 \u041C\u0430\u0440\u0436\u0430 \u0432\u044B\u043F\u0443\
         \u0441\u043A\u0430"
-  MARKDOWN-5fc38fae:
+  MARKDOWN-5e279340:
     type: MARKDOWN
-    id: MARKDOWN-5fc38fae
+    id: MARKDOWN-5e279340
     children: []
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-c081e054
+    - ROW-99b42ca9
     meta:
       width: 12
       height: 14
@@ -53,11 +53,11 @@ position:
         \u0430\u043A\u0442 (\u0433\u0434\u0435 \u0433\u043E\u0434\u0435\u043D, \u0438\
         \u043D\u0430\u0447\u0435 \u043D\u043E\u0440\u043C\u0430\u0442\u0438\u0432\
         ) \u0438\u043B\u0438 \u043D\u043E\u0440\u043C\u0430\u0442\u0438\u0432."
-  ROW-c081e054:
+  ROW-99b42ca9:
     type: ROW
-    id: ROW-c081e054
+    id: ROW-99b42ca9
     children:
-    - MARKDOWN-5fc38fae
+    - MARKDOWN-5e279340
     parents:
     - ROOT_ID
     - GRID_ID
@@ -70,7 +70,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-904b7d5b
+    - ROW-1075c107
     meta:
       chartId: 67
       width: 3
@@ -85,7 +85,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-904b7d5b
+    - ROW-1075c107
     meta:
       chartId: 68
       width: 3
@@ -99,7 +99,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-904b7d5b
+    - ROW-1075c107
     meta:
       chartId: 69
       width: 3
@@ -114,16 +114,16 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-904b7d5b
+    - ROW-1075c107
     meta:
       chartId: 70
       width: 3
       height: 20
       sliceName: "marg-04 \xB7 \u041F\u0440\u0435\u0434. \u0433\u043E\u0434, %"
       uuid: 5e1628a6-c74a-4bbf-bfa3-2be0a827b1d4
-  ROW-904b7d5b:
+  ROW-1075c107:
     type: ROW
-    id: ROW-904b7d5b
+    id: ROW-1075c107
     children:
     - CHART-67
     - CHART-68
@@ -141,7 +141,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-f834a4e2
+    - ROW-c1a09a3c
     meta:
       chartId: 71
       width: 3
@@ -156,7 +156,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-f834a4e2
+    - ROW-c1a09a3c
     meta:
       chartId: 72
       width: 3
@@ -171,7 +171,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-f834a4e2
+    - ROW-c1a09a3c
     meta:
       chartId: 73
       width: 3
@@ -185,16 +185,16 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-f834a4e2
+    - ROW-c1a09a3c
     meta:
       chartId: 74
       width: 3
       height: 20
       sliceName: "marg-19 \xB7 \u0421/\u0441 \u0448\u0442\u0443\u043A\u0438"
       uuid: 1ef5db3f-302a-47aa-9da5-558d63e701f2
-  ROW-f834a4e2:
+  ROW-c1a09a3c:
     type: ROW
-    id: ROW-f834a4e2
+    id: ROW-c1a09a3c
     children:
     - CHART-71
     - CHART-72
@@ -212,7 +212,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-6dfc65d3
+    - ROW-67c6a07c
     meta:
       chartId: 76
       width: 6
@@ -227,7 +227,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-6dfc65d3
+    - ROW-67c6a07c
     meta:
       chartId: 77
       width: 6
@@ -236,9 +236,9 @@ position:
         \u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u0438\
         , %"
       uuid: 1255cfde-4157-4f97-beca-e954bb645a40
-  ROW-6dfc65d3:
+  ROW-67c6a07c:
     type: ROW
-    id: ROW-6dfc65d3
+    id: ROW-67c6a07c
     children:
     - CHART-76
     - CHART-77
@@ -254,7 +254,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-f5750325
+    - ROW-e001063e
     meta:
       chartId: 78
       width: 4
@@ -269,7 +269,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-f5750325
+    - ROW-e001063e
     meta:
       chartId: 79
       width: 4
@@ -285,16 +285,16 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-f5750325
+    - ROW-e001063e
     meta:
       chartId: 80
       width: 4
       height: 50
       sliceName: "marg-12 \xB7 \u041C\u0430\u0440\u0436\u0430 \u043F\u043E Level 01"
       uuid: 9f2d6681-a9b2-4c1b-be82-120a83e25cb3
-  ROW-f5750325:
+  ROW-e001063e:
     type: ROW
-    id: ROW-f5750325
+    id: ROW-e001063e
     children:
     - CHART-78
     - CHART-79
@@ -304,14 +304,14 @@ position:
     - GRID_ID
     meta:
       background: BACKGROUND_TRANSPARENT
-  MARKDOWN-4ad44987:
+  MARKDOWN-cf3c2dea:
     type: MARKDOWN
-    id: MARKDOWN-4ad44987
+    id: MARKDOWN-cf3c2dea
     children: []
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-9c95560c
+    - ROW-bd992ed6
     meta:
       width: 12
       height: 6
@@ -326,11 +326,11 @@ position:
         \u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u044C \u043D\u0438\
         \u0436\u0435 \u043D\u043E\u0440\u043C\u044B \u0441\u0432\u043E\u0435\u0433\
         \u043E Level 01."
-  ROW-9c95560c:
+  ROW-bd992ed6:
     type: ROW
-    id: ROW-9c95560c
+    id: ROW-bd992ed6
     children:
-    - MARKDOWN-4ad44987
+    - MARKDOWN-cf3c2dea
     parents:
     - ROOT_ID
     - GRID_ID
@@ -343,7 +343,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-b86afdcc
+    - ROW-14cf4e68
     meta:
       chartId: 81
       width: 12
@@ -351,9 +351,9 @@ position:
       sliceName: "marg-13 \xB7 \u041C\u0430\u0442\u0440\u0438\u0446\u0430 \u043C\u0430\
         \u0440\u0436\u0438"
       uuid: caa02d92-c8ca-45b9-9189-0801b9c4cc4c
-  ROW-b86afdcc:
+  ROW-14cf4e68:
     type: ROW
-    id: ROW-b86afdcc
+    id: ROW-14cf4e68
     children:
     - CHART-81
     parents:
@@ -361,14 +361,14 @@ position:
     - GRID_ID
     meta:
       background: BACKGROUND_TRANSPARENT
-  MARKDOWN-06e4a48f:
+  MARKDOWN-287e666a:
     type: MARKDOWN
-    id: MARKDOWN-06e4a48f
+    id: MARKDOWN-287e666a
     children: []
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-0a9301d0
+    - ROW-f9708d2b
     meta:
       width: 12
       height: 10
@@ -392,11 +392,11 @@ position:
         \u043B\u0438\u0442\u043A\u0443 \xAB\u0424\u0430\u043A\u0442 \u0433\u043E\u0434\
         \u0435\u043D\xBB). \u0414\u043E 2026 \u0433\u043E\u0434\u0430 \u0444\u0430\
         \u043A\u0442\u0430 \u043D\u0435\u0442."
-  ROW-0a9301d0:
+  ROW-f9708d2b:
     type: ROW
-    id: ROW-0a9301d0
+    id: ROW-f9708d2b
     children:
-    - MARKDOWN-06e4a48f
+    - MARKDOWN-287e666a
     parents:
     - ROOT_ID
     - GRID_ID
@@ -409,7 +409,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-830442d2
+    - ROW-82e051d9
     meta:
       chartId: 87
       width: 3
@@ -424,7 +424,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-830442d2
+    - ROW-82e051d9
     meta:
       chartId: 88
       width: 3
@@ -439,7 +439,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-830442d2
+    - ROW-82e051d9
     meta:
       chartId: 89
       width: 3
@@ -454,7 +454,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-830442d2
+    - ROW-82e051d9
     meta:
       chartId: 90
       width: 3
@@ -462,9 +462,9 @@ position:
       sliceName: "marg-24 \xB7 \u0424\u0430\u043A\u0442 \u0433\u043E\u0434\u0435\u043D\
         , % \u0432\u044B\u043F\u0443\u0441\u043A\u0430"
       uuid: f50b175b-3046-4fa7-9d84-cecbf2f225f4
-  ROW-830442d2:
+  ROW-82e051d9:
     type: ROW
-    id: ROW-830442d2
+    id: ROW-82e051d9
     children:
     - CHART-87
     - CHART-88
@@ -482,7 +482,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-9917229e
+    - ROW-8d2a2cdd
     meta:
       chartId: 91
       width: 6
@@ -498,7 +498,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-9917229e
+    - ROW-8d2a2cdd
     meta:
       chartId: 92
       width: 6
@@ -509,9 +509,9 @@ position:
         \u043D\u0434-\u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430\u043C\
         , \u043F\u043F"
       uuid: 5755d393-9004-48f1-a294-228b5923f9e2
-  ROW-9917229e:
+  ROW-8d2a2cdd:
     type: ROW
-    id: ROW-9917229e
+    id: ROW-8d2a2cdd
     children:
     - CHART-91
     - CHART-92
@@ -527,7 +527,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-b17aaa7d
+    - ROW-9fa337c5
     meta:
       chartId: 93
       width: 12
@@ -535,9 +535,9 @@ position:
       sliceName: "marg-27 \xB7 \u041D\u043E\u0440\u043C\u0430\u0442\u0438\u0432 \u043F\
         \u0440\u043E\u0442\u0438\u0432 \u0444\u0430\u043A\u0442\u0430"
       uuid: 2d6265f9-ea75-4563-80ad-4558ac017248
-  ROW-b17aaa7d:
+  ROW-9fa337c5:
     type: ROW
-    id: ROW-b17aaa7d
+    id: ROW-9fa337c5
     children:
     - CHART-93
     parents:
@@ -545,24 +545,116 @@ position:
     - GRID_ID
     meta:
       background: BACKGROUND_TRANSPARENT
-  MARKDOWN-c2c10d16:
+  MARKDOWN-6b5a4c22:
     type: MARKDOWN
-    id: MARKDOWN-c2c10d16
+    id: MARKDOWN-6b5a4c22
     children: []
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-aca8db67
+    - ROW-136c846b
+    meta:
+      width: 12
+      height: 10
+      code: "### \u041E\u0442\u043A\u043B\u043E\u043D\u0435\u043D\u0438\u044F \u043F\
+        \u043E \u0430\u0440\u0442\u0438\u043A\u0443\u043B\u0430\u043C\n\u0421\u0442\
+        \u0440\u043E\u043A\u0430 \u2014 \u043F\u043B\u0430\u043D + \u043C\u043E\u0434\
+        \u0435\u043B\u044C + \u0430\u0440\u0442\u0438\u043A\u0443\u043B, \u0441\u0435\
+        \u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C \u0415\u0414\
+        \u0418\u041D\u0418\u0426\u042B \u0432 BYN. \u041F\u043B\u0430\u043D\u043E\u0432\
+        \u0430\u044F \u2014 PLAN_PRICE \u0441\u043F\u0440\u0430\u0432\u043E\u0447\u043D\
+        \u0438\u043A\u0430 \u043C\u043E\u0434\u0435\u043B\u0435\u0439 \u041B\u0438\
+        \u0441\u044B; \u043E\u043D\u0430 \u0432\u0435\u0434\u0451\u0442\u0441\u044F\
+        \ \u0434\u043B\u044F \u0442\u0440\u0438\u043A\u043E\u0442\u0430\u0436\u0430\
+        \ (80\u201392% \u0432\u044B\u043F\u0443\u0441\u043A\u0430) \u0438 \u043F\u043E\
+        \u0447\u0442\u0438 \u043D\u0435 \u0432\u0435\u0434\u0451\u0442\u0441\u044F\
+        \ \u0434\u043B\u044F \u043D\u043E\u0441\u043A\u043E\u0432 \u0438 \u043A\u043E\
+        \u043B\u0433\u043E\u0442\u043E\u043A \u2014 \u0442\u0430\u043C \u0441\u043C\
+        \u044B\u0441\u043B \u0438\u043C\u0435\u0435\u0442 \u0432\u0442\u043E\u0440\
+        \u0430\u044F \u0442\u0430\u0431\u043B\u0438\u0446\u0430, \u043D\u043E\u0440\
+        \u043C\u0430\u0442\u0438\u0432 \u043F\u0440\u043E\u0442\u0438\u0432 \u0444\
+        \u0430\u043A\u0442\u0430."
+  ROW-136c846b:
+    type: ROW
+    id: ROW-136c846b
+    children:
+    - MARKDOWN-6b5a4c22
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-94:
+    type: CHART
+    id: CHART-94
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-532d1dba
+    meta:
+      chartId: 94
+      width: 12
+      height: 60
+      sliceName: "marg-28 \xB7 \u041E\u0442\u043A\u043B\u043E\u043D\u0435\u043D\u0438\
+        \u044F \u043F\u043E \u0430\u0440\u0442\u0438\u043A\u0443\u043B\u0430\u043C\
+        \ \xB7 \u0444\u0430\u043A\u0442 / \u043F\u043B\u0430\u043D"
+      uuid: d6af6556-f1b8-411c-a8ba-554df8d188a8
+  ROW-532d1dba:
+    type: ROW
+    id: ROW-532d1dba
+    children:
+    - CHART-94
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  CHART-95:
+    type: CHART
+    id: CHART-95
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-b3ead403
+    meta:
+      chartId: 95
+      width: 12
+      height: 60
+      sliceName: "marg-29 \xB7 \u041E\u0442\u043A\u043B\u043E\u043D\u0435\u043D\u0438\
+        \u044F \u043F\u043E \u0430\u0440\u0442\u0438\u043A\u0443\u043B\u0430\u043C\
+        \ \xB7 \u043D\u043E\u0440\u043C\u0430\u0442\u0438\u0432 / \u0444\u0430\u043A\
+        \u0442"
+      uuid: 8cf543e9-5430-4751-bd00-e97e1858b6f4
+  ROW-b3ead403:
+    type: ROW
+    id: ROW-b3ead403
+    children:
+    - CHART-95
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    meta:
+      background: BACKGROUND_TRANSPARENT
+  MARKDOWN-1a82f8b9:
+    type: MARKDOWN
+    id: MARKDOWN-1a82f8b9
+    children: []
+    parents:
+    - ROOT_ID
+    - GRID_ID
+    - ROW-2dce734b
     meta:
       width: 12
       height: 6
       code: "### \u0414\u0438\u043D\u0430\u043C\u0438\u043A\u0430 \u0441\u0435\u0431\
         \u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438"
-  ROW-aca8db67:
+  ROW-2dce734b:
     type: ROW
-    id: ROW-aca8db67
+    id: ROW-2dce734b
     children:
-    - MARKDOWN-c2c10d16
+    - MARKDOWN-1a82f8b9
     parents:
     - ROOT_ID
     - GRID_ID
@@ -575,7 +667,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-7c7d2ef1
+    - ROW-c52108d3
     meta:
       chartId: 75
       width: 2
@@ -590,7 +682,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-7c7d2ef1
+    - ROW-c52108d3
     meta:
       chartId: 82
       width: 5
@@ -606,7 +698,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-7c7d2ef1
+    - ROW-c52108d3
     meta:
       chartId: 83
       width: 5
@@ -616,9 +708,9 @@ position:
         \u0443\u043A\u0438 \u043A \u043F\u0440\u043E\u0448\u043B\u043E\u043C\u0443\
         \ \u0433\u043E\u0434\u0443, %"
       uuid: 12568b58-04f0-4e63-b561-6d323656fcb6
-  ROW-7c7d2ef1:
+  ROW-c52108d3:
     type: ROW
-    id: ROW-7c7d2ef1
+    id: ROW-c52108d3
     children:
     - CHART-75
     - CHART-82
@@ -635,7 +727,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-429f5f8b
+    - ROW-d18c706a
     meta:
       chartId: 84
       width: 12
@@ -643,9 +735,9 @@ position:
       sliceName: "marg-16 \xB7 \u041C\u0430\u0442\u0440\u0438\u0446\u0430 \u0441\u0435\
         \u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438"
       uuid: bef363ab-df44-4a7e-b9e6-bcd8c4ea3514
-  ROW-429f5f8b:
+  ROW-d18c706a:
     type: ROW
-    id: ROW-429f5f8b
+    id: ROW-d18c706a
     children:
     - CHART-84
     parents:
@@ -653,14 +745,14 @@ position:
     - GRID_ID
     meta:
       background: BACKGROUND_TRANSPARENT
-  MARKDOWN-1d123aef:
+  MARKDOWN-33d05eb5:
     type: MARKDOWN
-    id: MARKDOWN-1d123aef
+    id: MARKDOWN-33d05eb5
     children: []
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-431a9abc
+    - ROW-497445d5
     meta:
       width: 12
       height: 8
@@ -670,11 +762,11 @@ position:
         \u0433\u0438 \u2014 \u0441\u0442\u0440\u043E\u043A\u0438 Level 01, \u043F\u043E\
         \u0441\u043B\u0435\u0434\u043D\u0438\u0439 \u0441\u0442\u043E\u043B\u0431\u0435\
         \u0446 \u2014 \u0438\u0442\u043E\u0433."
-  ROW-431a9abc:
+  ROW-497445d5:
     type: ROW
-    id: ROW-431a9abc
+    id: ROW-497445d5
     children:
-    - MARKDOWN-1d123aef
+    - MARKDOWN-33d05eb5
     parents:
     - ROOT_ID
     - GRID_ID
@@ -687,7 +779,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-7ecb4345
+    - ROW-4034edb0
     meta:
       chartId: 85
       width: 6
@@ -703,7 +795,7 @@ position:
     parents:
     - ROOT_ID
     - GRID_ID
-    - ROW-7ecb4345
+    - ROW-4034edb0
     meta:
       chartId: 86
       width: 6
@@ -712,9 +804,9 @@ position:
         \u0435 \u043C\u0430\u0440\u0436\u0438 \u043A \u043F\u0440\u043E\u0448\u043B\
         \u043E\u043C\u0443 \u0433\u043E\u0434\u0443"
       uuid: 832935a7-6e47-441a-ab17-f31b6173cf36
-  ROW-7ecb4345:
+  ROW-4034edb0:
     type: ROW
-    id: ROW-7ecb4345
+    id: ROW-4034edb0
     children:
     - CHART-85
     - CHART-86
@@ -727,22 +819,25 @@ position:
     type: GRID
     id: GRID_ID
     children:
-    - ROW-c081e054
-    - ROW-904b7d5b
-    - ROW-f834a4e2
-    - ROW-6dfc65d3
-    - ROW-f5750325
-    - ROW-9c95560c
-    - ROW-b86afdcc
-    - ROW-0a9301d0
-    - ROW-830442d2
-    - ROW-9917229e
-    - ROW-b17aaa7d
-    - ROW-aca8db67
-    - ROW-7c7d2ef1
-    - ROW-429f5f8b
-    - ROW-431a9abc
-    - ROW-7ecb4345
+    - ROW-99b42ca9
+    - ROW-1075c107
+    - ROW-c1a09a3c
+    - ROW-67c6a07c
+    - ROW-e001063e
+    - ROW-bd992ed6
+    - ROW-14cf4e68
+    - ROW-f9708d2b
+    - ROW-82e051d9
+    - ROW-8d2a2cdd
+    - ROW-9fa337c5
+    - ROW-136c846b
+    - ROW-532d1dba
+    - ROW-b3ead403
+    - ROW-2dce734b
+    - ROW-c52108d3
+    - ROW-d18c706a
+    - ROW-497445d5
+    - ROW-4034edb0
     parents:
     - ROOT_ID
 metadata:
@@ -824,6 +919,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -882,6 +979,8 @@ metadata:
     - 90
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -948,6 +1047,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -1018,6 +1119,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -1073,6 +1176,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -1128,6 +1233,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -1184,6 +1291,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -1241,6 +1350,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -1300,6 +1411,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -1359,6 +1472,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -1419,6 +1534,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -1474,6 +1591,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -1529,6 +1648,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
     tabsInScope: []
@@ -1562,6 +1683,8 @@ metadata:
         - 91
         - 92
         - 93
+        - 94
+        - 95
         - 85
         - 86
     '79':
@@ -1593,6 +1716,8 @@ metadata:
         - 91
         - 92
         - 93
+        - 94
+        - 95
         - 85
         - 86
     '80':
@@ -1624,6 +1749,8 @@ metadata:
         - 91
         - 92
         - 93
+        - 94
+        - 95
         - 85
         - 86
     '81':
@@ -1655,6 +1782,8 @@ metadata:
         - 91
         - 92
         - 93
+        - 94
+        - 95
         - 85
         - 86
     '84':
@@ -1686,6 +1815,8 @@ metadata:
         - 91
         - 92
         - 93
+        - 94
+        - 95
         - 85
         - 86
     '85':
@@ -1718,6 +1849,8 @@ metadata:
         - 91
         - 92
         - 93
+        - 94
+        - 95
         - 86
     '86':
       id: 86
@@ -1749,6 +1882,8 @@ metadata:
         - 91
         - 92
         - 93
+        - 94
+        - 95
         - 85
     '92':
       id: 92
@@ -1779,6 +1914,8 @@ metadata:
         - 90
         - 91
         - 93
+        - 94
+        - 95
         - 85
         - 86
     '93':
@@ -1810,6 +1947,74 @@ metadata:
         - 90
         - 91
         - 92
+        - 94
+        - 95
+        - 85
+        - 86
+    '94':
+      id: 94
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 67
+        - 68
+        - 69
+        - 70
+        - 71
+        - 72
+        - 73
+        - 74
+        - 75
+        - 76
+        - 77
+        - 78
+        - 79
+        - 80
+        - 81
+        - 82
+        - 83
+        - 84
+        - 87
+        - 88
+        - 89
+        - 90
+        - 91
+        - 92
+        - 93
+        - 95
+        - 85
+        - 86
+    '95':
+      id: 95
+      crossFilters:
+        scope: global
+        chartsInScope:
+        - 67
+        - 68
+        - 69
+        - 70
+        - 71
+        - 72
+        - 73
+        - 74
+        - 75
+        - 76
+        - 77
+        - 78
+        - 79
+        - 80
+        - 81
+        - 82
+        - 83
+        - 84
+        - 87
+        - 88
+        - 89
+        - 90
+        - 91
+        - 92
+        - 93
+        - 94
         - 85
         - 86
   global_chart_configuration:
@@ -1843,6 +2048,8 @@ metadata:
     - 91
     - 92
     - 93
+    - 94
+    - 95
     - 85
     - 86
   filter_bar_orientation: HORIZONTAL

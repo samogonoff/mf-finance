@@ -1,5 +1,6 @@
-slice_name: "marg-27 \xB7 \u041D\u043E\u0440\u043C\u0430\u0442\u0438\u0432 \u043F\u0440\
-  \u043E\u0442\u0438\u0432 \u0444\u0430\u043A\u0442\u0430"
+slice_name: "marg-29 \xB7 \u041E\u0442\u043A\u043B\u043E\u043D\u0435\u043D\u0438\u044F\
+  \ \u043F\u043E \u0430\u0440\u0442\u0438\u043A\u0443\u043B\u0430\u043C \xB7 \u043D\
+  \u043E\u0440\u043C\u0430\u0442\u0438\u0432 / \u0444\u0430\u043A\u0442"
 description: null
 certified_by: null
 certification_details: null
@@ -9,23 +10,21 @@ params:
   viz_type: table
   query_mode: aggregate
   groupby:
-  - level01
+  - plan_id
+  - model_name
+  - articul
   metrics:
-  - fact_coverage_pct_cur
-  - unit_cost_norm_cur
+  - vol_cur
+  - unit_cost_norm_all_cur
   - unit_cost_fact_cur
   - unit_cost_fact_dev_pct
-  - margin_norm_cur
-  - margin_fact_cur
-  - fact_dev_cur
-  - margin_pct_norm_cur
-  - margin_pct_fact_cur
-  - fact_dev_pp
+  - fact_coverage_pct_cur
+  - unit_price_cur
   all_columns: []
   percent_metrics: []
   order_by_cols: []
-  timeseries_limit_metric: fact_dev_cur
-  order_desc: false
+  timeseries_limit_metric: vol_sort
+  order_desc: true
   row_limit: 500
   server_page_length: 25
   show_cell_bars: false
@@ -33,14 +32,14 @@ params:
   table_timestamp_format: smart_date
   conditional_formatting:
   - colorScheme: '#EFA1AA'
-    column: fact_dev_pp
-    operator: <
+    column: unit_cost_fact_dev_pct
+    operator: '>'
     targetValue: 0
   column_config: {}
   adhoc_filters: []
   extra_form_data: {}
 query_context: null
 cache_timeout: null
-uuid: 2d6265f9-ea75-4563-80ad-4558ac017248
+uuid: 8cf543e9-5430-4751-bd00-e97e1858b6f4
 version: 1.0.0
 dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2
