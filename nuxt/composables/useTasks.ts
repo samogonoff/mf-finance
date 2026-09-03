@@ -140,6 +140,42 @@ export interface MpTaskForm {
    * пересчёта, и чтобы показать долю статьи рядом с суммой.
    */
   conditions?: Record<number, MpConditions>;
+  /**
+   * Подсказки к полям ввода (правки ТЗ 02.09.2026, часть 1): фактический %СПП и
+   * габаритные штрафы WB. В значения полей НЕ подставляются — показываются рядом.
+   */
+  hints?: FieldHint[];
+  /**
+   * Отметка «данные актуальны на …» снимка факта (правка МП §12). Форма читает
+   * снимок, а не OLAP вживую; collected=false означает «снимок ещё не собран», и
+   * это надо сказать словами, а не показать нули.
+   */
+  fact_snapshot?: MpSnapshotMeta;
+}
+
+/** Подсказка к полю ввода: значение источника рядом с полем, без подстановки. */
+export interface FieldHint {
+  kind: string;
+  code_cfo: number;
+  block_type: string;
+  value: number;
+  source: string;
+  note?: string;
+  as_of?: string;
+}
+
+/** Отметка актуальности снимка факта МП. */
+export interface MpSnapshotMeta {
+  year: number;
+  month: number;
+  layer: string;
+  segment: string;
+  rows_total: number;
+  refreshed_at: string;
+  source_note?: string;
+  error?: string;
+  /** false — снимок не собирался: «неизвестно», а не «ноль». */
+  collected: boolean;
 }
 export interface MpSaveRow { code_cfo: number; block_type: string; code_pl: number; amount: number; is_manual: boolean; comment: string }
 

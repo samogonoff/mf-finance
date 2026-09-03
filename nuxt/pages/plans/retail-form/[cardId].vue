@@ -248,6 +248,17 @@
             <input v-model="bulkRentTurnover" type="checkbox" @change="invalidatePreview" />
             считать оборотную часть (иначе — только факт аренды предыдущего месяца)
           </label>
+          <!-- Правка ТЗ 02.09.2026 §30: этап 2 (расчёт по договору) отменён —
+               реестра договоров в базах нет. Аренда вводится, а факт предыдущего
+               месяца показывается справочно: сколько магазинов он покрывает,
+               видно сразу, иначе операция выглядит как «посчитает сама». -->
+          <p v-if="bulkOp === 'rent'" class="bulk-hint">
+            <Icon name="lucide:lightbulb" />
+            Аренда — поле ввода: реестра договоров аренды в базах нет, расчёт по договору не делаем.
+            Справочно есть факт предыдущего месяца по
+            {{ rentHintCount }} {{ rentHintCount === 1 ? "магазину" : "магазинам" }}
+            (статьи 54 «Аренда помещений (стоянки)» и 55 «Аренда имущества»).
+          </p>
 
           <label class="checkbox bulk-chk">
             <input v-model="bulkResetManual" type="checkbox" @change="invalidatePreview" />
@@ -325,10 +336,39 @@
                     @change="toggleAll"
                   />
                 </th>
-                <th class="st st-2 col-num">ЦФО</th>
-                <th class="st st-3">{{ detail ? "Магазин" : groupTitle }}</th>
-                <th class="st st-4">{{ detail ? "Город" : "Магазинов" }}</th>
-                <th v-for="c in visibleAttrCols" :key="c.key" :class="c.num ? 'col-num' : ''">{{ c.title }}</th>
+                <!-- Сортировка «от А до Я» и обратно по требованию «Фронт таблицы».
+                     Первые три столбца не перемещаются (§4.2 требует выводить их
+                     всегда), но сортировать по ним можно. -->
+                <th class="st st-2 col-num sortable" :class="{ sorted: sortKey === 'code_cfo' }" @click="detail && toggleSort('code_cfo')">
+                  ЦФО <Icon v-if="detail" :name="sortIcon('code_cfo')" class="s-ic" />
+                </th>
+                <th class="st st-3 sortable" :class="{ sorted: sortKey === 'cfo' }" @click="detail && toggleSort('cfo')">
+                  {{ detail ? "Магазин" : groupTitle }} <Icon v-if="detail" :name="sortIcon('cfo')" class="s-ic" />
+                </th>
+                <th class="st st-4 sortable" :class="{ sorted: sortKey === 'city' }" @click="detail && toggleSort('city')">
+                  {{ detail ? "Город" : "Магазинов" }} <Icon v-if="detail" :name="sortIcon('city')" class="s-ic" />
+                </th>
+                <th
+                  v-for="c in visibleAttrCols"
+                  :key="c.key"
+                  :class="[c.num ? 'col-num' : '', { sortable: detail, sorted: sortKey === c.key, movable: MOVABLE_ATTR_KEYS.includes(c.key) }]"
+                  :draggable="detail && MOVABLE_ATTR_KEYS.includes(c.key)"
+                  :title="MOVABLE_ATTR_KEYS.includes(c.key) ? 'Перетащите, чтобы поменять порядок; клик — сортировка' : 'Клик — сортировка'"
+                  @click="detail && toggleSort(c.key)"
+                  @dragstart="onColDragStart(c.key)"
+                  @dragover.prevent
+                  @drop.prevent="onColDrop(c.key)"
+                >
+                  <Icon v-if="detail && MOVABLE_ATTR_KEYS.includes(c.key)" name="lucide:grip-vertical" class="g-ic" />
+                  {{ c.title }}
+                  <Icon v-if="detail" :name="sortIcon(c.key)" class="s-ic" />
+                  <!-- Кнопки-стрелки — доступная альтернатива перетаскиванию:
+                       drag не работает с клавиатуры и на тач-экранах. -->
+                  <span v-if="detail && MOVABLE_ATTR_KEYS.includes(c.key)" class="mv-btns">
+                    <button class="mv" title="Левее" @click.stop="moveAttrCol(c.key, -1)">‹</button>
+                    <button class="mv" title="Правее" @click.stop="moveAttrCol(c.key, 1)">›</button>
+                  </span>
+                </th>
                 <th v-for="c in visibleCmpCols" :key="c.key" class="col-num cmp-h" :title="c.hint">{{ c.title }}</th>
                 <th v-for="m in monthCols" :key="'m' + m" class="col-num inp-h">
                   {{ monthLabel(m) }} {{ String(form.year).slice(2) }}
@@ -539,7 +579,8 @@ import {
   BULK_OP_LABELS, LFL_LABELS, MONTH_LABELS, PARAM_LABELS, RETAIL_FORM_CODE,
   cellKey, iferrorDiv, iferrorRatioMinus1, noBaseline, resolveParam, retailErrText, useRetail,
   type RetailBulkRequest, type RetailBulkResult, type RetailForm, type RetailIndicators,
-  type RetailParam, type RetailRow, type RetailValidationReport, type ViewPreset
+  type RetailParam, type RetailRow, type RetailValidationReport, type ViewPreset,
+  type FieldHint as RetailFieldHint
 } from "~/composables/useRetail";
 import { num as fmtNum, formatDate } from "~/utils/format";
 
@@ -624,6 +665,25 @@ const filteredRows = computed<RetailRow[]>(() => {
   });
 });
 
+/**
+ * Строки в порядке сортировки (требование «Фронт таблицы»: «от А до Я» и
+ * наоборот). Сортируем КОПИЮ: form.rows — источник для сохранения и для
+ * массовых операций, и менять его порядок значит менять то, что уедет на сервер.
+ * Строки сравниваются локалью ru: иначе «Ё» уезжает за «Я», а регистр начинает
+ * влиять на порядок.
+ */
+const sortedRows = computed<RetailRow[]>(() => {
+  const rows = filteredRows.value;
+  if (!sortKey.value) return rows;
+  const dir = sortDir.value === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const va = sortValue(a, sortKey.value);
+    const vb = sortValue(b, sortKey.value);
+    if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+    return String(va).localeCompare(String(vb), "ru", { sensitivity: "base" }) * dir;
+  });
+});
+
 // ─────────── выделение ───────────
 const selected = reactive(new Set<number>());
 const toggleRow = (code: number) => {
@@ -698,7 +758,153 @@ for (const c of CMP_COLS) DEFAULT_COLS[c.key] = true;
 for (const c of IND_COLS) DEFAULT_COLS[c.key] = true;
 const cols = reactive<Record<string, boolean>>({ ...DEFAULT_COLS });
 
-const visibleAttrCols = computed(() => ATTR_COLS.filter((c) => cols[c.key]));
+// ─────────── подсказки к полям ввода (правки ТЗ 02.09.2026, часть 1 и §30) ───────────
+//
+// Аренда стала полем ввода: реестра договоров в базах нет, этап 2 расчёта по
+// договору отменён. Факт предыдущего месяца по тому же ЦФО показывается СПРАВОЧНО
+// — значение не подставляется, решение принимает финансист.
+const hintByCell = computed(() => {
+  const m: Record<string, RetailFieldHint> = {};
+  for (const h of form.value?.hints || []) m[`${h.code_cfo}:${h.block_type}`] = h;
+  return m;
+});
+
+/** Сколько магазинов покрыто подсказкой по аренде (для панели операции). */
+const rentHintCount = computed(
+  () => new Set((form.value?.hints || []).filter((h) => h.kind === "rent_prev").map((h) => h.code_cfo)).size
+);
+
+/** Подсказка по аренде для магазина: текст с источником и периодом. */
+const rentHint = (codeCfo: number, metric: string): string => {
+  const h = hintByCell.value[`${codeCfo}:${metric}`];
+  if (!h) return "";
+  return `${fmtNum(h.value, 2)} — ${h.source}${h.note ? ` · ${h.note}` : ""}`;
+};
+
+// ─────────── порядок и сортировка столбцов (требование «Фронт таблицы») ───────────
+//
+// Требование правок 02.09.2026: столбцы ЦФО, Магазин, Город, LFL, Тип, Кат., РМ
+// должны перемещаться между собой (настройка У КАЖДОГО ПОЛЬЗОВАТЕЛЯ своя) и
+// сортироваться «от А до Я» и наоборот.
+//
+// Два решения, которые стоит понимать:
+//   1. Порядок хранится СПИСКОМ КЛЮЧЕЙ в localStorage, а не индексами: набор
+//      столбцов со временем меняется, и индексы после релиза начали бы
+//      переставлять не те колонки. Незнакомые ключи игнорируются, отсутствующие
+//      добавляются в конец — старая настройка не ломает новую таблицу.
+//   2. Перемещаются ТОЛЬКО перечисленные в требовании столбцы. Первые три (код
+//      ЦФО, магазин, город) остаются на месте, потому что §4.2 требует выводить
+//      их всегда; месяцы, сравнение и показатели живут своими группами и
+//      смешивать их с атрибутами нельзя — это разные разделы шапки.
+const MOVABLE_ATTR_KEYS = ["lfl_status", "store_type", "category", "reg_manager"];
+const attrOrder = ref<string[]>(ATTR_COLS.map((c) => c.key));
+
+/** Ключ настройки — на пользователя и на форму: у РМ и финансиста разные таблицы. */
+const colPrefsKey = computed(() => `retail-cols:${useAuth().user.value?.id ?? "anon"}`);
+
+const loadColPrefs = () => {
+  if (!process.client) return;
+  try {
+    const raw = localStorage.getItem(colPrefsKey.value);
+    if (!raw) return;
+    const saved = JSON.parse(raw) as { order?: string[]; sortKey?: string; sortDir?: "asc" | "desc" };
+    if (Array.isArray(saved.order)) {
+      const known = saved.order.filter((k) => ATTR_COLS.some((c) => c.key === k));
+      const missing = ATTR_COLS.map((c) => c.key).filter((k) => !known.includes(k));
+      attrOrder.value = [...known, ...missing];
+    }
+    if (saved.sortKey) sortKey.value = saved.sortKey;
+    if (saved.sortDir) sortDir.value = saved.sortDir;
+  } catch {
+    // Повреждённая настройка не должна мешать открыть форму: берём порядок по умолчанию.
+  }
+};
+
+const saveColPrefs = () => {
+  if (!process.client) return;
+  try {
+    localStorage.setItem(
+      colPrefsKey.value,
+      JSON.stringify({ order: attrOrder.value, sortKey: sortKey.value, sortDir: sortDir.value })
+    );
+  } catch {
+    // Квота переполнена — настройка не критична, порядок остаётся в памяти сессии.
+  }
+};
+
+/** Перемещение столбца влево/вправо среди перемещаемых (drag + кнопки). */
+const moveAttrCol = (key: string, dir: -1 | 1) => {
+  const movable = attrOrder.value.filter((k) => MOVABLE_ATTR_KEYS.includes(k));
+  const i = movable.indexOf(key);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= movable.length) return;
+  [movable[i], movable[j]] = [movable[j], movable[i]];
+  let m = 0;
+  attrOrder.value = attrOrder.value.map((k) => (MOVABLE_ATTR_KEYS.includes(k) ? movable[m++] : k));
+  saveColPrefs();
+};
+
+/** Перетаскивание: источник запоминается на dragstart, порядок меняется на drop. */
+const dragKey = ref("");
+const onColDragStart = (key: string) => {
+  dragKey.value = MOVABLE_ATTR_KEYS.includes(key) ? key : "";
+};
+const onColDrop = (targetKey: string) => {
+  const from = dragKey.value;
+  dragKey.value = "";
+  if (!from || from === targetKey || !MOVABLE_ATTR_KEYS.includes(targetKey)) return;
+  const order = [...attrOrder.value];
+  const fi = order.indexOf(from);
+  const ti = order.indexOf(targetKey);
+  if (fi < 0 || ti < 0) return;
+  order.splice(fi, 1);
+  order.splice(ti, 0, from);
+  attrOrder.value = order;
+  saveColPrefs();
+};
+
+// ─────────── сортировка «от А до Я» и наоборот ───────────
+type SortDir = "asc" | "desc";
+const sortKey = ref("");
+const sortDir = ref<SortDir>("asc");
+
+/** Значение строки для сортировки по ключу столбца (включая фиксированные три). */
+const sortValue = (r: RetailRow, key: string): string | number => {
+  switch (key) {
+    case "code_cfo": return r.code_cfo;
+    case "cfo": return r.cfo || "";
+    case "city": return r.city || "";
+    case "lfl_status": return lflLabel(r.lfl_effective);
+    case "store_type": return r.store_type || "";
+    case "category": return r.category || "";
+    case "reg_manager": return r.reg_manager || "";
+    default: return "";
+  }
+};
+
+const toggleSort = (key: string) => {
+  if (sortKey.value === key) {
+    // Третий клик снимает сортировку: вернуться к порядку справочника надо уметь.
+    if (sortDir.value === "asc") sortDir.value = "desc";
+    else {
+      sortKey.value = "";
+      sortDir.value = "asc";
+    }
+  } else {
+    sortKey.value = key;
+    sortDir.value = "asc";
+  }
+  saveColPrefs();
+};
+
+const sortIcon = (key: string) => {
+  if (sortKey.value !== key) return "lucide:arrow-up-down";
+  return sortDir.value === "asc" ? "lucide:arrow-down-a-z" : "lucide:arrow-up-a-z";
+};
+
+const visibleAttrCols = computed(() =>
+  attrOrder.value.map((k) => ATTR_COLS.find((c) => c.key === k)).filter((c): c is ColDef => !!c && cols[c.key])
+);
 const visibleCmpCols = computed(() => CMP_COLS.filter((c) => cols[c.key]));
 const visibleIndCols = computed(() => IND_COLS.filter((c) => cols[c.key]));
 
@@ -800,7 +1006,10 @@ const liveInd = (row: RetailRow): Record<string, number | null> => {
 
 /** Строки к отрисовке с индексом (индекс — координата для навигации по сетке). */
 const liveRows = computed<LiveRow[]>(() =>
-  filteredRows.value.map((row, index) => ({ row, index, ind: liveInd(row), stale: rowDirty(row.code_cfo) }))
+  // Рендерим ОТСОРТИРОВАННЫЙ список (требование «Фронт таблицы»). index — позиция
+  // в видимом списке: он же используется навигацией по ячейкам, поэтому брать его
+  // из неотсортированного набора нельзя — стрелки уводили бы курсор не туда.
+  sortedRows.value.map((row, index) => ({ row, index, ind: liveInd(row), stale: rowDirty(row.code_cfo) }))
 );
 
 // ─────────── свёрнутый вид и итоги ───────────
@@ -1471,6 +1680,9 @@ const doImport = async (e: Event) => {
 };
 
 onMounted(async () => {
+  // Порядок и сортировка столбцов — настройка пользователя, поэтому читается до
+  // первого рендера сетки: иначе таблица дёрнется сразу после открытия.
+  loadColPrefs();
   await load();
   restoreDraft();
   // Сетка появляется по v-if="form" — виртуализатору нужен уже существующий
@@ -1580,6 +1792,16 @@ onBeforeUnmount(() => {
 .bulk-chk { white-space: nowrap; }
 /* Пояснение к формуле ФОТ: подпись в потоке панели, не поле ввода. */
 .bulk-note { font-size: var(--fs-sm); color: var(--text-muted); max-width: 420px; }
+/* Подсказка по аренде: правка ТЗ §30 — поле ввода, справочный факт рядом. */
+.bulk-hint {
+  margin: 0;
+  font-size: var(--fs-2xs);
+  color: var(--warn);
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 520px;
+}
 .bulk-go { margin-left: auto; }
 
 /* ─── валидации ─── */
@@ -1617,6 +1839,28 @@ onBeforeUnmount(() => {
 }
 .grid-table { min-width: max-content; }
 .grid-table thead th { z-index: 3; }
+/* Порядок и сортировка столбцов (требование «Фронт таблицы»). Иконка сортировки
+   держится приглушённой, пока столбец не выбран: иначе шапка рябит стрелками. */
+.sortable { cursor: pointer; user-select: none; }
+.sortable:hover { background: var(--bg-tonal); }
+.sortable .s-ic { opacity: 0.35; width: 12px; height: 12px; vertical-align: -1px; }
+.sortable.sorted .s-ic { opacity: 1; color: var(--accent); }
+.sortable.sorted { color: var(--text-strong); }
+.movable { cursor: grab; }
+.movable .g-ic { opacity: 0.3; width: 11px; height: 11px; vertical-align: -1px; }
+.movable:hover .g-ic { opacity: 0.7; }
+.mv-btns { display: none; margin-left: 2px; white-space: nowrap; }
+.movable:hover .mv-btns { display: inline-flex; }
+.mv {
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border-radius: var(--rd-2);
+  line-height: 1;
+  padding: 0 3px;
+  cursor: pointer;
+}
+.mv:hover { color: var(--text-strong); border-color: var(--accent); }
 .grid-table tbody td { height: 32px; }
 
 .st { position: sticky; background: var(--bg-surface); z-index: 1; }

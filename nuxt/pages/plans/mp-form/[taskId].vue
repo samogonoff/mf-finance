@@ -27,6 +27,19 @@
           </span> · {{ currency }} ·
           <span class="mode-tag" :class="{ inv: isInverse }" :title="modeHint">{{ modeLabel }}</span>
         </p>
+        <!-- Отметка снимка факта (правка ТЗ МП §12): форма читает снимок, а не
+             OLAP вживую, и обязана показывать, когда он собран. «Не собран» —
+             отдельное состояние: показать нули вместо него значит соврать. -->
+        <p v-if="form" class="snap-line" :class="{ warn: !form.fact_snapshot?.collected || !!form.fact_snapshot?.error }">
+          <Icon name="lucide:database" />
+          <template v-if="form.fact_snapshot?.collected">
+            данные факта актуальны на {{ snapAsOf }}
+            <span v-if="form.fact_snapshot?.error" class="snap-err">· ошибка сбора: {{ form.fact_snapshot.error }}</span>
+          </template>
+          <template v-else>
+            снимок факта за период ещё не собран — колонки факта пусты (не нули)
+          </template>
+        </p>
       </div>
       <div class="page-actions">
         <NuxtLink :to="backLink" class="btn btn-ghost"><Icon name="lucide:arrow-left" /> К процессу</NuxtLink>
@@ -220,6 +233,18 @@
                       <button v-if="canEdit && line.kind === 'input'" class="corr-btn" :class="{ on: isCorr(p.code_cfo, line.block_type) }" title="Корректировка с причиной (ADJ-02)" @click="toggleCorr(p.code_cfo, line.block_type)"><Icon name="lucide:pencil" /></button>
                     </div>
                     <span v-if="line.kind === 'input' && factOf(p.code_cfo, line.block_type) != null" class="fact">факт: {{ fmtMoney(factOf(p.code_cfo, line.block_type)) }}</span>
+                    <!-- Подсказка к полю ввода (правки ТЗ 02.09.2026, часть 1):
+                         %СПП и штрафы вводятся руками, а фактическое значение
+                         показывается РЯДОМ — вместе с расхождением и оговорками
+                         источника. В значение оно не подставляется. -->
+                    <span
+                      v-if="cellHint(p.code_cfo, line.block_type, displayInput(line, p.code_cfo))"
+                      class="hint-line"
+                      :title="cellHint(p.code_cfo, line.block_type, displayInput(line, p.code_cfo))"
+                    >
+                      <Icon name="lucide:lightbulb" />
+                      {{ hintShort(p.code_cfo, line.block_type) }}
+                    </span>
                     <span v-if="prevOf(p.code_cfo, line.block_type) != null" class="prev">пр. год: {{ fmt(line, prevOf(p.code_cfo, line.block_type)) }}</span>
                     <span v-if="stratOf(p.code_cfo, line.block_type) != null" class="strat">страт: {{ fmt(line, stratOf(p.code_cfo, line.block_type)) }}</span>
                     <span v-if="targetOf(p.code_cfo, line.block_type) != null" class="target">таргет: {{ fmt(line, targetOf(p.code_cfo, line.block_type)) }}</span>
@@ -320,7 +345,15 @@
 </template>
 
 <script setup lang="ts">
-import { useTasks, type MpTaskForm, type MpLine, type MpSaveRow, type MpFormCell, type MpFormPlatform } from "~/composables/useTasks";
+import {
+  useTasks,
+  type MpTaskForm,
+  type MpLine,
+  type MpSaveRow,
+  type MpFormCell,
+  type MpFormPlatform,
+  type FieldHint
+} from "~/composables/useTasks";
 import {
   computePlatform,
   computePlatformInverse,
@@ -444,6 +477,50 @@ const totalScoped = computed(() => visiblePlatforms.value.length !== (form.value
 // законодательной (20,36 % у WB/Lamoda/Ozon, 16,62 % у Yandex Market — ТЗ §3.4).
 // Округление до целых стирало бы это отличие.
 const vatLabel = computed(() => `${((form.value?.vat || 0) * 100).toFixed(2).replace(".", ",")} %`);
+
+/** Когда собран снимок факта (правка ТЗ МП §12): дата и время, а не только дата —
+ *  источник переливается несколько раз в сутки, и «сегодня» ничего не говорит. */
+const snapAsOf = computed(() => {
+  const at = form.value?.fact_snapshot?.refreshed_at;
+  if (!at) return "—";
+  const d = new Date(at);
+  return Number.isNaN(d.getTime())
+    ? at
+    : d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+});
+
+/** Подсказки к полям ввода по площадке и строке (правки ТЗ, часть 1).
+ *  Ключ — `${code_cfo}:${block_type}`: подсказка привязана к КОНКРЕТНОЙ ячейке. */
+const hintByCell = computed(() => {
+  const m: Record<string, FieldHint> = {};
+  for (const h of form.value?.hints || []) m[`${h.code_cfo}:${h.block_type}`] = h;
+  return m;
+});
+
+/** Короткая подпись подсказки под полем: только значение (подробности — в title). */
+const hintShort = (cfo: number, block: string): string => {
+  const h = hintByCell.value[`${cfo}:${block}`];
+  if (!h) return "";
+  return block === "spp"
+    ? `подсказка: ${(h.value * 100).toFixed(2).replace(".", ",")} %`
+    : `подсказка: ${num(h.value, 2)}`;
+};
+
+/** Текст подсказки для ячейки: значение + расхождение с введённым. */
+const cellHint = (cfo: number, block: string, current: number | null | undefined): string => {
+  const h = hintByCell.value[`${cfo}:${block}`];
+  if (!h) return "";
+  const isPct = block === "spp";
+  const shown = isPct ? `${(h.value * 100).toFixed(2).replace(".", ",")} %` : num(h.value, 2);
+  let text = `Факт: ${shown} (${h.source}${h.as_of ? `, ${h.as_of}` : ""})`;
+  if (typeof current === "number" && current !== 0) {
+    const diff = isPct ? (current - h.value) * 100 : current - h.value;
+    const diffText = isPct ? `${diff.toFixed(2).replace(".", ",")} п.п.` : num(diff, 2);
+    text += ` · расхождение с введённым: ${diffText}`;
+  }
+  if (h.note) text += ` · ${h.note}`;
+  return text;
+};
 
 const segmentTitle = computed(() => {
   if (segments.value.length > 1) return "все площадки";
@@ -765,6 +842,13 @@ onMounted(load);
 .hint-val, .fact, .prev, .strat, .target, .share { display: block; font-size: var(--fs-2xs); font-family: var(--font-mono); margin-top: 2px; }
 .hint-val { color: var(--warn); }
 .fact { color: var(--text-muted); }
+/* Подсказка к полю ввода: заметная, но не спорящая с введённым значением
+   (правки ТЗ 02.09.2026, часть 1 — подсказка не подставляется и не блокирует). */
+.hint-line { color: var(--warn); display: inline-flex; align-items: center; gap: 2px; cursor: help; }
+/* Отметка снимка факта: строка под подзаголовком, при проблеме — предупреждающая. */
+.snap-line { margin: 2px 0 0; font-size: var(--fs-2xs); color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
+.snap-line.warn { color: var(--warn); }
+.snap-err { color: var(--neg); }
 .prev { color: var(--text-muted); }
 .strat { color: var(--accent); }
 .target { color: var(--pos-strong); }

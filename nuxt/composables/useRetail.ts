@@ -117,6 +117,23 @@ export interface RetailForm {
   params: RetailParam[];
   warnings?: ValidationIssue[];
   fx_rate: number;
+  /** Подсказки к полям ввода: для аренды — факт предыдущего месяца, справочно. */
+  hints?: FieldHint[];
+}
+
+/**
+ * Подсказка к полю ввода (правки ТЗ 02.09.2026, часть 1). Значение НЕ
+ * подставляется в поле — показывается рядом с ним вместе с происхождением и
+ * периодом, чтобы решение осталось за человеком.
+ */
+export interface FieldHint {
+  kind: string;
+  code_cfo: number;
+  block_type: string;
+  value: number;
+  source: string;
+  note?: string;
+  as_of?: string;
 }
 
 export interface RetailCellWrite {
