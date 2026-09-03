@@ -155,6 +155,30 @@ var dirSchemas = map[string]DirSchema{
 			{Key: "note", Label: "Почему", Type: ColText, Search: true},
 		},
 	},
+	"dir_mp_spp_hint": {
+		Code: "dir_mp_spp_hint", Name: "Подсказка %СПП", Group: Group1C, Icon: "lucide:percent",
+		Description: "Фактический %СПП площадки за прошлый месяц — ПОДСКАЗКА к полю ввода, а не значение формы (правки ТЗ 02.09.2026, часть 1 и МП §8/§9). Считается взвешенным средним SUM(spp × SALES_RUB)/SUM(SALES_RUB) по MP.dbo.WB_Price_SPP_Analysis и весам MP.dbo.sales (ключ EAN); spp вне 0…100 отбрасывается. Регламент раз в сутки: в истории 112 млн строк.",
+		Stage: "1.1",
+		Columns: []DirColumn{
+			{Key: "code_cfo", Label: "Код ЦФО", Type: ColCode, Primary: true, Search: true, Width: "90px"},
+			{Key: "spp_pct", Label: "%СПП (факт)", Type: ColNumber, Hint: "доля 0…1"},
+			{Key: "as_of", Label: "Период", Type: ColCode, Filterable: true},
+			{Key: "source", Label: "Источник", Type: ColText},
+			{Key: "note", Label: "Примечание", Type: ColText},
+		},
+	},
+	"dir_mp_penalty_hint": {
+		Code: "dir_mp_penalty_hint", Name: "Подсказка по штрафам", Group: Group1C, Icon: "lucide:gavel",
+		Description: "Габаритные штрафы Wildberries за прошлый месяц из DWH.dbo.wb_dimensions_penalty — ПОДСКАЗКА к полю ввода (правка ТЗ МП §14). Это ЧАСТЬ штрафов, а не итог: общего реестра штрафов в базах нет, поэтому в форме штрафы вводятся руками. Копия в MP не используется — она встала 24.04.2026.",
+		Stage: "1.1",
+		Columns: []DirColumn{
+			{Key: "code_cfo", Label: "Код ЦФО", Type: ColCode, Primary: true, Search: true, Width: "90px"},
+			{Key: "amount", Label: "Штрафы (факт)", Type: ColMoney},
+			{Key: "as_of", Label: "Период", Type: ColCode, Filterable: true},
+			{Key: "source", Label: "Источник", Type: ColText},
+			{Key: "note", Label: "Примечание", Type: ColText},
+		},
+	},
 	"dir_pl_line": {
 		Code: "dir_pl_line", Name: "Статьи PL", Group: GroupManual, Icon: "lucide:list-tree",
 		Description: "Статьи отчёта о прибылях/убытках (Budgeting.dbo.CodePL, 423 записи). Кроме подписи несут НОРМАТИВНЫЙ НДС по странам, статью ДДС и флаг особого доступа. НДС хранится коэффициентом «1 + ставка» как в источнике: 1,00 = налог по статье не начисляется.",

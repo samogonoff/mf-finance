@@ -105,6 +105,13 @@ type Config struct {
 	// работает только по статьям сида).
 	PlansCodePLTable string
 
+	// Подсказки формы МП (правки ТЗ 02.09.2026, часть 1 и МП §9/§14). Значения в
+	// форму НЕ подставляются — показываются рядом с полем ввода. Пусто или нет
+	// MSSQL → подсказок не будет, поля остаются полями ввода.
+	PlansMpSppTable     string // MP.dbo.WB_Price_SPP_Analysis (spp + цена)
+	PlansMpSalesTable   string // MP.dbo.sales (веса SALES/SALES_RUB, ключ EAN)
+	PlansMpPenaltyTable string // DWH.dbo.wb_dimensions_penalty (НЕ копия в MP)
+
 	// Форма «Розница» (TPL-TO-RETAIL, ТЗ Розница §11). Источники — тот же сервер
 	// FinDWH/Budgeting/Checks, что у МП; при PlansMock=1 или без MSSQL работают
 	// фикстуры (plans/retail_mock.go), форма и тесты не зависят от VPN.
@@ -188,6 +195,9 @@ func Load() Config {
 		PlansPublishEnabled: env("PLANS_PUBLISH_ENABLED", "0") == "1",
 		PlansPublishSandbox: env("PLANS_PUBLISH_SANDBOX", "0") == "1",
 		PlansCodePLTable:    env("PLANS_CODEPL_TABLE", "Budgeting.dbo.CodePL"),
+		PlansMpSppTable:     env("PLANS_MP_SPP_TABLE", "MP.dbo.WB_Price_SPP_Analysis"),
+		PlansMpSalesTable:   env("PLANS_MP_SALES_TABLE", "MP.dbo.sales"),
+		PlansMpPenaltyTable: env("PLANS_MP_PENALTY_TABLE", "DWH.dbo.wb_dimensions_penalty"),
 		PlansPublishTargets: splitCSV(env("PLANS_PUBLISH_TARGETS",
 			"Budgeting.dbo.VFORMTOLOADTAKTTARGET,Budgeting.dbo.FormToLoaTaktTarget")),
 

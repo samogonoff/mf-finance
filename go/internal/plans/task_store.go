@@ -88,6 +88,9 @@ type TaskStore struct {
 	cards CardStore
 	cond  MpConditionsStore
 	rates *RateBook
+	// hints — подсказки к полям ввода (%СПП, штрафы). nil → подсказок нет, поля
+	// остаются полями ввода: это и есть требование части 1 правок 02.09.2026.
+	hints HintSource
 }
 
 // NewTaskStore — конструктор. fact может быть nil (факт тогда пуст).
@@ -100,6 +103,13 @@ func NewTaskStore(pool *pgxpool.Pool, fact MpFactSource) *TaskStore {
 // условий, а не подтягивается суммами.
 func (s *TaskStore) WithCalcContext(cards CardStore, cond MpConditionsStore, rates *RateBook) *TaskStore {
 	s.cards, s.cond, s.rates = cards, cond, rates
+	return s
+}
+
+// WithHints подключает подсказки к полям ввода (правки ТЗ 02.09.2026, часть 1):
+// фактическое значение показывается РЯДОМ с полем, в само поле не подставляется.
+func (s *TaskStore) WithHints(h HintSource) *TaskStore {
+	s.hints = h
 	return s
 }
 
