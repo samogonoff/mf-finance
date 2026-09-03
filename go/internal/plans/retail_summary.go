@@ -81,8 +81,13 @@ type RetailSummaryGroup struct {
 	Sections []RetailSummarySection `json:"sections"`
 }
 
-// RetailCurrencyBlock — валютный блок (ТЗ §8: нац. валюта — все 11 показателей,
-// BYN и USD — сокращённый набор из 6).
+// RetailCurrencyBlock — валютный блок. Нац. валюта — все 11 показателей, BYN —
+// сокращённый набор.
+//
+// БЛОКА USD В РОЗНИЦЕ НЕТ (правка ТЗ 02.09.2026 §27): в исходном файле
+// Розница_BY_магазины_2026_2пг.xlsx шесть листов, листа в USD среди них нет.
+// Требование пришло из файлов ЦЗ с месячными листами и было перенесено в ТЗ
+// розницы ошибочно. Не добавлять обратно «на всякий случай».
 type RetailCurrencyBlock struct {
 	Currency string `json:"currency"`
 	// Full=true — показывать все 11 показателей; false — сокращённый набор.
@@ -104,12 +109,11 @@ func retailFullFields() []string {
 	}
 }
 
-// retailShortFields — сокращённый набор из 6 для блоков BYN и USD (ТЗ §8).
+// retailShortFields — сокращённый набор из 6 для блока BYN (ТЗ §8).
 //
-// ТЗ состав шести не перечисляет. Берём ДЕНЕЖНЫЕ величины: пересчёт в BYN/USD —
+// ТЗ состав шести не перечисляет. Берём ДЕНЕЖНЫЕ величины: пересчёт в BYN —
 // слой отображения (§4), и проценты в нём те же самые числа, что в нац. блоке, —
-// дублировать их значит показать согласующему одно и то же трижды. Состав
-// подтвердить у аналитика (см. отчёт: открытые вопросы).
+// дублировать их значит показать согласующему одно и то же дважды.
 func retailShortFields() []string {
 	return []string{"fact_prev_year", "strategy", "tactic", "fact_cur", "period_total", "year_expectation"}
 }
@@ -168,19 +172,17 @@ func ComputeRetailSummary(in RetailSummaryInput) RetailSummary {
 		Rows:        len(rows),
 	}
 
-	// Валютные блоки: нац. валюта (все 11) + BYN и USD (сокращённые), ТЗ §8.
-	// Нац. валюта BY — BYN, поэтому дубль блока не создаём.
+	// Валютные блоки: нац. валюта (все 11) + BYN (сокращённый). USD-блока нет —
+	// правка ТЗ §27. Нац. валюта BY — BYN, поэтому дубль блока не создаём.
 	blocks := []struct {
 		cur  string
 		full bool
 	}{{in.NatCurrency, true}}
-	for _, c := range []string{"BYN", "USD"} {
-		if c != in.NatCurrency {
-			blocks = append(blocks, struct {
-				cur  string
-				full bool
-			}{c, false})
-		}
+	if in.NatCurrency != "BYN" {
+		blocks = append(blocks, struct {
+			cur  string
+			full bool
+		}{"BYN", false})
 	}
 	for _, b := range blocks {
 		rate := 1.0

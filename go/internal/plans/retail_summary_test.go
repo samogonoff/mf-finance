@@ -13,12 +13,14 @@ func summaryInput(rows []RetailRow, ser RetailSeries) RetailSummaryInput {
 	return RetailSummaryInput{
 		CardID: 1, Country: "BY", NatCurrency: "BYN", Year: 2026, Month: 7,
 		PlanMonths: []int{7, 8}, Rows: rows, Series: ser,
-		FxRates: map[string]float64{"BYN": 1, "USD": 0.3}, DirectoryActiveCount: -1,
+		FxRates: map[string]float64{"BYN": 1, "RUB": 0.0376}, DirectoryActiveCount: -1,
 	}
 }
 
-// TestSummary_CurrencyBlocksAndFieldSets — три валютных блока (ТЗ §8): нац.
-// валюта — все 11 показателей, BYN и USD — сокращённый набор из 6.
+// TestSummary_CurrencyBlocksAndFieldSets — валютные блоки: нац. валюта (все 11
+// показателей) и BYN (сокращённый набор из 6). USD-блока в рознице НЕТ —
+// правка ТЗ 02.09.2026 §27: в исходном файле такого листа не существует,
+// требование было перенесено из файлов ЦЗ ошибочно.
 func TestSummary_CurrencyBlocksAndFieldSets(t *testing.T) {
 	ser := NewRetailSeries()
 	ser.AddFact([]RetailFactCell{{CodeCFO: 100, Year: 2025, Month: 7, Amount: 1000}})
@@ -26,9 +28,9 @@ func TestSummary_CurrencyBlocksAndFieldSets(t *testing.T) {
 
 	sum := ComputeRetailSummary(summaryInput(rows, ser))
 
-	// Нац. валюта BY — BYN, поэтому дубль блока не создаётся: BYN + USD = 2 блока.
-	if len(sum.Blocks) != 2 {
-		t.Fatalf("валютных блоков: got %d, want 2 (BYN нац. + USD)", len(sum.Blocks))
+	// Нац. валюта BY — BYN, дубль блока не создаётся, USD не добавляется.
+	if len(sum.Blocks) != 1 {
+		t.Fatalf("валютных блоков: got %d, want 1 (только нац. BYN)", len(sum.Blocks))
 	}
 	nat := sum.Blocks[0]
 	if nat.Currency != "BYN" || !nat.Full {
@@ -37,12 +39,10 @@ func TestSummary_CurrencyBlocksAndFieldSets(t *testing.T) {
 	if len(nat.Fields) != 11 {
 		t.Errorf("нац. блок: показателей %d, ТЗ §8 требует 11", len(nat.Fields))
 	}
-	usd := sum.Blocks[1]
-	if usd.Currency != "USD" || usd.Full {
-		t.Errorf("второй блок должен быть USD с сокращённым набором, got %q full=%v", usd.Currency, usd.Full)
-	}
-	if len(usd.Fields) != 6 {
-		t.Errorf("USD-блок: показателей %d, ТЗ §8 требует 6", len(usd.Fields))
+	for _, b := range sum.Blocks {
+		if b.Currency == "USD" {
+			t.Fatal("USD-блока в рознице быть не должно (правка ТЗ §27)")
+		}
 	}
 
 	// Обязательные разрезы ТЗ §8: LFL / до года / новые / закрыты.
@@ -63,24 +63,31 @@ func TestSummary_CurrencyBlocksAndFieldSets(t *testing.T) {
 }
 
 // TestSummary_MoneyScaledPercentsNot — в валютном блоке пересчитываются только
-// денежные показатели; проценты остаются теми же (ТЗ §4/§8).
+// денежные показатели; проценты остаются теми же (ТЗ §4/§8). Проверяем на паре
+// «нац. валюта РФ + BYN»: в BY-карточке второго блока теперь нет вовсе.
 func TestSummary_MoneyScaledPercentsNot(t *testing.T) {
 	ser := NewRetailSeries()
 	ser.AddFact([]RetailFactCell{{CodeCFO: 100, Year: 2025, Month: 7, Amount: 1000}})
 	rows := []RetailRow{retailFilledRow(100, LFLYes, []int{7, 8}, 1200)}
 
-	sum := ComputeRetailSummary(summaryInput(rows, ser))
-	nat, usd := sum.Blocks[0].Total, sum.Blocks[1].Total
+	in := summaryInput(rows, ser)
+	in.Country, in.NatCurrency = "RU", "RUB"
+	in.FxRates = map[string]float64{"RUB": 1, "BYN": 0.0376}
+	sum := ComputeRetailSummary(in)
+	if len(sum.Blocks) != 2 {
+		t.Fatalf("для РФ ожидались блоки RUB + BYN, got %d", len(sum.Blocks))
+	}
+	nat, byn := sum.Blocks[0].Total, sum.Blocks[1].Total
 
 	if math.Abs(nat.Tactic-1200) > 1e-9 {
 		t.Errorf("тактика в нац. валюте: got %.2f, want 1200", nat.Tactic)
 	}
-	if math.Abs(usd.Tactic-360) > 1e-6 {
-		t.Errorf("тактика в USD (курс 0.3): got %.2f, want 360", usd.Tactic)
+	if math.Abs(byn.Tactic-45.12) > 1e-6 {
+		t.Errorf("тактика в BYN (курс 0,0376): got %.2f, want 45.12", byn.Tactic)
 	}
 	// LFL = 1200/1000 − 1 = 0.2 в ОБОИХ блоках.
-	if math.Abs(nat.LFL-0.2) > 1e-9 || math.Abs(usd.LFL-0.2) > 1e-9 {
-		t.Errorf("LFL должен быть одинаков в блоках: нац. %.4f, USD %.4f", nat.LFL, usd.LFL)
+	if math.Abs(nat.LFL-0.2) > 1e-9 || math.Abs(byn.LFL-0.2) > 1e-9 {
+		t.Errorf("LFL должен быть одинаков в блоках: нац. %.4f, BYN %.4f", nat.LFL, byn.LFL)
 	}
 }
 
