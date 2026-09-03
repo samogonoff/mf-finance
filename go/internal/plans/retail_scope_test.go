@@ -78,3 +78,38 @@ func TestRetailStoreClosed_ByDirectoryStatus(t *testing.T) {
 		}
 	}
 }
+
+// Метрики формы (правка ТЗ 02.09.2026 Розница §30): аренда стала полем ввода, и
+// статей аренды ДВЕ — 54 «Аренда помещений (стоянки)» и 55 «Аренда имущества».
+// Одна метрика на две статьи не разложится при публикации.
+func TestRetailMetrics_RentHasTwoArticles(t *testing.T) {
+	if RetailMetricCodePL(MetricRent) != 54 {
+		t.Fatalf("аренда помещений — статья 54, got %d", RetailMetricCodePL(MetricRent))
+	}
+	if RetailMetricCodePL(MetricRentAssets) != 55 {
+		t.Fatalf("аренда имущества — статья 55, got %d", RetailMetricCodePL(MetricRentAssets))
+	}
+	if RetailMetricCodePL(MetricPayroll) != 24 {
+		t.Fatalf("ФОТ — статья 24, got %d", RetailMetricCodePL(MetricPayroll))
+	}
+	// Продажи статьёй затрат не являются: код у них зависит от страны и канала и
+	// приходит из маппинга публикации, а не из этой таблицы.
+	if RetailMetricCodePL(MetricSales) != 0 {
+		t.Fatalf("для продаж код статьи здесь не задаётся, got %d", RetailMetricCodePL(MetricSales))
+	}
+}
+
+// Неизвестная метрика отклоняется: строка в tp_value с чужой метрикой не
+// находится ни отчётом, ни массовой операцией.
+func TestRetailMetricKnown(t *testing.T) {
+	for _, m := range []string{"", MetricSales, MetricPayroll, MetricRent, MetricRentAssets} {
+		if !RetailMetricKnown(m) {
+			t.Errorf("метрика %q должна быть известна форме", m)
+		}
+	}
+	for _, m := range []string{"rent2", "SALES", "прочее"} {
+		if RetailMetricKnown(m) {
+			t.Errorf("метрика %q не должна приниматься", m)
+		}
+	}
+}
