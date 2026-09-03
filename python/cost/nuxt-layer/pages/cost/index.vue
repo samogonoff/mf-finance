@@ -202,6 +202,12 @@
         <button v-if="can('cost:admin')" class="btn btn-ghost" @click="navigateTo('/cost/admin/roles')">
           <Icon name="lucide:settings" /> Администрирование
         </button>
+        <!-- Настройка провайдера модели — отдельное право: управление ролями и
+             распоряжение внешним оплачиваемым ключом это разные полномочия. -->
+        <button v-if="can('cost:llm_admin')" class="btn btn-ghost"
+                @click="navigateTo('/cost/admin/llm')">
+          <Icon name="lucide:brain" /> Модель ИИ
+        </button>
         <button
           v-if="can('cost:approve') || can('cost:peo_mark') || can('cost:edit_price')"
           class="btn btn-primary"

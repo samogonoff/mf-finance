@@ -6,6 +6,10 @@
         <p class="page-subtitle muted">Администрирование доступов к разделу «Себестоимость»</p>
       </div>
       <div class="page-header-actions">
+        <button v-if="can('cost:llm_admin')" class="btn btn-ghost btn-sm"
+                @click="navigateTo('/cost/admin/llm')">
+          <Icon name="lucide:brain" /> Модель ИИ
+        </button>
         <button class="btn btn-ghost btn-sm" @click="navigateTo('/cost')">
           <Icon name="lucide:arrow-left" /> Назад
         </button>

@@ -1,15 +1,32 @@
 <template>
-  <div class="page">
-    <h1 class="title">Подключение к языковой модели</h1>
+  <div class="page-cost">
+    <header class="page-header">
+      <div>
+        <h1 class="page-title">Подключение к языковой модели</h1>
+        <p class="page-subtitle muted">
+          Провайдер, ключ и модель для «Разбора ИИ» и углублённых исследований
+        </p>
+      </div>
+      <div class="page-header-actions">
+        <button class="btn btn-ghost btn-sm" @click="navigateTo('/cost/admin/roles')">
+          <Icon name="lucide:users" /> Роли раздела
+        </button>
+        <button class="btn btn-ghost btn-sm" @click="navigateTo('/cost')">
+          <Icon name="lucide:arrow-left" /> Назад
+        </button>
+      </div>
+    </header>
 
-    <p v-if="permLoading" class="note">Проверяю права…</p>
+    <p v-if="permLoading" class="muted" style="text-align:center;padding:24px">
+      <Icon name="lucide:loader" class="spinning" /> Проверка прав доступа…
+    </p>
 
     <div v-else-if="!can('cost:llm_admin')" class="cost-error">
       Нужно право <code>cost:llm_admin</code>. Обратитесь к администратору раздела.
     </div>
 
     <template v-else>
-      <p class="note">
+      <p class="muted note">
         Настройки применяются к «Разбору ИИ» и углублённым исследованиям без
         перезапуска сервиса. Заданное здесь перекрывает переменные
         <code>COST_LLM_*</code> из окружения; пустое поле — значит «брать из
@@ -29,7 +46,7 @@
         <label class="row">
           <span class="lbl">Адрес провайдера
             <span class="src">{{ view.sources?.api_base }}</span></span>
-          <input v-model.trim="form.api_base" class="inp" type="text"
+          <input v-model.trim="form.api_base" class="form-input" type="text"
                  placeholder="https://opencode.ai/zen/v1" />
           <span class="hint">
             OpenAI-совместимый эндпоинт, без <code>/chat/completions</code> на конце.
@@ -46,7 +63,7 @@
         <label class="row">
           <span class="lbl">Ключ
             <span class="src">{{ view.sources?.api_key }}</span></span>
-          <input v-model.trim="form.api_key" class="inp" type="password"
+          <input v-model.trim="form.api_key" class="form-input" type="password"
                  autocomplete="off"
                  :placeholder="view.api_key_mask || 'не задан'" />
           <span class="hint">
@@ -59,12 +76,12 @@
           <span class="lbl">Модель
             <span class="src">{{ view.sources?.model }}</span></span>
           <span class="model-row">
-            <select v-if="models.length" v-model="form.model" class="inp">
+            <select v-if="models.length" v-model="form.model" class="form-input">
               <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
             </select>
-            <input v-else v-model.trim="form.model" class="inp" type="text"
+            <input v-else v-model.trim="form.model" class="form-input" type="text"
                    placeholder="deepseek-v4-flash" />
-            <button type="button" class="btn ghost" :disabled="loadingModels"
+            <button type="button" class="btn btn-ghost btn-sm" :disabled="loadingModels"
                     @click="loadModels">
               {{ loadingModels ? 'Запрашиваю…' : 'Список от провайдера' }}
             </button>
@@ -75,7 +92,7 @@
         <label class="row">
           <span class="lbl">Размышления модели
             <span class="src">{{ view.sources?.reasoning }}</span></span>
-          <select v-model="form.reasoning" class="inp narrow">
+          <select v-model="form.reasoning" class="form-input narrow">
             <option value="none">none — выключены (рекомендуется)</option>
             <option value="low">low</option>
             <option value="medium">medium</option>
@@ -91,22 +108,22 @@
         <div class="pair">
           <label class="row">
             <span class="lbl">Таймаут одного вызова, с</span>
-            <input v-model.number="form.timeout_s" class="inp narrow" type="number"
+            <input v-model.number="form.timeout_s" class="form-input narrow" type="number"
                    min="5" max="600" />
           </label>
           <label class="row">
             <span class="lbl">Бюджет исследования, с</span>
-            <input v-model.number="form.agent_budget_s" class="inp narrow" type="number"
+            <input v-model.number="form.agent_budget_s" class="form-input narrow" type="number"
                    min="20" max="900" />
             <span class="hint">Сколько времени агент может копать один вопрос.</span>
           </label>
         </div>
 
         <div class="actions">
-          <button class="btn" type="submit" :disabled="saving">
+          <button class="btn btn-primary" type="submit" :disabled="saving">
             {{ saving ? 'Сохраняю…' : 'Сохранить' }}
           </button>
-          <button class="btn ghost" type="button" :disabled="testing" @click="test">
+          <button class="btn btn-ghost" type="button" :disabled="testing" @click="test">
             {{ testing ? 'Проверяю…' : 'Проверить подключение' }}
           </button>
         </div>
@@ -127,7 +144,7 @@
       </form>
 
       <section v-if="usage" class="card">
-        <h2 class="subtitle">Расход за {{ usage.days }} дней</h2>
+        <h2 class="card-title">Расход за {{ usage.days }} дней</h2>
         <table class="usage">
           <thead>
             <tr><th></th><th>вызовов</th><th>сбоев</th><th>токенов</th><th>стоимость</th></tr>
@@ -155,12 +172,12 @@
             </tr>
           </tfoot>
         </table>
-        <p v-if="usage.asks.avg_ms" class="note">
+        <p v-if="usage.asks.avg_ms" class="muted note">
           Среднее исследование — {{ (usage.asks.avg_ms / 1000).toFixed(0) }} с.
         </p>
       </section>
 
-      <p v-if="view.updated_at" class="note">
+      <p v-if="view.updated_at" class="muted note">
         Последнее изменение: {{ new Date(view.updated_at).toLocaleString('ru') }}
         <template v-if="view.updated_by">, {{ view.updated_by }}</template>.
       </p>
@@ -338,7 +355,7 @@ onMounted(load);
   border-radius: var(--rd-2);
 }
 
-.inp {
+.form-input-local {
   padding: var(--sp-1) var(--sp-2);
   font-family: inherit;
   font-size: var(--fs-sm);
@@ -347,11 +364,11 @@ onMounted(load);
   border: 1px solid var(--border);
   border-radius: var(--rd-2);
 }
-.inp:focus { outline: none; border-color: var(--border-focus); box-shadow: var(--shadow-focus); }
-.inp.narrow { max-width: 220px; }
+.form-input-local:focus { outline: none; border-color: var(--border-focus); box-shadow: var(--shadow-focus); }
+.form-input.narrow { max-width: 220px; }
 
 .model-row { display: flex; gap: var(--sp-2); align-items: center; }
-.model-row .inp { flex: 1; min-width: 0; }
+.model-row .form-input-local { flex: 1; min-width: 0; }
 
 .switch { display: flex; gap: var(--sp-2); align-items: center; font-size: var(--fs-sm); }
 
