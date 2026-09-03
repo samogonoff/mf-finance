@@ -172,6 +172,9 @@
       </article>
     </section>
 
+    <CostChartInsight block="margin_output" block-title="Маржа выпуска"
+                      :charts="insightChartsMarginOutput" :context="insightContext" />
+
     <!-- Матрица с проваливанием: Level 01 → … → Level 05 → артикул → задание.
          Путь применяется только к матрице и водопадам — не к плиткам и графикам. -->
     <section class="card">
@@ -276,7 +279,63 @@
           </div>
         </article>
       </section>
+
+      <CostChartInsight block="norm_vs_fact" block-title="Норматив против факта"
+                        :charts="insightChartsNormVsFact" :context="insightContext" />
     </template>
+
+    <!-- Лист «Отклонения по артикулам» — просьба заказчика 25.08.2026. Формат
+         повторяет страницу «Отклонение сс» его отчёта Power BI, плюс № плана. -->
+    <h2 class="section-title">Отклонения по артикулам</h2>
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <p class="card-note">
+            Строка — план + модель + артикул. Три себестоимости <strong>единицы</strong> в BYN:
+            плановая (справочник моделей Лисы), нормативная и фактическая (по стоимости минуты).
+            Отклонение — «что сравниваем / база − 1».
+            <span v-if="meta.deviations_truncated" class="warn">
+              Показаны {{ meta.deviations_row_limit }} артикулов с наибольшим выпуском — сузьте фильтры.</span>
+          </p>
+          <p class="card-note">
+            Плановая себестоимость ведётся не везде: в выбранном периоде она есть у
+            <strong>{{ devPlanCoverage === null ? '—' : fmtPct(devPlanCoverage, 0) }}</strong>
+            показанных артикулов<span v-if="devView === 'plan' && devPlanCoverage !== null && devPlanCoverage < 20">
+              — для носков и колготок план в Лисе не заводится, для них смысл имеет вкладка «Норматив / факт»</span>.
+          </p>
+        </div>
+        <div class="view-switch" role="group" aria-label="Что сравнивать">
+          <button v-for="v in devViews" :key="v.key" class="btn btn-sm"
+                  :class="v.key === devView ? 'btn-primary' : 'btn-ghost'"
+                  @click="devView = v.key">{{ v.label }}</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th v-for="c in devColumns" :key="c.key" :class="{ 'col-label': c.text }"
+                  :title="c.title" class="sortable" @click="sortDev(c.key)">
+                {{ c.label }}<span v-if="devSort.key === c.key">{{ devSort.asc ? ' ▲' : ' ▼' }}</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, i) in devRows" :key="i">
+              <td v-for="c in devColumns" :key="c.key" :class="[c.text ? 'col-label' : 'num', c.cls?.(row)]">
+                {{ c.fmt(row) }}
+              </td>
+            </tr>
+            <tr v-if="!devRows.length">
+              <td :colspan="devColumns.length" class="empty-row">
+                {{ devView === 'plan' ? 'Плановая себестоимость не заведена ни у одного артикула выборки'
+                                      : 'Нет артикулов с годной фактической себестоимостью' }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
 
     <h2 class="section-title">Динамика себестоимости</h2>
     <section class="charts">
@@ -454,6 +513,7 @@ async function reload(defaultPeriod = false) {
     byBm.value = res.by_bm || []
     byLevel01.value = res.by_level01 || []
     matrix.value = res.matrix || []
+    deviations.value = res.deviations || []
     meta.value = res.meta || { matrix_path: [], period: { year: [], month: [] } }
     filterOptions.value = res.options || {}
     truncatedFilters.value = res.meta?.options_truncated || []
@@ -635,6 +695,90 @@ const tileList = computed(() => {
         cmp('минут пошива на штуку', t.min_per_unit, null, (v: any) => nf2.format(Number(v)), () => ''),
       ],
     },
+  ]
+})
+
+// ── Отклонения по артикулам ─────────────────────────────────────────────────
+//
+// Две вкладки, как просил заказчик: «фактическая от плановой» и «нормативная от
+// фактической». Обе — на одних строках (план + модель + артикул), меняется
+// только набор колонок и то, по чему строки отбираются: показывать в отчёте
+// «Факт / план» артикул без плана бессмысленно.
+
+const deviations = ref<any[]>([])
+const devView = ref<'plan' | 'fact'>('plan')
+const devViews = [
+  { key: 'plan' as const, label: 'Факт / план' },
+  { key: 'fact' as const, label: 'Норматив / факт' },
+]
+/** Сортировка листа. По умолчанию — по отклонению, по убыванию: заказчик
+ * смотрит его как список «где разошлось сильнее всего» (так и в его Power BI). */
+const devSort = reactive<{ key: string; asc: boolean }>({ key: 'dev', asc: false })
+
+function sortDev(key: string) {
+  if (devSort.key === key) devSort.asc = !devSort.asc
+  else { devSort.key = key; devSort.asc = false }
+}
+
+/** Ключевая колонка отклонения для текущей вкладки — по ней сортируем и её
+ * подсвечиваем. */
+const devKey = computed(() => (devView.value === 'plan' ? 'dev_fact_plan_pct' : 'dev_fact_norm_pct'))
+
+const devRows = computed(() => {
+  // Во вкладке «Факт / план» строки без плана скрываем: пустая колонка сравнения
+  // — не информация, а шум на весь экран.
+  const rows = deviations.value.filter(r =>
+    devView.value === 'plan' ? isNum(r.unit_plan_byn) : isNum(r.unit_fact_byn))
+  const k = devSort.key === 'dev' ? devKey.value : devSort.key
+  const dir = devSort.asc ? 1 : -1
+  return [...rows].sort((a, b) => {
+    const x = a[k], y = b[k]
+    // Пустые всегда внизу, независимо от направления.
+    if (!isNum(x) && !isNum(y)) return 0
+    if (!isNum(x)) return 1
+    if (!isNum(y)) return -1
+    if (typeof x === 'string' || typeof y === 'string') return dir * String(x).localeCompare(String(y), 'ru')
+    return dir * (Number(x) - Number(y))
+  })
+})
+
+/** Доля показанных артикулов, у которых есть плановая себестоимость. */
+const devPlanCoverage = computed(() => {
+  const all = deviations.value.length
+  if (!all) return null
+  return (100 * deviations.value.filter(r => isNum(r.unit_plan_byn)).length) / all
+})
+
+const devColumns = computed<Col[]>(() => {
+  const devCls = (v: any, higherIsBetter = true) =>
+    !isNum(v) || Number(v) === 0 ? '' : (Number(v) > 0) === higherIsBetter ? 'pos' : 'neg'
+  const base: Col[] = [
+    { key: 'plan_id', label: '№ плана', text: true, fmt: r => r.plan_id || '—' },
+    { key: 'name', label: 'Наименование', text: true, fmt: r => r.name || '—' },
+    { key: 'articul', label: 'Артикул', text: true, fmt: r => r.articul || '—' },
+    { key: 'vol', label: 'Выпуск, шт', fmt: r => fmtInt(r.vol) },
+  ]
+  if (devView.value === 'plan') {
+    return [...base,
+      { key: 'unit_fact_byn', label: 'С/с штуки факт', title: 'по фактической стоимости минуты; где её нет — прочерк',
+        fmt: r => fmtMoney(r.unit_fact_byn) },
+      { key: 'unit_norm_byn', label: 'С/с штуки норматив', fmt: r => fmtMoney(r.unit_norm_byn) },
+      { key: 'unit_plan_byn', label: 'С/с штуки плановая', title: 'PLAN_PRICE справочника моделей Лисы',
+        fmt: r => fmtMoney(r.unit_plan_byn) },
+      { key: 'dev_fact_plan_pct', label: 'Отклонение факт / план, %', title: 'факт / план − 1; выше нуля — дороже плана',
+        fmt: r => fmtSignedPct(r.dev_fact_plan_pct), cls: r => devCls(r.dev_fact_plan_pct, false) },
+      { key: 'dev_norm_plan_pct', label: 'Норматив / план, %', fmt: r => fmtSignedPct(r.dev_norm_plan_pct),
+        cls: r => devCls(r.dev_norm_plan_pct, false) },
+    ]
+  }
+  return [...base,
+    { key: 'unit_norm_byn', label: 'С/с штуки норматив', fmt: r => fmtMoney(r.unit_norm_byn) },
+    { key: 'unit_fact_byn', label: 'С/с штуки факт', fmt: r => fmtMoney(r.unit_fact_byn) },
+    { key: 'dev_fact_norm_pct', label: 'Отклонение факт / норматив, %', title: 'факт / норматив − 1; выше нуля — факт дороже',
+      fmt: r => fmtSignedPct(r.dev_fact_norm_pct), cls: r => devCls(r.dev_fact_norm_pct, false) },
+    { key: 'fact_coverage_pct', label: 'Факт годен, % выпуска', title: 'у остальных строк артикула фактическая ставка минуты не заведена',
+      fmt: r => fmtPct(r.fact_coverage_pct, 0), cls: r => (isNum(r.fact_coverage_pct) && r.fact_coverage_pct < 100 ? 'neg' : '') },
+    { key: 'unit_price_byn', label: 'Отпускная цена', fmt: r => fmtMoney(r.unit_price_byn) },
   ]
 })
 
@@ -849,7 +993,7 @@ const waterfallPy = computed(() => waterfall(`margin_dev_${cur.value}_py`))
 
 // ── Матрица ─────────────────────────────────────────────────────────────────
 
-type Col = { key: string; label: string; title?: string; fmt: (r: any) => string; cls?: (r: any) => string }
+type Col = { key: string; label: string; title?: string; text?: boolean; fmt: (r: any) => string; cls?: (r: any) => string }
 const matrixColumns = computed<Col[]>(() => {
   const c = cur.value, C = currency.value
   const devCls = (v: any, higherIsBetter = true) =>
@@ -988,6 +1132,86 @@ const waterfallOptions = computed(() => ({
     y: axis(currency.value),
   },
 }))
+
+// ── Данные для блоков «Разбор ИИ» ───────────────────────────────────────────
+// Блок ставится под логической СЕКЦИЕЙ, а не под каждой карточкой: связка
+// «маржа выросла, а маржинальность просела» видна только на нескольких графиках
+// сразу. Разбор идёт по тем же сериям, что нарисованы, — второй раз данные не
+// запрашиваются.
+
+/** Из данных Chart.js оставляем только подписи и числа.
+ *
+ * Цвета, типы серий и прочее оформление в промпте бесполезны, зато раздувают
+ * его в разы: каждая серия тащит массивы backgroundColor на все точки. */
+function slim(data: any): any | null {
+  if (!data?.datasets?.length) return null
+  return {
+    labels: (data.labels || []).map((l: any) => String(l)),
+    datasets: data.datasets.map((ds: any) => ({
+      label: String(ds.label ?? 'серия'),
+      data: (ds.data || []).map((v: any) => (typeof v === 'number' ? v : (v == null ? null : Number(v)))),
+    })),
+  }
+}
+
+/** Отбрасываем карточки, которые на странице ещё не отрисованы (v-if по данным):
+ * присылать пустую серию нет смысла, а сервер её и не примет. */
+function chartsOf(items: Array<{ title: string; note?: string; raw: any }>) {
+  return items
+    .map(i => ({ title: i.title, note: i.note, series: slim(i.raw) }))
+    .filter(c => c.series !== null)
+}
+
+/** Что человек видел на экране: период, валюта, база себестоимости, фильтры.
+ *
+ * Отдельным пунктом — ОХВАТ ГРАФИКОВ, и это не формальность. Графики динамики
+ * игнорируют фильтр месяца и всегда рисуют все месяцы выбранного года (так
+ * устроен дашборд, см. подпись первой карточки). Раньше в контекст уходило
+ * «Период: сентябрь 2026», хотя в серии девять месяцев, — модель считала, что
+ * видит выбранный месяц, и сравнивала несопоставимое. */
+const insightContext = computed(() => {
+  const active: Record<string, string> = {}
+  for (const f of filterConfig) {
+    const vals = selected[f.key] || []
+    if (vals.length) active[f.label] = vals.join(', ')
+  }
+
+  const monthsPicked = (selected.month || []).length > 0
+  const scope = monthsPicked
+    ? 'Графики динамики показывают ВСЕ месяцы выбранного года — фильтр месяца ' +
+      'на них не влияет (он применён к плиткам и разрезам). Выводы о динамике ' +
+      'делай по месяцам, показанным на графике, а не по выбранному фильтру.'
+    : 'Графики динамики показывают все месяцы выбранного года.'
+
+  return {
+    'Фильтр периода': periodLabel.value,
+    'Что показано на графиках': scope,
+    'Валюта': currency.value,
+    'База себестоимости': costBasis.value === 'fact' ? 'фактическая' : 'нормативная',
+    ...(matrixPath.value.length ? { 'Путь матрицы': matrixPath.value.join(' → ') } : {}),
+    ...active,
+  }
+})
+
+const insightChartsMarginOutput = computed(() => chartsOf([
+  { title: `Динамика маржи выпуска, ${currency.value}`, raw: marginDynData.value,
+    note: 'Столбцы — текущий год и тот же месяц прошлого года, линия — темп роста к прошлому году' },
+  { title: 'Динамика маржинальности, %', raw: pctDynData.value,
+    note: 'Пунктир — норма по Level 01 из таргетов раздела' },
+  { title: `Маржа по бренд-менеджерам, ${currency.value}`, raw: bmMoneyData.value,
+    note: 'Текущий период против прошлого года' },
+  { title: 'Маржинальность по бренд-менеджерам, %', raw: bmPctData.value,
+    note: 'Взвешенная по выпуску в BYN' },
+  { title: `Маржа по Level 01, ${currency.value}`, raw: donutData.value,
+    note: 'Доли только положительной маржи' },
+]))
+
+const insightChartsNormVsFact = computed(() => chartsOf([
+  { title: 'Маржинальность по нормативу и по факту, %', raw: factDynData.value,
+    note: 'Обе линии по одним строкам с годным фактом; разрыв — эффект фактической ставки минуты' },
+  { title: 'Отклонение маржинальности факт − норматив по бренд-менеджерам, пп', raw: factBmData.value,
+    note: 'Ниже нуля — факт дороже норматива' },
+]))
 </script>
 
 <style scoped>
@@ -1066,6 +1290,8 @@ const waterfallOptions = computed(() => ({
 .table-wrap { overflow-x: auto; }
 .matrix { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
 .matrix th, .matrix td { padding: var(--sp-1) var(--sp-2); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.matrix th.sortable { cursor: pointer; user-select: none; }
+.matrix th.sortable:hover { color: var(--accent); }
 .matrix th { text-align: right; font-weight: var(--fw-medium); color: var(--text-muted); font-size: var(--fs-2xs); }
 .matrix th.col-label, .matrix td.col-label { text-align: left; }
 .matrix td.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
