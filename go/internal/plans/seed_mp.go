@@ -29,12 +29,46 @@ type MarketplaceRow struct {
 }
 
 // PLLineRow — строка dir_pl_line (статья PL).
+//
+// Колонки после Budgeting.dbo.CodePL (правки ТЗ 02.09.2026, часть 5): справочник
+// статей несёт не только подпись, но и НОРМАТИВНЫЙ НДС по странам, статью ДДС и
+// флаг особого доступа. Раньше пять НДС-колонок в ТЗ были описаны как
+// «коэффициенты индексации» — это оказалось неверно (правка МП §18), никакой
+// индексации в справочнике нет.
 type PLLineRow struct {
 	CodePL    int    `json:"code_pl"`
 	Name      string `json:"expense_name"`
 	GroupPL   string `json:"group_pl,omitempty"`
 	BlockType string `json:"block_type,omitempty"`
+	// Нормативный НДС по странам. ВНИМАНИЕ: в источнике это КОЭФФИЦИЕНТ «1 + ставка»
+	// (BY 1,20 · RU 1,22 · KZ 1,16 · UZ 1,12 · TR 1,00), а не сама ставка;
+	// 1,00 означает «НДС по этой статье в этой стране не начисляется».
+	// Формат сохраняем как в источнике — иначе сверка со справочником перестанет
+	// быть механической. Ставку отдаёт RateBook.NormativeVat.
+	VatBY float64 `json:"vat_by,omitempty"`
+	VatRU float64 `json:"vat_ru,omitempty"`
+	VatKZ float64 `json:"vat_kz,omitempty"`
+	VatUZ float64 `json:"vat_uz,omitempty"`
+	VatTR float64 `json:"vat_tr,omitempty"`
+	// CFItem — статья движения денежных средств. Строка, а не число: в источнике
+	// встречаются 'инвест' и '-99999' (ВГО-обороты).
+	CFItem string `json:"cf_item,omitempty"`
+	// SpecialAccess — тот же флаг 0/1, что выбирается в ALL_view.
+	SpecialAccess int `json:"special_access,omitempty"`
+	// Note — служебная пометка (расхождения с ТЗ, требующие сверки).
+	Note string `json:"note,omitempty"`
 }
+
+// Нормативные коэффициенты НДС по странам (правки ТЗ 02.09.2026, часть 5).
+// vatNone — статья, по которой НДС не начисляется (в источнике ровно 1,00).
+const (
+	vatNone = 1.00
+	vatBY   = 1.20
+	vatRU   = 1.22
+	vatKZ   = 1.16
+	vatUZ   = 1.12
+	vatTR   = 1.00 // Турция: в справочнике всегда 1,00 — НДС не применяется
+)
 
 // CFORow — строка dir_cfo (MP-подмножество: площадки + групповые коды).
 type CFORow struct {
@@ -57,6 +91,9 @@ func MarketplaceSeed() []MarketplaceRow {
 		{CodeCFO: 955, NameCFO: "Золотое яблоко", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
 		// small (RU) — ТЕКС-бренды → MF Tex
 		{CodeCFO: 957, NameCFO: "Yandex Market ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Tex"},
+		// 959 в списке площадок правок 02.09.2026 (МП §4) отсутствует — там 14 ЦФО.
+		// Не удаляем: строка пришла из данных, и молча терять площадку хуже, чем
+		// показать её с пометкой «сверить со справочником».
 		{CodeCFO: 959, NameCFO: "Детский мир ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Tex"},
 		{CodeCFO: 990, NameCFO: "Wildberries ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Tex"},
 		{CodeCFO: 991, NameCFO: "Ozon ТЕКС", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Tex"},
@@ -83,29 +120,41 @@ func PLLineSeed() []PLLineRow {
 		{CodePL: 2006, Name: "Себестоимость общая (Cost of goods) осн+пошив", GroupPL: "СЕБЕСТОИМОСТЬ", BlockType: "cogs_total"},
 		{CodePL: 6006, Name: "Себестоимость общая (Cost of goods) осн+пошив", GroupPL: "СЕБЕСТОИМОСТЬ", BlockType: "cogs_total"},
 		// Прямые затраты по площадкам / общие затраты (Расходы Code PL)
-		{CodePL: 10, Name: "Реклама-наружная (борды, метро)", GroupPL: "РЕКЛАМА И МАРКЕТИНГ"},
-		{CodePL: 12, Name: "Реклама-тв, радио", GroupPL: "РЕКЛАМА И МАРКЕТИНГ"},
-		{CodePL: 13, Name: "Реклама-интернет", GroupPL: "РЕКЛАМА И МАРКЕТИНГ"},
-		{CodePL: 14, Name: "Реклама-SEO, контекстная, ремаркетинг, e-mail-рассылка", GroupPL: "РЕКЛАМА И МАРКЕТИНГ"},
-		{CodePL: 15, Name: "Реклама-соц.сети", GroupPL: "РЕКЛАМА И МАРКЕТИНГ"},
-		{CodePL: 16, Name: "Реклама-транспорт, лифты", GroupPL: "РЕКЛАМА И МАРКЕТИНГ"},
-		{CodePL: 24, Name: "Заработная плата МФ (РБ)/ ТД (РФ)", GroupPL: "ВЫПЛАТЫ РАБОТНИКАМ"},
-		{CodePL: 26, Name: "Налоги от выплат МФ(РБ)/ ТД (РФ)", GroupPL: "ВЫПЛАТЫ РАБОТНИКАМ"},
-		{CodePL: 45, Name: "Расходы на упаковку (пакеты)", GroupPL: "ОСНОВНЫЕ РАСХОДЫ"},
-		{CodePL: 48, Name: "Расходы на IT обслуживание (программное обеспечение)", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ"},
-		{CodePL: 50, Name: "Грузоперевозки доставка сырья", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ"},
-		{CodePL: 51, Name: "Грузоперевозки экспорт", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ"},
-		{CodePL: 52, Name: "Грузоперевозки развоз и перемещение", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ"},
-		{CodePL: 53, Name: "Расходы на охрану и страхование", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ"},
-		{CodePL: 54, Name: "Аренда помещений (стоянки)", GroupPL: "АРЕНДА"},
-		{CodePL: 55, Name: "Аренда имущества", GroupPL: "АРЕНДА"},
-		{CodePL: 58, Name: "Банковские расходы / эквайринг", GroupPL: "ПРОЧИЕ РАСХОДЫ"},
-		{CodePL: 64, Name: "Агентское (комиссионное) вознаграждение", GroupPL: "ПРОЧИЕ РАСХОДЫ"},
+		{CodePL: 10, Name: "Реклама-наружная (борды, метро)", GroupPL: "РЕКЛАМА И МАРКЕТИНГ", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "4"},
+		{CodePL: 12, Name: "Реклама-тв, радио", GroupPL: "РЕКЛАМА И МАРКЕТИНГ", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "4"},
+		{CodePL: 13, Name: "Реклама-интернет", GroupPL: "РЕКЛАМА И МАРКЕТИНГ", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "4"},
+		{CodePL: 14, Name: "Реклама-SEO, контекстная, ремаркетинг, e-mail-рассылка", GroupPL: "РЕКЛАМА И МАРКЕТИНГ", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "4"},
+		{CodePL: 15, Name: "Реклама-соц.сети", GroupPL: "РЕКЛАМА И МАРКЕТИНГ", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "4"},
+		{CodePL: 16, Name: "Реклама-транспорт, лифты", GroupPL: "РЕКЛАМА И МАРКЕТИНГ", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "4"},
+		{CodePL: 24, Name: "Заработная плата МФ (РБ)/ ТД (РФ)", GroupPL: "ВЫПЛАТЫ РАБОТНИКАМ", VatBY: vatNone, VatRU: vatNone, VatKZ: vatNone, VatUZ: vatNone, VatTR: vatNone, CFItem: "7"},
+		{CodePL: 26, Name: "Налоги от выплат МФ(РБ)/ ТД (РФ)", GroupPL: "ВЫПЛАТЫ РАБОТНИКАМ", VatBY: vatNone, VatRU: vatNone, VatKZ: vatNone, VatUZ: vatNone, VatTR: vatNone, CFItem: "11"},
+		{CodePL: 45, Name: "Расходы на упаковку (пакеты)", GroupPL: "ОСНОВНЫЕ РАСХОДЫ", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "3"},
+		{CodePL: 48, Name: "Расходы на IT обслуживание (программное обеспечение)", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "3"},
+		{CodePL: 50, Name: "Грузоперевозки доставка сырья", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ", VatBY: vatNone, VatRU: vatNone, VatKZ: vatNone, VatUZ: vatNone, VatTR: vatNone, CFItem: "3"},
+		{CodePL: 51, Name: "Грузоперевозки экспорт", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ", VatBY: vatNone, VatRU: vatNone, VatKZ: vatNone, VatUZ: vatNone, VatTR: vatNone, CFItem: "3"},
+		{CodePL: 52, Name: "Грузоперевозки развоз и перемещение", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "3"},
+		{CodePL: 53, Name: "Расходы на охрану и страхование", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "3"},
+		{CodePL: 54, Name: "Аренда помещений (стоянки)", GroupPL: "АРЕНДА", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "6"},
+		{CodePL: 55, Name: "Аренда имущества", GroupPL: "АРЕНДА", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "6"},
+		{CodePL: 58, Name: "Банковские расходы / эквайринг", GroupPL: "ПРОЧИЕ РАСХОДЫ", VatBY: vatNone, VatRU: vatNone, VatKZ: vatNone, VatUZ: vatNone, VatTR: vatNone, CFItem: "10"},
+		{CodePL: 64, Name: "Агентское (комиссионное) вознаграждение", GroupPL: "ПРОЧИЕ РАСХОДЫ", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "3"},
 		// Отдельного кода под штрафы в справочнике нет (правка ТЗ МП §5): 66 —
 		// это «Прочие расходы», и штрафы площадок вводятся в этой строке формы.
-		{CodePL: 66, Name: "Прочие расходы", GroupPL: "ПРОЧИЕ РАСХОДЫ", BlockType: "penalties"},
-		{CodePL: 67, Name: "Амортизация", GroupPL: "АМОРТИЗАЦИЯ"},
-		{CodePL: 93, Name: "Грузоперевозки импорт товара", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ"},
+		{CodePL: 66, Name: "Прочие расходы", GroupPL: "ПРОЧИЕ РАСХОДЫ", BlockType: "penalties", VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "3"},
+		{CodePL: 67, Name: "Амортизация", GroupPL: "АМОРТИЗАЦИЯ", VatBY: vatNone, VatRU: vatNone, VatKZ: vatNone, VatUZ: vatNone, VatTR: vatNone},
+		// Статьи, на которых аналитик проверил трактовку НДС-колонок (часть 5 ТЗ).
+		// Держим их в сиде именно поэтому: на них ломается любая попытка
+		// «упростить» НДС до одной ставки на страну.
+		{CodePL: 49, Name: "Расходы на телефонную связь и интернет", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ",
+			// В Беларуси услуги электросвязи облагаются по отдельной ставке 25 %.
+			VatBY: 1.25, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatUZ, VatTR: vatTR, CFItem: "3"},
+		{CodePL: 62, Name: "Информационные услуги", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ",
+			VatBY: vatBY, VatRU: vatRU, VatKZ: vatNone, VatUZ: vatNone, VatTR: vatNone, CFItem: "3"},
+		{CodePL: 63, Name: "Таможенные услуги", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ",
+			VatBY: vatBY, VatRU: vatRU, VatKZ: vatNone, VatUZ: vatNone, VatTR: vatNone, CFItem: "9"},
+		{CodePL: 68, Name: "Приобретение имущества", GroupPL: "ИНВЕСТИЦИИ",
+			VatBY: vatBY, VatRU: vatRU, VatKZ: vatKZ, VatUZ: vatNone, VatTR: vatTR, CFItem: "инвест"},
+		{CodePL: 93, Name: "Грузоперевозки импорт товара", GroupPL: "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ", VatBY: vatNone, VatRU: vatNone, VatKZ: vatNone, VatUZ: vatNone, VatTR: vatNone, CFItem: "3"},
 	}
 }
 

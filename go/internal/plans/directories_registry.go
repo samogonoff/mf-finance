@@ -128,13 +128,23 @@ var dirSchemas = map[string]DirSchema{
 	},
 	"dir_pl_line": {
 		Code: "dir_pl_line", Name: "Статьи PL", Group: GroupManual, Icon: "lucide:list-tree",
-		Description: "Статьи отчёта о прибылях/убытках (строки шаблонов затрат). Маппинг в расчёты ФОТ, аренды, логистики.",
+		Description: "Статьи отчёта о прибылях/убытках (Budgeting.dbo.CodePL, 423 записи). Кроме подписи несут НОРМАТИВНЫЙ НДС по странам, статью ДДС и флаг особого доступа. НДС хранится коэффициентом «1 + ставка» как в источнике: 1,00 = налог по статье не начисляется.",
 		Stage: "1.5, 2.3",
 		Columns: []DirColumn{
 			{Key: "code_pl", Label: "Код PL", Type: ColNumber, Primary: true, Search: true, Width: "90px"},
 			{Key: "expense_name", Label: "Статья", Type: ColText, Search: true},
 			{Key: "group_pl", Label: "Группа PL", Type: ColBadge, Filterable: true},
 			{Key: "block_type", Label: "Тип блока", Type: ColCode},
+			// Пять колонок НДС. В ТЗ они были описаны как «коэффициенты индексации»
+			// — это оказалось неверно (правка МП §18), индексации в справочнике нет.
+			{Key: "vat_by", Label: "НДС BY", Type: ColNumber, Width: "80px", Hint: "коэффициент 1+ставка; 1,20 = 20 %, 1,00 = не начисляется"},
+			{Key: "vat_ru", Label: "НДС RU", Type: ColNumber, Width: "80px", Hint: "коэффициент 1+ставка; 1,22 = 22 %"},
+			{Key: "vat_kz", Label: "НДС KZ", Type: ColNumber, Width: "80px", Hint: "коэффициент 1+ставка; 1,16 = 16 %"},
+			{Key: "vat_uz", Label: "НДС UZ", Type: ColNumber, Width: "80px", Hint: "коэффициент 1+ставка; 1,12 = 12 %"},
+			{Key: "vat_tr", Label: "НДС TR", Type: ColNumber, Width: "80px", Hint: "в справочнике всегда 1,00 — НДС не применяется"},
+			{Key: "cf_item", Label: "Статья ДДС", Type: ColCode, Filterable: true, Hint: "значения не только числовые: «инвест» — вложения, «-99999» — ВГО-обороты"},
+			{Key: "special_access", Label: "Особый доступ", Type: ColNumber, Width: "90px", Hint: "флаг 0/1, тот же, что выбирается в ALL_view"},
+			{Key: "note", Label: "Примечание", Type: ColText},
 		},
 	},
 	"dir_marketplace": {

@@ -99,6 +99,12 @@ type Config struct {
 	PlansPublishSandbox bool
 	PlansPublishTargets []string
 
+	// Справочник статей PL (Budgeting.dbo.CodePL, 423 записи) — источник подписей,
+	// НОРМАТИВНОГО НДС по странам (колонки VAT_*) и статьи ДДС. Пусто или нет
+	// MSSQL → справочник остаётся на сиде PLLineSeed (нормативная проверка НДС
+	// работает только по статьям сида).
+	PlansCodePLTable string
+
 	// Форма «Розница» (TPL-TO-RETAIL, ТЗ Розница §11). Источники — тот же сервер
 	// FinDWH/Budgeting/Checks, что у МП; при PlansMock=1 или без MSSQL работают
 	// фикстуры (plans/retail_mock.go), форма и тесты не зависят от VPN.
@@ -182,6 +188,7 @@ func Load() Config {
 		PlansLegacyMpAPI:    env("PLANS_LEGACY_MP_API", "0") == "1",
 		PlansPublishEnabled: env("PLANS_PUBLISH_ENABLED", "0") == "1",
 		PlansPublishSandbox: env("PLANS_PUBLISH_SANDBOX", "0") == "1",
+		PlansCodePLTable:    env("PLANS_CODEPL_TABLE", "Budgeting.dbo.CodePL"),
 		PlansPublishTargets: splitCSV(env("PLANS_PUBLISH_TARGETS",
 			"Budgeting.dbo.VFORMTOLOADTAKTTARGET,Budgeting.dbo.FormToLoaTaktTarget")),
 

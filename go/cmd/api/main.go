@@ -280,8 +280,13 @@ func main() {
 	// Справочник магазинов розницы синхронизируется общим движком (версионирование
 	// строк, раз в сутки + кнопка) — ТЗ Розница §11. Провайдер регистрируется ДО
 	// Start: после старта фоновой синхронизации карту провайдеров не меняем.
+	// Справочник статей PL синхронизируется из Budgeting.dbo.CodePL: кроме подписей
+	// он несёт нормативный НДС по странам (правки ТЗ 02.09.2026, часть 5).
+	// Без MSSQL провайдер вернёт ошибку синхронизации, а справочник останется на
+	// сиде — форма от этого не падает.
 	plansProviders := append(plans.BuildProviders(cfg.LisaMock, lisa),
-		plans.NewRetailStoreProvider(plansRetailSource))
+		plans.NewRetailStoreProvider(plansRetailSource),
+		plans.NewPLLineProvider(mssqlDB, plans.PLLineTables{CodePLTable: cfg.PlansCodePLTable}))
 	plansSyncer := plans.NewSyncer(pool, plansProviders, plansCache)
 	plansPositions := plans.NewPositionStore(pool)
 	plansUsers := plans.NewUsersStore(pool)
