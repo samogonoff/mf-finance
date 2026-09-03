@@ -207,6 +207,23 @@ const apiBase = computed(() =>
   config.public.costOnly ? '' : ((config.public.apiBase as string) || '')
 )
 
+// Пользователь раздела — тот же useState, что заполняет OAuth-колбэк (и
+// cost-bypass в изолированном контуре). Заголовок X-Cost-User обязателен для
+// всех защищённых эндпоинтов: require_perm (app/middleware.py) без него
+// отвечает 401 «Не передан заголовок X-Cost-User».
+//
+// До 02.09.2026 страница ходила в API вообще без заголовка. Чтение
+// (GET /pending-changes) это переживало — там прав не проверяют, — а
+// «Установить цены» падало на 401 (прод, ELK 09:43 UTC: два POST
+// /pending-changes/apply без пользователя). Модалка на /cost той же кнопкой
+// работала, потому что заголовок передавала — отсюда «в одной форме
+// устанавливается, в другой ошибка».
+const user = useState<any>('auth-user')
+const fetchHeaders = computed(() => {
+  const email = user.value?.email || ''
+  return email ? { 'X-Cost-User': email } : {}
+})
+
 const pendingChanges = ref<any[]>([])
 const selectedIds = ref<number[]>([])
 const loading = ref(false)
@@ -298,7 +315,8 @@ async function loadFilterOptions() {
   try {
     const params = buildFilterParams();
     const raw = await $fetch<Record<string, string[]>>(
-      `${apiBase.value}/api/cost/pending-changes/filter-options?${params}`
+      `${apiBase.value}/api/cost/pending-changes/filter-options?${params}`,
+      { headers: fetchHeaders.value }
     );
     filterOptions.value = raw;
   } catch (e: any) {
@@ -340,7 +358,10 @@ async function loadData() {
   error.value = ''
   try {
     const params = buildFilterParams();
-    const res = await $fetch<{ data: any[] }>(`${apiBase.value}/api/cost/pending-changes?${params}`)
+    const res = await $fetch<{ data: any[] }>(
+      `${apiBase.value}/api/cost/pending-changes?${params}`,
+      { headers: fetchHeaders.value }
+    )
     pendingChanges.value = res.data || []
     selectedIds.value = []
   } catch (e: any) {
@@ -382,9 +403,12 @@ async function applySelected() {
 
     await $fetch(`${apiBase.value}/api/cost/pending-changes/apply`, {
       method: 'POST',
+      headers: fetchHeaders.value,
       body: {
         ids: selectedIds.value,
-        reviewed_by: 'system',
+        // Кто установил цены — в аудит уходит реальный пользователь, как и из
+        // модалки на /cost; 'system' здесь скрывал бы автора.
+        reviewed_by: user.value?.name || user.value?.email || 'system',
         proc_payload: procPayload,
       },
     })
@@ -405,7 +429,10 @@ async function clearAll() {
   clearing.value = true
   error.value = ''
   try {
-    await $fetch(`${apiBase.value}/api/cost/pending-changes/clear`, { method: 'POST' })
+    await $fetch(`${apiBase.value}/api/cost/pending-changes/clear`, {
+      method: 'POST',
+      headers: fetchHeaders.value,
+    })
     await loadData()
   } catch (e: any) {
     error.value = e?.data?.detail || e?.message || String(e)
@@ -459,7 +486,8 @@ const approvalRowClass = (row: any): Record<string, boolean> => ({
 async function loadMarginTargets() {
   try {
     const targets = await $fetch<{ level1: string; target_margin_pct: number | null }[]>(
-      `${apiBase.value}/api/cost/margin-targets`
+      `${apiBase.value}/api/cost/margin-targets`,
+      { headers: fetchHeaders.value }
     )
     const map: Record<string, number | null> = {}
     for (const t of targets) {
