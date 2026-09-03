@@ -172,6 +172,9 @@
       </article>
     </section>
 
+    <CostChartInsight block="margin_output" block-title="Маржа выпуска"
+                      :charts="insightChartsMarginOutput" :context="insightContext" />
+
     <!-- Матрица с проваливанием: Level 01 → … → Level 05 → артикул → задание.
          Путь применяется только к матрице и водопадам — не к плиткам и графикам. -->
     <section class="card">
@@ -276,6 +279,9 @@
           </div>
         </article>
       </section>
+
+      <CostChartInsight block="norm_vs_fact" block-title="Норматив против факта"
+                        :charts="insightChartsNormVsFact" :context="insightContext" />
     </template>
 
     <!-- Лист «Отклонения по артикулам» — просьба заказчика 25.08.2026. Формат
@@ -1126,6 +1132,86 @@ const waterfallOptions = computed(() => ({
     y: axis(currency.value),
   },
 }))
+
+// ── Данные для блоков «Разбор ИИ» ───────────────────────────────────────────
+// Блок ставится под логической СЕКЦИЕЙ, а не под каждой карточкой: связка
+// «маржа выросла, а маржинальность просела» видна только на нескольких графиках
+// сразу. Разбор идёт по тем же сериям, что нарисованы, — второй раз данные не
+// запрашиваются.
+
+/** Из данных Chart.js оставляем только подписи и числа.
+ *
+ * Цвета, типы серий и прочее оформление в промпте бесполезны, зато раздувают
+ * его в разы: каждая серия тащит массивы backgroundColor на все точки. */
+function slim(data: any): any | null {
+  if (!data?.datasets?.length) return null
+  return {
+    labels: (data.labels || []).map((l: any) => String(l)),
+    datasets: data.datasets.map((ds: any) => ({
+      label: String(ds.label ?? 'серия'),
+      data: (ds.data || []).map((v: any) => (typeof v === 'number' ? v : (v == null ? null : Number(v)))),
+    })),
+  }
+}
+
+/** Отбрасываем карточки, которые на странице ещё не отрисованы (v-if по данным):
+ * присылать пустую серию нет смысла, а сервер её и не примет. */
+function chartsOf(items: Array<{ title: string; note?: string; raw: any }>) {
+  return items
+    .map(i => ({ title: i.title, note: i.note, series: slim(i.raw) }))
+    .filter(c => c.series !== null)
+}
+
+/** Что человек видел на экране: период, валюта, база себестоимости, фильтры.
+ *
+ * Отдельным пунктом — ОХВАТ ГРАФИКОВ, и это не формальность. Графики динамики
+ * игнорируют фильтр месяца и всегда рисуют все месяцы выбранного года (так
+ * устроен дашборд, см. подпись первой карточки). Раньше в контекст уходило
+ * «Период: сентябрь 2026», хотя в серии девять месяцев, — модель считала, что
+ * видит выбранный месяц, и сравнивала несопоставимое. */
+const insightContext = computed(() => {
+  const active: Record<string, string> = {}
+  for (const f of filterConfig) {
+    const vals = selected[f.key] || []
+    if (vals.length) active[f.label] = vals.join(', ')
+  }
+
+  const monthsPicked = (selected.month || []).length > 0
+  const scope = monthsPicked
+    ? 'Графики динамики показывают ВСЕ месяцы выбранного года — фильтр месяца ' +
+      'на них не влияет (он применён к плиткам и разрезам). Выводы о динамике ' +
+      'делай по месяцам, показанным на графике, а не по выбранному фильтру.'
+    : 'Графики динамики показывают все месяцы выбранного года.'
+
+  return {
+    'Фильтр периода': periodLabel.value,
+    'Что показано на графиках': scope,
+    'Валюта': currency.value,
+    'База себестоимости': costBasis.value === 'fact' ? 'фактическая' : 'нормативная',
+    ...(matrixPath.value.length ? { 'Путь матрицы': matrixPath.value.join(' → ') } : {}),
+    ...active,
+  }
+})
+
+const insightChartsMarginOutput = computed(() => chartsOf([
+  { title: `Динамика маржи выпуска, ${currency.value}`, raw: marginDynData.value,
+    note: 'Столбцы — текущий год и тот же месяц прошлого года, линия — темп роста к прошлому году' },
+  { title: 'Динамика маржинальности, %', raw: pctDynData.value,
+    note: 'Пунктир — норма по Level 01 из таргетов раздела' },
+  { title: `Маржа по бренд-менеджерам, ${currency.value}`, raw: bmMoneyData.value,
+    note: 'Текущий период против прошлого года' },
+  { title: 'Маржинальность по бренд-менеджерам, %', raw: bmPctData.value,
+    note: 'Взвешенная по выпуску в BYN' },
+  { title: `Маржа по Level 01, ${currency.value}`, raw: donutData.value,
+    note: 'Доли только положительной маржи' },
+]))
+
+const insightChartsNormVsFact = computed(() => chartsOf([
+  { title: 'Маржинальность по нормативу и по факту, %', raw: factDynData.value,
+    note: 'Обе линии по одним строкам с годным фактом; разрыв — эффект фактической ставки минуты' },
+  { title: 'Отклонение маржинальности факт − норматив по бренд-менеджерам, пп', raw: factBmData.value,
+    note: 'Ниже нуля — факт дороже норматива' },
+]))
 </script>
 
 <style scoped>

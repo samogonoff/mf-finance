@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import re
 import sys
 import traceback
 import json
@@ -11,8 +13,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app import commercial, margin, mocks
+from app import commercial, insight_agent, insights, llm_settings, margin, mocks
 from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
+from app.logship import log
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -2860,3 +2863,366 @@ async def delete_plan_price_set_endpoint(
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"success": True}
+
+
+# ── Разбор блоков графиков языковой моделью («Разбор ИИ») ───────────────────
+# Блок ставится под логической секцией страницы и получает те же серии, что
+# нарисованы на её карточках. Арифметику считает app/insights.py, модель только
+# интерпретирует посчитанное — см. докстринг модуля.
+
+
+@router.get("/insights/status")
+async def insights_status() -> dict:
+    """Настроен ли разбор. Фронт по этому ответу решает, показывать ли блок.
+
+    Без ключа модели кнопку рисовать незачем — она бы только раздражала.
+    """
+    return {"enabled": insights.llm_enabled(), "model": insights._model()}
+
+
+@router.post("/insights/block")
+async def analyze_block(
+    payload: dict, email: str = Depends(_require_perm("cost:insights"))
+) -> dict:
+    """Разбор одного блока графиков.
+
+    Серии приходят с фронта: их уже посчитал и отдал этому же пользователю
+    бэкенд (`/margin`, `/commercial`), права на данные проверены там. Поэтому
+    здесь проверяется только право на сам разбор и РАЗМЕР входа — чтобы под
+    видом графика не прислали сырую выгрузку и не улетел гигантский промпт.
+    """
+    block = str(payload.get("block") or "").strip()
+    block_title = str(payload.get("block_title") or "").strip()
+    if not block:
+        raise HTTPException(400, "Не указан ключ блока (block)")
+
+    try:
+        charts = insights.validate_charts(payload.get("charts"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    context = payload.get("context") or {}
+    if not isinstance(context, dict):
+        raise HTTPException(400, "context должен быть объектом")
+
+    # В mock-режиме пользователя в заголовке может не быть: права отключены,
+    # а журнал не должен падать на NOT NULL.
+    who = email if isinstance(email, str) and email else "mock"
+
+    req_hash = insights.request_hash(block, block_title, context, charts)
+
+    if not payload.get("force"):
+        cached = await insights.cached_run(req_hash)
+        if cached is not None:
+            log(logging.INFO, "insights: отдан кэш", block=block, user=who,
+                cached_at=cached.get("cached_at"))
+            return {"block": block, **cached}
+
+    result = await insights.analyze(block, block_title, charts, context)
+    await insights.record_run(req_hash, block, block_title, who, context, result)
+
+    usage = result.get("usage") or {}
+    log(logging.INFO, "insights: разбор блока", block=block, user=who,
+        model=result.get("model"), degraded=result.get("degraded"),
+        elapsed_ms=result.get("elapsed_ms"),
+        prompt_tokens=usage.get("prompt_tokens"),
+        completion_tokens=usage.get("completion_tokens"),
+        cost=usage.get("cost"))
+
+    return {"cached": False, **result}
+
+
+# Ссылки на фоновые исследования. asyncio держит задачи слабой ссылкой — без
+# этого множества сборщик мусора может убить агента на середине работы (тот же
+# приём, что у _refresh_task выше).
+_ask_tasks: set[asyncio.Task] = set()
+
+# thread_id приходит от клиента и уходит в SQL как ::uuid — формат
+# проверяем до запроса, чтобы не ловить InvalidTextRepresentation
+# как 500 на кривом значении.
+_UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
+
+
+async def _run_investigation(job_id: str, question: str, context: dict,
+                             history: list[dict] | None = None) -> None:
+    """Фоновое исследование: считает и дописывает результат в свою задачу."""
+
+    async def progress(step: int, tool: str, sql_calls: int) -> None:
+        await insight_agent.update_progress(job_id, step, tool, sql_calls)
+
+    try:
+        result = await insight_agent.investigate(question, context,
+                                                 on_progress=progress,
+                                                 history=history)
+    except Exception as exc:
+        # Любое необработанное исключение обязано закрыть задачу: иначе она
+        # останется running до уборки, а пользователь будет ждать вечно.
+        log(logging.ERROR, "insights.ask: исследование упало", job_id=job_id,
+            error=f"{type(exc).__name__}: {str(exc)[:300]}")
+        await insight_agent.finish_job(job_id, {
+            "degraded": True,
+            "error": f"внутренняя ошибка: {type(exc).__name__}",
+            "trace": [], "steps": 0, "sql_calls": 0,
+        })
+        return
+
+    await insight_agent.finish_job(job_id, result)
+
+    usage = result.get("usage") or {}
+    log(logging.INFO, "insights.ask: исследование", job_id=job_id,
+        model=result.get("model"), degraded=result.get("degraded"),
+        steps=result.get("steps"), sql_calls=result.get("sql_calls"),
+        elapsed_ms=result.get("elapsed_ms"),
+        tools=",".join(t.get("tool", "") for t in (result.get("trace") or [])),
+        prompt_tokens=usage.get("prompt_tokens"),
+        completion_tokens=usage.get("completion_tokens"),
+        cost=usage.get("cost"))
+
+
+@router.post("/insights/ask")
+async def ask_insight(
+    payload: dict, email: str = Depends(_require_perm("cost:insights"))
+) -> dict:
+    """Запустить углублённое исследование. Отдаёт job_id, а не результат.
+
+    Исследование идёт 20–120 секунд, и держать на нём HTTP-запрос нельзя: у
+    `location /api/cost/` в nginx дефолтный минутный proxy_read_timeout, и
+    запрос на 84 секунды бэкенд досчитывал, а клиент получал 504 (02.09.2026).
+    Поэтому здесь только старт, а результат забирается через
+    `GET /insights/ask/{job_id}`.
+    """
+    question = str(payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(400, "Не задан вопрос")
+    if len(question) > 2000:
+        raise HTTPException(400, "Вопрос длиннее 2000 символов")
+
+    context = payload.get("context") or {}
+    if not isinstance(context, dict):
+        raise HTTPException(400, "context должен быть объектом")
+
+    if not insights.llm_enabled():
+        raise HTTPException(503, "Исследование не настроено (COST_LLM_*)")
+
+    # Ветка диалога. Пусто — начинается новый разговор; иначе вопрос считается
+    # уточняющим, и агент получит сводку прошлых раундов.
+    thread_id = str(payload.get("thread_id") or "").strip() or None
+    if thread_id and not _UUID_RE.match(thread_id):
+        raise HTTPException(400, "Некорректный thread_id")
+
+    who = email if isinstance(email, str) and email else "mock"
+    req_hash = await insight_agent.request_hash(question, context, thread_id)
+
+    # Кэш отдаём сразу готовым результатом — опрашивать нечего.
+    if not payload.get("force"):
+        cached = await insight_agent.cached_answer(req_hash)
+        if cached is not None:
+            log(logging.INFO, "insights.ask: отдан кэш", user=who,
+                thread_id=thread_id, cached_at=cached.get("cached_at"))
+            return {"status": "done", "question": question,
+                    "thread_id": thread_id, **cached}
+
+    # Брошенные задачи (умер процесс на середине) не должны занимать слоты.
+    await insight_agent.reap_stale_jobs()
+    if await insight_agent.running_jobs() >= insight_agent.MAX_RUNNING_JOBS:
+        raise HTTPException(429, "Одновременно выполняется слишком много "
+                                 "исследований, попробуйте через минуту")
+
+    history = await insight_agent.thread_history(thread_id) if thread_id else []
+    seq = await insight_agent.next_seq(thread_id) if thread_id else 1
+
+    job_id, thread_id = await insight_agent.create_job(
+        req_hash, who, question, context, thread_id=thread_id, seq=seq)
+    task = asyncio.ensure_future(
+        _run_investigation(job_id, question, context, history))
+    _ask_tasks.add(task)
+    task.add_done_callback(_ask_tasks.discard)
+
+    log(logging.INFO, "insights.ask: запуск", job_id=job_id, user=who,
+        thread_id=thread_id, seq=seq, history_rounds=len(history),
+        model=insights._model())
+    return {"status": "running", "job_id": job_id, "thread_id": thread_id,
+            "seq": seq, "question": question}
+
+
+@router.get("/insights/ask/{job_id}")
+async def ask_insight_status(
+    job_id: str, _: str = Depends(_require_perm("cost:insights"))
+) -> dict:
+    """Состояние исследования: running с прогрессом либо готовый результат."""
+    job = await insight_agent.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Исследование не найдено")
+    return job
+
+
+# ── Админка подключения к языковой модели ───────────────────────────────────
+# Настройки живут в cost_llm_settings (миграция 0051) и перекрывают COST_LLM_*
+# из окружения. Смысл: на проде .env приходит из CI-переменной через docker
+# config, и смена модели там стоила бы полного деплоя стека — а провайдеры
+# нестабильны настолько, что переключаться приходится по ходу дня.
+
+
+@router.get("/admin/llm")
+async def llm_settings_get(_: str = Depends(_require_perm("cost:llm_admin"))) -> dict:
+    """Текущее подключение. Ключ — только маской, плюс видно, что откуда взято."""
+    await llm_settings.refresh(force=True)
+    return llm_settings.public_view()
+
+
+@router.put("/admin/llm")
+async def llm_settings_put(
+    payload: dict, email: str = Depends(_require_perm("cost:llm_admin"))
+) -> dict:
+    """Сохранить подключение.
+
+    Пустой `api_key` означает «оставить прежний»: интерфейс получает только
+    маску и вернуть настоящий ключ не может.
+    """
+    who = email if isinstance(email, str) and email else "mock"
+    try:
+        return await llm_settings.save(payload, who)
+    except ValueError as e:
+        # Текст валидации уходит прямо в интерфейс — он написан для человека.
+        raise HTTPException(400, str(e))
+
+
+@router.post("/admin/llm/test")
+async def llm_settings_test(
+    payload: dict, _: str = Depends(_require_perm("cost:llm_admin"))
+) -> dict:
+    """Пробный вызов модели: работает ли подключение и сколько занимает.
+
+    Проверяем ДО того, как настройку увидят пользователи: иначе неработающая
+    модель обнаруживается на живых вопросах.
+    """
+    import time as _time
+
+    await llm_settings.refresh(force=True)
+    if not insights.llm_enabled():
+        raise HTTPException(400, "Подключение выключено или не задан ключ")
+
+    started = _time.monotonic()
+    body = {
+        "model": insights._model(),
+        "messages": [{"role": "user",
+                      "content": "Ответь одним словом по-русски: работает"}],
+        "max_tokens": 50,
+    }
+    effort = insights.reasoning_effort()
+    if effort:
+        body["reasoning_effort"] = effort
+
+    try:
+        resp = await insights.post_chat(body, timeout=min(insights._timeout(), 60))
+    except insights.InsightError as e:
+        return {"ok": False, "error": str(e),
+                "elapsed_ms": int((_time.monotonic() - started) * 1000)}
+
+    elapsed = int((_time.monotonic() - started) * 1000)
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = str((resp.json().get("error") or {}).get("message") or "")[:200]
+        except Exception:
+            detail = resp.text[:200]
+        return {"ok": False, "status": resp.status_code, "error": detail,
+                "elapsed_ms": elapsed}
+
+    data = resp.json()
+    message = (data.get("choices") or [{}])[0].get("message") or {}
+    usage = data.get("usage") or {}
+    return {
+        "ok": True,
+        "model": insights._model(),
+        "elapsed_ms": elapsed,
+        "answer": (message.get("content") or "")[:200],
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "cost": data.get("cost"),
+    }
+
+
+@router.get("/admin/llm/models")
+async def llm_settings_models(_: str = Depends(_require_perm("cost:llm_admin"))) -> dict:
+    """Список моделей у провайдера — чтобы имя не вбивали руками.
+
+    Опечатка в имени модели выясняется только на первом вопросе пользователя, а
+    у провайдеров десятки моделей (у opencode zen — 63).
+    """
+    import httpx
+
+    await llm_settings.refresh(force=True)
+    key = insights._api_key()
+    if not key:
+        raise HTTPException(400, "Не задан ключ провайдера")
+
+    url = f"{insights._api_base()}/models"
+    try:
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {key}"})
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": f"{type(e).__name__}", "models": []}
+
+    if resp.status_code != 200:
+        return {"ok": False, "status": resp.status_code,
+                "error": resp.text[:200], "models": []}
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        return {"ok": False, "error": "провайдер вернул не JSON", "models": []}
+
+    items = payload.get("data") if isinstance(payload, dict) else payload
+    names = sorted({str(m.get("id") if isinstance(m, dict) else m)
+                    for m in (items or []) if m})
+    return {"ok": True, "models": names}
+
+
+@router.get("/admin/llm/usage")
+async def llm_settings_usage(
+    days: int = 7, _: str = Depends(_require_perm("cost:llm_admin"))
+) -> dict:
+    """Сколько стоил разбор за период — из журналов, а не из догадок.
+
+    Стоимость провайдер отдаёт строкой, поэтому суммируем приведением к
+    numeric: у разных провайдеров разная точность, и хранится она как есть.
+    """
+    days = max(1, min(int(days or 7), 90))
+    async with acquire() as conn:
+        blocks = await conn.fetchrow(
+            "SELECT count(*) AS runs,"
+            "       count(*) FILTER (WHERE degraded) AS failed,"
+            "       coalesce(sum(nullif(cost, '')::numeric), 0) AS cost,"
+            "       coalesce(sum(prompt_tokens), 0) AS prompt_tokens,"
+            "       coalesce(sum(completion_tokens), 0) AS completion_tokens "
+            "FROM cost_insight_runs "
+            f"WHERE created_at > now() - interval '{days} days'")
+        asks = await conn.fetchrow(
+            "SELECT count(*) AS runs,"
+            "       count(*) FILTER (WHERE degraded) AS failed,"
+            "       coalesce(sum((SELECT coalesce(sum(nullif(part, '')::numeric), 0)"
+            "                     FROM unnest(string_to_array(cost, ';')) AS part)), 0)"
+            "         AS cost,"
+            "       coalesce(sum(prompt_tokens), 0) AS prompt_tokens,"
+            "       coalesce(sum(completion_tokens), 0) AS completion_tokens,"
+            "       coalesce(round(avg(elapsed_ms)), 0) AS avg_ms "
+            "FROM cost_insight_questions "
+            f"WHERE created_at > now() - interval '{days} days'")
+
+    def num(value: Any) -> float:
+        return float(value or 0)
+
+    return {
+        "days": days,
+        "blocks": {"runs": blocks["runs"], "failed": blocks["failed"],
+                   "cost": round(num(blocks["cost"]), 5),
+                   "prompt_tokens": blocks["prompt_tokens"],
+                   "completion_tokens": blocks["completion_tokens"]},
+        "asks": {"runs": asks["runs"], "failed": asks["failed"],
+                 "cost": round(num(asks["cost"]), 5),
+                 "prompt_tokens": asks["prompt_tokens"],
+                 "completion_tokens": asks["completion_tokens"],
+                 "avg_ms": int(num(asks["avg_ms"]))},
+        "cost_total": round(num(blocks["cost"]) + num(asks["cost"]), 5),
+    }

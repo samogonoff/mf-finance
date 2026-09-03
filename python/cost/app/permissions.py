@@ -8,5 +8,7 @@ COST_PERMISSIONS: dict[str, str] = {
     "cost:edit_materials": "Редактирование материалов (calculation drafts)",
     "cost:calc_sign_copy": "Создание калькуляции с другим признаком (копия расчёта)",
     "cost:export":         "Экспорт в Excel",
+    "cost:insights":       "Разбор блоков графиков языковой моделью («Разбор ИИ»)",
+    "cost:llm_admin":      "Настройка подключения к языковой модели (провайдер, ключ, модель)",
     "cost:admin":          "Управление ролями и пользователями cost",
 }
