@@ -51,8 +51,11 @@ func TestComputeMpPlatform_DirectCostsAndPL(t *testing.T) {
 
 	// Итого прямые = комиссия 15 + 10 + 2 + 3 = 30.
 	approx(t, "прямые затраты", out[BPlatformCosts], 30)
-	// PL = маржа gross 30 − прямые 30 = 0.
-	approx(t, "PL по площадке", out[BPlPlatform], 0)
+	// PL по правке ТЗ МП §21 = площадка без НДС 85 − СС отпускная 50 − статьи 15
+	// (комиссия в PL не вычитается: цена площадки уже за вычетом СПП).
+	approx(t, "PL по площадке", out[BPlPlatform], 20)
+	// PL от себестоимости ОБЩЕЙ = 85 − 55 − 15.
+	approx(t, "PL от себестоимости общей", out[BPlPlatformTotalCost], 15)
 }
 
 // Нулевые знаменатели не роняют расчёт и дают 0.

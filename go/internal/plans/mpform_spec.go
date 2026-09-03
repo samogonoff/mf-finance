@@ -142,9 +142,9 @@ func mpFormSpec() []MpLine {
 		{BlockType: BCostOther, CodePL: 66, Name: "Прочие удержания и компенсации", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 66 (источник), редактируется"},
 		{BlockType: BPlatformCosts, Name: "Итого прямые затраты по площадке", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= Σ (комиссия + все статьи затрат)"},
 		{BlockType: BDirectShare, Name: "Доля прямых затрат по площадке, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= прямые затраты / менеджер_без_НДС"},
-		{BlockType: BPlPlatform, Name: "PL по площадке", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= маржа (gross) − прямые затраты"},
+		{BlockType: BPlPlatform, Name: "PL по площадке", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= цена площадки без НДС − себестоимость по отпускным ценам − прямые затраты (без комиссии)"},
 		{BlockType: BPlPlatformPct, Name: "PL по площадке, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= PL по площадке / площадка_без_НДС"},
-		{BlockType: BPlPlatformTotalCost, Name: "PL (сумма) от себестоимости общей", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= маржа (gross) − (прямые затраты − комиссия площадки)"},
+		{BlockType: BPlPlatformTotalCost, Name: "PL (сумма) от себестоимости общей", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= цена площадки без НДС − себестоимость общая − прямые затраты (без комиссии)"},
 		{BlockType: BPlPlatformTotalCostPct, Name: "PL от себестоимости общей, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= PL от общей сс / площадка_без_НДС"},
 		{BlockType: BDirectShareTurnover, Name: "Доля прямых затрат в обороте, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= (прямые затраты − комиссия) / площадка_без_НДС"},
 	}
@@ -218,7 +218,7 @@ func mpFormSpecFor(mode string) []MpLine {
 		default:
 			if spec[i].CostLine && spec[i].Kind == KindInput {
 				spec[i].Kind = KindCalcEditable
-				spec[i].Formula = "= продажи менеджера без НДС × доля статьи (реестр условий)"
+				spec[i].Formula = "= цена площадки без НДС × доля статьи (реестр условий)"
 			}
 		}
 	}

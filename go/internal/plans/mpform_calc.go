@@ -78,7 +78,7 @@ func computeMpPlatform(in map[string]float64, vat float64) map[string]float64 {
 	out[BGrossMargin] = platNet - cogs
 	out[BGrossMarginPct] = safeDiv(platNet-cogs, platNet)
 
-	// Комиссия площадки = удержание МП = менеджер_без_НДС − площадка_без_НДС.
+	// Комиссия площадки = менеджер_без_НДС − площадка_без_НДС (ТЗ МП §22).
 	commission := managerNet - platNet
 	out[BCommission] = commission
 
@@ -92,9 +92,24 @@ func computeMpPlatform(in map[string]float64, vat float64) map[string]float64 {
 	out[BPlatformCosts] = directTotal
 	out[BDirectShare] = safeDiv(directTotal, managerNet)
 
-	pl := (platNet - cogs) - directTotal
+	// PL по площадке (правка ТЗ 02.09.2026 МП §21):
+	//   PL = продажи по цене площадки без НДС − себестоимость по отпускным ценам
+	//        − прямые затраты
+	// Из прежней формулы убраны «общие затраты» и слагаемое «+ Σ комиссия
+	// площадки», и вместо себестоимости ОБЩЕЙ (COGS осн+пошив) вычитается
+	// себестоимость ПО ОТПУСКНЫМ ЦЕНАМ (8006).
+	//
+	// Комиссия в PL не вычитается: цена площадки уже за вычетом СПП, и вычесть
+	// её ещё раз значит посчитать дважды. В прежней формуле «+ Σ комиссия»
+	// компенсировало базу по ценам менеджера — теперь компенсировать нечего.
+	directNoCommission := directTotal - commission
+	pl := platNet - shipments - directNoCommission
 	out[BPlPlatform] = pl
 	out[BPlPlatformPct] = safeDiv(pl, platNet)
+	// PL от себестоимости ОБЩЕЙ — тот же расчёт, но с COGS: показатель формы,
+	// а не альтернативная трактовка §21.
+	out[BPlPlatformTotalCost] = platNet - cogs - directNoCommission
+	out[BPlPlatformTotalCostPct] = safeDiv(out[BPlPlatformTotalCost], platNet)
 
 	return out
 }
