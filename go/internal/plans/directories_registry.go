@@ -120,10 +120,39 @@ var dirSchemas = map[string]DirSchema{
 		Stage: "1.6, 2.4, 3",
 		Columns: []DirColumn{
 			{Key: "name", Label: "Юр. лицо", Type: ColText, Primary: true, Search: true},
+			{Key: "short", Label: "Код", Type: ColCode, Width: "80px", Hint: "F / TDMF / MFKaz / MFUz"},
+			// УНП — то, что реально пишется в приёмник (правка Розница §15):
+			// план идёт на реальное ЮЛ, а не на фиктивный код.
+			{Key: "unp", Label: "УНП", Type: ColCode, Search: true, Width: "130px"},
 			{Key: "country", Label: "Страна", Type: ColCountry, Filterable: true, BadgeTones: countryTones, Ref: "dir_country"},
 			{Key: "director", Label: "Директор", Type: ColText, Search: true, Hint: "согласующий ЮЛ (этап 3)", Ref: "user"},
+			{Key: "historical_only", Label: "Только история", Type: ColBool, Filterable: true,
+				Hint: "фиктивные коды (1 BY, 2 RU, 4 CN, 7 KZ, 8 UZ, 9 TR) — читаем исторические строки, на запись не берём"},
 			{Key: "alias_raw", Label: "Сырые алиасы (xlsx)", Type: ColText},
 			{Key: "uncertain", Label: "Сверить", Type: ColBool, Filterable: true},
+			{Key: "note", Label: "Примечание", Type: ColText},
+		},
+	},
+	"dir_scenario": {
+		Code: "dir_scenario", Name: "Сценарии", Group: GroupManual, Icon: "lucide:git-branch",
+		Description: "Сценарии планирования и факта, как они лежат в приёмниках. Их ВОСЕМЬ (правка ТЗ Розница §23): −1 и 0 — факт, 1/2/3 — бюджеты, 9/10 — ожидаемый факт, 11 — тактика (в этом сценарии работают наши формы). Форма обязана понимать любое значение, которое встретит в приёмнике.",
+		Stage: "все",
+		Columns: []DirColumn{
+			{Key: "code", Label: "Код", Type: ColNumber, Primary: true, Search: true, Width: "70px"},
+			{Key: "name", Label: "Сценарий", Type: ColText, Search: true},
+			{Key: "kind", Label: "Тип", Type: ColBadge, Filterable: true,
+				BadgeTones: map[string]string{"fact": "muted", "budget": "info", "expected": "warn", "tactic": "pos"}},
+		},
+	},
+	"dir_retail_scope": {
+		Code: "dir_retail_scope", Name: "Состав розницы", Group: GroupManual, Icon: "lucide:filter",
+		Description: "ПРАВИЛО, что считается розницей (правка ТЗ Розница §11, по ALL_view): группа ЦФО «3.Магазины» плюс восемь ЦФО-отделов, минус ЦФО 40 (интернет-магазин) и 722 (техническая запись переезда магазина в Солигорске). Правило живёт строками, поэтому отдел добавляется без релиза. Исключение сильнее включения.",
+		Stage: "1.1",
+		Columns: []DirColumn{
+			{Key: "kind", Label: "Правило", Type: ColBadge, Primary: true, Filterable: true,
+				BadgeTones: map[string]string{"include_group": "pos", "include_cfo": "info", "exclude_cfo": "neg"}},
+			{Key: "value", Label: "Значение", Type: ColCode, Search: true},
+			{Key: "note", Label: "Почему", Type: ColText, Search: true},
 		},
 	},
 	"dir_pl_line": {

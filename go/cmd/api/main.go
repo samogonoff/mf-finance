@@ -285,7 +285,7 @@ func main() {
 	// Без MSSQL провайдер вернёт ошибку синхронизации, а справочник останется на
 	// сиде — форма от этого не падает.
 	plansProviders := append(plans.BuildProviders(cfg.LisaMock, lisa),
-		plans.NewRetailStoreProvider(plansRetailSource),
+		plans.NewRetailStoreProvider(plansRetailSource).WithScopeSource(plansDir),
 		plans.NewPLLineProvider(mssqlDB, plans.PLLineTables{CodePLTable: cfg.PlansCodePLTable}))
 	plansSyncer := plans.NewSyncer(pool, plansProviders, plansCache)
 	plansPositions := plans.NewPositionStore(pool)
