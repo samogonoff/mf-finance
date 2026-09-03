@@ -3,6 +3,7 @@ package plans
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -27,6 +28,15 @@ type RetailDataSource interface {
 	Fact(ctx context.Context, country string, years []int) ([]RetailFactCell, error)
 	// Strategy — стратегия года (Budgeting, нац. валюта).
 	Strategy(ctx context.Context, country string, year int) ([]RetailFactCell, error)
+	// Cogs — себестоимость магазинов, ТОЛЬКО в BYN (правка ТЗ §6: ExRate в её
+	// строках жёстко равен 1, валютной аналитики по себестоимости нет).
+	Cogs(ctx context.Context, country string, years []int) ([]RetailFactCell, error)
+	// FactFxRate — курс нац. валюты к BYN из факта (правка ТЗ §7):
+	// SUM(NetsalesCurrencyBelRubFact)/SUM(NetsalesCurrencyFact).
+	FactFxRate(ctx context.Context, country string, year, month int) (float64, bool, error)
+	// TacticFxRate — курс сценария «Тактика» из Budgeting.dbo.ExRateFactTarget
+	// (правка ТЗ §8). Нет месяца — ошибка заполнения, а не подстановка дефолта.
+	TacticFxRate(ctx context.Context, country string, year, month int, toUSD bool) (float64, error)
 	// PlanHistory — ранее утверждённая тактика (Checks.dbo.plan_saler_st*),
 	// только чтение. Второй результат — соответствие CodeCFO → KLIENT_ID:
 	// в [001 CodeCFO] колонки KLIENT_ID нет, а ТЗ §2 требует её как атрибут строки.
@@ -34,15 +44,48 @@ type RetailDataSource interface {
 }
 
 // RetailTables — имена таблиц-источников (ТЗ §11: «все имена таблиц — через конфиг»).
+//
+// Колонок факта здесь больше нет: правки ТЗ 02.09.2026 §4 назвали их точно
+// (Month, Country, CodeCFO, CodePL, GroupPL, Company/CompanyID, DbAnalytics1,
+// PLDescrBK + четыре колонки сумм), и настраивать их env'ом стало вредно —
+// запрос зависит от смысла колонок, а не только от их имён.
 type RetailTables struct {
 	StoreTable       string // FinDWH.dbo.[001 CodeCFO]
 	StoreGroup       string // значение GroupCFO1 справочника: 'Магазины'
 	FactTable        string // FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail
-	FactColumns      string // CSV: колонка ЦФО, колонка даты, колонка суммы
 	StrategyTable    string // Budgeting.dbo.VFORMTOLOADPLAN (нац. валюта)
 	StrategyGroup    string // ГруппыЦФО1 таблицы плана: '3.Магазины'
 	PlanHistTable    string // Checks.dbo.plan_saler_st
 	PlanHistNewTable string // Checks.dbo.plan_saler_st_new_stores
+}
+
+// Значения PLDescrBK — разделение выручки и себестоимости (правка ТЗ §1).
+// Фильтровать надо по НИМ, а не по КодPL: в представлении КодPL захардкожен
+// значениями 1001 и 2001, а кодов 2106 и 6106 в нём нет вообще.
+const (
+	retailPLRevenue = "RevenueDirect" // выручка
+	retailPLCogs    = "COGS"          // себестоимость
+)
+
+// Колонки сумм источника (правка ТЗ §4). Себестоимость лежит ТОЛЬКО в
+// белорусских рублях (ExRate в её строках жёстко равен 1, правка §6), поэтому
+// валютной аналитики по ней не запрашиваем.
+const (
+	retailAmtWithVATCur = "AmountWithVATCurrencyFact"
+	retailAmtWithVATBYN = "AmountWithVATBelRubFact"
+	retailAmtWOVATCur   = "AmountWOVATCurrencyFact"
+	retailAmtWOVATBYN   = "AmountWOVATBelRubFact"
+)
+
+// allViewGuards — три условия ALL_view (правка ТЗ §14). Если форма читает [ALL]
+// напрямую, их надо повторить, иначе цифры не сойдутся с отчётами. Для канальных
+// объектов (sales_and_COGG_from_FOX_*) они уже применены внутри представления,
+// поэтому добавляем условия только при чтении [ALL].
+func allViewGuards(table string) string {
+	if !strings.Contains(strings.ToUpper(table), "[ALL]") {
+		return ""
+	}
+	return ` AND [Month] >= '2020-01-01' AND [CodeCFO] <> '722' AND [CodePL] <> '1'`
 }
 
 // mssqlRetailSource — online-источник.
@@ -59,29 +102,11 @@ func NewRetailSource(mock bool, db *sql.DB, tbl RetailTables) RetailDataSource {
 	return &mssqlRetailSource{db: db, tbl: tbl}
 }
 
-// sqlIdent — допустимый идентификатор колонки. Имена колонок приходят из env
-// (FactColumns), поэтому подставлять их в SQL без проверки нельзя: env задаёт
-// администратор, но одна опечатка с кавычкой ломает запрос неотличимо от сбоя БД.
-var sqlIdent = regexp.MustCompile(`^[A-Za-zА-Яа-я_][A-Za-zА-Яа-я0-9_ ]*$`)
-
-// factColumns — колонки таблицы факта. ТЗ §11 называет ТАБЛИЦУ
-// (sales_and_COGG_from_FOX_offline_retail), но не её колонки, поэтому они
-// настраиваются: PLANS_RETAIL_FACT_COLUMNS="ЦФО,Дата,Сумма". Значения по
-// умолчанию — предположение, которое нужно подтвердить пробой
-// (cmd/mssql-probe с PROBE_SQL). Пока не подтверждено — работаем на mock'е.
-func (s *mssqlRetailSource) factColumns() (cfo, date, amount string, err error) {
-	parts := strings.Split(s.tbl.FactColumns, ",")
-	if len(parts) != 3 {
-		return "", "", "", fmt.Errorf("PLANS_RETAIL_FACT_COLUMNS должен содержать 3 имени через запятую, получено %q", s.tbl.FactColumns)
-	}
-	for i := range parts {
-		parts[i] = strings.TrimSpace(parts[i])
-		if !sqlIdent.MatchString(parts[i]) {
-			return "", "", "", fmt.Errorf("недопустимое имя колонки %q в PLANS_RETAIL_FACT_COLUMNS", parts[i])
-		}
-	}
-	return parts[0], parts[1], parts[2], nil
-}
+// storeJoinCFO — выражение соединения факта со справочником ЦФО (правка ТЗ §13).
+// Код 'XXX' в справочнике реально используется — по одной записи на BY, KZ, RU,
+// UZ, а в контуре затрат встречаются значения вида 'UZ_XXX'. Поэтому простое
+// A.CodeCFO = D.CodeCFO даёт потери строк.
+const storeJoinCFO = `IIF(D.[CodeCFO] = 'XXX', D.[Country] + '_' + D.[CodeCFO], D.[CodeCFO])`
 
 // Stores — справочник магазинов (ТЗ §11). Фильтр GroupCFO1 берётся из конфига,
 // а не из строкового литерала: ТЗ прямо предупреждает, что в справочнике
@@ -144,22 +169,113 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 }
 
 // Fact — факт продаж (выручка с НДС) по магазинам за годы (ТЗ §11).
+//
+// Правки ТЗ 02.09.2026, §1–§3: фильтр по PLDescrBK (а не по КодPL — в
+// представлении он захардкожен 1001/2001), выручка хранится С МИНУСОМ и берётся
+// по модулю, а знаки офлайна и онлайна противоположны: в офлайне выручка минус и
+// себестоимость плюс, в Click & Collect наоборот. Поэтому сумма без фильтра по
+// PLDescrBK бессмысленна — слагаемые частично гасят друг друга, и фильтр
+// обязателен ВСЕГДА, а не «по возможности».
 func (s *mssqlRetailSource) Fact(ctx context.Context, country string, years []int) ([]RetailFactCell, error) {
 	if len(years) == 0 || s.tbl.FactTable == "" {
 		return []RetailFactCell{}, nil
 	}
-	cfoCol, dateCol, amtCol, err := s.factColumns()
-	if err != nil {
-		return nil, err
+	// ABS вокруг суммы, а не вокруг слагаемых: знак задан направлением строки
+	// (выручка/себестоимость), и внутри одного PLDescrBK он однороден.
+	q := fmt.Sprintf(`
+		SELECT TRY_CONVERT(int, [CodeCFO]) AS cfo, YEAR([Month]) AS y, MONTH([Month]) AS m,
+		       ABS(SUM([%s])) AS amt
+		  FROM %s
+		 WHERE [PLDescrBK] = @p1
+		   AND YEAR([Month]) IN (%s)
+		   AND (@p2 = '' OR [Country] = @p2)
+		   -- Страна '- ' (с пробелом) — 21 088 строк факта (правка ТЗ §17).
+		   -- Исключаем ЯВНО: это не страна контура, но и потеряться она не должна
+		   -- незаметно, поэтому условие видно в запросе, а не спрятано в фильтре.
+		   AND LTRIM(RTRIM([Country])) <> '-'%s
+		 GROUP BY TRY_CONVERT(int, [CodeCFO]), YEAR([Month]), MONTH([Month])`,
+		retailAmtWithVATCur, s.tbl.FactTable, intList(years), allViewGuards(s.tbl.FactTable))
+	return s.scanCells(ctx, q, retailPLRevenue, country)
+}
+
+// Cogs — себестоимость магазинов (правка ТЗ §6): лежит ТОЛЬКО в белорусских
+// рублях, ExRate в её строках жёстко равен 1. Валютной аналитики по
+// себестоимости в источнике нет, поэтому и метод отдаёт BYN.
+func (s *mssqlRetailSource) Cogs(ctx context.Context, country string, years []int) ([]RetailFactCell, error) {
+	if len(years) == 0 || s.tbl.FactTable == "" {
+		return []RetailFactCell{}, nil
 	}
 	q := fmt.Sprintf(`
-		SELECT TRY_CONVERT(int, [%s]) AS cfo, YEAR([%s]) AS y, MONTH([%s]) AS m, SUM([%s]) AS amt
+		SELECT TRY_CONVERT(int, [CodeCFO]) AS cfo, YEAR([Month]) AS y, MONTH([Month]) AS m,
+		       ABS(SUM([%s])) AS amt
 		  FROM %s
-		 WHERE YEAR([%s]) IN (%s)
-		 GROUP BY TRY_CONVERT(int, [%s]), YEAR([%s]), MONTH([%s])`,
-		cfoCol, dateCol, dateCol, amtCol, s.tbl.FactTable,
-		dateCol, intList(years), cfoCol, dateCol, dateCol)
-	return s.scanCells(ctx, q)
+		 WHERE [PLDescrBK] = @p1
+		   AND YEAR([Month]) IN (%s)
+		   AND (@p2 = '' OR [Country] = @p2)%s
+		 GROUP BY TRY_CONVERT(int, [CodeCFO]), YEAR([Month]), MONTH([Month])`,
+		retailAmtWithVATBYN, s.tbl.FactTable, intList(years), allViewGuards(s.tbl.FactTable))
+	return s.scanCells(ctx, q, retailPLCogs, country)
+}
+
+// FactFxRate — курс нац. валюты к BYN, посчитанный ИЗ ФАКТА (правка ТЗ §7):
+// SUM(NetsalesCurrencyBelRubFact) / SUM(NetsalesCurrencyFact) по строкам выручки.
+// Из справочника его брать нельзя: в факте лежит тот курс, по которому суммы
+// уже пересчитаны, и любой другой даст расхождение с отчётами.
+//
+// Второй результат — найден ли курс: ноль в знаменателе (нет выручки за период)
+// это «нет данных», а не «курс 0».
+func (s *mssqlRetailSource) FactFxRate(ctx context.Context, country string, year, month int) (float64, bool, error) {
+	if s.tbl.FactTable == "" {
+		return 0, false, nil
+	}
+	q := fmt.Sprintf(`
+		SELECT SUM([NetsalesCurrencyBelRubFact]) AS byn, SUM([NetsalesCurrencyFact]) AS cur
+		  FROM %s
+		 WHERE [PLDescrBK] = @p1
+		   AND YEAR([Month]) = @p2 AND MONTH([Month]) = @p3
+		   AND (@p4 = '' OR [Country] = @p4)%s`,
+		s.tbl.FactTable, allViewGuards(s.tbl.FactTable))
+	var byn, cur sql.NullFloat64
+	if err := s.db.QueryRowContext(ctx, q, retailPLRevenue, year, month, country).Scan(&byn, &cur); err != nil {
+		return 0, false, err
+	}
+	if !byn.Valid || !cur.Valid || cur.Float64 == 0 {
+		return 0, false, nil
+	}
+	return byn.Float64 / cur.Float64, true, nil
+}
+
+// TacticFxRate — курс сценария «Тактика» (правка ТЗ §8).
+//
+// Источник — Budgeting.dbo.ExRateFactTarget, для долларового блока
+// ExRateToUSDFactTarget. Курсы заданы к белорусскому рублю, по BY значение 1.
+// Своего справочника курсов у сценария нет.
+//
+// Нет строки на месяц — это ОШИБКА ЗАПОЛНЕНИЯ источника, а не повод подставить
+// курс по умолчанию: подстановка тихо изменила бы утверждённые суммы.
+func (s *mssqlRetailSource) TacticFxRate(ctx context.Context, country string, year, month int, toUSD bool) (float64, error) {
+	if eqCountry(country, "BY") && !toUSD {
+		return 1, nil // по BY курс к белорусскому рублю равен 1 по определению
+	}
+	table := "Budgeting.dbo.ExRateFactTarget"
+	if toUSD {
+		table = "Budgeting.dbo.ExRateToUSDFactTarget"
+	}
+	q := fmt.Sprintf(`
+		SELECT TOP 1 [ExRate] FROM %s
+		 WHERE YEAR([Date]) = @p1 AND MONTH([Date]) = @p2
+		   AND (@p3 = '' OR [Country] = @p3)`, table)
+	var rate sql.NullFloat64
+	if err := s.db.QueryRowContext(ctx, q, year, month, country).Scan(&rate); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("курс тактики за %04d-%02d (%s) не заполнен в %s", year, month, country, table)
+		}
+		return 0, err
+	}
+	if !rate.Valid || rate.Float64 == 0 {
+		return 0, fmt.Errorf("курс тактики за %04d-%02d (%s) в %s пустой или нулевой", year, month, country, table)
+	}
+	return rate.Float64, nil
 }
 
 // Strategy — стратегия года (ТЗ §11). Читаем нац. валюту (VFORMTOLOADPLAN) и

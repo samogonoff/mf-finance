@@ -271,7 +271,6 @@ func main() {
 		StoreTable:       cfg.PlansRetailStoreTable,
 		StoreGroup:       cfg.PlansRetailStoreGroup,
 		FactTable:        cfg.PlansRetailFactTable,
-		FactColumns:      cfg.PlansRetailFactColumns,
 		StrategyTable:    cfg.PlansRetailStrategyTable,
 		StrategyGroup:    cfg.PlansRetailStrategyGroup,
 		PlanHistTable:    cfg.PlansRetailPlanHistTable,

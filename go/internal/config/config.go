@@ -111,7 +111,6 @@ type Config struct {
 	PlansRetailStoreTable    string // справочник магазинов: FinDWH.dbo.[001 CodeCFO]
 	PlansRetailStoreGroup    string // значение GroupCFO1 справочника ('Магазины')
 	PlansRetailFactTable     string // факт продаж (выручка с НДС) из FOX
-	PlansRetailFactColumns   string // CSV колонок факта: ЦФО, дата, сумма (колонки не подтверждены пробой)
 	PlansRetailStrategyTable string // стратегия в нац. валюте: Budgeting.dbo.VFORMTOLOADPLAN
 	PlansRetailStrategyGroup string // ГруппыЦФО1 таблицы плана ('3.Магазины' — НЕ равно группе справочника)
 	PlansRetailPlanHistTable string // история плана: Checks.dbo.plan_saler_st
@@ -195,7 +194,6 @@ func Load() Config {
 		PlansRetailStoreTable:    env("PLANS_RETAIL_STORE_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
 		PlansRetailStoreGroup:    env("PLANS_RETAIL_STORE_GROUP", "Магазины"),
 		PlansRetailFactTable:     env("PLANS_RETAIL_FACT_TABLE", "FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail"),
-		PlansRetailFactColumns:   env("PLANS_RETAIL_FACT_COLUMNS", "CodeCFO,Date,Summa"),
 		PlansRetailStrategyTable: env("PLANS_RETAIL_STRATEGY_TABLE", "Budgeting.dbo.VFORMTOLOADPLAN"),
 		PlansRetailStrategyGroup: env("PLANS_RETAIL_STRATEGY_GROUP", "3.Магазины"),
 		PlansRetailPlanHistTable: env("PLANS_RETAIL_PLAN_HISTORY_TABLE", "Checks.dbo.plan_saler_st"),

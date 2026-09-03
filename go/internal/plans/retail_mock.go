@@ -4,13 +4,16 @@ import (
 	"context"
 	"math"
 	"sort"
+	"strings"
 )
 
 // Фикстуры формы «Розница» (PLANS_MOCK=1 или нет соединения с MSSQL).
 //
-// Зачем нужны: онлайн-источники ТЗ §11 живут за корп-VPN (10.10.6.15), а колонки
-// таблицы факта (sales_and_COGG_from_FOX_offline_retail) ещё не подтверждены
-// пробой. Без фикстур ни форму нельзя открыть в dev, ни прогнать тесты сервиса.
+// Зачем нужны: онлайн-источники ТЗ §11 живут за корп-VPN (10.10.6.15). Без
+// фикстур ни форму нельзя открыть в dev, ни прогнать тесты сервиса. Колонки и
+// смысл таблицы факта подтверждены правками ТЗ 02.09.2026 §1–§10 (фильтр по
+// PLDescrBK, выручка с минусом, себестоимость только в BYN, курс — из факта),
+// поэтому фикстуры воспроизводят уже подтверждённую структуру, а не догадку.
 //
 // Состав. Ядро — 18 магазинов РБ с РЕАЛЬНЫМИ CodeCFO и адресами из dir_cfo
 // (миграция 0028), поэтому строки формы совпадают со справочником ЦФО. Набор
@@ -199,6 +202,57 @@ func (s *MockRetailSource) Fact(_ context.Context, country string, years []int) 
 		}
 	}
 	return out, nil
+}
+
+// Cogs — себестоимость магазинов в BYN (правка ТЗ §6). В фикстурах — доля от
+// выручки: точное значение неважно, важно, что величина ЕСТЬ и она в BYN, иначе
+// сводка PL на моке не собирается.
+func (s *MockRetailSource) Cogs(ctx context.Context, country string, years []int) ([]RetailFactCell, error) {
+	fact, err := s.Fact(ctx, country, years)
+	if err != nil {
+		return nil, err
+	}
+	const cogsShare = 0.52 // порядок величины по РБ: 51,8 млн при выручке 227,4 млн
+	out := make([]RetailFactCell, 0, len(fact))
+	for _, c := range fact {
+		byn := c.Amount * mockRetailFxToBYN(country)
+		out = append(out, RetailFactCell{
+			CodeCFO: c.CodeCFO, Year: c.Year, Month: c.Month,
+			Amount: math.Round(byn*cogsShare*100) / 100,
+		})
+	}
+	return out, nil
+}
+
+// FactFxRate — курс из факта (правка ТЗ §7). В фикстурах — фиксированный курс
+// страны: формула SUM(BelRub)/SUM(Currency) на моке дала бы то же число.
+func (s *MockRetailSource) FactFxRate(_ context.Context, country string, _, _ int) (float64, bool, error) {
+	return mockRetailFxToBYN(country), true, nil
+}
+
+// TacticFxRate — курс сценария «Тактика» (правка ТЗ §8). На моке курс есть всегда;
+// поведение «нет месяца → ошибка заполнения» проверяется на живом источнике.
+func (s *MockRetailSource) TacticFxRate(_ context.Context, country string, _, _ int, toUSD bool) (float64, error) {
+	if toUSD {
+		return mockRetailFxToBYN(country) / 3.2, nil // 3,2 BYN за доллар
+	}
+	return mockRetailFxToBYN(country), nil
+}
+
+// mockRetailFxToBYN — курс нац. валюты страны к белорусскому рублю (фикстуры).
+func mockRetailFxToBYN(country string) float64 {
+	switch strings.ToUpper(strings.TrimSpace(country)) {
+	case "", "BY":
+		return 1
+	case "RU":
+		return 0.0376
+	case "KZ":
+		return 0.0068
+	case "UZ":
+		return 0.00026
+	default:
+		return 1
+	}
 }
 
 // Strategy — стратегия года: факт прошлого года × 1.15 (демо). Онлайн источник —
