@@ -67,6 +67,8 @@ type Handler struct {
 	org        *OrgStore
 	jobpos     *JobPositionStore
 	tasks      *TaskStore
+	// factSnap — снимок факта МП: ручной прогон регламента (правка ТЗ МП §12).
+	factSnap *MpFactSnapshot
 }
 
 // SetOrgStore подключает структуру компании (nil — недоступна).
@@ -74,6 +76,10 @@ func (h *Handler) SetOrgStore(o *OrgStore) { h.org = o }
 
 // SetTaskStore подключает движок заданий процесса (nil — недоступен).
 func (h *Handler) SetTaskStore(t *TaskStore) { h.tasks = t }
+
+// SetFactSnapshot подключает снимок факта МП: ручной прогон регламента и отметка
+// «данные актуальны на …» (правка ТЗ 02.09.2026 МП §12).
+func (h *Handler) SetFactSnapshot(s *MpFactSnapshot) { h.factSnap = s }
 
 // SetJobPositions подключает должности (nil — недоступны).
 func (h *Handler) SetJobPositions(j *JobPositionStore) { h.jobpos = j }

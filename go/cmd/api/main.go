@@ -233,7 +233,19 @@ func main() {
 	// Тактические планы (VS0 каркас + VS1 справочники + VS2 факт МП).
 	// docs/reports/plans/SPEC.md. Факт: PLANS_MOCK=1 → фикстуры; иначе online
 	// FinDWH (переиспользуем mssqlDB ВГО-отчёта; при nil — fallback на mock).
-	plansFact := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactTable, cfg.PlansMpPlanTable, cfg.PlansMpTaktTable, cfg.PlansMpPenaltyView)
+	// Факт МП: форма читает СНИМОК, а не OLAP вживую (правка ТЗ 02.09.2026 МП §12).
+	// Причина — больше двухсот процедур DWH/FinDWH/MP перезаливают таблицы через
+	// TRUNCATE, и в динамике суммы плавают: согласующий увидел бы не то, что
+	// заполняющий. Снимок питается регламентом (раз в сутки) и ручкой админа.
+	// PLANS_FACT_SNAPSHOT=0 — аварийный откат на прямое чтение источника.
+	plansFactOrigin := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactTable, cfg.PlansMpPlanTable, cfg.PlansMpTaktTable, cfg.PlansMpPenaltyView)
+	plansFactSnap := plans.NewMpFactSnapshot(pool, plansFactOrigin)
+	plansFact := plansFactOrigin
+	if cfg.PlansFactSnapshot {
+		plansFact = plans.NewSnapshotFactSource(plansFactSnap)
+		plans.NewSnapshotRefresher(plansFactSnap, []string{"large", "small"},
+			time.Duration(cfg.PlansFactSnapshotInterval)*time.Second).Start(context.Background())
+	}
 	plansScope := plans.NewPgScopeStore(pool)
 	plansStore := plans.NewPgStore(pool)
 	plansCalendar := plans.NewCalendarStore(pool)
@@ -309,8 +321,10 @@ func main() {
 	plansTasks := plans.NewTaskStore(pool, plansFact).WithNotifier(notifSvc).
 		// Подсказки показываются РЯДОМ с полями ввода и в значения не попадают
 		// (правки ТЗ 02.09.2026, часть 1).
-		WithHints(plans.NewHintSource(plansDir))
+		WithHints(plans.NewHintSource(plansDir)).
+		WithFactSnapshot(plansFactSnap)
 	plansH.SetTaskStore(plansTasks)
+	plansH.SetFactSnapshot(plansFactSnap)
 	// Фоновая синхронизация + прогрев кэша (DIR-03). Интервал из PLANS_SYNC_INTERVAL.
 	plansSyncer.Start(context.Background(), time.Duration(cfg.PlansSyncInterval)*time.Second)
 
@@ -443,6 +457,8 @@ func main() {
 	mux.HandleFunc("POST /api/plans/instances/{id}/strategy/import", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.StrategyImport))
 	mux.HandleFunc("GET /api/plans/tasks/{taskId}/data", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.TaskDataView))
 	mux.HandleFunc("PUT /api/plans/tasks/{taskId}/assignee", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.TaskAssign))
+	// Ручной прогон регламента снимка факта МП (правка ТЗ МП §12) — только админ.
+	mux.HandleFunc("POST /api/plans/admin/mp-fact-snapshot", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.MpFactSnapshotRefresh))
 	mux.HandleFunc("GET /api/plans/tasks/{taskId}/mp-form", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormGet))
 	mux.HandleFunc("PUT /api/plans/tasks/{taskId}/mp-form", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormSave))
 	mux.HandleFunc("GET /api/plans/tasks/{taskId}/mp-form/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormExport))

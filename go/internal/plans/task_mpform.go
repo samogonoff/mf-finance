@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 )
 
@@ -74,6 +75,10 @@ type MpTaskForm struct {
 	// значение источника рядом с полем, БЕЗ подстановки в значение и без
 	// блокировки. Сохранение их не касается.
 	Hints []FieldHint `json:"hints,omitempty"`
+	// FactSnapshot — отметка «данные актуальны на …» (правка МП §12). Форма читает
+	// снимок, а не OLAP вживую, и обязана показывать, когда он собран: иначе
+	// заполняющий не отличит свежий факт от факта месячной давности.
+	FactSnapshot *MpSnapshotMeta `json:"fact_snapshot,omitempty"`
 }
 
 // seedPL — code_pl для подтяжки input-строк из источника (SUMIFS прототипа).
@@ -352,6 +357,15 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 				}
 			}
 			f.Cells = append(f.Cells, cell)
+		}
+	}
+
+	// Отметка актуальности снимка факта (правка МП §12).
+	if s.factSnap != nil {
+		if meta, err := s.factSnap.Meta(ctx, year, month, SnapLayerFact, segment); err == nil {
+			f.FactSnapshot = &meta
+		} else {
+			log.Printf("plans: отметка снимка факта МП недоступна: %v", err)
 		}
 	}
 
