@@ -404,6 +404,20 @@ func floatAt(m map[string]any, k string) float64 {
 	return 0
 }
 
+// boolAt — флаг из payload. Строковое "true" тоже принимаем: справочник
+// правится руками в UI, и значение может прийти строкой.
+func boolAt(m map[string]any, k string) bool {
+	switch v := m[k].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	case float64:
+		return v != 0
+	}
+	return false
+}
+
 func intAt(m map[string]any, k string) int {
 	switch v := m[k].(type) {
 	case float64:

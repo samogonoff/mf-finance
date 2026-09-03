@@ -47,6 +47,28 @@ type PublishRow struct {
 	Value       float64   `json:"value"`
 	Currency    string    `json:"currency"`
 	TargetTable string    `json:"target_table"`
+	// Company — ЮЛ строки: реальный УНП (правка ТЗ 02.09.2026 Розница §15).
+	// Колонка «Компания» есть ТОЛЬКО в FormToLoaTaktTarget и VFORMTOLOADTAKTTARGET
+	// (правка §16) — в плане и факте её нет, поэтому пишется она не всегда.
+	Company string `json:"company,omitempty"`
+}
+
+// targetHasCompany — есть ли у приёмника колонка «Компания» (правка ТЗ §16).
+// Список — по семейству таблиц тактики, а не по «есть ли значение»: попытка
+// записать колонку туда, где её нет, роняет всю пачку.
+func targetHasCompany(target string) bool {
+	t := strings.ToUpper(strings.TrimSpace(target))
+	return strings.Contains(t, "TAKTTARGET")
+}
+
+// LegalEntityResolver — УНП ЮЛ страны. Отдельным интерфейсом: карточка знает
+// название ЮЛ, а в приёмник уходит УНП, и связь между ними — данные справочника
+// (dir_legal_entity), а не таблица в коде.
+type LegalEntityResolver interface {
+	// UNP — УНП ЮЛ, на которое пишется план страны. Второй результат — найдено ли:
+	// фиктивные коды (historical_only) на запись не годятся, и «не найдено» лучше,
+	// чем молча записать историческую заглушку.
+	UNP(ctx context.Context, country string) (string, bool)
 }
 
 // PublishMapping — правило маппинга строки формы в приёмник (publish_mapping).
@@ -208,6 +230,11 @@ func (s *CardService) Publish(ctx context.Context, cardID int64, mode string, ac
 
 	if mode != PublishModeWrite {
 		res.Mode = PublishModeDryRun
+		// Предпросмотр ничего не пишет, поэтому отсутствие УНП его не блокирует —
+		// наоборот, dry-run и нужен, чтобы увидеть это заранее.
+		if err := s.fillCompany(ctx, c, mapped); err != nil {
+			res.Pending = append(res.Pending, err.Error())
+		}
 		sum, err := s.publisher.Probe(ctx, res.Target, mapped)
 		if err != nil {
 			res.Status = "failed"
@@ -216,6 +243,16 @@ func (s *CardService) Publish(ctx context.Context, cardID int64, mode string, ac
 			res.SumTarget = sum
 			res.Diff = round4(res.SumInput - sum)
 		}
+		s.logPublish(ctx, res, actorID)
+		return res, nil
+	}
+
+	// ЮЛ строки — реальный УНП (правки ТЗ §15/§16). Записать план на пустую
+	// «Компанию» нельзя: строка уедет в приёмник тактики без ЮЛ, и BI не сможет
+	// отделить её от исторических строк с фиктивными кодами.
+	if err := s.fillCompany(ctx, c, mapped); err != nil {
+		res.Status = "blocked"
+		res.Error = err.Error()
 		s.logPublish(ctx, res, actorID)
 		return res, nil
 	}
@@ -262,6 +299,33 @@ func (s *CardService) SandboxRows(ctx context.Context, target string, limit int)
 		return nil, errors.New("песочница приёмника выключена (PLANS_PUBLISH_SANDBOX=0)")
 	}
 	return r.Rows(ctx, target, limit)
+}
+
+// fillCompany — проставить УНП ЮЛ в строки приёмников, где есть «Компания».
+func (s *CardService) fillCompany(ctx context.Context, c Card, rows []PublishRow) error {
+	need := false
+	for i := range rows {
+		if targetHasCompany(rows[i].TargetTable) {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return nil
+	}
+	if s.legalEntities == nil {
+		return errors.New("справочник ЮЛ не подключён: УНП для колонки «Компания» неизвестен")
+	}
+	unp, ok := s.legalEntities.UNP(ctx, c.Country)
+	if !ok || strings.TrimSpace(unp) == "" {
+		return fmt.Errorf("в справочнике ЮЛ нет реального УНП для страны %q — план пишется на реальное ЮЛ (правка ТЗ §15)", c.Country)
+	}
+	for i := range rows {
+		if targetHasCompany(rows[i].TargetTable) {
+			rows[i].Company = unp
+		}
+	}
+	return nil
 }
 
 // PublishLog — журнал публикаций карточки.
@@ -510,6 +574,17 @@ func (p *mssqlPublisher) Write(ctx context.Context, target string, rows []Publis
 	insQ := fmt.Sprintf(`INSERT INTO %s
 		([Параметр],[Страна],[КодЦФО],[ГруппыЦФО1],[ГруппыЦФО2],[ЦФО],[КодPL],[Дата],[Значение])
 		VALUES (@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9)`, target)
+	// Колонка «Компания» есть только в семействе TaktTarget (правка ТЗ §16), и там
+	// она ОБЯЗАТЕЛЬНА: наша тактика пишется именно туда, а план идёт на реальное
+	// ЮЛ (§15). Ключ идемпотентности при этом остаётся логическим ключом ТЗ —
+	// Параметр+Страна+КодЦФО+КодPL+Дата: строка одной страны не должна
+	// размножаться по ЮЛ.
+	withCompany := targetHasCompany(target)
+	if withCompany {
+		insQ = fmt.Sprintf(`INSERT INTO %s
+		([Параметр],[Страна],[КодЦФО],[ГруппыЦФО1],[ГруппыЦФО2],[ЦФО],[КодPL],[Дата],[Значение],[Компания])
+		VALUES (@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10)`, target)
+	}
 
 	written := 0
 	for _, r := range rows {
@@ -517,8 +592,12 @@ func (p *mssqlPublisher) Write(ctx context.Context, target string, rows []Publis
 			fmt.Sprint(r.CodeCFO), fmt.Sprint(r.CodePL), r.Date); err != nil {
 			return written, 0, fmt.Errorf("очистка ключа (%s/%d/%s): %w", r.Param, r.CodeCFO, r.Date.Format("2006-01-02"), err)
 		}
-		if _, err := tx.ExecContext(ctx, insQ, r.Param, r.Country, fmt.Sprint(r.CodeCFO),
-			r.GroupCFO1, r.GroupCFO2, r.CFOName, fmt.Sprint(r.CodePL), r.Date, r.Value); err != nil {
+		args := []any{r.Param, r.Country, fmt.Sprint(r.CodeCFO), r.GroupCFO1, r.GroupCFO2,
+			r.CFOName, fmt.Sprint(r.CodePL), r.Date, r.Value}
+		if withCompany {
+			args = append(args, r.Company)
+		}
+		if _, err := tx.ExecContext(ctx, insQ, args...); err != nil {
 			return written, 0, fmt.Errorf("запись строки (%s/%d/%s): %w", r.Param, r.CodeCFO, r.Date.Format("2006-01-02"), err)
 		}
 		written++

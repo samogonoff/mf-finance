@@ -101,10 +101,10 @@ func (p *sandboxPublisher) Write(ctx context.Context, target string, rows []Publ
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO publish_sandbox (target_table, param, country, code_cfo,
-				group_cfo1, group_cfo2, cfo_name, code_pl, plan_date, value)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+				group_cfo1, group_cfo2, cfo_name, code_pl, plan_date, value, company)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 			target, r.Param, r.Country, fmt.Sprint(r.CodeCFO), r.GroupCFO1, r.GroupCFO2,
-			r.CFOName, fmt.Sprint(r.CodePL), r.Date, r.Value); err != nil {
+			r.CFOName, fmt.Sprint(r.CodePL), r.Date, r.Value, r.Company); err != nil {
 			return written, 0, fmt.Errorf("запись строки (%s/%d/%s): %w",
 				r.Param, r.CodeCFO, r.Date.Format("2006-01-02"), err)
 		}
@@ -131,7 +131,7 @@ func (p *sandboxPublisher) Rows(ctx context.Context, target string, limit int) (
 		}
 	}
 	q := `SELECT target_table, param, country, code_cfo, group_cfo1, group_cfo2,
-	             cfo_name, code_pl, plan_date, value
+	             cfo_name, code_pl, plan_date, value, company
 	        FROM publish_sandbox
 	       WHERE ($1 = '' OR target_table = $1)
 	       ORDER BY written_at DESC, id DESC LIMIT $2`
@@ -145,7 +145,7 @@ func (p *sandboxPublisher) Rows(ctx context.Context, target string, limit int) (
 		var r PublishRow
 		var codeCFO, codePL string
 		if err := rows.Scan(&r.TargetTable, &r.Param, &r.Country, &codeCFO, &r.GroupCFO1,
-			&r.GroupCFO2, &r.CFOName, &codePL, &r.Date, &r.Value); err != nil {
+			&r.GroupCFO2, &r.CFOName, &codePL, &r.Date, &r.Value, &r.Company); err != nil {
 			return nil, err
 		}
 		// КодЦФО/КодPL в приёмнике — строки; наружу отдаём числами, как в форме.

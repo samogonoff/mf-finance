@@ -321,6 +321,9 @@ func main() {
 	plansCards := plans.NewCardService(plans.NewCardStore(pool)).
 		WithPublisher(plansPublisher, plans.NewPublishStore(pool)).
 		WithOwners(plans.NewStageOwnerResolver(plansTasks)).
+		// План пишется на РЕАЛЬНОЕ ЮЛ: колонка «Компания» приёмника тактики
+		// заполняется УНП из справочника (правки ТЗ 02.09.2026 §15/§16).
+		WithLegalEntities(plans.NewLegalEntityResolver(plansDir)).
 		WithAudit(plansAudit)
 	plansCards.RegisterForm(plans.TemplateMP, plans.NewMpCardProvider(plansStore, plansRates), plans.NewMpCardProvider(plansStore, plansRates))
 

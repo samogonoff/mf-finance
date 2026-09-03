@@ -21,6 +21,9 @@ type CardService struct {
 	sources   map[string]PublishSource
 	owners    StepOwnerResolver
 	audit     AuditSink
+	// legalEntities — УНП ЮЛ по стране для колонки «Компания» приёмника тактики
+	// (правки ТЗ 02.09.2026 §15/§16).
+	legalEntities LegalEntityResolver
 }
 
 // SnapshotProvider — отдаёт снимок значений формы для версии карточки.
@@ -70,6 +73,12 @@ func (s *CardService) RegisterForm(formCode string, snap SnapshotProvider, src P
 	if src != nil {
 		s.sources[formCode] = src
 	}
+}
+
+// WithLegalEntities подключает справочник ЮЛ: план пишется на реальный УНП.
+func (s *CardService) WithLegalEntities(r LegalEntityResolver) *CardService {
+	s.legalEntities = r
+	return s
 }
 
 // WithOwners подключает резолвер владельцев шагов (skip_if_same_user).
