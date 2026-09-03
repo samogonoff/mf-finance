@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app import commercial, insight_agent, insights, llm_settings, margin, mocks
+from app import commercial, insight_agent, insights, llm_settings, margin, mocks, multipack
 from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
 from app.logship import log
 from app.middleware import require_perm
@@ -481,6 +481,25 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     for row in data:
         row["sum_Себестоимость, руб."] = _sum_components(row, SEBEST_COMPONENTS_RUB)
         row["sum_Себестоимость, USD."] = _sum_components(row, SEBEST_COMPONENTS_USD)
+
+    # Пометка мультипака: (модель, артикул) заведён в cost_multipack. Нужна
+    # таблице для значка и «своего» блока в редакторе, а дашбордам — чтобы
+    # исключить паки из агрегатов: их себестоимость складывается из одиночек,
+    # которые в агрегате уже посчитаны, и суммирование двоило бы её.
+    try:
+        pack_keys = [
+            ((r.get("Модель") or "").strip(), (r.get("Артикул") or "").strip())
+            for r in data
+        ]
+        packs = await multipack.pack_flags(pack_keys)
+        for row in data:
+            key = ((row.get("Модель") or "").strip(), (row.get("Артикул") or "").strip())
+            row["is_multipack"] = key in packs
+    except Exception as exc:
+        # Пометка — украшение таблицы: её отсутствие не повод не отдать данные.
+        log(logging.WARNING, "не удалось отметить мультипаки", error=str(exc))
+        for row in data:
+            row["is_multipack"] = False
 
     # Inject margin targets per level1
     try:
@@ -2026,7 +2045,23 @@ async def create_version_endpoint(payload: dict, user_email: str = Depends(_requ
         await _check_calc_locks(user_email, model, articul, calc_sign, plan_id, date_str, task_number)
     if _is_mock():
         return mocks.create_version(model, articul, calc_sign, plan_id, date_str, username, rows, status)
-    return await create_version(model, articul, calc_sign, plan_id, date_str, username, rows, status, task_number)
+    result = await create_version(
+        model, articul, calc_sign, plan_id, date_str, username, rows, status, task_number
+    )
+    # Мультипак: связываем версию с последней сборкой, чтобы журнал отвечал «из
+    # чего сложилась эта версия». Для обычной калькуляции — no-op.
+    try:
+        await multipack.attach_version(
+            model=model, articul=articul, calc_sign=calc_sign or "",
+            plan_id=plan_id or "", task_number=task_number or "",
+            version_id=result["version_id"],
+        )
+    except Exception as exc:
+        # Ссылка в журнале — аудит, а не сохранение расчёта: версия уже создана
+        # и применена, откатывать её из-за этого нельзя.
+        log(logging.WARNING, "не удалось связать версию со сборкой мультипака",
+            model=model, articul=articul, error=str(exc))
+    return result
 
 
 @router.post("/save-calculation-draft")
@@ -2738,6 +2773,162 @@ async def remove_calc_sign_copy(
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"success": True, **result}
+
+
+@router.get("/multipack")
+async def multipack_state(request: Request, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Состав мультипака и актуальная себестоимость его одиночек.
+
+    Отдаётся и для обычной калькуляции (`is_pack=false`) — редактор по этому
+    ответу решает, показывать блок состава или предложить «сделать мультипаком».
+    Право просмотровое: состав видят все, кто видит расчёт.
+    """
+    model = request.query_params.get("model") or ""
+    articul = request.query_params.get("articul") or ""
+    if not model.strip() or not articul.strip():
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return mocks.multipack_state(model, articul)
+    return await multipack.get_state(
+        model, articul,
+        request.query_params.get("calc_sign") or "",
+        request.query_params.get("plan_id") or "",
+        request.query_params.get("task_number") or "",
+    )
+
+
+@router.put("/multipack")
+async def multipack_save(
+    payload: dict, user_email: str = Depends(_require_perm("cost:multipack"))
+) -> dict:
+    """Создать или переписать состав мультипака.
+
+    Тело: model, articul, pack_size (необязательно), note, items[] —
+    {src_model, src_articul, qty, src_calc_sign?, src_plan_id?}. Пустые
+    src_calc_sign/src_plan_id означают «брать одиночку того же этапа и плана,
+    что у пака», и состав тогда работает на всех этапах без правки.
+    """
+    if _is_mock():
+        return {"success": True, "mock": True}
+    try:
+        result = await multipack.save_pack(
+            model=str(payload.get("model") or ""),
+            articul=str(payload.get("articul") or ""),
+            items=payload.get("items") or [],
+            pack_size=payload.get("pack_size"),
+            note=str(payload.get("note") or ""),
+            username=user_email or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"success": True, **result}
+
+
+@router.delete("/multipack")
+async def multipack_delete(
+    request: Request, user_email: str = Depends(_require_perm("cost:multipack"))
+) -> dict:
+    """Распустить мультипак (убрать состав и журнал сборок).
+
+    Строки расчёта при этом остаются в версии калькуляции: обнулять уже
+    согласованную себестоимость молча нельзя. Убираются они следующим
+    сохранением версии из редактора.
+    """
+    model = request.query_params.get("model") or ""
+    articul = request.query_params.get("articul") or ""
+    if not model.strip() or not articul.strip():
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return {"success": True, "mock": True}
+    try:
+        result = await multipack.delete_pack(model, articul, user_email or "")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"success": True, **result}
+
+
+@router.post("/multipack/build")
+async def multipack_build(
+    payload: dict, user_email: str = Depends(_require_perm("cost:multipack"))
+) -> dict:
+    """Собрать/пересобрать строки расчёта мультипака.
+
+    Версию НЕ создаёт и в кэш не пишет: строки возвращаются в редактор, человек
+    их видит и сохраняет обычным путём (черновик или отправка на утверждение).
+    Иначе сборка обходила бы согласование ПЭО.
+
+    `rows` — текущие строки редактора: всё, что не помечено маркером состава
+    (упаковка), переносится в результат как есть.
+    """
+    model = str(payload.get("model") or "")
+    articul = str(payload.get("articul") or "")
+    if not model.strip() or not articul.strip():
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return mocks.multipack_build(model, articul)
+    try:
+        return await multipack.build(
+            model=model,
+            articul=articul,
+            calc_sign=str(payload.get("calc_sign") or ""),
+            plan_id=str(payload.get("plan_id") or ""),
+            task_number=str(payload.get("task_number") or ""),
+            rows=payload.get("rows") or [],
+            username=user_email or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/multipack/candidates")
+async def multipack_candidates(
+    request: Request, _: str = Depends(_require_perm("cost:multipack"))
+) -> dict:
+    """Калькуляции-одиночки для добавления в состав.
+
+    Параметры: q (модель/артикул/наименование), calc_sign, level01,
+    brand_manager, exclude_model/exclude_articul (сам пак), limit (≤200).
+    Ответ: {data, truncated, limit}.
+    """
+    if _is_mock():
+        data = mocks.multipack_candidates(request.query_params.get("q") or "")
+        return {"data": data, "truncated": False, "limit": 50}
+    return await multipack.search_candidates(
+        query=request.query_params.get("q") or "",
+        calc_sign=request.query_params.get("calc_sign") or "",
+        plan_id=request.query_params.get("plan_id") or "",
+        level01=request.query_params.get("level01") or "",
+        brand_manager=request.query_params.get("brand_manager") or "",
+        exclude_model=request.query_params.get("exclude_model") or "",
+        exclude_articul=request.query_params.get("exclude_articul") or "",
+        limit=int(request.query_params.get("limit") or 50),
+    )
+
+
+@router.get("/multipack/list")
+async def multipack_list(_: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Журнал мультипаков: состав, последняя сборка, кто и когда."""
+    if _is_mock():
+        return {"data": [], "mock": True}
+    return {"data": await multipack.list_packs()}
+
+
+@router.get("/multipack/usage")
+async def multipack_usage(
+    request: Request, _: str = Depends(_require_perm("cost:view"))
+) -> dict:
+    """В какие мультипаки входит эта одиночка.
+
+    Нужно при правке её калькуляции: себестоимость паков сама не изменится
+    (пересборка ручная), и человек должен знать, что паки поедут.
+    """
+    model = request.query_params.get("model") or ""
+    articul = request.query_params.get("articul") or ""
+    if not model.strip() or not articul.strip():
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return {"data": []}
+    return {"data": await multipack.packs_using(model, articul)}
 
 
 @router.get("/plan-materials")

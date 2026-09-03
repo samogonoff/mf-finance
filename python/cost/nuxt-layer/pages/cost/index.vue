@@ -85,6 +85,15 @@
           </label>
 
           <label class="filter-checkbox"
+                 title="Показать только мультипаки — модель-артикулы, себестоимость которых собрана из калькуляций одиночек">
+            <input v-model="multipackOnly" type="checkbox" />
+            <span>
+              📦 Только мультипаки
+              <template v-if="multipackCount"> ({{ multipackCount }})</template>
+            </span>
+          </label>
+
+          <label class="filter-checkbox"
                  :title="hideDwhSentDefault
                    ? 'Для роли Калькулятор и ПЭО включён по умолчанию: в отправленных в DWH калькуляциях править и согласовывать нечего. Снять можно'
                    : 'Скрыть калькуляции, уже отправленные в DWH (📤)'">
@@ -588,6 +597,11 @@
                   :class="{ 'state-badge--action': can('cost:calc_sign_copy') }"
                   :title="manualCopyTitle(row)"
                   @click.stop="can('cost:calc_sign_copy') ? openCalcCopyDelete(row) : null">⧉</span>
+                <!-- Мультипак: продаётся как одна единица, себестоимость собрана
+                     из калькуляций одиночек. Состав виден в редакторе расчёта. -->
+                <span v-if="row.is_multipack"
+                  class="state-badge state-badge--multipack"
+                  title="Мультипак: себестоимость собрана из калькуляций одиночек. Состав — в редакторе расчёта">📦</span>
                 <button class="btn-details" @click.stop="openDetails(row)">🔍</button>
                 <!-- Право проверяем и здесь: без cost:edit_materials сервер
                      отклоняет сохранение (403), то есть кнопка обещала то, чего
@@ -1392,6 +1406,157 @@
               <button class="btn btn-sm btn-ghost" @click="cancelEditing">Отмена</button>
             </template>
           </div>
+          <!-- ── Состав мультипака ────────────────────────────────────────
+               Пак продаётся как одна единица, а состоит из нескольких одиночек.
+               Себестоимость = Σ (количество × себестоимость одиночки) + упаковка,
+               добавленная руками обычной кнопкой «+ Добавить строку». -->
+          <div v-if="multipackState?.is_pack || can('cost:multipack')" class="mp-block">
+            <div class="mp-head">
+              <button class="mp-toggle" @click="mpExpanded = !mpExpanded">
+                {{ mpExpanded ? '▾' : '▸' }} Мультипак
+                <span v-if="multipackState?.is_pack" class="mp-count">
+                  {{ mpItems.length }} позиц. · {{ mpQtyTotal }} шт
+                </span>
+              </button>
+              <span class="spacer"></span>
+              <template v-if="multipackState?.is_pack">
+                <label class="mp-inline-field" title="Сколько единиц в паке по паспорту (3/5/7)">
+                  в паке, шт
+                  <input type="number" step="1" min="0" class="editor-input mp-size"
+                         :value="mpPackSize ?? ''"
+                         @input="(e: any) => { mpPackSize = e.target.value === '' ? null : parseFloat(e.target.value); mpDirty = true; }" />
+                </label>
+                <button class="btn btn-sm" :disabled="!can('cost:multipack')" @click="mpOpenSearch">
+                  + Добавить одиночку
+                </button>
+                <button class="btn btn-sm" :disabled="!can('cost:multipack') || !mpDirty || multipackSaving"
+                        @click="mpSaveComposition">
+                  {{ multipackSaving ? 'Сохранение…' : '💾 Сохранить состав' }}
+                </button>
+                <button class="btn btn-sm btn-primary"
+                        :disabled="!can('cost:multipack') || multipackBuilding || !mpItems.length || editingVersion._locked"
+                        title="Пересчитать строки состава по актуальной себестоимости одиночек. Упаковка сохранится."
+                        @click="mpBuild">
+                  {{ multipackBuilding ? 'Сборка…' : '⟳ Собрать строки' }}
+                </button>
+                <button class="btn btn-sm btn-ghost" :disabled="!can('cost:multipack') || multipackSaving"
+                        @click="mpDeleteComposition">Распустить</button>
+              </template>
+              <button v-else class="btn btn-sm" @click="mpMarkPack">
+                Сделать мультипаком
+              </button>
+            </div>
+
+            <template v-if="multipackState?.is_pack && mpExpanded">
+              <div v-if="multipackLoading" class="muted mp-empty">Загрузка состава…</div>
+              <div v-else-if="!mpItems.length" class="muted mp-empty">
+                Состав пуст. Добавьте калькуляции одиночек, из которых собирается пак.
+              </div>
+              <table v-else class="version-editor-table mp-table">
+                <thead>
+                  <tr>
+                    <th>Модель</th>
+                    <th>Артикул</th>
+                    <th>Наименование</th>
+                    <th>Взято из</th>
+                    <th class="col-num">Кол-во, шт</th>
+                    <th class="col-num">С/с за шт, руб.</th>
+                    <th class="col-num">Сумма, руб.</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(it, ii) in mpItems" :key="ii" :class="{ 'mp-row-missing': !it.found }">
+                    <td>{{ it.src_model }}</td>
+                    <td>{{ it.src_articul }}</td>
+                    <td class="muted">{{ it.model_name || '—' }}</td>
+                    <td class="mp-src">
+                      <template v-if="it.found">
+                        <!-- Что именно взято: этап и план могут отличаться от
+                             запрошенных, и молчаливого выбора здесь быть не должно. -->
+                        <span class="mp-pin" :class="{ 'mp-pin--on': it.pinned_calc_sign }"
+                              :title="it.pinned_calc_sign
+                                ? 'Этап зафиксирован — клик, чтобы следовать этапу пака'
+                                : 'Этап следует за паком — клик, чтобы зафиксировать'"
+                              @click="mpTogglePin(it, 'calc_sign')">
+                          {{ it.actual_calc_sign || it.src_calc_sign || '—' }}{{ it.pinned_calc_sign ? ' 📌' : '' }}
+                        </span>
+                        ·
+                        <span class="mp-pin" :class="{ 'mp-pin--on': it.pinned_plan_id }"
+                              :title="it.pinned_plan_id
+                                ? 'План зафиксирован — клик, чтобы брать самый свежий'
+                                : 'Берётся самый свежий план — клик, чтобы зафиксировать этот'"
+                              @click="mpTogglePin(it, 'plan_id')">
+                          план {{ it.actual_plan_id || it.src_plan_id || '—' }}{{ it.pinned_plan_id ? ' 📌' : '' }}
+                        </span>
+                        <span v-if="it.task" class="muted"> · зад. {{ it.task }}</span>
+                        <span v-if="(it.tasks_total || 1) > 1" class="mp-hint"
+                              :title="'В плане ' + it.tasks_total + ' заданий, взято самое дорогое — как при простановке цены'">
+                          из {{ it.tasks_total }} зад.
+                        </span>
+                      </template>
+                      <span v-else class="mp-missing-text">калькуляция не найдена</span>
+                    </td>
+                    <td class="col-num">
+                      <input type="number" step="0.001" min="0" class="editor-input col-num mp-qty"
+                             :disabled="!can('cost:multipack')"
+                             :value="it.qty" @input="mpOnQtyInput(it, $event)" />
+                    </td>
+                    <td class="col-num num">{{ fmtPrice4(it.unit_rub) }}</td>
+                    <td class="col-num num">{{ fmtPrice4((Number(it.qty) || 0) * (Number(it.unit_rub) || 0)) }}</td>
+                    <td>
+                      <button class="btn-mp-del" :disabled="!can('cost:multipack')"
+                              title="Убрать из состава" @click="mpRemoveItem(ii)">✕</button>
+                    </td>
+                  </tr>
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colspan="4" class="mp-total-label">Состав</td>
+                    <td class="col-num num">{{ mpQtyTotal }}</td>
+                    <td></td>
+                    <td class="col-num num">{{ fmtPrice4(mpItemsRub) }}</td>
+                    <td></td>
+                  </tr>
+                  <tr>
+                    <td colspan="6" class="mp-total-label">
+                      Упаковка и прочие строки, добавленные вручную
+                    </td>
+                    <td class="col-num num">{{ fmtPrice4(mpPackagingRub) }}</td>
+                    <td></td>
+                  </tr>
+                  <tr class="mp-total-row">
+                    <td colspan="6" class="mp-total-label">Себестоимость мультипака</td>
+                    <td class="col-num num">{{ fmtPrice4(mpItemsRub + mpPackagingRub) }}</td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+              </table>
+
+              <div v-if="mpDirty" class="mp-warn mp-warn--dirty">
+                Состав изменён и не сохранён. Сборка идёт по сохранённому составу —
+                нажмите «Сохранить состав».
+              </div>
+              <div v-if="multipackState?.stale?.length" class="mp-warn">
+                В источнике пересчитали одиночки после последней сборки:
+                <span v-for="(s, si) in multipackState.stale" :key="si">
+                  <template v-if="si">, </template>
+                  {{ s.src_model }} / {{ s.src_articul }}
+                  ({{ fmtPrice4(s.was_unit_rub) }} → {{ fmtPrice4(s.now_unit_rub) }} руб.)
+                </span>.
+                Нажмите «Собрать строки», чтобы обновить расчёт.
+              </div>
+              <div v-for="(w, wi) in (multipackState?.warnings || [])" :key="'w' + wi" class="mp-warn">
+                {{ w }}
+              </div>
+              <div v-if="multipackState?.last_build" class="mp-built muted">
+                Последняя сборка: {{ formatDate(multipackState.last_build.built_at) }},
+                {{ multipackState.last_build.built_by }} —
+                {{ fmtPrice4(multipackState.last_build.total_rub) }} руб.
+              </div>
+            </template>
+          </div>
+
           <!-- Явно говорим, что с чем сравниваем: иначе отсутствие колонок
                прошлых этапов не отличить от «функция не работает». -->
           <div class="stage-note">
@@ -1436,10 +1601,13 @@
               </thead>
               <tbody>
                 <tr v-for="(vr, vi) in editingVersion.rows" :key="vi"
-                  :class="{ 'row-added': vr.change_type === 'added', 'row-modified': vr.change_type === 'modified', 'row-zero-cost': isZeroCostRow(vr) }">
+                  :class="{ 'row-added': vr.change_type === 'added', 'row-modified': vr.change_type === 'modified', 'row-zero-cost': isZeroCostRow(vr), 'row-multipack': isMultipackRow(vr) }">
                   <td v-if="editingVersion.isEditing"><input type="checkbox" v-model="vr._selected" /></td>
+                  <!-- Строки состава мультипака руками не правятся: их значения
+                       приходят из калькуляций одиночек, и ручная правка пропала
+                       бы при следующей пересборке. Меняется состав, а не строка. -->
                   <td>
-                    <select v-if="editingVersion.isEditing && editingTypeCell === vi" :value="vr['Материал/операция/декор(призн)']" class="editor-select" autofocus @change="onVersionRowEdit(vr, $event, 'Материал/операция/декор(призн)')" @blur="editingTypeCell = -1">
+                    <select v-if="editingVersion.isEditing && editingTypeCell === vi && !isMultipackRow(vr)" :value="vr['Материал/операция/декор(призн)']" class="editor-select" autofocus @change="onVersionRowEdit(vr, $event, 'Материал/операция/декор(призн)')" @blur="editingTypeCell = -1">
                       <option value="Материал основной">Материал основной</option>
                       <option value="Материал вспомогательный">Материал вспомогательный</option>
                       <option value="Декор">Декор</option>
@@ -1447,14 +1615,17 @@
                       <option value="Раскрой">Раскрой</option>
                       <option value="Вязание">Вязание</option>
                     </select>
+                    <span v-else-if="isMultipackRow(vr)" class="type-tag" title="Строка из состава мультипака — правится через состав, не здесь">
+                      📦 {{ typeDisplayValue(vr) || '—' }}
+                    </span>
                     <span v-else-if="editingVersion.isEditing" class="type-tag clickable" @click="editingTypeCell = vi">{{ typeDisplayValue(vr) || '—' }}</span>
                     <span v-else>{{ typeDisplayValue(vr) }}</span>
                   </td>
-                  <td><input v-if="editingVersion.isEditing" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ nameDisplayValue(vr) || '—' }}</span></td>
-                  <td><input v-if="editingVersion.isEditing" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
+                  <td><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ nameDisplayValue(vr) || '—' }}</span></td>
+                  <td><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
                   <td>
                     <input
-                      v-if="editingVersion.isEditing"
+                      v-if="editingVersion.isEditing && !isMultipackRow(vr)"
                       :value="vr._propRaw"
                       class="editor-input"
                       placeholder="свойства через запятую"
@@ -1477,13 +1648,13 @@
                   <!-- У декоров нормы и цены материала в источнике нет: их стоимость
                        задаётся суммой в колонках «Сумма» ниже. Поля скрыты намеренно —
                        если их заполнить, произведение затрёт сумму декора. -->
-                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted" title="У декора нет нормы — стоимость задаётся суммой">—</span><input v-else-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ fmtNorm(vr['Норма']) }}</span></td>
-                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing" :value="vr['цена материала, руб.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else>{{ fmtPrice4(vr['цена материала, руб.']) }}</span></td>
-                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing" :value="vr['цена материала, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ fmtPrice4(vr['цена материала, USD.']) }}</span></td>
-                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /><span v-else>{{ vr['Курс на дату расчета'] }}</span></td>
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted" title="У декора нет нормы — стоимость задаётся суммой">—</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else :title="isMultipackRow(vr) ? 'Количество штук в паке — меняется в составе' : ''">{{ fmtNorm(vr['Норма']) }}</span></td>
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['цена материала, руб.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else :title="isMultipackRow(vr) ? 'Себестоимость статьи у одиночки за штуку' : ''">{{ fmtPrice4(vr['цена материала, руб.']) }}</span></td>
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['цена материала, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ fmtPrice4(vr['цена материала, USD.']) }}</span></td>
+                  <td class="col-num"><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /><span v-else>{{ vr['Курс на дату расчета'] }}</span></td>
                   <!-- Для декора сумма редактируется напрямую, для материала считается. -->
-                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing" :value="vr['Декоры, руб.']" type="number" step="0.0001" class="editor-input col-num" title="Стоимость декора — задаётся суммой" @input="onVersionRowEdit(vr, $event, 'Декоры, руб.')" /><span v-else>{{ fmtPrice4(versionRowSum(vr, 'руб.')) }}</span></td>
-                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing" :value="vr['Декоры, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Декоры, USD.')" /><span v-else>{{ fmtPrice4(versionRowSum(vr, 'USD.')) }}</span></td>
+                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Декоры, руб.']" type="number" step="0.0001" class="editor-input col-num" title="Стоимость декора — задаётся суммой" @input="onVersionRowEdit(vr, $event, 'Декоры, руб.')" /><span v-else>{{ fmtPrice4(isMultipackRow(vr) && isDecorRow(vr) ? vr['Декоры, руб.'] : versionRowSum(vr, 'руб.')) }}</span></td>
+                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Декоры, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Декоры, USD.')" /><span v-else>{{ fmtPrice4(isMultipackRow(vr) && isDecorRow(vr) ? vr['Декоры, USD.'] : versionRowSum(vr, 'USD.')) }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr.row_comment" class="editor-input" placeholder="..." @input="onVersionRowEdit(vr, $event, 'row_comment')" /><span v-else>{{ vr.row_comment }}</span></td>
                 </tr>
               </tbody>
@@ -1517,6 +1688,111 @@
                 </table>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Поиск калькуляций-одиночек для состава мультипака.
+         Связь пак → одиночки из данных не выводится (у пака артикул
+         B3-263430A, у одиночки B2-124430A — общего корня нет), поэтому состав
+         набирается поиском вручную. -->
+    <Teleport to="body">
+      <div v-if="mpSearchOpen" class="modal-overlay" @click.self="mpSearchOpen = false">
+        <!-- modal-content даёт колонку с max-height 95vh; тело прокручивается
+             само, шапка и футер остаются на месте. Классы маленькой модалки
+             ПЭО (.approval-modal, 400px) здесь не годятся: таблица на восемь
+             колонок вылезала из неё и растягивалась за экран. -->
+        <div class="modal-content mp-search-modal" @click.stop>
+          <div class="modal-header">
+            <h2>Добавить одиночку в состав</h2>
+            <span class="mp-search-ctx">
+              пак {{ editingVersion?.model }} / {{ editingVersion?.articul }}
+              <template v-if="editingVersion?.calc_sign"> · этап {{ editingVersion.calc_sign }}</template>
+            </span>
+            <button class="modal-close" @click="mpSearchOpen = false">×</button>
+          </div>
+
+          <!-- Фильтры. Стартуют от пака: тот же этап, та же группа — иначе
+               первый список был бы «весь раздел по алфавиту». -->
+          <div class="mp-search-filters">
+            <input v-model="mpSearchQuery" class="mp-search-input"
+                   placeholder="Модель, артикул или наименование…"
+                   @keyup.enter="mpSearch" />
+            <label class="mp-search-field">
+              Этап
+              <select v-model="mpSearchSign" class="mp-search-select" @change="mpSearch">
+                <option value="">как у пака{{ editingVersion?.calc_sign ? ` (${editingVersion.calc_sign})` : '' }}</option>
+                <option v-for="s in MP_SEARCH_SIGNS" :key="s" :value="s">{{ s }}</option>
+                <option value="*">любой</option>
+              </select>
+            </label>
+            <label class="mp-search-field">
+              Группа (Level 01)
+              <select v-model="mpSearchLevel01" class="mp-search-select" @change="mpSearch">
+                <option value="">любая</option>
+                <option v-for="l in (filterOptions.level01 || [])" :key="l" :value="l">{{ l }}</option>
+              </select>
+            </label>
+            <label class="mp-search-field">
+              Бренд-менеджер
+              <select v-model="mpSearchBm" class="mp-search-select" @change="mpSearch">
+                <option value="">любой</option>
+                <option v-for="b in (filterOptions.brand_manager || [])" :key="b" :value="b">{{ b }}</option>
+              </select>
+            </label>
+            <button class="btn btn-sm btn-primary" :disabled="mpSearchLoading" @click="mpSearch">
+              {{ mpSearchLoading ? 'Поиск…' : 'Найти' }}
+            </button>
+            <button class="btn btn-sm btn-ghost" :disabled="mpSearchLoading" @click="mpResetSearchFilters">Сбросить</button>
+          </div>
+
+          <div class="mp-search-body">
+            <div v-if="mpSearchLoading" class="muted mp-empty">Поиск…</div>
+            <div v-else-if="!mpSearchRows.length" class="muted mp-empty">
+              Ничего не найдено. Проверьте фильтры этапа и группы: одиночки могут быть
+              на другом этапе. Мультипаки в список не попадают — пак в пак вкладывать нельзя.
+            </div>
+            <table v-else class="data-table compact mp-search-table">
+              <thead>
+                <tr>
+                  <th>Модель</th>
+                  <th>Артикул</th>
+                  <th>Наименование</th>
+                  <th>Группа</th>
+                  <th>Этап</th>
+                  <th>План</th>
+                  <th>Дата расчёта</th>
+                  <th class="col-num">С/с за шт, руб.</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(c, ci) in mpSearchRows" :key="ci">
+                  <td>{{ c.model }}</td>
+                  <td>{{ c.articul }}</td>
+                  <td class="muted">{{ c.model_name || '—' }}</td>
+                  <td class="muted">{{ c.level01 || '—' }}</td>
+                  <td>{{ c.calc_sign || '—' }}</td>
+                  <td>{{ c.plan_id || '—' }}<span v-if="(c.tasks_total || 1) > 1" class="mp-hint" :title="'В плане ' + c.tasks_total + ' заданий, показано самое дорогое'"> · {{ c.tasks_total }} зад.</span></td>
+                  <td>{{ formatDate(c.calc_date) }}</td>
+                  <td class="col-num num">{{ fmtPrice4(c.unit_rub) }}</td>
+                  <td>
+                    <button class="btn btn-sm" @click="mpAddCandidate(c)">Добавить</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="approval-modal-footer">
+            <span class="mp-search-status">
+              <template v-if="mpSearchTruncated">
+                Показаны первые {{ mpSearchLimit }} — уточните поиск или фильтры.
+              </template>
+              <template v-else>Найдено: {{ mpSearchRows.length }}.</template>
+              Количество штук задаётся в составе после добавления.
+            </span>
+            <button class="btn btn-ghost btn-sm" @click="mpSearchOpen = false">Закрыть</button>
           </div>
         </div>
       </div>
@@ -2568,6 +2844,8 @@ const fetchHeaders = computed(() => {
   return email ? { "X-Cost-User": email } : {};
 });
 const noWholesaleOnly = ref(false);
+/** «Только мультипаки» — клиентский фильтр по пометке из /aggregated. */
+const multipackOnly = ref(false);
 
 const approvalTarget = ref<any>(null);
 const approvalComment = ref('');
@@ -2736,6 +3014,11 @@ const dwhSentHiddenCount = computed(() =>
   hideDwhSent.value ? allAggregated.value.filter((r: any) => r._has_audit).length : 0
 );
 
+/** Сколько мультипаков в текущей выдаче — цифра рядом с чекбоксом фильтра. */
+const multipackCount = computed(
+  () => allAggregated.value.filter((r: any) => r.is_multipack).length
+);
+
 // ── Data loading ────────────────────────────────────────────────────────────
 
 const allAggregated = ref<any[]>([]);
@@ -2841,6 +3124,9 @@ const filteredAggregated = computed(() => {
   return allAggregated.value.filter((row: any) => {
     // Отправленные в DWH — вне работы: править и согласовывать в них нечего.
     if (hideDwhSent.value && row._has_audit) return false;
+    // Мультипаки среди тысяч калькуляций иначе не найти: в фильтрах раздела
+    // нет ни модели, ни артикула, а паков на группу — единицы.
+    if (multipackOnly.value && !row.is_multipack) return false;
     return columnFilterConfig.every((cfg) => {
       const sel = columnFilters[cfg.key];
       if (!sel || sel.length === 0) return true;
@@ -4364,6 +4650,13 @@ const editingVersion = ref<{
   calc_sign: string;
   plan_id: string;
   date: string;
+  // Номер задания входит в ключ версии (миграция 0032) и в контекст сборки
+  // мультипака. У ПКПСС заданий не бывает — там пустая строка.
+  task_number: string;
+  // Группа и бренд-менеджер строки — значения по умолчанию для фильтров поиска
+  // одиночек мультипака: носки ищут среди носков, а не по всему разделу.
+  level01: string;
+  brand_manager: string;
   rows: any[];
   versions: any[];
   selectedVersionId: number | null;
@@ -4493,6 +4786,318 @@ const onCommentInput = (row: any, value: string) => {
   comments[calcRowKey(row)] = value || "";
   changedRows.set(calcRowKey(row), row);
 };
+
+// ── Мультипаки ──────────────────────────────────────────────────────────────
+// Пак (3/5/7 пар в одной единице продажи) собирается из калькуляций-одиночек:
+// на каждую одиночку сервер генерирует по строке НА СТАТЬЮ (Норма = количество,
+// цена = себестоимость статьи за штуку), а упаковку калькулятор добавляет руками
+// обычной кнопкой «+ Добавить строку». Дальше пак живёт как обычная
+// калькуляция — цена, согласование ПЭО, запись в DWH.
+//
+// Состав хранится на (модель, артикул) и работает на всех этапах калькуляции;
+// сборка привязана к конкретной калькуляции (этап, план, задание). Строки
+// состава помечены «свойство3» = MP_MARKER: по нему пересборка отличает свои
+// строки от упаковки, а таблица блокирует ручной ввод в них.
+
+const MP_MARKER = 'мультипак';
+
+/** Строка расчёта сгенерирована из состава пака (а не добавлена руками). */
+const isMultipackRow = (row: any): boolean =>
+  ((row?.['свойство3'] ?? '') as string).toString().trim() === MP_MARKER;
+
+const multipackState = ref<any | null>(null);
+const multipackLoading = ref(false);
+const multipackBuilding = ref(false);
+const multipackSaving = ref(false);
+/** Редактируемая копия состава: правки применяются кнопкой, а не на каждый ввод. */
+const mpItems = ref<any[]>([]);
+const mpPackSize = ref<number | null>(null);
+const mpNote = ref('');
+const mpExpanded = ref(true);
+const mpDirty = ref(false);
+/** Поиск одиночек для добавления в состав. */
+const mpSearchOpen = ref(false);
+const mpSearchQuery = ref('');
+const mpSearchRows = ref<any[]>([]);
+const mpSearchLoading = ref(false);
+/** Фильтры поиска. Этап: '' = этап пака (ПКПСС собирается из ПКПСС), '*' = любой.
+ *  Группа и бренд-менеджер по умолчанию — как у пака, снимаются вручную. */
+const mpSearchSign = ref('');
+const mpSearchLevel01 = ref('');
+const mpSearchBm = ref('');
+const mpSearchTruncated = ref(false);
+const mpSearchLimit = ref(50);
+const MP_SEARCH_SIGNS = ['ПКПСС', 'КПСС', 'ПФКСС', 'ФКСС'];
+
+const mpQtyTotal = computed(() =>
+  mpItems.value.reduce((s, it) => s + (Number(it.qty) || 0), 0)
+);
+
+/** Себестоимость состава по текущим (не пересобранным) данным сервера. */
+const mpItemsRub = computed(() =>
+  mpItems.value.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_rub) || 0), 0)
+);
+
+/** Упаковка = строки редактора, которые НЕ из состава. */
+const mpPackagingRub = computed(() => {
+  const rows = editingVersion.value?.rows || [];
+  return rows
+    .filter((r: any) => !isMultipackRow(r))
+    .reduce((s: number, r: any) => s + versionRowSum(r, 'руб.'), 0);
+});
+
+async function loadMultipackState() {
+  const ev = editingVersion.value;
+  if (!ev) return;
+  multipackLoading.value = true;
+  try {
+    const params = new URLSearchParams({
+      model: ev.model,
+      articul: ev.articul,
+      calc_sign: ev.calc_sign || '',
+      plan_id: ev.plan_id || '',
+      task_number: ev.task_number || '',
+    });
+    const data: any = await $fetch(
+      `${apiBase.value}/api/cost/multipack?${params}`,
+      { headers: fetchHeaders.value },
+    );
+    multipackState.value = data;
+    mpItems.value = (data.items || []).map((i: any) => ({ ...i }));
+    mpPackSize.value = data.pack_size ?? null;
+    mpNote.value = data.note || '';
+    mpDirty.value = false;
+  } catch (e: any) {
+    // Состав — дополнение к расчёту: если не отдался, редактор должен работать.
+    console.error('[cost] load multipack state failed', e);
+    multipackState.value = null;
+    mpItems.value = [];
+  } finally {
+    multipackLoading.value = false;
+  }
+}
+
+function mpMarkPack() {
+  // «Сделать мультипаком» — пустой состав, который тут же можно наполнить.
+  multipackState.value = { is_pack: true, items: [], warnings: [], stale: [] };
+  mpItems.value = [];
+  mpPackSize.value = null;
+  mpNote.value = '';
+  mpDirty.value = true;
+  mpExpanded.value = true;
+}
+
+async function mpSaveComposition() {
+  const ev = editingVersion.value;
+  if (!ev) return;
+  multipackSaving.value = true;
+  try {
+    const resp = await fetch(`${apiBase.value}/api/cost/multipack`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+      body: JSON.stringify({
+        model: ev.model,
+        articul: ev.articul,
+        pack_size: mpPackSize.value,
+        note: mpNote.value,
+        items: mpItems.value.map((it: any) => ({
+          src_model: it.src_model,
+          src_articul: it.src_articul,
+          // Пустой признак = «этап пака», пустой план = «любой, самый свежий».
+          src_calc_sign: it.pinned_calc_sign ? (it.src_calc_sign || '') : '',
+          src_plan_id: it.pinned_plan_id ? (it.src_plan_id || '') : '',
+          qty: Number(it.qty) || 0,
+        })),
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err?.detail || `HTTP ${resp.status}`);
+    }
+    await loadMultipackState();
+  } catch (e: any) {
+    alert('Не удалось сохранить состав: ' + (e?.message || String(e)));
+  } finally {
+    multipackSaving.value = false;
+  }
+}
+
+async function mpDeleteComposition() {
+  const ev = editingVersion.value;
+  if (!ev) return;
+  if (!confirm(
+    'Распустить мультипак?\n\n'
+    + 'Состав и журнал сборок будут удалены. Строки расчёта останутся в версии — '
+    + 'уберите их вручную и сохраните версию, иначе себестоимость пака не изменится.'
+  )) return;
+  multipackSaving.value = true;
+  try {
+    const params = new URLSearchParams({ model: ev.model, articul: ev.articul });
+    const resp = await fetch(`${apiBase.value}/api/cost/multipack?${params}`, {
+      method: 'DELETE',
+      headers: fetchHeaders.value,
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err?.detail || `HTTP ${resp.status}`);
+    }
+    await loadMultipackState();
+  } catch (e: any) {
+    alert('Не удалось распустить мультипак: ' + (e?.message || String(e)));
+  } finally {
+    multipackSaving.value = false;
+  }
+}
+
+async function mpBuild() {
+  const ev = editingVersion.value;
+  if (!ev) return;
+  if (mpDirty.value) {
+    alert('Сначала сохраните состав — сборка идёт по сохранённому составу.');
+    return;
+  }
+  const hadComponents = (ev.rows || []).some((r: any) => isMultipackRow(r));
+  if (hadComponents && !confirm(
+    'Пересобрать строки состава по актуальной себестоимости одиночек?\n\n'
+    + 'Строки упаковки, добавленные вручную, сохранятся.'
+  )) return;
+  multipackBuilding.value = true;
+  try {
+    const resp = await fetch(`${apiBase.value}/api/cost/multipack/build`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+      body: JSON.stringify({
+        model: ev.model,
+        articul: ev.articul,
+        calc_sign: ev.calc_sign || '',
+        plan_id: ev.plan_id || '',
+        task_number: ev.task_number || '',
+        rows: ev.rows || [],
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err?.detail || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    ev.rows = (data.rows || []).map((rr: any) => normalizeVersionRow(rr));
+    // Сборка ничего не сохраняет: строки надо принять — «Сохранить» или
+    // «Отправить на утверждение». Поэтому сразу включаем режим правки.
+    if (!ev.isEditing) startEditing();
+    if (data.state) {
+      multipackState.value = data.state;
+      mpItems.value = (data.state.items || []).map((i: any) => ({ ...i }));
+    }
+  } catch (e: any) {
+    alert('Не удалось собрать мультипак: ' + (e?.message || String(e)));
+  } finally {
+    multipackBuilding.value = false;
+  }
+}
+
+function mpRemoveItem(idx: number) {
+  mpItems.value.splice(idx, 1);
+  mpDirty.value = true;
+}
+
+function mpOnQtyInput(item: any, event: Event) {
+  const val = (event.target as HTMLInputElement).value;
+  item.qty = val === '' ? 0 : parseFloat(val);
+  mpDirty.value = true;
+}
+
+function mpTogglePin(item: any, field: 'calc_sign' | 'plan_id') {
+  // Фиксация источника: «брать именно этот этап/план», а не следовать контексту.
+  if (field === 'calc_sign') {
+    item.pinned_calc_sign = !item.pinned_calc_sign;
+    if (item.pinned_calc_sign) item.src_calc_sign = item.actual_calc_sign || item.src_calc_sign || '';
+  } else {
+    item.pinned_plan_id = !item.pinned_plan_id;
+    if (item.pinned_plan_id) item.src_plan_id = item.actual_plan_id || item.src_plan_id || '';
+  }
+  mpDirty.value = true;
+}
+
+async function mpSearch() {
+  const ev = editingVersion.value;
+  if (!ev) return;
+  mpSearchLoading.value = true;
+  try {
+    const sign = mpSearchSign.value === '*' ? '' : (mpSearchSign.value || ev.calc_sign || '');
+    const params = new URLSearchParams({
+      q: mpSearchQuery.value || '',
+      calc_sign: sign,
+      level01: mpSearchLevel01.value || '',
+      brand_manager: mpSearchBm.value || '',
+      exclude_model: ev.model,
+      exclude_articul: ev.articul,
+      limit: String(mpSearchLimit.value),
+    });
+    const data: any = await $fetch(
+      `${apiBase.value}/api/cost/multipack/candidates?${params}`,
+      { headers: fetchHeaders.value },
+    );
+    mpSearchRows.value = data.data || [];
+    mpSearchTruncated.value = !!data.truncated;
+  } catch (e: any) {
+    console.error('[cost] multipack candidates failed', e);
+    mpSearchRows.value = [];
+    mpSearchTruncated.value = false;
+  } finally {
+    mpSearchLoading.value = false;
+  }
+}
+
+function mpOpenSearch() {
+  const ev = editingVersion.value;
+  mpSearchOpen.value = true;
+  mpSearchQuery.value = '';
+  mpSearchRows.value = [];
+  mpSearchTruncated.value = false;
+  // Стартовые фильтры — от самого пака: тот же этап и та же группа. Так первый
+  // список уже про носки, а не про весь раздел по алфавиту.
+  mpSearchSign.value = '';
+  mpSearchLevel01.value = ev?.level01 || '';
+  mpSearchBm.value = '';
+  mpSearch();
+}
+
+function mpResetSearchFilters() {
+  mpSearchQuery.value = '';
+  mpSearchSign.value = '*';
+  mpSearchLevel01.value = '';
+  mpSearchBm.value = '';
+  mpSearch();
+}
+
+function mpAddCandidate(c: any) {
+  const dup = mpItems.value.some(
+    (it: any) => it.src_model === c.model && it.src_articul === c.articul
+  );
+  if (dup) {
+    alert('Эта одиночка уже в составе — задайте ей количество.');
+    return;
+  }
+  mpItems.value.push({
+    src_model: c.model,
+    src_articul: c.articul,
+    src_calc_sign: c.calc_sign,
+    src_plan_id: c.plan_id,
+    actual_calc_sign: c.calc_sign,
+    actual_plan_id: c.plan_id,
+    // По умолчанию источник НЕ зафиксирован: состав должен переезжать между
+    // этапами сам. Фиксирует человек галочками, если нужен конкретный расчёт.
+    pinned_calc_sign: false,
+    pinned_plan_id: false,
+    model_name: c.model_name,
+    unit_rub: c.unit_rub,
+    qty: 1,
+    found: true,
+    tasks_total: c.tasks_total,
+  });
+  mpDirty.value = true;
+  mpSearchOpen.value = false;
+}
 
 // ── Цены предыдущих этапов калькулирования ──────────────────────────────────
 // ПКПСС — первый этап, сравнивать не с чем. На КПСС показываем цены ПКПСС, на
@@ -4639,6 +5244,8 @@ const openVersionEditor = async (row: any) => {
       plan_id: r['PLAN_ID'] || '',
       date: r['дата расчета'] || '',
       task_number: r['Номер задания производства'] || '',
+      level01: (r['Level 01'] || '').toString().trim(),
+      brand_manager: (r['Бренд-менеджер'] || '').toString().trim(),
       rows: initialRows.map((rr: any) => normalizeVersionRow(rr)),
       versions,
       selectedVersionId,
@@ -4649,6 +5256,9 @@ const openVersionEditor = async (row: any) => {
     // Справочные цены прошлых этапов — отдельным запросом и без await в общей
     // цепочке: редактор открывается сразу, колонки появляются по готовности.
     void loadStagePrices(r);
+    // Состав мультипака — тем же принципом: блок появляется по готовности и не
+    // задерживает открытие расчёта.
+    void loadMultipackState();
   } catch (e: any) {
     console.error('[cost] load version editor failed', e);
     lastError.value = e?.data?.detail || e?.message || String(e);
@@ -4869,6 +5479,10 @@ const closeVersionEditor = () => {
   editingVersion.value = null;
   editingTypeCell.value = -1;
   stagePrices.value = [];
+  multipackState.value = null;
+  mpItems.value = [];
+  mpDirty.value = false;
+  mpSearchOpen.value = false;
 };
 
 const addVersionRow = () => {
@@ -7505,6 +8119,12 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   color: var(--accent);
 }
 
+/* Пометка мультипака. Эмодзи цветное само, поэтому только курсор-подсказка:
+   значок информационный, кликом ничего не делает. */
+.state-badge--multipack {
+  cursor: help;
+}
+
 /* Перенос колонок мышью (пожелания № 9 и № 14).
    Тянуть можно только незакреплённые заголовки — у закреплённых слева порядок
    задаёт раскладку sticky-отступов, поэтому они не draggable. */
@@ -7899,6 +8519,67 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .editor-select:focus { border-color:var(--accent-color, #4338ca); outline:none; }
 .row-added { background:#ecfdf5; }
 .row-modified { background:#fefce8; }
+
+/* ── Мультипаки ─────────────────────────────────────────────────────────── */
+/* Строка состава: приходит из калькуляции одиночки, руками не правится.
+   Цвет — тонированный акцент, чтобы отличаться от «добавлено» (зелёный) и
+   «изменено» (жёлтый), которые про ручные правки. */
+.row-multipack { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.mp-block { border-bottom: 1px solid var(--border-color, #e5e7eb); padding: 8px 16px; }
+.mp-head { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.mp-head .spacer { flex:1; }
+.mp-toggle {
+  background:none; border:none; cursor:pointer; padding:0;
+  font-size:13px; font-weight:600; color:var(--text);
+}
+.mp-count { font-weight:400; color:var(--text-muted); margin-left:6px; }
+.mp-inline-field { font-size:var(--fs-xs, 12px); color:var(--text-secondary, #6b7280); display:flex; gap:4px; align-items:center; }
+.mp-size { width:64px; border:1px solid var(--border-color, #e5e7eb); border-radius:4px; }
+.mp-table { margin-top:8px; width:auto; min-width:720px; }
+.mp-table tfoot td { border-top:1px solid var(--border-color, #e5e7eb); font-size:12px; color:var(--text-secondary, #6b7280); }
+.mp-table tfoot .mp-total-row td { font-weight:600; color:var(--text); }
+.mp-total-label { text-align:right; }
+.mp-qty { width:80px; border:1px solid var(--border-color, #e5e7eb); border-radius:4px; }
+.mp-empty { padding:12px 0; font-size:var(--fs-xs, 12px); }
+.mp-src { font-size:var(--fs-xs, 12px); color:var(--text-secondary, #6b7280); }
+.mp-pin { cursor:pointer; border-bottom:1px dashed var(--border-color, #e5e7eb); }
+.mp-pin--on { color:var(--text); font-weight:600; }
+.mp-hint { margin-left:4px; color:var(--text-muted); }
+.mp-row-missing { background: color-mix(in srgb, #ef4444 10%, transparent); }
+.mp-missing-text { color:#b91c1c; }
+.btn-mp-del { background:none; border:none; cursor:pointer; color:var(--text-muted); }
+.btn-mp-del:hover:not(:disabled) { color:#b91c1c; }
+.mp-warn {
+  margin-top:6px; padding:6px 8px; font-size:var(--fs-xs, 12px);
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  border-left:2px solid #f59e0b; color:var(--text);
+}
+.mp-warn--dirty { background: color-mix(in srgb, var(--accent) 12%, transparent); border-left-color:var(--accent); }
+.mp-built { margin-top:6px; font-size:var(--fs-xs, 12px); }
+/* Поиск одиночек. Ширина под девять колонок; высоту ограничивает
+   .modal-content (95vh), прокручивается только тело. */
+.mp-search-modal { width: min(1200px, 96vw); }
+.mp-search-ctx { font-size: var(--fs-xs, 12px); color: var(--text-muted); margin-left: auto; margin-right: var(--sp-4); }
+.mp-search-filters {
+  display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;
+  padding: var(--sp-3) var(--sp-5);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.mp-search-input {
+  flex: 1 1 260px; min-width: 200px;
+  border:1px solid var(--border-color, #e5e7eb); border-radius:4px;
+  padding:6px 8px; font-size:13px; background: var(--bg-surface); color: var(--text-strong);
+}
+.mp-search-field { display:flex; flex-direction:column; gap:2px; font-size: var(--fs-xs, 12px); color: var(--text-muted); }
+.mp-search-select {
+  min-width: 150px; max-width: 240px;
+  border:1px solid var(--border-color, #e5e7eb); border-radius:4px;
+  padding:5px 8px; font-size:13px; background: var(--bg-surface); color: var(--text-strong);
+}
+.mp-search-body { flex: 1 1 auto; overflow: auto; padding: 0 var(--sp-5); min-height: 160px; }
+.mp-search-table thead th { position: sticky; top: 0; background: var(--bg-surface); z-index: 1; }
+.mp-search-status { font-size: var(--fs-xs, 12px); color: var(--text-muted); }
 .row-zero-cost { background: color-mix(in srgb, #ef4444 10%, transparent) !important; }
 .type-tag.clickable { cursor:pointer; padding:2px 6px; border-radius:4px; background:var(--bg-tonal, #f3f4f6); border:1px solid var(--border-color, #e5e7eb); }
 .type-tag.clickable:hover { background:var(--bg-hover, #e5e7eb); }

@@ -872,3 +872,105 @@ def margin_dashboard() -> dict:
             "matrix_levels": [{"key": k, "label": v} for k, v in margin.MATRIX_LEVELS],
         },
     }
+
+
+# ── Мультипаки ────────────────────────────────────────────────────────────────
+#
+# Состав отдаётся статикой: в mock-режиме нет ни кэша калькуляций, ни таблиц
+# состава, а редактор расчёта должен открываться и блок состава показывать.
+# Сборка возвращает готовые суммы, но строк не генерирует — генерация опирается
+# на строку-шаблон из cost_data_all, которой в моке нет.
+
+_MULTIPACK_ITEMS = [
+    {
+        "src_model": "430A-2848", "src_articul": "B2-124430A",
+        "src_calc_sign": "ПКПСС", "src_plan_id": "0",
+        "pinned_calc_sign": False, "pinned_plan_id": False,
+        "qty": 2.0, "position": 0, "found": True,
+        "model_name": "НОСКИ ДЕТСКИЕ", "level01": "Носки&Колготки",
+        "calc_date": "2026-09-01", "fx_rate": 3.05, "task": "",
+        "tasks_total": 1, "src_rows": 23,
+        "buckets": {
+            "Основные материалы": {"rub": 0.62, "usd": 0.20},
+            "Вспомогательные материалы": {"rub": 0.11, "usd": 0.04},
+            "Пошив": {"rub": 0.0, "usd": 0.0},
+            "Раскрой": {"rub": 0.0, "usd": 0.0},
+            "Вязание": {"rub": 0.24, "usd": 0.08},
+            "Декоры": {"rub": 0.03, "usd": 0.01},
+        },
+        "unit_rub": 1.0, "unit_usd": 0.33,
+        "sum_rub": 2.0, "sum_usd": 0.66,
+    },
+    {
+        "src_model": "430A-2930", "src_articul": "B2-125430A",
+        "src_calc_sign": "ПКПСС", "src_plan_id": "0",
+        "pinned_calc_sign": False, "pinned_plan_id": False,
+        "qty": 1.0, "position": 1, "found": True,
+        "model_name": "НОСКИ ДЕТСКИЕ", "level01": "Носки&Колготки",
+        "calc_date": "2026-09-01", "fx_rate": 3.05, "task": "",
+        "tasks_total": 1, "src_rows": 23,
+        "buckets": {
+            "Основные материалы": {"rub": 0.70, "usd": 0.23},
+            "Вспомогательные материалы": {"rub": 0.12, "usd": 0.04},
+            "Пошив": {"rub": 0.0, "usd": 0.0},
+            "Раскрой": {"rub": 0.0, "usd": 0.0},
+            "Вязание": {"rub": 0.26, "usd": 0.09},
+            "Декоры": {"rub": 0.02, "usd": 0.01},
+        },
+        "unit_rub": 1.1, "unit_usd": 0.37,
+        "sum_rub": 1.1, "sum_usd": 0.37,
+    },
+]
+
+
+def multipack_state(model: str, articul: str) -> dict[str, Any]:
+    return {
+        "is_pack": True,
+        "pack_id": 1,
+        "model": (model or "").strip(),
+        "articul": (articul or "").strip(),
+        "pack_size": 3.0,
+        "note": "мок-состав",
+        "created_by": "mock@local",
+        "updated_by": None,
+        "updated_at": None,
+        "items": _MULTIPACK_ITEMS,
+        "qty_total": 3.0,
+        "items_rub": 3.1,
+        "items_usd": 1.03,
+        "last_build": None,
+        "stale": [],
+        "warnings": [],
+        "mock": True,
+    }
+
+
+def multipack_build(model: str, articul: str) -> dict[str, Any]:
+    state = multipack_state(model, articul)
+    return {
+        "rows": [],
+        "items_rub": 3.1, "items_usd": 1.03,
+        "packaging_rub": 0.0, "packaging_usd": 0.0,
+        "total_rub": 3.1, "total_usd": 1.03,
+        "generated": 0, "kept": 0,
+        "state": state,
+        "mock": True,
+    }
+
+
+def multipack_candidates(query: str = "") -> list[dict[str, Any]]:
+    rows = [
+        {
+            "model": it["src_model"], "articul": it["src_articul"],
+            "calc_sign": it["src_calc_sign"], "plan_id": it["src_plan_id"],
+            "model_name": it["model_name"], "level01": it["level01"],
+            "calc_date": it["calc_date"], "task": it["task"],
+            "tasks_total": it["tasks_total"], "unit_rub": it["unit_rub"],
+        }
+        for it in _MULTIPACK_ITEMS
+    ]
+    q = (query or "").strip().lower()
+    if not q:
+        return rows
+    return [r for r in rows if q in r["model"].lower() or q in r["articul"].lower()
+            or q in (r["model_name"] or "").lower()]
