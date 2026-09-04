@@ -80,8 +80,11 @@ func TestCardNotify_SubmitNotifiesNextStepOwner(t *testing.T) {
 	}
 }
 
-// Возврат уведомляет владельца шага, НА КОТОРЫЙ вернули: исправлять ему.
-func TestCardNotify_ReturnNotifiesTargetStep(t *testing.T) {
+// Возврат уведомляет владельца шага, НА КОТОРЫЙ вернули, И автора карточки.
+//
+// Владелец шага заполнения часто не назначен (заполняют по заданиям, а не по
+// этапу), и без автора о возврате не узнавал никто — форма просто зависала.
+func TestCardNotify_ReturnNotifiesTargetStepAndAuthor(t *testing.T) {
 	svc, n := notifyFixture()
 	next := Card{ID: 42, PlID: 7, FormCode: TemplateRetail, Title: "Розница BY",
 		Status: CardReturned, StepCode: "1.1"}
@@ -90,14 +93,35 @@ func TestCardNotify_ReturnNotifiesTargetStep(t *testing.T) {
 		CardActionInput{Action: "return", Comment: "пересчитать август",
 			StepOwner: map[string]int64{"1.1": 11, "1.2": 55}})
 
-	got := n.wait(t, 1)
-	if len(got) != 1 || got[0].UserID != 11 {
-		t.Fatalf("возврат должен уведомить владельца шага 1.1 (11): %+v", got)
+	got := n.wait(t, 2)
+	if len(got) != 2 {
+		t.Fatalf("ожидались уведомления владельцу шага и автору: %+v", got)
 	}
-	// Причина возврата обязательна по маршруту — она должна быть и в уведомлении,
-	// иначе человек идёт искать её в карточке.
-	if want := "пересчитать август"; !strings.Contains(got[0].Message, want) {
-		t.Fatalf("в тексте должна быть причина возврата: %q", got[0].Message)
+	users := map[int64]bool{}
+	for _, in := range got {
+		users[in.UserID] = true
+		// Причина возврата обязательна по маршруту — она должна быть и в
+		// уведомлении, иначе человек идёт искать её в карточке.
+		if !strings.Contains(in.Message, "пересчитать август") {
+			t.Fatalf("в тексте должна быть причина возврата: %q", in.Message)
+		}
+	}
+	if !users[11] || !users[100] {
+		t.Fatalf("получатели: got %v, want владельца шага 11 и автора 100", users)
+	}
+}
+
+// Один и тот же человек не должен получить возврат дважды (он и владелец шага, и
+// автор карточки).
+func TestCardNotify_ReturnDoesNotDuplicateSameUser(t *testing.T) {
+	svc, n := notifyFixture()
+	next := Card{ID: 42, PlID: 7, Status: CardReturned, StepCode: "1.1"}
+
+	svc.notifyCardTransition(context.Background(), Card{CreatedBy: 11}, next,
+		CardActionInput{Action: "return", Comment: "исправить", StepOwner: map[string]int64{"1.1": 11}})
+
+	if got := n.waitFor(2, 100*time.Millisecond); len(got) != 1 {
+		t.Fatalf("ожидалось одно уведомление без дубля: %+v", got)
 	}
 }
 

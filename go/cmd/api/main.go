@@ -364,6 +364,9 @@ func main() {
 	// Этапы знают про карточки: закрыть этап 1.х руками, пока формы не прошли
 	// шаг, нельзя — решение принимается в карточке формы.
 	plansSvc.WithCards(plansCards)
+	// Карточки форм заводятся вместе с периодом: до этого процесс выглядел
+	// незапущенным (этапы и задания есть, а формы «не созданы»).
+	plansH.SetCards(plansCards)
 	plansCards.RegisterForm(plans.TemplateMP, plans.NewMpCardProvider(plansStore, plansRates), plans.NewMpCardProvider(plansStore, plansRates))
 
 	// Форма «Розница» (TPL-TO-RETAIL): карточка + сервис сетки/расчёта/валидаций.

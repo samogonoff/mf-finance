@@ -129,3 +129,25 @@ func TestStageSync_FinStepBelongsBetweenFillAndApproval(t *testing.T) {
 		t.Fatal("этап 1.2 ещё не пройден: карточка стоит на fin")
 	}
 }
+
+// Право финансиста в форме — явный шаг «fin» в правах-срезах, а не любое широкое
+// правило: иначе участник процесса с правилом «все шаги» получал бы полномочия
+// финансового контролёра (переопределение LFL, правка расчётных статей).
+func TestScopeFilter_ExplicitFinStep(t *testing.T) {
+	wide := NewScopeFilter(false, []UserScope{{Country: "BY"}}) // правило без шага
+	if wide.HasExplicitStep(StepFinCode) {
+		t.Fatal("широкое правило не должно давать роль финансиста")
+	}
+	if !wide.AllowsStep("1.2") {
+		t.Fatal("широкое правило по-прежнему разрешает участие в шагах")
+	}
+
+	fin := NewScopeFilter(false, []UserScope{{Country: "BY", StageCode: StepFinCode}})
+	if !fin.HasExplicitStep(StepFinCode) {
+		t.Fatal("явное правило на шаг fin должно давать роль финансиста")
+	}
+	other := NewScopeFilter(false, []UserScope{{Country: "BY", StageCode: "1.2"}})
+	if other.HasExplicitStep(StepFinCode) {
+		t.Fatal("правило на другой шаг роль финансиста не даёт")
+	}
+}

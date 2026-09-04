@@ -100,6 +100,11 @@ func (s *RetailService) access(ctx context.Context, cardID int64, p Principal) (
 		return a, fmt.Errorf("карточка %d — форма %s, а не розница", cardID, c.FormCode)
 	}
 	a.card = c
+	// Право финансиста (переопределение LFL-статуса §3, правка расчётных статей и
+	// массовые операции) — у админа процессов и у того, кому ЯВНО выдан шаг
+	// финансового контролёра в правах-срезах. Раньше это был только админ, и на
+	// включённом шаге «Финансист» его владелец мог согласовать форму, но не мог
+	// сделать то, за что отвечает.
 	a.finance = p.PlansAdmin
 
 	if s.scope != nil {
@@ -113,6 +118,9 @@ func (s *RetailService) access(ctx context.Context, cardID int64, p Principal) (
 	}
 	if !a.filter.AllowsCard(c) {
 		return a, errors.New("карточка вне вашего среза доступа")
+	}
+	if !a.finance && a.filter.HasExplicitStep(StepFinCode) {
+		a.finance = true
 	}
 	if mgrs, err := s.repo.RegManagers(ctx, p.UserID); err != nil {
 		log.Printf("plans retail: соответствие РМ для пользователя %d не прочитано: %v", p.UserID, err)

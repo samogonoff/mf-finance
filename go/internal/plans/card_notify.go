@@ -107,16 +107,38 @@ func (s *CardService) notifyCardTransition(ctx context.Context, prev Card, next 
 				link)
 		}
 	case "return":
-		s.notifyCard(owners[next.StepCode], next,
-			"Планы: форма возвращена на доработку",
-			fmt.Sprintf("«%s» вернули на шаг %s%s.", title, next.StepCode, reasonSuffix(in.Comment)),
-			link)
+		// Возврат: владелец целевого шага плюс автор карточки. Владелец шага
+		// заполнения часто не назначен (заполняют по заданиям, а не по этапу), и
+		// без автора о возврате не узнавал НИКТО — форма просто зависала.
+		for _, uid := range recipients(owners[next.StepCode], prev.CreatedBy) {
+			s.notifyCard(uid, next,
+				"Планы: форма возвращена на доработку",
+				fmt.Sprintf("«%s» вернули на шаг %s%s.", title, next.StepCode, reasonSuffix(in.Comment)),
+				link)
+		}
 	case "reopen":
-		s.notifyCard(owners[next.StepCode], next,
-			"Планы: период переоткрыт",
-			fmt.Sprintf("«%s» открыта на запись заново%s.", title, reasonSuffix(in.Comment)),
-			link)
+		for _, uid := range recipients(owners[next.StepCode], prev.CreatedBy) {
+			s.notifyCard(uid, next,
+				"Планы: период переоткрыт",
+				fmt.Sprintf("«%s» открыта на запись заново%s.", title, reasonSuffix(in.Comment)),
+				link)
+		}
 	}
+}
+
+// recipients — получатели без нулей и дублей: один человек не должен получить
+// два одинаковых уведомления, если он и владелец шага, и автор карточки.
+func recipients(ids ...int64) []int64 {
+	seen := map[int64]bool{}
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 // publishedSuffix — уточнение про публикацию: «утверждена» и «уехала в приёмник»
