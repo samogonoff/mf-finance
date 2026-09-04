@@ -117,12 +117,18 @@ export function computePlatform(input: Record<string, number | null | undefined>
   out[B.platformCosts] = direct;
   out[B.directShare] = div(direct, managerNet);
 
-  const pl = (platNet - cogs) - direct;
+  // PL по площадке (правка ТЗ 02.09.2026 МП §21):
+  //   PL = площадка без НДС − СС по отпускным ценам − прямые затраты
+  // Из формулы убраны «общие затраты» и «+ Σ комиссия площадки», а вместо
+  // себестоимости общей вычитается себестоимость по отпускным ценам. Комиссия
+  // второй раз не вычитается: цена площадки уже за вычетом СПП.
+  const directNoCommission = direct - commission;
+  const pl = platNet - shipments - directNoCommission;
   out[B.plPlatform] = pl;
   out[B.plPlatformPct] = div(pl, platNet);
-  out[B.plPlatformTotalCost] = out[B.grossMargin] - (direct - commission);
+  out[B.plPlatformTotalCost] = platNet - cogs - directNoCommission;
   out[B.plPlatformTotalCostPct] = div(out[B.plPlatformTotalCost], platNet);
-  out[B.directShareTurnover] = div(direct - commission, platNet);
+  out[B.directShareTurnover] = div(directNoCommission, platNet);
   return out;
 }
 
@@ -166,18 +172,22 @@ export function computePlatformInverse(
     // Ручное переопределение суммы статьи имеет приоритет над расчётом по доле
     // (ТЗ §7.2: автопересчёт не перезатирает ручной ввод).
     const manual = input[b];
-    const v = typeof manual === "number" && !Number.isNaN(manual) ? manual : managerNet * n(shares[b]);
+    // База начисления статьи — цена ПЛОЩАДКИ без НДС (правка ТЗ МП §20; было по
+    // ценам менеджера). СПП уже удержан переходом к цене площадки, и начислять
+    // статьи на цену менеджера значило считать комиссию внутри каждой статьи.
+    const v = typeof manual === "number" && !Number.isNaN(manual) ? manual : platNet * n(shares[b]);
     out[b] = v;
     direct += v;
   }
   out[B.platformCosts] = direct;
   out[B.directShare] = div(direct, managerNet);
 
-  // PL считается от маржи за вычетом прямых затрат БЕЗ комиссии: комиссия уже
-  // удержана переходом к цене площадки, второй раз её вычитать нельзя.
-  out[B.plPlatform] = out[B.retailMargin] - (direct - commission);
+  // PL = площадка без НДС − СС по отпускным ценам − прямые затраты без комиссии
+  // (правка ТЗ МП §21). Комиссия уже удержана переходом к цене площадки, второй
+  // раз её вычитать нельзя.
+  out[B.plPlatform] = platNet - out[B.shipments] - (direct - commission);
   out[B.plPlatformPct] = div(out[B.plPlatform], platNet);
-  out[B.plPlatformTotalCost] = out[B.grossMargin] - (direct - commission);
+  out[B.plPlatformTotalCost] = platNet - out[B.cogsTotal] - (direct - commission);
   out[B.plPlatformTotalCostPct] = div(out[B.plPlatformTotalCost], platNet);
   out[B.directShareTurnover] = div(direct - commission, platNet);
   return out;

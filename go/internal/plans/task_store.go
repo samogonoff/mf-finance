@@ -88,6 +88,12 @@ type TaskStore struct {
 	cards CardStore
 	cond  MpConditionsStore
 	rates *RateBook
+	// hints — подсказки к полям ввода (%СПП, штрафы). nil → подсказок нет, поля
+	// остаются полями ввода: это и есть требование части 1 правок 02.09.2026.
+	hints HintSource
+	// factSnap — снимок факта МП: из него берётся отметка «данные актуальны на …»
+	// (правка ТЗ 02.09.2026 МП §12).
+	factSnap *MpFactSnapshot
 }
 
 // NewTaskStore — конструктор. fact может быть nil (факт тогда пуст).
@@ -100,6 +106,20 @@ func NewTaskStore(pool *pgxpool.Pool, fact MpFactSource) *TaskStore {
 // условий, а не подтягивается суммами.
 func (s *TaskStore) WithCalcContext(cards CardStore, cond MpConditionsStore, rates *RateBook) *TaskStore {
 	s.cards, s.cond, s.rates = cards, cond, rates
+	return s
+}
+
+// WithHints подключает подсказки к полям ввода (правки ТЗ 02.09.2026, часть 1):
+// фактическое значение показывается РЯДОМ с полем, в само поле не подставляется.
+func (s *TaskStore) WithHints(h HintSource) *TaskStore {
+	s.hints = h
+	return s
+}
+
+// WithFactSnapshot подключает снимок факта: форма показывает отметку
+// «данные актуальны на …» (правка ТЗ МП §12).
+func (s *TaskStore) WithFactSnapshot(snap *MpFactSnapshot) *TaskStore {
+	s.factSnap = snap
 	return s
 }
 

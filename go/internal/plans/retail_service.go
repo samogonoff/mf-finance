@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -299,7 +300,53 @@ func (s *RetailService) Form(ctx context.Context, p Principal, cardID int64, cur
 		visible = ConvertRetailRows(visible, rate)
 	}
 	form.Rows = visible
+	// Подсказка по аренде: факт предыдущего месяца по тому же ЦФО (правка ТЗ §30
+	// и часть 1). Именно ПОДСКАЗКА, а не подстановка: реестра договоров в базах
+	// нет (поиск по 67 базам, включая Diadoc и Procurement, не дал совпадений),
+	// этап 2 расчёта по договору отменён, и значение вводит финансист.
+	form.Hints = s.rentHints(ctx, a)
 	return form, nil
+}
+
+// rentHints — факт аренды предыдущего месяца по магазинам (справочно).
+// Недоступность источника подсказок не мешает открыть форму: без подсказки поле
+// остаётся полем ввода, и это рабочее состояние, а не ошибка.
+func (s *RetailService) rentHints(ctx context.Context, a retailAccess) []FieldHint {
+	py, pm := retailPrevMonth(a.card.Year, a.card.Month)
+	out := []FieldHint{}
+	for _, m := range []struct {
+		metric string
+		label  string
+	}{
+		{MetricRent, "аренда помещений (стоянки), статья 54"},
+		{MetricRentAssets, "аренда имущества, статья 55"},
+	} {
+		prev, err := s.repo.PrevMetric(ctx, a.card.Country, m.metric, py, pm)
+		if err != nil {
+			log.Printf("plans retail: подсказка по аренде (%s) недоступна: %v", m.metric, err)
+			continue
+		}
+		for cfo, v := range prev {
+			if v == 0 {
+				continue
+			}
+			out = append(out, FieldHint{
+				Kind: HintRentPrev, CodeCFO: cfo, BlockType: m.metric, Value: v,
+				Source: fmt.Sprintf("факт %s за %04d-%02d по тому же ЦФО", m.label, py, pm),
+				Note:   "справочно: реестра договоров аренды в базах нет, значение вводится",
+				AsOf:   fmt.Sprintf("%04d-%02d", py, pm),
+			})
+		}
+	}
+	// Порядок стабильный: подсказки идут в ответе рядом со строками, и «прыгающий»
+	// список читается как изменение данных.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CodeCFO != out[j].CodeCFO {
+			return out[i].CodeCFO < out[j].CodeCFO
+		}
+		return out[i].BlockType < out[j].BlockType
+	})
+	return out
 }
 
 // normalizeDisplayCurrency — допустимые валюты отображения (ТЗ §4, §8).
@@ -388,6 +435,11 @@ func (s *RetailService) SaveForm(ctx context.Context, p Principal, cardID int64,
 		}
 		if c.Metric == "" {
 			c.Metric = MetricSales
+		}
+		if !RetailMetricKnown(c.Metric) {
+			// Неизвестная метрика в tp_value не находится ни отчётом, ни массовой
+			// операцией — отклоняем на входе, а не «сохраним, разберёмся потом».
+			return RetailForm{}, fmt.Errorf("неизвестная метрика %q", c.Metric)
 		}
 		if c.Metric != MetricSales && !a.finance {
 			return RetailForm{}, errors.New("статьи ФОТ и аренды правит финансист, а не заполняющий")

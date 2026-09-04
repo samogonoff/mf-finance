@@ -3,6 +3,7 @@ package plans
 import (
 	"context"
 	"errors"
+	"log"
 	"strconv"
 )
 
@@ -18,11 +19,20 @@ import (
 // RetailStoreProvider — провайдер dir_retail_store.
 type RetailStoreProvider struct {
 	src RetailDataSource
+	// dir — справочники кабинета: из них берётся ПРАВИЛО состава розницы
+	// (dir_retail_scope). nil → работаем по правилу ТЗ из RetailScopeSeed.
+	dir dirRowsSource
 }
 
 // NewRetailStoreProvider — конструктор.
 func NewRetailStoreProvider(src RetailDataSource) *RetailStoreProvider {
 	return &RetailStoreProvider{src: src}
+}
+
+// WithScopeSource подключает справочник состава розницы (правка ТЗ §11).
+func (p *RetailStoreProvider) WithScopeSource(dir dirRowsSource) *RetailStoreProvider {
+	p.dir = dir
+	return p
 }
 
 // Code — код справочника.
@@ -40,10 +50,20 @@ func (p *RetailStoreProvider) Fetch(ctx context.Context) ([]SyncRow, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Состав розницы — правило ALL_view (правка ТЗ §11), а не одна группа ЦФО:
+	// группа магазинов + восемь ЦФО-отделов − ЦФО 40 и 722. Без него в справочник
+	// попадал другой состав, и суммы формы не сходились с отчётами.
+	scope := NewRetailScope(scopeRulesFromDir(ctx, p.dir))
+
 	out := make([]SyncRow, 0, len(stores))
+	outOfScope := 0
 	for _, st := range stores {
 		if st.CodeCFO == 0 {
 			continue // без CodeCFO строка бесполезна: это ключ строки формы (V-04)
+		}
+		if !scope.Includes(st.CodeCFO, st.GroupCFO1) {
+			outOfScope++
+			continue
 		}
 		out = append(out, SyncRow{
 			ExternalID: strconv.Itoa(st.CodeCFO),
@@ -68,8 +88,14 @@ func (p *RetailStoreProvider) Fetch(ctx context.Context) ([]SyncRow, error) {
 				"reg_manager": st.RegManager,
 				"manager":     st.Manager,
 				"pl_analytic": st.PLAnalytic,
+				// Отбор строк формы идёт по СТАТУСУ справочника, а не по наличию
+				// факта (правка ТЗ §12): иначе новые магазины в план не попадут.
+				"closed": retailStoreClosed(st),
 			},
 		})
+	}
+	if outOfScope > 0 {
+		log.Printf("plans retail: вне состава розницы (правило dir_retail_scope) пропущено ЦФО: %d", outOfScope)
 	}
 	return out, nil
 }

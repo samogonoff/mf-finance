@@ -140,7 +140,10 @@ func sandboxFixture(target *fakeTarget, rows []PublishRow) (*CardService, *fakeC
 		}},
 		published: map[string]bool{},
 	}
-	svc := NewCardService(cards).WithPublisher(target, pub)
+	// Резолвер ЮЛ на сиде: план пишется на реальный УНП (правки §15/§16), без
+	// него режим записи блокируется — это проверяется отдельным тестом.
+	svc := NewCardService(cards).WithPublisher(target, pub).
+		WithLegalEntities(NewLegalEntityResolver(nil))
 	svc.RegisterForm(TemplateRetail, nil, fakeSource{rows: rows})
 	return svc, cards, pub
 }
@@ -284,3 +287,124 @@ func TestSandboxPublisher_UnavailableWithoutPool(t *testing.T) {
 		t.Fatal("без пула PG песочница не должна считаться доступной")
 	}
 }
+
+// ЮЛ в приёмнике тактики (правки ТЗ 02.09.2026 §15/§16): колонка «Компания» есть
+// только у TaktTarget, и заполняться она обязана РЕАЛЬНЫМ УНП.
+func TestPublish_CompanyFilledWithRealUNP(t *testing.T) {
+	target := &fakeTarget{sandbox: true}
+	svc, _, _ := sandboxFixture(target, []PublishRow{sandboxRow(100, 7, 1000)})
+
+	res, err := svc.Publish(context.Background(), 42, PublishModeWrite, 7)
+	if err != nil || res.Status != "ok" {
+		t.Fatalf("публикация: %s (%s) %v", res.Status, res.Error, err)
+	}
+	if len(res.Preview) == 0 || res.Preview[0].Company != "690719790" {
+		t.Fatalf("в строку приёмника тактики обязан попасть УНП ЮЛ страны, got %+v", res.Preview)
+	}
+}
+
+// Нет реального ЮЛ страны — запись блокируется: строка без ЮЛ в приёмнике
+// неотличима от исторических строк с фиктивными кодами.
+func TestPublish_BlockedWithoutLegalEntity(t *testing.T) {
+	target := &fakeTarget{sandbox: true}
+	cards := &fakeCardStore{card: Card{
+		ID: 42, FormCode: TemplateRetail, Country: "CN", CurrentVersion: 1,
+		Status: CardApproved, StepCode: "1.4",
+	}}
+	pub := &fakePubStore{
+		mappings: []PublishMapping{{
+			FormCode: TemplateRetail, BlockType: "sales_plan", ParamName: "ПРОДАЖИ", CodePL: 1001,
+			TargetTable: "Budgeting.dbo.VFORMTOLOADTAKTTARGET", Enabled: true,
+		}},
+		published: map[string]bool{},
+	}
+	svc := NewCardService(cards).WithPublisher(target, pub).
+		WithLegalEntities(NewLegalEntityResolver(nil))
+	svc.RegisterForm(TemplateRetail, nil, fakeSource{rows: []PublishRow{sandboxRow(100, 7, 1000)}})
+
+	res, _ := svc.Publish(context.Background(), 42, PublishModeWrite, 7)
+	if res.Status != "blocked" {
+		t.Fatalf("без реального ЮЛ запись должна блокироваться, got %s", res.Status)
+	}
+	if !strings.Contains(res.Error, "УНП") {
+		t.Fatalf("в причине должно быть сказано про УНП: %q", res.Error)
+	}
+	if target.written != 0 {
+		t.Fatal("в приёмник не должно уйти ни строки")
+	}
+}
+
+// Предпросмотр отсутствие УНП НЕ блокирует: dry-run и нужен, чтобы увидеть это
+// заранее — проблема уходит в отчёт, а не отменяет отчёт.
+func TestPublish_DryRunReportsMissingLegalEntity(t *testing.T) {
+	target := &fakeTarget{sandbox: true}
+	cards := &fakeCardStore{card: Card{
+		ID: 42, FormCode: TemplateRetail, Country: "CN", CurrentVersion: 1,
+		Status: CardApproved, StepCode: "1.4",
+	}}
+	pub := &fakePubStore{
+		mappings: []PublishMapping{{
+			FormCode: TemplateRetail, BlockType: "sales_plan", ParamName: "ПРОДАЖИ", CodePL: 1001,
+			TargetTable: "Budgeting.dbo.VFORMTOLOADTAKTTARGET", Enabled: true,
+		}},
+		published: map[string]bool{},
+	}
+	svc := NewCardService(cards).WithPublisher(target, pub).
+		WithLegalEntities(NewLegalEntityResolver(nil))
+	svc.RegisterForm(TemplateRetail, nil, fakeSource{rows: []PublishRow{sandboxRow(100, 7, 1000)}})
+
+	res, err := svc.Publish(context.Background(), 42, PublishModeDryRun, 7)
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if res.Status == "blocked" {
+		t.Fatalf("предпросмотр не должен блокироваться из-за ЮЛ: %s", res.Error)
+	}
+	found := false
+	for _, p := range res.Pending {
+		if strings.Contains(p, "УНП") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("проблема с ЮЛ обязана попасть в отчёт: %+v", res.Pending)
+	}
+}
+
+// Колонка «Компания» пишется ТОЛЬКО в приёмники тактики (правка §16): в плане и
+// факте её нет, и попытка записать её туда уронила бы всю пачку.
+func TestTargetHasCompany(t *testing.T) {
+	cases := map[string]bool{
+		"Budgeting.dbo.VFORMTOLOADTAKTTARGET": true,
+		"Budgeting.dbo.FormToLoaTaktTarget":   true,
+		"Budgeting.dbo.FormToLoadPlan":        false,
+		"Budgeting.dbo.FormToLoadFact":        false,
+	}
+	for target, want := range cases {
+		if got := targetHasCompany(target); got != want {
+			t.Errorf("%s: got %v, want %v", target, got, want)
+		}
+	}
+}
+
+// УНП берётся из справочника, а фиктивные коды (historical_only) на запись не
+// годятся — иначе план уедет на заглушку для чтения истории.
+func TestLegalEntityResolver_SkipsHistoricalOnly(t *testing.T) {
+	rows := []DirRow{
+		{Payload: map[string]any{"country": "BY", "unp": "1", "historical_only": true}},
+		{Payload: map[string]any{"country": "BY", "unp": "690719790", "historical_only": false}},
+	}
+	r := NewLegalEntityResolver(fakeDirRows{rows: rows})
+	unp, ok := r.UNP(context.Background(), "BY")
+	if !ok || unp != "690719790" {
+		t.Fatalf("ожидался реальный УНП, got %q ok=%v", unp, ok)
+	}
+	if _, ok := r.UNP(context.Background(), "CN"); ok {
+		t.Fatal("для страны без реального ЮЛ резолвер должен отвечать «не найдено»")
+	}
+}
+
+// fakeDirRows — строки справочника в памяти.
+type fakeDirRows struct{ rows []DirRow }
+
+func (f fakeDirRows) Rows(context.Context, string) ([]DirRow, error) { return f.rows, nil }

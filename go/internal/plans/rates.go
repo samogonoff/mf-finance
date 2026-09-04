@@ -41,6 +41,14 @@ type FxRow struct {
 	Scenario string  `json:"scenario"`
 }
 
+// PLVatRow — нормативный НДС статьи по странам (dir_pl_line, колонки VAT_* из
+// Budgeting.dbo.CodePL). Значения хранятся КОЭФФИЦИЕНТОМ «1 + ставка», как в
+// источнике; наружу отдаётся ставка (NormativeVat).
+type PLVatRow struct {
+	CodePL int
+	Coef   map[string]float64 // страна → коэффициент 1+ставка
+}
+
 // dirRowsSource — минимальный доступ к строкам справочника (реализует DirRepo).
 type dirRowsSource interface {
 	Rows(ctx context.Context, code string) ([]DirRow, error)
@@ -54,6 +62,7 @@ type RateBook struct {
 	loadedAt time.Time
 	vat      []VatRow
 	fx       []FxRow
+	plVat    []PLVatRow
 	ttl      time.Duration
 }
 
@@ -110,6 +119,26 @@ func FxSeed() []FxRow {
 	}
 }
 
+// PLVatSeed — нормативный НДС из сида статей: единственная копия значений живёт
+// в PLLineSeed, здесь только проекция «статья → страна → коэффициент».
+func PLVatSeed() []PLVatRow {
+	out := make([]PLVatRow, 0, 32)
+	for _, l := range PLLineSeed() {
+		coef := map[string]float64{}
+		for country, v := range map[string]float64{
+			"BY": l.VatBY, "RU": l.VatRU, "KZ": l.VatKZ, "UZ": l.VatUZ, "TR": l.VatTR,
+		} {
+			if v > 0 {
+				coef[country] = v
+			}
+		}
+		if len(coef) > 0 {
+			out = append(out, PLVatRow{CodePL: l.CodePL, Coef: coef})
+		}
+	}
+	return out
+}
+
 func (b *RateBook) load(ctx context.Context) ([]VatRow, []FxRow) {
 	b.mu.RLock()
 	fresh := time.Since(b.loadedAt) < b.ttl && (len(b.vat) > 0 || len(b.fx) > 0)
@@ -119,6 +148,7 @@ func (b *RateBook) load(ctx context.Context) ([]VatRow, []FxRow) {
 		return vat, fx
 	}
 	vat, fx = VatSeed(), FxSeed()
+	plVat := PLVatSeed()
 	if b.repo != nil {
 		if rows, err := b.repo.Rows(ctx, "dir_vat"); err != nil {
 			log.Printf("plans: справочник НДС недоступен, работаем на дефолтных ставках: %v", err)
@@ -149,11 +179,81 @@ func (b *RateBook) load(ctx context.Context) ([]VatRow, []FxRow) {
 				})
 			}
 		}
+		// Нормативный НДС статьи по странам (правки ТЗ 02.09.2026, часть 5).
+		// Живёт в том же справочнике статей, что и подписи: одна строка на статью,
+		// пять колонок стран. Недоступен — нормативной проверки просто не будет,
+		// расчёт на эффективной ставке от этого не меняется.
+		if rows, err := b.repo.Rows(ctx, "dir_pl_line"); err != nil {
+			log.Printf("plans: справочник статей недоступен, нормативный НДС не проверяется: %v", err)
+		} else {
+			plVat = plVat[:0]
+			for _, r := range rows {
+				code := intAt(r.Payload, "code_pl")
+				if code == 0 {
+					continue
+				}
+				coef := map[string]float64{}
+				for country, key := range plVatKeys {
+					if v := floatAt(r.Payload, key); v > 0 {
+						coef[country] = v
+					}
+				}
+				if len(coef) > 0 {
+					plVat = append(plVat, PLVatRow{CodePL: code, Coef: coef})
+				}
+			}
+		}
 	}
 	b.mu.Lock()
-	b.vat, b.fx, b.loadedAt = vat, fx, time.Now()
+	b.vat, b.fx, b.plVat, b.loadedAt = vat, fx, plVat, time.Now()
 	b.mu.Unlock()
 	return vat, fx
+}
+
+// plVatKeys — страна → ключ колонки НДС в строке справочника статей.
+var plVatKeys = map[string]string{
+	"BY": "vat_by", "RU": "vat_ru", "KZ": "vat_kz", "UZ": "vat_uz", "TR": "vat_tr",
+}
+
+// NormativeVat — НОРМАТИВНАЯ ставка НДС статьи в стране (правка ТЗ МП §1).
+// Второй результат — есть ли значение в справочнике: «нет строки» и «НДС не
+// начисляется» (коэффициент 1,00 → ставка 0) различать обязательно, иначе
+// проверка границей молча пропустит любую введённую ставку.
+func (b *RateBook) NormativeVat(ctx context.Context, codePL int, country string) (float64, bool) {
+	b.load(ctx)
+	b.mu.RLock()
+	rows := b.plVat
+	b.mu.RUnlock()
+	return pickNormativeVat(rows, codePL, country)
+}
+
+// pickNormativeVat — чистый выбор нормативной ставки (коэффициент → ставка).
+func pickNormativeVat(rows []PLVatRow, codePL int, country string) (float64, bool) {
+	key := strings.ToUpper(strings.TrimSpace(country))
+	for _, r := range rows {
+		if r.CodePL != codePL {
+			continue
+		}
+		coef, ok := r.Coef[key]
+		if !ok || coef <= 0 {
+			return 0, false
+		}
+		// В источнике лежит «1 + ставка»; 1,00 = НДС по статье не начисляется.
+		return round4(coef - 1), true
+	}
+	return 0, false
+}
+
+// VatExceedsNormative — введённая (или эффективная) ставка выше нормативной.
+// ТЗ МП §2: нормативная служит ВЕРХНЕЙ ГРАНИЦЕЙ и проверкой, а не значением
+// расчёта — применять 22 % ко всей выручке нельзя, НДС завысится примерно на
+// десятую часть. Допуск 0,0001 — против шума округления справочника.
+func (b *RateBook) VatExceedsNormative(ctx context.Context, codePL int, country string, rate float64) (bool, float64) {
+	norm, ok := b.NormativeVat(ctx, codePL, country)
+	if !ok {
+		return false, 0
+	}
+	return rate > norm+0.0001, norm
 }
 
 // Invalidate сбрасывает кэш (после правки справочника).
@@ -302,6 +402,20 @@ func floatAt(m map[string]any, k string) float64 {
 		return float64(v)
 	}
 	return 0
+}
+
+// boolAt — флаг из payload. Строковое "true" тоже принимаем: справочник
+// правится руками в UI, и значение может прийти строкой.
+func boolAt(m map[string]any, k string) bool {
+	switch v := m[k].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	case float64:
+		return v != 0
+	}
+	return false
 }
 
 func intAt(m map[string]any, k string) int {

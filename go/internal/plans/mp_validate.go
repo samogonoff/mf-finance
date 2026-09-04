@@ -19,7 +19,16 @@ const (
 	MpBlocking MpIssueLevel = "blocking"
 	// MpWarning — подсветка + обязательное обоснование, ввод сохраняется.
 	MpWarning MpIssueLevel = "warning"
+	// MpInfo — только сообщение: ни перехода не блокирует, ни обоснования не
+	// требует. Появился для случаев, где ТЗ прямо говорит «информировать»
+	// (правки 02.09.2026: владелец статьи 51 — ЦЗ 32; расхождение %СПП с фактом).
+	MpInfo MpIssueLevel = "info"
 )
+
+// mpForeignOwnerByDefault — статьи, владелец которых ПО ТЗ находится вне формы МП
+// (правка 02.09.2026, часть 2): 51 «Грузоперевозки экспорт» считают логисты,
+// ЦЗ 32. Для таких статей «владелец не МП» — ожидаемое состояние.
+var mpForeignOwnerByDefault = map[string]bool{BCostFreight: true}
 
 // MpIssue — одно замечание валидации.
 type MpIssue struct {
@@ -49,6 +58,10 @@ type MpValidationInput struct {
 	// Общий согласованный вес затрат по площадке (W3): доля, выше которой
 	// «мы платим площадке больше, чем договорились». 0 = не задан.
 	AgreedShare map[int]float64
+	// SppFact — ФАКТИЧЕСКИЙ %СПП площадки (подсказка, правка МП §9): взвешенное
+	// среднее за прошлый месяц. Значение не подставляется в форму — только
+	// сравнивается с введённым (МП-W9).
+	SppFact map[int]float64
 	// Комментарии по площадке: наличие снимает требование обоснования.
 	Comments   map[int]string
 	Thresholds MpDiffThresholds
@@ -149,13 +162,27 @@ func ValidateMpForm(in MpValidationInput) []MpIssue {
 		}
 
 		// МП-08: одна и та же комбинация (ЦФО, статья) не приходит из двух форм.
+		//
+		// Правка ТЗ 02.09.2026 (часть 2, МП §24) закрепила владельцев: 52 и 54 —
+		// маркетплейсы (доля вводится в реестре «Условия площадки»), а 51
+		// «Грузоперевозки экспорт» — логисты, ЦЗ 32; в форме МП эта строка
+		// ВЫВОДИТСЯ индикатором «сумма / выручка», без ввода. Поэтому «владелец
+		// 51 — не МП» это норма, а не ошибка: блокировать форму нечем.
 		for _, b := range []string{BCostFreight, BCostLogTransport, BCostLogWarehouse} {
 			pl := blockToPL()[b]
-			if owner, ok := in.CalcOwner[[2]int{pl, cfo}]; ok && owner != TemplateMP {
-				add("МП-08", MpBlocking, false,
-					"статья %d (%s) считается формой «%s» — здесь она только выводится",
-					pl, names[b], owner)
+			owner, ok := in.CalcOwner[[2]int{pl, cfo}]
+			if !ok || owner == TemplateMP {
+				continue
 			}
+			if mpForeignOwnerByDefault[b] {
+				add("МП-08", MpInfo, false,
+					"статья %d (%s) считается формой «%s» (по ТЗ владелец — ЦЗ 32) — здесь только индикатор «сумма / выручка»",
+					pl, names[b], owner)
+				continue
+			}
+			add("МП-08", MpBlocking, false,
+				"статья %d (%s) считается формой «%s» — здесь она только выводится",
+				pl, names[b], owner)
 		}
 
 		// МП-W1/W2: изменения условий сверх порога требуют обоснования.
@@ -173,6 +200,18 @@ func ValidateMpForm(in MpValidationInput) []MpIssue {
 					}
 				}
 			}
+			// МП-W9: введённый %СПП расходится с ФАКТИЧЕСКИМ (подсказка из
+			// MP.dbo.WB_Price_SPP_Analysis). Правка ТЗ 02.09.2026 (часть 2, МП §23):
+			// информировать и подсветить, НЕ блокировать и обоснования не требовать —
+			// %СПП это поле ввода, а фактическое значение лишь ориентир.
+			if fact, ok := in.SppFact[cfo]; ok && fact > 0 {
+				if d := math.Abs(cond.SppPct - fact); d > th.SppPct {
+					add("МП-W9", MpWarning, false,
+						"%%СПП %.2f %% расходится с фактическим %.2f %% (на %.2f п.п.)",
+						cond.SppPct*100, fact*100, d*100)
+				}
+			}
+
 			// МП-W3: доля прямых затрат превысила согласованный с площадкой вес.
 			if agreed := in.AgreedShare[cfo]; agreed > 0 && vals != nil {
 				if vals[BDirectShare] > agreed {

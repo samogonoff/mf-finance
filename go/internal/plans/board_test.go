@@ -109,9 +109,20 @@ func TestMpPlatformInputs(t *testing.T) {
 	if in[BShipments] != 400 {
 		t.Errorf("себестоимость из факта: %v", in[BShipments])
 	}
-	wantSPP := 1 - 700.0/833.0
-	if math.Abs(in[BSPP]-wantSPP) > 1e-9 {
-		t.Errorf("%%СПП = %v, ждали %v", in[BSPP], wantSPP)
+	// %СПП НЕ подставляется из источника (правки ТЗ 02.09.2026, часть 1 и МП §8):
+	// в форме Excel за ним нет формулы, значит это поле ввода. Фактическое
+	// значение уходит подсказкой рядом с полем — deriveSPP считает именно её.
+	if _, ok := in[BSPP]; ok {
+		t.Errorf("%%СПП не должен сидироваться из источника, получено %v", in[BSPP])
+	}
+	wantHint := 1 - 700.0/833.0
+	if got := deriveSPP(factIdx, 335); math.Abs(got-wantHint) > 1e-9 {
+		t.Errorf("подсказка %%СПП = %v, ждали %v", got, wantHint)
+	}
+	// Штрафы — тоже поле ввода (правка МП §14): общего реестра нет, в DWH только
+	// габаритные штрафы Wildberries.
+	if _, ok := in[BCostPenalties]; ok {
+		t.Errorf("штрафы не должны сидироваться из источника, получено %v", in[BCostPenalties])
 	}
 	if _, ok := in[BMarkup]; ok {
 		t.Errorf("наценка не сидируется — она расчётная")

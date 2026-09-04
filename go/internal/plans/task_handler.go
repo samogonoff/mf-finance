@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // HTTP-ручки движка заданий процесса. Чтение — ROLE_PLANS_USER; генерация/назначение
@@ -69,6 +70,38 @@ func (h *Handler) MpTaskFormGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, f)
+}
+
+// MpFactSnapshotRefresh — POST /api/plans/admin/mp-fact-snapshot?year=&month=&segment=.
+// Ручной прогон регламента снимка факта (правка ТЗ МП §12): обычно снимок питается
+// раз в сутки, но после переливки источника его нужно уметь обновить сразу.
+func (h *Handler) MpFactSnapshotRefresh(w http.ResponseWriter, r *http.Request) {
+	if h.factSnap == nil {
+		writeErr(w, http.StatusServiceUnavailable, "снимок факта МП не подключён (PLANS_FACT_SNAPSHOT=0)")
+		return
+	}
+	q := r.URL.Query()
+	year, _ := atoiPositive(q.Get("year"))
+	month, _ := atoiPositive(q.Get("month"))
+	if year == 0 || month == 0 {
+		// По умолчанию — прошлый месяц: именно с ним работает форма (МП §12).
+		year, month = hintPrevMonth(time.Now())
+	}
+	segment := q.Get("segment")
+	segments := []string{segment}
+	if segment == "" {
+		segments = []string{"large", "small"}
+	}
+	var out []MpSnapshotMeta
+	for _, seg := range segments {
+		metas, err := h.factSnap.Refresh(r.Context(), year, month, seg)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		out = append(out, metas...)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // MpTaskFormExport — GET /api/plans/tasks/{taskId}/mp-form/export. .xlsx формы (TPL-06).

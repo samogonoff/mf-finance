@@ -99,13 +99,33 @@ type Config struct {
 	PlansPublishSandbox bool
 	PlansPublishTargets []string
 
+	// Справочник статей PL (Budgeting.dbo.CodePL, 423 записи) — источник подписей,
+	// НОРМАТИВНОГО НДС по странам (колонки VAT_*) и статьи ДДС. Пусто или нет
+	// MSSQL → справочник остаётся на сиде PLLineSeed (нормативная проверка НДС
+	// работает только по статьям сида).
+	PlansCodePLTable string
+
+	// Подсказки формы МП (правки ТЗ 02.09.2026, часть 1 и МП §9/§14). Значения в
+	// форму НЕ подставляются — показываются рядом с полем ввода. Пусто или нет
+	// MSSQL → подсказок не будет, поля остаются полями ввода.
+	// Снимок факта МП (правка ТЗ 02.09.2026 МП §12). 1 (дефолт) → форма читает
+	// таблицу снимка с отметкой «данные актуальны на …»; живое чтение OLAP
+	// запрещено, потому что таблицы источников перезаливаются через TRUNCATE и
+	// суммы плавают в динамике. 0 — аварийный откат на прямое чтение.
+	// Интервал регламента в секундах, дефолт сутки.
+	PlansFactSnapshot         bool
+	PlansFactSnapshotInterval int
+
+	PlansMpSppTable     string // MP.dbo.WB_Price_SPP_Analysis (spp + цена)
+	PlansMpSalesTable   string // MP.dbo.sales (веса SALES/SALES_RUB, ключ EAN)
+	PlansMpPenaltyTable string // DWH.dbo.wb_dimensions_penalty (НЕ копия в MP)
+
 	// Форма «Розница» (TPL-TO-RETAIL, ТЗ Розница §11). Источники — тот же сервер
 	// FinDWH/Budgeting/Checks, что у МП; при PlansMock=1 или без MSSQL работают
 	// фикстуры (plans/retail_mock.go), форма и тесты не зависят от VPN.
 	PlansRetailStoreTable    string // справочник магазинов: FinDWH.dbo.[001 CodeCFO]
 	PlansRetailStoreGroup    string // значение GroupCFO1 справочника ('Магазины')
 	PlansRetailFactTable     string // факт продаж (выручка с НДС) из FOX
-	PlansRetailFactColumns   string // CSV колонок факта: ЦФО, дата, сумма (колонки не подтверждены пробой)
 	PlansRetailStrategyTable string // стратегия в нац. валюте: Budgeting.dbo.VFORMTOLOADPLAN
 	PlansRetailStrategyGroup string // ГруппыЦФО1 таблицы плана ('3.Магазины' — НЕ равно группе справочника)
 	PlansRetailPlanHistTable string // история плана: Checks.dbo.plan_saler_st
@@ -182,13 +202,19 @@ func Load() Config {
 		PlansLegacyMpAPI:    env("PLANS_LEGACY_MP_API", "0") == "1",
 		PlansPublishEnabled: env("PLANS_PUBLISH_ENABLED", "0") == "1",
 		PlansPublishSandbox: env("PLANS_PUBLISH_SANDBOX", "0") == "1",
+		PlansCodePLTable:    env("PLANS_CODEPL_TABLE", "Budgeting.dbo.CodePL"),
+		PlansFactSnapshot:         env("PLANS_FACT_SNAPSHOT", "1") == "1",
+		PlansFactSnapshotInterval: atoiDef(env("PLANS_FACT_SNAPSHOT_INTERVAL", "86400"), 86400),
+
+		PlansMpSppTable:     env("PLANS_MP_SPP_TABLE", "MP.dbo.WB_Price_SPP_Analysis"),
+		PlansMpSalesTable:   env("PLANS_MP_SALES_TABLE", "MP.dbo.sales"),
+		PlansMpPenaltyTable: env("PLANS_MP_PENALTY_TABLE", "DWH.dbo.wb_dimensions_penalty"),
 		PlansPublishTargets: splitCSV(env("PLANS_PUBLISH_TARGETS",
 			"Budgeting.dbo.VFORMTOLOADTAKTTARGET,Budgeting.dbo.FormToLoaTaktTarget")),
 
 		PlansRetailStoreTable:    env("PLANS_RETAIL_STORE_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
 		PlansRetailStoreGroup:    env("PLANS_RETAIL_STORE_GROUP", "Магазины"),
 		PlansRetailFactTable:     env("PLANS_RETAIL_FACT_TABLE", "FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail"),
-		PlansRetailFactColumns:   env("PLANS_RETAIL_FACT_COLUMNS", "CodeCFO,Date,Summa"),
 		PlansRetailStrategyTable: env("PLANS_RETAIL_STRATEGY_TABLE", "Budgeting.dbo.VFORMTOLOADPLAN"),
 		PlansRetailStrategyGroup: env("PLANS_RETAIL_STRATEGY_GROUP", "3.Магазины"),
 		PlansRetailPlanHistTable: env("PLANS_RETAIL_PLAN_HISTORY_TABLE", "Checks.dbo.plan_saler_st"),

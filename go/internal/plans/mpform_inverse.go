@@ -101,11 +101,18 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 	commission := put(BCommission, managerNet*c.SppPct,
 		"= продажи менеджера без НДС × %СПП")
 
-	// Статьи прямых затрат: доля от выручки по ценам менеджера БЕЗ НДС.
+	// Статьи прямых затрат: доля от выручки ПО ЦЕНЕ ПЛОЩАДКИ без НДС.
+	//
+	// Правка ТЗ 02.09.2026 МП §20: было «Статья = Выручка по ценам менеджера ×
+	// доля_статьи», верно «Статья = Выручка по цене площадки × доля_статьи».
+	// База меньше на СПП, поэтому суммы статей ниже прежних — это и есть смысл
+	// правки, а не потеря расхода: СПП уже удержан переходом к цене площадки, и
+	// начислять статьи на цену менеджера значило считать площадочную комиссию
+	// внутри каждой статьи ещё раз (см. §21 — там же убрано «+ Σ Комиссия»).
 	directTotal := commission
 	for _, block := range mpCostBlocks {
 		share := c.Shares[block]
-		v := put(block, managerNet*share, "= продажи менеджера без НДС × доля статьи")
+		v := put(block, platNet*share, "= цена площадки без НДС × доля статьи")
 		directTotal += v
 	}
 
@@ -180,8 +187,14 @@ func computeMpFormTotals(platforms map[int]map[string]float64, commonCosts float
 	}
 	// Средний %СПП по форме — из сумм, а не среднее долей.
 	t.SppPct = safeDiv(t.SalesManagerNet-t.SalesPlatNet, t.SalesManagerNet)
-	// PL (сумма) = цена площадки − СС отпускная − общие затраты − прямые + Σ комиссий.
-	t.PL = t.SalesPlatNet - t.Shipments - commonCosts - t.DirectCosts + t.Commission
+	// PL (сумма) по правке ТЗ 02.09.2026 МП §21:
+	//   PL = продажи по цене площадки без НДС − себестоимость по отпускным ценам
+	//        − прямые затраты
+	// Из формулы убраны «общие затраты» и слагаемое «+ Σ комиссия площадки».
+	// Комиссия не вычитается второй раз (цена площадки уже за вычетом СПП), а
+	// общие затраты остаются отдельным показателем формы: в PL они больше не
+	// входят. Следствие, полезное как проверка: PL по форме = Σ PL площадок.
+	t.PL = t.SalesPlatNet - t.Shipments - (t.DirectCosts - t.Commission)
 	t.PLPct = safeDiv(t.PL, t.SalesPlatNet)
 	t.DirectShareTurn = safeDiv(t.DirectCosts-t.Commission, t.SalesPlatNet)
 	return t

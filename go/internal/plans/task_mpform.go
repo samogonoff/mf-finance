@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 )
 
@@ -70,6 +71,14 @@ type MpTaskForm struct {
 	// Conditions — условия площадок, из которых посчитана расходная часть
 	// (в inverse-режиме): %СПП, наценки и доли статей для показа рядом со строками.
 	Conditions map[int]MpConditions `json:"conditions,omitempty"`
+	// Hints — подсказки к полям ввода (правки ТЗ 02.09.2026, часть 1): фактическое
+	// значение источника рядом с полем, БЕЗ подстановки в значение и без
+	// блокировки. Сохранение их не касается.
+	Hints []FieldHint `json:"hints,omitempty"`
+	// FactSnapshot — отметка «данные актуальны на …» (правка МП §12). Форма читает
+	// снимок, а не OLAP вживую, и обязана показывать, когда он собран: иначе
+	// заполняющий не отличит свежий факт от факта месячной давности.
+	FactSnapshot *MpSnapshotMeta `json:"fact_snapshot,omitempty"`
 }
 
 // seedPL — code_pl для подтяжки input-строк из источника (SUMIFS прототипа).
@@ -140,7 +149,11 @@ func factSeed(factIdx map[[2]int]float64, block string, cfo int) (float64, bool)
 	}
 }
 
-// deriveSPP — начальный %СПП из источника (если есть цены площадки и менеджера).
+// deriveSPP — фактический %СПП, посчитанный из факта (пара 1006/1045 либо
+// 1022/1046). Это ПОДСКАЗКА, а не начальное значение поля: правки ТЗ 02.09.2026
+// (часть 1, МП §8) требуют, чтобы %СПП вводился руками, потому что в форме Excel
+// за ним нет формулы. Подставлять источник нельзя — через одно сохранение
+// подстановка становится неотличимой от решения планировщика.
 func deriveSPP(factIdx map[[2]int]float64, cfo int) float64 {
 	if net, ok := factIdx[[2]int{cfo, 1006}]; ok {
 		if mgr, ok2 := factIdx[[2]int{cfo, 1045}]; ok2 && mgr != 0 {
@@ -346,6 +359,28 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 			f.Cells = append(f.Cells, cell)
 		}
 	}
+
+	// Отметка актуальности снимка факта (правка МП §12).
+	if s.factSnap != nil {
+		if meta, err := s.factSnap.Meta(ctx, year, month, SnapLayerFact, segment); err == nil {
+			f.FactSnapshot = &meta
+		} else {
+			log.Printf("plans: отметка снимка факта МП недоступна: %v", err)
+		}
+	}
+
+	// Подсказки к полям ввода (правки ТЗ, часть 1): фактический %СПП и габаритные
+	// штрафы WB. Идут ОТДЕЛЬНО от ячеек — значение поля они не трогают.
+	if s.hints != nil {
+		for _, p := range f.Platforms {
+			if h, ok := s.hints.SppHint(ctx, p.CodeCFO); ok {
+				f.Hints = append(f.Hints, h)
+			}
+			if h, ok := s.hints.PenaltyHint(ctx, p.CodeCFO); ok {
+				f.Hints = append(f.Hints, h)
+			}
+		}
+	}
 	return f, nil
 }
 
@@ -402,7 +437,11 @@ func mpPlatformInputs(cfo int, tactic map[string]float64, factIdx map[[2]int]flo
 		}
 		switch l.BlockType {
 		case BSPP:
-			in[BSPP] = deriveSPP(factIdx, cfo)
+			// Поле ввода (правки ТЗ, часть 1 и МП §8): фактическое значение уходит
+			// в подсказку рядом с полем, а не в само поле.
+		case BCostPenalties:
+			// Поле ввода (правка МП §14): общего реестра штрафов нет, а в DWH
+			// лежат только габаритные штрафы Wildberries — это часть, не итог.
 		case BMarkup:
 			// расчётная по умолчанию — не сидируем
 		default:
