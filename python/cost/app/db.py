@@ -245,6 +245,91 @@ def call_calc_sign_procedure(json_str: str) -> None:
 # лимит ODBC/MSSQL — ~2100; 500 × 4 = 2000, с запасом (проверено: 520 ключей
 # проходят, 530 уже падают).
 _OLAP_KEYS_PER_BATCH = 500
+# Пар на один запрос плановых цен: по два параметра на пару, предел ODBC ~2100.
+_GPARTNER_PAIRS_PER_BATCH = 500
+
+
+_OLAP_WHOLE_TABLE_FROM_KEYS = 200
+_OLAP_WHOLE_TABLE_ROW_CAP = 20_000
+
+_OLAP_COLUMNS = (
+    "Модель, Артикул, calc_sign, plan_id, "
+    "Розничная_цена_руб, Отпускная_цена_руб, "
+    "price_rf, price_kz, price_uz, comment, approved_at, Уровень_цен"
+)
+
+
+def _olap_normalise(rec: dict) -> dict:
+    """Имена колонок источника → соглашение кэша."""
+    rec["retail_rub"] = rec.pop("Розничная_цена_руб")
+    rec["wholesale_rub"] = rec.pop("Отпускная_цена_руб")
+    rec["price_level"] = rec.pop("Уровень_цен")
+    return rec
+
+
+def _olap_key(rec: dict) -> tuple[str, str, str, str]:
+    return (
+        str(rec.get("Модель") or "").strip(),
+        str(rec.get("Артикул") or "").strip(),
+        str(rec.get("calc_sign") or "").strip() if rec.get("calc_sign") else "",
+        str(rec.get("plan_id") or "").strip() if rec.get("plan_id") else "",
+    )
+
+
+def _olap_is_newer(candidate: dict, current: dict) -> bool:
+    """Свежее ли candidate по approved_at. NULL считаем самым старым — так
+    дедуп «последняя запись на ключ» не зависит от порядка выдачи сервера."""
+    a, b = candidate.get("approved_at"), current.get("approved_at")
+    if a is None:
+        return False
+    if b is None:
+        return True
+    return a > b
+
+
+def _fetch_olap_changes_whole(cursor, keys: set[tuple[str, str, str, str]]) -> list[dict] | None:
+    """Прочитать таблицу целиком и оставить нужные ключи.
+
+    Форма запроса не зависит от набора ключей, поэтому MSSQL берёт готовый план:
+    OR-цепочка из тысяч условий компилировалась заново на каждом новом фильтре
+    и стоила от 11,5 до 25,8 с на первом запросе (замер 04.09.2026), тогда как
+    полное чтение 665 строк — 40 мс.
+
+    Возвращает None, если таблица выросла сверх лимита: тогда вызывающий код
+    возвращается к перечислению ключей батчами.
+    """
+    cursor.execute(
+        f"""SELECT TOP (?) {_OLAP_COLUMNS} FROM (
+                SELECT {_OLAP_COLUMNS},
+                       ROW_NUMBER() OVER (
+                           PARTITION BY Модель, Артикул, calc_sign, plan_id
+                           ORDER BY approved_at DESC) AS rn
+                  FROM CostHistory_Changes
+            ) t WHERE rn = 1""",
+        _OLAP_WHOLE_TABLE_ROW_CAP + 1,
+    )
+    cols = [d[0] for d in cursor.description]
+    rows = cursor.fetchall()
+    if len(rows) > _OLAP_WHOLE_TABLE_ROW_CAP:
+        print(
+            f"[cost] CostHistory_Changes выросла свыше {_OLAP_WHOLE_TABLE_ROW_CAP} "
+            "уникальных ключей — читаем цены батчами по ключам",
+            flush=True,
+        )
+        return None
+
+    best: dict[tuple[str, str, str, str], dict] = {}
+    for row in rows:
+        rec = dict(zip(cols, row))
+        key = _olap_key(rec)
+        if key not in keys:
+            continue
+        # ROW_NUMBER уже оставил по одной строке на ключ источника, но ключ
+        # источника и ключ кэша не совпадают: NULL и '' в calc_sign/plan_id —
+        # разные партиции и один ключ кэша. Поэтому сверяем ещё и здесь.
+        if key not in best or _olap_is_newer(rec, best[key]):
+            best[key] = rec
+    return [_olap_normalise(rec) for rec in best.values()]
 
 
 def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
@@ -252,7 +337,12 @@ def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
 
     keys: список (model, articul, calc_sign, plan_id).
     Возвращает список записей — последнюю для каждой уникальной комбинации
-    (Модель, Артикул, calc_sign, plan_id), отсортированную по approved_at DESC.
+    (Модель, Артикул, calc_sign, plan_id).
+
+    На широких выборках (свыше 200 ключей) таблица читается целиком одним
+    запросом постоянной формы, а ключи сопоставляются в питоне. На узких —
+    перечисление ключей батчами, как раньше: для одного-двух ключей читать
+    таблицу целиком расточительно.
     """
     if not keys:
         return []
@@ -260,6 +350,11 @@ def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
     olap = get_olap_conn()
     cursor = olap.cursor()
     try:
+        if len(keys) > _OLAP_WHOLE_TABLE_FROM_KEYS:
+            whole = _fetch_olap_changes_whole(cursor, set(keys))
+            if whole is not None:
+                return whole
+
         seen: set[tuple[str, str, str, str]] = set()
         result: list[dict] = []
 
@@ -293,19 +388,10 @@ def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
             # ORDER BY approved_at DESC.
             for row in cursor.fetchall():
                 rec = dict(zip(cols, row))
-                key = (
-                    str(rec.get("Модель") or "").strip(),
-                    str(rec.get("Артикул") or "").strip(),
-                    str(rec.get("calc_sign") or "").strip() if rec.get("calc_sign") else "",
-                    str(rec.get("plan_id") or "").strip() if rec.get("plan_id") else "",
-                )
+                key = _olap_key(rec)
                 if key not in seen:
                     seen.add(key)
-                    # Normalise column names to match cache convention
-                    rec["retail_rub"] = rec.pop("Розничная_цена_руб")
-                    rec["wholesale_rub"] = rec.pop("Отпускная_цена_руб")
-                    rec["price_level"] = rec.pop("Уровень_цен")
-                    result.append(rec)
+                    result.append(_olap_normalise(rec))
         return result
     finally:
         olap.close()
@@ -331,21 +417,51 @@ def fetch_gpartner_planned(pairs: list[tuple[str, str]]) -> dict[tuple[str, str]
     cursor = conn.cursor()
     try:
         result: dict[tuple[str, str], dict] = {}
-        # ODBC/MSSQL ограничивает число параметров запроса (~2100) — при большом
-        # наборе пар (напр. "Цена для МП" по всему незафильтрованному датасету,
-        # тысячи уникальных (model, articul)) один запрос на все пары падает с
-        # pyodbc.Error 07002 "COUNT field incorrect". Бьём на батчи по 500 пар
-        # (=1000 параметров), с запасом от лимита.
-        batch_size = 500
-        for i in range(0, len(pairs), batch_size):
-            batch = pairs[i:i + batch_size]
-            conditions = " OR ".join("(MODEL = ? AND ART = ?)" for _ in batch)
+
+        # Пары передаём производной таблицей VALUES и ДЖОЙНИМ, а не перечисляем
+        # цепочкой OR. Замеры 04.09.2026 на одном соединении, 695 пар:
+        #
+        #   OR-цепочка (как было)         3429 мс
+        #   VALUES + JOIN + ROW_NUMBER     139 мс   ← выбрано, в 25 раз быстрее
+        #   #temp + JOIN + ROW_NUMBER      253 мс   (99 мс из них — вставка строк)
+        #
+        # Причина разницы: [dbo].[S_MODELI] — ПРЕДСТАВЛЕНИЕ из пятнадцати
+        # LEFT JOIN, и с цепочкой OR сервер прогоняет его на каждое условие, а с
+        # JOIN — один проход по ключу. На полном периоде это была самая дорогая
+        # статья /aggregated: 2,7 с из 6.
+        #
+        # Временную таблицу отбросил замер, и не только по времени: она падала с
+        # «Не удалось разрешить конфликт параметров сортировки между
+        # Cyrillic_General_BIN и Cyrillic_General_CI_AS» — колонки MODEL и ART у
+        # представления объявлены как char(25) COLLATE Cyrillic_General_BIN, а
+        # tempdb создаёт свои в сортировке базы. У VALUES этой беды нет: параметр
+        # приводится к сортировке колонки.
+        #
+        # Батчи по 500 пар остаются: у VALUES параметры есть (два на пару), а
+        # предел ODBC/MSSQL — ~2100.
+        for i in range(0, len(pairs), _GPARTNER_PAIRS_PER_BATCH):
+            batch = pairs[i:i + _GPARTNER_PAIRS_PER_BATCH]
+            values = ", ".join("(?, ?)" for _ in batch)
             params: list[str] = []
             for m, a in batch:
                 params.extend([m, a])
 
+            # ROW_NUMBER по ITEM_ID DESC — актуальная версия пары. На пару
+            # модель+артикул в справочнике бывает несколько записей (14 912 из
+            # 95 849: модель заводят заново, старая остаётся), и раньше выбор
+            # зависел от порядка выдачи сервера — «последняя выигрывает» в
+            # питоне. Теперь тот же выбор, что в load_gpartner_plan_prices ниже:
+            # последняя по ITEM_ID.
             cursor.execute(
-                f"SELECT MODEL, ART, PRICE_MOPT, NDS, PLAN_PRICE, RU_NDS FROM [dbo].[S_MODELI] WHERE {conditions}",
+                f"""SELECT MODEL, ART, PRICE_MOPT, NDS, PLAN_PRICE, RU_NDS FROM (
+                        SELECT RTRIM(m.MODEL) AS MODEL, RTRIM(m.ART) AS ART,
+                               m.PRICE_MOPT, m.NDS, m.PLAN_PRICE, m.RU_NDS,
+                               ROW_NUMBER() OVER (PARTITION BY RTRIM(m.MODEL), RTRIM(m.ART)
+                                                  ORDER BY m.ITEM_ID DESC) AS rn
+                          FROM [dbo].[S_MODELI] m
+                          JOIN (VALUES {values}) AS p(MODEL, ART)
+                            ON p.MODEL = m.MODEL AND p.ART = m.ART
+                    ) t WHERE rn = 1""",
                 params,
             )
             for row in cursor.fetchall():

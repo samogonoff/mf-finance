@@ -456,15 +456,50 @@ async def dashboard(
         period AS (SELECT * FROM shifted{on_label()}),
         -- Источник листа отклонений: строки ТЕКУЩЕГО периода с плановым ключом
         -- (план + модель + артикул) и тремя себестоимостями выпуска.
+        -- Отбор отдельно от джойнов: условия where() написаны голыми именами
+        -- колонок, а ниже в запросе три источника (строка ФКСС и два ранних
+        -- этапа) — Postgres на «cost_byn > 0» отвечает ambiguous column.
+        dev_base AS (
+            SELECT * FROM cost_calc_mv WHERE {where()}
+        ),
         dev_src AS (
             SELECT
                 c.plan_id, c.model, c.articul, c.model_name,
                 c.volume_pcs                          AS vol,
                 c.volume_pcs * c.wholesale_price_{cur_sfx} AS rev,
                 c.volume_pcs * c.cost_{cur_sfx}        AS cost_norm,
-                c.volume_pcs * ({fact_expr})           AS cost_fact
-            FROM cost_calc_mv c
-            WHERE {where()}
+                c.volume_pcs * ({fact_expr})           AS cost_fact,
+                -- Ранние этапы ТОГО ЖЕ задания. Ключ сопоставления — модель +
+                -- артикул + план + задание, как у get_prev_stage_prices в db.py:
+                -- у КПСС и ПФКСС калькуляция привязана к заданию, а не к модели.
+                --
+                -- Этапов в источнике мало (КПСС 1 584 калькуляции, ПФКСС 1 026
+                -- против 88 456 ФКСС — их ведут не для всего ассортимента),
+                -- поэтому у большинства строк оба поля пусты. Это не пропуск
+                -- данных, а отсутствие предварительного расчёта.
+                c.volume_pcs * kp.cost_{cur_sfx}       AS cost_kpss,
+                CASE WHEN kp.cost_{cur_sfx} IS NOT NULL THEN c.volume_pcs END AS vol_kpss,
+                c.volume_pcs * pf.cost_{cur_sfx}       AS cost_pfkss,
+                CASE WHEN pf.cost_{cur_sfx} IS NOT NULL THEN c.volume_pcs END AS vol_pfkss
+            FROM dev_base c
+            -- LATERAL, а не GROUP BY: на этап бывает несколько дат расчёта,
+            -- берём последнюю — она и есть действующая.
+            LEFT JOIN LATERAL (
+                SELECT s.cost_byn, s.cost_usd FROM cost_calc_mv s
+                WHERE s.calc_sign = 'КПСС' AND s.model = c.model AND s.articul = c.articul
+                  AND coalesce(s.plan_id, '') = coalesce(c.plan_id, '')
+                  AND coalesce(s.zadanie, '') = coalesce(c.zadanie, '')
+                  AND s.cost_byn > 0
+                ORDER BY s.calc_date DESC LIMIT 1
+            ) kp ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT s.cost_byn, s.cost_usd FROM cost_calc_mv s
+                WHERE s.calc_sign = 'ПФКСС' AND s.model = c.model AND s.articul = c.articul
+                  AND coalesce(s.plan_id, '') = coalesce(c.plan_id, '')
+                  AND coalesce(s.zadanie, '') = coalesce(c.zadanie, '')
+                  AND s.cost_byn > 0
+                ORDER BY s.calc_date DESC LIMIT 1
+            ) pf ON TRUE
         ),
         tiles AS (
             SELECT {sums}
@@ -522,7 +557,11 @@ async def dashboard(
                 sum(d.cost_norm)                          AS norm_total,
                 sum(d.cost_fact)                          AS fact_total,
                 sum(d.vol) FILTER (WHERE d.cost_fact IS NOT NULL) AS fact_vol,
-                sum(d.rev)                                AS rev_total
+                sum(d.rev)                                AS rev_total,
+                sum(d.cost_kpss)                          AS kpss_total,
+                sum(d.vol_kpss)                           AS kpss_vol,
+                sum(d.cost_pfkss)                         AS pfkss_total,
+                sum(d.vol_pfkss)                          AS pfkss_vol
             FROM dev_src d
             LEFT JOIN cost_plan_prices pp
                    ON pp.model = d.model AND pp.articul = d.articul
@@ -580,9 +619,17 @@ async def dashboard(
     out_dev = []
     for r in deviations[:DEVIATION_ROW_LIMIT]:
         vol, plan_vol, fact_vol = r.get("vol"), r.get("plan_vol"), r.get("fact_vol")
-        unit_plan = _ratio(r.get("plan_total"), plan_vol)
         unit_norm = _ratio(r.get("norm_total"), vol)
         unit_fact = _ratio(r.get("fact_total"), fact_vol)
+        unit_pfkss = _ratio(r.get("pfkss_total"), r.get("pfkss_vol"))
+        # Плановая: КПСС того же задания, если он есть, иначе карточка модели в
+        # Лисе (решение заказчика 04.09.2026). Источник обязан быть виден в
+        # таблице — это разные вещи: КПСС считан по нормам конкретного задания,
+        # карточка проставлена человеком один раз при заведении модели.
+        unit_kpss = _ratio(r.get("kpss_total"), r.get("kpss_vol"))
+        unit_card = _ratio(r.get("plan_total"), plan_vol)
+        unit_plan = unit_kpss if unit_kpss is not None else unit_card
+        plan_source = "КПСС" if unit_kpss is not None else ("карточка" if unit_card is not None else None)
         # Нормативная на том же объёме, что плановая и фактическая — чтобы
         # отклонения считались на сопоставимых величинах, а не «норматив по всему
         # тиражу против плана по половине».
@@ -594,6 +641,10 @@ async def dashboard(
             "name": r.get("name"),
             "vol": None if vol is None else float(vol),
             "unit_plan_byn": unit_plan,
+            "unit_plan_source": plan_source,
+            "unit_kpss_byn": unit_kpss,
+            "unit_card_byn": unit_card,
+            "unit_pfkss_byn": unit_pfkss,
             "unit_norm_byn": unit_norm,
             "unit_fact_byn": unit_fact,
             "unit_price_byn": _ratio(r.get("rev_total"), vol),

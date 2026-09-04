@@ -15,12 +15,13 @@ params:
   - articul
   metrics:
   - vol_cur
-  - unit_cost_fact_cur
   - unit_cost_norm_all_cur
-  - unit_cost_plan_cur
-  - dev_fact_plan_pct
-  - dev_norm_plan_pct
-  - plan_coverage_pct_cur
+  - unit_cost_fact_cur
+  - unit_cost_pfkss_cur
+  - unit_cost_kpss_cur
+  - kpss_coverage_pct_cur
+  - dev_fact_kpss_pct
+  - dev_norm_kpss_pct
   all_columns: []
   percent_metrics: []
   order_by_cols: []
@@ -33,7 +34,7 @@ params:
   table_timestamp_format: smart_date
   conditional_formatting:
   - colorScheme: '#EFA1AA'
-    column: dev_fact_plan_pct
+    column: dev_fact_kpss_pct
     operator: '>'
     targetValue: 0
   column_config: {}
