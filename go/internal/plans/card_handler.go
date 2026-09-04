@@ -2,6 +2,7 @@ package plans
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -166,6 +167,16 @@ func (h *CardHandler) CardAction(w http.ResponseWriter, r *http.Request) {
 
 	next, err := h.svc.Action(r.Context(), id, body)
 	if err != nil {
+		// Отказ гейта отдаём перечнем причин, а не одной строкой: человеку нужно
+		// знать, что именно исправить, а не «форма не проходит проверки».
+		var blocked *SubmitBlockedError
+		if errors.As(err, &blocked) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"error":   blocked.Error(),
+				"reasons": blocked.Reasons,
+			})
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 )
 
 // CardService — процесс поверх карточек форм: создание карточек периода, переходы
@@ -27,6 +28,15 @@ type CardService struct {
 	// notify — уведомления по карточкам (кому форма пришла на решение). nil —
 	// процесс работает молча, как раньше.
 	notify CardNotifier
+	// gates — проверки «можно ли отправить форму на согласование» по form_code.
+	// Без гейта форма ведёт себя как раньше (валидации только в интерфейсе).
+	gates map[string]SubmitGate
+	// stages — этапы периода: их статус пересчитывается по карточкам, чтобы
+	// таймлайн и формы не расходились (stage_sync.go).
+	stages StageStore
+	// fillTasks — задания заполнения: закрываются отправкой формы, возвращаются
+	// вместе с ней (task_card_sync.go).
+	fillTasks FillTaskSyncer
 }
 
 // SnapshotProvider — отдаёт снимок значений формы для версии карточки.
@@ -154,6 +164,13 @@ func (s *CardService) Action(ctx context.Context, cardID int64, in CardActionInp
 	if err != nil {
 		return Card{}, err
 	}
+	// Отправка на согласование — единственное место, где формальные проверки
+	// формы обязательны: дальше по маршруту значения уже заморожены.
+	if strings.TrimSpace(in.Action) == "submit" {
+		if err := s.checkSubmitGate(ctx, c); err != nil {
+			return Card{}, err
+		}
+	}
 	if in.StepOwner == nil && s.owners != nil {
 		if owners, err := s.owners.StepOwners(ctx, c.PlID, c.FormCode, c.ScopeKey); err == nil {
 			in.StepOwner = owners
@@ -199,6 +216,9 @@ func (s *CardService) Action(ctx context.Context, cardID int64, in CardActionInp
 			next = fresh
 		}
 	}
+	// Этапы периода — агрегат состояния карточек: пересчитываем сразу после
+	// перехода, иначе таймлайн показывает не то, что происходит с формами.
+	s.syncStages(ctx, next.PlID)
 	// Уведомления — последним шагом и в фоне: получатель узнаёт об уже
 	// состоявшемся переходе, а сбой канала не откатывает маршрут.
 	s.notifyCardTransition(ctx, c, next, in)

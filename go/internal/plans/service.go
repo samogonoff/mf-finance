@@ -3,6 +3,7 @@ package plans
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -15,7 +16,19 @@ type Service struct {
 	scope ScopeStore
 	// cal — календари стран из БД (plans_country_calendar). nil → CalendarSeed().
 	cal CalendarStore
+	// cards — карточки форм: по ним проверяется, можно ли закрыть этап руками
+	// (этапы 1.1–1.4 — агрегат состояния форм, см. stage_sync.go). nil →
+	// проверки нет, поведение как раньше.
+	cards CardReader
 }
+
+// CardReader — чтение карточек периода (реализует CardService).
+type CardReader interface {
+	Cards(ctx context.Context, plID int64) ([]Card, error)
+}
+
+// WithCards подключает карточки форм к процессу этапов.
+func (s *Service) WithCards(c CardReader) *Service { s.cards = c; return s }
 
 // NewService — конструктор.
 func NewService(store MetricStore, fact MpFactSource, scope ScopeStore) *Service {
@@ -187,6 +200,12 @@ func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year
 	if err != nil {
 		return nil, err
 	}
+	// Этапы 1.1–1.4 — агрегат состояния КАРТОЧЕК форм (stage_sync.go), и закрывать
+	// их руками нельзя: иначе таймлайн говорит «согласовано», пока формы лежат в
+	// черновиках. Ровно на это наткнулся заказчик, двигая этапы вместо карточек.
+	if err := s.guardCardStage(ctx, plID, code, action); err != nil {
+		return nil, err
+	}
 	next, err := applyStageAction(stages, code, action, target)
 	if err != nil {
 		return nil, err
@@ -211,6 +230,45 @@ func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year
 		}
 	}
 	return next, nil
+}
+
+// guardCardStage — запрет ручного движения этапов, за которые отвечают карточки.
+//
+// Возврат этапа при этом разрешаем: он не подменяет решение по форме, а помечает
+// сам этап (и это единственный способ вернуть период назад, если формы уже
+// закрыты). Запрещается только «закрыть этап» вручную.
+func (s *Service) guardCardStage(ctx context.Context, plID int64, code, action string) error {
+	if action != "approve" && action != "submit" && action != "start" {
+		return nil
+	}
+	if stepOrder(code) < 0 || s.cards == nil {
+		return nil // этап без карточек — движется вручную, как раньше
+	}
+	cards, err := s.cards.Cards(ctx, plID)
+	if err != nil || len(cards) == 0 {
+		return nil // карточек нет — блокировать нечего
+	}
+	if action == "start" {
+		return nil // «взять в работу» безвредно: статус всё равно пересчитается
+	}
+	var pending []string
+	for _, c := range cards {
+		if !cardPassedStep(c, code) {
+			pending = append(pending, c.Title+" — "+CardStatusLabel(c.Status, c.StepCode))
+		}
+	}
+	if len(pending) == 0 {
+		// Все формы прошли шаг: этап и так станет completed при пересчёте.
+		return nil
+	}
+	const limit = 4
+	shown := pending
+	suffix := ""
+	if len(shown) > limit {
+		shown, suffix = shown[:limit], fmt.Sprintf(" и ещё %d", len(pending)-limit)
+	}
+	return fmt.Errorf("этап %s закрывается сам, когда формы пройдут шаг %s — решение принимается в карточке формы. Ещё не прошли: %s%s",
+		code, code, strings.Join(shown, "; "), suffix)
 }
 
 // Approvals — лист согласования экземпляра (история решений, включая revoked).
