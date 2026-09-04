@@ -82,14 +82,29 @@
                   <span v-else-if="st.due_at" class="sc-due"><Icon name="lucide:calendar" /> {{ st.due_at }}</span>
                 </div>
                 <div class="sc-actions">
+                  <!-- Этапы 1.1–1.4 закрываются САМИ, когда формы проходят
+                       соответствующий шаг: они агрегат состояния карточек, а не
+                       отдельное решение. Кнопку здесь не показываем — сервер её
+                       всё равно отклонит, а человек считал, что двигает процесс
+                       (именно так процесс и «разъезжался» с формами). Вместо
+                       кнопки — переход туда, где решение принимается. -->
                   <button
-                    v-if="!isApproval(st.stage_code)"
+                    v-if="stageDrivenByCards(st)"
+                    class="btn btn-sm btn-ghost"
+                    :title="`Этап ${st.stage_code} закрывается сам, когда формы пройдут этот шаг`"
+                    @click="stageModal = st"
+                  >
+                    <Icon name="lucide:check-check" />
+                    {{ cardsOnStep(st.stage_code).length ? "К формам на решении" : "Что согласуется" }}
+                  </button>
+                  <button
+                    v-else-if="!isApproval(st.stage_code)"
                     class="btn btn-sm btn-primary"
                     :disabled="!!depHint(st) || st.status === 'completed'"
                     @click="doAct(st.stage_code, 'submit')"
                   >Отправить</button>
                   <button
-                    v-if="isApproval(st.stage_code)"
+                    v-else
                     class="btn btn-sm btn-primary"
                     :disabled="!!depHint(st) || st.status === 'completed'"
                     @click="doAct(st.stage_code, 'approve')"
@@ -430,6 +445,15 @@ const stageIsApproval = (st: StageState) => st.is_approval ?? APPROVAL.has(st.st
  * утверждение. Показываем только те, что реально на согласовании: карточка в
  * черновике решения не ждёт.
  */
+/**
+ * Этапом управляют КАРТОЧКИ форм: 1.1–1.4 закрываются сами, когда формы проходят
+ * шаг (сервер отклоняет ручное закрытие). Признак считаем по наличию карточек с
+ * таким шагом в маршруте — если карточек периода нет вовсе, этап остаётся
+ * ручным, как этапы производства и сводов.
+ */
+const CARD_STEPS = ["1.1", "1.2", "1.3", "1.4"];
+const stageDrivenByCards = (st: StageState) => CARD_STEPS.includes(st.stage_code) && cards.value.length > 0;
+
 const cardsOnStep = (code: string) =>
   cards.value.filter((c) => c.step_code === code && ["on_approval", "returned"].includes(c.status));
 
@@ -507,11 +531,14 @@ const load = async () => {
   error.value = "";
   try {
     list.value = await stages(id, year.value, month.value);
-    [svod.value, tasks.value] = await Promise.all([
-      mpSvod(year.value, month.value),
-      byInstance(id).catch(() => [])
+    // Карточки грузим ВМЕСТЕ с остальным, а не после: от них зависит вид плиток
+    // этапов (какие закрываются сами), и при загрузке в конце таймлайн на миг
+    // показывал кнопки, которых там быть не должно.
+    await Promise.all([
+      mpSvod(year.value, month.value).then((v) => (svod.value = v)),
+      byInstance(id).catch(() => []).then((v) => (tasks.value = v)),
+      loadCards()
     ]);
-    await loadCards();
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : "Ошибка загрузки";
   }
