@@ -291,17 +291,25 @@
       <div class="card-head">
         <div>
           <p class="card-note">
-            Строка — план + модель + артикул. Три себестоимости <strong>единицы</strong> в BYN:
-            плановая (справочник моделей Лисы), нормативная и фактическая (по стоимости минуты).
+            Строка — план + модель + артикул, себестоимость <strong>единицы</strong> в BYN.
+            <strong>Норматив</strong> и <strong>факт</strong> — один и тот же расчёт ФКСС по
+            нормативной и фактической стоимости минуты. <strong>Плановая</strong> — КПСС того же
+            задания, если он есть, иначе значение из карточки модели в Лисе (источник в отдельной
+            колонке). <strong>ПФКСС</strong> — себестоимость на этапе расценки.
             Отклонение — «что сравниваем / база − 1».
             <span v-if="meta.deviations_truncated" class="warn">
               Показаны {{ meta.deviations_row_limit }} артикулов с наибольшим выпуском — сузьте фильтры.</span>
           </p>
           <p class="card-note">
-            Плановая себестоимость ведётся не везде: в выбранном периоде она есть у
+            Плановая себестоимость есть у
             <strong>{{ devPlanCoverage === null ? '—' : fmtPct(devPlanCoverage, 0) }}</strong>
-            показанных артикулов<span v-if="devView === 'plan' && devPlanCoverage !== null && devPlanCoverage < 20">
-              — для носков и колготок план в Лисе не заводится, для них смысл имеет вкладка «Норматив / факт»</span>.
+            показанных артикулов, из них по КПСС — у
+            <strong>{{ devKpssCoverage === null ? '—' : fmtPct(devKpssCoverage, 0) }}</strong>,
+            остальное из карточки модели. Ранние этапы ведут не для всего ассортимента: в источнике
+            КПСС 1 584 калькуляции и ПФКСС 1 026 против 88 456 ФКСС, поэтому у большинства строк эти
+            колонки пусты — это отсутствие предварительного расчёта, а не пропуск данных.<span
+              v-if="devView === 'plan' && devPlanCoverage !== null && devPlanCoverage < 20">
+              Для носков и колготок план в Лисе не заводится — им смысл имеет вкладка «Норматив / факт».</span>
           </p>
         </div>
         <div class="view-switch" role="group" aria-label="Что сравнивать">
@@ -754,6 +762,15 @@ const devPlanCoverage = computed(() => {
   return (100 * deviations.value.filter(r => isNum(r.unit_plan_byn)).length) / all
 })
 
+/** Из них — сколько взято из КПСС, а не из карточки модели. Разница важна:
+ * КПСС считан по нормам конкретного задания, карточка проставлена человеком
+ * один раз при заведении модели. */
+const devKpssCoverage = computed(() => {
+  const all = deviations.value.length
+  if (!all) return null
+  return (100 * deviations.value.filter(r => isNum(r.unit_kpss_byn)).length) / all
+})
+
 const devColumns = computed<Col[]>(() => {
   const devCls = (v: any, higherIsBetter = true) =>
     !isNum(v) || Number(v) === 0 ? '' : (Number(v) > 0) === higherIsBetter ? 'pos' : 'neg'
@@ -763,13 +780,24 @@ const devColumns = computed<Col[]>(() => {
     { key: 'articul', label: 'Артикул', text: true, fmt: r => r.articul || '—' },
     { key: 'vol', label: 'Выпуск, шт', fmt: r => fmtInt(r.vol) },
   ]
+  // Названия колонок — как назвал заказчик 04.09.2026: этап калькуляции в
+  // скобках, потому что «норматив» и «факт» — это один и тот же расчёт ФКСС по
+  // разным ставкам минуты, а «плановая» и «расценка» — вообще другие этапы.
   if (devView.value === 'plan') {
     return [...base,
-      { key: 'unit_fact_byn', label: 'С/с штуки факт', title: 'по фактической стоимости минуты; где её нет — прочерк',
+      { key: 'unit_norm_byn', label: 'Норматив (ФКСС)', title: 'себестоимость единицы по нормативной стоимости минуты',
+        fmt: r => fmtMoney(r.unit_norm_byn) },
+      { key: 'unit_fact_byn', label: 'Факт (ФКСС)', title: 'тот же расчёт ФКСС по фактической стоимости минуты',
         fmt: r => fmtMoney(r.unit_fact_byn) },
-      { key: 'unit_norm_byn', label: 'С/с штуки норматив', fmt: r => fmtMoney(r.unit_norm_byn) },
-      { key: 'unit_plan_byn', label: 'С/с штуки плановая', title: 'PLAN_PRICE справочника моделей Лисы',
+      { key: 'unit_pfkss_byn', label: 'Фактическая себестоимость расценки (ПФКСС)',
+        title: 'себестоимость единицы на этапе ПФКСС того же задания; этот этап ведут не для всего ассортимента',
+        fmt: r => fmtMoney(r.unit_pfkss_byn) },
+      { key: 'unit_plan_byn', label: 'Плановая с/с (КПСС)',
+        title: 'КПСС того же задания, если он есть; иначе PLAN_PRICE из карточки модели в Лисе',
         fmt: r => fmtMoney(r.unit_plan_byn) },
+      { key: 'unit_plan_source', label: 'Источник плановой', text: true,
+        title: 'КПСС — расчёт этапа по этому заданию; карточка — значение, проставленное в справочнике моделей',
+        fmt: r => r.unit_plan_source || '—' },
       { key: 'dev_fact_plan_pct', label: 'Отклонение факт / план, %', title: 'факт / план − 1; выше нуля — дороже плана',
         fmt: r => fmtSignedPct(r.dev_fact_plan_pct), cls: r => devCls(r.dev_fact_plan_pct, false) },
       { key: 'dev_norm_plan_pct', label: 'Норматив / план, %', fmt: r => fmtSignedPct(r.dev_norm_plan_pct),
@@ -777,10 +805,12 @@ const devColumns = computed<Col[]>(() => {
     ]
   }
   return [...base,
-    { key: 'unit_norm_byn', label: 'С/с штуки норматив', fmt: r => fmtMoney(r.unit_norm_byn) },
-    { key: 'unit_fact_byn', label: 'С/с штуки факт', fmt: r => fmtMoney(r.unit_fact_byn) },
+    { key: 'unit_norm_byn', label: 'Норматив (ФКСС)', fmt: r => fmtMoney(r.unit_norm_byn) },
+    { key: 'unit_fact_byn', label: 'Факт (ФКСС)', fmt: r => fmtMoney(r.unit_fact_byn) },
     { key: 'dev_fact_norm_pct', label: 'Отклонение факт / норматив, %', title: 'факт / норматив − 1; выше нуля — факт дороже',
       fmt: r => fmtSignedPct(r.dev_fact_norm_pct), cls: r => devCls(r.dev_fact_norm_pct, false) },
+    { key: 'unit_pfkss_byn', label: 'Фактическая себестоимость расценки (ПФКСС)',
+      title: 'себестоимость единицы на этапе ПФКСС того же задания', fmt: r => fmtMoney(r.unit_pfkss_byn) },
     { key: 'fact_coverage_pct', label: 'Факт годен, % выпуска', title: 'у остальных строк артикула фактическая ставка минуты не заведена',
       fmt: r => fmtPct(r.fact_coverage_pct, 0), cls: r => (isNum(r.fact_coverage_pct) && r.fact_coverage_pct < 100 ? 'neg' : '') },
     { key: 'unit_price_byn', label: 'Отпускная цена', fmt: r => fmtMoney(r.unit_price_byn) },
