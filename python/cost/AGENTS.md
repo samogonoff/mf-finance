@@ -74,7 +74,7 @@ docker) плюс дубль в Logstash/ELK, если задан `LOGSTASH_HOST`
 | `GET` | `/filter-options` | Каскадные значения фильтров (DWH) | OLAP `[DWH].[dim].[groups]` |
 | `POST` | `/load-data` | Сырые данные с пагинацией (limit/offset) | MSSQL `[Checks].[CostHistory]` |
 | `POST` | `/aggregated` | GROUP BY с AVG/SUM по CostHistory | MSSQL `[Checks].[CostHistory]` |
-| `POST` | `/details` | Детализация по модели с GROUP BY | MSSQL `[Checks].[CostHistory]` |
+| `POST` | `/details` | Детализация с GROUP BY: `scope=model` — артикулы модели, `scope=articul` — модели артикула (ЧНИ) | MSSQL `[Checks].[CostHistory]` |
 | `GET` | `/price-levels` | Справочник уровней цен | MSSQL `[Gpartner].[s_price_level]` |
 | `POST` | `/save-changes` | Сохранить одно изменение цены | OLAP `[FinSandBox].[CostHistory_Changes]` + локальный аудит |
 | `POST` | `/save-batch` | Массовое сохранение | OLAP `[FinSandBox].[CostHistory_Changes]` + локальный аудит |
@@ -146,7 +146,15 @@ docker) плюс дубль в Logstash/ELK, если задан `LOGSTASH_HOST`
 
 #### `POST /details`
 - **Изменён**: принимает `model` (строка), не `model + articul`.
-- Body: `{ model, date_from?, date_to?, calc_sign? }`
+- Body: `{ scope?, model?, articul?, date_from?, date_to?, calc_sign? }`
+- `scope` (по умолчанию `model`) выбирает ключ детализации:
+  - `model` + `model` — все артикулы одной модели (историческое поведение,
+    старое тело `{ model }` работает как раньше);
+  - `articul` + `articul` — все модели одного артикула. Режим для ЧНИ
+    («Носки&Колготки», Orodoro): там артикул — общая вязка, а модель — её
+    цветовой/размерный вариант, и на один артикул приходится до 30 моделей.
+    В остальных группах связь 1:1, и режим вернёт одну модель.
+  Второй ключ сортировки следует за режимом: в режиме артикула это `Модель`.
 - Делает GROUP BY по `дата расчета, Признак калькуляции, Модель, Артикул, Наименование модели, Номер задания производства`.
 - Серверный расчёт: `Себестоимость, руб.` (сумма статей), `Наценка, руб.`, `Наценка, %`, `Маржинальность, %`.
 - Новые поля: `Номер задания производства`, `Вязание, руб.`, `Декор, руб.`.

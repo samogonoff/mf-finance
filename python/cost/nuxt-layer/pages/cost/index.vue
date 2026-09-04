@@ -830,8 +830,30 @@
     <div v-if="showDetailsModal" class="modal-overlay" @click.self="showDetailsModal = false">
       <div class="modal-content modal-wide" @click.stop>
         <div class="modal-header">
-          <h2>Детализация: {{ detailsModel }}</h2>
+          <h2>
+            Детализация: {{ detailsScopeKey || '—' }}
+            <span class="details-scope-hint">{{ detailsScope === 'articul' ? 'артикул' : 'модель' }}</span>
+          </h2>
           <div class="modal-header-actions">
+            <!-- Собрать все модели одного артикула — режим для ЧНИ («Носки&Колготки»,
+                 Orodoro), где артикул один, а моделей под ним десятки. -->
+            <div class="details-scope-switch" role="group" aria-label="Что собирать в детализации">
+              <button
+                type="button"
+                :class="{ active: detailsScope === 'model' }"
+                title="Все артикулы этой модели"
+                @click="setDetailsScope('model')"
+              >Артикулы модели</button>
+              <button
+                type="button"
+                :class="{ active: detailsScope === 'articul' }"
+                :disabled="!detailsArticul"
+                :title="detailsArticul
+                  ? `Все модели артикула ${detailsArticul}`
+                  : 'У строки нет артикула'"
+                @click="setDetailsScope('articul')"
+              >Модели артикула</button>
+            </div>
             <button class="btn btn-ghost btn-sm" @click="openDetailsInNewTab">Открыть в новом окне <Icon name="lucide:external-link" /></button>
             <button class="modal-close" @click="showDetailsModal = false">×</button>
           </div>
@@ -853,7 +875,7 @@
         </div>
         <!-- Column filters row -->
         <div class="details-col-filters" v-if="detailsAllData.length">
-          <div v-for="cfg in detailsFilterConfig" :key="cfg.key" class="details-col-filter-item" :class="{ locked: isDetFilterLocked(cfg.key) }">
+          <div v-for="cfg in detailsFilterConfig" :key="cfg.key" v-show="cfg.key !== detailsFixedKey" class="details-col-filter-item" :class="{ locked: isDetFilterLocked(cfg.key) }">
             <label>{{ cfg.label }}</label>
             <CostMultiSelect
               v-model="detailsColumnFilters[cfg.key]"
@@ -874,14 +896,20 @@
               <tr>
                 <th>Дата</th>
                 <th>Пр.кальк</th>
-                <th>Артикул</th>
+                <!-- Столбец меняющегося измерения: в режиме модели это артикул,
+                     в режиме артикула — модель. Фиксированное значение и так в
+                     заголовке окна, дублировать его в каждой строке незачем. -->
+                <th>{{ detailsScope === 'articul' ? 'Модель' : 'Артикул' }}</th>
                 <th>Наименование</th>
                 <th>№ задания</th>
                 <th>Дата выпуска</th>
+                <!-- Пожелание № 16: страна производства и минуты пошива в детализации. -->
+                <th>Страна</th>
                 <th class="col-num">Розница (руб)</th>
                 <th class="col-num">Опт (руб)</th>
                 <th class="col-num">Осн. мат.</th>
                 <th class="col-num">Вспом.</th>
+                <th class="col-num" title="Пошив, минуты (среднее по строкам калькуляции)">Пошив, мин</th>
                 <th class="col-num">Пошив</th>
                 <th class="col-num">Раскрой</th>
                 <th class="col-num">Декор</th>
@@ -896,14 +924,16 @@
               <tr v-for="(d, i) in detailsFilteredData" :key="i">
                 <td>{{ formatDate(d['дата расчета']) }}</td>
                 <td>{{ d['Признак калькуляции'] || '—' }}</td>
-                <td>{{ d['Артикул'] || '—' }}</td>
+                <td>{{ (detailsScope === 'articul' ? d['Модель'] : d['Артикул']) || '—' }}</td>
                 <td>{{ d['Наименование модели'] || '—' }}</td>
                 <td>{{ d['Номер задания производства'] || '—' }}</td>
                 <td>{{ formatDate(d['Дата выпуска']) }}</td>
+                <td>{{ d['Страна пр-ва'] || '—' }}</td>
                 <td class="col-num num" :style="heatBg(d['Розничная цена, руб.'], 'Розничная цена, руб.')">{{ fmt(d['Розничная цена, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Оптовая цена, руб.'], 'Оптовая цена, руб.')">{{ fmt(d['Оптовая цена, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Осн. материалы, руб.'], 'Осн. материалы, руб.')">{{ fmt(d['Осн. материалы, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Вспом. материалы, руб.'], 'Вспом. материалы, руб.')">{{ fmt(d['Вспом. материалы, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Пошив, минуты'], 'Пошив, минуты')">{{ fmt(d['Пошив, минуты']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Пошив, руб.'], 'Пошив, руб.')">{{ fmt(d['Пошив, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Раскрой, руб.'], 'Раскрой, руб.')">{{ fmt(d['Раскрой, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Декор, руб.'], 'Декор, руб.')">{{ fmt(d['Декор, руб.']) }}</td>
@@ -915,7 +945,9 @@
               </tr>
             </tbody>
           </table>
-          <div v-if="detailsFilteredData.length" class="details-count">Найдено строк: {{ detailsFilteredData.length }}</div>
+          <div v-if="detailsFilteredData.length" class="details-count">
+            Найдено строк: {{ detailsFilteredData.length }}<template v-if="detailsScope === 'articul'"> · моделей: {{ detailsModelsCount }}</template>
+          </div>
         </div>
       </div>
     </div>
@@ -4158,6 +4190,16 @@ async function deletePlanPriceSet(setId: number) {
 // ── Details modal ────────────────────────────────────────────────────────────
 const showDetailsModal = ref(false);
 const detailsModel = ref('');
+const detailsArticul = ref('');
+/** Что собирает детализация: все артикулы модели или все модели артикула.
+ *
+ * Второй режим нужен ЧНИ («Носки&Колготки», Orodoro): там артикул — общая
+ * вязка, а модель — её цветовой/размерный вариант, и один артикул тянет до 30
+ * моделей. Сравнивать себестоимость надо между ними, а не между артикулами. */
+const detailsScope = ref<'model' | 'articul'>('model');
+const detailsScopeKey = computed(() =>
+  detailsScope.value === 'articul' ? detailsArticul.value : detailsModel.value
+);
 const detailDateFrom = ref('');
 const detailDateTo = ref('');
 const detailCalcSign = ref<string[]>([]);
@@ -4176,13 +4218,20 @@ const detailsAggregatedRow = ref<any>(null);
 const rawRowsData = ref<any[]>([]);
 const rawRowsLoading = ref(false);
 
+// Набор фильтров колонок один на оба режима: у фиксированного измерения
+// значение единственное, поэтому его фильтр просто не показываем (см. шаблон),
+// а выбор в нём всегда пустой и на каскад не влияет.
 const detailsFilterConfig = [
   { key: 'col_date', label: 'Дата', field: 'дата расчета' },
   { key: 'calc_sign', label: 'Пр.кальк', field: 'Признак калькуляции' },
+  { key: 'model', label: 'Модель', field: 'Модель' },
   { key: 'articul', label: 'Артикул', field: 'Артикул' },
   { key: 'name', label: 'Наименование', field: 'Наименование модели' },
   { key: 'task_num', label: '№ задания', field: 'Номер задания производства' },
 ];
+
+/** Измерение, зафиксированное текущим режимом: его фильтр и колонка не нужны. */
+const detailsFixedKey = computed(() => (detailsScope.value === 'articul' ? 'articul' : 'model'));
 
 const DET_COL_FILTER_KEYS = detailsFilterConfig.map((c) => c.key);
 
@@ -4259,6 +4308,10 @@ async function openDetails(row: any) {
   const model = String(row['Модель'] || '').trim();
   if (!model) return;
   detailsModel.value = model;
+  detailsArticul.value = String(row['Артикул'] || '').trim();
+  // Режим всегда начинаем с модели: так детализация открывается ровно тем же,
+  // чем открывалась всегда, а расширение до артикула — осознанный клик.
+  detailsScope.value = 'model';
 
   // Copy current main filters as defaults
   detailDateFrom.value = dateFrom.value;
@@ -4269,10 +4322,19 @@ async function openDetails(row: any) {
   await loadDetailsData();
 }
 
+// Запросы детализации могут накладываться (переключатель режима, «Применить»,
+// смена признака калькуляции), а порядок ответов не гарантирован. Без счётчика
+// поздний ответ старого запроса перезаписывал бы данные, и в шапке был бы один
+// ключ, а в таблице — строки другого.
+let detailsRequestSeq = 0;
+
 async function loadDetailsData() {
+  const seq = ++detailsRequestSeq;
   detailsLoading.value = true;
   try {
-    const body: Record<string, any> = { model: detailsModel.value };
+    const body: Record<string, any> = detailsScope.value === 'articul'
+      ? { scope: 'articul', articul: detailsArticul.value }
+      : { scope: 'model', model: detailsModel.value };
     if (detailDateFrom.value) body.date_from = detailDateFrom.value;
     if (detailDateTo.value) body.date_to = detailDateTo.value;
     if (detailCalcSign.value.length) body.calc_sign = detailCalcSign.value;
@@ -4281,14 +4343,16 @@ async function loadDetailsData() {
       `${apiBase.value}/api/cost/details`,
       { method: 'POST', body }
     );
+    if (seq !== detailsRequestSeq) return;
     detailsAllData.value = result.data || [];
     resetDetailsColumnFilters();
   } catch (e: any) {
+    if (seq !== detailsRequestSeq) return;
     console.error('[cost] details load failed', e);
     detailsAllData.value = [];
     detailsFilteredData.value = [];
   } finally {
-    detailsLoading.value = false;
+    if (seq === detailsRequestSeq) detailsLoading.value = false;
   }
 }
 
@@ -4327,6 +4391,24 @@ async function openRawRows(row: any) {
   await loadRawRows();
 }
 
+/** Переключить режим детализации и перезагрузить данные. */
+async function setDetailsScope(scope: 'model' | 'articul') {
+  if (detailsScope.value === scope) return;
+  if (scope === 'articul' && !detailsArticul.value) return;
+  detailsScope.value = scope;
+  await loadDetailsData();
+}
+
+/** Сколько разных моделей попало в выборку — видно, стоило ли переключаться. */
+const detailsModelsCount = computed(() => {
+  const seen = new Set<string>();
+  for (const r of detailsFilteredData.value) {
+    const v = String(r['Модель'] ?? '').trim();
+    if (v) seen.add(v);
+  }
+  return seen.size;
+});
+
 function resetDetailsFilters() {
   detailDateFrom.value = '';
   detailDateTo.value = '';
@@ -4339,7 +4421,14 @@ function openDetailsInNewTab() {
   if (!w) return;
 
   const rows = detailsFilteredData.value;
-  const model = detailsModel.value;
+  const byArticul = detailsScope.value === 'articul';
+  // Ключ и подпись окна берём из текущего режима: попап должен открыться тем же,
+  // что видно в модалке, и его кнопка «Загрузить данные» — дотягивать то же.
+  const scopeKey = detailsScopeKey.value;
+  const scopeTitle = (byArticul ? 'Детализация по артикулу: ' : 'Детализация: ') + scopeKey;
+  // Столбец меняющегося измерения — как в модалке.
+  const keyColLabel = byArticul ? 'Модель' : 'Артикул';
+  const keyColField = byArticul ? 'Модель' : 'Артикул';
   const hasData = rows && rows.length > 0;
 
   function nf(v) {
@@ -4377,10 +4466,11 @@ function openDetailsInNewTab() {
     const cells = [
       dv,
       r['\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438'] || '\u2014',
-      r['\u0410\u0440\u0442\u0438\u043A\u0443\u043B'] || '\u2014',
+      r[keyColField] || '\u2014',
       r['\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435 \u043C\u043E\u0434\u0435\u043B\u0438'] || '\u2014',
       r['\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430'] || '\u2014',
       dvRel,
+      r['\u0421\u0442\u0440\u0430\u043D\u0430 \u043F\u0440-\u0432\u0430'] || '\u2014',
       nf(r['\u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431.']),
       nf(r['\u041E\u043F\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431.']),
       nf(r['\u041E\u0441\u043D. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431.']),
@@ -4396,16 +4486,21 @@ function openDetailsInNewTab() {
     ];
     const POPUP_NUM_FIELDS = [
       'Розничная цена, руб.', 'Оптовая цена, руб.', 'Осн. материалы, руб.', 'Вспом. материалы, руб.',
-      'Пошив, руб.', 'Раскрой, руб.', 'Декор, руб.', 'Вязание, руб.',
+      'Пошив, минуты', 'Пошив, руб.', 'Раскрой, руб.', 'Декор, руб.', 'Вязание, руб.',
       'Себестоимость, руб.', 'Наценка, руб.', 'Наценка, %', 'Маржинальность, %',
     ];
+    // Первые 7 ячеек — текстовые (дата, признак, ключ, наименование, задание,
+    // дата выпуска, страна), дальше числа; два последних поля — проценты, их
+    // не форматируем как деньги.
+    const POPUP_TEXT_CELLS = 7;
+    const POPUP_PCT_FROM = POPUP_NUM_FIELDS.length - 2;
     tableHtml += '<tr>';
-    for (let ci = 0; ci < 6; ci++) tableHtml += '<td>' + escHtml(String(cells[ci])) + '<\/td>';
+    for (let ci = 0; ci < POPUP_TEXT_CELLS; ci++) tableHtml += '<td>' + escHtml(String(cells[ci])) + '<\/td>';
     for (let ci = 0; ci < POPUP_NUM_FIELDS.length; ci++) {
       const field = POPUP_NUM_FIELDS[ci];
       const rawVal = r[field];
       const style = hbStyleStr(rawVal, field);
-      const display = ci >= 10 ? (rawVal ?? '') : nf(rawVal);
+      const display = ci >= POPUP_PCT_FROM ? (rawVal ?? '') : nf(rawVal);
       tableHtml += '<td style="' + style + '">' + escHtml(String(display)) + '<\/td>';
     }
     tableHtml += '<\/tr>';
@@ -4415,7 +4510,9 @@ function openDetailsInNewTab() {
   const filterFields = [
     { key: 'col_date', label: '\u0414\u0430\u0442\u0430', field: '\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430' },
     { key: 'calc_sign', label: '\u041F\u0440.\u043A\u0430\u043B\u044C\u043A', field: '\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438' },
-    { key: 'articul', label: '\u0410\u0440\u0442\u0438\u043A\u0443\u043B', field: '\u0410\u0440\u0442\u0438\u043A\u0443\u043B' },
+    // Третье поле — меняющееся измерение: rt() в попапе рендерит третью
+    // колонку именно по FF[2], поэтому подмена здесь разворачивает и таблицу, и фильтр.
+    { key: byArticul ? 'model' : 'articul', label: keyColLabel, field: keyColField },
     { key: 'name', label: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435', field: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435 \u043C\u043E\u0434\u0435\u043B\u0438' },
     { key: 'task_num', label: '\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F', field: '\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430' },
     { key: 'release_date', label: '\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430', field: '\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430' },
@@ -4445,11 +4542,13 @@ function openDetailsInNewTab() {
   // JS to embed in popup (completely self-contained, no toString() serialization)
   const popupScript = `try{
 var R=${JSON.stringify(rows)};
-var MODEL=${JSON.stringify(detailsModel.value)};
+var SCOPE=${JSON.stringify(detailsScope.value)};
+var SCOPE_KEY=${JSON.stringify(scopeKey)};
 var API_BASE=${JSON.stringify(apiBase.value)};
 var FK=${JSON.stringify(filterFields.map(f => f.key))};
 var FF=${JSON.stringify(filterFields.map(f => f.field))};
 var NF=${JSON.stringify(DETAILS_NUMERIC_FIELDS)};
+var CTRY=${JSON.stringify('Страна пр-ва')};
 // Compute per-column ranges for heatmap
 var RG={};
 for(var fi=0;fi<NF.length;fi++){
@@ -4518,10 +4617,12 @@ function rt(rr){
       +"<td>"+(r[FF[3]]||"\\u2014")+"<\\/td>"
       +"<td>"+(r[FF[4]]||"\\u2014")+"<\\/td>"
       +"<td>"+gv(r,FF[5])+"<\\/td>"
+      +"<td>"+(r[CTRY]||"\\u2014")+"<\\/td>"
       +"<td style=\\""+hb(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."],"\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."],"\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u043C\\u0438\\u043D\\u0443\\u0442\\u044B"],"\\u041F\\u043E\\u0448\\u0438\\u0432, \\u043C\\u0438\\u043D\\u0443\\u0442\\u044B")+"\\">"+nf(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u043C\\u0438\\u043D\\u0443\\u0442\\u044B"])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431."],"\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431."],"\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431."],"\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431."])+"<\\/td>"
@@ -4666,7 +4767,7 @@ async function loadData(){
     var df=document.getElementById("f_dateFrom").value;
     var dt=document.getElementById("f_dateTo").value;
     var cs=MS_API_CS;
-    var body={model:MODEL};
+    var body=SCOPE==="articul"?{scope:"articul",articul:SCOPE_KEY}:{scope:"model",model:SCOPE_KEY};
     if(df)body.date_from=df;
     if(dt)body.date_to=dt;
     if(cs.length)body.calc_sign=cs;
@@ -4712,7 +4813,7 @@ document.getElementById("loadBtn").onclick=loadData;
   const html =
     '<!DOCTYPE html>' +
     '<html lang="ru"><head><meta charset="utf-8">' +
-    '<title>\u0414\u0435\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F: ' + escHtml(model) + '<\/title>' +
+    '<title>' + escHtml(scopeTitle) + '<\/title>' +
     '<style>' +
     '*{box-sizing:border-box;margin:0;padding:0}' +
     'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:20px;background:#f5f5f5}' +
@@ -4753,12 +4854,12 @@ document.getElementById("loadBtn").onclick=loadData;
     '.count{padding:8px 24px;font-size:12px;color:#6c757d;border-top:1px solid #eee}' +
     '<\/style><\/head><body>' +
     '<div class="container">' +
-      '<div class="header"><h1>\u0414\u0435\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F: ' + escHtml(model) + '<\/h1><\/div>' +
+      '<div class="header"><h1>' + escHtml(scopeTitle) + '<\/h1><\/div>' +
       '<div class="filters">' + filterHtml + '<\/div>' +
       '<div class="content">' +
         '<table><thead><tr>' +
-          '<th>\u0414\u0430\u0442\u0430<\/th><th>\u041F\u0440.\u043A\u0430\u043B\u044C\u043A<\/th><th>\u0410\u0440\u0442\u0438\u043A\u0443\u043B<\/th><th>\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435<\/th><th>\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F<\/th><th>\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430<\/th>' +
-          '<th>\u0420\u043E\u0437\u043D\u0438\u0446\u0430<\/th><th>\u041E\u043F\u0442<\/th><th>\u041E\u0441\u043D.\u043C\u0430\u0442<\/th><th>\u0412\u0441\u043F\u043E\u043C.<\/th><th>\u041F\u043E\u0448\u0438\u0432<\/th><th>\u0420\u0430\u0441\u043A\u0440\u043E\u0439<\/th><th>\u0414\u0435\u043A\u043E\u0440<\/th><th>\u0412\u044F\u0437\u0430\u043D\u0438\u0435<\/th>' +
+          '<th>\u0414\u0430\u0442\u0430<\/th><th>\u041F\u0440.\u043A\u0430\u043B\u044C\u043A<\/th><th>' + escHtml(keyColLabel) + '<\/th><th>\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435<\/th><th>\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F<\/th><th>\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430<\/th><th>\u0421\u0442\u0440\u0430\u043D\u0430<\/th>' +
+          '<th>\u0420\u043E\u0437\u043D\u0438\u0446\u0430<\/th><th>\u041E\u043F\u0442<\/th><th>\u041E\u0441\u043D.\u043C\u0430\u0442<\/th><th>\u0412\u0441\u043F\u043E\u043C.<\/th><th>\u041F\u043E\u0448\u0438\u0432, \u043C\u0438\u043D<\/th><th>\u041F\u043E\u0448\u0438\u0432<\/th><th>\u0420\u0430\u0441\u043A\u0440\u043E\u0439<\/th><th>\u0414\u0435\u043A\u043E\u0440<\/th><th>\u0412\u044F\u0437\u0430\u043D\u0438\u0435<\/th>' +
           '<th>\u0421\u0435\u0431\u0435\u0441\u0442.<\/th><th>\u041D\u0430\u0446\u0435\u043D\u043A\u0430<\/th><th>\u041D\u0430\u0446\u0435\u043D\u043A\u0430%<\/th><th>\u041C\u0430\u0440\u0436\u0430%<\/th>' +
         '<\/tr><\/thead>' +
         '<tbody id="popupBody">' + tableHtml + '<\/tbody><\/table>' +
@@ -8269,6 +8370,7 @@ const DETAILS_NUMERIC_FIELDS = [
   'Оптовая цена, руб.',
   'Осн. материалы, руб.',
   'Вспом. материалы, руб.',
+  'Пошив, минуты',
   'Пошив, руб.',
   'Раскрой, руб.',
   'Декор, руб.',
@@ -8591,6 +8693,13 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .table-wrap { overflow-x: auto; max-width: 100%; }
 .details-table-wrap { overflow: auto; flex: 1; }
 .details-count { padding: var(--sp-2) var(--sp-5); font-size: var(--fs-xs); color: var(--text-muted); border-top: 1px solid var(--border); flex-shrink: 0; }
+.details-scope-hint { font-size: var(--fs-2xs, 10px); font-weight: var(--fw-normal, 400); color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; margin-left: var(--sp-2); }
+.details-scope-switch { display: inline-flex; border: 1px solid var(--border); border-radius: var(--rd-2); overflow: hidden; }
+.details-scope-switch button { border: none; background: var(--bg-surface); color: var(--text-muted); font-size: var(--fs-xs, 11px); font-weight: var(--fw-medium); padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+.details-scope-switch button + button { border-left: 1px solid var(--border); }
+.details-scope-switch button:hover:not(:disabled) { background: var(--bg-surface-2); color: var(--text-strong); }
+.details-scope-switch button.active { background: var(--accent, #4f46e5); color: var(--accent-fg, #fff); }
+.details-scope-switch button:disabled { opacity: .45; cursor: not-allowed; }
 .btn-details { background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 12px; }
 .btn-details:hover { opacity: 0.7; }
 /* Кнопки строк не наезжают друг на друга */

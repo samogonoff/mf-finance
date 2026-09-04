@@ -1177,17 +1177,36 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
 
 @router.post("/details")
 async def get_details(payload: dict) -> dict:
-    """Детализация по модели с GROUP BY и опциональными фильтрами."""
+    """Детализация по модели либо по артикулу с GROUP BY и опциональными фильтрами.
+
+    Ключ детализации задаёт `scope`:
+
+    · `model` (по умолчанию) — все артикулы одной модели, историческое поведение;
+    · `articul` — все модели одного артикула. Нужен для ЧНИ («Носки&Колготки»,
+      Orodoro): там артикул — общая вязка, а модель — её цветовой/размерный
+      вариант, и один артикул тянет до 30 моделей (проверено на кэше 01.09.2026:
+      479 артикулов из 1430 в «Носки&Колготки» многомодельные). Сравнивать
+      себестоимость надо именно между моделями одного артикула. В остальных
+      группах номенклатуры связь 1:1, и переключатель просто вернёт одну модель.
+    """
+    scope = (payload.get("scope") or "model").strip()
+    if scope not in ("model", "articul"):
+        raise HTTPException(400, "scope must be 'model' or 'articul'")
+
     model = (payload.get("model") or "").strip()
-    if not model:
-        raise HTTPException(400, "model required")
+    articul = (payload.get("articul") or "").strip()
+    key_value = articul if scope == "articul" else model
+    if not key_value:
+        raise HTTPException(400, "articul required" if scope == "articul" else "model required")
 
     if _is_mock():
-        return mocks.details(model)
+        return mocks.details(key_value, scope)
+
+    key_column = "Артикул" if scope == "articul" else "Модель"
 
     params: list[Any] = []
-    where_parts: list[str] = [f'TRIM("Модель") = ${len(params) + 1}']
-    params.append(model)
+    where_parts: list[str] = [f'TRIM("{key_column}") = ${len(params) + 1}']
+    params.append(key_value)
 
     date_from = (payload.get("date_from") or "").strip()
     date_to = (payload.get("date_to") or "").strip()
@@ -1205,11 +1224,19 @@ async def get_details(payload: dict) -> dict:
         params.extend(calc_sign)
 
     where = " AND ".join(where_parts)
+    # В режиме артикула перебираются модели, поэтому вторым ключом сортировки
+    # идёт то поле, которое в этом режиме меняется.
+    order_column = "Модель" if scope == "articul" else "Артикул"
 
     query = f"""
         SELECT
             "дата расчета",
             MAX("дата производства") AS "Дата выпуска",
+            -- Пожелание № 16: страна производства и минуты пошива. Страна у
+            -- строк одной калькуляции одна, MAX лишь снимает её с GROUP BY;
+            -- минуты усредняем так же, как в главной таблице (avg_Пошив, минуты).
+            MAX(TRIM("Страна пр-ва")) AS "Страна пр-ва",
+            COALESCE(AVG("Пошив, минуты"), 0) AS "Пошив, минуты",
             "Признак калькуляции",
             TRIM("Модель") AS "Модель",
             TRIM("Артикул") AS "Артикул",
@@ -1232,7 +1259,7 @@ async def get_details(payload: dict) -> dict:
             TRIM("Артикул"),
             TRIM("Наименование модели"),
             TRIM("Номер задания производства")
-        ORDER BY "дата расчета" DESC, TRIM("Артикул")
+        ORDER BY "дата расчета" DESC, TRIM("{order_column}")
     """
 
     async with pool().acquire() as conn:
