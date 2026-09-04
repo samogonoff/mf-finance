@@ -94,6 +94,16 @@
           </label>
 
           <label class="filter-checkbox"
+                 title="Только закупная готовая продукция — калькуляции из портала БМ и расчёты по приходу.
+Фильтр серверный: выдача перезагрузится и придут только закупные строки (это быстро — сотня строк вместо всего периода).">
+            <input v-model="purchasedOnly" type="checkbox" @change="onPurchasedOnlyChange" />
+            <span>
+              🛒 Только закупная
+              <template v-if="purchasedCount"> ({{ purchasedCount }})</template>
+            </span>
+          </label>
+
+          <label class="filter-checkbox"
                  :title="hideDwhSentDefault
                    ? 'Для роли Калькулятор и ПЭО включён по умолчанию: в отправленных в DWH калькуляциях править и согласовывать нечего. Снять можно'
                    : 'Скрыть калькуляции, уже отправленные в DWH (📤)'">
@@ -2937,6 +2947,7 @@ const activeFilterCount = computed(() => {
   if (dateFrom.value || dateTo.value) n += 1;
   if (noWholesaleOnly.value) n += 1;
   if (peoFilter.value !== 'all') n += 1;
+  if (purchasedOnly.value) n += 1;
   return n;
 });
 
@@ -3097,6 +3108,24 @@ const fetchHeaders = computed(() => {
 const noWholesaleOnly = ref(false);
 /** «Только мультипаки» — клиентский фильтр по пометке из /aggregated. */
 const multipackOnly = ref(false);
+/** «Только закупная» — СЕРВЕРНЫЙ фильтр: уходит в тело /aggregated как
+ *  purchased_only, и сервер отдаёт только закупные калькуляции.
+ *
+ *  Раньше галочка фильтровала уже загруженные строки, и это было её главным
+ *  недостатком: сервер всё равно считал и отдавал весь период (замер
+ *  04.09.2026 — 13 723 строки и 35,9 МБ за 6–9 с), а нужны были 123 строки.
+ *  Теперь переключение перезагружает выдачу; включённый фильтр отвечает почти
+ *  мгновенно, потому что запрос уходит только в таблицу закупных калькуляций.
+ *  Предикат в filteredRows оставлен подстраховкой на случай, когда строки уже
+ *  загружены без флага. */
+const purchasedOnly = ref(false);
+const purchasedCount = computed(() => allAggregated.value.filter((r: any) => r.purchase_source).length);
+
+function onPurchasedOnlyChange() {
+  // Данные ещё не грузили — не дёргаем сервер: человек только настраивает фильтры.
+  if (!allAggregated.value.length && !loading.value) return;
+  loadData();
+}
 
 const approvalTarget = ref<any>(null);
 const approvalComment = ref('');
@@ -3378,6 +3407,7 @@ const filteredAggregated = computed(() => {
     // Мультипаки среди тысяч калькуляций иначе не найти: в фильтрах раздела
     // нет ни модели, ни артикула, а паков на группу — единицы.
     if (multipackOnly.value && !row.is_multipack) return false;
+    if (purchasedOnly.value && !row.purchase_source) return false;
     return columnFilterConfig.every((cfg) => {
       const sel = columnFilters[cfg.key];
       if (!sel || sel.length === 0) return true;
@@ -3480,6 +3510,9 @@ async function loadData() {
   try {
     const payload = buildFilters();
     if (peoFilter.value !== 'all') payload.peo_filter = peoFilter.value;
+    // Серверный фильтр закупной продукции: отсекает ветку кэша в cost_data_all,
+    // поэтому выдача приходит за единицы миллисекунд вместо секунд.
+    if (purchasedOnly.value) payload.purchased_only = true;
     const result = await $fetch<{ data: any[]; count: number; mp_formula_inputs: MpFormulaInputs | null }>(
       `${apiBase.value}/api/cost/aggregated`,
       { method: "POST", body: payload, headers: fetchHeaders.value }

@@ -408,6 +408,28 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
             where_parts.append(f'TRIM("{col}") IN ({placeholders})')
             params.extend(values)
 
+    # ── Только закупная готовая продукция ──────────────────────────────────
+    # Галочка «🛒 Только закупная» была клиентской: сервер считал и отдавал весь
+    # период (замер 04.09.2026: 13 723 строки, 35,9 МБ, 6–9 с), а нужны из него
+    # были 123 строки. Теперь условие уходит в WHERE, и выигрыш не в том, что
+    # фильтр применён пораньше: закупные калькуляции живут ТОЛЬКО в
+    # cost_manual_calc, поэтому предикат по manual_source_sign отсекает всю
+    # ветку миллионного кэша в UNION ALL вьюхи cost_data_all. План сводится к
+    # Seq Scan по сотне строк (EXPLAIN: cost=15.80 против 212 598 на полном
+    # периоде), агрегат — с 815 мс до единиц миллисекунд. Вслед за ним сжимается
+    # и вся цепочка ниже: ключей для Gpartner и FinSandBox остаётся сотня вместо
+    # тысяч, а это самые дорогие обращения запроса.
+    #
+    # Признак берём по источнику строки, а не по наличию записи в
+    # cost_purchase_cost: EXISTS не позволяет планировщику убрать ветку кэша, а
+    # соответствие и так точное — обе таблицы наполняет одна транзакция
+    # (purchase.run_import и purchase.apply_invoice).
+    if payload.get("purchased_only"):
+        where_parts.append(
+            f"cd.manual_source_sign IN (${len(params) + 1}, ${len(params) + 2})"
+        )
+        params.extend([purchase.PORTAL_SOURCE_SIGN, purchase.INVOICE_SOURCE_SIGN])
+
     where = " AND ".join(where_parts) if where_parts else "TRUE"
     join = (
         'LEFT JOIN cost_calc_approvals ca'
