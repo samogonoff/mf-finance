@@ -18,6 +18,7 @@ params:
   - unit_cost_norm_all_cur
   - unit_cost_fact_cur
   - unit_cost_fact_dev_pct
+  - unit_cost_pfkss_cur
   - fact_coverage_pct_cur
   - unit_price_cur
   all_columns: []
