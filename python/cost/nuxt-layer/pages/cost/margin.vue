@@ -337,6 +337,11 @@
       </div>
     </section>
 
+    <CostChartInsight block="margin_deviations"
+                      block-title="Отклонения по артикулам"
+                      :charts="insightChartsDeviations"
+                      :context="insightContextDeviations" />
+
     <h2 class="section-title">Динамика себестоимости</h2>
     <section class="charts">
       <article class="card">
@@ -1212,6 +1217,76 @@ const insightChartsNormVsFact = computed(() => chartsOf([
   { title: 'Отклонение маржинальности факт − норматив по бренд-менеджерам, пп', raw: factBmData.value,
     note: 'Ниже нуля — факт дороже норматива' },
 ]))
+
+/** Данные блока «Разбор ИИ» для листа отклонений по артикулам.
+ *
+ * Лист — таблица, а не график, но по сути это те же серии: на каждый артикул
+ * три себестоимости единицы и отклонение между ними. Передаём их так же, как
+ * серии графика, и бэкенд считает по ним факты обычным порядком.
+ *
+ * Берём не всё: в листе до 500 строк, а в промпте осмысленны десятки. Отбираем
+ * по АБСОЛЮТНОМУ отклонению — именно выбросы и есть предмет разбора, тогда как
+ * первые строки по выпуску чаще всего в норме. */
+const DEV_INSIGHT_ROWS = 15
+
+const insightChartsDeviations = computed(() => {
+  const key = devKey.value
+  const rows = [...devRows.value]
+    .filter(r => isNum(r[key]))
+    .sort((a, b) => Math.abs(Number(b[key])) - Math.abs(Number(a[key])))
+    .slice(0, DEV_INSIGHT_ROWS)
+  if (!rows.length) return []
+
+  // Подпись — артикул с моделью и планом: по одному артикулу позицию не найти,
+  // а обрезанный идентификатор уже приводил к путанице.
+  const labels = rows.map(r => `${r.articul || '—'} (мод. ${r.model || '—'}, план ${r.plan_id || '—'})`)
+  const series = (label: string, field: string) => ({
+    label,
+    data: rows.map(r => (isNum(r[field]) ? Number(r[field]) : null)),
+  })
+
+  const datasets = devView.value === 'plan'
+    ? [
+        series('Плановая с/с единицы, BYN', 'unit_plan_byn'),
+        series('Фактическая с/с единицы, BYN', 'unit_fact_byn'),
+        series('Отпускная цена единицы, BYN', 'unit_price_byn'),
+        series('Отклонение факт от плана, %', 'dev_fact_plan_pct'),
+      ]
+    : [
+        series('Нормативная с/с единицы, BYN', 'unit_norm_byn'),
+        series('Фактическая с/с единицы, BYN', 'unit_fact_byn'),
+        series('Отпускная цена единицы, BYN', 'unit_price_byn'),
+        series('Отклонение факт от норматива, %', 'dev_fact_norm_pct'),
+      ]
+
+  return [{
+    title: `Отклонения по артикулам · ${devView.value === 'plan' ? 'факт от плана' : 'факт от норматива'}`,
+    note: `Показаны ${rows.length} артикулов с наибольшим по модулю отклонением из `
+      + `${deviations.value.length} в выборке. Себестоимость и цена — на ЕДИНИЦУ в BYN.`,
+    series: { labels, datasets },
+  }]
+})
+
+/** Контекст листа отклонений: чем он отличается от графиков выше.
+ *
+ * Отдельно от insightContext: тут важны вкладка сравнения и покрытие плановой
+ * себестоимости — без него «отклонение +600%» читается как экономика, хотя
+ * плановая себестоимость может быть просто не заведена. */
+const insightContextDeviations = computed(() => ({
+  ...insightContext.value,
+  'Вкладка': devView.value === 'plan'
+    ? 'фактическая себестоимость против плановой'
+    : 'фактическая против нормативной',
+  'Плановая с/с заведена у': devPlanCoverage.value === null
+    ? 'нет данных'
+    : `${fmtPct(devPlanCoverage.value, 0)} показанных артикулов`,
+  'Артикулов в выборке': String(deviations.value.length)
+    + (meta.value.deviations_truncated
+      ? ` (обрезано до ${meta.value.deviations_row_limit} с наибольшим выпуском)` : ''),
+  'Что показано в блоке': 'Только артикулы с наибольшим по модулю отклонением, '
+    + 'а не вся выборка. Себестоимость в разы выше цены или плана — это почти '
+    + 'всегда дефект калькуляции в источнике, а не убыточная продажа.',
+}))
 </script>
 
 <style scoped>

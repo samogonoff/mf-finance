@@ -546,6 +546,11 @@ async def _chat(messages: list[dict], with_tools: bool) -> dict:
         # То же, что в обзорном блоке: без этого агент тратил минуты на
         # внутренние рассуждения на каждом шаге и ловил ReadTimeout.
         payload["reasoning_effort"] = effort
+    thinking = insights.thinking_param()
+    if thinking:
+        # У GLM (z.ai) размышления выключаются своим полем, а не через
+        # reasoning_effort — отправляем оба, лишнее отвалится в post_chat.
+        payload["thinking"] = thinking
 
     if with_tools:
         payload["tools"] = TOOL_SPECS

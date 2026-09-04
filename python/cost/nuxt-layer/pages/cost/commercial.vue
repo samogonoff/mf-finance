@@ -160,6 +160,9 @@
       </article>
     </section>
 
+    <CostChartInsight block="commercial_prices" block-title="Цены и себестоимость"
+                      :charts="insightCharts" :context="insightContext" />
+
     <!-- Тот же макет, собранный в Superset — чтобы сравнить обе реализации
          на одном экране. Инструмент разработчика, не часть продукта. -->
     <section v-if="supersetUrl" class="card compare">
@@ -659,6 +662,73 @@ const ringOptions = computed(() => ({
     },
   },
 }))
+
+// ── Данные для блока «Разбор ИИ» ───────────────────────────────────────────
+// Блок ставится под секцией графиков целиком: связка «себестоимость растёт
+// быстрее отпускной цены» видна только на нескольких графиках сразу.
+
+/** Из данных Chart.js оставляем подписи и числа.
+ *
+ * Цвета и оформление в промпте бесполезны, зато раздувают его: каждая серия
+ * тащит массивы backgroundColor на все точки. Имя серии передаём явно —
+ * у кольца датасет без label, и в фактах он выглядел бы как «серия». */
+function slim(data: any, fallbackLabel?: string): any | null {
+  if (!data?.datasets?.length) return null
+  return {
+    labels: (data.labels || []).map((l: any) => String(l)),
+    datasets: data.datasets.map((ds: any, i: number) => ({
+      label: String(ds.label ?? (i === 0 && fallbackLabel ? fallbackLabel : 'серия')),
+      data: (ds.data || []).map((v: any) => (typeof v === 'number' ? v : (v == null ? null : Number(v)))),
+    })),
+  }
+}
+
+function chartsOf(items: Array<{ title: string; note?: string; raw: any; seriesName?: string }>) {
+  return items
+    .map(i => ({ title: i.title, note: i.note, series: slim(i.raw, i.seriesName) }))
+    .filter(c => c.series !== null)
+}
+
+/** Что человек видел на экране: период, валюта, признак, разрез, фильтры. */
+const insightContext = computed(() => {
+  const active: Record<string, string> = {}
+  for (const f of filterConfig) {
+    const vals = selected[f.key] || []
+    if (vals.length) active[f.label] = vals.join(', ')
+  }
+  const dimLabel = (meta.value.dimensions || [])
+    .find((d: any) => d.key === dimension.value)?.label || dimension.value
+  // Та же ловушка, что на «Марже выпуска»: график динамики цен игнорирует
+  // фильтр месяца (он и есть разрез по месяцам), и без этой оговорки модель
+  // считала бы, что видит выбранный месяц.
+  const monthsPicked = (selected.month || []).length > 0
+  return {
+    'Фильтр периода': [
+      (selected.year || []).join(', ') || 'все годы',
+      monthsPicked ? (selected.month || []).join(', ') : 'все месяцы',
+    ].join(' · '),
+    'Что показано на графиках': monthsPicked
+      ? 'График динамики цен показывает ВСЕ месяцы выбранного года — фильтр '
+        + 'месяца на него не влияет (он применён к плиткам и структуре). '
+        + 'Выводы о динамике делай по месяцам, показанным на графике.'
+      : 'График динамики цен показывает все месяцы выбранного года.',
+    'Валюта': currency.value,
+    'Разрез структуры выпуска': dimLabel,
+    ...(meta.value.structure_label ? { 'Разрез структуры себестоимости': meta.value.structure_label } : {}),
+    ...active,
+  }
+})
+
+const insightCharts = computed(() => chartsOf([
+  { title: `Динамика цен по месяцам, ${curLabel.value}`, raw: monthData.value,
+    note: 'Себестоимость против отпускной и розничной цены по месяцам' },
+  { title: `Структура себестоимости · ${meta.value.structure_label || ''}`,
+    raw: structureData.value,
+    note: 'Статьи затрат: материалы, пошив, раскрой, декоры, вязание, прочее' },
+  { title: 'Структура выпуска', raw: ringEmpty.value ? null : ringData.value,
+    seriesName: 'Доля в выпуске',
+    note: `Доли по измерению «${(meta.value.dimensions || []).find((d: any) => d.key === dimension.value)?.label || dimension.value}»` },
+]))
 </script>
 
 <style scoped>

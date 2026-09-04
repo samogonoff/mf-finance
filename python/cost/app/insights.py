@@ -157,6 +157,29 @@ def _is_relative(series_name: str) -> bool:
     return "%" in low or "пп" in low.split() or "темп" in low
 
 
+_MONTH_WORDS = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг",
+                "сен", "окт", "ноя", "дек")
+_PERIOD_RE = re.compile(r"(^|\D)(19|20)\d{2}(\D|$)")
+
+
+def _is_time_series(labels: list[str]) -> bool:
+    """Похожи ли подписи на периоды (месяцы, годы)?
+
+    Нужно детектору незакрытого периода: «последняя точка аномально мала» имеет
+    смысл только на временной оси. На разрезе по бренд-менеджерам он выдал
+    «последняя точка (МАСЛЕННИКОВА А.) почти наверняка не закрыта» — там просто
+    самый маленький из категорий, и это норма, а не неполные данные
+    (проверено 03.09.2026 на коммерческом дашборде).
+    """
+    if len(labels) < 3:
+        return False
+    hits = sum(1 for lbl in labels
+               if lbl and (_PERIOD_RE.search(lbl)
+                           or lbl.strip().lower()[:3] in _MONTH_WORDS))
+    # Больше половины подписей похожи на периоды — считаем ряд временным.
+    return hits * 2 > len(labels)
+
+
 def chart_facts(chart: dict) -> list[str]:
     """Факты по одному графику — посчитанные, а не угаданные."""
     facts: list[str] = []
@@ -164,6 +187,8 @@ def chart_facts(chart: dict) -> list[str]:
     series = chart.get("series") or {}
     labels = [_lbl(x) for x in (series.get("labels") or [])]
     datasets = series.get("datasets") or []
+    # Детектор незакрытого периода имеет смысл только на временной оси.
+    time_series = _is_time_series(labels)
 
     for ds in datasets[:MAX_DATASETS_PER_CHART]:
         name = str(ds.get("label") or "серия")
@@ -220,7 +245,7 @@ def chart_facts(chart: dict) -> list[str]:
         # аномально мала относительно медианы остальных. Только для серий,
         # где все значения одного знака и не процентные по смыслу — для доли
         # или темпа роста «мало» не означает «неполный период».
-        if len(data) >= 4 and all(v >= 0 for v in data):
+        if len(data) >= 4 and all(v >= 0 for v in data) and time_series:
             rest = sorted(data[:-1])
             median = rest[len(rest) // 2]
             last = data[-1]
@@ -411,10 +436,22 @@ def reasoning_effort() -> str:
     return llm_settings.value("reasoning", "COST_LLM_REASONING", "none")
 
 
+def thinking_param() -> dict[str, Any] | None:
+    """Параметр отключения размышлений для провайдеров, где своя ручка.
+
+    `reasoning_effort=none` понимают не все. У GLM через z.ai размышления
+    включены по умолчанию и выключаются отдельным полем
+    `thinking: {"type": "disabled"}` (GLM-4.5 и выше), а `reasoning_effort`
+    поддержан только с GLM-5.2. Отправляем оба: лишнее поле провайдер либо
+    игнорирует, либо отвергает — и тогда post_chat выбросит его сам.
+    """
+    return {"type": "disabled"} if reasoning_effort() == "none" else None
+
+
 # Необязательные поля запроса, которые провайдеры поддерживают вразнобой.
 # При отказе (400/404/422) выбрасываются ПО ОДНОМУ, и запрос повторяется: так
 # сборка работает и там, где поле не знают, без правки кода под провайдера.
-DROPPABLE_FIELDS = ("reasoning_effort", "response_format")
+DROPPABLE_FIELDS = ("thinking", "reasoning_effort", "response_format")
 
 
 async def post_chat(payload: dict, timeout: float | None = None) -> httpx.Response:
@@ -524,6 +561,9 @@ async def call_llm(system: str, user: str) -> tuple[list[dict], dict]:
         # deepseek-v4-flash генерировала до 9,6 тыс. токенов и упиралась в
         # таймаут. См. докстринг reasoning_effort().
         payload["reasoning_effort"] = effort
+    thinking = thinking_param()
+    if thinking:
+        payload["thinking"] = thinking
     resp = await post_chat(payload)
 
     if resp.status_code in (400, 404, 422) and "response_format" in payload:
