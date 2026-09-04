@@ -295,6 +295,7 @@ func (s *pgStore) Stages(ctx context.Context, plID int64) ([]StageState, error) 
 		_ = json.Unmarshal(dep, &st.DependsOn)
 		if d, ok := stageDefByCode(st.Code); ok {
 			st.Name = d.Name
+			st.IsApproval = d.IsApproval
 		}
 		out = append(out, st)
 	}

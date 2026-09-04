@@ -663,6 +663,20 @@ func (h *Handler) StagesList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// На какие этапы вообще заведены шаблоны заданий: интерфейс не должен
+	// предлагать «сгенерировать задания» там, где генерация ничего не создаст
+	// (этапы согласования — это карточки форм, а не задания-ввода).
+	if h.tasks != nil {
+		if tmpls, terr := h.tasks.ListTemplates(r.Context()); terr == nil {
+			withTasks := map[string]bool{}
+			for _, t := range tmpls {
+				withTasks[t.StageCode] = true
+			}
+			for i := range stages {
+				stages[i].HasTaskTemplates = withTasks[stages[i].Code]
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, stages)
 }
 

@@ -24,6 +24,9 @@ type CardService struct {
 	// legalEntities — УНП ЮЛ по стране для колонки «Компания» приёмника тактики
 	// (правки ТЗ 02.09.2026 §15/§16).
 	legalEntities LegalEntityResolver
+	// notify — уведомления по карточкам (кому форма пришла на решение). nil —
+	// процесс работает молча, как раньше.
+	notify CardNotifier
 }
 
 // SnapshotProvider — отдаёт снимок значений формы для версии карточки.
@@ -196,6 +199,9 @@ func (s *CardService) Action(ctx context.Context, cardID int64, in CardActionInp
 			next = fresh
 		}
 	}
+	// Уведомления — последним шагом и в фоне: получатель узнаёт об уже
+	// состоявшемся переходе, а сбой канала не откатывает маршрут.
+	s.notifyCardTransition(ctx, c, next, in)
 	return next, nil
 }
 

@@ -351,6 +351,9 @@ func main() {
 		// План пишется на РЕАЛЬНОЕ ЮЛ: колонка «Компания» приёмника тактики
 		// заполняется УНП из справочника (правки ТЗ 02.09.2026 §15/§16).
 		WithLegalEntities(plans.NewLegalEntityResolver(plansDir)).
+		// Уведомления по карточкам: согласующий узнаёт, что форма ждёт его
+		// решения. Тот же канал, что у заданий (колокольчик + Bitrix).
+		WithNotifier(notifSvc).
 		WithAudit(plansAudit)
 	plansCards.RegisterForm(plans.TemplateMP, plans.NewMpCardProvider(plansStore, plansRates), plans.NewMpCardProvider(plansStore, plansRates))
 
