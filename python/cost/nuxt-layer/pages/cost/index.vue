@@ -116,9 +116,17 @@
               <option value="approved">🟢 Согласовано</option>
               <option value="none">Не согласовано</option>
               <option value="rejected">🔴 Отклонено</option>
-              <option value="returned">🟠 Возврат на корректировку</option>
+              <option value="returned">🟡 Возврат на корректировку</option>
             </select>
           </label>
+
+          <!-- Легенда семафора этапов (пожелание № 2): те же значки, что в
+               колонке «Этап», в порядке прохождения калькуляции. -->
+          <span class="stage-legend" :title="STAGE_LEGEND_TEXT">
+            <span v-for="s in STAGE_LEGEND" :key="s.key" class="stage-legend-item">
+              <span class="stage-badge" :class="'stage-' + s.key">{{ s.icon }}</span>{{ s.short }}
+            </span>
+          </span>
         </div>
 
         <div v-if="cascadeBusy" class="filters-overlay">
@@ -157,6 +165,20 @@
         <button class="btn btn-ghost btn-sm" :disabled="cacheRefreshing" @click="refreshCache">
           <Icon name="lucide:refresh-cw" />
           {{ cacheRefreshing ? 'Обновление…' : 'Обновить кеш' }}
+        </button>
+        <!-- Импорт КПСС закупной готовой продукции из портала БМ (пожелания № 6/7).
+             Право — как у согласования: ПЭО и админ. -->
+        <button v-if="can('cost:approve') || can('cost:admin')" class="btn btn-ghost btn-sm"
+                :disabled="purchaseImporting" @click="runPurchaseImport"
+                title="Забрать из портала БМ калькуляции КПСС закупной готовой продукции (планы «заказ готовой»)">
+          <Icon name="lucide:shopping-cart" />
+          {{ purchaseImporting ? 'Импорт…' : 'Импорт закупной' }}
+        </button>
+        <!-- ПФКСС закупной по приходу (пожелание № 7): инвойс + накладные →
+             калькуляции ПФКСС. Смотреть могут все, править — кто правит расчёты. -->
+        <button class="btn btn-ghost btn-sm" @click="showPurchaseInvoice = true"
+                title="Приход закупной продукции: инвойс, накладные, распределение и расчёт ПФКСС">
+          <Icon name="lucide:receipt" /> Приход (ПФКСС)
         </button>
         <!-- Полное обновление — только админу раздела: TRUNCATE + перезалив всей
              CostHistory, ~25 минут, и на это время запросы к кэшу встают.
@@ -198,6 +220,11 @@
         </button>
         <button v-if="can('cost:approve')" class="btn btn-ghost" @click="navigateTo('/cost/approvals')">
           <Icon name="lucide:clipboard-check" /> Страница согласования
+        </button>
+        <!-- Отчёт по карточкам 713 (пожелание № 8): читать могут все, кто видит
+             таблицу; правки — только из карточки. -->
+        <button class="btn btn-ghost" @click="navigateTo('/cost/reg713')" title="Изделия, отмеченные на согласование с исполкомом: цены, аналоги, решения">
+          <Icon name="lucide:landmark" /> Согласование 713
         </button>
         <!-- Считаем по sortedRows, а не по totalAllRecords: выгружается
              отфильтрованный диапазон, и кнопка должна гаснуть, когда фильтры
@@ -444,6 +471,12 @@
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'price_uz' && isVisible('price_uz')" class="col-num">Цена УЗ<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'mp_price_rub' && isVisible('mp_price_rub')" class="col-num">Цена для МП, рос. руб.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'comment' && isVisible('comment')">Комментарий<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <!-- Пожелание № 4: отметка «нужна замена артикула», при установке
+                   уходит письмо операторам (ЧНИ и остальное — разным людям). -->
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'replace' && isVisible('replace')" class="col-replace" :title="replaceHeaderTitle">Замена арт.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <!-- Пожелание № 8: согласование цены с исполкомом по постановлению 713.
+                   Значок — состояние карточки, клик открывает её. -->
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'reg713' && isVisible('reg713')" class="col-reg713" :title="REG713_LEGEND">713<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'avg_wholesale' && isVisible('avg_wholesale') && !showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
                 Сред. опт (руб)<span v-if="sortField === 'avg_Отпускная цена по уровню, руб'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
@@ -542,7 +575,7 @@
                 Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'peo' && isVisible('peo')" class="col-peo">ПЭО<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'peo' && isVisible('peo')" class="col-peo" :title="STAGE_LEGEND_TEXT">Этап<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               </template>
             </tr>
           </thead>
@@ -592,11 +625,18 @@
                   @click.stop="can('cost:admin') ? openReopenModal(row) : null">{{ row._reopened ? '🔓' : '📤' }}</span>
                 <!-- Калькуляция, созданная в приложении копией с другим признаком
                      (пункт 1). Значок кликабелен для тех, кто вправе её удалить. -->
-                <span v-if="row.is_manual"
+                <span v-if="row.is_manual && !row.purchase_source"
                   class="state-badge state-badge--manual"
                   :class="{ 'state-badge--action': can('cost:calc_sign_copy') }"
                   :title="manualCopyTitle(row)"
                   @click.stop="can('cost:calc_sign_copy') ? openCalcCopyDelete(row) : null">⧉</span>
+                <!-- Закупная готовая продукция (пожелания № 6/7): калькуляция пришла
+                     из портала БМ или посчитана по приходу. Клик — раскладка
+                     себестоимости: цена, курс, логистика, таможня, сертификация. -->
+                <span v-if="row.purchase_source"
+                  class="state-badge state-badge--purchase state-badge--action"
+                  :title="purchaseTitle(row)"
+                  @click.stop="openPurchaseDetail(row)">🛒</span>
                 <!-- Мультипак: продаётся как одна единица, себестоимость собрана
                      из калькуляций одиночек. Состав виден в редакторе расчёта. -->
                 <span v-if="row.is_multipack"
@@ -705,6 +745,27 @@
                   @input="onCommentInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
+              <td v-if="ck === 'replace' && isVisible('replace')" class="col-replace" :title="replaceTitle(row)">
+                <label class="replace-cell" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="!!row.replace_needed"
+                    :disabled="!can('cost:articul_replace') || !!replaceBusy[calcRowKey(row)]"
+                    @change="toggleReplace(row, $event)"
+                  />
+                  <span v-if="row.replace_needed"
+                    class="replace-mail"
+                    :class="row.replace_notified_at ? 'replace-mail--ok' : 'replace-mail--err'"
+                  >{{ row.replace_notified_at ? '✉' : '⚠' }}</span>
+                </label>
+              </td>
+              <td v-if="ck === 'reg713' && isVisible('reg713')" class="col-reg713" :title="reg713Title(row)">
+                <span
+                  class="reg713-badge"
+                  :class="['reg713-' + reg713State(row).key, { 'reg713-readonly': !can('cost:reg713') }]"
+                  @click.stop="openReg713(row)"
+                >{{ reg713State(row).icon }}</span>
+              </td>
               <td v-if="ck === 'avg_wholesale' && isVisible('avg_wholesale') && !showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
               <td v-if="ck === 'price_level' && isVisible('price_level')">{{ row['Уровень цен'] || '—' }}</td>
               <td v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
@@ -735,14 +796,18 @@
               </td>
               <td v-if="ck === 'calc_margin_pct' && isVisible('calc_margin_pct')" class="col-num num col-metric col-metric-hl">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
               <td v-if="ck === 'calc_margin_deviation' && isVisible('calc_margin_deviation')" class="col-num num col-metric" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
+              <!-- Семафор этапа (пожелание № 2): один значок на строку показывает,
+                   где калькуляция в процессе — утверждена ПЭО, расценена БМ,
+                   вернулась на корректировку, отклонена или уже в DWH. Этап
+                   считает rowStage(); клик по-прежнему открывает окно ПЭО, пока
+                   строка не заблокирована. -->
               <td v-if="ck === 'peo' && isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark'), 'peo-active': approvalTarget === row }">
-                <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟢</span>
-                <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🔴</span>
-                <!-- Возврат на корректировку: не «отклонено», а «жду исправленную
-                     цену». Введённое бренд-менеджером значение при возврате
-                     сохраняется, поэтому строка остаётся с заполненной ценой. -->
-                <span v-else-if="row.peo_status === 'returned'" class="peo-badge peo-returned" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Возврат на корректировку' + (row.peo_approved_by ? ': ' + row.peo_approved_by : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟠</span>
-                <span v-else class="peo-badge peo-none" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">⚪</span>
+                <span
+                  class="peo-badge stage-badge"
+                  :class="['stage-' + rowStage(row).key, { 'peo-readonly': isRowLocked(row) || row._has_audit }]"
+                  :title="stageTitle(row)"
+                  @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)"
+                >{{ rowStage(row).icon }}</span>
               </td>
               </template>
             </tr>
@@ -1880,6 +1945,185 @@
     </Teleport>
 
     <Teleport to="body">
+      <!-- Приход закупной продукции: инвойс → ПФКСС (пожелание № 7) -->
+      <CostPurchaseInvoice
+        v-if="showPurchaseInvoice"
+        :api-base="apiBase"
+        :headers="fetchHeaders"
+        :all-rows="allAggregated"
+        :visible-rows="sortedRows"
+        :can-edit="can('cost:edit_materials') || can('cost:approve') || can('cost:admin')"
+        @close="showPurchaseInvoice = false"
+      />
+
+      <!-- Раскладка себестоимости закупной готовой продукции (пожелания № 6/7) -->
+      <div v-if="purchaseTarget" class="modal-overlay" @click.self="purchaseTarget = null">
+        <div class="modal approval-modal purchase-modal">
+          <div class="modal-header">
+            <span>Себестоимость закупной продукции</span>
+            <span class="modal-subtitle">
+              {{ purchaseTarget['Модель'] || '—' }} / {{ purchaseTarget['Артикул'] || '—' }}
+              · {{ purchaseTarget['Признак калькуляции'] || '—' }} · план {{ purchaseTarget['PLAN_ID'] || '—' }}
+              <template v-if="purchaseTarget['Номер задания производства']"> · задание {{ purchaseTarget['Номер задания производства'] }}</template>
+            </span>
+            <button class="modal-close" @click="purchaseTarget = null">✕</button>
+          </div>
+          <div class="approval-body purchase-body">
+            <div v-if="purchaseLoading" class="muted">Загрузка…</div>
+            <div v-else-if="purchaseError" class="reg713-error">{{ purchaseError }}</div>
+            <template v-else-if="purchaseDetail">
+              <div class="muted purchase-src">
+                Источник: {{ purchaseDetail.current.source === 'portal' ? 'портал БМ (КПСС)' : 'приход по инвойсу (ПФКСС)' }}
+                · курс $ → BYN {{ fmt(purchaseDetail.current.usd_to_byn) }}
+                <template v-if="purchaseDetail.current.qty"> · количество {{ fmt(purchaseDetail.current.qty) }}</template>
+              </div>
+              <table class="purchase-table">
+                <thead>
+                  <tr>
+                    <th>Статья</th>
+                    <th class="col-num">$ / ед.</th>
+                    <th class="col-num">BYN / ед.</th>
+                    <template v-if="purchaseDetail.plan">
+                      <th class="col-num">План КПСС, BYN</th>
+                      <th class="col-num">Откл., BYN</th>
+                    </template>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="a in PURCHASE_ARTICLES" :key="a.key" :class="{ total: a.key === 'total' }">
+                    <td>{{ a.label }}</td>
+                    <td class="col-num num">{{ fmt(purchaseDetail.current[a.key + '_usd']) }}</td>
+                    <td class="col-num num">{{ fmt(purchaseDetail.current[a.key + '_byn']) }}</td>
+                    <template v-if="purchaseDetail.plan">
+                      <td class="col-num num">{{ fmt(purchaseDetail.plan[a.key + '_byn']) }}</td>
+                      <td class="col-num num" :class="devClass(purchaseDetail.current[a.key + '_byn'], purchaseDetail.plan[a.key + '_byn'])">
+                        {{ devText(purchaseDetail.current[a.key + '_byn'], purchaseDetail.plan[a.key + '_byn']) }}
+                      </td>
+                    </template>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="muted purchase-hint">
+                Розница {{ fmt(purchaseDetail.current.retail_byn) }} · опт {{ fmt(purchaseDetail.current.wholesale_byn) }}
+                <template v-if="purchaseDetail.current.source === 'portal' && purchaseDetail.current.snapshot?.portal?.reference_snapshot">
+                  · ставки портала: пошлина {{ purchaseDetail.current.snapshot.portal.reference_snapshot.duty_pct }} %,
+                  транспорт {{ purchaseDetail.current.snapshot.portal.reference_snapshot.transport_pct }} %,
+                  сертификация {{ purchaseDetail.current.snapshot.portal.reference_snapshot.certification_usd }} $ + тесты {{ purchaseDetail.current.snapshot.portal.reference_snapshot.testing_usd }} $
+                </template>
+              </div>
+              <div class="muted purchase-hint">
+                В главной таблице вся себестоимость закупной показана одним итогом в «Основных материалах»; раскладка хранится здесь.
+              </div>
+            </template>
+            <div class="approval-actions">
+              <button class="btn btn-ghost" type="button" @click="purchaseTarget = null">Закрыть</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Карточка согласования по постановлению 713 (пожелание № 8) -->
+      <div v-if="reg713Target" class="modal-overlay" @click.self="closeReg713">
+        <div class="modal approval-modal reg713-modal">
+          <div class="modal-header">
+            <span>Согласование по постановлению 713</span>
+            <!-- Карточка одна на модель+артикул: признак и план в подзаголовке
+                 только сбивали бы с толку — решение действует на все. -->
+            <span class="modal-subtitle">
+              {{ reg713Target['Модель'] || '—' }} / {{ reg713Target['Артикул'] || '—' }}
+            </span>
+            <button class="modal-close" @click="closeReg713">✕</button>
+          </div>
+          <div class="approval-body reg713-body">
+            <div class="reg713-name muted">{{ reg713Target['Наименование модели'] || '' }}</div>
+
+            <label class="reg713-check">
+              <input type="checkbox" v-model="reg713Form.required" :disabled="!can('cost:reg713')" />
+              <span>Требуется согласование с исполкомом</span>
+            </label>
+
+            <div class="reg713-row">
+              <span class="approval-label">Вид:</span>
+              <label class="reg713-radio"><input type="radio" value="price_increase" v-model="reg713Form.kind" :disabled="!can('cost:reg713')" /> Повышение цены</label>
+              <label class="reg713-radio"><input type="radio" value="novelty" v-model="reg713Form.kind" :disabled="!can('cost:reg713')" /> Новинка</label>
+              <button v-if="reg713Form.kind" class="btn btn-ghost btn-sm" type="button" :disabled="!can('cost:reg713')" @click="reg713Form.kind = null">сбросить</button>
+            </div>
+
+            <div class="reg713-block">
+              <div class="reg713-block-title">Артикул аналога</div>
+              <div v-if="reg713Form.analog_articul" class="reg713-analog">
+                <div>
+                  <b>{{ reg713Form.analog_articul }}</b> / {{ reg713Form.analog_model || '—' }}
+                  <span class="muted">{{ reg713Form.analog_name || '' }}</span>
+                </div>
+                <button class="btn btn-ghost btn-sm" type="button" :disabled="!can('cost:reg713')" @click="clearReg713Analog">Сменить</button>
+              </div>
+              <div v-else class="reg713-search">
+                <input
+                  type="text"
+                  class="reg713-search-input"
+                  v-model="reg713Query"
+                  :disabled="!can('cost:reg713')"
+                  placeholder="Артикул, модель или наименование — от 2 символов"
+                  autocomplete="off"
+                  @input="onReg713QueryInput"
+                  @keydown.esc.prevent="reg713Results = []"
+                />
+                <div v-if="reg713Searching" class="muted reg713-hint">Ищу в справочнике…</div>
+                <div v-else-if="reg713Query.trim().length >= 2 && !reg713Results.length && reg713Searched" class="muted reg713-hint">Ничего не найдено</div>
+                <ul v-if="reg713Results.length" class="reg713-results">
+                  <li v-for="it in reg713Results" :key="it.item_id ?? (it.model + '|' + it.articul)" @click="pickReg713Analog(it)">
+                    <b>{{ it.articul }}</b> / {{ it.model }}
+                    <span class="muted">{{ it.name }}</span>
+                    <span v-if="it.archived" class="reg713-arch">архив</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div class="reg713-prices">
+                <div class="reg713-price">
+                  <span class="approval-label">Розница:</span>
+                  <input type="number" step="0.01" min="0" v-model="reg713Form.analog_retail" :disabled="!can('cost:reg713')" @change="reg713Form.analog_price_source = 'manual'" />
+                </div>
+                <div class="reg713-price">
+                  <span class="approval-label">Опт:</span>
+                  <input type="number" step="0.01" min="0" v-model="reg713Form.analog_wholesale" :disabled="!can('cost:reg713')" @change="reg713Form.analog_price_source = 'manual'" />
+                </div>
+                <button class="btn btn-ghost btn-sm" type="button" :disabled="!reg713Form.analog_articul || reg713PricesLoading || !can('cost:reg713')" @click="fetchReg713Prices" title="Подтянуть цены аналога заново: последняя калькуляция → утверждённая цена → плановая">
+                  {{ reg713PricesLoading ? 'Загрузка…' : 'Обновить цены' }}
+                </button>
+              </div>
+              <div class="muted reg713-hint">{{ reg713SourceText }}</div>
+            </div>
+
+            <div class="reg713-block">
+              <div class="reg713-block-title">Решение исполкома</div>
+              <div class="reg713-row">
+                <label class="reg713-radio"><input type="radio" :value="null" v-model="reg713Form.decision" :disabled="!can('cost:reg713')" /> Не рассмотрено</label>
+                <label class="reg713-radio"><input type="radio" value="approved" v-model="reg713Form.decision" :disabled="!can('cost:reg713')" /> ✅ Согласовано</label>
+                <label class="reg713-radio"><input type="radio" value="rejected" v-model="reg713Form.decision" :disabled="!can('cost:reg713')" /> ❌ Не согласовано</label>
+              </div>
+              <input type="text" class="reg713-doc" v-model="reg713Form.decision_doc" :disabled="!can('cost:reg713')" placeholder="№ и дата письма исполкома (если есть)" maxlength="200" />
+              <textarea class="reg713-comment" v-model="reg713Form.comment" :disabled="!can('cost:reg713')" rows="2" placeholder="Комментарий" maxlength="1000"></textarea>
+            </div>
+
+            <div v-if="reg713Target.reg713_updated_by" class="muted reg713-hint">
+              Изменено: {{ reg713Target.reg713_updated_by }}
+              {{ reg713Target.reg713_updated_at ? new Date(reg713Target.reg713_updated_at).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '' }}
+              <template v-if="reg713History.length"> · записей в истории: {{ reg713History.length }}</template>
+            </div>
+            <div v-if="reg713Error" class="reg713-error">{{ reg713Error }}</div>
+
+            <div class="approval-actions">
+              <button class="btn btn-primary" type="button" :disabled="!can('cost:reg713') || reg713Saving" @click="saveReg713">
+                {{ reg713Saving ? 'Сохранение…' : 'Сохранить' }}
+              </button>
+              <button class="btn btn-ghost" type="button" @click="closeReg713">Закрыть</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div v-if="approvalTarget" class="modal-overlay" @click.self="closeApprovalPopup">
         <div class="modal approval-modal">
           <div class="modal-header">
@@ -1892,8 +2136,13 @@
               <span class="approval-label">Статус ПЭО:</span>
               <span v-if="approvalTarget.peo_status === 'approved'" class="peo-badge peo-approved">🟢 Согласовано</span>
               <span v-else-if="approvalTarget.peo_status === 'rejected'" class="peo-badge peo-rejected">🔴 Отклонено</span>
-              <span v-else-if="approvalTarget.peo_status === 'returned'" class="peo-badge peo-returned">🟠 Возврат на корректировку</span>
+              <span v-else-if="approvalTarget.peo_status === 'returned'" class="peo-badge peo-returned">🟡 Возврат на корректировку</span>
               <span v-else class="peo-badge peo-none">⚪ Нет статуса</span>
+            </div>
+            <div class="approval-info-row">
+              <span class="approval-label">Этап:</span>
+              <span class="stage-badge" :class="'stage-' + rowStage(approvalTarget).key">{{ rowStage(approvalTarget).icon }}</span>
+              <span>{{ rowStage(approvalTarget).label }}</span>
             </div>
             <div v-if="approvalTarget.peo_approved_by" class="approval-info-row">
               <span class="approval-label">Кто:</span>
@@ -2163,6 +2412,8 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'price_uz', label: 'Цена УЗ' },
   { key: 'mp_price_rub', label: 'Цена для МП, рос. руб.' },
   { key: 'comment', label: 'Комментарий' },
+  { key: 'replace', label: 'Замена артикула' },
+  { key: 'reg713', label: 'Согласование 713' },
   { key: 'avg_wholesale', label: 'Сред. опт' },
   { key: 'price_level', label: 'Уровень цен' },
   { key: 'avg_retail_usd', label: 'Сред. розница ($)' },
@@ -2180,12 +2431,12 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'calc_markup_pct', label: 'Рентабельность (%)' },
   { key: 'calc_margin_pct', label: 'Маржа (%)' },
   { key: 'calc_margin_deviation', label: 'Откл. маржи (%)' },
-  { key: 'peo', label: 'ПЭО' },
+  { key: 'peo', label: 'Этап (семафор ПЭО)' },
 ];
 
 // Column groupings for the settings modal
 const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','plan_id'];
-const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment'];
+const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','reg713'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
 const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation'];
@@ -2213,7 +2464,7 @@ const COL_DEFAULT_WIDTHS: Record<string, number> = {
   planned_retail: 78, planned_wholesale: 78, planned_cost: 78,
   planned_profitability: 92, avg_retail_rub: 92, avg_rate: 72,
   retail_markup: 92, price_rf: 92, price_kz: 92, price_uz: 92,
-  mp_price_rub: 96, comment: 190,
+  mp_price_rub: 96, comment: 190, replace: 110, reg713: 72,
   // рубли и уровень цен
   avg_wholesale: 92, price_level: 86,
   // валютные и себестоимость
@@ -2243,7 +2494,7 @@ const STORAGE_KEY = 'cost_column_visibility';
  *
  * Порядок хранится списком ключей, а не индексами: список ключей переживает
  * добавление и удаление колонок в коде, а индексы — нет. */
-const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
+const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 const ORDER_STORAGE_KEY = 'cost_column_order';
 /** Все колонки таблицы: закреплённые слева плюс переносимые. */
 const ALL_COL_KEYS = [...STICKY_COL_KEYS, ...MOVABLE_COL_KEYS];
@@ -6380,6 +6631,461 @@ async function submitRevokeReopen() {
 }
 
 const openApprovalPopup = (row: any) => { if (!can('cost:approve') && !can('cost:peo_mark')) return; approvalTarget.value = row; approvalComment.value = ''; };
+
+// ── Семафор этапов (пожелание № 2) ───────────────────────────────────────────
+// Один значок на строку: где калькуляция в процессе. Порядок проверок — от
+// конца процесса к началу, потому что признаки накладываются: у записанной в
+// DWH строки остаётся и статус ПЭО, и заявка на цену; у возвращённой на
+// корректировку заявка тоже не удаляется (с 25.08.2026 введённая БМ цена
+// сохраняется). Поэтому сначала смотрим DWH, потом решения ПЭО по цене,
+// потом наличие цены, и только потом согласование себестоимости.
+type StageKey = 'dwh' | 'rejected' | 'returned' | 'priced' | 'approved' | 'none';
+interface StageInfo { key: StageKey; icon: string; label: string; short: string }
+
+const STAGE_LEGEND: StageInfo[] = [
+  { key: 'approved', icon: '🟢', label: 'Себестоимость утверждена экономистом',        short: 'утверждена ПЭО' },
+  { key: 'priced',   icon: '🔵', label: 'Цена установлена бренд-менеджером',           short: 'цена БМ' },
+  { key: 'returned', icon: '🟡', label: 'Цена БМ отправлена на корректировку экономисту', short: 'на корректировке' },
+  { key: 'rejected', icon: '🔴', label: 'Отклонена руководителем ПЭО',                 short: 'отклонена' },
+  { key: 'dwh',      icon: '🟣', label: 'Расценённая калькуляция загружена в DWH («лису»)', short: 'в DWH' },
+];
+const STAGE_NONE: StageInfo = { key: 'none', icon: '⚪', label: 'Ещё не согласована', short: 'нет статуса' };
+const STAGE_LEGEND_TEXT = 'Этапы прохождения калькуляции:\n' +
+  STAGE_LEGEND.map((s) => `${s.icon} ${s.label}`).join('\n') +
+  `\n${STAGE_NONE.icon} ${STAGE_NONE.label}`;
+
+function rowStage(row: any): StageInfo {
+  if (!row) return STAGE_NONE;
+  // Переоткрытая админом калькуляция снова в процессе: запись в DWH есть,
+  // но показываем не её, а текущий шаг второго круга.
+  if (row._in_dwh && !row._reopened) return STAGE_LEGEND[4];
+  if (row.peo_status === 'rejected') return STAGE_LEGEND[3];
+  if (row.peo_status === 'returned') return STAGE_LEGEND[2];
+  if (row._has_pending) return STAGE_LEGEND[1];
+  if (row.peo_status === 'approved') return STAGE_LEGEND[0];
+  return STAGE_NONE;
+}
+
+function stageTitle(row: any): string {
+  const s = rowStage(row);
+  const who = row?.peo_approved_by ? `: ${row.peo_approved_by}` : '';
+  const when = row?.peo_approved_at ? ` ${new Date(row.peo_approved_at).toLocaleDateString('ru-RU')}` : '';
+  switch (s.key) {
+    case 'approved': return `${s.label}${who}${when}`;
+    case 'returned':
+    case 'rejected': return `${s.label}${who}`;
+    case 'dwh':      return s.label + (row?._reopened ? ', открыта на исправление' : '');
+    default:         return s.label;
+  }
+}
+
+// ── Отметка «нужна замена артикула» (пожелание № 4) ─────────────────────────
+// Галочка в строке; при установке сервер рассылает письмо операторам. Адресаты
+// зависят от ассортимента: ЧНИ (носки и Orodoro по Level 01) и всё остальное
+// уходят разным людям. Список адресатов и состояние SMTP подтягиваем с сервера,
+// чтобы подсказка говорила правду, а не повторяла захардкоженные фамилии.
+const CHNI_LEVEL01 = ['Носки&Колготки', 'Orodoro'];
+const isChniRow = (row: any) => CHNI_LEVEL01.includes(String(row?.['Level 01'] || '').trim());
+
+interface ReplaceInfo { recipients: { segment: string; email: string; name: string }[]; smtp_enabled: boolean }
+const replaceInfo = ref<ReplaceInfo | null>(null);
+const replaceBusy = reactive<Record<string, boolean>>({});
+
+async function loadReplaceInfo() {
+  try {
+    replaceInfo.value = await $fetch<ReplaceInfo>(`${apiBase.value}/api/cost/articul-replace/recipients`, { headers: fetchHeaders.value });
+  } catch { replaceInfo.value = null; }
+}
+onMounted(() => { loadReplaceInfo(); });
+
+function replaceRecipientsText(row: any): string {
+  const seg = isChniRow(row) ? 'chni' : 'other';
+  const list = (replaceInfo.value?.recipients || []).filter((r) => r.segment === seg);
+  if (!list.length) return isChniRow(row) ? 'адресатам по ЧНИ' : 'адресату по остальному ассортименту';
+  return list.map((r) => r.name || r.email).join(', ');
+}
+
+const replaceHeaderTitle = computed(() =>
+  'Нужна замена артикула. Отметка рассылает письмо: ЧНИ (носки, Orodoro) — ' +
+  ((replaceInfo.value?.recipients || []).filter((r) => r.segment === 'chni').map((r) => r.name || r.email).join(', ') || '—') +
+  '; остальное — ' +
+  ((replaceInfo.value?.recipients || []).filter((r) => r.segment === 'other').map((r) => r.name || r.email).join(', ') || '—') +
+  (replaceInfo.value && !replaceInfo.value.smtp_enabled ? '\nВнимание: почта не настроена, письма не уходят' : '')
+);
+
+function replaceTitle(row: any): string {
+  if (!row.replace_needed) {
+    if (!can('cost:articul_replace')) return 'Отметку «нужна замена артикула» ставит бренд-менеджер (а также ПЭО и калькулятор)';
+    return 'Нужна замена артикула? Отметьте — письмо уйдёт: ' + replaceRecipientsText(row);
+  }
+  const fmtDt = (v: any) => (v ? new Date(v).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '');
+  let s = `Нужна замена артикула — отметил(а) ${row.replace_set_by || '—'} ${fmtDt(row.replace_set_at)}`.trim();
+  if (row.replace_comment) s += `\nКомментарий: ${row.replace_comment}`;
+  // Уведомление идёт двумя каналами (почта; сообщение в Битрикс по ID на
+  // портале). notified_at — дошло хотя бы одним, notify_error — что нет.
+  s += row.replace_notified_at
+    ? `\nУведомление отправлено ${fmtDt(row.replace_notified_at)}: ${replaceRecipientsText(row)}`
+    : '\nУведомление не отправлено';
+  if (row.replace_notify_error) s += `\nНе дошло: ${row.replace_notify_error}`;
+  return s;
+}
+
+async function toggleReplace(row: any, ev: Event) {
+  const input = ev.target as HTMLInputElement;
+  const checked = input.checked;
+  const k = calcRowKey(row);
+  if (replaceBusy[k]) { input.checked = !!row.replace_needed; return; }
+  let comment = '';
+  if (checked) {
+    const c = window.prompt(
+      `Нужна замена артикула: ${row['Модель'] || ''} / ${row['Артикул'] || ''}.\nПисьмо уйдёт: ${replaceRecipientsText(row)}.\nКомментарий для письма (можно оставить пустым):`,
+      row.replace_comment || '',
+    );
+    // Отмена диалога — отметку не ставим; :checked привязан к row, но DOM уже
+    // переключился, поэтому возвращаем его руками.
+    if (c === null) { input.checked = !!row.replace_needed; return; }
+    comment = c.trim();
+  }
+  replaceBusy[k] = true;
+  try {
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/articul-replace`, {
+      method: 'POST',
+      headers: fetchHeaders.value,
+      body: {
+        model: row['Модель'], articul: row['Артикул'],
+        calc_sign: row['Признак калькуляции'], plan_id: row['PLAN_ID'],
+        task_number: row['Номер задания производства'],
+        needed: checked, comment,
+        context: {
+          model_name: row['Наименование модели'], level01: row['Level 01'],
+          country: row['Страна пр-ва'], brand_manager: row['Бренд-менеджер'],
+        },
+      },
+    });
+    Object.assign(row, {
+      replace_needed: res.replace_needed, replace_comment: res.replace_comment,
+      replace_set_by: res.replace_set_by, replace_set_at: res.replace_set_at,
+      replace_notified_at: res.replace_notified_at, replace_notify_error: res.replace_notify_error,
+    });
+    if (checked && res.mail && res.mail.status !== 'sent') {
+      lastError.value = `Отметка о замене артикула сохранена, но уведомление не дошло: ${res.mail.error || res.mail.status}. ` +
+        `Адресаты: ${(res.mail.recipients || []).join(', ') || '—'}.`;
+    } else if (checked && res.mail && res.mail.error) {
+      // Дошло не всеми каналами (например, письмо ушло, а в кабинет — нет):
+      // отметка стоит, но человеку стоит знать, чего не хватило.
+      lastError.value = `Отметка о замене артикула сохранена, уведомление отправлено частично. Не дошло: ${res.mail.error}.`;
+    }
+  } catch (e: any) {
+    input.checked = !!row.replace_needed;
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    delete replaceBusy[k];
+  }
+}
+
+// ── Согласование по постановлению 713 (пожелание № 8) ───────────────────────
+// Карточка на калькуляцию (ключ — как у цены: модель, артикул, признак, план):
+// требуется ли согласование с исполкомом, вид (повышение цены / новинка),
+// артикул-аналог из S_MODELI с ценами «как в главной таблице», решение
+// исполкома. Поля reg713_* приходят с /aggregated, карточка правится в окне.
+interface Reg713State { key: 'none' | 'required' | 'approved' | 'rejected'; icon: string; label: string }
+const REG713_STATES: Record<Reg713State['key'], Reg713State> = {
+  none:     { key: 'none',     icon: '·',  label: 'Согласование по 713 не требуется' },
+  required: { key: 'required', icon: '📋', label: 'Требуется согласование с исполкомом, решения ещё нет' },
+  approved: { key: 'approved', icon: '✅', label: 'Согласовано в исполкоме' },
+  rejected: { key: 'rejected', icon: '❌', label: 'Не согласовано в исполкоме' },
+};
+const REG713_LEGEND = 'Согласование цены с исполкомом по постановлению 713:\n' +
+  '· — не требуется\n📋 — требуется, решения нет\n✅ — согласовано\n❌ — не согласовано\nКлик — открыть карточку';
+const REG713_KIND_LABEL: Record<string, string> = { price_increase: 'повышение цены', novelty: 'новинка' };
+const REG713_SOURCE_LABEL: Record<string, string> = {
+  calc: 'последняя калькуляция аналога в CostHistory',
+  dwh: 'утверждённая цена аналога в DWH',
+  gpartner: 'плановая цена из справочника S_MODELI',
+  manual: 'введено вручную',
+};
+
+function reg713State(row: any): Reg713State {
+  if (!row?.reg713_required) return REG713_STATES.none;
+  if (row.reg713_decision === 'approved') return REG713_STATES.approved;
+  if (row.reg713_decision === 'rejected') return REG713_STATES.rejected;
+  return REG713_STATES.required;
+}
+
+function reg713Title(row: any): string {
+  const s = reg713State(row);
+  const parts = [s.label];
+  if (row?.reg713_required) {
+    if (row.reg713_kind) parts.push(`Вид: ${REG713_KIND_LABEL[row.reg713_kind] || row.reg713_kind}`);
+    if (row.reg713_analog_articul) {
+      let a = `Аналог: ${row.reg713_analog_articul}${row.reg713_analog_model ? ' / ' + row.reg713_analog_model : ''}`;
+      const pr: string[] = [];
+      if (row.reg713_analog_retail != null) pr.push(`розница ${fmt(row.reg713_analog_retail)}`);
+      if (row.reg713_analog_wholesale != null) pr.push(`опт ${fmt(row.reg713_analog_wholesale)}`);
+      if (pr.length) a += ` (${pr.join(', ')})`;
+      parts.push(a);
+    }
+    if (row.reg713_decision_doc) parts.push(row.reg713_decision_doc);
+  }
+  parts.push(can('cost:reg713') ? 'Клик — открыть карточку' : 'Клик — посмотреть карточку');
+  return parts.join('\n');
+}
+
+const reg713Target = ref<any>(null);
+const reg713Form = reactive<any>({
+  required: false, kind: null as string | null,
+  analog_model: null as string | null, analog_articul: null as string | null, analog_name: null as string | null,
+  analog_retail: null as number | string | null, analog_wholesale: null as number | string | null,
+  analog_price_source: null as string | null,
+  decision: null as string | null, decision_doc: '', comment: '',
+});
+const reg713History = ref<any[]>([]);
+const reg713Query = ref('');
+const reg713Results = ref<any[]>([]);
+const reg713Searching = ref(false);
+const reg713Searched = ref(false);
+const reg713PricesLoading = ref(false);
+const reg713Saving = ref(false);
+const reg713Error = ref('');
+let reg713SearchTimer: ReturnType<typeof setTimeout> | null = null;
+let reg713SearchSeq = 0;
+
+const reg713SourceText = computed(() => {
+  if (!reg713Form.analog_articul) return 'Выберите аналог — цены подтянутся по правилам главной таблицы: последняя калькуляция, затем утверждённая цена, затем плановая.';
+  const src = reg713Form.analog_price_source;
+  if (!src) return 'Цены аналога не найдены ни в калькуляциях, ни в справочнике — введите вручную или нажмите «Обновить цены».';
+  return 'Источник цен: ' + (REG713_SOURCE_LABEL[src] || src) + '.';
+});
+
+// Ключ карточки — модель + артикул (решение заказчика 03.09.2026): исполком
+// согласует цену изделия, одно решение действует на все планы и этапы пары.
+function reg713Key(row: any) {
+  return { model: String(row['Модель'] || '').trim(), articul: String(row['Артикул'] || '').trim() };
+}
+
+async function openReg713(row: any) {
+  reg713Target.value = row;
+  reg713Error.value = '';
+  reg713Query.value = '';
+  reg713Results.value = [];
+  reg713Searched.value = false;
+  reg713History.value = [];
+  Object.assign(reg713Form, {
+    required: !!row.reg713_required, kind: row.reg713_kind || null,
+    analog_model: row.reg713_analog_model || null, analog_articul: row.reg713_analog_articul || null,
+    analog_name: row.reg713_analog_name || null,
+    analog_retail: row.reg713_analog_retail ?? null, analog_wholesale: row.reg713_analog_wholesale ?? null,
+    analog_price_source: row.reg713_analog_price_source || null,
+    decision: row.reg713_decision || null, decision_doc: row.reg713_decision_doc || '', comment: row.reg713_comment || '',
+  });
+  // История — фоном, окно открывается сразу.
+  try {
+    const k = reg713Key(row);
+    const q = new URLSearchParams(k).toString();
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/card?${q}`, { headers: fetchHeaders.value });
+    if (reg713Target.value === row) reg713History.value = res?.history || [];
+  } catch { /* история — украшение */ }
+}
+
+function closeReg713() {
+  reg713Target.value = null;
+  if (reg713SearchTimer) { clearTimeout(reg713SearchTimer); reg713SearchTimer = null; }
+}
+
+function onReg713QueryInput() {
+  if (reg713SearchTimer) clearTimeout(reg713SearchTimer);
+  const q = reg713Query.value.trim();
+  reg713Searched.value = false;
+  if (q.length < 2) { reg713Results.value = []; return; }
+  reg713SearchTimer = setTimeout(async () => {
+    const seq = ++reg713SearchSeq;
+    reg713Searching.value = true;
+    try {
+      const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/articuls?q=${encodeURIComponent(q)}&limit=30`, { headers: fetchHeaders.value });
+      if (seq !== reg713SearchSeq) return; // пришёл ответ на устаревший запрос
+      reg713Results.value = res?.items || [];
+      reg713Searched.value = true;
+    } catch (e: any) {
+      if (seq === reg713SearchSeq) { reg713Results.value = []; reg713Error.value = e?.data?.detail || e?.message || String(e); }
+    } finally {
+      if (seq === reg713SearchSeq) reg713Searching.value = false;
+    }
+  }, 350);
+}
+
+async function pickReg713Analog(it: any) {
+  reg713Form.analog_model = it.model;
+  reg713Form.analog_articul = it.articul;
+  reg713Form.analog_name = it.name;
+  reg713Form.analog_retail = null;
+  reg713Form.analog_wholesale = null;
+  reg713Form.analog_price_source = null;
+  reg713Results.value = [];
+  reg713Query.value = '';
+  await fetchReg713Prices();
+}
+
+function clearReg713Analog() {
+  reg713Form.analog_model = null;
+  reg713Form.analog_articul = null;
+  reg713Form.analog_name = null;
+  reg713Form.analog_retail = null;
+  reg713Form.analog_wholesale = null;
+  reg713Form.analog_price_source = null;
+}
+
+async function fetchReg713Prices() {
+  if (!reg713Form.analog_articul) return;
+  reg713PricesLoading.value = true;
+  reg713Error.value = '';
+  try {
+    const q = new URLSearchParams({ model: reg713Form.analog_model || '', articul: reg713Form.analog_articul }).toString();
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/analog-prices?${q}`, { headers: fetchHeaders.value });
+    reg713Form.analog_retail = res?.retail ?? null;
+    reg713Form.analog_wholesale = res?.wholesale ?? null;
+    reg713Form.analog_price_source = res?.source || null;
+    if (res?.name && !reg713Form.analog_name) reg713Form.analog_name = res.name;
+  } catch (e: any) {
+    reg713Error.value = 'Не удалось получить цены аналога: ' + (e?.data?.detail || e?.message || String(e));
+  } finally {
+    reg713PricesLoading.value = false;
+  }
+}
+
+async function saveReg713() {
+  const row = reg713Target.value;
+  if (!row) return;
+  if (reg713Form.required && !reg713Form.kind) {
+    reg713Error.value = 'Укажите вид: повышение цены или новинка.';
+    return;
+  }
+  reg713Saving.value = true;
+  reg713Error.value = '';
+  try {
+    const num = (v: any) => (v === '' || v == null ? null : Number(v));
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/card`, {
+      method: 'POST', headers: fetchHeaders.value,
+      body: {
+        ...reg713Key(row),
+        required: !!reg713Form.required, kind: reg713Form.kind || null,
+        analog_model: reg713Form.analog_model, analog_articul: reg713Form.analog_articul, analog_name: reg713Form.analog_name,
+        analog_retail: num(reg713Form.analog_retail), analog_wholesale: num(reg713Form.analog_wholesale),
+        analog_price_source: reg713Form.analog_articul ? (reg713Form.analog_price_source || 'manual') : null,
+        decision: reg713Form.decision || null, decision_doc: reg713Form.decision_doc || null, comment: reg713Form.comment || null,
+      },
+    });
+    const c = res?.card || {};
+    // Обновляем ВСЕ строки с этой парой модель+артикул: карточка одна на
+    // изделие, а строк (планов, этапов, заданий) у него может быть много.
+    const k = reg713Key(row);
+    for (const r of allAggregated.value) {
+      const rk = reg713Key(r);
+      if (rk.model !== k.model || rk.articul !== k.articul) continue;
+      Object.assign(r, {
+        reg713_required: !!c.required, reg713_kind: c.kind ?? null,
+        reg713_analog_model: c.analog_model ?? null, reg713_analog_articul: c.analog_articul ?? null, reg713_analog_name: c.analog_name ?? null,
+        reg713_analog_retail: c.analog_retail ?? null, reg713_analog_wholesale: c.analog_wholesale ?? null,
+        reg713_analog_price_source: c.analog_price_source ?? null,
+        reg713_decision: c.decision ?? null, reg713_decision_at: c.decision_at ?? null, reg713_decision_doc: c.decision_doc ?? null,
+        reg713_comment: c.comment ?? null, reg713_updated_by: c.updated_by ?? null, reg713_updated_at: c.updated_at ?? null,
+      });
+    }
+    closeReg713();
+  } catch (e: any) {
+    reg713Error.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    reg713Saving.value = false;
+  }
+}
+
+// ── Закупная готовая продукция (пожелания № 6/7) ────────────────────────────
+// Калькуляции КПСС приходят импортом из портала БМ, ПФКСС считается по приходу.
+// В строке таблицы виден один итог в «Основных материалах», раскладка (цена,
+// логистика, таможня, сертификация) — в окне по значку 🛒.
+const PURCHASE_ARTICLES = [
+  { key: 'price', label: 'Цена по инвойсу / размещения' },
+  { key: 'logistics', label: 'Логистика' },
+  { key: 'customs', label: 'Таможня' },
+  { key: 'cert', label: 'Сертификация' },
+  { key: 'total', label: 'Себестоимость' },
+];
+const purchaseTarget = ref<any>(null);
+const purchaseDetail = ref<any>(null);
+const purchaseLoading = ref(false);
+const purchaseError = ref('');
+const purchaseImporting = ref(false);
+const showPurchaseInvoice = ref(false);
+
+function purchaseTitle(row: any): string {
+  const src = row.purchase_source === 'portal' ? 'КПСС из портала БМ' : 'ПФКСС по приходу';
+  const parts = [`Закупная готовая продукция: ${src}`];
+  if (row.purchase_total_byn != null) {
+    parts.push(`Себестоимость ${fmt(row.purchase_total_byn)} BYN = цена ${fmt(row.purchase_price_byn)}` +
+      ` + логистика ${fmt(row.purchase_logistics_byn)} + таможня ${fmt(row.purchase_customs_byn)} + сертификация ${fmt(row.purchase_cert_byn)}`);
+  }
+  parts.push('Клик — раскладка себестоимости');
+  return parts.join('\n');
+}
+
+async function openPurchaseDetail(row: any) {
+  purchaseTarget.value = row;
+  purchaseDetail.value = null;
+  purchaseError.value = '';
+  purchaseLoading.value = true;
+  try {
+    const q = new URLSearchParams({
+      model: String(row['Модель'] || '').trim(), articul: String(row['Артикул'] || '').trim(),
+      calc_sign: String(row['Признак калькуляции'] || '').trim(), plan_id: String(row['PLAN_ID'] || '').trim(),
+      task_number: String(row['Номер задания производства'] || '').trim(),
+    }).toString();
+    purchaseDetail.value = await $fetch<any>(`${apiBase.value}/api/cost/purchase/detail?${q}`, { headers: fetchHeaders.value });
+  } catch (e: any) {
+    purchaseError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    purchaseLoading.value = false;
+  }
+}
+
+function devText(fact: any, plan: any): string {
+  if (fact == null || plan == null) return '—';
+  const d = Number(fact) - Number(plan);
+  return (d > 0 ? '+' : '') + fmt(d);
+}
+function devClass(fact: any, plan: any): string {
+  if (fact == null || plan == null) return '';
+  const d = Number(fact) - Number(plan);
+  return d > 0.005 ? 'delta-neg' : d < -0.005 ? 'delta-pos' : '';
+}
+
+/** Импорт КПСС из портала: сначала пробный прогон с цифрами, потом запись. */
+async function runPurchaseImport() {
+  if (purchaseImporting.value) return;
+  purchaseImporting.value = true;
+  lastError.value = '';
+  try {
+    const dry = await $fetch<any>(`${apiBase.value}/api/cost/purchase/import`, {
+      method: 'POST', headers: fetchHeaders.value, body: { dry_run: true },
+    });
+    const reasons = Object.entries(dry.skipped_reasons || {}).map(([k, v]) => `   · ${k}: ${v}`).join('\n');
+    const ok = confirm(
+      'Импорт закупной готовой продукции из портала БМ.\n\n' +
+      `Планов «заказ готовой»: ${dry.plans}, строк: ${dry.items}.\n` +
+      `Будет создано или обновлено калькуляций КПСС: ${dry.to_write}.\n` +
+      `Пропущено: ${dry.skipped}` + (reasons ? '\n' + reasons : '') + '\n\n' +
+      'Существующие импортированные строки обновятся, остальные данные не затрагиваются. Продолжить?'
+    );
+    if (!ok) return;
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/purchase/import`, {
+      method: 'POST', headers: fetchHeaders.value, body: {},
+    });
+    alert(`Импорт завершён за ${res.seconds} с.\nСоздано: ${res.created}, обновлено: ${res.updated}, пропущено: ${res.skipped}.\n` +
+      'Нажмите «Загрузить данные», чтобы увидеть строки (фильтр «🛒 Только закупная»).');
+  } catch (e: any) {
+    lastError.value = 'Импорт закупной не выполнен: ' + (e?.data?.detail || e?.message || String(e));
+  } finally {
+    purchaseImporting.value = false;
+  }
+}
 const closeApprovalPopup = () => { approvalTarget.value = null; };
 
 const recomputeGroupApproved = (row: any) => {
@@ -8635,6 +9341,69 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .peo-badge { cursor:pointer; font-size:16px; }
 .peo-readonly .peo-badge { cursor:default; }
 .peo-active .peo-badge { background:rgba(99,102,241,0.15); border-radius:4px; }
+
+/* Семафор этапов (пожелание № 2). Значок — эмодзи-кружок, цветная подложка
+   дублирует его цвет для тех, у кого эмодзи рисуются монохромно. */
+.stage-badge { display:inline-flex; align-items:center; justify-content:center; min-width:22px; height:22px; border-radius:6px; font-size:14px; line-height:1; }
+.stage-approved { background: color-mix(in srgb, var(--pos, #16a34a) 14%, transparent); }
+.stage-priced   { background: color-mix(in srgb, #2563eb 14%, transparent); }
+.stage-returned { background: color-mix(in srgb, #eab308 18%, transparent); }
+.stage-rejected { background: color-mix(in srgb, var(--neg, #dc2626) 14%, transparent); }
+.stage-dwh      { background: color-mix(in srgb, #7c3aed 14%, transparent); }
+.stage-none     { background: transparent; opacity: 0.7; }
+
+.stage-legend { display:inline-flex; flex-wrap:wrap; align-items:center; gap: var(--sp-3, 10px); font-size: var(--fs-xs); color: var(--text-muted); cursor: help; }
+.stage-legend-item { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
+.stage-legend .stage-badge { min-width:18px; height:18px; font-size:11px; }
+
+/* Отметка «нужна замена артикула» (пожелание № 4) */
+.col-replace { text-align:center; }
+.replace-cell { display:inline-flex; align-items:center; gap:4px; cursor:pointer; }
+.replace-cell input { cursor:pointer; }
+.replace-cell input:disabled { cursor:default; }
+.replace-mail { font-size:13px; line-height:1; }
+.replace-mail--ok { color: var(--pos, #16a34a); }
+.replace-mail--err { color: var(--warn, #b76e00); }
+
+/* Согласование по постановлению 713 (пожелание № 8) */
+.col-reg713 { text-align:center; }
+.reg713-badge { display:inline-flex; align-items:center; justify-content:center; min-width:22px; height:22px; border-radius:6px; font-size:14px; line-height:1; cursor:pointer; }
+.reg713-badge.reg713-none { color: var(--text-muted); font-size:16px; opacity:0.6; }
+.reg713-badge.reg713-required { background: color-mix(in srgb, #2563eb 14%, transparent); }
+.reg713-badge.reg713-approved { background: color-mix(in srgb, var(--pos, #16a34a) 14%, transparent); }
+.reg713-badge.reg713-rejected { background: color-mix(in srgb, var(--neg, #dc2626) 14%, transparent); }
+.reg713-badge.reg713-readonly { cursor:help; }
+.reg713-modal { width: 560px; max-width: calc(100vw - 32px); }
+.reg713-body { gap: 10px; }
+.reg713-name { font-size: 13px; margin-top: -4px; }
+.reg713-check { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; }
+.reg713-row { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+.reg713-radio { display:inline-flex; align-items:center; gap:6px; cursor:pointer; }
+.reg713-block { border:1px solid var(--border-color, #e5e7eb); border-radius:8px; padding:10px 12px; display:flex; flex-direction:column; gap:8px; }
+.reg713-block-title { font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color: var(--text-muted, #6b7280); }
+.reg713-analog { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.reg713-search { position:relative; }
+.reg713-search-input, .reg713-doc, .reg713-comment { width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; font-family:inherit; }
+.reg713-results { list-style:none; margin:4px 0 0; padding:0; max-height:220px; overflow-y:auto; border:1px solid var(--border-color, #d1d5db); border-radius:4px; background: var(--bg-surface, #fff); }
+.reg713-results li { padding:6px 8px; cursor:pointer; font-size:13px; display:flex; gap:6px; align-items:baseline; flex-wrap:wrap; }
+.reg713-results li:hover { background: var(--bg-tonal, #f3f4f6); }
+.reg713-arch { font-size:11px; color: var(--text-muted); border:1px solid var(--border-color, #d1d5db); border-radius:999px; padding:0 6px; }
+.reg713-prices { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+.reg713-price { display:inline-flex; align-items:center; gap:6px; }
+.reg713-price input { width:110px; padding:4px 6px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-variant-numeric: tabular-nums; }
+.reg713-hint { font-size:12px; }
+.reg713-error { color: var(--neg, #dc2626); font-size:13px; }
+
+/* Закупная готовая продукция (пожелания № 6/7) */
+.state-badge--purchase { background: color-mix(in srgb, #0e7490 14%, transparent); }
+.purchase-modal { width: 640px; max-width: calc(100vw - 32px); }
+.purchase-body { gap: 10px; }
+.purchase-src, .purchase-hint { font-size: 12px; }
+.purchase-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.purchase-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted, #6b7280); padding: 6px 8px; border-bottom: 1px solid var(--border-color, #e5e7eb); }
+.purchase-table td { padding: 6px 8px; border-bottom: 1px solid var(--border-color, #eef0f3); }
+.purchase-table tr.total td { font-weight: 600; border-top: 2px solid var(--border-color, #d1d5db); }
+.purchase-table .num { font-variant-numeric: tabular-nums; font-family: 'JetBrains Mono', ui-monospace, monospace; }
 .peo-filter-select { padding:4px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; }
 .approval-modal { width:400px; background:#fff; color:#1f2937; }
 .approval-modal .modal-header { background:#fff; color:#1f2937; border-bottom:1px solid #e5e7eb; }

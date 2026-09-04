@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app import commercial, insight_agent, insights, llm_settings, margin, mocks, multipack
+from app import articul_replace, commercial, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
 from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
 from app.logship import log
 from app.middleware import require_perm
@@ -500,6 +500,50 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         log(logging.WARNING, "не удалось отметить мультипаки", error=str(exc))
         for row in data:
             row["is_multipack"] = False
+
+    # Отметка «нужна замена артикула» (пожелание № 4): ключ — как у статуса ПЭО,
+    # с заданием. Без отметки строка получает replace_needed=False, чтобы фронт
+    # не отличал «нет записи» от «снято».
+    try:
+        replace_keys = [
+            articul_replace.make_key(
+                r.get("Модель"), r.get("Артикул"), r.get("Признак калькуляции"),
+                r.get("PLAN_ID"), r.get("Номер задания производства"),
+            )
+            for r in data
+        ]
+        articul_replace.apply_flags(data, await articul_replace.flags_for(replace_keys))
+    except Exception as exc:
+        log(logging.WARNING, "не удалось наложить отметки о замене артикула", error=str(exc))
+        for row in data:
+            row["replace_needed"] = False
+
+    # Карточки согласования по постановлению 713 (пожелание № 8): ключ —
+    # модель + артикул, одна карточка на все планы и этапы пары. Без карточки
+    # строка получает reg713_required=False и пустые поля.
+    try:
+        reg_keys = [reg713.make_key(r.get("Модель"), r.get("Артикул")) for r in data]
+        reg713.apply_cards(data, await reg713.cards_for(reg_keys))
+    except Exception as exc:
+        log(logging.WARNING, "не удалось наложить карточки 713", error=str(exc))
+        for row in data:
+            row.update(reg713.REG713_EMPTY)
+
+    # Закупная готовая продукция (пожелания № 6/7): источник и итог раскладки
+    # себестоимости по ключу с заданием. Фронт по purchase_source рисует 🛒
+    # вместо значка копии и открывает детализацию (цена, логистика, таможня,
+    # сертификация).
+    try:
+        p_keys = [
+            purchase.make_key(r.get("Модель"), r.get("Артикул"), r.get("Признак калькуляции"),
+                              r.get("PLAN_ID"), r.get("Номер задания производства"))
+            for r in data
+        ]
+        purchase.apply_flags(data, await purchase.flags_for(p_keys))
+    except Exception as exc:
+        log(logging.WARNING, "не удалось наложить признак закупной продукции", error=str(exc))
+        for row in data:
+            row["purchase_source"] = None
 
     # Inject margin targets per level1
     try:
@@ -3417,3 +3461,291 @@ async def llm_settings_usage(
                  "avg_ms": int(num(asks["avg_ms"]))},
         "cost_total": round(num(blocks["cost"]) + num(asks["cost"]), 5),
     }
+
+
+# ── Отметка «нужна замена артикула» и рассылка (пожелание № 4) ────────────────
+
+@router.get("/articul-replace/recipients")
+async def articul_replace_recipients(_: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Кому уйдёт письмо: адресаты по сегментам (ЧНИ / остальное) и состояние SMTP.
+
+    Фронт показывает это в подсказке к галочке, чтобы экономист видел, кого он
+    оповещает и уйдёт ли письмо вообще.
+    """
+    people = await articul_replace.recipients()
+    return {
+        "recipients": people,
+        "smtp_enabled": articul_replace.smtp_enabled(),
+        "chni_level01": list(articul_replace.CHNI_LEVEL01),
+    }
+
+
+@router.post("/articul-replace")
+async def articul_replace_set(
+    payload: dict,
+    user: str | None = Depends(_require_perm("cost:articul_replace")),
+) -> dict:
+    """Поставить или снять отметку «нужна замена артикула» по строке таблицы.
+
+    Body: { model, articul, calc_sign?, plan_id?, task_number?, needed: bool,
+            comment?, context?: { model_name, level01, country, brand_manager } }
+
+    При needed=true письмо уходит адресатам сегмента, выбранного по
+    context.level01 (ЧНИ — носки и Orodoro, иначе — остальное). Итог рассылки
+    возвращается в ответе (`mail`) и сохраняется в журнале; сбой почты отметку
+    не откатывает.
+    """
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model и articul обязательны")
+    needed = payload.get("needed")
+    if not isinstance(needed, bool):
+        raise HTTPException(400, "needed должен быть true или false")
+
+    key = articul_replace.make_key(
+        model, articul, payload.get("calc_sign"), payload.get("plan_id"), payload.get("task_number"),
+    )
+    context = payload.get("context") or {}
+    if not isinstance(context, dict):
+        raise HTTPException(400, "context должен быть объектом")
+    set_by = (user or payload.get("user") or "system").strip() or "system"
+    comment = str(payload.get("comment") or "").strip()[:1000]
+
+    return await articul_replace.set_flag(
+        key, needed=needed, comment=comment, set_by=set_by, context=context,
+    )
+
+
+# ── Согласование цен по постановлению 713 (пожелание № 8) ─────────────────────
+
+def _reg713_key_from(payload: dict) -> "reg713.Reg713Key":
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model и articul обязательны")
+    return reg713.make_key(model, articul)
+
+
+@router.get("/reg713/articuls")
+async def reg713_search_articuls(q: str = "", limit: int = 30,
+                                 _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Поиск артикула-аналога в Gpartner S_MODELI: по артикулу, модели, наименованию.
+
+    От двух символов. Архивные записи помечены `archived`, идут в конце.
+    """
+    if _is_mock():
+        ql = (q or "").strip().lower()
+        items = [
+            {"model": "117924", "articul": "26-49773П-0", "name": "ФУТБОЛКА ДЛЯ ДЕВОЧЕК", "archived": False,
+             "price_mopt": 10.25, "price_rozn": None, "item_id": 1},
+            {"model": "532524-1", "articul": "26-46898ПП-0", "name": "БРЮКИ ЖЕНСКИЕ", "archived": False,
+             "price_mopt": 26.78, "price_rozn": None, "item_id": 2},
+            {"model": "123389", "articul": "26-46876П-7-2С", "name": "НОСКИ ДЕТСКИЕ", "archived": True,
+             "price_mopt": None, "price_rozn": None, "item_id": 3},
+        ]
+        return {"items": [i for i in items if ql in (i["articul"] + i["model"] + i["name"]).lower()]}
+    return {"items": await reg713.search_articuls(q, limit)}
+
+
+@router.get("/reg713/analog-prices")
+async def reg713_analog_prices(model: str, articul: str,
+                               _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Розница и опт аналога по правилам главной таблицы: последняя калькуляция
+    → утверждённая цена в DWH → плановая из S_MODELI. В ответе `source`
+    говорит, откуда взяты цифры (calc | dwh | gpartner | null)."""
+    if _is_mock():
+        return {"model": model, "articul": articul, "name": "МОК", "retail": 19.9, "wholesale": 12.5,
+                "source": "calc", "calc_sign": "КПСС", "plan_id": "1", "calc_date": None}
+    return await reg713.analog_prices(model, articul)
+
+
+@router.get("/reg713/list")
+async def reg713_list(all: int = 0, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Отчёт «Согласование 713»: все изделия, отмеченные «требуется согласование»
+    (`all=1` — включая снятые), с наименованием и ценами по правилам главной
+    таблицы, аналогом и его снимком цен, видом, решением исполкома и датами.
+    Фильтры, сортировка и Excel — на клиенте: карточек сотни, не миллионы.
+    """
+    if _is_mock():
+        return {"items": []}
+    return {"items": await reg713.list_cards(include_unmarked=bool(all))}
+
+
+@router.get("/reg713/card")
+async def reg713_get_card(model: str, articul: str,
+                          _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Карточка согласования и её история (кто, когда, что менял)."""
+    key = reg713.make_key(model, articul)
+    if _is_mock():
+        return {"card": None, "history": []}
+    return {"card": await reg713.get_card(key), "history": await reg713.history(key)}
+
+
+@router.post("/reg713/card")
+async def reg713_save_card(payload: dict, user: str | None = Depends(_require_perm("cost:reg713"))) -> dict:
+    """Сохранить карточку согласования по 713.
+
+    Body: { model, articul,
+            required?: bool, kind?: 'price_increase'|'novelty'|null,
+            analog_model?, analog_articul?, analog_name?,
+            analog_retail?, analog_wholesale?, analog_price_source?,
+            decision?: 'approved'|'rejected'|null, decision_doc?, comment? }
+    Передаются только меняемые поля; каждое сохранение пишется в журнал.
+    """
+    key = _reg713_key_from(payload)
+    fields = {k: v for k, v in payload.items() if k in reg713.EDITABLE}
+    set_by = (user or payload.get("user") or "system").strip() or "system"
+    if _is_mock():
+        return {"card": {"model": key[0], "articul": key[1], **fields}}
+    try:
+        card = await reg713.save_card(key, fields, set_by)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"card": card}
+
+
+# ── Закупная готовая продукция (пожелания № 6/7) ─────────────────────────────
+
+@router.post("/purchase/import")
+async def purchase_import(payload: dict | None = None,
+                          user: str | None = Depends(_require_any_perm("cost:approve", "cost:admin"))) -> dict:
+    """Импорт КПСС закупной продукции из портала БМ (mfportal, OLAP).
+
+    Body: { dry_run?: bool } — dry_run только считает, что было бы записано.
+    Создаёт/обновляет калькуляции в cost_manual_calc (source_calc_sign='ПОРТАЛ')
+    и раскладку в cost_purchase_cost. Идемпотентен по ключу с заданием.
+    """
+    if _is_mock():
+        return {"dry_run": bool((payload or {}).get("dry_run")), "plans": 0, "items": 0, "created": 0,
+                "updated": 0, "skipped": 0, "skipped_reasons": {}, "mock": True}
+    dry = bool((payload or {}).get("dry_run"))
+    try:
+        return await purchase.run_import((user or "system").strip() or "system", dry_run=dry)
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+
+
+@router.get("/purchase/import/runs")
+async def purchase_import_runs(limit: int = 10, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Журнал запусков импорта: когда, кто, сколько создано/обновлено/пропущено."""
+    if _is_mock():
+        return {"runs": []}
+    return {"runs": await purchase.last_runs(max(1, min(limit, 50)))}
+
+
+@router.get("/purchase/detail")
+async def purchase_detail(model: str, articul: str, calc_sign: str = "", plan_id: str = "", task_number: str = "",
+                          _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Раскладка себестоимости закупной калькуляции (цена, курс, логистика,
+    таможня, сертификация) и, для ПФКСС, плановая раскладка КПСС рядом."""
+    if _is_mock():
+        return {"current": None, "plan": None}
+    res = await purchase.detail(purchase.make_key(model, articul, calc_sign, plan_id, task_number))
+    if res is None:
+        raise HTTPException(404, "раскладка себестоимости по этой калькуляции не найдена")
+    return res
+
+
+# ── ПФКСС закупной продукции по приходу (пожелание № 7, этап 2) ──────────────
+
+_PURCHASE_EDIT = _require_any_perm("cost:edit_materials", "cost:approve", "cost:admin")
+
+
+@router.get("/purchase/rates")
+async def purchase_rates(date: str = "", _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Курсы НБ РБ к бел. рублю на дату: USD, EUR, RUB, KZT, UZS, CNY (BYN = 1).
+
+    Источник — `[DWH].[dim].[valuta1].KURS_BANK` (не `KURS`: тот внутренний курс
+    компании). Если на дату записи нет, берётся ближайшая предыдущая — она
+    видна в `as_of` по каждой валюте.
+    """
+    if _is_mock():
+        return {"date": date, "source": "nbrb", "as_of": {},
+                "rates": {"BYN": 1, "USD": 3.0687, "EUR": 3.5507, "RUB": 0.035546,
+                          "KZT": 0.0067319, "UZS": 0.00025744, "CNY": 0.45871}}
+    try:
+        return await purchase.rates_for_date(date or None)
+    except Exception as exc:  # noqa: BLE001 — DWH за VPN
+        raise HTTPException(502, f"курсы НБ РБ недоступны: {exc}")
+
+
+@router.get("/purchase/currencies")
+async def purchase_currencies(_: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Валюты, доступные для прихода и статей накладных."""
+    return {"items": [{"code": c, "name": v["name"]} for c, v in purchase.CURRENCIES.items()]}
+
+
+@router.post("/purchase/invoice/preview")
+async def purchase_invoice_preview(payload: dict, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Распределить накладные по строкам без сохранения: шапка + строки → строки
+    с раскладкой на единицу и итоги сверки. Та же функция, что при применении."""
+    try:
+        return purchase.distribute(payload, payload.get("lines") or [])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/purchase/hs-codes")
+async def purchase_hs_codes(payload: dict, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Коды ТН ВЭД по парам модель+артикул из справочника S_MODELI (KTNVED).
+
+    Body: { pairs: [{model, articul}] } → { codes: {"модель|артикул": "6203 43 900 0"} }.
+    Пары без кода в ответ не попадают — поле остаётся для ручного ввода.
+    """
+    pairs = [(p.get("model"), p.get("articul")) for p in (payload.get("pairs") or []) if isinstance(p, dict)]
+    if _is_mock():
+        return {"codes": {f"{m}|{a}": "6203 43 900 0" for m, a in pairs}}
+    try:
+        return {"codes": await purchase.hs_codes_for_pairs(pairs)}
+    except Exception as exc:  # noqa: BLE001 — справочник за VPN
+        raise HTTPException(502, f"справочник S_MODELI недоступен: {exc}")
+
+
+@router.get("/purchase/invoices")
+async def purchase_invoices(limit: int = 50, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    if _is_mock():
+        return {"items": []}
+    return {"items": await purchase.list_invoices(max(1, min(limit, 200)))}
+
+
+@router.get("/purchase/invoice/{inv_id}")
+async def purchase_invoice_get(inv_id: int, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    inv = await purchase.get_invoice(inv_id)
+    if not inv:
+        raise HTTPException(404, "инвойс не найден")
+    return inv
+
+
+@router.post("/purchase/invoice")
+async def purchase_invoice_save(payload: dict, user: str | None = Depends(_PURCHASE_EDIT)) -> dict:
+    """Создать или обновить черновик инвойса (id в теле — обновление).
+
+    Body: { id?, number, invoice_date?, contract?, supplier?, comment?, currency,
+            cur_to_usd, usd_to_rub?, usd_to_byn, rate_date?,
+            customs_fee_rub, transport_rub, transport_usd, cert_rub, svh_rub,
+            duty_rub: {"<код ТН ВЭД>": сумма_руб},
+            lines: [{ model, articul, plan_id?, task_number?, name?, color?, hs_code?, qty, unit_price_cur }] }
+    """
+    try:
+        return await purchase.save_invoice(payload, (user or "system").strip() or "system")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/purchase/invoice/{inv_id}/apply")
+async def purchase_invoice_apply(inv_id: int, user: str | None = Depends(_PURCHASE_EDIT)) -> dict:
+    """Применить инвойс: создать калькуляции ПФКСС и записи раскладки."""
+    try:
+        return await purchase.apply_invoice(inv_id, (user or "system").strip() or "system")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.delete("/purchase/invoice/{inv_id}")
+async def purchase_invoice_delete(inv_id: int, _: str | None = Depends(_PURCHASE_EDIT)) -> dict:
+    try:
+        await purchase.delete_invoice(inv_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True}
