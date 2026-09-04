@@ -27,7 +27,7 @@ params:
   order_by_cols: []
   timeseries_limit_metric: margin_cur
   order_desc: true
-  row_limit: 300
+  row_limit: 500
   server_page_length: 25
   show_cell_bars: false
   color_pn: true
