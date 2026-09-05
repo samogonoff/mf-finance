@@ -155,6 +155,21 @@ export interface PublishResult {
   pending?: string[];
 }
 
+/** Запись журнала публикаций карточки (и предпросмотры, и записи). */
+export interface PublishLogItem {
+  id: number;
+  version_no: number;
+  mode: string;
+  target: string;
+  status: string;
+  rows_total: number;
+  rows_written: number;
+  diff: number;
+  sandbox?: boolean;
+  error?: string;
+  started_at: string;
+}
+
 /** Строка, реально лежащая в приёмнике-песочнице (девять колонок FormToLoad*). */
 export interface SandboxRow {
   target_table: string;
@@ -218,8 +233,8 @@ export function useMpConditions() {
       headers: authHeader()
     });
 
-  const publishLog = (cardId: number): Promise<Record<string, unknown>[]> =>
-    $fetch(`${base}/api/plans/cards/${cardId}/publish-log`, { headers: authHeader() });
+  const publishLog = (cardId: number): Promise<PublishLogItem[]> =>
+    $fetch<PublishLogItem[]>(`${base}/api/plans/cards/${cardId}/publish-log`, { headers: authHeader() });
 
   // Что реально записано в песочницу приёмника (PLANS_PUBLISH_SANDBOX=1). Только
   // админ процессов: это срез «внешнего контура», в обычном процессе не нужен.

@@ -53,8 +53,24 @@
                   <span class="badge" :class="statusBadge(st.status)">{{ statusLabel(st.status) }}</span>
                 </div>
                 <div class="sc-name">{{ st.name }}</div>
-                <button type="button" class="sc-tasks" :title="`Открыть задания этапа ${st.stage_code}`" @click="stageModal = st">
-                  <span class="sct-count" :class="{ ok: stageTasks(st.stage_code).length && stageDone(st.stage_code) === stageTasks(st.stage_code).length }">
+                <button
+                  type="button"
+                  class="sc-tasks"
+                  :title="stageIsApproval(st) ? `Что согласуется на этапе ${st.stage_code}` : `Открыть задания этапа ${st.stage_code}`"
+                  @click="stageModal = st"
+                >
+                  <!-- На этапе согласования заданий не бывает: показываем не «0/0
+                       заданий» (это читалось как «ничего не сгенерировано»), а
+                       сколько форм ждёт решения на этом шаге. -->
+                  <span
+                    v-if="stageIsApproval(st) && !stageTasks(st.stage_code).length"
+                    class="sct-count"
+                    :class="{ ok: !cardsOnStep(st.stage_code).length }"
+                  >
+                    <Icon name="lucide:check-check" />
+                    {{ cardsOnStep(st.stage_code).length ? `${cardsOnStep(st.stage_code).length} форм ждёт решения` : "формы решения не ждут" }}
+                  </span>
+                  <span v-else class="sct-count" :class="{ ok: stageTasks(st.stage_code).length && stageDone(st.stage_code) === stageTasks(st.stage_code).length }">
                     <Icon name="lucide:list-checks" /> {{ stageDone(st.stage_code) }}/{{ stageTasks(st.stage_code).length }} заданий
                   </span>
                   <span class="sct-people" :title="stageAssignees(st.stage_code).join(', ')">
@@ -66,14 +82,29 @@
                   <span v-else-if="st.due_at" class="sc-due"><Icon name="lucide:calendar" /> {{ st.due_at }}</span>
                 </div>
                 <div class="sc-actions">
+                  <!-- Этапы 1.1–1.4 закрываются САМИ, когда формы проходят
+                       соответствующий шаг: они агрегат состояния карточек, а не
+                       отдельное решение. Кнопку здесь не показываем — сервер её
+                       всё равно отклонит, а человек считал, что двигает процесс
+                       (именно так процесс и «разъезжался» с формами). Вместо
+                       кнопки — переход туда, где решение принимается. -->
                   <button
-                    v-if="!isApproval(st.stage_code)"
+                    v-if="stageDrivenByCards(st)"
+                    class="btn btn-sm btn-ghost"
+                    :title="`Этап ${st.stage_code} закрывается сам, когда формы пройдут этот шаг`"
+                    @click="stageModal = st"
+                  >
+                    <Icon name="lucide:check-check" />
+                    {{ cardsOnStep(st.stage_code).length ? "К формам на решении" : "Что согласуется" }}
+                  </button>
+                  <button
+                    v-else-if="!isApproval(st.stage_code)"
                     class="btn btn-sm btn-primary"
                     :disabled="!!depHint(st) || st.status === 'completed'"
                     @click="doAct(st.stage_code, 'submit')"
                   >Отправить</button>
                   <button
-                    v-if="isApproval(st.stage_code)"
+                    v-else
                     class="btn btn-sm btn-primary"
                     :disabled="!!depHint(st) || st.status === 'completed'"
                     @click="doAct(st.stage_code, 'approve')"
@@ -236,7 +267,38 @@
       @close="stageModal = null"
     >
       <div v-if="stageModal" class="sm-body">
-        <p v-if="!stageTasks(stageModal.stage_code).length" class="sm-empty">
+        <!-- Этап согласования заданий-ввода не имеет: решение принимается по
+             КАРТОЧКАМ ФОРМ (у каждой формы свой лист согласования, ТЗ §2.2).
+             Раньше здесь предлагалось «сгенерировать задания», и человек искал
+             кнопку, которой не существует. -->
+        <div v-if="!stageTasks(stageModal.stage_code).length && stageIsApproval(stageModal)" class="sm-appr">
+          <p class="sm-appr-txt">
+            Это этап согласования — отдельных заданий у него нет. Согласуются
+            <b>карточки форм</b>: у каждой формы свой лист согласования, версия и возврат,
+            поэтому возврат одной формы не останавливает остальные.
+          </p>
+          <p v-if="!cardsOnStep(stageModal.stage_code).length" class="sm-appr-txt muted">
+            На этом шаге сейчас ни одна форма решения не ждёт.
+          </p>
+          <div v-else class="sm-cards">
+            <div v-for="c in cardsOnStep(stageModal.stage_code)" :key="c.id" class="sm-card">
+              <span class="smc-title">{{ c.title }}</span>
+              <span class="badge" :class="cardBadge(c)">{{ cardStatus(c) }}</span>
+              <!-- Лист согласования — панель на этом же экране (CardProcessPanel),
+                   поэтому не ссылка, а раскрытие панели: отдельной страницы
+                   согласования карточки нет. -->
+              <button type="button" class="btn btn-sm btn-primary" @click="openCardFromStage(c.id)">
+                <Icon name="lucide:check-check" /> Согласование
+              </button>
+            </div>
+          </div>
+        </div>
+        <p v-else-if="!stageTasks(stageModal.stage_code).length && stageModal.has_task_templates === false" class="sm-empty">
+          На этот этап не заведены шаблоны заданий — генерация ничего не создаст.
+          Шаблоны настраиваются в
+          <NuxtLink :to="`/plans/admin/task-templates`" class="link">конструкторе заданий</NuxtLink>.
+        </p>
+        <p v-else-if="!stageTasks(stageModal.stage_code).length" class="sm-empty">
           Задания не сгенерированы.
           <NuxtLink :to="`/plans/process/${id}`" class="link">Открыть кокпит</NuxtLink> и нажать «Генерировать задания».
         </p>
@@ -370,6 +432,41 @@ const colDue = (c: Col): string => {
 };
 
 const isApproval = (code: string) => APPROVAL.has(code);
+
+/**
+ * Этап согласования: признак приходит с сервера (stageDefs.IsApproval), а
+ * локальный список APPROVAL остаётся фолбэком для старых ответов API.
+ */
+const stageIsApproval = (st: StageState) => st.is_approval ?? APPROVAL.has(st.stage_code);
+
+/**
+ * Карточки форм, ожидающие решения на этом шаге маршрута. Шаг карточки (step_code)
+ * совпадает с кодом этапа: 1.2 — руководитель, 1.3 — директор, 1.4 — финальное
+ * утверждение. Показываем только те, что реально на согласовании: карточка в
+ * черновике решения не ждёт.
+ */
+/**
+ * Этапом управляют КАРТОЧКИ форм: 1.1–1.4 закрываются сами, когда формы проходят
+ * шаг (сервер отклоняет ручное закрытие). Признак считаем по наличию карточек с
+ * таким шагом в маршруте — если карточек периода нет вовсе, этап остаётся
+ * ручным, как этапы производства и сводов.
+ */
+const CARD_STEPS = ["1.1", "1.2", "1.3", "1.4"];
+const stageDrivenByCards = (st: StageState) => CARD_STEPS.includes(st.stage_code) && cards.value.length > 0;
+
+const cardsOnStep = (code: string) =>
+  cards.value.filter((c) => c.step_code === code && ["on_approval", "returned"].includes(c.status));
+
+/** Из попапа этапа — к листу согласования карточки: закрываем попап и раскрываем панель. */
+const openCardFromStage = (cardID: number) => {
+  stageModal.value = null;
+  openCard.value = cardID;
+  // Панель рендерится ниже таймлайна — без прокрутки человек её не заметит и
+  // решит, что кнопка «не сработала».
+  nextTick(() => {
+    document.querySelector(".cards-block")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+};
 const canReturn = (st: StageState) => st.status !== "pending";
 
 const depHint = (st: StageState): string => {
@@ -434,11 +531,14 @@ const load = async () => {
   error.value = "";
   try {
     list.value = await stages(id, year.value, month.value);
-    [svod.value, tasks.value] = await Promise.all([
-      mpSvod(year.value, month.value),
-      byInstance(id).catch(() => [])
+    // Карточки грузим ВМЕСТЕ с остальным, а не после: от них зависит вид плиток
+    // этапов (какие закрываются сами), и при загрузке в конце таймлайн на миг
+    // показывал кнопки, которых там быть не должно.
+    await Promise.all([
+      mpSvod(year.value, month.value).then((v) => (svod.value = v)),
+      byInstance(id).catch(() => []).then((v) => (tasks.value = v)),
+      loadCards()
     ]);
-    await loadCards();
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : "Ошибка загрузки";
   }
@@ -669,6 +769,21 @@ onMounted(load);
 /* попап этапа */
 .sm-body { display: flex; flex-direction: column; gap: var(--sp-3); }
 .sm-empty { color: var(--text-muted); padding: var(--sp-4); text-align: center; }
+/* Этап согласования: объяснение + карточки, ожидающие решения на этом шаге. */
+.sm-appr { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-2) 0; }
+.sm-appr-txt { margin: 0; font-size: var(--fs-sm); color: var(--text-primary); }
+.sm-appr-txt.muted { color: var(--text-muted); }
+.sm-cards { display: flex; flex-direction: column; gap: var(--sp-2); }
+.sm-card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--rd-4);
+  background: var(--bg-surface);
+}
+.smc-title { flex: 1; font-size: var(--fs-sm); color: var(--text-strong); }
 .sm-tasks { display: flex; flex-direction: column; gap: var(--sp-3); max-height: 60vh; overflow-y: auto; }
 .sm-task {
   border: 1px solid var(--border);

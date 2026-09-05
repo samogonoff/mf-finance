@@ -629,9 +629,15 @@ func (s *TaskStore) nameMap(ctx context.Context, dir, codeKey, nameKey string) m
 	return out
 }
 
-// TaskData собирает срез данных задания: pl_metric по его ЦФО (или ЦФО его ЮЛ),
-// факт/стратегия/тактика/расчёт + корректировки (для проверки промежуточных
-// результатов ответственным/согласующим, ТЗ WF-05/ADJ-04/05).
+// TaskData собирает срез данных задания: факт/стратегия/тактика/расчёт по его ЦФО
+// (или ЦФО его ЮЛ) + корректировки — для проверки промежуточных результатов
+// ответственным и согласующим (ТЗ WF-05/ADJ-04/05).
+//
+// ВАЖНО про два слоя значений. МП пишет значения в pl_metric, а «Розница» — в
+// tp_value (свой слой, миграция 0035: у розницы единица ввода «магазин × месяц»,
+// и все 12 месяцев года читаются сразу). Поэтому чтение только pl_metric
+// показывало «данных пока нет» на заполненной форме розницы — задание было
+// «готово», а модалка пустая. Слой выбирается по form_code задания.
 func (s *TaskStore) TaskData(ctx context.Context, taskID int64) (TaskData, error) {
 	var out TaskData
 	var raw []byte
@@ -670,6 +676,18 @@ func (s *TaskStore) TaskData(ctx context.Context, taskID int64) (TaskData, error
 	cfoNames := s.nameMap(ctx, "dir_cfo", "code_cfo", "name_cfo")
 	plNames := s.nameMap(ctx, "dir_pl_line", "code_pl", "expense_name")
 
+	// «Розница» держит значения в своём слое — читаем его, иначе модалка врёт
+	// «форма ещё не заполнена» на заполненной форме.
+	if out.Task.FormCode == TemplateRetail {
+		retailRows, err := s.retailTaskRows(ctx, out.Task, codes, cfoNames)
+		if err != nil {
+			return out, err
+		}
+		out.Rows = retailRows
+		out.HasData = len(retailRows) > 0
+		return out, nil
+	}
+
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.profit_center, m.line_code, m.block_type,
 		       m.amount_fact, m.amount_strategy, m.amount, m.amount_calc, m.is_manual,
@@ -699,6 +717,76 @@ func (s *TaskStore) TaskData(ctx context.Context, taskID int64) (TaskData, error
 	}
 	out.HasData = len(out.Rows) > 0
 	return out, rows.Err()
+}
+
+// retailTaskRows — значения формы «Розница» для модалки данных задания.
+//
+// Строка модалки — это «магазин × метрика», а не «магазин × месяц»: задание
+// покрывает до 144 магазинов, и 12 месяцев на каждый дали бы 1700 строк, по
+// которым согласующий ничего не увидит. Поэтому месяцы СВЁРНУТЫ в сумму по
+// плановому периоду карточки — ровно то число, которое согласующий сверяет со
+// сводом. Факт и стратегия берутся так же, из своих метрик слоя.
+func (s *TaskStore) retailTaskRows(ctx context.Context, t Task, codes []int, cfoNames map[int]string) ([]TaskDataRow, error) {
+	// Экземпляр розницы ищем по карточке периода: у формы четыре карточки (по
+	// стране), и задание относится к одной из них.
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.code_cfo, v.metric, SUM(v.amount)::float8,
+		       BOOL_OR(v.source = 'manual'), MAX(COALESCE(v.note, ''))
+		  FROM tp_instance i
+		  JOIN form_card c ON c.id = i.card_id
+		  JOIN tp_row r ON r.instance_id = i.id
+		  JOIN tp_value v ON v.row_id = r.id
+		 WHERE c.pl_id = $1 AND c.form_code = $2
+		   AND r.code_cfo = ANY($3)
+		   AND v.amount IS NOT NULL
+		 GROUP BY r.code_cfo, v.metric
+		 ORDER BY r.code_cfo, v.metric`, t.PlID, TemplateRetail, codes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TaskDataRow, 0, 256)
+	for rows.Next() {
+		var code int
+		var metric string
+		var amount float64
+		var manual bool
+		var note string
+		if err := rows.Scan(&code, &metric, &amount, &manual, &note); err != nil {
+			return nil, err
+		}
+		v := amount
+		row := TaskDataRow{
+			CodeCFO:  code,
+			NameCFO:  cfoNames[code],
+			LineCode: RetailMetricCodePL(metric),
+			IsManual: manual,
+			Reason:   note,
+		}
+		row.ExpenseName = retailMetricTitle(metric)
+		// План розницы вводится в колонку тактики — там же его и сверяют.
+		row.Tactic = &v
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// retailMetricTitle — подпись метрики в модалке данных. Пишем по-человечески:
+// «sales» в интерфейсе не читается, а согласующий должен понять строку без
+// словаря.
+func retailMetricTitle(metric string) string {
+	switch metric {
+	case MetricSales:
+		return "План продаж (сумма периода)"
+	case MetricPayroll:
+		return "ФОТ (сумма периода)"
+	case MetricRent:
+		return "Аренда помещений, статья 54 (сумма периода)"
+	case MetricRentAssets:
+		return "Аренда имущества, статья 55 (сумма периода)"
+	}
+	return metric
 }
 
 // --- Конструктор: шаблоны заданий этапа ---

@@ -207,12 +207,20 @@ func applyCardAction(c Card, allSteps []RouteStep, in CardActionInput) (CardTran
 		next := idx + 1
 		for next < len(route) {
 			s := route[next]
+			// skip_if_same_user закрывает ВЫРОЖДЕННОЕ самосогласование: когда
+			// согласующий шага — тот же человек, который отправил форму.
+			//
+			// Владелец шага НЕ НАЗНАЧЕН — это не самосогласование, а незаконченная
+			// настройка. Раньше owner == 0 тоже приводил к пропуску, и шаг
+			// согласования исчезал молча: форма проскакивала руководителя, а в
+			// листе стояло «согласовано автоматически» без человека. Такой пропуск
+			// невозможно отличить от настоящего решения, поэтому теперь шаг
+			// остаётся, и админ назначает владельца в кокпите процесса.
 			if s.SkipIfSameUser && in.ActorID != 0 {
-				owner := in.StepOwner[s.StepCode]
-				if owner == 0 || owner == in.ActorID {
+				if owner := in.StepOwner[s.StepCode]; owner != 0 && owner == in.ActorID {
 					tr.Approvals = append(tr.Approvals, ApprovalWrite{
 						StepCode: s.StepCode, Decision: "auto_skipped", UserID: in.ActorID,
-						Comment: "согласовано автоматически: совпадение исполнителя и согласующего",
+						Comment: "согласовано автоматически: отправитель и согласующий — один человек",
 					})
 					next++
 					continue

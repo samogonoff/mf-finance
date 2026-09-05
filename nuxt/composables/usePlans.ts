@@ -42,6 +42,14 @@ export interface StageState {
   status: string;
   due_at: string;
   depends_on: string[];
+  /**
+   * Этап СОГЛАСОВАНИЯ: заданий-ввода у него нет, решение принимается по
+   * карточкам форм (лист согласования каждой формы). Признак нужен, чтобы не
+   * предлагать «сгенерировать задания» там, где их не бывает.
+   */
+  is_approval?: boolean;
+  /** На этап заведены шаблоны заданий: без них генерация ничего не создаст. */
+  has_task_templates?: boolean;
 }
 
 export interface AuditEvent {

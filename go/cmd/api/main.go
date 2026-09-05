@@ -351,7 +351,22 @@ func main() {
 		// План пишется на РЕАЛЬНОЕ ЮЛ: колонка «Компания» приёмника тактики
 		// заполняется УНП из справочника (правки ТЗ 02.09.2026 §15/§16).
 		WithLegalEntities(plans.NewLegalEntityResolver(plansDir)).
+		// Уведомления по карточкам: согласующий узнаёт, что форма ждёт его
+		// решения. Тот же канал, что у заданий (колокольчик + Bitrix).
+		WithNotifier(notifSvc).
+		// Этапы таймлайна считаются по карточкам: «этап 1.2 готово» при формах в
+		// черновиках — то, из-за чего процесс выглядел рассинхронизированным.
+		WithStages(plansStore).
+		// Задание «заполни форму» закрывается отправкой формы, а не отдельной
+		// кнопкой: иначе задание и форма живут своей жизнью.
+		WithFillTasks(plansTasks).
 		WithAudit(plansAudit)
+	// Этапы знают про карточки: закрыть этап 1.х руками, пока формы не прошли
+	// шаг, нельзя — решение принимается в карточке формы.
+	plansSvc.WithCards(plansCards)
+	// Карточки форм заводятся вместе с периодом: до этого процесс выглядел
+	// незапущенным (этапы и задания есть, а формы «не созданы»).
+	plansH.SetCards(plansCards)
 	plansCards.RegisterForm(plans.TemplateMP, plans.NewMpCardProvider(plansStore, plansRates), plans.NewMpCardProvider(plansStore, plansRates))
 
 	// Форма «Розница» (TPL-TO-RETAIL): карточка + сервис сетки/расчёта/валидаций.
@@ -364,6 +379,11 @@ func main() {
 		WithScope(plansScope).
 		WithAudit(plansAudit).
 		WithValueLimits(cfg.PlansRetailValueLimits)
+	// Гейт отправки: карточка не уходит на согласование, если форма не проходит
+	// блокирующие проверки. До этого проверки жили только в интерфейсе, и форму
+	// можно было отправить мимо них — согласующий обязан был вернуть её, и
+	// процесс делал лишний круг.
+	plansCards.WithSubmitGate(plans.TemplateRetail, plans.NewRetailSubmitGate(plansRetail))
 	plansRetailH := plans.NewRetailHandler(plansRetail, plansPrincipal)
 
 	plansCardsH := plans.NewCardHandler(plansCards, plansScope, plansPrincipal).

@@ -57,6 +57,14 @@ type StageState struct {
 	DueDate     string   `json:"due_at"`
 	DependsOn   []string `json:"depends_on"`
 	Responsible string   `json:"responsible"` // ответственные/согласующие (из маршрута)
+	// IsApproval — этап СОГЛАСОВАНИЯ. У него нет заданий-ввода: согласование идёт
+	// по карточкам форм (лист согласования каждой формы), а этап отражает срок и
+	// факт прохождения. Без этого признака интерфейс предлагал «сгенерировать
+	// задания» там, где их не бывает, и человек искал несуществующую кнопку.
+	IsApproval bool `json:"is_approval"`
+	// HasTaskTemplates — на этап заведены шаблоны заданий (конструктор). Пусто —
+	// значит генерация ничего не создаст, и предлагать её нельзя.
+	HasTaskTemplates bool `json:"has_task_templates"`
 }
 
 // RouteSeed — ответственные по схеме ТЗ (fallback, если plans_route_config пуст).
@@ -100,6 +108,7 @@ func initStages(year, month int, country string, seed []CountryCalendar, resp ma
 			}
 		}
 		out = append(out, StageState{
+			IsApproval: d.IsApproval,
 			Code: d.Code, Track: d.Track, Name: d.Name,
 			Status: "pending", DueDate: due, DependsOn: d.DependsOn,
 			Responsible: resp[d.Code],

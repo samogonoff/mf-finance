@@ -193,6 +193,11 @@
       <button class="tb" :class="{ active: tab === 'versions' }" @click="tab = 'versions'">
         Версии <span class="tb-n">{{ versions.length }}</span>
       </button>
+      <!-- Журнал публикаций отвечает на вопрос «опубликовал — и что дальше»:
+           видно, куда ушли строки, сколько записано и сошёлся ли контроль сумм. -->
+      <button class="tb" :class="{ active: tab === 'publog' }" @click="tab = 'publog'">
+        Публикации <span class="tb-n">{{ pubLog.length }}</span>
+      </button>
     </div>
 
     <div v-if="card && tab === 'approvals'" class="cpp-pane">
@@ -239,6 +244,38 @@
         </tbody>
       </table>
       <p v-else class="cpp-empty">Версий нет: снимок пишется при каждом переходе по маршруту.</p>
+    </div>
+
+    <div v-if="card && tab === 'publog'" class="cpp-pane">
+      <table v-if="pubLog.length" class="data-table compact">
+        <thead>
+          <tr>
+            <th>Когда</th><th>Режим</th><th>Приёмник</th><th>Статус</th>
+            <th class="col-num">Строк</th><th class="col-num">Записано</th>
+            <th class="col-num">Расхождение</th><th>Комментарий</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="p in pubLog" :key="p.id">
+            <td class="dt-cell">{{ dt(p.started_at) }}</td>
+            <td>{{ p.mode === "write" ? "запись" : "предпросмотр" }}</td>
+            <td class="tgt-cell">
+              {{ p.target || "—" }}
+              <span v-if="p.sandbox" class="badge badge-warn">песочница</span>
+            </td>
+            <td><span class="badge" :class="pubLogTone(p.status)">{{ pubLogStatus(p.status) }}</span></td>
+            <td class="col-num">{{ num(p.rows_total) }}</td>
+            <td class="col-num">{{ num(p.rows_written) }}</td>
+            <!-- Контроль ТЗ §28.5: расхождение обязано быть нулём. -->
+            <td class="col-num" :class="p.diff === 0 ? 'ok' : 'bad'">{{ num(p.diff, 2) }}</td>
+            <td class="cm-cell">{{ p.error || "—" }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="cpp-empty">
+        Публикаций не было. Предпросмотр можно запустить на любом шаге — он ничего не пишет
+        и показывает, что и куда ушло бы.
+      </p>
     </div>
 
     <!-- ===== Модалка возврата ===== -->
@@ -313,6 +350,7 @@ import {
   type CardApproval,
   type CardVersion,
   type PublishResult,
+  type PublishLogItem,
   type SandboxRow
 } from "~/composables/useMpConditions";
 import { num } from "~/utils/format";
@@ -338,7 +376,14 @@ const route = ref<RouteStep[]>([]);
 const approvals = ref<CardApproval[]>([]);
 const versions = ref<CardVersion[]>([]);
 const pub = ref<PublishResult | null>(null);
-const tab = ref<"approvals" | "versions">("approvals");
+const tab = ref<"approvals" | "versions" | "publog">("approvals");
+const pubLog = ref<PublishLogItem[]>([]);
+
+/** Метки журнала публикаций: «ok/blocked/failed» человеку ничего не говорят. */
+const pubLogStatus = (s: string) =>
+  s === "ok" ? "успешно" : s === "blocked" ? "не выполнено" : "ошибка";
+const pubLogTone = (s: string) =>
+  s === "ok" ? "badge-pos" : s === "blocked" ? "badge-warn" : "badge-neg";
 const loading = ref(true);
 const busy = ref(false);
 const error = ref("");
@@ -465,6 +510,14 @@ const load = async () => {
     route.value = v.route || [];
     approvals.value = v.approvals || [];
     versions.value = v.versions || [];
+    // Журнал публикаций — часть состояния карточки, а не отдельный экран:
+    // «опубликовал и что дальше» должно быть видно там же, где кнопка публикации.
+    // Его недоступность не должна ломать загрузку карточки.
+    try {
+      pubLog.value = await api.publishLog(props.cardId);
+    } catch {
+      pubLog.value = [];
+    }
   } catch (e: unknown) {
     error.value = errText(e, "Не удалось загрузить карточку процесса");
   } finally {
@@ -661,6 +714,9 @@ defineExpose({ reload: load });
 .cpp-pane { overflow-x: auto; }
 .cpp-empty { font-size: var(--fs-sm); color: var(--text-muted); padding: var(--sp-4); margin: 0; }
 .cm-cell { max-width: 320px; font-size: var(--fs-sm); }
+/* Журнал публикаций: имя приёмника длинное, поэтому моно и с бейджем песочницы. */
+.tgt-cell { font-family: var(--font-mono); font-size: var(--fs-2xs); white-space: nowrap; }
+.tgt-cell .badge { margin-left: 4px; }
 .dt-cell { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-secondary); white-space: nowrap; }
 .revoked td { text-decoration: line-through; color: var(--text-muted); }
 .rv-note { display: block; font-size: var(--fs-2xs); color: var(--neg); text-decoration: none; }

@@ -62,6 +62,7 @@ func (f *fakeTarget) Sandbox() bool   { return f.sandbox }
 // MarkPublished; остальное — заглушки (публикация их не трогает).
 type fakeCardStore struct {
 	card    Card
+	route   []RouteStep
 	pubOK   bool
 	pubNote string
 	marked  bool
@@ -77,8 +78,19 @@ func (s *fakeCardStore) CardByScope(context.Context, int64, string, string) (Car
 	return s.card, nil
 }
 func (s *fakeCardStore) Cards(context.Context, int64) ([]Card, error) { return nil, nil }
-func (s *fakeCardStore) SaveTransition(context.Context, int64, CardTransition, []byte, int64) (Card, error) {
-	return s.card, nil
+func (s *fakeCardStore) SaveTransition(_ context.Context, _ int64, tr CardTransition, _ []byte, _ int64) (Card, error) {
+	// Возвращаем карточку в состоянии ПОСЛЕ перехода: тесты процесса проверяют,
+	// куда именно уехала карточка, а не только что вызов не упал.
+	next := s.card
+	if tr.Status != "" {
+		next.Status = tr.Status
+	}
+	if tr.StepCode != "" {
+		next.StepCode = tr.StepCode
+	}
+	next.Locked = tr.Locked
+	s.card = next
+	return next, nil
 }
 func (s *fakeCardStore) SetCalcMode(context.Context, int64, string) error           { return nil }
 func (s *fakeCardStore) SetFxSnapshot(context.Context, int64, map[string]any) error { return nil }
@@ -86,7 +98,7 @@ func (s *fakeCardStore) CardApprovals(context.Context, int64) ([]CardApproval, e
 	return nil, nil
 }
 func (s *fakeCardStore) CardVersions(context.Context, int64) ([]CardVersion, error) { return nil, nil }
-func (s *fakeCardStore) Route(context.Context, string) ([]RouteStep, error)         { return nil, nil }
+func (s *fakeCardStore) Route(context.Context, string) ([]RouteStep, error)         { return s.route, nil }
 func (s *fakeCardStore) UpsertRouteStep(context.Context, RouteStep, int64) error    { return nil }
 func (s *fakeCardStore) CardVersionPayload(context.Context, int64, int) (json.RawMessage, error) {
 	return json.RawMessage(`{}`), nil
