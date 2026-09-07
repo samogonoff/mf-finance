@@ -54,6 +54,20 @@ migrate:               ## применить миграции (заново — 
 	docker exec -it finance-postgres-1 sh -c \
 	  'for f in /docker-entrypoint-initdb.d/migrations/*.up.sql; do echo "applying $$f"; psql -U finance -d finance -f "$$f"; done'
 
+plans-reset:           ## ⚠ снести процесс «Тактических планов»: периоды, задания, карточки, значения
+	@echo "Будет удалено (каскадом от pl_instance):"
+	@docker exec finance-postgres-1 psql -U finance -d finance -tAc \
+	  "SELECT 'периодов '||(SELECT COUNT(*) FROM pl_instance)||', заданий '||(SELECT COUNT(*) FROM pl_task)||', карточек '||(SELECT COUNT(*) FROM form_card)||', ячеек розницы '||(SELECT COUNT(*) FROM tp_value)||', значений МП '||(SELECT COUNT(*) FROM pl_metric)"
+	@printf 'Продолжить? [y/N] ' && read a && [ "$$a" = "y" ]
+	docker exec finance-postgres-1 psql -U finance -d finance -c "DELETE FROM pl_instance"
+	@echo "Готово. Справочники, права-срезы и соответствия РМ сохранены."
+	@echo "Дальше: создать период на /plans и нажать «Генерировать задания» в кокпите."
+
+plans-reset-period:    ## ⚠ снести один период планов: make plans-reset-period Y=2026 M=9
+	@test -n "$(Y)" -a -n "$(M)" || (echo "нужны Y и M: make plans-reset-period Y=2026 M=9"; exit 1)
+	docker exec finance-postgres-1 psql -U finance -d finance -c \
+	  "DELETE FROM pl_instance WHERE period_year=$(Y) AND period_month=$(M)"
+
 reset-db:              ## ⚠ полностью пересоздать БД (drop volume + миграции)
 	$(COMPOSE) stop postgres
 	$(COMPOSE) rm -fv postgres

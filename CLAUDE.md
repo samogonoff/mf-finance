@@ -33,6 +33,8 @@ make logs-go          # логи только go-api
 make logs-nuxt        # логи только nuxt
 make psql             # psql в БД finance
 make reset-db         # ⚠ снести том db_data и поднять PG заново (миграции из migrations/ применятся init-db.sh)
+make plans-reset      # ⚠ сбросить процесс планов: периоды, задания, карточки, значения (справочники и права остаются)
+make plans-reset-period Y=2026 M=9   # ⚠ то же для одного периода
 make migrate          # повторно прогнать /docker-entrypoint-initdb.d/migrations/*.up.sql на существующем volume
 make restart-<svc>    # перезапустить сервис: make restart-go-api / make restart-nuxt
 
