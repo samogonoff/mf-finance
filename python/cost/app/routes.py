@@ -3656,9 +3656,18 @@ async def reg713_save_card(payload: dict, user: str | None = Depends(_require_pe
 
 # ── Закупная готовая продукция (пожелания № 6/7) ─────────────────────────────
 
+# Право на изменение закупной: импорт из портала, инвойс и его применение.
+# Калькулятор входит намеренно (просьба заказчика 07.09.2026) — импорт создаёт
+# КАЛЬКУЛЯЦИИ КПСС, а это его работа, а не согласование. Набор прав тот же, что у
+# остальных мутаций закупной ниже: cost:edit_materials есть у ролей
+# «Калькулятор», «ПЭО» и «Full Admin», и кнопка не появляется у бренд-менеджера
+# и «Просмотра», которым импортировать нечего.
+_PURCHASE_EDIT = _require_any_perm("cost:edit_materials", "cost:approve", "cost:admin")
+
+
 @router.post("/purchase/import")
 async def purchase_import(payload: dict | None = None,
-                          user: str | None = Depends(_require_any_perm("cost:approve", "cost:admin"))) -> dict:
+                          user: str | None = Depends(_PURCHASE_EDIT)) -> dict:
     """Импорт КПСС закупной продукции из портала БМ (mfportal, OLAP).
 
     Body: { dry_run?: bool } — dry_run только считает, что было бы записано.
@@ -3697,8 +3706,7 @@ async def purchase_detail(model: str, articul: str, calc_sign: str = "", plan_id
 
 
 # ── ПФКСС закупной продукции по приходу (пожелание № 7, этап 2) ──────────────
-
-_PURCHASE_EDIT = _require_any_perm("cost:edit_materials", "cost:approve", "cost:admin")
+# Право на изменение — общее для всей закупной, объявлено выше (_PURCHASE_EDIT).
 
 
 @router.get("/purchase/rates")

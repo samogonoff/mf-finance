@@ -177,8 +177,12 @@
           {{ cacheRefreshing ? 'Обновление…' : 'Обновить кеш' }}
         </button>
         <!-- Импорт КПСС закупной готовой продукции из портала БМ (пожелания № 6/7).
-             Право — как у согласования: ПЭО и админ. -->
-        <button v-if="can('cost:approve') || can('cost:admin')" class="btn btn-ghost btn-sm"
+             Право — как у остальных правок закупной: калькулятор, ПЭО, админ.
+             Калькулятор добавлен по просьбе заказчика 07.09.2026 — импорт создаёт
+             калькуляции КПСС, это его работа, а не согласование. Условие зеркалит
+             серверное _PURCHASE_EDIT в app/routes.py; расходиться им нельзя, иначе
+             кнопка обещает то, что сервер отклонит с 403. -->
+        <button v-if="can('cost:edit_materials') || can('cost:approve') || can('cost:admin')" class="btn btn-ghost btn-sm"
                 :disabled="purchaseImporting" @click="runPurchaseImport"
                 title="Забрать из портала БМ калькуляции КПСС закупной готовой продукции (планы «заказ готовой»)">
           <Icon name="lucide:shopping-cart" />
