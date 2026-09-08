@@ -30,6 +30,9 @@ type RetailService struct {
 	scope    ScopeStore
 	audit    AuditSink
 	limits   map[string]float64 // V-02: верхняя граница значения по стране
+	// reconBlocking — запрещать ли отправку при несошедшейся сверке V-05.
+	// По умолчанию false (решение 08.09.2026), включается ENV.
+	reconBlocking bool
 
 	// Кэш срезов факта/стратегии/истории: сетка на 375 магазинов дёргает срезы
 	// на каждый запрос, а источники суточные. Ключ — (страна, год периода).
@@ -68,6 +71,12 @@ func (s *RetailService) WithScope(st ScopeStore) *RetailService { s.scope = st; 
 func (s *RetailService) WithAudit(a AuditSink) *RetailService { s.audit = a; return s }
 
 // WithValueLimits задаёт верхние границы значения ячейки по стране (V-02).
+// WithReconBlocking возвращает запрет отправки при несошедшейся сверке V-05.
+func (s *RetailService) WithReconBlocking(v bool) *RetailService {
+	s.reconBlocking = v
+	return s
+}
+
 func (s *RetailService) WithValueLimits(m map[string]float64) *RetailService {
 	if m != nil {
 		s.limits = m
@@ -748,9 +757,17 @@ func (s *RetailService) Validate(ctx context.Context, p Principal, cardID int64)
 	if err != nil {
 		return RetailValidationReport{}, err
 	}
-	// V-05: несошедшаяся контрольная сверка — блокирующее замечание, а не просто
-	// красный блок в своде. Иначе форму можно было бы отправить с расхождением.
-	blocking = append(blocking, ReconciliationIssues(sum.Reconciliations)...)
+	// V-05: несошедшаяся контрольная сверка. По умолчанию это ПРЕДУПРЕЖДЕНИЕ
+	// (см. ReconciliationIssues): запрет отправки останавливал работу, пока
+	// расхождение факта ищут в данных. PLANS_RETAIL_RECON_BLOCKING=1 возвращает
+	// прежнее поведение.
+	for _, iss := range ReconciliationIssues(sum.Reconciliations, s.reconBlocking) {
+		if iss.Blocking {
+			blocking = append(blocking, iss)
+		} else {
+			warnings = append(warnings, iss)
+		}
+	}
 	return RetailValidationReport{
 		CardID: cardID, Blocking: blocking, Warnings: warnings,
 		CanSubmit: len(blocking) == 0, Reconciliations: sum.Reconciliations,

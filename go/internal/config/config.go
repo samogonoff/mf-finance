@@ -133,6 +133,11 @@ type Config struct {
 	// PlansRetailValueLimits — верхняя граница значения ячейки по стране (V-02),
 	// формат «BY=5000000,RU=50000000». Страна без записи → границы нет.
 	PlansRetailValueLimits map[string]float64
+	// PlansRetailReconBlocking — запрещать ли отправку формы розницы, когда
+	// контрольная сверка V-05 не сошлась. По умолчанию НЕТ (решение 08.09.2026):
+	// расхождение остаётся предупреждением в отчёте, но не держит работу над
+	// формой, пока причину ищут в данных факта.
+	PlansRetailReconBlocking bool
 
 	// Справочники Лисы (ТЗ §«Справочники из Лисы»): MSSQL-БД Gpartner (FOX_*).
 	// LisaMock=1 → синхронизация из фикстур (как PLANS_MOCK), без сети к FOX.
@@ -220,6 +225,7 @@ func Load() Config {
 		PlansRetailPlanHistTable: env("PLANS_RETAIL_PLAN_HISTORY_TABLE", "Checks.dbo.plan_saler_st"),
 		PlansRetailPlanHistNew:   env("PLANS_RETAIL_PLAN_HISTORY_NEW_TABLE", "Checks.dbo.plan_saler_st_new_stores"),
 		PlansRetailValueLimits:   parseCountryLimits(env("PLANS_RETAIL_VALUE_LIMITS", "")),
+		PlansRetailReconBlocking: env("PLANS_RETAIL_RECON_BLOCKING", "") == "1",
 
 		LisaHost:          env("FOX_HOST", ""),
 		LisaPort:          env("FOX_PORT", "1433"),

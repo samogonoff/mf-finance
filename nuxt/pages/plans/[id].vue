@@ -68,7 +68,7 @@
                     :class="{ ok: !cardsOnStep(st.stage_code).length }"
                   >
                     <Icon name="lucide:check-check" />
-                    {{ cardsOnStep(st.stage_code).length ? `${cardsOnStep(st.stage_code).length} форм ждёт решения` : "формы решения не ждут" }}
+                    {{ waitingLabel(st.stage_code) }}
                   </span>
                   <span v-else class="sct-count" :class="{ ok: stageTasks(st.stage_code).length && stageDone(st.stage_code) === stageTasks(st.stage_code).length }">
                     <Icon name="lucide:list-checks" /> {{ stageDone(st.stage_code) }}/{{ stageTasks(st.stage_code).length }} заданий
@@ -176,7 +176,10 @@
             <!-- /plans/mp-form — экран МП, а не общий: задание по рознице открывать
                  им нельзя (у розницы своя форма ниже). Без проверки form_code
                  карточка розницы получала вторую ссылку «Форма», ведущую на форму МП. -->
-            <NuxtLink v-if="c.form_code === 'TPL-MP' && formTaskId(c)" :to="`/plans/mp-form/${formTaskId(c)}`" class="fc-link">
+            <!-- Разрез карточки идёт в ссылку: крупные и мелкие МП — разные
+                 карточки с разными согласующими, и открывать они должны разные
+                 формы (замечание аналитика 08.09.2026). -->
+            <NuxtLink v-if="c.form_code === 'TPL-MP' && formTaskId(c)" :to="`/plans/mp-form/${formTaskId(c)}?scope=${c.scope_key}`" class="fc-link">
               <Icon name="lucide:file-input" /> Форма
             </NuxtLink>
             <NuxtLink v-if="c.form_code === 'TPL-MP'" :to="`/plans/mp-conditions/${c.id}`" class="fc-link">
@@ -501,6 +504,21 @@ const stageIsApproval = (st: StageState) => st.is_approval ?? APPROVAL.has(st.st
 const CARD_STEPS = ["1.1", "1.2", "1.3", "1.4"];
 const stageDrivenByCards = (st: StageState) => CARD_STEPS.includes(st.stage_code) && cards.value.length > 0;
 
+/**
+ * Плашка ожидания: «1 форма ждёт решения», «2 формы», «5 форм». Раньше стояло
+ * «1 форм ждёт решения» — число и слово не согласовывались (замечание аналитика
+ * 08.09.2026).
+ */
+const waitingLabel = (code: string): string => {
+  const n = cardsOnStep(code).length;
+  if (!n) return "формы решения не ждут";
+  const last = n % 10;
+  const tens = n % 100;
+  const word = tens >= 11 && tens <= 14 ? "форм" : last === 1 ? "форма" : last >= 2 && last <= 4 ? "формы" : "форм";
+  const verb = tens >= 11 && tens <= 14 ? "ждут" : last === 1 ? "ждёт" : "ждут";
+  return `${n} ${word} ${verb} решения`;
+};
+
 const cardsOnStep = (code: string) =>
   cards.value.filter((c) => c.step_code === code && ["on_approval", "returned"].includes(c.status));
 
@@ -796,6 +814,10 @@ onMounted(load);
   font-size: var(--fs-sm);
   color: var(--text-strong);
   line-height: var(--lh-tight);
+  /* Длинные названия этапов («Согласование руководителем подразделения»)
+     переносятся, а не выдавливают соседние элементы карточки. */
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .sc-tasks {
   display: flex;
@@ -816,8 +838,13 @@ onMounted(load);
   font-family: var(--font-mono);
   color: var(--text-secondary);
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
+  /* Текст плашки переносится по словам: в узкой колонке таймлайна он налезал
+     на соседние строки карточки. */
+  text-align: left;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .sct-count.ok { color: var(--pos-strong); }
 .sct-people {

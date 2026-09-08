@@ -71,7 +71,7 @@ func (h *Handler) MpTaskFormGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID := parseInt64(r.PathValue("taskId"))
-	f, err := h.tasks.MpFormData(r.Context(), taskID, r.URL.Query().Get("currency"))
+	f, err := h.tasks.MpFormData(r.Context(), taskID, r.URL.Query().Get("currency"), r.URL.Query().Get("scope"))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -150,7 +150,7 @@ func (h *Handler) MpTaskFormExport(w http.ResponseWriter, r *http.Request) {
 	taskID := parseInt64(r.PathValue("taskId"))
 	// Экспорт — те же данные, что и чтение формы, только файлом: срез проверяем
 	// так же, иначе ABAC обходится выгрузкой.
-	if f, err := h.tasks.MpFormData(r.Context(), taskID, ""); err == nil && !h.mpFormAllowed(r, f) {
+	if f, err := h.tasks.MpFormData(r.Context(), taskID, "", r.URL.Query().Get("scope")); err == nil && !h.mpFormAllowed(r, f) {
 		writeErr(w, http.StatusForbidden, "задание вне вашего среза доступа")
 		return
 	}

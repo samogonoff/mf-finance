@@ -186,11 +186,19 @@ func deriveSPP(factIdx map[[2]int]float64, cfo int) float64 {
 
 // MpFormData собирает полную форму МП задания (каскад по спеке) в валюте currency
 // (BYN/RUB/USD; пусто → RUB). Тактика хранится в RUB, пересчёт — только отображение.
-func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency string) (MpTaskForm, error) {
+// scope — разрез КАРТОЧКИ формы (large|small|пусто). Крупные и мелкие МП живут
+// раздельными карточками со своими маршрутами и согласующими, но задание может
+// покрывать обе группы. Без разреза обе карточки открывали одну и ту же форму:
+// на экране это выглядело так, что крупные можно согласовать, а мелкие — только
+// отправить (замечание аналитика 08.09.2026).
+func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scope string) (MpTaskForm, error) {
 	var f MpTaskForm
 	t, year, month, segment, err := s.taskBrief(ctx, taskID)
 	if err != nil {
 		return f, err
+	}
+	if scope == "large" || scope == "small" {
+		segment = scope
 	}
 	f.Task, f.Year, f.Month, f.Segment, f.Currency = t, year, month, segment, normalizeCurrency(currency)
 
@@ -225,10 +233,22 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		leOf[m.CodeCFO] = m.LegalEntity
 	}
 	segmentOf := s.segmentsByCfo(ctx, t.CfoCodes)
+	// Разрез карточки сужает состав площадок: форма «Крупные МП» показывает
+	// только крупные, даже если задание сгенерировано на обе группы.
+	cfoCodes := t.CfoCodes
+	if scope == "large" || scope == "small" {
+		filtered := make([]int, 0, len(cfoCodes))
+		for _, c := range cfoCodes {
+			if segmentOf[c] == scope {
+				filtered = append(filtered, c)
+			}
+		}
+		cfoCodes = filtered
+	}
 	mpNames := s.nameMap(ctx, "dir_marketplace", "code_cfo", "name_cfo")
 	cfoNames := s.nameMap(ctx, "dir_cfo", "code_cfo", "name_cfo")
 	dirLE := s.nameMap(ctx, "dir_marketplace", "code_cfo", "legal_entity")
-	for _, c := range t.CfoCodes {
+	for _, c := range cfoCodes {
 		name := mpNames[c]
 		if name == "" {
 			name = cfoNames[c]
@@ -269,7 +289,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	// Read-only сценарии из источника, уже в валюте формы: факт, факт прошлого
 	// года, стратегия (FormToLoadPlan), таргет (FormToLoaTaktTarget).
 	allowedCfo := map[int]bool{}
-	for _, c := range t.CfoCodes {
+	for _, c := range cfoCodes {
 		allowedCfo[c] = true
 	}
 	layerSet := s.mpLayersFor(ctx, year, month, segmentOf, allowedCfo, f.Currency)
@@ -287,10 +307,10 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		}
 		return convertAmount(v, "RUB", f.Currency)
 	}
-	if len(t.CfoCodes) > 0 {
+	if len(cfoCodes) > 0 {
 		if rows, e := s.pool.Query(ctx, `
 			SELECT profit_center, block_type, amount, is_manual, amount_strategy
-			FROM pl_metric WHERE pl_id=$1 AND template_code='TPL-MP' AND profit_center = ANY($2)`, t.PlID, append(t.CfoCodes, 0)); e == nil {
+			FROM pl_metric WHERE pl_id=$1 AND template_code='TPL-MP' AND profit_center = ANY($2)`, t.PlID, append(cfoCodes, 0)); e == nil {
 			for rows.Next() {
 				var pc int
 				var bt string
@@ -311,7 +331,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		}
 		if ar, e := s.pool.Query(ctx, `
 			SELECT profit_center, block_type, reason FROM pl_adjustment
-			WHERE pl_id=$1 AND profit_center = ANY($2) ORDER BY adjusted_at`, t.PlID, append(t.CfoCodes, 0)); e == nil {
+			WHERE pl_id=$1 AND profit_center = ANY($2) ORDER BY adjusted_at`, t.PlID, append(cfoCodes, 0)); e == nil {
 			for ar.Next() {
 				var pc int
 				var bt, rs string

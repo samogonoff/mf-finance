@@ -225,8 +225,9 @@ export const useTasks = () => {
 
   // currency — валюта ОТОБРАЖЕНИЯ (хранение всегда RUB): сервер пересчитывает
   // денежные строки туда и обратно, проценты не трогает.
-  const mpForm = (taskId: number, currency = "RUB"): Promise<MpTaskForm> =>
-    $fetch<MpTaskForm>(`${base}/api/plans/tasks/${taskId}/mp-form`, { params: { currency }, headers: h() });
+  /** scope — разрез карточки (large|small): у крупных и мелких МП свои формы. */
+  const mpForm = (taskId: number, currency = "RUB", scope = ""): Promise<MpTaskForm> =>
+    $fetch<MpTaskForm>(`${base}/api/plans/tasks/${taskId}/mp-form`, { params: { currency, scope }, headers: h() });
   const saveMpForm = (taskId: number, rows: MpSaveRow[], currency = "RUB"): Promise<{ ok: boolean }> =>
     $fetch(`${base}/api/plans/tasks/${taskId}/mp-form`, { method: "PUT", body: { rows, currency }, headers: h() });
 

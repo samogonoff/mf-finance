@@ -130,6 +130,8 @@ func (s *TaskStore) calcModeFor(ctx context.Context, plID int64, segment string)
 		return CalcLegacy, Card{}
 	}
 	scopes := []string{segment}
+	// Разрез задан (в том числе разрезом карточки из запроса формы) — берём
+	// карточку именно этого разреза: у крупных и мелких МП свои маршруты.
 	if segment == "" || segment == "all" {
 		// Объединённая форма: режим берём из карточки large (обе группы идут в
 		// одном режиме — иначе числа в своде будут несопоставимы).
