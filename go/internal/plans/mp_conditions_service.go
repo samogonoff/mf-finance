@@ -402,7 +402,47 @@ func (s *MpConditionsService) CommonCosts(ctx context.Context, cardID int64) ([]
 		return nil, nil, err
 	}
 	rows, err := s.store.CommonCosts(ctx, card.PlID, card.ScopeKey, card.Year, card.Month)
-	return rows, MpCommonCostSpec(), err
+	if err != nil {
+		return rows, MpCommonCostSpec(), err
+	}
+	return s.withPlanCommonCosts(ctx, card, rows), MpCommonCostSpec(), nil
+}
+
+// withPlanCommonCosts — статьи, которых нет во вводе, добираются ИЗ ПЛАНА того же
+// месяца. В прототипе общие затраты тактики не пересчитываются и не вводятся:
+// колонка тактики ссылается на план один в один (=BF202). Введённое значение
+// плану не уступает — оно остаётся переопределением.
+func (s *MpConditionsService) withPlanCommonCosts(ctx context.Context, card Card, rows []MpCommonCost) []MpCommonCost {
+	if s.fact == nil {
+		return rows
+	}
+	planRows, err := s.fact.MpStrategy(ctx, card.Year, card.Month, card.ScopeKey)
+	if err != nil || len(planRows) == 0 {
+		return rows
+	}
+	byPL := map[int]float64{}
+	for _, r := range planRows {
+		byPL[r.CodePL] += r.Amount
+	}
+	has := map[int]bool{}
+	for _, r := range rows {
+		has[r.CodePL] = true
+	}
+	for _, g := range MpCommonCostSpec() {
+		for _, l := range g.Lines {
+			amount, ok := byPL[l.CodePL]
+			if has[l.CodePL] || !ok || amount == 0 {
+				continue
+			}
+			rows = append(rows, MpCommonCost{
+				Segment: card.ScopeKey, CodePL: l.CodePL, Name: l.Name, Group: g.Group,
+				Year: card.Year, Month: card.Month,
+				Currency: firstNonEmpty(card.Currency, "RUB"),
+				Amount:   amount, Source: "plan",
+			})
+		}
+	}
+	return rows
 }
 
 // SaveCommonCosts — сохранить общие затраты (ввод по статьям).
