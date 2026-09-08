@@ -22,9 +22,7 @@
         <p class="page-subtitle">
           {{ form?.task.title }} · {{ form?.year }}-{{ String(form?.month || 0).padStart(2, "0") }} ·
           показано {{ visiblePlatforms.length }} из {{ form?.platforms.length || 0 }} площадок ·
-          <span :title="'эффективная ставка первой площадки из справочника; расчёт идёт по ставке каждой площадки'">
-            НДС {{ vatLabel }}
-          </span> · {{ currency }} ·
+          <span :title="vatHint">НДС {{ vatLabel }}</span> · {{ currency }} ·
           <span class="mode-tag" :class="{ inv: isInverse }" :title="modeHint">{{ modeLabel }}</span>
         </p>
         <!-- Отметка снимка факта (правка ТЗ МП §12): форма читает снимок, а не
@@ -200,6 +198,7 @@
                   <Icon name="lucide:maximize-2" class="plat-ic" />
                 </button>
                 <span class="cfo">ЦФО {{ p.code_cfo }}</span>
+                <span class="cfo vat-tag" :title="vatHint">НДС {{ pctLabel(vatRateOf(p.code_cfo)) }}</span>
               </th>
               <th class="col-total num">Итого<span v-if="totalScoped" class="cfo">по фильтру</span></th>
             </tr>
@@ -336,7 +335,7 @@
       :inverse="isInverse"
       :editable="canEdit"
       :currency="currency"
-      :vat-fallback="form?.vat || 0.2"
+      :vat-fallback="platformModal ? vatRateOf(platformModal.code_cfo) : form?.vat || 0.2"
       :card-id="cardId"
       @close="platformModal = null"
       @input="onPlatformInput"
@@ -357,6 +356,7 @@ import {
 import {
   computePlatform,
   computePlatformInverse,
+  vatBasisFromRate,
   computeFormTotals,
   vatByCountry,
   B,
@@ -476,7 +476,22 @@ const totalScoped = computed(() => visiblePlatforms.value.length !== (form.value
 // Ставка НДС выводится с двумя знаками: у площадок она ЭФФЕКТИВНАЯ и не равна
 // законодательной (20,36 % у WB/Lamoda/Ozon, 16,62 % у Yandex Market — ТЗ §3.4).
 // Округление до целых стирало бы это отличие.
-const vatLabel = computed(() => `${((form.value?.vat || 0) * 100).toFixed(2).replace(".", ",")} %`);
+// Ставка НДС: одно число в шапке допустимо, только если она одна на всю форму.
+// У площадок ставки разные (20,36 % у WB, 16,62 % у Yandex Market), и раньше
+// шапка показывала ставку первой площадки, пока расчёт шёл по другой.
+const pctLabel = (v: number): string => `${(v * 100).toFixed(2).replace(".", ",")} %`;
+const vatRateOf = (cfo: number): number => {
+  const b = form.value?.vat_by_cfo?.[cfo];
+  return b ? b.manager_ratio - 1 : form.value?.vat || 0;
+};
+const vatLabel = computed(() => (form.value?.vat_mixed ? "по площадкам" : pctLabel(form.value?.vat || 0)));
+const vatHint = computed(() =>
+  form.value?.vat_mixed
+    ? "ставка у каждой площадки своя — она подписана в заголовке колонки"
+    : form.value?.vat_from_plan
+      ? "эффективная ставка: отношение плановых сумм с НДС и без НДС того же месяца"
+      : "ставка из справочника dir_vat: плановых сумм за период нет"
+);
 
 /** Когда собран снимок факта (правка ТЗ МП §12): дата и время, а не только дата —
  *  источник переливается несколько раз в сутки, и «сегодня» ничего не говорит. */
@@ -562,7 +577,9 @@ const platformValues = computed<Record<number, Record<string, number>>>(() => {
     for (const l of form.value?.lines || []) {
       if (l.scope === "platform" && l.editable) inp[l.block_type] = inputs[key(p.code_cfo, l.block_type)];
     }
-    const vat = vatByCountry(p.country);
+    // Базис НДС приходит с сервера по каждой площадке (отношение плановых сумм);
+    // законодательная ставка страны — фолбэк, если ответ его не содержит.
+    const vat = form.value?.vat_by_cfo?.[p.code_cfo] ?? vatBasisFromRate(vatByCountry(p.country));
     const cond = condOf(p.code_cfo);
     map[p.code_cfo] = isInverse.value && cond ? computePlatformInverse(inp, cond, vat) : computePlatform(inp, vat);
   }

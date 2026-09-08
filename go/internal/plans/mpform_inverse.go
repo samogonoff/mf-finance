@@ -14,12 +14,27 @@ package plans
 // MpConditionsInput — условия площадки на период: то, что вводится в реестре
 // (ТЗ §6.1) и становится источником истины для расходной части.
 type MpConditionsInput struct {
-	CodeCFO        int                // площадка
-	VatRate        float64            // эффективная ставка НДС площадки (не законодательная)
+	CodeCFO int // площадка
+	// VatRate — эффективная ставка НДС площадки (не законодательная). Работает,
+	// когда отношения из плана нет: ставку в условиях площадки задают руками.
+	VatRate float64
+	// VatRatio — отношение план_с_НДС ÷ план_без_НДС того же месяца и площадки
+	// (mpform_vat.go). Ведущая величина: ставки в прототипе нет вовсе, суммы без
+	// НДС получаются делением на это отношение. 0 — отношения нет, работает VatRate.
+	VatRatio       float64
 	SppPct         float64            // % СПП — скидка, которую даёт площадка
 	MarkupPct      float64            // наценка к отпускным ценам
 	MarkupTotalPct float64            // наценка к общей себестоимости (Cost of goods)
 	Shares         map[string]float64 // доли статей прямых затрат: block_type → доля (может быть < 0)
+}
+
+// vatRatio — делитель перехода «с НДС → без НДС»: отношение из плана, если оно
+// известно, иначе ставка условий площадки.
+func (c MpConditionsInput) vatRatio() float64 {
+	if c.VatRatio > 0 {
+		return c.VatRatio
+	}
+	return 1 + c.VatRate
 }
 
 // MpInverseInput — вход расчёта по одной площадке.
@@ -62,10 +77,11 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 		return val
 	}
 
-	// Продажи. НДС не считается «законодательным»: ставка — свойство площадки.
+	// Продажи. НДС не считается «законодательным»: перевод в суммы без НДС идёт
+	// по отношению плановых сумм площадки, а ставка условий — фолбэк (vatRatio).
 	managerGross := put(BSalesManagerGross, in.SalesManagerGross, "ручной ввод (тактика)")
-	managerNet := put(BSalesManagerNet, safeDiv(managerGross, 1+c.VatRate),
-		"= продажи с НДС / (1 + ставка НДС площадки)")
+	managerNet := put(BSalesManagerNet, safeDiv(managerGross, c.vatRatio()),
+		"= продажи с НДС / отношение план с НДС ÷ план без НДС")
 	out[BSPP] = c.SppPct
 	log = append(log, MpInverseCell{BlockType: BSPP, Value: c.SppPct, Calculated: c.SppPct,
 		Formula: "условия площадки: % СПП"})

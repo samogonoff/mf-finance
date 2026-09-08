@@ -510,19 +510,23 @@ func blockToPL() map[string]int {
 	return out
 }
 
-// conditionsToInput — условия площадки → вход каскада. Ставка НДС: из условий,
-// иначе из справочника (ТЗ §3.4 — прошивать нельзя).
-func conditionsToInput(c MpConditions, vat float64) MpConditionsInput {
-	rate := vat
+// conditionsToInput — условия площадки → вход каскада.
+//
+// Перевод «с НДС → без НДС»: ставка, ЗАДАННАЯ РУКАМИ в условиях площадки, старше
+// всего — это решение заполняющего. Если её нет, работает отношение плановых сумм
+// (mpform_vat.go), и только за ним — ставка справочника, которую basis принёс
+// фолбэком. Прошивать ставку в код нельзя (ТЗ §3.4).
+func conditionsToInput(c MpConditions, vat MpVatBasis) MpConditionsInput {
+	rate, ratio := vat.Rate(), vat.ManagerRatio
 	if c.VatRate != nil {
-		rate = *c.VatRate
+		rate, ratio = *c.VatRate, 1+*c.VatRate
 	}
 	shares := make(map[string]float64, len(c.Shares))
 	for k, v := range c.Shares {
 		shares[k] = v
 	}
 	return MpConditionsInput{
-		CodeCFO: c.CodeCFO, VatRate: rate, SppPct: c.SppPct,
+		CodeCFO: c.CodeCFO, VatRate: rate, VatRatio: ratio, SppPct: c.SppPct,
 		MarkupPct: c.MarkupPct, MarkupTotalPct: c.MarkupTotalPct, Shares: shares,
 	}
 }

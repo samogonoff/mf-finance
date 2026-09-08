@@ -367,7 +367,8 @@ func main() {
 	// Карточки форм заводятся вместе с периодом: до этого процесс выглядел
 	// незапущенным (этапы и задания есть, а формы «не созданы»).
 	plansH.SetCards(plansCards)
-	plansCards.RegisterForm(plans.TemplateMP, plans.NewMpCardProvider(plansStore, plansRates), plans.NewMpCardProvider(plansStore, plansRates))
+	mpCardProvider := plans.NewMpCardProvider(plansStore, plansRates).WithFactSource(plansFact)
+	plansCards.RegisterForm(plans.TemplateMP, mpCardProvider, mpCardProvider)
 
 	// Форма «Розница» (TPL-TO-RETAIL): карточка + сервис сетки/расчёта/валидаций.
 	plansRetailRepo := plans.NewRetailRepo(pool)

@@ -247,6 +247,15 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 	for _, c := range conds {
 		condByCfo[c.CodeCFO] = c
 	}
+	// Базис НДС — тот же, что в форме: отношение плановых сумм площадки, ставка
+	// справочника фолбэком. Иначе предпросмотр пересчёта показывал бы суммы,
+	// которых форма не даёт.
+	planSegments := make([]string, 0, 2)
+	for _, mp := range platformsInfo {
+		planSegments = append(planSegments, mp.Segment)
+	}
+	planLayer := mpPlanByBlock(ctx, s.fact, card.Year, card.Month, planSegments)
+
 	values := map[int]map[string]float64{}
 	for _, mp := range platformsInfo {
 		cond, ok := condByCfo[mp.CodeCFO]
@@ -259,7 +268,7 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 		}
 		out, log := computeMpPlatformInverse(MpInverseInput{
 			SalesManagerGross: sales[mp.CodeCFO],
-			Conditions:        conditionsToInput(cond, vat),
+			Conditions:        conditionsToInput(cond, mpVatBasis(planLayer, mp.CodeCFO, vat)),
 			Overrides:         overrides[mp.CodeCFO],
 		})
 		values[mp.CodeCFO] = out

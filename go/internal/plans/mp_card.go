@@ -13,6 +13,15 @@ import (
 type MpCardProvider struct {
 	store MetricStore
 	rates *RateBook
+	fact  MpFactSource
+}
+
+// WithFactSource подключает источник плана: из него берутся отношения
+// «план с НДС ÷ план без НДС», которыми считалась форма. Без источника снимок
+// фиксирует ставку справочника — это хуже, но не ломает утверждение карточки.
+func (p *MpCardProvider) WithFactSource(src MpFactSource) *MpCardProvider {
+	p.fact = src
+	return p
 }
 
 // NewMpCardProvider — конструктор.
@@ -56,13 +65,27 @@ func (p *MpCardProvider) FormSnapshot(ctx context.Context, c Card) (map[string]a
 	}
 	if p.rates != nil {
 		snap["fx"] = p.rates.Snapshot(ctx, c.Year, c.Month, "RUB", "BYN", "USD", "KZT", "UZS")
+		// Фиксируем ИМЕННО ТО, чем считалась форма: отношения плановых сумм, а
+		// не ставку справочника. Иначе следующая заливка плана изменит ставку, и
+		// утверждённые суммы перестанут воспроизводиться из версии.
+		segList := make([]string, 0, len(segments))
+		for seg := range segments {
+			segList = append(segList, seg)
+		}
+		planLayer := mpPlanByBlock(ctx, p.fact, c.Year, c.Month, segList)
 		vat := map[string]float64{}
+		basis := map[string]MpVatBasis{}
 		for _, mp := range MarketplaceSeed() {
-			if segments[mp.Segment] {
-				vat[itoa(int64(mp.CodeCFO))] = p.rates.Vat(ctx, mp.Country, mp.CodeCFO)
+			if !segments[mp.Segment] {
+				continue
 			}
+			b := mpVatBasis(planLayer, mp.CodeCFO, p.rates.Vat(ctx, mp.Country, mp.CodeCFO))
+			key := itoa(int64(mp.CodeCFO))
+			vat[key] = b.Rate()
+			basis[key] = b
 		}
 		snap["vat"] = vat
+		snap["vat_basis"] = basis
 	}
 	return snap, nil
 }
