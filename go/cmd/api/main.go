@@ -367,7 +367,11 @@ func main() {
 	// Карточки форм заводятся вместе с периодом: до этого процесс выглядел
 	// незапущенным (этапы и задания есть, а формы «не созданы»).
 	plansH.SetCards(plansCards)
-	mpCardProvider := plans.NewMpCardProvider(plansStore, plansRates).WithFactSource(plansFact)
+	// Реестр условий площадки нужен и провайдеру карточки (общие затраты идут в
+	// приёмник под ЦФО 250), и сервису формы — заводим до обоих.
+	plansMpCond := plans.NewMpConditionsStore(pool)
+	mpCardProvider := plans.NewMpCardProvider(plansStore, plansRates).
+		WithFactSource(plansFact).WithCommonCosts(plansMpCond)
 	plansCards.RegisterForm(plans.TemplateMP, mpCardProvider, mpCardProvider)
 
 	// Форма «Розница» (TPL-TO-RETAIL): карточка + сервис сетки/расчёта/валидаций.
@@ -393,7 +397,6 @@ func main() {
 	// Форма МП по скорректированному ТЗ: реестр условий площадки + инверсия
 	// расчёта. TaskStore получает контекст расчёта, чтобы сетка формы считалась
 	// тем же направлением, что указано в карточке (calc_mode).
-	plansMpCond := plans.NewMpConditionsStore(pool)
 	plansMpCondSvc := plans.NewMpConditionsService(plansMpCond, plansStore, plans.NewCardStore(pool),
 		plansRates, plansFact, plansScope).WithAudit(plansAudit)
 	plansMpCondH := plans.NewMpConditionsHandler(plansMpCondSvc, plansPrincipal)

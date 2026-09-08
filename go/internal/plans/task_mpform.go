@@ -68,6 +68,10 @@ type MpTaskForm struct {
 	VatByCfo    map[int]MpVatBasis `json:"vat_by_cfo,omitempty"`
 	VatMixed    bool               `json:"vat_mixed"`
 	VatFromPlan bool               `json:"vat_from_plan"`
+	// VatMissing — площадки, по которым плана нет ни за месяц формы, ни за
+	// предыдущий: суммы посчитаны по аварийной ставке справочника, отправка на
+	// согласование заблокирована (МП-12).
+	VatMissing []int `json:"vat_missing,omitempty"`
 	Platforms []MpFormPlatform `json:"platforms"`
 	Lines     []MpLine         `json:"lines"`
 	Cells     []MpFormCell     `json:"cells"`
@@ -75,6 +79,9 @@ type MpTaskForm struct {
 	// inverse («условия → суммы», ТЗ §3.1). От него зависит, какие строки
 	// доступны на ввод, поэтому клиент обязан его учитывать.
 	CalcMode string `json:"calc_mode"`
+	// PLWithCommon — в PL формы вычитаются общие затраты. На этапах 1.1/1.2 они
+	// не участвуют, начиная с 1.5 — участвуют (правка 08.09.2026 п. 10).
+	PLWithCommon bool `json:"pl_with_common"`
 	// CardID — карточка процесса этой формы (0, если период старый и карточки нет).
 	CardID int64 `json:"card_id,omitempty"`
 	// Conditions — условия площадок, из которых посчитана расходная часть
@@ -192,6 +199,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	plID := t.PlID
 	mode, card := s.calcModeFor(ctx, plID, segment)
 	f.CalcMode, f.CardID = mode, card.ID
+	f.PLWithCommon = mpPLWithCommon(card)
 	f.Lines = mpFormSpecFor(mode)
 
 	// Условия площадок нужны и для расчёта, и для показа долей в сетке.
@@ -239,14 +247,22 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	// Базис НДС по каждой площадке: отношение плановых сумм, ставка справочника —
 	// фолбэк (mpform_vat.go). Одного числа на всю форму не существует: у площадок
 	// ставки разные, поэтому шапка отдаёт и разрез VatByCfo, и признак VatMixed.
-	planLayer := mpPlanByBlock(ctx, s.fact, year, month, distinctSegments(segmentOf))
+	segList := distinctSegments(segmentOf)
+	planLayer := mpPlanByBlock(ctx, s.fact, year, month, segList)
+	prevY, prevM := prevMonth(year, month)
+	planPrev := mpPlanByBlock(ctx, s.fact, prevY, prevM, segList)
 	f.VatByCfo = map[int]MpVatBasis{}
 	rateByCfo := map[int]float64{}
 	for _, p := range f.Platforms {
-		b := mpVatBasis(planLayer, p.CodeCFO, s.vatFor(ctx, p))
+		b := mpVatBasis(planLayer, planPrev, p.CodeCFO, year, month, s.vatFor(ctx, p))
 		f.VatByCfo[p.CodeCFO] = b
 		rateByCfo[p.CodeCFO] = b.Rate()
 		f.VatFromPlan = f.VatFromPlan || b.FromPlan
+		// Площадки без базы перечисляем поимённо: валидация МП-12 назовёт их в
+		// тексте блокировки, а форма подсветит строку ставки.
+		if b.Missing {
+			f.VatMissing = append(f.VatMissing, p.CodeCFO)
+		}
 	}
 	f.Vat, f.VatMixed = headerVat(rateByCfo)
 
@@ -331,7 +347,8 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		// Слои берутся по сегменту КАЖДОЙ площадки: в объединённой форме
 		// large и small приходят из разных срезов источника.
 		pl := layerSet.forCfo(p.CodeCFO)
-		values := s.platformValues(mode, f.VatByCfo[p.CodeCFO], condByCfo[p.CodeCFO], tacByKey, pl, p.CodeCFO)
+		values := s.platformValues(mode, f.VatByCfo[p.CodeCFO], s.normShareOf(ctx, p.CodeCFO, year, month),
+			condByCfo[p.CodeCFO], tacByKey, pl, p.CodeCFO)
 
 		for _, l := range spec {
 			if l.Kind == KindHeader {
@@ -405,7 +422,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 // «суммы → доли». inverse (ТЗ §3.1): вводится только объём продаж, а расходная
 // часть считается из условий площадки; уже сохранённые ручные значения статей
 // передаются как переопределения и автопересчётом не затираются (ТЗ §7.2).
-func (s *TaskStore) platformValues(mode string, vat MpVatBasis,
+func (s *TaskStore) platformValues(mode string, vat MpVatBasis, norm float64,
 	cond MpConditions, tactic map[string]float64, layers mpLayers, cfo int) map[string]float64 {
 
 	inputs := mpPlatformInputs(cfo, tactic, layers)
@@ -422,7 +439,7 @@ func (s *TaskStore) platformValues(mode string, vat MpVatBasis,
 	}
 	values, _ := computeMpPlatformInverse(MpInverseInput{
 		SalesManagerGross: inputs[BSalesManagerGross],
-		Conditions:        conditionsToInput(cond, vat),
+		Conditions:        conditionsToInputNorm(cond, vat, norm),
 		Overrides:         overrides,
 	})
 	return values
@@ -433,6 +450,17 @@ func (s *TaskStore) platformValues(mode string, vat MpVatBasis,
 // Это ФОЛБЭК базиса: ведущее правило — отношение плановых сумм (mpform_vat.go).
 func (s *TaskStore) vatFor(ctx context.Context, p MpFormPlatform) float64 {
 	return s.vatRate(ctx, p.Country, p.CodeCFO)
+}
+
+// normShareOf — норматив удержаний площадки на месяц: справочник dir_mp_norm,
+// иначе сид. Норматив зависит от периода, поэтому месяц обязателен.
+func (s *TaskStore) normShareOf(ctx context.Context, cfo, year, month int) float64 {
+	if s.rates != nil {
+		if v, ok := s.rates.NormShare(ctx, cfo, year, month); ok {
+			return v
+		}
+	}
+	return mpNormShareOf(cfo, year, month)
 }
 
 // vatRate — та же ставка по паре «страна, ЦФО» (свод площадками не оперирует).

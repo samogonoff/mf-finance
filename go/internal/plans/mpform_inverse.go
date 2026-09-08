@@ -86,6 +86,7 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 	managerGross := put(BSalesManagerGross, in.SalesManagerGross, "ручной ввод (тактика)")
 	managerNet := put(BSalesManagerNet, safeDiv(managerGross, c.vatRatio()),
 		"= продажи с НДС / отношение план с НДС ÷ план без НДС")
+	out[BVatRate] = c.vatRatio() - 1
 	out[BSPP] = c.SppPct
 	log = append(log, MpInverseCell{BlockType: BSPP, Value: c.SppPct, Calculated: c.SppPct,
 		Formula: "условия площадки: % СПП"})
@@ -121,16 +122,24 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 	commission := put(BCommission, managerNet*c.SppPct,
 		"= продажи менеджера без НДС × %СПП")
 
+	// Норматив удержаний площадки, приведённый к базе формы: в справочнике он
+	// задан к цене менеджера без НДС, а доли считаются от цены площадки.
+	normBase := 0.0
+	if c.NormShare > 0 && c.SppPct < 1 {
+		normBase = c.NormShare / (1 - c.SppPct)
+		put(BNormShare, normBase, "норматив удержаний площадки, приведённый к базе долей")
+	}
+
 	// Доля агентского вознаграждения — ОСТАТОК норматива площадки, если её не
 	// задали руками (прототип, строка 85). Считаем до статей: от неё зависит
 	// сумма агентского и весь итог прямых затрат.
 	shares := c.Shares
-	if _, set := shares[BCostAgent]; !set && c.NormShare > 0 {
+	if _, set := shares[BCostAgent]; !set && normBase > 0 {
 		merged := make(map[string]float64, len(shares)+1)
 		for k, v := range shares {
 			merged[k] = v
 		}
-		merged[BCostAgent] = agentShareFromNorm(c.NormShare, safeDiv(commission, platNet), shares)
+		merged[BCostAgent] = agentShareFromNorm(normBase, safeDiv(commission, platNet), shares)
 		shares = merged
 	}
 
@@ -171,6 +180,18 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 	put(BDirectShareTurnover, safeDiv(directTotal-commission, platNet),
 		"= (прямые затраты − комиссия площадки) / цена площадки без НДС")
 
+	// Контроль норматива (правка 08.09.2026 п. 8): норматив покрывает шесть долей,
+	// остальные статьи в него не входят — вместе они обязаны дать долю прямых
+	// затрат. Ненулевое значение означает несогласованность условий с нормативом.
+	if normBase > 0 {
+		outside := 0.0
+		for _, b := range []string{BCostFreight, BCostAds, BCostAdsSocial, BCostPackaging, BCostAcquiring, BCostIT} {
+			outside += shares[b]
+		}
+		put(BNormControl, normBase+outside-out[BDirectShare],
+			"= норматив + доли статей вне норматива − доля прямых затрат")
+	}
+
 	return out, log
 }
 
@@ -190,8 +211,11 @@ type MpFormTotals struct {
 	CommonCosts       float64 `json:"common_costs"`
 	PlPlatforms       float64 `json:"pl_platforms"`
 	PlTotalCost       float64 `json:"pl_total_cost"`
-	PL                float64 `json:"pl"`
-	PLPct             float64 `json:"pl_pct"`
+	PL float64 `json:"pl"`
+	// PLWithCommon — в PL вычтены общие затраты (этап 1.5 и далее). На этапах
+	// 1.1/1.2 они не участвуют, и подпись формы обязана это показывать.
+	PLWithCommon bool    `json:"pl_with_common"`
+	PLPct        float64 `json:"pl_pct"`
 	DirectShareTurn   float64 `json:"direct_share_turnover"`
 }
 
@@ -206,6 +230,18 @@ type MpFormTotals struct {
 //     и Ozon, из-за чего итог показывает 27,92 % вместо 26,32 %. Дефект НЕ
 //     воспроизводим — это отдельный пункт приёмки.
 func computeMpFormTotals(platforms map[int]map[string]float64, commonCosts float64) MpFormTotals {
+	return computeMpFormTotalsMode(platforms, commonCosts, false)
+}
+
+// computeMpFormTotalsMode — то же с явным выбором формулы PL (правка 08.09.2026
+// п. 10). PL считается ДВУМЯ способами в зависимости от того, где стоит период:
+//
+//	этапы 1.1 и 1.2 — без общих затрат: поток продаж их ещё не видит;
+//	начиная с 1.5   — полный, общие затраты вычитаются.
+//
+// Разница ровно на сумму общих затрат, и форма обязана подписывать, какой
+// вариант применён: иначе два разных числа PL за один период выглядят ошибкой.
+func computeMpFormTotalsMode(platforms map[int]map[string]float64, commonCosts float64, withCommon bool) MpFormTotals {
 	t := MpFormTotals{CommonCosts: commonCosts}
 	for _, v := range platforms {
 		t.SalesManagerGross += v[BSalesManagerGross]
@@ -231,24 +267,60 @@ func computeMpFormTotals(platforms map[int]map[string]float64, commonCosts float
 	// общие затраты остаются отдельным показателем формы: в PL они больше не
 	// входят. Следствие, полезное как проверка: PL по форме = Σ PL площадок.
 	t.PL = t.SalesPlatNet - t.Shipments - (t.DirectCosts - t.Commission)
+	if withCommon {
+		t.PL -= commonCosts
+	}
+	t.PLWithCommon = withCommon
 	t.PLPct = safeDiv(t.PL, t.SalesPlatNet)
 	t.DirectShareTurn = safeDiv(t.DirectCosts-t.Commission, t.SalesPlatNet)
 	return t
 }
 
+// mpNormParts — доли, которые норматив площадки покрывает вместе с агентским
+// вознаграждением (правка 08.09.2026 п. 8: «норматив покрывает ровно шесть
+// долей»). Экспорт 51, реклама 13, соцсети 15, упаковка 45, эквайринг 58 и IT 48
+// в норматив НЕ входят — это наши расходы, а не удержания площадки.
+var mpNormParts = []string{BCostLogTransport, BCostLogWarehouse, BCostPenalties, BCostOther}
+
 // agentShareFromNorm — доля агентского вознаграждения как остаток норматива
-// площадки (прототип, строки 85/109/135/159: =43%-AR83-AR89-AR91-AR101-AR103,
-// нормативы Wildberries 43 %, Lamoda 34 %, Ozon 35 %, Yandex Market 32 %).
+// площадки (прототип, строки 85/109/135/159; норматив приведён к базе долей).
 //
-// Из норматива вычитаются доли, которые площадка удерживает отдельными строками:
-// комиссия, транспортная и складская логистика, штрафы и прочие удержания.
-// Остаток может выйти отрицательным — тогда норматив площадки исчерпан
-// известными удержаниями, и это сигнал разобраться с условиями, а не повод
-// молча обнулить строку: отрицательная доля допустима (МП §6.1) и видна в форме.
+// Отрицательный остаток НЕ записывается: Excel считает его молча, но по правке
+// 08.09.2026 п. 7 это ошибка условий — сумма удержаний превысила норматив.
+// Строка обнуляется, а отправку блокирует МП-13, которая называет обе величины.
 func agentShareFromNorm(norm, commissionShare float64, shares map[string]float64) float64 {
 	rest := commissionShare
-	for _, b := range []string{BCostLogTransport, BCostLogWarehouse, BCostPenalties, BCostOther} {
+	for _, b := range mpNormParts {
 		rest += shares[b]
 	}
+	if norm-rest < 0 {
+		return 0
+	}
 	return norm - rest
+}
+
+// mpNormExceeded — превышен ли норматив площадки известными удержаниями.
+// Возвращает сумму удержаний и норматив в базе долей — оба числа нужны в тексте
+// блокировки, иначе непонятно, что именно уменьшать.
+func mpNormExceeded(normBase, commissionShare float64, shares map[string]float64) (used float64, exceeded bool) {
+	used = commissionShare
+	for _, b := range mpNormParts {
+		used += shares[b]
+	}
+	return used, normBase > 0 && used > normBase
+}
+
+// mpPLWithCommon — участвуют ли общие затраты в PL этой карточки.
+//
+// Маршрут формы МП заканчивается шагом 1.4 «Утверждение», а общие затраты по
+// правке 08.09.2026 п. 10/11 появляются НАЧИНАЯ С 1.5 — то есть после того, как
+// поток продаж утверждён. Поэтому признак читается по статусу карточки, а не по
+// коду шага: «утверждена» и означает, что период ушёл дальше 1.4.
+func mpPLWithCommon(c Card) bool {
+	switch c.Status {
+	case CardApproved, CardPublished, CardPublishFailed:
+		return true
+	default:
+		return false
+	}
 }

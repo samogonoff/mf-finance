@@ -236,8 +236,8 @@
             <label class="form-field">
               <span class="form-label">База порога 106 %</span>
               <select v-model="bulkPayrollBase" class="select" @change="invalidatePreview">
+                <option value="strategy">стратегия того же месяца</option>
                 <option value="plan_current_month">план продаж текущего месяца</option>
-                <option value="strategy">стратегия</option>
                 <option value="fact_prev_year">факт прошлого года</option>
                 <option value="approved_prev">утверждённая тактика</option>
               </select>
@@ -1489,7 +1489,9 @@ const bulkPctDelta = ref<number | null>(null);
 const bulkTarget = ref<number | null>(null);
 const bulkBaseMonths = ref("");
 const bulkIndexBase = ref<"fact_prev_month" | "fact_prev_year" | "approved_prev" | "strategy">("fact_prev_month");
-const bulkPayrollBase = ref<NonNullable<RetailBulkRequest["payroll_base"]>>("plan_current_month");
+// Дефолт — стратегия того же месяца (правка 08.09.2026 п. 20). Прежний вариант
+// «план текущего месяца» остался в списке: по нему считались утверждённые периоды.
+const bulkPayrollBase = ref<NonNullable<RetailBulkRequest["payroll_base"]>>("strategy");
 /** Оборотная часть аренды — переходный режим до расчёта от условий договора (§12 п.13). */
 const bulkRentTurnover = ref(false);
 const bulkResetManual = ref(false);

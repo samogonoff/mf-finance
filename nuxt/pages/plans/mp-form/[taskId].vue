@@ -198,7 +198,11 @@
                   <Icon name="lucide:maximize-2" class="plat-ic" />
                 </button>
                 <span class="cfo">ЦФО {{ p.code_cfo }}</span>
-                <span class="cfo vat-tag" :title="vatHint">НДС {{ pctLabel(vatRateOf(p.code_cfo)) }}</span>
+                <span
+                  class="cfo vat-tag"
+                  :class="{ 'vat-miss': form?.vat_by_cfo?.[p.code_cfo]?.missing }"
+                  :title="vatSourceOf(p.code_cfo) || vatHint"
+                >НДС {{ pctLabel(vatRateOf(p.code_cfo)) }}</span>
               </th>
               <th class="col-total num">Итого<span v-if="totalScoped" class="cfo">по фильтру</span></th>
             </tr>
@@ -291,9 +295,10 @@
                — ТЗ §1 п.25, отдельный пункт приёмки. -->
           <tfoot v-if="form.platforms.length">
             <tr class="tot-row">
-              <td class="col-line">PL формы (сумма)</td>
+              <td class="col-line">PL формы (сумма) · {{ plModeLabel }}</td>
               <td :colspan="visiblePlatforms.length" class="tot-note">
-                = цена площадки без НДС − себестоимость отпускная − общие затраты − прямые затраты + комиссии
+                = цена площадки без НДС − себестоимость отпускная − прямые затраты + комиссии<template
+                  v-if="form.pl_with_common"> − общие затраты</template>
               </td>
               <td class="total-cell strong">{{ fmtMoney(formTotals.pl) }}</td>
             </tr>
@@ -485,7 +490,16 @@ const totalScoped = computed(() => visiblePlatforms.value.length !== (form.value
 const pctLabel = (v: number): string => `${(v * 100).toFixed(2).replace(".", ",")} %`;
 const vatRateOf = (cfo: number): number => {
   const b = form.value?.vat_by_cfo?.[cfo];
-  return b ? b.manager_ratio - 1 : form.value?.vat || 0;
+  return b ? b.ratio - 1 : form.value?.vat || 0;
+};
+// Откуда взята ставка: план месяца формы, план предыдущего месяца либо её нет
+// вовсе (тогда отправку блокирует МП-12).
+const vatSourceOf = (cfo: number): string => {
+  const b = form.value?.vat_by_cfo?.[cfo];
+  if (!b) return "";
+  if (b.missing) return "нет базы для расчёта ставки — отправка заблокирована";
+  if (!b.from_plan) return "ставка из справочника dir_vat";
+  return `из плана ${b.year}-${String(b.month).padStart(2, "0")}`;
 };
 const vatLabel = computed(() => (form.value?.vat_mixed ? "по площадкам" : pctLabel(form.value?.vat || 0)));
 const vatHint = computed(() =>
@@ -593,9 +607,13 @@ const platformValues = computed<Record<number, Record<string, number>>>(() => {
 const formTotals = computed(() =>
   computeFormTotals(
     (form.value?.platforms || []).map((p) => platformValues.value[p.code_cfo] || {}),
-    commonCostTotal.value
+    commonCostTotal.value,
+    form.value?.pl_with_common === true
   )
 );
+// Какой из двух вариантов PL показан: до общих затрат (этапы 1.1/1.2) или полный
+// (с 1.5). Без подписи два разных числа за один период читаются как ошибка.
+const plModeLabel = computed(() => (form.value?.pl_with_common ? "PL полный" : "PL до общих затрат"));
 
 const cellValue = (line: MpLine, cfo: number): number => platformValues.value[cfo]?.[line.block_type] ?? 0;
 // Итог считается по ВИДИМЫМ площадкам: отфильтровав срез, пользователь ждёт итог
@@ -805,6 +823,9 @@ onMounted(load);
 </script>
 
 <style scoped>
+/* Ставка без базы: суммы посчитаны по аварийному фолбэку, отправка заблокирована. */
+.vat-miss { color: var(--neg); }
+
 .banner { padding: var(--sp-4) var(--sp-5); border-radius: var(--rd-4, 6px); margin-bottom: var(--sp-5); font-size: var(--fs-sm); }
 .banner-neg { background: var(--neg-soft); color: var(--neg-strong); }
 .banner-pos { background: var(--pos-soft); color: var(--pos-strong); }

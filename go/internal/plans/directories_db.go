@@ -28,7 +28,7 @@ func NewDirRepo(pool *pgxpool.Pool) *DirRepo { return &DirRepo{pool: pool} }
 
 // editableDirs — справочники, доступные для ручного редактирования (manual).
 var editableDirs = []string{
-	"dir_marketplace", "dir_pl_line", "dir_cfo", "dir_fx_rate",
+	"dir_marketplace", "dir_pl_line", "dir_cfo", "dir_fx_rate", "dir_mp_norm",
 	"dir_cfo_group", "dir_cfo_subgroup", "dir_cfo_type", "dir_legal_entity",
 }
 
@@ -43,6 +43,8 @@ func seedRowsAsMaps(code string) []map[string]any {
 		v = CFOSeed()
 	case "dir_fx_rate":
 		v = FxRateSeed()
+	case "dir_mp_norm":
+		v = MpNormSeed()
 	default:
 		return nil
 	}

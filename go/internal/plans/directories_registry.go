@@ -223,6 +223,21 @@ var dirSchemas = map[string]DirSchema{
 			{Key: "rate_byn", Label: "Курс к BYN", Type: ColMoney},
 		},
 	},
+	"dir_mp_norm": {
+		Code: "dir_mp_norm", Name: "Нормативы удержаний площадок", Group: GroupManual, Icon: "lucide:percent",
+		Description: "Норматив совокупных удержаний площадки с периодом действия (правка 08.09.2026). Покрывает шесть долей: комиссия, агентское вознаграждение, транспортная и складская логистика, штрафы и прочие удержания. Из него ВЫВОДИТСЯ доля агентского как остаток. Задан к выручке по ценам менеджера без НДС; к базе формы приводится делением на (1 − %СПП).",
+		Stage: "1.1",
+		Columns: []DirColumn{
+			{Key: "code_cfo", Label: "Код ЦФО", Type: ColNumber, Primary: true, Search: true, Width: "100px"},
+			{Key: "name", Label: "Площадка", Type: ColText, Search: true},
+			{Key: "norm", Label: "Норматив, доля", Type: ColMoney},
+			{Key: "from_year", Label: "С года", Type: ColNumber, Width: "90px"},
+			{Key: "from_month", Label: "С месяца", Type: ColNumber, Width: "90px"},
+			{Key: "to_year", Label: "По год", Type: ColNumber, Width: "90px"},
+			{Key: "to_month", Label: "По месяц", Type: ColNumber, Width: "90px"},
+			{Key: "note", Label: "Примечание", Type: ColText},
+		},
+	},
 	"dir_store_to": {
 		Code: "dir_store_to", Name: "Магазины (ТО)", Group: GroupLisa, Icon: "lucide:shopping-bag",
 		Description: "Мастер-справочник магазинов для товарооборота розницы (этап 1.1). Источник: Лиса s_klient.",

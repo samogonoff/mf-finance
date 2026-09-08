@@ -517,13 +517,13 @@ func blockToPL() map[string]int {
 // (mpform_vat.go), и только за ним — ставка справочника, которую basis принёс
 // фолбэком. Прошивать ставку в код нельзя (ТЗ §3.4).
 func conditionsToInput(c MpConditions, vat MpVatBasis) MpConditionsInput {
-	return conditionsToInputNorm(c, vat, mpNormShareOf(c.CodeCFO))
+	return conditionsToInputNorm(c, vat, mpNormShareOf(c.CodeCFO, c.Year, c.Month))
 }
 
 // conditionsToInputNorm — то же с явным нормативом площадки (для тестов и мест,
 // где норматив приходит из справочника, а не из сида).
 func conditionsToInputNorm(c MpConditions, vat MpVatBasis, norm float64) MpConditionsInput {
-	rate, ratio := vat.Rate(), vat.ManagerRatio
+	rate, ratio := vat.Rate(), vat.Ratio
 	if c.VatRate != nil {
 		rate, ratio = *c.VatRate, 1+*c.VatRate
 	}
@@ -609,13 +609,13 @@ func mustJSON(v map[string]any) []byte {
 	return raw
 }
 
-// mpNormShareOf — норматив совокупных удержаний площадки из справочника
-// (сид dir_marketplace). 0 — норматива нет, доля агентского вводится руками.
-func mpNormShareOf(cfo int) float64 {
-	for _, mp := range MarketplaceSeed() {
-		if mp.CodeCFO == cfo {
-			return mp.NormShare
-		}
+// mpNormShareOf — норматив удержаний площадки на месяц из СИДА (фолбэк). Норматив
+// зависит от периода: у Wildberries 43 % действовали январь–февраль 2026, с марта
+// 42,8 %. Живой справочник читает RateBook.NormShare — сюда попадаем, когда его
+// нет (тесты, расчёт без справочника).
+func mpNormShareOf(cfo, year, month int) float64 {
+	if v, ok := pickNorm(MpNormSeed(), cfo, year, month); ok {
+		return v
 	}
 	return 0
 }

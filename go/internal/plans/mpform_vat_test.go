@@ -18,26 +18,41 @@ func planWB() map[string]float64 {
 }
 
 func TestVatBasis_FromPlanRatio(t *testing.T) {
-	b := mpVatBasis(planWB(), 335, 0.20)
-	if !b.FromPlan {
+	b := mpVatBasis(planWB(), nil, 335, 2026, 6, 0.20)
+	if !b.FromPlan || b.Missing {
 		t.Fatal("базис обязан прийти из плана, когда пара сумм есть")
 	}
-	approx(t, "отношение по цене менеджера", b.ManagerRatio, 457_380_000.0/380_012_405.0)
-	approx(t, "отношение по цене площадки", b.PlatRatio, 315_592_200.0/262_208_559.0)
-	// Ставка — производная от отношения, а не законодательные 20 %.
+	// Ставка ОДНА на оба уровня цены (правка 08.09.2026): 1046 / 1045 плана.
+	approx(t, "отношение из плана", b.Ratio, 457_380_000.0/380_012_405.0)
+	if b.Year != 2026 || b.Month != 6 {
+		t.Errorf("период базиса: got %d-%d, want 2026-6", b.Year, b.Month)
+	}
 	if math.Abs(b.Rate()-0.20) < 0.001 {
 		t.Errorf("ставка совпала с законодательной: %.6f", b.Rate())
 	}
 }
 
-// Плана нет — работает ставка справочника, а не молчаливый ноль.
-func TestVatBasis_FallbackToRate(t *testing.T) {
-	b := mpVatBasis(map[string]float64{}, 335, 0.196)
-	if b.FromPlan {
-		t.Fatal("без плана базис не может быть помечен как плановый")
+// Плана месяца нет — берётся план ПРЕДЫДУЩЕГО месяца той же площадки
+// (правка 08.09.2026 п. 1), а не ставка справочника.
+func TestVatBasis_FallsBackToPreviousMonthPlan(t *testing.T) {
+	b := mpVatBasis(map[string]float64{}, planWB(), 335, 2026, 6, 0.196)
+	if !b.FromPlan || b.Missing {
+		t.Fatal("план предыдущего месяца обязан считаться базой")
 	}
-	approx(t, "фолбэк-отношение", b.ManagerRatio, 1.196)
-	approx(t, "фолбэк-ставка", b.Rate(), 0.196)
+	approx(t, "отношение из плана мая", b.Ratio, 457_380_000.0/380_012_405.0)
+	if b.Year != 2026 || b.Month != 5 {
+		t.Errorf("период базиса: got %d-%d, want 2026-5", b.Year, b.Month)
+	}
+}
+
+// Нет ни того, ни другого — суммы считаются по ставке справочника, но базис
+// помечен Missing: отправку такой формы блокирует МП-12.
+func TestVatBasis_MissingBlocksSubmit(t *testing.T) {
+	b := mpVatBasis(map[string]float64{}, map[string]float64{}, 335, 2026, 6, 0.196)
+	if b.FromPlan || !b.Missing {
+		t.Fatal("без плана базис обязан помечаться как отсутствующий")
+	}
+	approx(t, "аварийное отношение", b.Ratio, 1.196)
 }
 
 // Мусор в плановой паре (разные периоды, разные единицы) не должен молча уехать
@@ -47,7 +62,7 @@ func TestVatBasis_ImplausibleRatioIgnored(t *testing.T) {
 		layerKey(335, BSalesManagerGross): 457_380_000,
 		layerKey(335, BSalesManagerNet):   4_500_000, // отношение ~101
 	}
-	b := mpVatBasis(plan, 335, 0.20)
+	b := mpVatBasis(plan, nil, 335, 2026, 6, 0.20)
 	if b.FromPlan {
 		t.Fatal("неправдоподобное отношение принято за плановое")
 	}
@@ -56,15 +71,18 @@ func TestVatBasis_ImplausibleRatioIgnored(t *testing.T) {
 
 // Каскад делит каждый уровень цены на СВОЁ отношение (прототип: строки 17 и 32).
 func TestComputeMpPlatform_UsesPlanRatios(t *testing.T) {
-	b := mpVatBasis(planWB(), 335, 0.20)
+	b := mpVatBasis(planWB(), nil, 335, 2026, 6, 0.20)
 	out := computeMpPlatform(map[string]float64{
 		BSalesManagerGross: 375_286_090.33,
 		BSPP:               0.2560,
 	}, b)
 
-	approxMoney(t, "продажи менеджера без НДС", out[BSalesManagerNet], 375_286_090.33/b.ManagerRatio)
+	approxMoney(t, "продажи менеджера без НДС", out[BSalesManagerNet], 375_286_090.33/b.Ratio)
 	approxMoney(t, "продажи площадки с НДС", out[BSalesPlatGross], 375_286_090.33*(1-0.2560))
-	approxMoney(t, "продажи площадки без НДС", out[BSalesPlatNet], out[BSalesPlatGross]/b.PlatRatio)
+	approxMoney(t, "продажи площадки без НДС", out[BSalesPlatNet], out[BSalesPlatGross]/b.Ratio)
+	// Контроль связности (правка 08.09.2026, лист A п. 7): на одной ставке
+	// 1 − [1006]/[1045] обязано равняться %СПП.
+	approx(t, "контроль связности", 1-out[BSalesPlatNet]/out[BSalesManagerNet], 0.2560)
 	// Ставка 20 % дала бы ровно 312 738 408,61 — то самое число с экрана, из-за
 	// которого дефект и был найден. По отношению из плана результат другой.
 	if math.Abs(out[BSalesManagerNet]-312_738_408.61) < 10 {
@@ -85,5 +103,26 @@ func TestHeaderVat_MixedRates(t *testing.T) {
 	}
 	if _, mixed := headerVat(map[int]float64{}); mixed {
 		t.Error("пустой набор не может быть «разным»")
+	}
+}
+
+// Себестоимость общая делится на 2006 и 6006 пропорцией плана; пошив считается
+// вычитанием, чтобы сумма сошлась с показанной строкой до копейки.
+func TestSplitCogsByPlan(t *testing.T) {
+	plan := map[[2]int]float64{
+		{335, 2006}: 70_000_000,
+		{335, 6006}: 30_000_000,
+	}
+	main, sewing := splitCogsByPlan(94_586_709.96, plan, 335)
+	approxMoney(t, "основная себестоимость", main, 94_586_709.96*0.7)
+	approxMoney(t, "пошив", sewing, 94_586_709.96*0.3)
+	if got := main + sewing; got != 94_586_709.96 {
+		t.Errorf("сумма частей разошлась с исходной: %.6f", got)
+	}
+
+	// Плана нет — всё на 2006: одна верная строка лучше двух выдуманных.
+	main, sewing = splitCogsByPlan(1000, map[[2]int]float64{}, 335)
+	if main != 1000 || sewing != 0 {
+		t.Errorf("без плана: got main=%.2f sewing=%.2f, want 1000/0", main, sewing)
 	}
 }

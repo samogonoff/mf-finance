@@ -46,6 +46,7 @@ const (
 const (
 	BSalesManagerGross = "sales_manager_price"      // 1046 — ПРОДАЖИ по ценам менеджера с НДС (ввод)
 	BSalesManagerNet   = "sales_manager_price_net"  // 1045 — …без НДС (расчёт)
+	BVatRate           = "vat_rate"                 // Эффективная ставка НДС площадки (расчёт)
 	BSPP               = "spp"                      // % СПП (скидка) — расчёт/правка
 	BSalesPlatGross    = "sales_platform_price"     // 1022 — по цене площадки с НДС (расчёт)
 	BSalesPlatNet      = "sales_platform_price_net" // 1006 — по цене площадки без НДС (расчёт)
@@ -60,6 +61,8 @@ const (
 	BGrossMargin       = "gross_margin"             // Маржа (gross) — расчёт
 	BGrossMarginPct    = "gross_margin_pct"         // Маржа (gross), % — расчёт
 	BCommission        = "commission"               // Комиссия площадки — расчёт (1045−1006)
+	BNormShare         = "norm_share"               // Норматив удержаний площадки (справочник, в базе долей)
+	BNormControl       = "norm_control"             // Контроль норматива: должен равняться нулю
 	BCostAgent         = "cost_agent"               // 64 — Агентское вознаграждение (ввод)
 	BCostFreight       = "cost_freight"             // 51 — Грузоперевозки экспорт (ввод)
 	BCostLogTransport  = "cost_log_transport"       // 52 — Грузоперевозки развоз и перемещение (ввод)
@@ -107,6 +110,9 @@ func mpFormSpec() []MpLine {
 		// --- Продажи ---
 		{BlockType: BSalesManagerGross, CodePL: 1046, Name: "ПРОДАЖИ по ценам менеджера с НДС", Section: sales, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, Formula: "ручной ввод (тактика)"},
 		{BlockType: BSalesManagerNet, CodePL: 1045, Name: "ПРОДАЖИ по ценам менеджера без НДС", Section: sales, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= с НДС / (1 + НДС)"},
+		// Ставка выводится СТРОКОЙ рядом с 1045 (правка 08.09.2026 п. 1): у каждой
+		// площадки она своя, и одно число в шапке показывать нельзя.
+		{BlockType: BVatRate, Name: "Эффективная ставка НДС", Section: sales, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= план 1046 / план 1045 того же месяца и площадки − 1"},
 		{BlockType: BSPP, Name: "% СПП (скидка)", Section: sales, Kind: KindCalcEditable, ValueKind: ValuePct, Scope: ScopePlatform, Editable: true, Formula: "= 1 − площадка_без_НДС / менеджер_без_НДС"},
 		{BlockType: BSalesPlatGross, CodePL: 1022, Name: "ПРОДАЖИ по цене площадки с НДС", Section: sales, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= менеджер_с_НДС × (1 − %СПП)"},
 		{BlockType: BSalesPlatNet, CodePL: 1006, Name: "ПРОДАЖИ по цене площадки без НДС", Section: sales, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= площадка_с_НДС / (1 + НДС)"},
@@ -133,6 +139,9 @@ func mpFormSpec() []MpLine {
 		{BlockType: BGrossMarginPct, Name: "Маржа (gross), %", Section: cogs, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= маржа (gross) / площадка_без_НДС"},
 
 		// --- Прямые затраты по площадкам ---
+		// Норматив — справочная величина площадки, стоит НАД блоком затрат
+		// (правка 08.09.2026 п. 7): из него выводится доля агентского.
+		{BlockType: BNormShare, Name: "Норматив удержаний площадки", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "справочник dir_mp_norm, приведён к базе долей"},
 		{BlockType: BCommission, Name: "Комиссия площадки", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, CostLine: true, Formula: "= менеджер_без_НДС − площадка_без_НДС"},
 		{BlockType: BCostAgent, CodePL: 64, Name: "Агентское (комиссионное) вознаграждение", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 64 (источник), редактируется"},
 		{BlockType: BCostFreight, CodePL: 51, Name: "Грузоперевозки экспорт", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 51 (источник), редактируется"},
@@ -151,6 +160,10 @@ func mpFormSpec() []MpLine {
 		{BlockType: BPlPlatformPct, Name: "PL по площадке, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= PL по площадке / площадка_без_НДС"},
 		{BlockType: BPlPlatformTotalCost, Name: "PL (сумма) от себестоимости общей", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= цена площадки без НДС − себестоимость общая − прямые затраты (без комиссии)"},
 		{BlockType: BPlPlatformTotalCostPct, Name: "PL от себестоимости общей, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= PL от общей сс / площадка_без_НДС"},
+		// Контроль норматива (правка 08.09.2026 п. 8): норматив плюс доли статей,
+		// которые в него не входят, обязаны дать долю прямых затрат. Ненулевое
+		// значение подсвечивается, но отправку не блокирует.
+		{BlockType: BNormControl, Name: "Контроль норматива (должен быть 0)", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= норматив + доли 51/13/15/45/58 − доля прямых затрат"},
 		{BlockType: BDirectShareTurnover, Name: "Доля прямых затрат в обороте, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= (прямые затраты − комиссия) / площадка_без_НДС"},
 	}
 }

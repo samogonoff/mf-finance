@@ -12,6 +12,7 @@
 export const B = {
   salesManagerGross: "sales_manager_price",
   salesManagerNet: "sales_manager_price_net",
+  vatRate: "vat_rate",
   spp: "spp",
   salesPlatGross: "sales_platform_price",
   salesPlatNet: "sales_platform_price_net",
@@ -48,17 +49,19 @@ export const COST_BLOCKS = [
 // месяца и площадки, и оно своё на каждом уровне цены. Базис приходит с сервера
 // (form.vat_by_cfo); считать его на клиенте нельзя — плана здесь нет.
 export interface MpVatBasis {
-  manager_ratio: number; // план 1046 / план 1045
-  plat_ratio: number;    // план 1022 / план 1006
+  /** Отношение план 1046 ÷ план 1045 площадки. Одно на оба уровня цены. */
+  ratio: number;
   from_plan?: boolean;
+  /** Период плана, из которого взято отношение (месяц формы либо предыдущий). */
+  year?: number;
+  month?: number;
+  /** Базы нет: суммы посчитаны по аварийной ставке, отправку блокирует МП-12. */
+  missing?: boolean;
 }
 
 // vatBasisFromRate — базис из ставки. Нужен ровно в двух случаях: сервер базис не
 // прислал (старый ответ) и ставка задана руками в условиях площадки.
-export const vatBasisFromRate = (vat: number): MpVatBasis => ({
-  manager_ratio: 1 + vat,
-  plat_ratio: 1 + vat,
-});
+export const vatBasisFromRate = (vat: number): MpVatBasis => ({ ratio: 1 + vat });
 
 // Законодательная ставка страны — фолбэк последней очереди.
 export const vatByCountry = (country: string): number =>
@@ -85,14 +88,15 @@ export function computePlatform(input: Record<string, number | null | undefined>
   let shipments = n(input[B.shipments]);
   let cogs = n(input[B.cogsTotal]);
 
-  // Каждый уровень цены делится на СВОЁ отношение (прототип: строка 17 берёт
-  // BF12/BF17, строка 32 — BF27/BF32).
-  const managerNet = div(managerGross, vat.manager_ratio);
+  // Оба уровня цены делятся на ОДНУ ставку (правка 08.09.2026): только так
+  // контроль связности «1 − [1006]/[1045] = %СПП» сходится по определению.
+  const managerNet = div(managerGross, vat.ratio);
   const platGross = managerGross * (1 - spp);
-  const platNet = div(platGross, vat.plat_ratio);
+  const platNet = div(platGross, vat.ratio);
 
   out[B.salesManagerGross] = managerGross;
   out[B.salesManagerNet] = managerNet;
+  out[B.vatRate] = vat.ratio - 1;
   out[B.spp] = spp;
   out[B.salesPlatGross] = platGross;
   out[B.salesPlatNet] = platNet;
@@ -165,13 +169,14 @@ export function computePlatformInverse(
   const ratio =
     typeof cond.vat_rate === "number" && cond.vat_rate > 0
       ? 1 + cond.vat_rate
-      : vatBasis.manager_ratio;
+      : vatBasis.ratio;
   const spp = n(cond.spp_pct);
   const shares = cond.shares ?? {};
 
   const managerGross = n(input[B.salesManagerGross]);
   const managerNet = div(managerGross, ratio);
   out[B.salesManagerGross] = managerGross;
+  out[B.vatRate] = ratio - 1;
   out[B.salesManagerNet] = managerNet;
   out[B.spp] = spp;
   out[B.salesPlatGross] = managerGross * (1 - spp);
@@ -240,9 +245,16 @@ export interface MpTotals {
   directShareTurnover: number;
 }
 
+/**
+ * Итоги формы. withCommon — вычитать ли общие затраты из PL: на этапах 1.1/1.2
+ * они не участвуют, начиная с 1.5 участвуют (правка 08.09.2026 п. 10). Признак
+ * приходит с сервера (form.pl_with_common): раньше клиент вычитал их всегда, а
+ * сервер — никогда, и два PL за один период расходились ровно на эту сумму.
+ */
 export function computeFormTotals(
   platforms: Record<string, number>[],
-  commonCosts = 0
+  commonCosts = 0,
+  withCommon = false
 ): MpTotals {
   const t: MpTotals = {
     salesManagerGross: 0, salesManagerNet: 0, salesPlatNet: 0, sppPct: 0,
@@ -261,7 +273,8 @@ export function computeFormTotals(
     t.directCosts += n(v[B.platformCosts]);
   }
   t.sppPct = div(t.salesManagerNet - t.salesPlatNet, t.salesManagerNet);
-  t.pl = t.salesPlatNet - t.shipments - commonCosts - t.directCosts + t.commission;
+  t.pl = t.salesPlatNet - t.shipments - (t.directCosts - t.commission);
+  if (withCommon) t.pl -= commonCosts;
   t.plPct = div(t.pl, t.salesPlatNet);
   t.directShareTurnover = div(t.directCosts - t.commission, t.salesPlatNet);
   return t;

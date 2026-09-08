@@ -49,6 +49,25 @@ type FxRow struct {
 	Scenario string  `json:"scenario"`
 }
 
+// MpNormRow — строка dir_mp_norm: НОРМАТИВ совокупных удержаний площадки с
+// периодом действия. Период обязателен: у Wildberries норматив 43 % действовал
+// январь–февраль 2026, с марта — 42,8 % (правка 08.09.2026 п. 8). Одно значение
+// на площадку означало бы, что июньские суммы не воспроизводятся.
+//
+// Норматив задан к выручке ПО ЦЕНАМ МЕНЕДЖЕРА без НДС — так он записан в
+// договоре с площадкой и в прототипе. База формы другая (цена площадки без НДС,
+// решение звонка 07.09.2026), поэтому перед применением норматив приводится к
+// базе делением на (1 − %СПП) — см. agentShareFromNorm.
+type MpNormRow struct {
+	CodeCFO   int     `json:"code_cfo"`
+	Norm      float64 `json:"norm"`
+	FromYear  int     `json:"from_year"`
+	FromMonth int     `json:"from_month"`
+	ToYear    int     `json:"to_year"`  // 0 — без ограничения
+	ToMonth   int     `json:"to_month"` // 0 — без ограничения
+	Note      string  `json:"note"`
+}
+
 // PLVatRow — нормативный НДС статьи по странам (dir_pl_line, колонки VAT_* из
 // Budgeting.dbo.CodePL). Значения хранятся КОЭФФИЦИЕНТОМ «1 + ставка», как в
 // источнике; наружу отдаётся ставка (NormativeVat).
@@ -71,6 +90,7 @@ type RateBook struct {
 	vat      []VatRow
 	fx       []FxRow
 	plVat    []PLVatRow
+	norms    []MpNormRow
 	ttl      time.Duration
 }
 
@@ -127,6 +147,60 @@ func FxSeed() []FxRow {
 	}
 }
 
+// MpNormSeed — нормативы удержаний площадок (правка 08.09.2026 п. 8). Фолбэк на
+// недоступный справочник; значения — из согласованного файла июня 2026.
+func MpNormSeed() []MpNormRow {
+	return []MpNormRow{
+		{CodeCFO: 335, Norm: 0.430, FromYear: 2026, FromMonth: 1, ToYear: 2026, ToMonth: 2, Note: "Wildberries, январь–февраль"},
+		{CodeCFO: 335, Norm: 0.428, FromYear: 2026, FromMonth: 3, Note: "Wildberries, с марта"},
+		{CodeCFO: 336, Norm: 0.340, Note: "Lamoda"},
+		{CodeCFO: 337, Norm: 0.350, Note: "Ozon"},
+		{CodeCFO: 954, Norm: 0.320, Note: "Yandex Market"},
+	}
+}
+
+// NormShare — норматив удержаний площадки на месяц. Второй результат false, если
+// норматива нет: тогда доля агентского вознаграждения вводится как обычная
+// статья, а не выводится остатком.
+func (b *RateBook) NormShare(ctx context.Context, cfo, year, month int) (float64, bool) {
+	b.load(ctx)
+	b.mu.RLock()
+	rows := b.norms
+	b.mu.RUnlock()
+	return pickNorm(rows, cfo, year, month)
+}
+
+// pickNorm — чистый выбор норматива: строка с периодом, накрывающим месяц,
+// старше строки без периода.
+func pickNorm(rows []MpNormRow, cfo, year, month int) (float64, bool) {
+	ym := year*12 + month
+	var openEnded float64
+	var hasOpen bool
+	for _, r := range rows {
+		if r.CodeCFO != cfo {
+			continue
+		}
+		from := r.FromYear*12 + r.FromMonth
+		to := r.ToYear*12 + r.ToMonth
+		switch {
+		case r.FromYear == 0 && r.ToYear == 0:
+			openEnded, hasOpen = r.Norm, true
+		case r.ToYear == 0:
+			if ym >= from {
+				return r.Norm, true
+			}
+		default:
+			if ym >= from && ym <= to {
+				return r.Norm, true
+			}
+		}
+	}
+	if hasOpen {
+		return openEnded, true
+	}
+	return 0, false
+}
+
 // PLVatSeed — нормативный НДС из сида статей: единственная копия значений живёт
 // в PLLineSeed, здесь только проекция «статья → страна → коэффициент».
 func PLVatSeed() []PLVatRow {
@@ -157,6 +231,7 @@ func (b *RateBook) load(ctx context.Context) ([]VatRow, []FxRow) {
 	}
 	vat, fx = VatSeed(), FxSeed()
 	plVat := PLVatSeed()
+	norms := MpNormSeed()
 	if b.repo != nil {
 		if rows, err := b.repo.Rows(ctx, "dir_vat"); err != nil {
 			log.Printf("plans: справочник НДС недоступен, работаем на дефолтных ставках: %v", err)
@@ -212,8 +287,27 @@ func (b *RateBook) load(ctx context.Context) ([]VatRow, []FxRow) {
 			}
 		}
 	}
+	if b.repo != nil {
+		// Нормативы удержаний площадок с периодом действия (правка 08.09.2026 п. 8).
+		if rows, err := b.repo.Rows(ctx, "dir_mp_norm"); err != nil {
+			log.Printf("plans: справочник нормативов недоступен, работаем на сиде: %v", err)
+		} else if len(rows) > 0 {
+			norms = norms[:0]
+			for _, r := range rows {
+				norms = append(norms, MpNormRow{
+					CodeCFO:   intAt(r.Payload, "code_cfo"),
+					Norm:      floatAt(r.Payload, "norm"),
+					FromYear:  intAt(r.Payload, "from_year"),
+					FromMonth: intAt(r.Payload, "from_month"),
+					ToYear:    intAt(r.Payload, "to_year"),
+					ToMonth:   intAt(r.Payload, "to_month"),
+					Note:      strAt(r.Payload, "note"),
+				})
+			}
+		}
+	}
 	b.mu.Lock()
-	b.vat, b.fx, b.plVat, b.loadedAt = vat, fx, plVat, time.Now()
+	b.vat, b.fx, b.plVat, b.norms, b.loadedAt = vat, fx, plVat, norms, time.Now()
 	b.mu.Unlock()
 	return vat, fx
 }

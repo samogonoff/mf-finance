@@ -69,6 +69,14 @@ type MpValidationInput struct {
 	CalcOwner map[[2]int]string
 	// Наименования статей из справочника «Расходы Code PL» — контроль МП-11.
 	PLNames map[int]string
+	// VatBasis — базис ставки НДС по площадке. Базис с Missing=true означает, что
+	// плана нет ни за месяц формы, ни за предыдущий: суммы посчитаны по аварийной
+	// ставке справочника, и утверждать такой план нельзя (МП-12, правка
+	// 08.09.2026 п. 1).
+	VatBasis map[int]MpVatBasis
+	// Norms — норматив удержаний площадки (в базе справочника, к цене менеджера).
+	// Пусто — норматива нет, доля агентского вводится как обычная статья.
+	Norms map[int]float64
 }
 
 // ValidateMpForm — полный набор проверок формы. Возвращает замечания,
@@ -101,6 +109,31 @@ func ValidateMpForm(in MpValidationInput) []MpIssue {
 			add("МП-05", MpBlocking, false,
 				"площадка не отнесена к группе/стране/ЮЛ (сегмент %q, страна %q, ЮЛ %q)",
 				p.Segment, p.Country, p.LegalEntity)
+		}
+
+		// МП-12: есть база для расчёта эффективной ставки НДС. Ставку даёт план
+		// (месяца формы либо предыдущего); без него форма считает по справочнику,
+		// и это видно на экране, но отправлять такие числа на согласование нельзя.
+		if b, ok := in.VatBasis[cfo]; ok && b.Missing {
+			add("МП-12", MpBlocking, false,
+				"нет базы для расчёта ставки НДС по площадке %s: плана нет ни за %04d-%02d, ни за предыдущий месяц",
+				p.NameCFO, in.Year, in.Month)
+		}
+
+		// МП-13: удержания площадки превысили её норматив. Excel в этом случае
+		// считает отрицательную долю агентского молча (правка 08.09.2026 п. 7),
+		// кабинет обязан обнулить строку и не дать отправить форму.
+		if norm, ok := in.Norms[cfo]; ok && norm > 0 && hasCond && vals != nil {
+			normBase := vals[BNormShare]
+			if normBase == 0 && cond.SppPct < 1 {
+				normBase = norm / (1 - cond.SppPct)
+			}
+			commissionShare := safeDiv(vals[BCommission], vals[BSalesPlatNet])
+			if used, exceeded := mpNormExceeded(normBase, commissionShare, cond.Shares); exceeded {
+				add("МП-13", MpBlocking, false,
+					"сумма удержаний по площадке %s равна %.2f %% и превышает норматив %.2f %%: уменьшите доли или измените норматив",
+					p.NameCFO, used*100, normBase*100)
+			}
 		}
 
 		// МП-01: заданы продажи, %СПП, обе наценки и доли всех статей набора.

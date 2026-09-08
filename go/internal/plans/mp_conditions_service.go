@@ -255,8 +255,12 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 		planSegments = append(planSegments, mp.Segment)
 	}
 	planLayer := mpPlanByBlock(ctx, s.fact, card.Year, card.Month, planSegments)
+	prevPY, prevPM := prevMonth(card.Year, card.Month)
+	planPrevLayer := mpPlanByBlock(ctx, s.fact, prevPY, prevPM, planSegments)
 
 	values := map[int]map[string]float64{}
+	basisByCfo := map[int]MpVatBasis{}
+	normByCfo := map[int]float64{}
 	for _, mp := range platformsInfo {
 		cond, ok := condByCfo[mp.CodeCFO]
 		if !ok {
@@ -266,9 +270,20 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 		if s.rates != nil {
 			vat = s.rates.Vat(ctx, mp.Country, mp.CodeCFO)
 		}
+		basis := mpVatBasis(planLayer, planPrevLayer, mp.CodeCFO, card.Year, card.Month, vat)
+		basisByCfo[mp.CodeCFO] = basis
+		// Норматив удержаний — из справочника с периодом действия; сид остаётся
+		// фолбэком (mpNormShareOf).
+		norm := mpNormShareOf(mp.CodeCFO, card.Year, card.Month)
+		if s.rates != nil {
+			if v, ok := s.rates.NormShare(ctx, mp.CodeCFO, card.Year, card.Month); ok {
+				norm = v
+			}
+		}
+		normByCfo[mp.CodeCFO] = norm
 		out, log := computeMpPlatformInverse(MpInverseInput{
 			SalesManagerGross: sales[mp.CodeCFO],
-			Conditions:        conditionsToInput(cond, mpVatBasis(planLayer, mp.CodeCFO, vat)),
+			Conditions:        conditionsToInputNorm(cond, basis, norm),
 			Overrides:         overrides[mp.CodeCFO],
 		})
 		values[mp.CodeCFO] = out
@@ -291,10 +306,10 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 
 	res := MpRecalcResult{
 		Period: PeriodRef{Year: card.Year, Month: card.Month}, CalcMode: CalcInverse,
-		Platforms: values, Totals: computeMpFormTotals(values, commonSum),
+		Platforms: values, Totals: computeMpFormTotalsMode(values, commonSum, mpPLWithCommon(card)),
 		CommonCost: commonSum, Preview: preview,
 	}
-	res.Issues = s.validate(ctx, card, platformsInfo, condByCfo, values)
+	res.Issues = s.validate(ctx, card, platformsInfo, condByCfo, values, basisByCfo, normByCfo)
 	res.Blocking = HasBlocking(res.Issues)
 
 	if !preview {
@@ -309,11 +324,12 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 // validate — полный набор проверок формы: подтягивает владельцев расчёта,
 // наименования статей справочника, факт прошлого месяца и штрафы.
 func (s *MpConditionsService) validate(ctx context.Context, card Card, platforms []MarketplaceRow,
-	conds map[int]MpConditions, values map[int]map[string]float64) []MpIssue {
+	conds map[int]MpConditions, values map[int]map[string]float64,
+	vat map[int]MpVatBasis, norms map[int]float64) []MpIssue {
 
 	in := MpValidationInput{
 		Year: card.Year, Month: card.Month, Platforms: platforms,
-		Conditions: conds, Values: values,
+		Conditions: conds, Values: values, VatBasis: vat, Norms: norms,
 		CalcOwner: map[[2]int]string{}, PLNames: plLineNames(),
 		Thresholds: DefaultMpThresholds(),
 	}
