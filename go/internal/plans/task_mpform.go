@@ -68,6 +68,10 @@ type MpTaskForm struct {
 	VatByCfo    map[int]MpVatBasis `json:"vat_by_cfo,omitempty"`
 	VatMixed    bool               `json:"vat_mixed"`
 	VatFromPlan bool               `json:"vat_from_plan"`
+	// VatMissing — площадки, по которым плана нет ни за месяц формы, ни за
+	// предыдущий: суммы посчитаны по аварийной ставке справочника, отправка на
+	// согласование заблокирована (МП-12).
+	VatMissing []int `json:"vat_missing,omitempty"`
 	Platforms []MpFormPlatform `json:"platforms"`
 	Lines     []MpLine         `json:"lines"`
 	Cells     []MpFormCell     `json:"cells"`
@@ -239,14 +243,22 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	// Базис НДС по каждой площадке: отношение плановых сумм, ставка справочника —
 	// фолбэк (mpform_vat.go). Одного числа на всю форму не существует: у площадок
 	// ставки разные, поэтому шапка отдаёт и разрез VatByCfo, и признак VatMixed.
-	planLayer := mpPlanByBlock(ctx, s.fact, year, month, distinctSegments(segmentOf))
+	segList := distinctSegments(segmentOf)
+	planLayer := mpPlanByBlock(ctx, s.fact, year, month, segList)
+	prevY, prevM := prevMonth(year, month)
+	planPrev := mpPlanByBlock(ctx, s.fact, prevY, prevM, segList)
 	f.VatByCfo = map[int]MpVatBasis{}
 	rateByCfo := map[int]float64{}
 	for _, p := range f.Platforms {
-		b := mpVatBasis(planLayer, p.CodeCFO, s.vatFor(ctx, p))
+		b := mpVatBasis(planLayer, planPrev, p.CodeCFO, year, month, s.vatFor(ctx, p))
 		f.VatByCfo[p.CodeCFO] = b
 		rateByCfo[p.CodeCFO] = b.Rate()
 		f.VatFromPlan = f.VatFromPlan || b.FromPlan
+		// Площадки без базы перечисляем поимённо: валидация МП-12 назовёт их в
+		// тексте блокировки, а форма подсветит строку ставки.
+		if b.Missing {
+			f.VatMissing = append(f.VatMissing, p.CodeCFO)
+		}
 	}
 	f.Vat, f.VatMixed = headerVat(rateByCfo)
 

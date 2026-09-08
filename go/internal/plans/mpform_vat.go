@@ -18,67 +18,79 @@ import "context"
 // кабинетом», п. 2) и var/Найдено_в_кабинете_07.09.2026.docx (часть 2).
 
 // MpVatBasis — как форма переводит суммы «с НДС» в «без НДС» по одной площадке.
-// Отношения, а не ставка: ставка — производная от них (Rate), и хранить её как
-// ведущую величину значит терять разницу между уровнями «цена менеджера» и
-// «цена площадки», у которых в источнике свои плановые пары.
+//
+// Ставка ОДНА на оба уровня цены (правка 08.09.2026, лист A п. 4: «то же
+// отношение работает для пары 1022 → 1006»). Прежняя версия держала две
+// независимые пары отношений — по прототипу, где каждая строка делится на своё;
+// заказчик это отменил, и на одной ставке контроль связности
+// `1 − [1006]/[1045] = %СПП` сходится по определению, а на двух — нет.
 type MpVatBasis struct {
-	ManagerRatio float64 `json:"manager_ratio"` // план 1046 / план 1045
-	PlatRatio    float64 `json:"plat_ratio"`    // план 1022 / план 1006
-	FromPlan     bool    `json:"from_plan"`     // отношение получено из плана, а не из справочника
+	Ratio    float64 `json:"ratio"`     // план 1046 / план 1045 площадки
+	FromPlan bool    `json:"from_plan"` // отношение получено из плана, а не из справочника
+	// Year/Month — период плана, из которого взято отношение: месяц формы либо
+	// предыдущий. Форма подписывает это рядом со ставкой, иначе непонятно, почему
+	// у соседних площадок ставки разных месяцев.
+	Year  int `json:"year,omitempty"`
+	Month int `json:"month,omitempty"`
+	// Missing — базы для расчёта ставки нет ни в текущем, ни в предыдущем месяце.
+	// Значения при этом считаются по ставке справочника (иначе форму нельзя было
+	// бы открыть ни в mock-режиме, ни на периоде без плана), но отправка на
+	// согласование блокируется валидацией МП-12: план утверждают по числам, а не
+	// по аварийному фолбэку.
+	Missing bool `json:"missing"`
 }
 
-// Rate — эффективная ставка, которую даёт отношение: её показывает шапка формы и
-// фиксирует версия карточки. Считается по уровню цены менеджера — на нём стоит
-// ввод, и именно эту ставку видит заполняющий.
+// Rate — эффективная ставка, которую даёт отношение: её показывает форма и
+// фиксирует версия карточки.
 func (b MpVatBasis) Rate() float64 {
-	if b.ManagerRatio <= 0 {
+	if b.Ratio <= 0 {
 		return 0
 	}
-	return b.ManagerRatio - 1
+	return b.Ratio - 1
 }
 
-// vatBasisFromRate — базис из ставки: фолбэк на случай, когда плана нет (или его
-// суммы непригодны), и способ учесть ставку, введённую руками в условиях площадки.
+// vatBasisFromRate — базис из ставки: способ учесть ставку, введённую руками в
+// условиях площадки, и аварийный фолбэк на отсутствующий план.
 func vatBasisFromRate(vat float64) MpVatBasis {
-	return MpVatBasis{ManagerRatio: 1 + vat, PlatRatio: 1 + vat}
+	return MpVatBasis{Ratio: 1 + vat}
 }
 
 // Границы правдоподобия отношения. Ставка НДС контура лежит в 0…22 %, поэтому
 // отношение вне 1,00…1,50 означает не «высокий НДС», а мусор в источнике: чаще
 // всего в плановую пару попали разные периоды или разные единицы. Делить на такое
-// отношение нельзя — суммы уедут молча, поэтому берём фолбэк-ставку.
+// отношение нельзя — суммы уедут молча.
 const (
 	mpVatRatioMin = 1.0
 	mpVatRatioMax = 1.5
 )
 
-// mpVatBasis — базис площадки из планового слоя (FormToLoadPlan, свёрнут по
-// block_type). Пара, которой в плане нет, заменяется другой, а если нет обеих —
-// работает ставка справочника: без плана делить не на что.
-func mpVatBasis(plan map[string]float64, cfo int, fallbackVat float64) MpVatBasis {
-	ratio := func(gross, net string) (float64, bool) {
-		g, n := plan[layerKey(cfo, gross)], plan[layerKey(cfo, net)]
-		if g <= 0 || n <= 0 {
-			return 0, false
-		}
-		r := g / n
-		if r < mpVatRatioMin || r > mpVatRatioMax {
-			return 0, false
-		}
-		return r, true
+// mpPlanRatio — отношение план_1046 ÷ план_1045 площадки в одном месяце.
+func mpPlanRatio(plan map[string]float64, cfo int) (float64, bool) {
+	g, n := plan[layerKey(cfo, BSalesManagerGross)], plan[layerKey(cfo, BSalesManagerNet)]
+	if g <= 0 || n <= 0 {
+		return 0, false
 	}
-	mgr, okMgr := ratio(BSalesManagerGross, BSalesManagerNet)
-	plat, okPlat := ratio(BSalesPlatGross, BSalesPlatNet)
-	switch {
-	case okMgr && okPlat:
-		return MpVatBasis{ManagerRatio: mgr, PlatRatio: plat, FromPlan: true}
-	case okMgr:
-		return MpVatBasis{ManagerRatio: mgr, PlatRatio: mgr, FromPlan: true}
-	case okPlat:
-		return MpVatBasis{ManagerRatio: plat, PlatRatio: plat, FromPlan: true}
-	default:
-		return vatBasisFromRate(fallbackVat)
+	r := g / n
+	if r < mpVatRatioMin || r > mpVatRatioMax {
+		return 0, false
 	}
+	return r, true
+}
+
+// mpVatBasis — базис площадки: отношение из плана месяца формы, иначе из плана
+// ПРЕДЫДУЩЕГО месяца по той же площадке (правка 08.09.2026 п. 1), иначе пометка
+// Missing и ставка справочника как аварийное значение.
+func mpVatBasis(plan, planPrev map[string]float64, cfo, year, month int, fallbackVat float64) MpVatBasis {
+	if r, ok := mpPlanRatio(plan, cfo); ok {
+		return MpVatBasis{Ratio: r, FromPlan: true, Year: year, Month: month}
+	}
+	py, pm := prevMonth(year, month)
+	if r, ok := mpPlanRatio(planPrev, cfo); ok {
+		return MpVatBasis{Ratio: r, FromPlan: true, Year: py, Month: pm}
+	}
+	b := vatBasisFromRate(fallbackVat)
+	b.Missing = true
+	return b
 }
 
 // mpPlanByBlock — плановый слой (FormToLoadPlan) по сегментам, свёрнутый в

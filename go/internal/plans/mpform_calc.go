@@ -45,14 +45,15 @@ func computeMpPlatform(in map[string]float64, vat MpVatBasis) map[string]float64
 	shipments := in[BShipments]
 	cogs := in[BCogsTotal]
 
-	// Уровни цены менеджера и цены площадки делятся каждый на СВОЁ отношение
-	// (прототип: строка 17 берёт BF12/BF17, строка 32 — BF27/BF32).
-	managerNet := safeDiv(managerGross, vat.ManagerRatio)
+	// Оба уровня цены делятся на ОДНУ ставку (правка 08.09.2026): только так
+	// контроль связности «1 − [1006]/[1045] = %СПП» сходится по определению.
+	managerNet := safeDiv(managerGross, vat.Ratio)
 	platGross := managerGross * (1 - spp)
-	platNet := safeDiv(platGross, vat.PlatRatio)
+	platNet := safeDiv(platGross, vat.Ratio)
 
 	out[BSalesManagerGross] = managerGross
 	out[BSalesManagerNet] = managerNet
+	out[BVatRate] = vat.Rate()
 	out[BSPP] = spp
 	out[BSalesPlatGross] = platGross
 	out[BSalesPlatNet] = platNet

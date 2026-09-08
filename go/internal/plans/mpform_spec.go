@@ -46,6 +46,7 @@ const (
 const (
 	BSalesManagerGross = "sales_manager_price"      // 1046 — ПРОДАЖИ по ценам менеджера с НДС (ввод)
 	BSalesManagerNet   = "sales_manager_price_net"  // 1045 — …без НДС (расчёт)
+	BVatRate           = "vat_rate"                 // Эффективная ставка НДС площадки (расчёт)
 	BSPP               = "spp"                      // % СПП (скидка) — расчёт/правка
 	BSalesPlatGross    = "sales_platform_price"     // 1022 — по цене площадки с НДС (расчёт)
 	BSalesPlatNet      = "sales_platform_price_net" // 1006 — по цене площадки без НДС (расчёт)
@@ -107,6 +108,9 @@ func mpFormSpec() []MpLine {
 		// --- Продажи ---
 		{BlockType: BSalesManagerGross, CodePL: 1046, Name: "ПРОДАЖИ по ценам менеджера с НДС", Section: sales, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, Formula: "ручной ввод (тактика)"},
 		{BlockType: BSalesManagerNet, CodePL: 1045, Name: "ПРОДАЖИ по ценам менеджера без НДС", Section: sales, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= с НДС / (1 + НДС)"},
+		// Ставка выводится СТРОКОЙ рядом с 1045 (правка 08.09.2026 п. 1): у каждой
+		// площадки она своя, и одно число в шапке показывать нельзя.
+		{BlockType: BVatRate, Name: "Эффективная ставка НДС", Section: sales, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= план 1046 / план 1045 того же месяца и площадки − 1"},
 		{BlockType: BSPP, Name: "% СПП (скидка)", Section: sales, Kind: KindCalcEditable, ValueKind: ValuePct, Scope: ScopePlatform, Editable: true, Formula: "= 1 − площадка_без_НДС / менеджер_без_НДС"},
 		{BlockType: BSalesPlatGross, CodePL: 1022, Name: "ПРОДАЖИ по цене площадки с НДС", Section: sales, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= менеджер_с_НДС × (1 − %СПП)"},
 		{BlockType: BSalesPlatNet, CodePL: 1006, Name: "ПРОДАЖИ по цене площадки без НДС", Section: sales, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= площадка_с_НДС / (1 + НДС)"},

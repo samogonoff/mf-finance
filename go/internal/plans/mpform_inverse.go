@@ -86,6 +86,7 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 	managerGross := put(BSalesManagerGross, in.SalesManagerGross, "ручной ввод (тактика)")
 	managerNet := put(BSalesManagerNet, safeDiv(managerGross, c.vatRatio()),
 		"= продажи с НДС / отношение план с НДС ÷ план без НДС")
+	out[BVatRate] = c.vatRatio() - 1
 	out[BSPP] = c.SppPct
 	log = append(log, MpInverseCell{BlockType: BSPP, Value: c.SppPct, Calculated: c.SppPct,
 		Formula: "условия площадки: % СПП"})

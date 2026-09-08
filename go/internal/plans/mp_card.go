@@ -73,13 +73,15 @@ func (p *MpCardProvider) FormSnapshot(ctx context.Context, c Card) (map[string]a
 			segList = append(segList, seg)
 		}
 		planLayer := mpPlanByBlock(ctx, p.fact, c.Year, c.Month, segList)
+		prevY, prevM := prevMonth(c.Year, c.Month)
+		planPrev := mpPlanByBlock(ctx, p.fact, prevY, prevM, segList)
 		vat := map[string]float64{}
 		basis := map[string]MpVatBasis{}
 		for _, mp := range MarketplaceSeed() {
 			if !segments[mp.Segment] {
 				continue
 			}
-			b := mpVatBasis(planLayer, mp.CodeCFO, p.rates.Vat(ctx, mp.Country, mp.CodeCFO))
+			b := mpVatBasis(planLayer, planPrev, mp.CodeCFO, c.Year, c.Month, p.rates.Vat(ctx, mp.Country, mp.CodeCFO))
 			key := itoa(int64(mp.CodeCFO))
 			vat[key] = b.Rate()
 			basis[key] = b

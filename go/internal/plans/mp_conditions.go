@@ -523,7 +523,7 @@ func conditionsToInput(c MpConditions, vat MpVatBasis) MpConditionsInput {
 // conditionsToInputNorm — то же с явным нормативом площадки (для тестов и мест,
 // где норматив приходит из справочника, а не из сида).
 func conditionsToInputNorm(c MpConditions, vat MpVatBasis, norm float64) MpConditionsInput {
-	rate, ratio := vat.Rate(), vat.ManagerRatio
+	rate, ratio := vat.Rate(), vat.Ratio
 	if c.VatRate != nil {
 		rate, ratio = *c.VatRate, 1+*c.VatRate
 	}
