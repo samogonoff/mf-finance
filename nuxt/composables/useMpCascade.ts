@@ -245,9 +245,16 @@ export interface MpTotals {
   directShareTurnover: number;
 }
 
+/**
+ * Итоги формы. withCommon — вычитать ли общие затраты из PL: на этапах 1.1/1.2
+ * они не участвуют, начиная с 1.5 участвуют (правка 08.09.2026 п. 10). Признак
+ * приходит с сервера (form.pl_with_common): раньше клиент вычитал их всегда, а
+ * сервер — никогда, и два PL за один период расходились ровно на эту сумму.
+ */
 export function computeFormTotals(
   platforms: Record<string, number>[],
-  commonCosts = 0
+  commonCosts = 0,
+  withCommon = false
 ): MpTotals {
   const t: MpTotals = {
     salesManagerGross: 0, salesManagerNet: 0, salesPlatNet: 0, sppPct: 0,
@@ -266,7 +273,8 @@ export function computeFormTotals(
     t.directCosts += n(v[B.platformCosts]);
   }
   t.sppPct = div(t.salesManagerNet - t.salesPlatNet, t.salesManagerNet);
-  t.pl = t.salesPlatNet - t.shipments - commonCosts - t.directCosts + t.commission;
+  t.pl = t.salesPlatNet - t.shipments - (t.directCosts - t.commission);
+  if (withCommon) t.pl -= commonCosts;
   t.plPct = div(t.pl, t.salesPlatNet);
   t.directShareTurnover = div(t.directCosts - t.commission, t.salesPlatNet);
   return t;

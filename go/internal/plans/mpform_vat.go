@@ -160,3 +160,44 @@ func planMarkupTotal(plan map[string]float64, cfo int) (float64, bool) {
 	}
 	return platNet/cogs - 1, true
 }
+
+// mpPlanByPL — плановый слой по КОДАМ статей (а не по block_type): нужен там, где
+// один блок формы собран из нескольких кодов. Такой блок один — себестоимость
+// общая (2006 основная + 6006 пошив), и при публикации её надо развести обратно.
+func mpPlanByPL(ctx context.Context, src MpFactSource, year, month int, segments []string) map[[2]int]float64 {
+	out := map[[2]int]float64{}
+	if src == nil {
+		return out
+	}
+	seen := map[string]bool{}
+	for _, seg := range segments {
+		if seg == "" || seen[seg] {
+			continue
+		}
+		seen[seg] = true
+		rows, err := src.MpStrategy(ctx, year, month, seg)
+		if err != nil {
+			continue
+		}
+		for _, r := range rows {
+			out[[2]int{r.CodeCFO, r.CodePL}] += r.Amount
+		}
+	}
+	return out
+}
+
+// splitCogsByPlan — разделение себестоимости общей на 2006 и 6006 пропорцией
+// плана того же месяца (правка 08.09.2026 п. 4). Пошив считается ВЫЧИТАНИЕМ,
+// чтобы сумма двух записей сошлась с показанной строкой до копейки.
+//
+// Плана нет — вся сумма относится на 2006: форма покажет пометку «разделение
+// недоступно», а в приёмник уйдёт одна строка вместо двух неверных.
+func splitCogsByPlan(total float64, plan map[[2]int]float64, cfo int) (main, sewing float64) {
+	p2006, p6006 := plan[[2]int{cfo, 2006}], plan[[2]int{cfo, 6006}]
+	sum := p2006 + p6006
+	if sum <= 0 || p2006 <= 0 {
+		return total, 0
+	}
+	main = total * p2006 / sum
+	return main, total - main
+}

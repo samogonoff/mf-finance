@@ -105,3 +105,24 @@ func TestHeaderVat_MixedRates(t *testing.T) {
 		t.Error("пустой набор не может быть «разным»")
 	}
 }
+
+// Себестоимость общая делится на 2006 и 6006 пропорцией плана; пошив считается
+// вычитанием, чтобы сумма сошлась с показанной строкой до копейки.
+func TestSplitCogsByPlan(t *testing.T) {
+	plan := map[[2]int]float64{
+		{335, 2006}: 70_000_000,
+		{335, 6006}: 30_000_000,
+	}
+	main, sewing := splitCogsByPlan(94_586_709.96, plan, 335)
+	approxMoney(t, "основная себестоимость", main, 94_586_709.96*0.7)
+	approxMoney(t, "пошив", sewing, 94_586_709.96*0.3)
+	if got := main + sewing; got != 94_586_709.96 {
+		t.Errorf("сумма частей разошлась с исходной: %.6f", got)
+	}
+
+	// Плана нет — всё на 2006: одна верная строка лучше двух выдуманных.
+	main, sewing = splitCogsByPlan(1000, map[[2]int]float64{}, 335)
+	if main != 1000 || sewing != 0 {
+		t.Errorf("без плана: got main=%.2f sewing=%.2f, want 1000/0", main, sewing)
+	}
+}

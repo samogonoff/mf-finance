@@ -211,8 +211,11 @@ type MpFormTotals struct {
 	CommonCosts       float64 `json:"common_costs"`
 	PlPlatforms       float64 `json:"pl_platforms"`
 	PlTotalCost       float64 `json:"pl_total_cost"`
-	PL                float64 `json:"pl"`
-	PLPct             float64 `json:"pl_pct"`
+	PL float64 `json:"pl"`
+	// PLWithCommon — в PL вычтены общие затраты (этап 1.5 и далее). На этапах
+	// 1.1/1.2 они не участвуют, и подпись формы обязана это показывать.
+	PLWithCommon bool    `json:"pl_with_common"`
+	PLPct        float64 `json:"pl_pct"`
 	DirectShareTurn   float64 `json:"direct_share_turnover"`
 }
 
@@ -227,6 +230,18 @@ type MpFormTotals struct {
 //     и Ozon, из-за чего итог показывает 27,92 % вместо 26,32 %. Дефект НЕ
 //     воспроизводим — это отдельный пункт приёмки.
 func computeMpFormTotals(platforms map[int]map[string]float64, commonCosts float64) MpFormTotals {
+	return computeMpFormTotalsMode(platforms, commonCosts, false)
+}
+
+// computeMpFormTotalsMode — то же с явным выбором формулы PL (правка 08.09.2026
+// п. 10). PL считается ДВУМЯ способами в зависимости от того, где стоит период:
+//
+//	этапы 1.1 и 1.2 — без общих затрат: поток продаж их ещё не видит;
+//	начиная с 1.5   — полный, общие затраты вычитаются.
+//
+// Разница ровно на сумму общих затрат, и форма обязана подписывать, какой
+// вариант применён: иначе два разных числа PL за один период выглядят ошибкой.
+func computeMpFormTotalsMode(platforms map[int]map[string]float64, commonCosts float64, withCommon bool) MpFormTotals {
 	t := MpFormTotals{CommonCosts: commonCosts}
 	for _, v := range platforms {
 		t.SalesManagerGross += v[BSalesManagerGross]
@@ -252,6 +267,10 @@ func computeMpFormTotals(platforms map[int]map[string]float64, commonCosts float
 	// общие затраты остаются отдельным показателем формы: в PL они больше не
 	// входят. Следствие, полезное как проверка: PL по форме = Σ PL площадок.
 	t.PL = t.SalesPlatNet - t.Shipments - (t.DirectCosts - t.Commission)
+	if withCommon {
+		t.PL -= commonCosts
+	}
+	t.PLWithCommon = withCommon
 	t.PLPct = safeDiv(t.PL, t.SalesPlatNet)
 	t.DirectShareTurn = safeDiv(t.DirectCosts-t.Commission, t.SalesPlatNet)
 	return t
@@ -289,4 +308,19 @@ func mpNormExceeded(normBase, commissionShare float64, shares map[string]float64
 		used += shares[b]
 	}
 	return used, normBase > 0 && used > normBase
+}
+
+// mpPLWithCommon — участвуют ли общие затраты в PL этой карточки.
+//
+// Маршрут формы МП заканчивается шагом 1.4 «Утверждение», а общие затраты по
+// правке 08.09.2026 п. 10/11 появляются НАЧИНАЯ С 1.5 — то есть после того, как
+// поток продаж утверждён. Поэтому признак читается по статусу карточки, а не по
+// коду шага: «утверждена» и означает, что период ушёл дальше 1.4.
+func mpPLWithCommon(c Card) bool {
+	switch c.Status {
+	case CardApproved, CardPublished, CardPublishFailed:
+		return true
+	default:
+		return false
+	}
 }

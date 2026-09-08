@@ -79,6 +79,9 @@ type MpTaskForm struct {
 	// inverse («условия → суммы», ТЗ §3.1). От него зависит, какие строки
 	// доступны на ввод, поэтому клиент обязан его учитывать.
 	CalcMode string `json:"calc_mode"`
+	// PLWithCommon — в PL формы вычитаются общие затраты. На этапах 1.1/1.2 они
+	// не участвуют, начиная с 1.5 — участвуют (правка 08.09.2026 п. 10).
+	PLWithCommon bool `json:"pl_with_common"`
 	// CardID — карточка процесса этой формы (0, если период старый и карточки нет).
 	CardID int64 `json:"card_id,omitempty"`
 	// Conditions — условия площадок, из которых посчитана расходная часть
@@ -196,6 +199,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	plID := t.PlID
 	mode, card := s.calcModeFor(ctx, plID, segment)
 	f.CalcMode, f.CardID = mode, card.ID
+	f.PLWithCommon = mpPLWithCommon(card)
 	f.Lines = mpFormSpecFor(mode)
 
 	// Условия площадок нужны и для расчёта, и для показа долей в сетке.

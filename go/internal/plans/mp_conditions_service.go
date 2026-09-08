@@ -306,7 +306,7 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 
 	res := MpRecalcResult{
 		Period: PeriodRef{Year: card.Year, Month: card.Month}, CalcMode: CalcInverse,
-		Platforms: values, Totals: computeMpFormTotals(values, commonSum),
+		Platforms: values, Totals: computeMpFormTotalsMode(values, commonSum, mpPLWithCommon(card)),
 		CommonCost: commonSum, Preview: preview,
 	}
 	res.Issues = s.validate(ctx, card, platformsInfo, condByCfo, values, basisByCfo, normByCfo)

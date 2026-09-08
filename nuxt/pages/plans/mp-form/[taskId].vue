@@ -295,9 +295,10 @@
                — ТЗ §1 п.25, отдельный пункт приёмки. -->
           <tfoot v-if="form.platforms.length">
             <tr class="tot-row">
-              <td class="col-line">PL формы (сумма)</td>
+              <td class="col-line">PL формы (сумма) · {{ plModeLabel }}</td>
               <td :colspan="visiblePlatforms.length" class="tot-note">
-                = цена площадки без НДС − себестоимость отпускная − общие затраты − прямые затраты + комиссии
+                = цена площадки без НДС − себестоимость отпускная − прямые затраты + комиссии<template
+                  v-if="form.pl_with_common"> − общие затраты</template>
               </td>
               <td class="total-cell strong">{{ fmtMoney(formTotals.pl) }}</td>
             </tr>
@@ -606,9 +607,13 @@ const platformValues = computed<Record<number, Record<string, number>>>(() => {
 const formTotals = computed(() =>
   computeFormTotals(
     (form.value?.platforms || []).map((p) => platformValues.value[p.code_cfo] || {}),
-    commonCostTotal.value
+    commonCostTotal.value,
+    form.value?.pl_with_common === true
   )
 );
+// Какой из двух вариантов PL показан: до общих затрат (этапы 1.1/1.2) или полный
+// (с 1.5). Без подписи два разных числа за один период читаются как ошибка.
+const plModeLabel = computed(() => (form.value?.pl_with_common ? "PL полный" : "PL до общих затрат"));
 
 const cellValue = (line: MpLine, cfo: number): number => platformValues.value[cfo]?.[line.block_type] ?? 0;
 // Итог считается по ВИДИМЫМ площадкам: отфильтровав срез, пользователь ждёт итог
