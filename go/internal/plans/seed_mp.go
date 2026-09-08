@@ -102,8 +102,11 @@ func MarketplaceSeed() []MarketplaceRow {
 		{CodeCFO: 475, NameCFO: "Wildberries KZ", Segment: "small", Country: "KZ", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Kazakhstan"},
 		{CodeCFO: 474, NameCFO: "Ozon KZ", Segment: "small", Country: "KZ", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Kazakhstan"},
 		{CodeCFO: 338, NameCFO: "Kaspi", Segment: "small", Country: "KZ", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Kazakhstan"},
-		// small (UZ) → MF Kazakhstan (провизорно)
-		{CodeCFO: 339, NameCFO: "Uzmarket", Segment: "small", Country: "UZ", GroupCFO: 480, CodePL: 1046, LegalEntity: "MF Kazakhstan"},
+		// small (UZ) → MFUz. Провизорное «MF Kazakhstan» держалось с первого сида и
+		// было найдено на экране 07.09.2026: в своде Uzmarket стоял на казахском
+		// ЮЛ, то есть узбекские продажи ушли бы на чужую компанию (УНП 305554644,
+		// dir_legal_entity UZ-305554644).
+		{CodeCFO: 339, NameCFO: "Uzmarket", Segment: "small", Country: "UZ", GroupCFO: 480, CodePL: 1046, LegalEntity: "MFUz"},
 	}
 }
 
