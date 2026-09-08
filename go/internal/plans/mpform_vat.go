@@ -136,3 +136,15 @@ func headerVat(byCfo map[int]float64) (float64, bool) {
 	}
 	return min, max-min > 0.0005
 }
+
+// planMarkupTotal — наценка от общей себестоимости по плану того же месяца:
+// прототип берёт её ссылкой на план (строка 65: =BF65), а не вводит.
+// Возвращает false, если пары сумм в плане нет — тогда наценку вводят руками.
+func planMarkupTotal(plan map[string]float64, cfo int) (float64, bool) {
+	platNet := plan[layerKey(cfo, BSalesPlatNet)]
+	cogs := plan[layerKey(cfo, BCogsTotal)]
+	if platNet <= 0 || cogs <= 0 {
+		return 0, false
+	}
+	return platNet/cogs - 1, true
+}

@@ -517,6 +517,12 @@ func blockToPL() map[string]int {
 // (mpform_vat.go), и только за ним — ставка справочника, которую basis принёс
 // фолбэком. Прошивать ставку в код нельзя (ТЗ §3.4).
 func conditionsToInput(c MpConditions, vat MpVatBasis) MpConditionsInput {
+	return conditionsToInputNorm(c, vat, mpNormShareOf(c.CodeCFO))
+}
+
+// conditionsToInputNorm — то же с явным нормативом площадки (для тестов и мест,
+// где норматив приходит из справочника, а не из сида).
+func conditionsToInputNorm(c MpConditions, vat MpVatBasis, norm float64) MpConditionsInput {
 	rate, ratio := vat.Rate(), vat.ManagerRatio
 	if c.VatRate != nil {
 		rate, ratio = *c.VatRate, 1+*c.VatRate
@@ -526,7 +532,7 @@ func conditionsToInput(c MpConditions, vat MpVatBasis) MpConditionsInput {
 		shares[k] = v
 	}
 	return MpConditionsInput{
-		CodeCFO: c.CodeCFO, VatRate: rate, VatRatio: ratio, SppPct: c.SppPct,
+		CodeCFO: c.CodeCFO, VatRate: rate, VatRatio: ratio, NormShare: norm, SppPct: c.SppPct,
 		MarkupPct: c.MarkupPct, MarkupTotalPct: c.MarkupTotalPct, Shares: shares,
 	}
 }
@@ -601,4 +607,15 @@ func mustJSON(v map[string]any) []byte {
 		return []byte(`{}`)
 	}
 	return raw
+}
+
+// mpNormShareOf — норматив совокупных удержаний площадки из справочника
+// (сид dir_marketplace). 0 — норматива нет, доля агентского вводится руками.
+func mpNormShareOf(cfo int) float64 {
+	for _, mp := range MarketplaceSeed() {
+		if mp.CodeCFO == cfo {
+			return mp.NormShare
+		}
+	}
+	return 0
 }

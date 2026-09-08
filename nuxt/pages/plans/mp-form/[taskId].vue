@@ -250,7 +250,10 @@
                     <!-- В inverse суммы статей — производные от доли: показываем и долю
                          из условий, и посчитанную по ней сумму. Пустое поле = «берём
                          расчёт», заполненное = ручное переопределение (ТЗ §7.2). -->
-                    <span v-if="isInverse && line.cost_line" class="share">доля {{ fmtPct(condShare(line, p.code_cfo)) }}</span>
+                    <!-- Доля статьи под каждой суммой — главное замечание заказчика
+                         (07.09.2026): раньше доля была одна, итоговая по площадке.
+                         В inverse она ЗАДАНА условиями, в legacy считается от суммы. -->
+                    <span v-if="line.cost_line" class="share">доля {{ fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}</span>
                     <span v-if="isInverse && line.cost_line && displayInput(line, p.code_cfo) == null" class="calc-hint">
                       по доле: {{ fmtMoney(cellValue(line, p.code_cfo)) }}
                     </span>
@@ -618,9 +621,12 @@ const totalValue = (line: MpLine): number => {
 };
 
 // Доля статьи затрат в выручке по ценам менеджера (без НДС).
+// Доля статьи в выручке. База — цена площадки БЕЗ НДС (решение звонка
+// 07.09.2026): СПП уже удержан переходом к цене площадки, и мерить расход от цены
+// менеджера значит считать комиссию внутри каждой доли ещё раз.
 const shareOf = (line: MpLine, cfo: number): number => {
-  const mgrNet = platformValues.value[cfo]?.[B.salesManagerNet] ?? 0;
-  return mgrNet === 0 ? 0 : cellValue(line, cfo) / mgrNet;
+  const platNet = platformValues.value[cfo]?.[B.salesPlatNet] ?? 0;
+  return platNet === 0 ? 0 : cellValue(line, cfo) / platNet;
 };
 
 const cellRef = (cfo: number, block: string) => form.value?.cells.find((c) => c.code_cfo === cfo && c.block_type === block);

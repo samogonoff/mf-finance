@@ -95,7 +95,11 @@ func TestInverse_AcceptanceWildberriesJune2026(t *testing.T) {
 	approxMoney(t, "PL по площадке (от прямых затрат)", out[BPlPlatform], 56_883_366)
 	// PL от общей СС = 262 208 559 − 94 586 710 − 46 410 915.
 	approxMoney(t, "PL от себестоимости общей", out[BPlPlatformTotalCost], 121_210_930)
-	approx(t, "доля прямых затрат площадки", out[BDirectShare], 0.4321)
+	// База доли — цена площадки без НДС (решение звонка 07.09.2026; в Приложении Б
+	// 0,4321 от цены менеджера). Пересчёт: 164 214 760 / 262 208 559 = 0,6263.
+	// Инвариант ниже делает это число проверяемым: доля прямых затрат обязана
+	// равняться сумме долей статей ПЛЮС доля комиссии, посчитанная от той же базы.
+	approx(t, "доля прямых затрат площадки", out[BDirectShare], 0.6263)
 	approx(t, "доля прямых затрат в обороте", out[BDirectShareTurnover], 0.1770)
 
 	// --- Эталонные числа Приложения Б, которых правки не касались ---
@@ -113,6 +117,12 @@ func TestInverse_AcceptanceWildberriesJune2026(t *testing.T) {
 		shareSum += v
 	}
 	approx(t, "доля прямых в обороте = Σ долей статей", out[BDirectShareTurnover], shareSum)
+
+	// 3) Доля прямых затрат = Σ долей статей + доля комиссии от той же базы.
+	//    Раньше равенства не было: доля мерилась от цены менеджера, а статьи
+	//    начислялись на цену площадки.
+	approx(t, "доля прямых = Σ долей + комиссия/база", out[BDirectShare],
+		shareSum+out[BCommission]/out[BSalesPlatNet])
 
 	// 2) PL = цена площадки без НДС − СС по отпускным ценам − статьи (без комиссии).
 	wantPL := out[BSalesPlatNet] - out[BShipments] - (out[BPlatformCosts] - out[BCommission])
@@ -250,4 +260,37 @@ func TestInverse_PlatformVatRate(t *testing.T) {
 	c := MpConditionsInput{CodeCFO: 954, VatRate: vatYM, SppPct: 0.20}
 	out, _ := computeMpPlatformInverse(MpInverseInput{SalesManagerGross: 116_620_000, Conditions: c})
 	approxMoney(t, "продажи без НДС при ставке 16,62 %", out[BSalesManagerNet], 100_000_000)
+}
+
+// Доля агентского вознаграждения — ОСТАТОК норматива площадки (прототип, строка
+// 85). Проверяем на Wildberries: норматив 43 %, из него вычитаются доля комиссии
+// и доли транспортной, складской, штрафов и прочих удержаний.
+func TestInverse_AgentShareFromPlatformNorm(t *testing.T) {
+	c := conditionsWB()
+	c.NormShare = 0.43
+	delete(c.Shares, BCostAgent) // доля не задана — считаем от норматива
+
+	out, _ := computeMpPlatformInverse(MpInverseInput{SalesManagerGross: 457_380_000, Conditions: c})
+
+	platNet := out[BSalesPlatNet]
+	commissionShare := out[BCommission] / platNet
+	want := 0.43 - commissionShare - c.Shares[BCostLogTransport] - c.Shares[BCostLogWarehouse] -
+		c.Shares[BCostPenalties] - c.Shares[BCostOther]
+	approx(t, "доля агентского из норматива", out[BCostAgent]/platNet, want)
+
+	// Заданная руками доля норматив не трогает: условия площадки старше.
+	c2 := conditionsWB()
+	c2.NormShare = 0.43
+	out2, _ := computeMpPlatformInverse(MpInverseInput{SalesManagerGross: 457_380_000, Conditions: c2})
+	approx(t, "заданная доля агентского сохранена", out2[BCostAgent]/out2[BSalesPlatNet], 0.0530)
+}
+
+// Норматива нет — статья ведёт себя как обычная доля (в том числе нулевая).
+func TestInverse_NoNormKeepsAgentShareZero(t *testing.T) {
+	c := conditionsWB()
+	delete(c.Shares, BCostAgent)
+	out, _ := computeMpPlatformInverse(MpInverseInput{SalesManagerGross: 457_380_000, Conditions: c})
+	if out[BCostAgent] != 0 {
+		t.Errorf("без норматива агентское должно остаться нулём: %.2f", out[BCostAgent])
+	}
 }

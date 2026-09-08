@@ -96,7 +96,11 @@ func computeMpPlatform(in map[string]float64, vat MpVatBasis) map[string]float64
 		directTotal += v
 	}
 	out[BPlatformCosts] = directTotal
-	out[BDirectShare] = safeDiv(directTotal, managerNet)
+	// База долей — цена площадки БЕЗ НДС (решение звонка 07.09.2026; в прототипе
+	// E81 делит на цену менеджера). Та же база, что у статей в inverse-каскаде:
+	// СПП уже удержан переходом к цене площадки, и мерить расход от цены
+	// менеджера значит считать комиссию внутри каждой доли ещё раз.
+	out[BDirectShare] = safeDiv(directTotal, platNet)
 
 	// PL по площадке (правка ТЗ 02.09.2026 МП §21):
 	//   PL = продажи по цене площадки без НДС − себестоимость по отпускным ценам

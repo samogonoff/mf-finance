@@ -132,7 +132,9 @@ export function computePlatform(input: Record<string, number | null | undefined>
     direct += v;
   }
   out[B.platformCosts] = direct;
-  out[B.directShare] = div(direct, managerNet);
+  // База доли — цена площадки без НДС (решение звонка 07.09.2026): та же база,
+  // что у самих статей, иначе доля не сходится с суммой долей, из которых сложена.
+  out[B.directShare] = div(direct, platNet);
 
   // PL по площадке (правка ТЗ 02.09.2026 МП §21):
   //   PL = площадка без НДС − СС по отпускным ценам − прямые затраты
@@ -202,7 +204,9 @@ export function computePlatformInverse(
     direct += v;
   }
   out[B.platformCosts] = direct;
-  out[B.directShare] = div(direct, managerNet);
+  // База доли — цена площадки без НДС (решение звонка 07.09.2026): та же база,
+  // что у самих статей, иначе доля не сходится с суммой долей, из которых сложена.
+  out[B.directShare] = div(direct, platNet);
 
   // PL = площадка без НДС − СС по отпускным ценам − прямые затраты без комиссии
   // (правка ТЗ МП §21). Комиссия уже удержана переходом к цене площадки, второй

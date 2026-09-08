@@ -112,8 +112,11 @@ func mpFormSpec() []MpLine {
 		{BlockType: BSalesPlatNet, CodePL: 1006, Name: "ПРОДАЖИ по цене площадки без НДС", Section: sales, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= площадка_с_НДС / (1 + НДС)"},
 
 		// --- Себестоимость и наценка ---
-		{BlockType: BShipments, CodePL: 8006, Name: "Себестоимость по отпускным ценам", Section: cost, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, Formula: "подтягивается из источника, редактируется"},
-		{BlockType: BMarkup, Name: "Наценка, %", Section: cost, Kind: KindCalcEditable, ValueKind: ValuePct, Scope: ScopePlatform, Editable: true, Formula: "= площадка_без_НДС / себестоимость − 1"},
+		// Себестоимость — ПРОИЗВОДНАЯ от наценки, а не поле ввода (решение звонка
+		// 07.09.2026 и прототип: строка 37 = AR32/(1+AR42)). Пока оба поля были
+		// вводимыми, они расходились между собой без предупреждения.
+		{BlockType: BShipments, CodePL: 8006, Name: "Себестоимость по отпускным ценам", Section: cost, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= цена площадки без НДС / (1 + наценка)"},
+		{BlockType: BMarkup, Name: "Наценка, %", Section: cost, Kind: KindCalcEditable, ValueKind: ValuePct, Scope: ScopePlatform, Editable: true, Formula: "вводится; от неё считается себестоимость по отпускным ценам"},
 
 		// --- Маржа розничная ---
 		{BlockType: BDiscount, Name: "Скидки по всем площадкам", Section: marginR, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopeTotal, Editable: true, Formula: "ручной ввод (по всем МП)"},
@@ -122,8 +125,10 @@ func mpFormSpec() []MpLine {
 		{BlockType: BRetailMarginPct, Name: "Маржинальность розничная, %", Section: marginR, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= маржа розничная / площадка_без_НДС"},
 
 		// --- COGS и маржа gross ---
-		{BlockType: BCogsTotal, CodePL: 2006, Name: "Себестоимость общая (COGS) осн+пошив", Section: cogs, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, Formula: "подтягивается из источника (осн+пошив), редактируется"},
-		{BlockType: BMarkupTotal, Name: "Наценка от общей сс, %", Section: cogs, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= площадка_без_НДС / COGS − 1"},
+		{BlockType: BCogsTotal, CodePL: 2006, Name: "Себестоимость общая (COGS) осн+пошив", Section: cogs, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= цена площадки без НДС / (1 + наценка от общей сс)"},
+		// Наценка от общей сс в прототипе берётся из плана того же месяца (=BF65),
+		// но правится: подставляем план, ввод оставляем.
+		{BlockType: BMarkupTotal, Name: "Наценка от общей сс, %", Section: cogs, Kind: KindCalcEditable, ValueKind: ValuePct, Scope: ScopePlatform, Editable: true, Formula: "по умолчанию из плана; от неё считается себестоимость общая"},
 		{BlockType: BGrossMargin, Name: "Маржа (gross)", Section: cogs, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= площадка_без_НДС − COGS"},
 		{BlockType: BGrossMarginPct, Name: "Маржа (gross), %", Section: cogs, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= маржа (gross) / площадка_без_НДС"},
 
@@ -141,7 +146,7 @@ func mpFormSpec() []MpLine {
 		{BlockType: BCostPenalties, CodePL: 66, Name: "Штрафы", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "штрафы FINDWH (LIKE '%Штраф%'), редактируется"},
 		{BlockType: BCostOther, CodePL: 66, Name: "Прочие удержания и компенсации", Section: direct, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, CostLine: true, Formula: "статья 66 (источник), редактируется"},
 		{BlockType: BPlatformCosts, Name: "Итого прямые затраты по площадке", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= Σ (комиссия + все статьи затрат)"},
-		{BlockType: BDirectShare, Name: "Доля прямых затрат по площадке, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= прямые затраты / менеджер_без_НДС"},
+		{BlockType: BDirectShare, Name: "Доля прямых затрат по площадке, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= прямые затраты / цена площадки без НДС"},
 		{BlockType: BPlPlatform, Name: "PL по площадке", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= цена площадки без НДС − себестоимость по отпускным ценам − прямые затраты (без комиссии)"},
 		{BlockType: BPlPlatformPct, Name: "PL по площадке, %", Section: direct, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= PL по площадке / площадка_без_НДС"},
 		{BlockType: BPlPlatformTotalCost, Name: "PL (сумма) от себестоимости общей", Section: direct, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= цена площадки без НДС − себестоимость общая − прямые затраты (без комиссии)"},

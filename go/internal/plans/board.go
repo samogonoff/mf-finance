@@ -259,7 +259,7 @@ func (s *TaskStore) BoardData(ctx context.Context, plID int64, f BoardFilter, al
 	for _, p := range platforms {
 		l := layersBySegment[p.Segment]
 		vat := mpVatBasis(planLayer, p.CodeCFO, s.vatRate(ctx, p.Country, p.CodeCFO))
-		values[p.CodeCFO] = computeMpPlatform(mpPlatformInputs(p.CodeCFO, tactic, l.fact), vat)
+		values[p.CodeCFO] = computeMpPlatform(mpPlatformInputs(p.CodeCFO, tactic, l), vat)
 	}
 	// Агрегаты денежных строк — база для процентных итогов.
 	agg := map[string]float64{}

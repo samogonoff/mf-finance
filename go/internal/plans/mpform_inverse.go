@@ -21,7 +21,11 @@ type MpConditionsInput struct {
 	// VatRatio — отношение план_с_НДС ÷ план_без_НДС того же месяца и площадки
 	// (mpform_vat.go). Ведущая величина: ставки в прототипе нет вовсе, суммы без
 	// НДС получаются делением на это отношение. 0 — отношения нет, работает VatRate.
-	VatRatio       float64
+	VatRatio float64
+	// NormShare — норматив совокупных удержаний площадки (0 — не задан). Если
+	// доля агентского вознаграждения в условиях не задана, она выводится из
+	// норматива как остаток (см. agentShareFromNorm).
+	NormShare      float64
 	SppPct         float64            // % СПП — скидка, которую даёт площадка
 	MarkupPct      float64            // наценка к отпускным ценам
 	MarkupTotalPct float64            // наценка к общей себестоимости (Cost of goods)
@@ -117,6 +121,19 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 	commission := put(BCommission, managerNet*c.SppPct,
 		"= продажи менеджера без НДС × %СПП")
 
+	// Доля агентского вознаграждения — ОСТАТОК норматива площадки, если её не
+	// задали руками (прототип, строка 85). Считаем до статей: от неё зависит
+	// сумма агентского и весь итог прямых затрат.
+	shares := c.Shares
+	if _, set := shares[BCostAgent]; !set && c.NormShare > 0 {
+		merged := make(map[string]float64, len(shares)+1)
+		for k, v := range shares {
+			merged[k] = v
+		}
+		merged[BCostAgent] = agentShareFromNorm(c.NormShare, safeDiv(commission, platNet), shares)
+		shares = merged
+	}
+
 	// Статьи прямых затрат: доля от выручки ПО ЦЕНЕ ПЛОЩАДКИ без НДС.
 	//
 	// Правка ТЗ 02.09.2026 МП §20: было «Статья = Выручка по ценам менеджера ×
@@ -127,13 +144,16 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 	// внутри каждой статьи ещё раз (см. §21 — там же убрано «+ Σ Комиссия»).
 	directTotal := commission
 	for _, block := range mpCostBlocks {
-		share := c.Shares[block]
+		share := shares[block]
 		v := put(block, platNet*share, "= цена площадки без НДС × доля статьи")
 		directTotal += v
 	}
 
 	put(BPlatformCosts, directTotal, "= комиссия площадки + Σ статей прямых затрат")
-	put(BDirectShare, safeDiv(directTotal, managerNet), "= прямые затраты / продажи менеджера без НДС")
+	// База — цена площадки без НДС, как у самих статей (решение звонка
+	// 07.09.2026). До этого доля мерилась от цены менеджера и не сходилась с
+	// долями статей, из которых сама и сложена.
+	put(BDirectShare, safeDiv(directTotal, platNet), "= прямые затраты / цена площадки без НДС")
 
 	// PL по площадке считается ОТ МАРЖИ минус прямые затраты БЕЗ комиссии:
 	// комиссия уже вычтена переходом к цене площадки.
@@ -214,4 +234,21 @@ func computeMpFormTotals(platforms map[int]map[string]float64, commonCosts float
 	t.PLPct = safeDiv(t.PL, t.SalesPlatNet)
 	t.DirectShareTurn = safeDiv(t.DirectCosts-t.Commission, t.SalesPlatNet)
 	return t
+}
+
+// agentShareFromNorm — доля агентского вознаграждения как остаток норматива
+// площадки (прототип, строки 85/109/135/159: =43%-AR83-AR89-AR91-AR101-AR103,
+// нормативы Wildberries 43 %, Lamoda 34 %, Ozon 35 %, Yandex Market 32 %).
+//
+// Из норматива вычитаются доли, которые площадка удерживает отдельными строками:
+// комиссия, транспортная и складская логистика, штрафы и прочие удержания.
+// Остаток может выйти отрицательным — тогда норматив площадки исчерпан
+// известными удержаниями, и это сигнал разобраться с условиями, а не повод
+// молча обнулить строку: отрицательная доля допустима (МП §6.1) и видна в форме.
+func agentShareFromNorm(norm, commissionShare float64, shares map[string]float64) float64 {
+	rest := commissionShare
+	for _, b := range []string{BCostLogTransport, BCostLogWarehouse, BCostPenalties, BCostOther} {
+		rest += shares[b]
+	}
+	return norm - rest
 }

@@ -26,6 +26,12 @@ type MarketplaceRow struct {
 	GroupCFO    int    `json:"group_cfo"` // 250 (large) | 480 (small)
 	CodePL      int    `json:"code_pl"`  // 1046 — товарооборот
 	LegalEntity string `json:"legal_entity"`
+	// NormShare — НОРМАТИВ совокупных удержаний площадки (доля от выручки).
+	// В прототипе он зашит прямо в формулу доли агентского вознаграждения
+	// (строка 85: =43%-AR83-AR89-AR91-AR101-AR103), то есть агентское — остаток
+	// норматива после известных удержаний. 0 — норматив не задан, доля
+	// агентского вводится как обычная статья.
+	NormShare float64 `json:"norm_share,omitempty"`
 }
 
 // PLLineRow — строка dir_pl_line (статья PL).
@@ -82,10 +88,10 @@ type CFORow struct {
 func MarketplaceSeed() []MarketplaceRow {
 	return []MarketplaceRow{
 		// large (RU) → TD Mark Formelle
-		{CodeCFO: 335, NameCFO: "Wildberries", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
-		{CodeCFO: 336, NameCFO: "Lamoda", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
-		{CodeCFO: 337, NameCFO: "Ozon", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
-		{CodeCFO: 954, NameCFO: "Yandex Market", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
+		{CodeCFO: 335, NameCFO: "Wildberries", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle", NormShare: 0.43},
+		{CodeCFO: 336, NameCFO: "Lamoda", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle", NormShare: 0.34},
+		{CodeCFO: 337, NameCFO: "Ozon", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle", NormShare: 0.35},
+		{CodeCFO: 954, NameCFO: "Yandex Market", Segment: "large", Country: "RU", GroupCFO: 250, CodePL: 1046, LegalEntity: "TD Mark Formelle", NormShare: 0.32},
 		// small (RU) — общие площадки → TD Mark Formelle
 		{CodeCFO: 953, NameCFO: "Детский мир", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "TD Mark Formelle"},
 		{CodeCFO: 955, NameCFO: "Золотое яблоко", Segment: "small", Country: "RU", GroupCFO: 480, CodePL: 1046, LegalEntity: "TD Mark Formelle"},

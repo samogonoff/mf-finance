@@ -331,7 +331,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		// Слои берутся по сегменту КАЖДОЙ площадки: в объединённой форме
 		// large и small приходят из разных срезов источника.
 		pl := layerSet.forCfo(p.CodeCFO)
-		values := s.platformValues(mode, f.VatByCfo[p.CodeCFO], condByCfo[p.CodeCFO], tacByKey, pl.fact, p.CodeCFO)
+		values := s.platformValues(mode, f.VatByCfo[p.CodeCFO], condByCfo[p.CodeCFO], tacByKey, pl, p.CodeCFO)
 
 		for _, l := range spec {
 			if l.Kind == KindHeader {
@@ -406,9 +406,9 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 // часть считается из условий площадки; уже сохранённые ручные значения статей
 // передаются как переопределения и автопересчётом не затираются (ТЗ §7.2).
 func (s *TaskStore) platformValues(mode string, vat MpVatBasis,
-	cond MpConditions, tactic map[string]float64, factIdx map[[2]int]float64, cfo int) map[string]float64 {
+	cond MpConditions, tactic map[string]float64, layers mpLayers, cfo int) map[string]float64 {
 
-	inputs := mpPlatformInputs(cfo, tactic, factIdx)
+	inputs := mpPlatformInputs(cfo, tactic, layers)
 	if mode != CalcInverse || cond.CodeCFO == 0 {
 		return computeMpPlatform(inputs, vat)
 	}
@@ -446,8 +446,23 @@ func (s *TaskStore) vatRate(ctx context.Context, country string, cfo int) float6
 // mpPlatformInputs — входы каскада по площадке: сохранённая тактика ?? факт из
 // источника ?? деривация (%СПП). Наценка по умолчанию расчётная. Одна функция на
 // форму ввода и на свод — иначе проверяющий увидит не те числа, что заполняющий.
-func mpPlatformInputs(cfo int, tactic map[string]float64, factIdx map[[2]int]float64) map[string]float64 {
+func mpPlatformInputs(cfo int, tactic map[string]float64, layers mpLayers) map[string]float64 {
 	in := map[string]float64{}
+	factIdx := layers.fact
+	// Себестоимости больше не вводятся (их ведёт наценка), но СОХРАНЁННЫЕ суммы
+	// прежних периодов читать обязаны: там наценки нет, и без этих значений
+	// утверждённая форма пересчиталась бы в нули.
+	for _, b := range []string{BShipments, BCogsTotal} {
+		if v, ok := tactic[layerKey(cfo, b)]; ok {
+			in[b] = v
+		}
+	}
+	// Наценка от общей себестоимости по умолчанию берётся ИЗ ПЛАНА того же месяца
+	// (прототип, строка 65: =BF65), а не вводится с нуля. Сохранённое значение
+	// ниже её перебьёт.
+	if v, ok := planMarkupTotal(layers.strategy, cfo); ok {
+		in[BMarkupTotal] = v
+	}
 	for _, l := range mpFormSpec() {
 		if l.Scope != ScopePlatform || !l.Editable {
 			continue
@@ -465,6 +480,16 @@ func mpPlatformInputs(cfo int, tactic map[string]float64, factIdx map[[2]int]flo
 			// лежат только габаритные штрафы Wildberries — это часть, не итог.
 		case BMarkup:
 			// расчётная по умолчанию — не сидируем
+		case BSalesManagerGross:
+			// Тактическая выручка МП в прототипе НЕ вводится: она приходит из
+			// тактики ТО (=VLOOKUP([14]Янв_26!…)). Ближайший аналог в контуре —
+			// слой таргета (FormToLoaTaktTarget), поэтому он старше факта: факт
+			// прошлого месяца планом не является.
+			if v, ok := layers.target[layerKey(cfo, l.BlockType)]; ok && v != 0 {
+				in[l.BlockType] = v
+			} else if v, ok := factSeed(factIdx, l.BlockType, cfo); ok {
+				in[l.BlockType] = v
+			}
 		default:
 			if v, ok := factSeed(factIdx, l.BlockType, cfo); ok {
 				in[l.BlockType] = v
