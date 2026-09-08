@@ -207,7 +207,7 @@ def public_view() -> dict[str, Any]:
         "model": insights._model(),
         "reasoning": insights.reasoning_effort(),
         "timeout_s": int(insights._timeout()),
-        "agent_budget_s": int_value("agent_budget_s", "COST_LLM_AGENT_BUDGET", 120),
+        "agent_budget_s": int_value("agent_budget_s", "COST_LLM_AGENT_BUDGET", 180),
         "allow_private": allow_private(),
         "allowed_hosts": [h.strip() for h in _env("COST_LLM_ALLOWED_HOSTS").split(",")
                           if h.strip()],
