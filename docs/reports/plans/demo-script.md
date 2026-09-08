@@ -59,8 +59,16 @@ make plans-reset-period Y=2026 M=9    # только один период
 На проде того же добиваются одним запросом (контейнер PG называется иначе):
 
 ```bash
+# один период
 psql "$POSTGRES_URL" -c "DELETE FROM pl_instance WHERE period_year=2026 AND period_month=9"
+
+# все периоды планов
+psql "$POSTGRES_URL" -c "DELETE FROM pl_instance WHERE id > 0"
 ```
+
+`WHERE id > 0` здесь не лишний: по смыслу это «все строки», но GUI-клиенты
+(DataGrip, DBeaver) отклоняют `DELETE` без `WHERE` как unsafe query — с условием
+команда одинаково работает и в psql, и в клиенте.
 
 ## 1. Старт периода (админ процессов)
 
