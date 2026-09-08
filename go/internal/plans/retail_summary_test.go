@@ -13,7 +13,7 @@ func summaryInput(rows []RetailRow, ser RetailSeries) RetailSummaryInput {
 	return RetailSummaryInput{
 		CardID: 1, Country: "BY", NatCurrency: "BYN", Year: 2026, Month: 7,
 		PlanMonths: []int{7, 8}, Rows: rows, Series: ser,
-		FxRates: map[string]float64{"BYN": 1, "RUB": 0.0376}, DirectoryActiveCount: -1,
+		FxRates: map[string]RetailFxRates{"BYN": SameRetailFx(1), "RUB": SameRetailFx(0.0376)}, DirectoryActiveCount: -1,
 	}
 }
 
@@ -72,7 +72,7 @@ func TestSummary_MoneyScaledPercentsNot(t *testing.T) {
 
 	in := summaryInput(rows, ser)
 	in.Country, in.NatCurrency = "RU", "RUB"
-	in.FxRates = map[string]float64{"RUB": 1, "BYN": 0.0376}
+	in.FxRates = map[string]RetailFxRates{"RUB": SameRetailFx(1), "BYN": SameRetailFx(0.0376)}
 	sum := ComputeRetailSummary(in)
 	if len(sum.Blocks) != 2 {
 		t.Fatalf("для РФ ожидались блоки RUB + BYN, got %d", len(sum.Blocks))

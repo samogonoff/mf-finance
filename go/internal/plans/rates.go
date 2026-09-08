@@ -32,6 +32,14 @@ type VatRow struct {
 	Note     string  `json:"note"`
 }
 
+// Сценарии курса (колонка scenario справочника dir_fx_rate). Пустой сценарий —
+// общая строка, она работает для всех сценариев, пока свой не заполнен.
+const (
+	FxScenarioFact   = "fact"   // курс факта месяца
+	FxScenarioPlan   = "plan"   // плановый курс («план 26» файла ТО: 3,2)
+	FxScenarioTactic = "tactic" // курс тактики (таблица «курс тактика» прототипа МП)
+)
+
 // FxRow — строка dir_fx_rate: курс к BYN на месяц (Year=0/Month=0 — дефолт).
 type FxRow struct {
 	Currency string  `json:"currency"`
@@ -300,27 +308,80 @@ func eqCountry(a, b string) bool {
 	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
-// FxRate — курс валюты к BYN на месяц: строка (валюта, год, месяц), затем
-// (валюта, год), затем дефолт (0,0), затем 1.0.
+// FxRate — курс валюты к BYN на месяц вне сценария.
 func (b *RateBook) FxRate(ctx context.Context, currency string, year, month int) float64 {
-	_, fx := b.load(ctx)
-	return pickFx(fx, currency, year, month)
+	return b.FxRateFor(ctx, currency, year, month, "")
 }
 
-// pickFx — чистый выбор курса.
-func pickFx(rows []FxRow, currency string, year, month int) float64 {
+// FxRateFor — курс валюты к BYN на месяц В СЦЕНАРИИ.
+//
+// Сценарий — измерение справочника, а не свойство кода: в прототипе таблица
+// «курс тактика» (Списки_для_фильтров, N:Q) задана по месяцу, валюте и сценарию,
+// и у тактики курс свой. Строки со сценарием старше общих, поэтому наполнение
+// сценария меняет только его колонки и не трогает остальные.
+func (b *RateBook) FxRateFor(ctx context.Context, currency string, year, month int, scenario string) float64 {
+	_, fx := b.load(ctx)
+	return pickFx(fx, currency, year, month, scenario)
+}
+
+// pickFx — чистый выбор курса. Порядок: строки запрошенного сценария (месяц →
+// год → дефолт), затем строки без сценария, затем ЛЮБЫЕ строки валюты, и только
+// потом 1.0.
+//
+// Последняя ступень не «на всякий случай»: в справочнике 0034 все строки помечены
+// сценарием «Тактика бюджет (таргеты)», и без неё пересчёт валют молча стал бы
+// единичным — то есть суммы в BYN и USD сравнялись бы с нац. валютой.
+func pickFx(rows []FxRow, currency string, year, month int, scenario string) float64 {
 	cur := strings.ToUpper(strings.TrimSpace(currency))
 	if cur == "" || cur == "BYN" {
 		return 1.0
 	}
+	if scenario = normalizeFxScenario(scenario); scenario != "" {
+		if v, ok := pickFxBy(rows, cur, year, month, func(r FxRow) bool {
+			return normalizeFxScenario(r.Scenario) == scenario
+		}); ok {
+			return v
+		}
+	}
+	if v, ok := pickFxBy(rows, cur, year, month, func(r FxRow) bool {
+		return strings.TrimSpace(r.Scenario) == ""
+	}); ok {
+		return v
+	}
+	if v, ok := pickFxBy(rows, cur, year, month, func(FxRow) bool { return true }); ok {
+		return v
+	}
+	return 1.0
+}
+
+// normalizeFxScenario — сценарий строки справочника к коду. Значения приходят
+// человекочитаемыми («Тактика бюджет (таргеты)»), а сравнивать нужно по смыслу.
+func normalizeFxScenario(s string) string {
+	v := strings.ToLower(strings.TrimSpace(s))
+	switch {
+	case v == "":
+		return ""
+	case strings.Contains(v, "тактик") || strings.Contains(v, "tactic"):
+		return FxScenarioTactic
+	case strings.Contains(v, "факт") || strings.Contains(v, "fact"):
+		return FxScenarioFact
+	case strings.Contains(v, "план") || strings.Contains(v, "plan") || strings.Contains(v, "стратег"):
+		return FxScenarioPlan
+	default:
+		return v
+	}
+}
+
+// pickFxBy — выбор строки валюты, отобранной предикатом: месяц → год → дефолт.
+func pickFxBy(rows []FxRow, currency string, year, month int, match func(FxRow) bool) (float64, bool) {
 	var yearOnly, def float64
 	for _, r := range rows {
-		if r.Currency != cur {
+		if r.Currency != currency || !match(r) {
 			continue
 		}
 		switch {
 		case r.Year == year && r.Month == month && year != 0:
-			return r.RateBYN
+			return r.RateBYN, true
 		case r.Year == year && r.Month == 0 && year != 0:
 			yearOnly = r.RateBYN
 		case r.Year == 0 && r.Month == 0:
@@ -328,22 +389,27 @@ func pickFx(rows []FxRow, currency string, year, month int) float64 {
 		}
 	}
 	if yearOnly > 0 {
-		return yearOnly
+		return yearOnly, true
 	}
 	if def > 0 {
-		return def
+		return def, true
 	}
-	return 1.0
+	return 0, false
 }
 
 // Convert — пересчёт суммы между валютами через BYN-базу на конкретный месяц.
 func (b *RateBook) Convert(ctx context.Context, amount float64, src, dst string, year, month int) float64 {
+	return b.ConvertFor(ctx, amount, src, dst, year, month, "")
+}
+
+// ConvertFor — то же в сценарии (у тактики курс свой, см. FxRateFor).
+func (b *RateBook) ConvertFor(ctx context.Context, amount float64, src, dst string, year, month int, scenario string) float64 {
 	src, dst = normalizeAnyCurrency(src), normalizeAnyCurrency(dst)
 	if src == dst || amount == 0 {
 		return amount
 	}
-	rSrc := b.FxRate(ctx, src, year, month)
-	rDst := b.FxRate(ctx, dst, year, month)
+	rSrc := b.FxRateFor(ctx, src, year, month, scenario)
+	rDst := b.FxRateFor(ctx, dst, year, month, scenario)
 	if rDst == 0 {
 		return amount
 	}

@@ -185,22 +185,23 @@ func ComputeRetailSummary(in RetailSummaryInput) RetailSummary {
 		}{"BYN", false})
 	}
 	for _, b := range blocks {
-		rate := 1.0
-		if r, ok := in.FxRates[b.cur]; ok && r != 0 {
-			rate = r
+		fx := SameRetailFx(1)
+		if r, ok := in.FxRates[b.cur]; ok && r.Tactic != 0 {
+			fx = r
 		}
-		block := RetailCurrencyBlock{Currency: b.cur, Full: b.full, FxRate: rate}
+		// В подпись блока идёт курс тактики: это курс колонки, которую вводят.
+		block := RetailCurrencyBlock{Currency: b.cur, Full: b.full, FxRate: fx.Tactic}
 		if b.full {
 			block.Fields = retailFullFields()
 		} else {
 			block.Fields = retailShortFields()
 		}
-		block.Total = scaleMetrics(aggregateMetrics(rows, in), rate)
+		block.Total = scaleMetricsFx(aggregateMetrics(rows, in), fx)
 		for _, sec := range retailSectionOrder {
 			part := filterRows(rows, sec.Match)
 			block.Sections = append(block.Sections, RetailSummarySection{
 				Key: sec.Key, Title: sec.Title, Rows: len(part),
-				Metrics: scaleMetrics(aggregateMetrics(part, in), rate),
+				Metrics: scaleMetricsFx(aggregateMetrics(part, in), fx),
 			})
 		}
 		out.Blocks = append(out.Blocks, block)
@@ -246,9 +247,13 @@ type RetailSummaryInput struct {
 	PlanMonths  []int
 	Rows        []RetailRow
 	Series      RetailSeries
-	// FxRates — курс нац. валюты к валюте блока (сколько единиц валюты блока в
+	// FxRates — курсы нац. валюты к валюте блока ПО НАЗНАЧЕНИЮ показателя (у
+	// тактики свой курс — факта предыдущего месяца). Ключ — валюта блока.
+	// Прежнее «одно число на блок» осталось в подписи (RetailCurrencyBlock.FxRate).
+	//
+	// Историческая формулировка: курс нац. валюты к валюте блока (сколько единиц валюты блока в
 	// одной единице нац. валюты). Считается RateBook'ом снаружи.
-	FxRates map[string]float64
+	FxRates map[string]RetailFxRates
 	// SourceFactTotal — итог факта ИЗ ИСТОЧНИКА за период по всей стране
 	// (сверка §7 №2). nil → источник недоступен, сверка помечается skipped:
 	// «нет данных» и «расхождение 0» — разные ответы согласующему.
@@ -297,16 +302,28 @@ func aggregateMetrics(rows []RetailRow, in RetailSummaryInput) RetailSummaryMetr
 // scaleMetrics — пересчёт денежных показателей в валюту блока. Проценты НЕ
 // пересчитываются (ТЗ §4: «индикаторы на слое отображения не пересчитываются»).
 func scaleMetrics(m RetailSummaryMetrics, rate float64) RetailSummaryMetrics {
-	if rate == 1 || rate == 0 {
+	return scaleMetricsFx(m, SameRetailFx(rate))
+}
+
+// scaleMetricsFx — то же с курсами ПО НАЗНАЧЕНИЮ показателя: тактика
+// пересчитывается курсом тактики (факта предыдущего месяца), факт — своим,
+// стратегия — плановым. Свод обязан считать теми же курсами, что и форма, иначе
+// согласующий видит не те числа, что заполняющий.
+func scaleMetricsFx(m RetailSummaryMetrics, fx RetailFxRates) RetailSummaryMetrics {
+	if fx.identity() {
 		return m
 	}
-	m.FactPrevYear *= rate
-	m.Strategy *= rate
-	m.Tactic *= rate
-	m.FactCur *= rate
-	m.FactPrevMonth *= rate
-	m.PeriodTotal *= rate
-	m.YearExpectation *= rate
+	tactic := fx.Tactic
+	if tactic == 0 {
+		tactic = 1
+	}
+	m.FactPrevYear *= fx.with(fx.FactPrevYear)
+	m.Strategy *= fx.with(fx.Strategy)
+	m.FactCur *= fx.with(fx.FactCurrent)
+	m.FactPrevMonth *= fx.with(fx.FactCurrent)
+	m.Tactic *= tactic
+	m.PeriodTotal *= tactic
+	m.YearExpectation *= tactic
 	return m
 }
 
