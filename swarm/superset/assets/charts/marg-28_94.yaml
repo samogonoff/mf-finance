@@ -13,6 +13,7 @@ params:
   - plan_id
   - model_name
   - articul
+  - zadanie
   metrics:
   - vol_cur
   - unit_cost_norm_all_cur

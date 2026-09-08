@@ -58,7 +58,13 @@ from .db import pool
 
 # Фильтры дашборда: те же измерения витрины, что у коммерческого (белый список
 # оттуда же), кроме признака калькуляции — здесь он всегда VOLUME_SIGN.
-MARGIN_FILTERS: dict[str, str] = {k: v for k, v in FILTERS.items() if k != "calc_sign"}
+MARGIN_FILTERS: dict[str, str] = {
+    **{k: v for k, v in FILTERS.items() if k != "calc_sign"},
+    # № плана — просьба заказчика 04.09.2026. На коммерческом дашборде его нет:
+    # там разрез по ассортименту, а здесь план — рабочая единица планирования,
+    # и лист отклонений заказчик читает по планам.
+    "plan_id": '"plan_id"',
+}
 
 # Год и месяц накладываются на метку месяца, а у метки в разных частях запроса
 # разное имя: в каскаде вариантов это production_date витрины, в агрегатах —
@@ -88,8 +94,16 @@ MATRIX_LEVELS: list[tuple[str, str]] = [
 MATRIX_ROW_LIMIT = 300
 
 # Лист «Отклонения по артикулам» — просьба заказчика (Апанасенок О.А., 25.08.2026):
-# развернуть отклонения ПО АРТИКУЛАМ с номером плана. Строка = план + модель +
-# артикул; три себестоимости единицы и отклонения между ними:
+# развернуть отклонения ПО АРТИКУЛАМ с номером плана.
+#
+# Строка = план + модель + артикул + НОМЕР ЗАДАНИЯ. Задание добавлено 04.09.2026:
+# без него лист схлопывал все задания артикула в одну строку со взвешенной по
+# объёму себестоимостью, и такого числа не было ни в главной таблице, ни в одной
+# калькуляции. Пример: у 25-40868Ц-9 пять заданий с себестоимостью 21,63…33,75, а
+# лист показывал 26,12 — среднее, которое ниоткуда не сходилось. Теперь строки
+# бьются с главной таблицей один в один.
+#
+# На строке — три себестоимости единицы и отклонения между ними:
 #   плановая   — cost_plan_prices.plan_price, справочник моделей Лисы (0050);
 #   нормативная — cost_byn, по нормативной стоимости минуты;
 #   фактическая — cost_fact_byn, по фактической (с 01.01.2026, см. COST_BASES).
@@ -464,7 +478,7 @@ async def dashboard(
         ),
         dev_src AS (
             SELECT
-                c.plan_id, c.model, c.articul, c.model_name,
+                c.plan_id, c.model, c.articul, c.zadanie, c.model_name,
                 c.volume_pcs                          AS vol,
                 c.volume_pcs * c.wholesale_price_{cur_sfx} AS rev,
                 c.volume_pcs * c.cost_{cur_sfx}        AS cost_norm,
@@ -550,6 +564,7 @@ async def dashboard(
                 coalesce(d.plan_id, '')                   AS plan_id,
                 coalesce(d.model, '')                     AS model,
                 coalesce(d.articul, '')                   AS articul,
+                coalesce(d.zadanie, '')                   AS zadanie,
                 min(d.model_name)                         AS name,
                 sum(d.vol)                                AS vol,
                 sum(d.vol * pp.plan_price)                AS plan_total,
@@ -565,7 +580,7 @@ async def dashboard(
             FROM dev_src d
             LEFT JOIN cost_plan_prices pp
                    ON pp.model = d.model AND pp.articul = d.articul
-            GROUP BY 1, 2, 3
+            GROUP BY 1, 2, 3, 4
             ORDER BY sum(d.vol) DESC NULLS LAST
             LIMIT {DEVIATION_ROW_LIMIT + 1}
         )
@@ -638,6 +653,7 @@ async def dashboard(
             "plan_id": r.get("plan_id") or "",
             "model": r.get("model") or "",
             "articul": r.get("articul") or "",
+            "zadanie": r.get("zadanie") or "",
             "name": r.get("name"),
             "vol": None if vol is None else float(vol),
             "unit_plan_byn": unit_plan,

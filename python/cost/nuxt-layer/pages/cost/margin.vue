@@ -291,7 +291,8 @@
       <div class="card-head">
         <div>
           <p class="card-note">
-            Строка — план + модель + артикул, себестоимость <strong>единицы</strong> в BYN.
+            Строка — план + артикул + <strong>задание</strong>, как в главной таблице раздела;
+            себестоимость <strong>единицы</strong> в BYN.
             <strong>Норматив</strong> и <strong>факт</strong> — один и тот же расчёт ФКСС по
             нормативной и фактической стоимости минуты. <strong>Плановая</strong> — КПСС того же
             задания, если он есть, иначе значение из карточки модели в Лисе (источник в отдельной
@@ -444,6 +445,7 @@ const fetchHeaders = computed(() => {
 const filterConfig = [
   { key: 'year', label: 'Год' },
   { key: 'month', label: 'Месяц' },
+  { key: 'plan_id', label: '№ плана' },
   { key: 'brand_manager', label: 'Бренд-менеджер' },
   { key: 'level01', label: 'Level 01' },
   { key: 'level02', label: 'Level 02' },
@@ -778,6 +780,7 @@ const devColumns = computed<Col[]>(() => {
     { key: 'plan_id', label: '№ плана', text: true, fmt: r => r.plan_id || '—' },
     { key: 'name', label: 'Наименование', text: true, fmt: r => r.name || '—' },
     { key: 'articul', label: 'Артикул', text: true, fmt: r => r.articul || '—' },
+    { key: 'zadanie', label: '№ задания', text: true, fmt: r => r.zadanie || '—' },
     { key: 'vol', label: 'Выпуск, шт', fmt: r => fmtInt(r.vol) },
   ]
   // Названия колонок — как назвал заказчик 04.09.2026: этап калькуляции в
