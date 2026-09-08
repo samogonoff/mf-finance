@@ -122,16 +122,24 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 	commission := put(BCommission, managerNet*c.SppPct,
 		"= продажи менеджера без НДС × %СПП")
 
+	// Норматив удержаний площадки, приведённый к базе формы: в справочнике он
+	// задан к цене менеджера без НДС, а доли считаются от цены площадки.
+	normBase := 0.0
+	if c.NormShare > 0 && c.SppPct < 1 {
+		normBase = c.NormShare / (1 - c.SppPct)
+		put(BNormShare, normBase, "норматив удержаний площадки, приведённый к базе долей")
+	}
+
 	// Доля агентского вознаграждения — ОСТАТОК норматива площадки, если её не
 	// задали руками (прототип, строка 85). Считаем до статей: от неё зависит
 	// сумма агентского и весь итог прямых затрат.
 	shares := c.Shares
-	if _, set := shares[BCostAgent]; !set && c.NormShare > 0 {
+	if _, set := shares[BCostAgent]; !set && normBase > 0 {
 		merged := make(map[string]float64, len(shares)+1)
 		for k, v := range shares {
 			merged[k] = v
 		}
-		merged[BCostAgent] = agentShareFromNorm(c.NormShare, safeDiv(commission, platNet), shares)
+		merged[BCostAgent] = agentShareFromNorm(normBase, safeDiv(commission, platNet), shares)
 		shares = merged
 	}
 
@@ -171,6 +179,18 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 	// переходом к цене площадки (ТЗ §3.4).
 	put(BDirectShareTurnover, safeDiv(directTotal-commission, platNet),
 		"= (прямые затраты − комиссия площадки) / цена площадки без НДС")
+
+	// Контроль норматива (правка 08.09.2026 п. 8): норматив покрывает шесть долей,
+	// остальные статьи в него не входят — вместе они обязаны дать долю прямых
+	// затрат. Ненулевое значение означает несогласованность условий с нормативом.
+	if normBase > 0 {
+		outside := 0.0
+		for _, b := range []string{BCostFreight, BCostAds, BCostAdsSocial, BCostPackaging, BCostAcquiring, BCostIT} {
+			outside += shares[b]
+		}
+		put(BNormControl, normBase+outside-out[BDirectShare],
+			"= норматив + доли статей вне норматива − доля прямых затрат")
+	}
 
 	return out, log
 }
@@ -237,19 +257,36 @@ func computeMpFormTotals(platforms map[int]map[string]float64, commonCosts float
 	return t
 }
 
+// mpNormParts — доли, которые норматив площадки покрывает вместе с агентским
+// вознаграждением (правка 08.09.2026 п. 8: «норматив покрывает ровно шесть
+// долей»). Экспорт 51, реклама 13, соцсети 15, упаковка 45, эквайринг 58 и IT 48
+// в норматив НЕ входят — это наши расходы, а не удержания площадки.
+var mpNormParts = []string{BCostLogTransport, BCostLogWarehouse, BCostPenalties, BCostOther}
+
 // agentShareFromNorm — доля агентского вознаграждения как остаток норматива
-// площадки (прототип, строки 85/109/135/159: =43%-AR83-AR89-AR91-AR101-AR103,
-// нормативы Wildberries 43 %, Lamoda 34 %, Ozon 35 %, Yandex Market 32 %).
+// площадки (прототип, строки 85/109/135/159; норматив приведён к базе долей).
 //
-// Из норматива вычитаются доли, которые площадка удерживает отдельными строками:
-// комиссия, транспортная и складская логистика, штрафы и прочие удержания.
-// Остаток может выйти отрицательным — тогда норматив площадки исчерпан
-// известными удержаниями, и это сигнал разобраться с условиями, а не повод
-// молча обнулить строку: отрицательная доля допустима (МП §6.1) и видна в форме.
+// Отрицательный остаток НЕ записывается: Excel считает его молча, но по правке
+// 08.09.2026 п. 7 это ошибка условий — сумма удержаний превысила норматив.
+// Строка обнуляется, а отправку блокирует МП-13, которая называет обе величины.
 func agentShareFromNorm(norm, commissionShare float64, shares map[string]float64) float64 {
 	rest := commissionShare
-	for _, b := range []string{BCostLogTransport, BCostLogWarehouse, BCostPenalties, BCostOther} {
+	for _, b := range mpNormParts {
 		rest += shares[b]
 	}
+	if norm-rest < 0 {
+		return 0
+	}
 	return norm - rest
+}
+
+// mpNormExceeded — превышен ли норматив площадки известными удержаниями.
+// Возвращает сумму удержаний и норматив в базе долей — оба числа нужны в тексте
+// блокировки, иначе непонятно, что именно уменьшать.
+func mpNormExceeded(normBase, commissionShare float64, shares map[string]float64) (used float64, exceeded bool) {
+	used = commissionShare
+	for _, b := range mpNormParts {
+		used += shares[b]
+	}
+	return used, normBase > 0 && used > normBase
 }
