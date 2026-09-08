@@ -200,12 +200,17 @@ func ValidateRetailForm(in RetailValidationInput) (blocking, warnings []Validati
 
 			// W-01/W-02 не применяются к «новый»/«до года»/«ххх» (ТЗ §6).
 			if !retailWarnExempt(r.LFLEffective) {
+				// Порог сравнивается ПО МОДУЛЮ: и рост, и падение сверх него —
+				// повод объясниться. В тексте это сказано словом, иначе «−30,2 %
+				// превышает порог 30,0 %» читается как ошибка (замечание
+				// аналитика 08.09.2026).
 				if lfl := iferrorRatioMinus1(amount, factPrevYear); factPrevYear != 0 && absf(lfl) > lflWarn {
-					warn("W-01", m, lfl, "LFL тактич. %.1f%% превышает порог %.1f%% (LFL-статус %q)",
-						lfl*100, lflWarn*100, r.LFLEffective)
+					warn("W-01", m, lfl, "LFL тактич. %s: %.1f%% при пороге ±%.1f%% (LFL-статус %q)",
+						deviationWord(lfl), lfl*100, lflWarn*100, r.LFLEffective)
 				}
 				if lfm := iferrorRatioMinus1(amount, factPrevMonth); factPrevMonth != 0 && absf(lfm) > lfmWarn {
-					warn("W-02", m, lfm, "LFM тактич. %.1f%% превышает порог %.1f%%", lfm*100, lfmWarn*100)
+					warn("W-02", m, lfm, "LFM тактич. %s: %.1f%% при пороге ±%.1f%%",
+						deviationWord(lfm), lfm*100, lfmWarn*100)
 				}
 			}
 			// W-03: план = 0 при непустом факте того же месяца прошлого года.
@@ -301,6 +306,16 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
+// deviationWord — «рост» или «падение»: знак отклонения должен читаться словом,
+// потому что порог сравнивается по модулю и одно и то же число может означать
+// разное.
+func deviationWord(v float64) string {
+	if v < 0 {
+		return "падение"
+	}
+	return "рост"
+}
+
 func absf(v float64) float64 {
 	if v < 0 {
 		return -v
@@ -309,20 +324,29 @@ func absf(v float64) float64 {
 }
 
 // ReconciliationIssues — V-05: контрольные сверки согласующего (§7) должны быть
-// нулевыми, и их несходимость БЛОКИРУЕТ отправку («Согласующему показывается, что
-// свод не сходится, до нажатия "Согласовать"»). Сверка, пропущенная из-за
-// недоступного источника, не блокирует: это не расхождение данных, а отсутствие
-// связи, и она уже помечена Skipped.
-func ReconciliationIssues(recs []RetailReconciliation) []ValidationIssue {
+// нулевыми. Сверка, пропущенная из-за недоступного источника, не отмечается
+// вовсе: это не расхождение данных, а отсутствие связи, и она уже помечена
+// Skipped.
+//
+// blocking — запрещать ли отправку при расхождении. По просьбе аналитика и
+// владельца процесса (08.09.2026) по умолчанию НЕ запрещаем: на стенде сверки
+// расходились из-за самих данных факта, и запрет останавливал работу над формой,
+// пока расхождение ищут. Расхождение при этом никуда не прячется — оно остаётся
+// в отчёте проверки и в листе согласования. Вернуть запрет:
+// PLANS_RETAIL_RECON_BLOCKING=1.
+func ReconciliationIssues(recs []RetailReconciliation, blocking bool) []ValidationIssue {
 	out := make([]ValidationIssue, 0)
 	for _, r := range recs {
 		if r.Skipped || r.OK {
 			continue
 		}
+		msg := fmt.Sprintf("%s: расхождение %.2f (свод %.2f против %.2f)",
+			r.Title, r.Diff, r.Left, r.Right)
+		if !blocking {
+			msg += ". Отправку не блокирует — проверьте данные факта"
+		}
 		out = append(out, ValidationIssue{
-			Code: "V-05", Blocking: true, Value: r.Diff,
-			Message: fmt.Sprintf("%s: расхождение %.2f (%s %.2f против %.2f)",
-				r.Title, r.Diff, "свод", r.Left, r.Right),
+			Code: "V-05", Blocking: blocking, Value: r.Diff, Message: msg,
 		})
 	}
 	return out

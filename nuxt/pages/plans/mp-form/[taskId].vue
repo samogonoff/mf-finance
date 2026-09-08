@@ -214,7 +214,22 @@
                 <td class="col-line">
                   <span class="line-name">{{ line.name }}</span>
                   <span v-if="line.code_pl" class="cp">PL {{ line.code_pl }}</span>
-                  <Icon v-if="line.formula" name="lucide:info" class="fi" :title="line.formula" />
+                  <!-- Формула раскрывается ТЕКСТОМ по клику, а не нативной
+                       подсказкой: у иконки крохотная зона наведения, и подсказка
+                       обрезалась — аналитик 08.09.2026 «вопросик не работает,
+                       описание есть, просто не попадает». -->
+                  <button
+                    v-if="line.formula"
+                    type="button"
+                    class="fi-btn"
+                    :class="{ on: openFormula.has(line.block_type) }"
+                    :aria-expanded="openFormula.has(line.block_type)"
+                    :title="openFormula.has(line.block_type) ? 'Скрыть формулу' : 'Показать формулу'"
+                    @click="toggleFormula(line.block_type)"
+                  >
+                    <Icon name="lucide:info" class="fi" />
+                  </button>
+                  <div v-if="openFormula.has(line.block_type)" class="line-formula">{{ line.formula }}</div>
                 </td>
 
                 <!-- ячейки по площадкам -->
@@ -380,6 +395,9 @@ definePageMeta({ middleware: "scope-guard" });
 
 const route = useRoute();
 const taskId = Number(route.params.taskId);
+// Разрез карточки (large|small) приходит ссылкой из блока «Формы периода»:
+// крупные и мелкие МП — разные карточки с разными согласующими.
+const scope = computed(() => String(route.query.scope || ""));
 const api = useTasks();
 const cardApi = useMpConditions();
 const { user } = useAuth();
@@ -462,6 +480,13 @@ const sections = computed(() => {
 
 // Одна форма на все МП (миграция 0029): площадки обоих сегментов приходят одним
 // заданием, фильтры ниже — только представление, они не влияют на сохранение.
+// Раскрытые формулы строк: показываем текст под названием показателя.
+const openFormula = reactive(new Set<string>());
+const toggleFormula = (block: string) => {
+  if (openFormula.has(block)) openFormula.delete(block);
+  else openFormula.add(block);
+};
+
 const platformFilter = ref("0");
 const segmentFilter = ref("");
 const legalFilter = ref("");
@@ -622,6 +647,16 @@ const sumBlock = (block: string): number =>
   visiblePlatforms.value.reduce((s, p) => s + (platformValues.value[p.code_cfo]?.[block] ?? 0), 0);
 
 // Итого по строке: сумма денег; проценты пересчитываются из агрегатов.
+/**
+ * Итог строки по всем видимым площадкам.
+ *
+ * Проценты НЕ складываются: итог считается из сумм (взвешенно). Раньше строки,
+ * которых не было в списке ниже, попадали в `default: return 0` — из-за этого
+ * итоговая эффективная ставка НДС и контроль норматива показывали ноль при
+ * ненулевых колонках (замечание аналитика 08.09.2026). Теперь неизвестная
+ * процентная строка взвешивается по цене площадки без НДС — это база всех долей
+ * формы, — а не обнуляется.
+ */
 const totalValue = (line: MpLine): number => {
   if (line.scope === "total") return Number(totals[line.block_type]) || 0;
   if (line.value_kind === "money") return sumBlock(line.block_type);
@@ -633,9 +668,32 @@ const totalValue = (line: MpLine): number => {
     case B.retailMarginPct: return net === 0 ? 0 : sumBlock(B.retailMargin) / net;
     case B.grossMarginPct: return net === 0 ? 0 : sumBlock(B.grossMargin) / net;
     case B.plPlatformPct: return net === 0 ? 0 : sumBlock(B.plPlatform) / net;
-    case B.directShare: { const mgr = sumBlock(B.salesManagerNet); return mgr === 0 ? 0 : sumBlock(B.platformCosts) / mgr; }
-    default: return 0;
+    case B.plPlatformTotalCostPct: return net === 0 ? 0 : sumBlock(B.plPlatformTotalCost) / net;
+    // Ставка НДС взвешивается по выручке: у площадок она разная, и среднее
+    // арифметическое дало бы ставку, которой нет ни у одной из них.
+    case B.vatRate: {
+      const mgrNet = sumBlock(B.salesManagerNet);
+      return mgrNet === 0 ? 0 : sumBlock(B.salesManagerGross) / mgrNet - 1;
+    }
+    // База долей — цена площадки без НДС (решение звонка 07.09.2026).
+    case B.directShare: return net === 0 ? 0 : sumBlock(B.platformCosts) / net;
+    case B.directShareTurnover:
+      return net === 0 ? 0 : (sumBlock(B.platformCosts) - sumBlock(B.commission)) / net;
+    default:
+      return weightedByPlatNet(line.block_type);
   }
+};
+
+/** Взвешивание доли по цене площадки без НДС: Σ(доля × база) ÷ Σбаза. */
+const weightedByPlatNet = (block: string): number => {
+  let num = 0;
+  let den = 0;
+  for (const p of visiblePlatforms.value) {
+    const base = platformValues.value[p.code_cfo]?.[B.salesPlatNet] ?? 0;
+    num += (platformValues.value[p.code_cfo]?.[block] ?? 0) * base;
+    den += base;
+  }
+  return den === 0 ? 0 : num / den;
 };
 
 // Доля статьи затрат в выручке по ценам менеджера (без НДС).
@@ -732,7 +790,7 @@ const copyTarget = () => copyScenario((c) => c.target, "таргет");
 const load = async () => {
   loading.value = true;
   try {
-    form.value = await api.mpForm(taskId, currency.value);
+    form.value = await api.mpForm(taskId, currency.value, scope.value);
     seedFromCells();
     dirty.value = false;
     await loadCommonCosts();
@@ -823,6 +881,18 @@ onMounted(load);
 </script>
 
 <style scoped>
+/* Кнопка формулы: иконка с нормальной зоной клика вместо нативного title. */
+.fi-btn { border: 0; background: none; padding: 2px; margin-left: 4px; cursor: pointer; color: var(--text-muted); line-height: 1; }
+.fi-btn:hover, .fi-btn.on { color: var(--accent); }
+/* Текст формулы — под названием строки, с переносом: он длинный и в подсказке не помещался. */
+.line-formula {
+  margin-top: 2px;
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
 /* Ставка без базы: суммы посчитаны по аварийному фолбэку, отправка заблокирована. */
 .vat-miss { color: var(--neg); }
 

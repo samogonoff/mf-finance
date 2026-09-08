@@ -444,8 +444,11 @@
                     class="input cmt-input"
                     :disabled="!editable"
                     :class="{ 'need-why': needsComment(vr.row.code_cfo) && !commentValue(vr.row).trim() }"
+                    :data-grid-cell="`${vr.index}:${monthCols.length}`"
                     :placeholder="needsComment(vr.row.code_cfo) ? 'обязателен: есть предупреждения' : ''"
                     @input="setComment(vr.row.code_cfo, ($event.target as HTMLInputElement).value)"
+                    @keydown="nav.onKeydown($event, vr.index, monthCols.length)"
+                    @focus="nav.onFocusCell(vr.index, monthCols.length)"
                   />
                 </td>
               </tr>
@@ -1186,7 +1189,10 @@ const measureRowHeight = () => {
 // ─────────── навигация «как в Excel» (§4.3) ───────────
 const nav = useGridNav({
   rows: () => (detail.value ? liveRows.value.length : 0),
-  cols: () => monthCols.value.length,
+  // Комментарий — последняя колонка сетки: стрелками и Tab в него надо попадать
+  // так же, как в месячные ячейки (просьба аналитика 08.09.2026). Отдельная
+  // колонка, а не «ещё один месяц»: вставка из буфера её не касается.
+  cols: () => monthCols.value.length + (detail.value ? 1 : 0),
   ensureVisible: (row) => scrollToRow(row),
   onPaste: (anchor, matrix) => {
     const rows = liveRows.value;
@@ -1197,6 +1203,7 @@ const nav = useGridNav({
       const r = rows[anchor.row + i];
       if (!r) break;
       for (let j = 0; j < matrix[i].length; j++) {
+        // Колонка комментария в matrix не участвует: за месяцами вставлять нечего.
         const m = months[anchor.col + j];
         if (m === undefined) break;
         setCell(r.row.code_cfo, m, nav.parseCellNumber(matrix[i][j]));

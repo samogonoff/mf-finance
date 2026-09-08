@@ -62,19 +62,34 @@ func TestBoardTotalPct(t *testing.T) {
 		BRetailMarginPct: 0.375,
 		BGrossMarginPct:  0.5,
 		BPlPlatformPct:   0.25,
-		BDirectShare:     0.25,
+		// База доли прямых затрат — цена площадки без НДС (250/800).
+		BDirectShare: 0.3125,
+		// Ставка НДС взвешена по выручке: 1000/800 − 1 (в агрегатах 1046 = 1000
+		// приходит из BSalesManagerGross ниже).
 	}
+	agg[BSalesManagerGross] = 1200
+	cases[BVatRate] = 0.2 // 1200/1000 − 1
+	cases[BDirectShareTurnover] = 0.25
+	agg[BCommission] = 50 // (250 − 50)/800
 	for block, want := range cases {
-		if got := boardTotalPct(block, agg); math.Abs(got-want) > 1e-9 {
+		if got := boardTotalPct(block, agg, map[string]float64{}); math.Abs(got-want) > 1e-9 {
 			t.Errorf("%s = %v, ждали %v", block, got, want)
 		}
+	}
+
+	// Строка, которой нет в списке (норматив, контроль норматива), взвешивается
+	// по цене площадки без НДС, а НЕ обнуляется: в своде появлялись нули при
+	// ненулевых колонках площадок (замечание аналитика 08.09.2026).
+	weighted := map[string]float64{BNormShare: 0.62 * 800}
+	if got := boardTotalPct(BNormShare, agg, weighted); math.Abs(got-0.62) > 1e-9 {
+		t.Errorf("норматив в итоге = %v, ждали 0,62", got)
 	}
 }
 
 // Пустые агрегаты не должны давать деления на ноль / NaN.
 func TestBoardTotalPctEmpty(t *testing.T) {
 	for _, block := range []string{BSPP, BMarkup, BMarkupTotal, BRetailMarginPct, BGrossMarginPct, BPlPlatformPct, BDirectShare} {
-		if got := boardTotalPct(block, map[string]float64{}); got != 0 || math.IsNaN(got) {
+		if got := boardTotalPct(block, map[string]float64{}, map[string]float64{}); got != 0 || math.IsNaN(got) {
 			t.Errorf("%s на пустых агрегатах = %v, ждали 0", block, got)
 		}
 	}

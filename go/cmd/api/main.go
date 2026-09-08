@@ -383,7 +383,8 @@ func main() {
 		WithCalendar(plansCalendar).
 		WithScope(plansScope).
 		WithAudit(plansAudit).
-		WithValueLimits(cfg.PlansRetailValueLimits)
+		WithValueLimits(cfg.PlansRetailValueLimits).
+		WithReconBlocking(cfg.PlansRetailReconBlocking)
 	// Гейт отправки: карточка не уходит на согласование, если форма не проходит
 	// блокирующие проверки. До этого проверки жили только в интерфейсе, и форму
 	// можно было отправить мимо них — согласующий обязан был вернуть её, и
