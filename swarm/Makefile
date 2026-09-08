@@ -59,7 +59,10 @@ plans-reset:           ## ⚠ снести процесс «Тактически
 	@docker exec finance-postgres-1 psql -U finance -d finance -tAc \
 	  "SELECT 'периодов '||(SELECT COUNT(*) FROM pl_instance)||', заданий '||(SELECT COUNT(*) FROM pl_task)||', карточек '||(SELECT COUNT(*) FROM form_card)||', ячеек розницы '||(SELECT COUNT(*) FROM tp_value)||', значений МП '||(SELECT COUNT(*) FROM pl_metric)"
 	@printf 'Продолжить? [y/N] ' && read a && [ "$$a" = "y" ]
-	docker exec finance-postgres-1 psql -U finance -d finance -c "DELETE FROM pl_instance"
+	# WHERE id > 0 вместо DELETE без условия: по смыслу это «все строки», но
+	# GUI-клиенты (DataGrip, DBeaver) отклоняют DELETE без WHERE как unsafe query,
+	# и скопированную отсюда команду там выполнить нельзя.
+	docker exec finance-postgres-1 psql -U finance -d finance -c "DELETE FROM pl_instance WHERE id > 0"
 	@echo "Готово. Справочники, права-срезы и соответствия РМ сохранены."
 	@echo "Дальше: создать период на /plans и нажать «Генерировать задания» в кокпите."
 

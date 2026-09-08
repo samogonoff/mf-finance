@@ -302,10 +302,12 @@ func (s *RetailService) Form(ctx context.Context, p Principal, cardID int64, cur
 		StepCode: a.card.StepCode, Params: params, Warnings: blocking, FxRate: 1,
 	}
 	// Слой отображения: пересчёт денежных величин, проценты те же (ТЗ §4).
+	// Курс не один: у тактики он свой — курс предыдущего месяца (см. retailFx).
 	if cur := normalizeDisplayCurrency(currency); cur != "" && cur != a.inst.Currency && s.rates != nil {
-		rate := s.rates.Convert(ctx, 1, a.inst.Currency, cur, a.card.Year, a.card.Month)
-		form.Currency, form.FxRate = cur, rate
-		visible = ConvertRetailRows(visible, rate)
+		fx := s.retailFx(ctx, a.inst.Currency, cur, a.card.Year, a.card.Month)
+		form.Currency, form.FxRate = cur, fx.Tactic
+		form.FxRates = &fx
+		visible = ConvertRetailRows(visible, fx)
 	}
 	form.Rows = visible
 	// Подсказка по аренде: факт предыдущего месяца по тому же ЦФО (правка ТЗ §30
@@ -689,12 +691,12 @@ func (s *RetailService) Summary(ctx context.Context, p Principal, cardID int64) 
 	in := RetailSummaryInput{
 		CardID: cardID, Country: a.card.Country, NatCurrency: a.inst.Currency,
 		Year: a.card.Year, Month: a.card.Month, PlanMonths: retailPlanMonths(a.card.Month),
-		Rows: visible, Series: ser, FxRates: map[string]float64{},
+		Rows: visible, Series: ser, FxRates: map[string]RetailFxRates{},
 		DirectoryActiveCount: -1,
 	}
 	if s.rates != nil {
 		for _, cur := range []string{"BYN", "USD"} {
-			in.FxRates[cur] = s.rates.Convert(ctx, 1, a.inst.Currency, cur, a.card.Year, a.card.Month)
+			in.FxRates[cur] = s.retailFx(ctx, a.inst.Currency, cur, a.card.Year, a.card.Month)
 		}
 	}
 	// Сверка §7 №2: итог факта из источника за тот же период. Считаем по срезу
@@ -763,4 +765,29 @@ func (s *RetailService) rec(ctx context.Context, userID int64, action string, ca
 	_ = s.audit.Record(ctx, AuditEvent{
 		UserID: userID, Action: action, EntityType: "form_card", EntityID: cardID,
 	})
+}
+
+// retailFx — курсы отображения формы розницы по назначению колонки.
+//
+// Ключевая величина — курс ТАКТИКИ: в файле ТО он равен курсу факта ПРЕДЫДУЩЕГО
+// месяца (`Июн_26!V2 = Май_26!W2`, для июня 2026 — 2,7806), а вовсе не плановым
+// 3,2, которые стоят в соседней колонке под подписью «план 26». Кабинет до
+// 07.09.2026 пересчитывал всё справочными 3,2 и 0,0376, и суммы в BYN и USD
+// расходились с файлом, причём незаметно для глаза.
+//
+// Факт пересчитывается курсом своего месяца, стратегия — сценарным «плановым»
+// курсом (пока сценарий не наполнен, справочник отдаёт общую строку — это и есть
+// прежнее поведение; продление таблицы курсов на 2026 — вопрос 27
+// docs/reports/plans/open-questions.md).
+func (s *RetailService) retailFx(ctx context.Context, nat, display string, year, month int) RetailFxRates {
+	conv := func(y, m int, scenario string) float64 {
+		return s.rates.ConvertFor(ctx, 1, nat, display, y, m, scenario)
+	}
+	prevY, prevM := prevMonth(year, month)
+	return RetailFxRates{
+		Tactic:       conv(prevY, prevM, FxScenarioFact),
+		FactCurrent:  conv(year, month, FxScenarioFact),
+		FactPrevYear: conv(year-1, month, FxScenarioFact),
+		Strategy:     conv(year, month, FxScenarioPlan),
+	}
 }

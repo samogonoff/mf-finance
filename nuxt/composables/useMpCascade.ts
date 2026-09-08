@@ -42,10 +42,25 @@ export const COST_BLOCKS = [
   "cost_it", "penalties", "cost_other",
 ];
 
-// Ставка НДС: законодательная по стране — ФОЛБЭК на случай, когда сервер не
-// прислал эффективную ставку площадки. Эффективная ставка своя у каждой площадки
-// (20,36 % у WB/Lamoda/Ozon, 16,62 % у Yandex Market — ТЗ §3.4), поэтому она
-// приходит с сервера из справочника dir_vat, а не считается здесь.
+// Базис перевода «с НДС → без НДС» площадки — зеркало MpVatBasis
+// (go/internal/plans/mpform_vat.go). Ставки здесь нет и быть не может: в
+// прототипе суммы без НДС получаются делением на ОТНОШЕНИЕ плановых сумм того же
+// месяца и площадки, и оно своё на каждом уровне цены. Базис приходит с сервера
+// (form.vat_by_cfo); считать его на клиенте нельзя — плана здесь нет.
+export interface MpVatBasis {
+  manager_ratio: number; // план 1046 / план 1045
+  plat_ratio: number;    // план 1022 / план 1006
+  from_plan?: boolean;
+}
+
+// vatBasisFromRate — базис из ставки. Нужен ровно в двух случаях: сервер базис не
+// прислал (старый ответ) и ставка задана руками в условиях площадки.
+export const vatBasisFromRate = (vat: number): MpVatBasis => ({
+  manager_ratio: 1 + vat,
+  plat_ratio: 1 + vat,
+});
+
+// Законодательная ставка страны — фолбэк последней очереди.
 export const vatByCountry = (country: string): number =>
   country === "KZ" || country === "UZ" ? 0.12 : 0.20;
 
@@ -63,16 +78,18 @@ export interface MpConditions {
 }
 
 // computePlatform — каскад legacy («суммы → доли»).
-export function computePlatform(input: Record<string, number | null | undefined>, vat: number): Record<string, number> {
+export function computePlatform(input: Record<string, number | null | undefined>, vat: MpVatBasis): Record<string, number> {
   const out: Record<string, number> = {};
   const managerGross = n(input[B.salesManagerGross]);
   const spp = n(input[B.spp]);
   let shipments = n(input[B.shipments]);
   let cogs = n(input[B.cogsTotal]);
 
-  const managerNet = div(managerGross, 1 + vat);
+  // Каждый уровень цены делится на СВОЁ отношение (прототип: строка 17 берёт
+  // BF12/BF17, строка 32 — BF27/BF32).
+  const managerNet = div(managerGross, vat.manager_ratio);
   const platGross = managerGross * (1 - spp);
-  const platNet = div(platGross, 1 + vat);
+  const platNet = div(platGross, vat.plat_ratio);
 
   out[B.salesManagerGross] = managerGross;
   out[B.salesManagerNet] = managerNet;
@@ -115,7 +132,9 @@ export function computePlatform(input: Record<string, number | null | undefined>
     direct += v;
   }
   out[B.platformCosts] = direct;
-  out[B.directShare] = div(direct, managerNet);
+  // База доли — цена площадки без НДС (решение звонка 07.09.2026): та же база,
+  // что у самих статей, иначе доля не сходится с суммой долей, из которых сложена.
+  out[B.directShare] = div(direct, platNet);
 
   // PL по площадке (правка ТЗ 02.09.2026 МП §21):
   //   PL = площадка без НДС − СС по отпускным ценам − прямые затраты
@@ -138,15 +157,20 @@ export function computePlatform(input: Record<string, number | null | undefined>
 export function computePlatformInverse(
   input: Record<string, number | null | undefined>,
   cond: MpConditions,
-  vatFallback: number
+  vatBasis: MpVatBasis
 ): Record<string, number> {
   const out: Record<string, number> = {};
-  const vat = typeof cond.vat_rate === "number" && cond.vat_rate > 0 ? cond.vat_rate : vatFallback;
+  // Ставка, заданная руками в условиях площадки, старше отношения из плана —
+  // это решение заполняющего (зеркало conditionsToInput).
+  const ratio =
+    typeof cond.vat_rate === "number" && cond.vat_rate > 0
+      ? 1 + cond.vat_rate
+      : vatBasis.manager_ratio;
   const spp = n(cond.spp_pct);
   const shares = cond.shares ?? {};
 
   const managerGross = n(input[B.salesManagerGross]);
-  const managerNet = div(managerGross, 1 + vat);
+  const managerNet = div(managerGross, ratio);
   out[B.salesManagerGross] = managerGross;
   out[B.salesManagerNet] = managerNet;
   out[B.spp] = spp;
@@ -180,7 +204,9 @@ export function computePlatformInverse(
     direct += v;
   }
   out[B.platformCosts] = direct;
-  out[B.directShare] = div(direct, managerNet);
+  // База доли — цена площадки без НДС (решение звонка 07.09.2026): та же база,
+  // что у самих статей, иначе доля не сходится с суммой долей, из которых сложена.
+  out[B.directShare] = div(direct, platNet);
 
   // PL = площадка без НДС − СС по отпускным ценам − прямые затраты без комиссии
   // (правка ТЗ МП §21). Комиссия уже удержана переходом к цене площадки, второй

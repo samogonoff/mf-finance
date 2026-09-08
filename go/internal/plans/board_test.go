@@ -100,14 +100,23 @@ func TestMpPlatformInputs(t *testing.T) {
 		{335, 1006}: 700,
 		{335, 8006}: 400,
 	}
-	tactic := map[string]float64{layerKey(335, BSalesManagerGross): 1200}
+	tactic := map[string]float64{
+		layerKey(335, BSalesManagerGross): 1200,
+		layerKey(335, BShipments):         400, // сохранена прежним периодом
+	}
 
-	in := mpPlatformInputs(335, tactic, factIdx)
+	in := mpPlatformInputs(335, tactic, mpLayers{fact: factIdx, strategy: map[string]float64{}, target: map[string]float64{}})
 	if in[BSalesManagerGross] != 1200 {
 		t.Errorf("тактика должна перебивать факт: %v", in[BSalesManagerGross])
 	}
+	// Себестоимость больше не вводится и из ФАКТА не сидируется (решение звонка
+	// 07.09.2026: её ведёт наценка), но сохранённое значение прежних периодов
+	// читается — иначе утверждённая форма пересчиталась бы в нули.
 	if in[BShipments] != 400 {
-		t.Errorf("себестоимость из факта: %v", in[BShipments])
+		t.Errorf("сохранённая себестоимость должна читаться: %v", in[BShipments])
+	}
+	if got := mpPlatformInputs(335, map[string]float64{}, mpLayers{fact: factIdx, strategy: map[string]float64{}, target: map[string]float64{}})[BShipments]; got != 0 {
+		t.Errorf("себестоимость не должна подставляться из факта: %v", got)
 	}
 	// %СПП НЕ подставляется из источника (правки ТЗ 02.09.2026, часть 1 и МП §8):
 	// в форме Excel за ним нет формулы, значит это поле ввода. Фактическое

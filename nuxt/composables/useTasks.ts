@@ -4,7 +4,7 @@
  * submit → review → accept → done). Владелец этапа двигает этап.
  */
 
-import type { MpConditions } from "./useMpCascade";
+import type { MpConditions, MpVatBasis } from "./useMpCascade";
 
 export interface CfoFilter {
   entity_type?: string;
@@ -123,7 +123,18 @@ export interface MpTaskForm {
   year: number;
   month: number;
   currency: string;
+  /**
+   * Ставка НДС для шапки. Осмысленна, только когда она одна на всю форму: у
+   * площадок ставки разные, поэтому расчёт идёт по vat_by_cfo, а vat_mixed
+   * говорит, что одно число в шапке показывать нельзя.
+   */
   vat: number;
+  /** Базис перевода «с НДС → без НДС» по каждой площадке (отношение из плана). */
+  vat_by_cfo?: Record<number, MpVatBasis>;
+  /** Ставки площадок различаются — шапка обязана отдать разрез, а не одно число. */
+  vat_mixed?: boolean;
+  /** Отношение получено из планового слоя, а не из справочника dir_vat. */
+  vat_from_plan?: boolean;
   platforms: MpFormPlatform[];
   lines: MpLine[];
   cells: MpFormCell[];

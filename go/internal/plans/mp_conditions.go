@@ -510,19 +510,29 @@ func blockToPL() map[string]int {
 	return out
 }
 
-// conditionsToInput — условия площадки → вход каскада. Ставка НДС: из условий,
-// иначе из справочника (ТЗ §3.4 — прошивать нельзя).
-func conditionsToInput(c MpConditions, vat float64) MpConditionsInput {
-	rate := vat
+// conditionsToInput — условия площадки → вход каскада.
+//
+// Перевод «с НДС → без НДС»: ставка, ЗАДАННАЯ РУКАМИ в условиях площадки, старше
+// всего — это решение заполняющего. Если её нет, работает отношение плановых сумм
+// (mpform_vat.go), и только за ним — ставка справочника, которую basis принёс
+// фолбэком. Прошивать ставку в код нельзя (ТЗ §3.4).
+func conditionsToInput(c MpConditions, vat MpVatBasis) MpConditionsInput {
+	return conditionsToInputNorm(c, vat, mpNormShareOf(c.CodeCFO))
+}
+
+// conditionsToInputNorm — то же с явным нормативом площадки (для тестов и мест,
+// где норматив приходит из справочника, а не из сида).
+func conditionsToInputNorm(c MpConditions, vat MpVatBasis, norm float64) MpConditionsInput {
+	rate, ratio := vat.Rate(), vat.ManagerRatio
 	if c.VatRate != nil {
-		rate = *c.VatRate
+		rate, ratio = *c.VatRate, 1+*c.VatRate
 	}
 	shares := make(map[string]float64, len(c.Shares))
 	for k, v := range c.Shares {
 		shares[k] = v
 	}
 	return MpConditionsInput{
-		CodeCFO: c.CodeCFO, VatRate: rate, SppPct: c.SppPct,
+		CodeCFO: c.CodeCFO, VatRate: rate, VatRatio: ratio, NormShare: norm, SppPct: c.SppPct,
 		MarkupPct: c.MarkupPct, MarkupTotalPct: c.MarkupTotalPct, Shares: shares,
 	}
 }
@@ -597,4 +607,15 @@ func mustJSON(v map[string]any) []byte {
 		return []byte(`{}`)
 	}
 	return raw
+}
+
+// mpNormShareOf — норматив совокупных удержаний площадки из справочника
+// (сид dir_marketplace). 0 — норматива нет, доля агентского вводится руками.
+func mpNormShareOf(cfo int) float64 {
+	for _, mp := range MarketplaceSeed() {
+		if mp.CodeCFO == cfo {
+			return mp.NormShare
+		}
+	}
+	return 0
 }

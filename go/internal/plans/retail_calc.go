@@ -181,6 +181,52 @@ func ComputeRetailForm(rows []RetailRow, s RetailSeries, year, month int, planMo
 	return out
 }
 
+// RetailFxRates — курсы отображения ПО НАЗНАЧЕНИЮ колонки.
+//
+// Одного курса на строку не существует: в файле ТО (лист Июн_26, шапка строк 2–6)
+// их четыре, и каждая колонка делится на свой — факт прошлого года на T2, ТАКТИКА
+// на V2, факт текущего года на W2. При этом V2 = `Май_26!W2`, то есть курс тактики
+// это КУРС ФАКТА ПРЕДЫДУЩЕГО МЕСЯЦА, а не плановый: константа 3,2 стоит в колонке
+// U и подписана «план 26».
+//
+// Кабинет до 07.09.2026 пересчитывал всё одним справочным курсом (3,2 и 0,0376) —
+// проверка на числах файла: «Розница РБ» 35 452 000 BYN даёт 12 749 781,03 USD,
+// отношение 2,7806, а не 3,2.
+//
+// Каждый курс — «сколько нац. валюты в единице валюты отображения»: значение
+// УМНОЖАЕТСЯ на него (как и прежний rate). Ноль означает «курса нет» — тогда
+// работает Tactic как основной курс формы.
+type RetailFxRates struct {
+	Tactic       float64 `json:"tactic"`         // тактика, план периода, ожидание года
+	FactCurrent  float64 `json:"fact_current"`   // факт текущего года и производные от него
+	FactPrevYear float64 `json:"fact_prev_year"` // факт того же месяца прошлого года
+	Strategy     float64 `json:"strategy"`       // стратегия (в файле — плановый курс)
+}
+
+// SameRetailFx — все колонки по одному курсу: пересчёт в BYN внутри страны, где
+// разделения на сценарии нет, и совместимость со старым поведением.
+func SameRetailFx(rate float64) RetailFxRates {
+	return RetailFxRates{Tactic: rate, FactCurrent: rate, FactPrevYear: rate, Strategy: rate}
+}
+
+// with — курс назначения, если он задан, иначе основной (курс тактики).
+func (r RetailFxRates) with(rate float64) float64 {
+	if rate > 0 {
+		return rate
+	}
+	return r.Tactic
+}
+
+// identity — пересчитывать нечего: все курсы единичные либо не заданы.
+func (r RetailFxRates) identity() bool {
+	for _, v := range []float64{r.Tactic, r.with(r.FactCurrent), r.with(r.FactPrevYear), r.with(r.Strategy)} {
+		if v != 1 && v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // ConvertRetailRows — слой ОТОБРАЖЕНИЯ в другой валюте (ТЗ §4: «пересчёт в
 // BYN/USD — отдельный слой отображения, индикаторы на нём НЕ пересчитываются»).
 //
@@ -188,31 +234,38 @@ func ComputeRetailForm(rows []RetailRow, s RetailSeries, year, month int, planMo
 // % к стратегии, % вып.) остаются ТЕМИ ЖЕ ЧИСЛАМИ: отношение не зависит от
 // валюты, а повторный расчёт по округлённым суммам дал бы другие проценты и
 // расхождение с экраном согласования.
-func ConvertRetailRows(rows []RetailRow, rate float64) []RetailRow {
-	if rate == 1 || rate == 0 {
+func ConvertRetailRows(rows []RetailRow, fx RetailFxRates) []RetailRow {
+	if fx.identity() {
 		return rows
+	}
+	tactic := fx.Tactic
+	if tactic == 0 {
+		tactic = 1
 	}
 	out := make([]RetailRow, len(rows))
 	copy(out, rows)
 	for i := range out {
+		// Месячные ячейки — это ввод тактики, поэтому курс тактики.
 		vals := make([]RetailValue, len(out[i].Values))
 		copy(vals, out[i].Values)
 		for j := range vals {
 			if vals[j].Amount != nil {
-				vals[j].Amount = fptr(*vals[j].Amount * rate)
+				vals[j].Amount = fptr(*vals[j].Amount * tactic)
 			}
 		}
 		out[i].Values = vals
 		ind := out[i].Indicators
-		scalePtr(&ind.FactPrevYearMonth, rate)
-		scalePtr(&ind.FactPrevMonth, rate)
-		scalePtr(&ind.FactCurMonth, rate)
-		scalePtr(&ind.Strategy, rate)
-		scalePtr(&ind.TacticApproved, rate)
-		scalePtr(&ind.Tactic, rate)
-		scalePtr(&ind.AvgMonthFact, rate)
-		ind.PeriodTotal *= rate
-		ind.YearExpectation *= rate
+		scalePtr(&ind.FactPrevYearMonth, fx.with(fx.FactPrevYear))
+		scalePtr(&ind.FactPrevMonth, fx.with(fx.FactCurrent))
+		scalePtr(&ind.FactCurMonth, fx.with(fx.FactCurrent))
+		scalePtr(&ind.AvgMonthFact, fx.with(fx.FactCurrent))
+		scalePtr(&ind.Strategy, fx.with(fx.Strategy))
+		scalePtr(&ind.TacticApproved, tactic)
+		scalePtr(&ind.Tactic, tactic)
+		ind.PeriodTotal *= tactic
+		// Ожидание года смешивает факт закрытых месяцев с тактикой остальных;
+		// в файле оно стоит в блоке тактики, поэтому и курс тактики.
+		ind.YearExpectation *= tactic
 		out[i].Indicators = ind
 	}
 	return out

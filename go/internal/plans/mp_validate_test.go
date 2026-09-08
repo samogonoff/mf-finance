@@ -8,7 +8,7 @@ func mpValidateFixture() MpValidationInput {
 	cond := MpConditions{CodeCFO: 335, SppPct: 0.31, MarkupPct: 0.65, MarkupTotalPct: 1.7722,
 		Currency: "RUB", Shares: conditionsWB().Shares}
 	vals, _ := computeMpPlatformInverse(MpInverseInput{
-		SalesManagerGross: 457_380_000, Conditions: conditionsToInput(cond, vatWB)})
+		SalesManagerGross: 457_380_000, Conditions: conditionsToInput(cond, vatBasisFromRate(vatWB))})
 	return MpValidationInput{
 		Year: 2026, Month: 6,
 		Platforms:  []MarketplaceRow{{CodeCFO: 335, NameCFO: "Wildberries", Segment: "large", Country: "RU", LegalEntity: "TD Mark Formelle"}},
@@ -33,7 +33,7 @@ func TestValidateMp_ValidPlatformPasses(t *testing.T) {
 	cond := MpConditions{CodeCFO: 335, SppPct: 0.31, MarkupPct: 0.65, MarkupTotalPct: 1.7722,
 		Currency: "RUB", Shares: conditionsWB().Shares}
 	vals, _ := computeMpPlatformInverse(MpInverseInput{
-		SalesManagerGross: 457_380_000, Conditions: conditionsToInput(cond, vatWB)})
+		SalesManagerGross: 457_380_000, Conditions: conditionsToInput(cond, vatBasisFromRate(vatWB))})
 
 	issues := ValidateMpForm(MpValidationInput{
 		Year: 2026, Month: 6,
@@ -165,7 +165,7 @@ func TestValidateMp_WarningsNeedReasonNotBlocking(t *testing.T) {
 	cur := MpConditions{CodeCFO: 335, SppPct: 0.31, MarkupPct: 0.65, MarkupTotalPct: 1.77,
 		Currency: "RUB", Shares: map[string]float64{BCostAds: 0.06}}
 	vals, _ := computeMpPlatformInverse(MpInverseInput{
-		SalesManagerGross: 1_000_000, Conditions: conditionsToInput(cur, 0.2036)})
+		SalesManagerGross: 1_000_000, Conditions: conditionsToInput(cur, vatBasisFromRate(0.2036))})
 
 	issues := ValidateMpForm(MpValidationInput{
 		Platforms:      []MarketplaceRow{{CodeCFO: 335, NameCFO: "Wildberries", Segment: "large", Country: "RU", LegalEntity: "TD"}},
@@ -201,7 +201,7 @@ func TestValidateMp_WarningsNeedReasonNotBlocking(t *testing.T) {
 func TestValidateMp_PenaltiesWarning(t *testing.T) {
 	cond := MpConditions{CodeCFO: 337, SppPct: 0.27, MarkupPct: 0.65, MarkupTotalPct: 1.77, Currency: "RUB"}
 	vals, _ := computeMpPlatformInverse(MpInverseInput{
-		SalesManagerGross: 1_000_000, Conditions: conditionsToInput(cond, 0.2036)})
+		SalesManagerGross: 1_000_000, Conditions: conditionsToInput(cond, vatBasisFromRate(0.2036))})
 	issues := ValidateMpForm(MpValidationInput{
 		Platforms:     []MarketplaceRow{{CodeCFO: 337, NameCFO: "Ozon", Segment: "large", Country: "RU", LegalEntity: "TD"}},
 		Conditions:    map[int]MpConditions{337: cond},

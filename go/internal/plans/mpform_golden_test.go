@@ -20,7 +20,7 @@ func TestGolden_MpCascade_Legacy(t *testing.T) {
 		BCostAcquiring:     5_700_186,
 		BCostOther:         760_025,
 	}
-	out := computeMpPlatform(in, 0.20)
+	out := computeMpPlatform(in, vatBasisFromRate(0.20))
 
 	// Продажи: менеджер без НДС и цена площадки.
 	approx(t, "менеджер без НДС", out[BSalesManagerNet], 381_150_000)
@@ -35,7 +35,9 @@ func TestGolden_MpCascade_Legacy(t *testing.T) {
 
 	// Прямые затраты = комиссия + Σ статей.
 	approx(t, "прямые затраты", out[BPlatformCosts], 185_415_246)
-	approx(t, "доля прямых затрат", out[BDirectShare], 0.4865)
+	// База доли — цена площадки без НДС (решение звонка 07.09.2026): было 0,4865
+	// от цены менеджера, стало 185 415 246 / 262 993 500.
+	approx(t, "доля прямых затрат", out[BDirectShare], 0.7050)
 
 	// PL по площадке (правка ТЗ 02.09.2026 МП §21):
 	//   PL = площадка без НДС − СС по отпускным ценам − прямые затраты
@@ -59,7 +61,7 @@ func TestComputeMpPlatform_MarkupOverrideDrivesCost(t *testing.T) {
 		BCogsTotal:         55,
 	}
 	// Без override: наценка = 85/50 − 1 = 0,70.
-	out := computeMpPlatform(base, 0.20)
+	out := computeMpPlatform(base, vatBasisFromRate(0.20))
 	approx(t, "наценка расчётная", out[BMarkup], 0.70)
 	approx(t, "СС отпускная", out[BShipments], 50)
 
@@ -69,7 +71,7 @@ func TestComputeMpPlatform_MarkupOverrideDrivesCost(t *testing.T) {
 		in[k] = v
 	}
 	in[BMarkup] = 0.65
-	out = computeMpPlatform(in, 0.20)
+	out = computeMpPlatform(in, vatBasisFromRate(0.20))
 	approx(t, "наценка override", out[BMarkup], 0.65)
 	approx(t, "СС от наценки", out[BShipments], 51.5152)
 	approx(t, "маржа розничная от наценки", out[BRetailMargin], 33.4848)
@@ -77,7 +79,7 @@ func TestComputeMpPlatform_MarkupOverrideDrivesCost(t *testing.T) {
 
 	// Наценка от общей себестоимости ведёт COGS так же.
 	in[BMarkupTotal] = 1.7722
-	out = computeMpPlatform(in, 0.20)
+	out = computeMpPlatform(in, vatBasisFromRate(0.20))
 	approx(t, "COGS от наценки общей", out[BCogsTotal], 30.6620)
 	approx(t, "маржа gross от наценки общей", out[BGrossMargin], 54.3380)
 }

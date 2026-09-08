@@ -44,19 +44,19 @@ func TestPickFx_MonthlyPrecedence(t *testing.T) {
 		{Currency: "RUB", Year: 2026, Month: 6, RateBYN: 0.0390}, // на месяц
 		{Currency: "KZT", RateBYN: 0.0068},
 	}
-	if got := pickFx(rows, "RUB", 2026, 6); got != 0.0390 {
+	if got := pickFx(rows, "RUB", 2026, 6, ""); got != 0.0390 {
 		t.Fatalf("июнь-2026: ожидался помесячный курс, получено %.4f", got)
 	}
-	if got := pickFx(rows, "RUB", 2026, 7); got != 0.0380 {
+	if got := pickFx(rows, "RUB", 2026, 7, ""); got != 0.0380 {
 		t.Fatalf("июль-2026: ожидался годовой курс, получено %.4f", got)
 	}
-	if got := pickFx(rows, "RUB", 2025, 3); got != 0.0376 {
+	if got := pickFx(rows, "RUB", 2025, 3, ""); got != 0.0376 {
 		t.Fatalf("2025: ожидался дефолтный курс, получено %.4f", got)
 	}
-	if got := pickFx(rows, "BYN", 2026, 6); got != 1.0 {
+	if got := pickFx(rows, "BYN", 2026, 6, ""); got != 1.0 {
 		t.Fatalf("BYN — база, ожидался 1.0, получено %.4f", got)
 	}
-	if got := pickFx(rows, "UZS", 2026, 6); got != 1.0 {
+	if got := pickFx(rows, "UZS", 2026, 6, ""); got != 1.0 {
 		t.Fatalf("валюта без курса: ожидался нейтральный 1.0, получено %.4f", got)
 	}
 }

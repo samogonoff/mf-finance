@@ -196,12 +196,14 @@ const cellOf = (block: string): MpFormCell | undefined =>
 
 const shareRows = computed(() => {
   const sh = props.conditions?.shares || {};
-  const mgrNet = props.values[B.salesManagerNet] ?? 0;
+  // База начисления — цена площадки БЕЗ НДС (решение звонка 07.09.2026), та же,
+  // что в каскаде: иначе сумма в карточке расходилась бы с суммой в форме.
+  const platNet = props.values[B.salesPlatNet] ?? 0;
   return COST_BLOCKS.filter((b) => sh[b] !== undefined && sh[b] !== 0).map((b) => ({
     block: b,
     name: nameOf(b),
     share: sh[b],
-    amount: mgrNet * sh[b]
+    amount: platNet * sh[b]
   }));
 });
 

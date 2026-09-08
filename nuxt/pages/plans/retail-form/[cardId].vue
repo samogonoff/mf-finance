@@ -26,6 +26,10 @@
           Форма ввода TPL-TO-RETAIL
           <span v-if="form"> · {{ form.country }} · {{ form.legal_entity || "ЮЛ не задано" }}</span>
           <span v-if="form"> · ввод в {{ form.nat_currency }}</span>
+          <!-- Курсы разные по назначению колонки: тактика пересчитывается курсом
+               ФАКТА ПРЕДЫДУЩЕГО МЕСЯЦА (файл ТО: V2 = Май_26!W2), факт — своим.
+               Показываем оба, иначе непонятно, почему суммы не делятся на один. -->
+          <span v-if="fxNote" class="fx-note" :title="fxHint">{{ fxNote }}</span>
           <span v-if="form"> · {{ filteredRows.length }} из {{ form.rows.length }} магазинов</span>
           <span v-if="form && !form.editable" class="lock-note">
             <Icon name="lucide:lock" /> период закрыт на запись
@@ -604,6 +608,26 @@ const busy = ref(false);
 const error = ref("");
 const note = ref("");
 const draftNote = ref("");
+
+// Курсы отображения. Их несколько, и это не избыточность: тактика в файле ТО
+// пересчитывается курсом факта ПРЕДЫДУЩЕГО месяца (V2 = Май_26!W2), факт — курсом
+// своего месяца, стратегия — плановым. Раньше кабинет пересчитывал всё одним
+// справочным курсом (3,2), и суммы расходились с файлом незаметно для глаза.
+const fxNum = (v: number): string => (v > 0 ? (1 / v).toFixed(4).replace(".", ",") : "—");
+const fxNote = computed(() => {
+  const f = form.value;
+  if (!f || !f.fx_rates || f.currency === f.nat_currency) return "";
+  return ` · курс тактики ${fxNum(f.fx_rates.tactic)}`;
+});
+const fxHint = computed(() => {
+  const r = form.value?.fx_rates;
+  if (!r) return "";
+  return (
+    `курс тактики — курс факта предыдущего месяца (${fxNum(r.tactic)}); ` +
+    `факт пересчитан по ${fxNum(r.fact_current)}, факт прошлого года — ${fxNum(r.fact_prev_year)}, ` +
+    `стратегия — по плановому ${fxNum(r.strategy)}`
+  );
+});
 
 /** Несохранённый ввод: ключ ячейки → значение (null = «пусто», это не 0 — см. V-01). */
 const edits = reactive(new Map<string, number | null>());
@@ -1711,6 +1735,9 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* Подпись курса в шапке: справочная величина, поэтому приглушена. */
+.fx-note { color: var(--text-muted); }
+
 .page-retail {
   display: flex;
   flex-direction: column;

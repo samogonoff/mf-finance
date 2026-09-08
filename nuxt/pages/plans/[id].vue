@@ -49,7 +49,7 @@
                 :class="`s-${st.status}`"
               >
                 <div class="sc-top">
-                  <span class="sc-code">Этап {{ st.stage_code }}</span>
+                  <span class="sc-code">{{ st.route_only ? "Шаг маршрута" : `Этап ${st.stage_code}` }}</span>
                   <span class="badge" :class="statusBadge(st.status)">{{ statusLabel(st.status) }}</span>
                 </div>
                 <div class="sc-name">{{ st.name }}</div>
@@ -81,7 +81,20 @@
                   <span v-if="depHint(st)" class="sc-dep"><Icon name="lucide:lock" /> {{ depHint(st) }}</span>
                   <span v-else-if="st.due_at" class="sc-due"><Icon name="lucide:calendar" /> {{ st.due_at }}</span>
                 </div>
-                <div class="sc-actions">
+                <!-- У шага маршрута нет состояния в БД: двигать его нельзя,
+                     сервер такой переход отклонит. Показываем только, у кого
+                     формы, и ведём в лист согласования. -->
+                <div v-if="st.route_only" class="sc-actions">
+                  <button
+                    class="btn btn-sm btn-ghost"
+                    :title="`Формы, ожидающие шага «${st.name}»`"
+                    @click="stageModal = st"
+                  >
+                    <Icon name="lucide:check-check" />
+                    {{ cardsOnStep(st.stage_code).length ? "К формам на решении" : "Что согласуется" }}
+                  </button>
+                </div>
+                <div v-else class="sc-actions">
                   <!-- Этапы 1.1–1.4 закрываются САМИ, когда формы проходят
                        соответствующий шаг: они агрегат состояния карточек, а не
                        отдельное решение. Кнопку здесь не показываем — сервер её
@@ -337,7 +350,7 @@ import PlanStatusBar from "~/components/plans/PlanStatusBar.vue";
 import CardProcessPanel from "~/components/plans/CardProcessPanel.vue";
 import { usePlans, type StageState, type SvodRow } from "~/composables/usePlans";
 import { useTasks, type Task } from "~/composables/useTasks";
-import { useMpConditions, type PlanCard } from "~/composables/useMpConditions";
+import { useMpConditions, type PlanCard, type RouteStep } from "~/composables/useMpConditions";
 
 definePageMeta({ middleware: "scope-guard" });
 
@@ -400,7 +413,9 @@ const COLS = [
   { key: "prev25", label: "25-е число", sub: "месяц М−1", codes: ["2.1", "2.2"] },
   { key: "rd2", label: "2-й р.д.", sub: "заполнение", codes: ["1.1"] },
   { key: "rd3", label: "3-й р.д.", sub: "согласование", codes: ["1.2", "1.3", "2.3"] },
-  { key: "rd4", label: "4-й р.д.", sub: "финал/свод", codes: ["1.4", "2.4"] },
+  // «финал/свод» на 4-м р.д. спорил с «утверждением» на 6-м: на таймлайне
+  // получались два финала. 1.4 — утверждение потока продаж, 4 — итоговое.
+  { key: "rd4", label: "4-й р.д.", sub: "утверждение продаж / свод", codes: ["1.4", "2.4"] },
   { key: "rd5", label: "5-й р.д.", sub: "расходы/ЮЛ", codes: ["1.5", "1.6"] },
   { key: "rd6", label: "6-й р.д.", sub: "утверждение", codes: ["3", "4"] }
 ];
@@ -418,10 +433,42 @@ const byCode = computed<Record<string, StageState>>(() =>
 type Col = (typeof COLS)[number];
 type Track = (typeof TRACKS)[number];
 
-const cellStages = (tr: Track, c: Col): StageState[] =>
-  tr.codes
+const cellStages = (tr: Track, c: Col): StageState[] => {
+  const own = tr.codes
     .filter((code) => c.codes.includes(code) && byCode.value[code])
     .map((code) => byCode.value[code]);
+  // Шаги маршрута форм, которых нет среди этапов периода, показываем рядом с
+  // согласованием: иначе на таймлайне не видно, у кого форма.
+  if (tr.key === "sales" && c.key === "rd3") return [...own, ...routeOnlySteps.value];
+  return own;
+};
+
+/** Шаги маршрута, включённые данными и не имеющие своего этапа периода. */
+const routeOnlySteps = computed<StageState[]>(() => {
+  const seen = new Set<string>();
+  const out: StageState[] = [];
+  for (const steps of Object.values(routes.value)) {
+    for (const st of steps) {
+      if (!st.enabled || byCode.value[st.step_code] || seen.has(st.step_code)) continue;
+      seen.add(st.step_code);
+      const waiting = cardsOnStep(st.step_code).length;
+      out.push({
+        stage_code: st.step_code,
+        track: "sales",
+        name: st.step_name,
+        // Статус синтетический: этапа в БД нет, состояние определяют формы.
+        status: waiting ? "in_progress" : "pending",
+        due_at: "",
+        depends_on: [],
+        responsible: st.responsible,
+        is_approval: true,
+        has_task_templates: false,
+        route_only: true
+      });
+    }
+  }
+  return out;
+});
 
 const colDue = (c: Col): string => {
   for (const code of c.codes) {
@@ -482,7 +529,11 @@ const returnTargets = (from: string) => list.value.filter((s) => s.stage_code !=
 // Формы/задания этапа — теперь через движок процесса (task-driven), а не старую
 // segment-форму. Кнопка ведёт в кокпит процесса с заданиями этапа.
 const stageForms = (code: string): Array<{ label: string; to: string }> => {
-  if (code === "1.1") {
+  // Ссылка нужна на КАЖДОМ этапе ввода, а не только на 1.1: задания есть и у 1.5,
+  // 2.1, 2.3, но попасть в них можно было только через общий экран процесса
+  // (найдено 07.09.2026). Признак — наличие заданий у этапа, а не список кодов:
+  // добавление шаблона на новый этап не должно требовать правки фронта.
+  if (!isApproval(code) && stageTasks(code).length) {
     return [{ label: "Задания этапа", to: `/plans/process/${id}` }];
   }
   return [];
@@ -521,10 +572,24 @@ const loadCards = async () => {
   cardsError.value = "";
   try {
     cards.value = await cardApi.cards(id);
+    await loadRoutes();
   } catch (e: unknown) {
     cards.value = [];
     cardsError.value = e instanceof Error ? e.message : "Карточки форм недоступны";
   }
+};
+
+// Маршруты форм периода. Нужны таймлайну: в маршруте есть шаги, которых нет
+// среди этапов периода — прежде всего «Финансовый контролёр» (шаг `fin`,
+// включается данными). Пока его не было видно, форма, стоящая на финансисте,
+// выглядела как «этап 1.2 ждёт 1.1», и понять, у кого форма, было нельзя.
+const routes = ref<Record<string, RouteStep[]>>({});
+const loadRoutes = async () => {
+  const codes = [...new Set(cards.value.map((c) => c.form_code))];
+  const loaded = await Promise.all(
+    codes.map((code) => cardApi.formRoute(code).then((steps) => [code, steps] as const).catch(() => [code, []] as const))
+  );
+  routes.value = Object.fromEntries(loaded);
 };
 
 const load = async () => {

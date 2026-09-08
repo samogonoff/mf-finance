@@ -247,11 +247,19 @@ func (s *TaskStore) BoardData(ctx context.Context, plID int64, f BoardFilter, al
 	tactic, manual, reason := s.boardTactic(ctx, plID, f.Currency)
 	tasksByCfo := s.boardTasksByCfo(ctx, plID)
 
-	// Каскад по каждой площадке — ровно как в форме ввода.
+	// Каскад по каждой площадке — ровно как в форме ввода, включая базис НДС:
+	// свод, посчитанный по другой ставке, расходился бы с формой (доклад
+	// 07.09.2026: в своде стояли законодательные 20 %).
+	segList := make([]string, 0, len(segments))
+	for seg := range segments {
+		segList = append(segList, seg)
+	}
+	planLayer := mpPlanByBlock(ctx, s.fact, b.Year, b.Month, segList)
 	values := map[int]map[string]float64{}
 	for _, p := range platforms {
 		l := layersBySegment[p.Segment]
-		values[p.CodeCFO] = computeMpPlatform(mpPlatformInputs(p.CodeCFO, tactic, l.fact), vatByCountry(p.Country))
+		vat := mpVatBasis(planLayer, p.CodeCFO, s.vatRate(ctx, p.Country, p.CodeCFO))
+		values[p.CodeCFO] = computeMpPlatform(mpPlatformInputs(p.CodeCFO, tactic, l), vat)
 	}
 	// Агрегаты денежных строк — база для процентных итогов.
 	agg := map[string]float64{}
