@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import logging
 import os
 import uuid
 
@@ -25,6 +26,8 @@ from typing import Any
 
 import asyncpg
 import pyodbc
+
+from app.logship import log
 
 # ── postgres-cost (asyncpg pool) ─────────────────────────────────────────────
 
@@ -183,11 +186,13 @@ def call_calc_sign_procedure(json_str: str) -> None:
     proc_name = os.environ.get("PROC_DB_PROCEDURE", "")
     conn = get_proc_db_conn()
     if conn is None:
-        print(f"[cost] proc-db not configured — skipping, {len(json_str)} bytes", flush=True)
+        log(logging.WARNING, "прейскурант: proc-db не настроен, вызов пропущен",
+            bytes=len(json_str))
         return
 
     if not proc_name:
-        print(f"[cost] PROC_DB_PROCEDURE not set — stub, {len(json_str)} bytes", flush=True)
+        log(logging.WARNING, "прейскурант: PROC_DB_PROCEDURE не задан, вызов пропущен",
+            bytes=len(json_str))
         conn.close()
         return
 
@@ -220,23 +225,34 @@ def call_calc_sign_procedure(json_str: str) -> None:
 
         conn.commit()
 
+        # Ответ процедуры — единственный способ узнать, ЧТО применилось: в нём
+        # PLAN_PRICE_UPDATED и PRICE_LEVEL_UPDATED. Уровень цен процедура
+        # обновляет только у карточек, где он ещё пуст, поэтому «прейскурант
+        # создан» и «уровень записан» — разные события, и по одному факту вызова
+        # второе не следует. Разбор 08.09.2026: жалоба «в Лису опять записались
+        # неверные уровни» диагностировалась вслепую именно потому, что этот
+        # ответ уходил в print и в ELK не попадал.
         if result_val:
-            print(f"[cost] {proc_name} RETURN: {result_val}", flush=True)
+            updated: dict[str, Any] = {}
+            try:
+                parsed = json.loads(result_val)
+                updated = {
+                    k.lower(): parsed.get(k)
+                    for k in ("NO_VALID", "MESS", "TOTAL_RECORDS", "TOTAL_DOCUMENTS",
+                              "PLAN_PRICE_UPDATED", "PRICE_LEVEL_UPDATED")
+                    if k in parsed
+                }
+            except (ValueError, TypeError):
+                pass
+            log(logging.INFO, "прейскурант: процедура ответила",
+                proc=proc_name, bytes=len(json_str),
+                result=result_val[:2000], **updated)
         else:
-            print(f"[cost] {proc_name} ok (no output), {len(json_str)} bytes", flush=True)
+            log(logging.INFO, "прейскурант: процедура выполнена без ответа",
+                proc=proc_name, bytes=len(json_str))
     except Exception as exc:
-        print(f"[cost] procedure failed: {exc}", flush=True)
-    finally:
-        conn.close()
-        return
-
-    cursor = conn.cursor()
-    try:
-        cursor.execute(f"EXEC {proc_name} @JSON_IN = ?", json_str)
-        conn.commit()
-        print(f"[cost] {proc_name} ok, {len(json_str)} bytes", flush=True)
-    except Exception as exc:
-        print(f"[cost] procedure failed: {exc}", flush=True)
+        log(logging.ERROR, "прейскурант: процедура не выполнена",
+            proc=proc_name, bytes=len(json_str), error=str(exc))
     finally:
         conn.close()
 
