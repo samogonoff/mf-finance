@@ -8007,7 +8007,11 @@ async function applyPendingChanges() {
           wholesale_rub: Number(pc['Отпускная цена по уровню, руб'] ?? pc.wholesale_rub ?? 0),
           calc_sign: calcSign,
           price_type: priceType,
-          author_name: user.value?.email || 'system',
+          // Автора прейскуранта подставляет сервер — бренд-менеджера строки
+          // (просьба пользователей 08.09.2026). Отсюда уходил email нажавшего, и
+          // в Лису он попадал обрезанным до 15 символов: 31.07 в поле «кто ввёл»
+          // записалось «mariy.zuravskay». Оставляем бренд-менеджера как фолбэк.
+          author_name: String(pc['Бренд-менеджер'] ?? pc.brand_manager ?? ''),
           cost_rub: Number(pc['Себестоимость, руб.'] ?? pc.cost_rub ?? 0),
         };
       })

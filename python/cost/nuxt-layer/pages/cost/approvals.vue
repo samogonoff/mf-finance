@@ -394,7 +394,11 @@ async function applySelected() {
           wholesale_rub: Number(pc['Отпускная цена по уровню, руб'] ?? pc.wholesale_rub ?? 0),
           calc_sign: calcSign,
           price_type: priceType,
-          author_name: 'system',
+          // Автора прейскуранта подставляет сервер — бренд-менеджера строки
+          // (просьба пользователей 08.09.2026). Здесь оставляем бренд-менеджера
+          // строки как подсказку и фолбэк: раньше уходило 'system', и именно оно
+          // попадало в поле «кто ввёл» в Лисе.
+          author_name: String(pc['Бренд-менеджер'] ?? pc.brand_manager ?? ''),
           cost_rub: Number(pc['Себестоимость, руб.'] ?? pc.cost_rub ?? 0),
         };
       })

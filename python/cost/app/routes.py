@@ -1868,14 +1868,56 @@ async def pending_filter_options(request: Request) -> dict:
     return await get_pending_filter_options(selected)
 
 
+# Длина поля [prices].[USERVRKV] в Лисе — char(15). Процедура кладёт туда
+# author_name из JSON и ЕГО ЖЕ подставляет в PRIM ('PLAN_ID: … AUTHOR: …'),
+# поэтому предел задаёт узкое поле, хотя PRIM объявлен char(100). Проверено на
+# живой базе 08.09.2026: INFORMATION_SCHEMA даёт USERVRKV char(15), PRIM char(100).
+_USERVRKV_MAX = 15
+
+# Метка прейскуранта себестоимости закупной продукции. Ставится перед фамилией
+# бренд-менеджера, чтобы два прейскуранта одной пачки (себестоимость и отпускные
+# цены) различались в списке Лисы, а не только по номеру.
+_COST_AUTHOR_PREFIX = "с/с "
+
+
+def _fit_author(name: str, prefix: str = "") -> str:
+    """Автор для JSON процедуры: prefix + фамилия, усечённые под char(15).
+
+    Обрезаем справа: фамилия информативнее инициалов, а метка «с/с» —
+    информативнее фамилии, поэтому префикс сохраняется целиком. Сейчас все
+    одиннадцать бренд-менеджеров укладываются в 15 символов сами (максимум ровно
+    15 — «МАСЛЕННИКОВА А.», «ТАТАРИЦКИЙ В.П.»), с префиксом усечение начинается
+    с 12 символов фамилии. Функция нужна на будущее: длинная фамилия должна
+    аккуратно усечься, а не уехать в обрезку драйвером или в ошибку вставки.
+    """
+    name = (name or "").strip()
+    if prefix:
+        room = _USERVRKV_MAX - len(prefix)
+        out = (prefix + name[:room]) if room > 0 else prefix[:_USERVRKV_MAX]
+    else:
+        out = name[:_USERVRKV_MAX]
+    # rstrip: обрезка может оставить хвостовой пробел («с/с ТАТАРИЦКИЙ »), и он
+    # попадёт в PRIM между фамилией и концом строки.
+    return out.rstrip()
+
+
 def _run_proc_safe(json_str: str) -> None:
-    # Wrapper with exception logging — ensure_future swallows thread errors
+    """Вызов процедуры прейскуранта. Исключения не пускаем наружу: ensure_future
+    их проглотит, а сохранение цен к этому моменту уже состоялось.
+
+    Пишем через log(), а не print(): print остаётся только в stdout контейнера и
+    в ELK не попадает, а результат процедуры (сколько документов ушло, что она
+    вернула в @JSON_OUT) — единственный способ понять на проде, доехал ли
+    прейскурант до Лисы.
+    """
     try:
-        print(f"[cost] _run_proc_safe: {len(json_str)} bytes", flush=True)
-        print(f"[cost] _run_proc_safe PAYLOAD:\n{json_str}", flush=True)
+        log(logging.INFO, "прейскурант: вызов процедуры", bytes=len(json_str))
+        log(logging.DEBUG, "прейскурант: payload", payload=json_str)
         call_calc_sign_procedure(json_str)
     except Exception as exc:
         import traceback
+        log(logging.ERROR, "прейскурант: вызов процедуры не выполнен",
+            error=str(exc), trace=traceback.format_exc())
         print(f"[cost] _run_proc_safe FAILED: {exc}", flush=True)
         traceback.print_exc()
         sys.stdout.flush()
@@ -1902,6 +1944,15 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
     # Фронт шлёт в proc_payload только name-поля, а ITEM_ID уровня берём на бэке из
     # справочника s_price_level — для поля price_level_id в JSON процедуры.
     level_name_by_row: dict[tuple[str, str, str, str], str] = {}
+    # Тот же ключ → бренд-менеджер строки. Он уходит в автора прейскуранта
+    # (просьба пользователей 08.09.2026): раньше туда попадал обрезанный email
+    # нажавшего кнопку («mariy.zuravskay» в Лисе 31.07) или вовсе «system» со
+    # страницы согласования. Заодно бренд-менеджер входит в ключ группировки
+    # документов — см. ниже, почему.
+    bm_by_row: dict[tuple[str, str, str, str], str] = {}
+    # Тот же ключ → полное задание строки. Нужно, чтобы спросить cost_purchase_cost:
+    # закупная продукция ключуется там вместе с заданием.
+    task_by_row: dict[tuple[str, str, str, str], str] = {}
 
     # One-step flow: pressing «Установить цены» is itself the PEO approval action.
     # Mark every pending row as approved in cost_calc_approvals BEFORE the DWH write.
@@ -1909,7 +1960,7 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
     if not _is_mock():
         async with pool().acquire() as conn:
             pending_rows = await conn.fetch(
-                "SELECT \"Модель\", \"Артикул\", \"Признак калькуляции\", \"PLAN_ID\", \"Номер задания производства\", \"Уровень цен\" FROM cost_price_pending WHERE id = ANY($1::bigint[])",
+                "SELECT \"Модель\", \"Артикул\", \"Признак калькуляции\", \"PLAN_ID\", \"Номер задания производства\", \"Уровень цен\", \"Бренд-менеджер\" FROM cost_price_pending WHERE id = ANY($1::bigint[])",
                 ids,
             )
         for pr in pending_rows:
@@ -1918,12 +1969,19 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
                 pr["Модель"], pr["Артикул"], pr["Признак калькуляции"], pr["PLAN_ID"],
                 "approved", reviewed_by, task_number=tn,
             )
-            level_name_by_row[(
+            row_key = (
                 str(pr.get("Модель", "") or "").strip(),
                 str(pr.get("Артикул", "") or "").strip(),
                 str(pr.get("Признак калькуляции", "") or "").strip(),
                 str(pr.get("PLAN_ID", "") or "").strip(),
-            )] = str(pr.get("Уровень цен", "") or "").strip()
+            )
+            level_name_by_row[row_key] = str(pr.get("Уровень цен", "") or "").strip()
+            task_by_row[row_key] = tn
+            bm = str(pr.get("Бренд-менеджер", "") or "").strip()
+            # В кэше у части строк бренд-менеджер пуст или стоит «-». Пустого
+            # автора процедуре отдавать нельзя (PRIM превратится в «AUTHOR: »),
+            # поэтому падаем на того, кто нажал кнопку, — как было до этой правки.
+            bm_by_row[row_key] = bm if bm and bm != "-" else reviewed_by
 
     count = await apply_pending_changes(ids, reviewed_by)
     result = {"success": True, "applied": count}
@@ -1969,17 +2027,65 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
     if proc_payload:
         import json as _json
 
-        # Группировка:
-        #   КПСС   — по (calc_sign, plan_id): отдельный прейскурант на план
-        #   ПФКСС  — только по calc_sign: все строки в один прейскурант
-        groups: dict[tuple[str, str], list[dict]] = {}
+        # Какие из строк — закупная готовая продукция. Признак не в калькуляции
+        # (у неё обычные КПСС/ПФКСС), а в наличии раскладки cost_purchase_cost,
+        # поэтому спрашиваем её пакетно по ключу С ЗАДАНИЕМ.
+        purchase_by_row: dict[tuple[str, str, str, str], dict] = {}
+        if not _is_mock():
+            try:
+                pkeys = []
+                for it in proc_payload:
+                    rk = (
+                        str(it.get("model", "") or "").strip(),
+                        str(it.get("articul", "") or "").strip(),
+                        str(it.get("calc_sign", "") or "").strip(),
+                        str(it.get("plan_id", "") or "").strip(),
+                    )
+                    pkeys.append((rk, purchase.make_key(rk[0], rk[1], rk[2], rk[3], task_by_row.get(rk, ""))))
+                flags = await purchase.flags_for([pk for _, pk in pkeys])
+                for rk, pk in pkeys:
+                    f = flags.get(pk)
+                    if f:
+                        purchase_by_row[rk] = f
+            except Exception:
+                # Без раскладки закупная поедет одним документом, как раньше:
+                # цены в Лису уйдут, отдельного прейскуранта себестоимости не будет.
+                log(logging.WARNING, "прейскурант: раскладка закупной не прочитана",
+                    error=traceback.format_exc(limit=3))
+
+        # Группировка. Ключ — (признак, план, бренд-менеджер, вид документа):
+        #   КПСС   — отдельный прейскурант на план
+        #   ПФКСС  — план в ключ не входит, строки собираются вместе
+        #   бренд-менеджер — в ключе, потому что он уходит АВТОРОМ прейскуранта:
+        #     ПЭО отправляет пачкой ассортимент разных менеджеров, и без этого
+        #     автором всей пачки становился бы один из них (брали первую строку).
+        #   вид документа:
+        #     ''         — обычная строка, тип цены по признаку калькуляции;
+        #     'purchase' — закупная, документ ОТПУСКНЫХ ЦЕН, тип цены 1;
+        #     'cost'     — закупная, документ СЕБЕСТОИМОСТИ, тип цены 1.
+        #   Для закупной строки создаётся ДВА документа (решение заказчика
+        #   08.09.2026). Закупная не смешивается с обычной в одном документе даже
+        #   при совпадении признака, плана и менеджера: у неё тип цены 1, а у
+        #   обычной КПСС — 3, и тип задаётся на документ, а не на строку.
+        groups: dict[tuple[str, str, str, str], list[dict]] = {}
         for item in proc_payload:
             cs = (item.get("calc_sign") or "").strip()
-            if cs == "КПСС":
-                pi = (item.get("plan_id") or "").strip()
-                groups.setdefault((cs, pi), []).append(item)
-            elif cs == "ПФКСС":
-                groups.setdefault((cs, ""), []).append(item)
+            if cs not in ("КПСС", "ПФКСС"):
+                continue
+            pi = (item.get("plan_id") or "").strip()
+            row_key = (
+                str(item.get("model", "") or "").strip(),
+                str(item.get("articul", "") or "").strip(),
+                cs,
+                pi,
+            )
+            bm = bm_by_row.get(row_key, "") or (item.get("author_name") or "system")
+            plan_key = pi if cs == "КПСС" else ""
+            if row_key in purchase_by_row:
+                groups.setdefault((cs, plan_key, bm, "cost"), []).append(item)
+                groups.setdefault((cs, plan_key, bm, "purchase"), []).append(item)
+            else:
+                groups.setdefault((cs, plan_key, bm, ""), []).append(item)
 
         # Построить вложенный JSON: один документ на группу с prices1[]
         calc_sign_price_type = {"КПСС": 3, "ПФКСС": 1}
@@ -1998,28 +2104,59 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
                 price_level_id_by_name = {}
 
         docs = []
-        for (cs, pi), items in groups.items():
-            price_type = calc_sign_price_type.get(cs, items[0].get("price_type", 0))
-            author_name = (items[0].get("author_name", "system") or "system")[:15]
+        # Сначала документы себестоимости, потом цены: порядок задан заказчиком,
+        # и он же определяет порядок номеров прейскурантов в Лисе.
+        for (cs, pi, bm, kind), items in sorted(
+            groups.items(), key=lambda kv: (0 if kv[0][3] == "cost" else 1, kv[0][0], kv[0][1], kv[0][2])
+        ):
+            is_cost_doc = kind == "cost"
+            # У закупной ОБА документа с типом цены 1 (решение заказчика
+            # 08.09.2026) — и себестоимость, и отпускные цены. При типе 3
+            # процедура полезла бы обновлять s_modeli.PLAN_PRICE, а карточку
+            # модели трогать не нужно: у закупной плановая цена ведётся не
+            # отсюда. У обычных строк тип по-прежнему от признака калькуляции.
+            price_type = 1 if kind in ("cost", "purchase") else calc_sign_price_type.get(
+                cs, items[0].get("price_type", 0)
+            )
+            author_name = _fit_author(bm, _COST_AUTHOR_PREFIX if is_cost_doc else "")
 
             prices1 = []
             for it in items:
+                row_key = (
+                    str(it.get("model", "") or "").strip(),
+                    str(it.get("articul", "") or "").strip(),
+                    cs,
+                    str(it.get("plan_id", "") or "").strip(),
+                )
                 # price_level_id есть только у ПФКСС: имя уровня из строки
                 # согласования → ITEM_ID справочника; не нашли — 0.
+                # В документе себестоимости уровень НЕ передаём: процедура пишет
+                # s_modeli.PRICE_LEVEL_ID из любой строки с price_type=1, и уровень
+                # должен приехать документом цен, а не этим. Ноль отсекается её
+                # условием PRICE_LEVEL_ID > 0.
                 price_level_id = 0
-                if cs == "ПФКСС":
-                    row_key = (
-                        str(it.get("model", "") or "").strip(),
-                        str(it.get("articul", "") or "").strip(),
-                        cs,
-                        str(it.get("plan_id", "") or "").strip(),
-                    )
+                if cs == "ПФКСС" and not is_cost_doc:
                     price_level_id = price_level_id_by_name.get(level_name_by_row.get(row_key, ""), 0)
+
+                if is_cost_doc:
+                    # Себестоимость закупной — полная из прихода (total_byn):
+                    # цена поставщика плюс накладные, пошлина и сертификация.
+                    cena = purchase_by_row.get(row_key, {}).get("purchase_total_byn") or 0
+                else:
+                    cena = it.get("wholesale_rub", 0)
+
                 prices1.append({
                     "model": it.get("model", ""),
                     "articul": it.get("articul", ""),
-                    "wholesale_rub": it.get("wholesale_rub", 0),
-                    "plan_price": it.get("cost_rub") or it.get("Себестоимость, руб.", 0),
+                    "wholesale_rub": cena,
+                    # plan_price = 0 у закупной в ОБОИХ документах: себестоимость
+                    # теперь едет отдельным прейскурантом, а поле plan_price
+                    # процедура применяет только при price_type=3. При этом сбор
+                    # отчёта PLAN_PRICE_DETAILS в ней сделан БЕЗ проверки типа, и
+                    # ненулевое значение засоряло бы ответ моделями, у которых
+                    # ничего не обновилось.
+                    "plan_price": 0 if row_key in purchase_by_row
+                                  else (it.get("cost_rub") or it.get("Себестоимость, руб.", 0)),
                     "price_level_id": price_level_id,
                 })
 
@@ -2032,8 +2169,16 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
             })
 
         json_str = _json.dumps(docs, ensure_ascii=False, default=str)
+        log(logging.INFO, "прейскурант: документы собраны",
+            docs=len(docs),
+            cost_docs=sum(1 for d in docs if d["author_name"].startswith(_COST_AUTHOR_PREFIX)),
+            rows=sum(len(d["prices1"]) for d in docs),
+            authors=sorted({d["author_name"] for d in docs}))
 
-        # Один вызов процедуры на все документы (в threadpool, т.к. pyodbc)
+        # Один вызов процедуры на все документы (в threadpool, т.к. pyodbc).
+        # Два документа закупной уходят вместе, а не двумя EXEC: процедура и так
+        # итерирует по массиву курсором и создаёт по прейскуранту на документ, а
+        # один вызов не оставляет состояния «себестоимость записалась, цены нет».
         asyncio.ensure_future(
             asyncio.get_event_loop().run_in_executor(
                 None, _run_proc_safe, json_str
