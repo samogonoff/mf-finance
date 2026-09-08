@@ -486,7 +486,7 @@
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'mp_price_rub' && isVisible('mp_price_rub')" class="col-num">Цена для МП, рос. руб.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'comment' && isVisible('comment')">Комментарий<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               <!-- Пожелание № 4: отметка «нужна замена артикула», при установке
-                   уходит письмо операторам (ЧНИ и остальное — разным людям). -->
+                   уходит сообщение в Битрикс операторам (ЧНИ и остальное — разным людям). -->
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'replace' && isVisible('replace')" class="col-replace" :title="replaceHeaderTitle">Замена арт.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               <!-- Пожелание № 8: согласование цены с исполкомом по постановлению 713.
                    Значок — состояние карточки, клик открывает её. -->
@@ -6818,14 +6818,15 @@ function stageTitle(row: any): string {
 }
 
 // ── Отметка «нужна замена артикула» (пожелание № 4) ─────────────────────────
-// Галочка в строке; при установке сервер рассылает письмо операторам. Адресаты
-// зависят от ассортимента: ЧНИ (носки и Orodoro по Level 01) и всё остальное
-// уходят разным людям. Список адресатов и состояние SMTP подтягиваем с сервера,
-// чтобы подсказка говорила правду, а не повторяла захардкоженные фамилии.
+// Галочка в строке; при установке сервер шлёт сообщение в Битрикс операторам
+// (почтовый канал убран 08.09.2026 по решению заказчика). Адресаты зависят от
+// ассортимента: ЧНИ (носки и Orodoro по Level 01) и всё остальное уходят разным
+// людям. Список адресатов и настроен ли Битрикс подтягиваем с сервера, чтобы
+// подсказка говорила правду, а не повторяла захардкоженные фамилии.
 const CHNI_LEVEL01 = ['Носки&Колготки', 'Orodoro'];
 const isChniRow = (row: any) => CHNI_LEVEL01.includes(String(row?.['Level 01'] || '').trim());
 
-interface ReplaceInfo { recipients: { segment: string; email: string; name: string }[]; smtp_enabled: boolean }
+interface ReplaceInfo { recipients: { segment: string; email: string; name: string; b24_id: number | null }[]; bitrix_enabled: boolean }
 const replaceInfo = ref<ReplaceInfo | null>(null);
 const replaceBusy = reactive<Record<string, boolean>>({});
 
@@ -6844,23 +6845,23 @@ function replaceRecipientsText(row: any): string {
 }
 
 const replaceHeaderTitle = computed(() =>
-  'Нужна замена артикула. Отметка рассылает письмо: ЧНИ (носки, Orodoro) — ' +
+  'Нужна замена артикула. Отметка шлёт сообщение в Битрикс: ЧНИ (носки, Orodoro) — ' +
   ((replaceInfo.value?.recipients || []).filter((r) => r.segment === 'chni').map((r) => r.name || r.email).join(', ') || '—') +
   '; остальное — ' +
   ((replaceInfo.value?.recipients || []).filter((r) => r.segment === 'other').map((r) => r.name || r.email).join(', ') || '—') +
-  (replaceInfo.value && !replaceInfo.value.smtp_enabled ? '\nВнимание: почта не настроена, письма не уходят' : '')
+  (replaceInfo.value && !replaceInfo.value.bitrix_enabled ? '\nВнимание: Битрикс не настроен, сообщения не уходят' : '')
 );
 
 function replaceTitle(row: any): string {
   if (!row.replace_needed) {
     if (!can('cost:articul_replace')) return 'Отметку «нужна замена артикула» ставит бренд-менеджер (а также ПЭО и калькулятор)';
-    return 'Нужна замена артикула? Отметьте — письмо уйдёт: ' + replaceRecipientsText(row);
+    return 'Нужна замена артикула? Отметьте — сообщение в Битрикс уйдёт: ' + replaceRecipientsText(row);
   }
   const fmtDt = (v: any) => (v ? new Date(v).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '');
   let s = `Нужна замена артикула — отметил(а) ${row.replace_set_by || '—'} ${fmtDt(row.replace_set_at)}`.trim();
   if (row.replace_comment) s += `\nКомментарий: ${row.replace_comment}`;
-  // Уведомление идёт двумя каналами (почта; сообщение в Битрикс по ID на
-  // портале). notified_at — дошло хотя бы одним, notify_error — что нет.
+  // Уведомление — сообщение в Битрикс по ID адресата на портале. notified_at —
+  // дошло хотя бы одному, notify_error — кому и почему нет.
   s += row.replace_notified_at
     ? `\nУведомление отправлено ${fmtDt(row.replace_notified_at)}: ${replaceRecipientsText(row)}`
     : '\nУведомление не отправлено';
@@ -6876,7 +6877,7 @@ async function toggleReplace(row: any, ev: Event) {
   let comment = '';
   if (checked) {
     const c = window.prompt(
-      `Нужна замена артикула: ${row['Модель'] || ''} / ${row['Артикул'] || ''}.\nПисьмо уйдёт: ${replaceRecipientsText(row)}.\nКомментарий для письма (можно оставить пустым):`,
+      `Нужна замена артикула: ${row['Модель'] || ''} / ${row['Артикул'] || ''}.\nСообщение в Битрикс уйдёт: ${replaceRecipientsText(row)}.\nКомментарий к сообщению (можно оставить пустым):`,
       row.replace_comment || '',
     );
     // Отмена диалога — отметку не ставим; :checked привязан к row, но DOM уже
@@ -6905,13 +6906,14 @@ async function toggleReplace(row: any, ev: Event) {
       replace_set_by: res.replace_set_by, replace_set_at: res.replace_set_at,
       replace_notified_at: res.replace_notified_at, replace_notify_error: res.replace_notify_error,
     });
-    if (checked && res.mail && res.mail.status !== 'sent') {
-      lastError.value = `Отметка о замене артикула сохранена, но уведомление не дошло: ${res.mail.error || res.mail.status}. ` +
-        `Адресаты: ${(res.mail.recipients || []).join(', ') || '—'}.`;
-    } else if (checked && res.mail && res.mail.error) {
-      // Дошло не всеми каналами (например, письмо ушло, а в кабинет — нет):
+    // Отметка стоит в любом случае; баннер — только про доставку сообщения.
+    if (checked && res.notify && res.notify.status !== 'sent') {
+      lastError.value = `Отметка о замене артикула сохранена, но сообщение в Битрикс не дошло ` +
+        `(адресаты: ${(res.notify.recipients || []).join(', ') || '—'}): ${res.notify.error || res.notify.status}`;
+    } else if (checked && res.notify && res.notify.error) {
+      // Дошло, но не всем (например, у одного из адресатов нет ID в Битриксе):
       // отметка стоит, но человеку стоит знать, чего не хватило.
-      lastError.value = `Отметка о замене артикула сохранена, уведомление отправлено частично. Не дошло: ${res.mail.error}.`;
+      lastError.value = `Отметка о замене артикула сохранена, сообщение в Битрикс отправлено не всем: ${res.notify.error}`;
     }
   } catch (e: any) {
     input.checked = !!row.replace_needed;

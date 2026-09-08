@@ -3661,15 +3661,15 @@ async def llm_settings_usage(
 
 @router.get("/articul-replace/recipients")
 async def articul_replace_recipients(_: str = Depends(_require_perm("cost:view"))) -> dict:
-    """Кому уйдёт письмо: адресаты по сегментам (ЧНИ / остальное) и состояние SMTP.
+    """Кому уйдёт сообщение: адресаты по сегментам (ЧНИ / остальное) и настроен ли Битрикс.
 
     Фронт показывает это в подсказке к галочке, чтобы экономист видел, кого он
-    оповещает и уйдёт ли письмо вообще.
+    оповещает и уйдёт ли сообщение вообще.
     """
     people = await articul_replace.recipients()
     return {
         "recipients": people,
-        "smtp_enabled": articul_replace.smtp_enabled(),
+        "bitrix_enabled": articul_replace.bitrix_enabled(),
         "chni_level01": list(articul_replace.CHNI_LEVEL01),
     }
 
@@ -3684,10 +3684,10 @@ async def articul_replace_set(
     Body: { model, articul, calc_sign?, plan_id?, task_number?, needed: bool,
             comment?, context?: { model_name, level01, country, brand_manager } }
 
-    При needed=true письмо уходит адресатам сегмента, выбранного по
-    context.level01 (ЧНИ — носки и Orodoro, иначе — остальное). Итог рассылки
-    возвращается в ответе (`mail`) и сохраняется в журнале; сбой почты отметку
-    не откатывает.
+    При needed=true сообщение в Битрикс уходит адресатам сегмента, выбранного
+    по context.level01 (ЧНИ — носки и Orodoro, иначе — остальное). Итог
+    возвращается в ответе (`notify`) и сохраняется в журнале; сбой доставки
+    отметку не откатывает.
     """
     model = (payload.get("model") or "").strip()
     articul = (payload.get("articul") or "").strip()
