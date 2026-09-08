@@ -263,7 +263,19 @@ func (s *TaskStore) leDirectors(ctx context.Context) map[string]*int64 {
 	return out
 }
 
-// Generate раскрывает шаблоны в задания на период (перегенерирует с нуля).
+// Generate раскрывает шаблоны в задания на период.
+//
+// НЕ «с нуля»: повторный вызов ОБНОВЛЯЕТ существующие задания и добавляет
+// недостающие. Прежняя версия сносила только нетронутые (pending) задания и
+// вставляла новые, из-за чего каждое повторное нажатие «Генерировать» плодило
+// копии тронутых — в 2026-06 на этапе 1.1 висели два одинаковых задания
+// «Маркетплейсы large» на те же 4 ЦФО. Уникальный ключ слота
+// (период, шаблон, должность, ЮЛ) закреплён индексом uq_pl_task_slot
+// (миграция 0049), поэтому дубль невозможен даже при гонке двух генераций.
+//
+// Что обновляется: название, набор ЦФО и — только пока задание не тронуто —
+// исполнитель по умолчанию. Назначенного руками исполнителя, делегата и статус
+// генерация не трогает: это работа людей, а не данные шаблона.
 func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 	tmpls, err := s.templates(ctx)
 	if err != nil {
@@ -276,18 +288,29 @@ func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	// Сносим прежние НЕтронутые задания (pending) — сделанные сохраняем.
-	if _, err := tx.Exec(ctx, `DELETE FROM pl_task WHERE pl_id=$1 AND status='pending'`, plID); err != nil {
-		return 0, err
-	}
 
 	batch := &pgx.Batch{}
 	n := 0
+	// Слот задания — (период, шаблон, должность, ЮЛ). Он же уникальный ключ в БД.
+	// COALESCE(position_id,0) в индексе повторён здесь через ON CONFLICT по тому
+	// же выражению: иначе Postgres не свяжет upsert с частичным индексом.
 	queue := func(t taskTemplate, title string, codes []int, posID, assignee *int64, le string) {
 		cj, _ := json.Marshal(codes)
 		batch.Queue(`
 			INSERT INTO pl_task (pl_id, stage_code, template_id, form_code, title, cfo_codes, task_role, position_id, legal_entity, assignee_user_id, status)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending')`,
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending')
+			ON CONFLICT (pl_id, template_id, COALESCE(position_id, 0), legal_entity) DO UPDATE
+			   SET stage_code = EXCLUDED.stage_code,
+			       form_code  = EXCLUDED.form_code,
+			       title      = EXCLUDED.title,
+			       cfo_codes  = EXCLUDED.cfo_codes,
+			       task_role  = EXCLUDED.task_role,
+			       -- исполнитель по умолчанию проставляется, только пока задание
+			       -- не тронуто и никто не назначен руками
+			       assignee_user_id = CASE
+			           WHEN pl_task.status = 'pending' AND pl_task.assignee_user_id IS NULL
+			           THEN EXCLUDED.assignee_user_id ELSE pl_task.assignee_user_id END,
+			       updated_at = NOW()`,
 			plID, t.Stage, t.ID, t.Form, title, cj, t.Role, posID, le, assignee)
 		n++
 	}
@@ -326,9 +349,11 @@ func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 				queue(t, t.Title, codes, &p, holderOf[posID], "")
 			}
 			if len(unassigned) > 0 {
-				// «без ТОПа» — внутренний жаргон: у ЦФО не задана должность-владелец.
-				// В UI пишем то, что от человека требуется: назначить исполнителя.
-				queue(t, t.Title+" · исполнитель не назначен", unassigned, nil, nil, "")
+				// ЦФО без должности-владельца. Раньше в название дописывалось
+				// «· исполнитель не назначен» (а до того — жаргонное «· без ТОПа»),
+				// хотя рядом стоит бейдж того же смысла: исполнителю название
+				// должно говорить, ЧТО заполнять, а не в каком состоянии задание.
+				queue(t, t.Title, unassigned, nil, nil, "")
 			}
 		}
 	}
@@ -341,6 +366,17 @@ func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 		}
 	}
 	if err := br.Close(); err != nil {
+		return 0, err
+	}
+	// Осиротевшие задания: шаблон убрали или его фильтр перестал давать ЦФО.
+	// Убираем только НЕтронутые и никому не назначенные — работу людей генерация
+	// не удаляет. NOW() в транзакции один на все запросы, поэтому «старее NOW()»
+	// это ровно «не затронуто текущей генерацией».
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM pl_task
+		 WHERE pl_id = $1 AND status = 'pending'
+		   AND assignee_user_id IS NULL AND delegate_user_id IS NULL
+		   AND updated_at < NOW()`, plID); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
