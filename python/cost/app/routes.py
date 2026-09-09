@@ -29,6 +29,7 @@ from app.roles import (
     remove_user_role,
     update_role,
 )
+from app import obsolete
 
 router = APIRouter()
 
@@ -539,6 +540,17 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         log(logging.WARNING, "не удалось наложить отметки о замене артикула", error=str(exc))
         for row in data:
             row["replace_needed"] = False
+
+    # Статус «Неактуальная модель/артикул» (09.09.2026): ключ — модель + артикул,
+    # один статус на все калькуляции изделия. Накладывается до фильтра по
+    # статусу ниже, чтобы значение 'obsolete' в фильтре было чем отбирать.
+    try:
+        obs_keys = [obsolete.make_key(r.get("Модель"), r.get("Артикул")) for r in data]
+        obsolete.apply_flags(data, await obsolete.flags_for(obs_keys))
+    except Exception as exc:
+        log(logging.WARNING, "не удалось наложить статус неактуальности", error=str(exc))
+        for row in data:
+            row.update(obsolete.EMPTY)
 
     # Карточки согласования по постановлению 713 (пожелание № 8): ключ —
     # модель + артикул, одна карточка на все планы и этапы пары. Без карточки
@@ -1158,6 +1170,10 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     if peo_filter and peo_filter != "all":
         if peo_filter == "none":
             data = [r for r in data if r.get("peo_status") is None]
+        elif peo_filter == "obsolete":
+            # Неактуальные изделия — состояние модели/артикула, не этап
+            # согласования; в остальных значениях фильтра они не отсекаются.
+            data = [r for r in data if r.get("obsolete")]
         else:
             data = [r for r in data if r.get("peo_status") == peo_filter]
 
@@ -3730,8 +3746,52 @@ async def articul_replace_set(
     set_by = (user or payload.get("user") or "system").strip() or "system"
     comment = str(payload.get("comment") or "").strip()[:1000]
 
+    # Снять уже стоящую отметку может только администратор (заказчик,
+    # 09.09.2026: калькулятор, ПЭО и БМ снимали галочку после отправки).
+    # Отметка — сообщение операторам; отозвать его молча нельзя. Повторная
+    # установка (needed=true поверх true) остаётся всем с правом: так
+    # повторяют рассылку, если она не дошла.
+    if not needed and user is not None:
+        current = (await articul_replace.flags_for([key])).get(key)
+        if current and current.get("replace_needed"):
+            perms = await get_user_permissions(user)
+            if "cost:admin" not in perms:
+                raise HTTPException(
+                    403, "Снять отметку «нужна замена артикула» может только администратор",
+                )
+
     return await articul_replace.set_flag(
         key, needed=needed, comment=comment, set_by=set_by, context=context,
+    )
+
+
+# ── Статус «Неактуальная модель/артикул» ──────────────────────────────────────
+
+@router.post("/obsolete")
+async def obsolete_set(
+    payload: dict,
+    user: str | None = Depends(_require_perm("cost:obsolete")),
+) -> dict:
+    """Поставить или снять статус «Неактуальная модель/артикул».
+
+    Body: { model, articul, obsolete: bool, comment? }
+
+    Ключ — модель + артикул: статус ложится на все калькуляции изделия. Право
+    `cost:obsolete` — у калькулятора, ПЭО и Full Admin (миграция 0056). Ответ —
+    поля `obsolete_*`, как в строках /aggregated; фронт накладывает их на все
+    строки той же пары.
+    """
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model и articul обязательны")
+    flag = payload.get("obsolete")
+    if not isinstance(flag, bool):
+        raise HTTPException(400, "obsolete должен быть true или false")
+    set_by = (user or payload.get("user") or "system").strip() or "system"
+    comment = str(payload.get("comment") or "").strip()[:1000]
+    return await obsolete.set_flag(
+        obsolete.make_key(model, articul), obsolete=flag, comment=comment, set_by=set_by,
     )
 
 

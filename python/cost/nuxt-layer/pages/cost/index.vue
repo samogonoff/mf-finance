@@ -119,6 +119,20 @@
             </span>
           </label>
 
+          <!-- Неактуальные модели/артикулы (⚫): по умолчанию видны серыми, галочка
+               убирает их из выдачи (просьба заказчика 09.09.2026). -->
+          <label class="filter-checkbox" title="Скрыть калькуляции моделей/артикулов со статусом «Неактуальная модель/артикул» (⚫, серые строки)">
+            <input
+              type="checkbox"
+              :checked="hideObsolete"
+              @change="setHideObsolete(($event.target as HTMLInputElement).checked)"
+            />
+            <span>
+              Не показывать неактуальные
+              <template v-if="obsoleteHiddenCount"> ({{ obsoleteHiddenCount }})</template>
+            </span>
+          </label>
+
           <label class="peo-filter-label">
             Статус согласования
             <select v-model="peoFilter" class="peo-filter-select" @change="onPeoFilterChange">
@@ -127,6 +141,7 @@
               <option value="none">Не согласовано</option>
               <option value="rejected">🔴 Отклонено</option>
               <option value="returned">🟡 Возврат на корректировку</option>
+              <option value="obsolete">⚫ Неактуальная модель/артикул</option>
             </select>
           </label>
 
@@ -488,6 +503,9 @@
               <!-- Пожелание № 4: отметка «нужна замена артикула», при установке
                    уходит сообщение в Битрикс операторам (ЧНИ и остальное — разным людям). -->
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'replace' && isVisible('replace')" class="col-replace" :title="replaceHeaderTitle">Замена арт.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <!-- Статус «Неактуальная модель/артикул» (09.09.2026): ставят калькулятор и
+                   ПЭО, ключ — модель + артикул, строка серая, в «Этапе» ⚫. -->
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'obsolete' && isVisible('obsolete')" class="col-obsolete" :title="OBSOLETE_HEADER_TITLE">Неакт.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               <!-- Пожелание № 8: согласование цены с исполкомом по постановлению 713.
                    Значок — состояние карточки, клик открывает её. -->
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'reg713' && isVisible('reg713')" class="col-reg713" :title="REG713_LEGEND">713<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
@@ -607,7 +625,7 @@
             <tr
               v-for="(row, idx) in pageRows"
               :key="idx"
-              :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
+              :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, 'row-obsolete': !!row.obsolete, selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
               @click="selectRow(getOriginalIndex(row))"
             >
               <td v-if="isVisible('peo_sel')" :class="stickyClasses('peo_sel')" :style="stickyStyle('peo_sel')" class="col-peo-sel">
@@ -764,13 +782,28 @@
                   <input
                     type="checkbox"
                     :checked="!!row.replace_needed"
-                    :disabled="!can('cost:articul_replace') || !!replaceBusy[calcRowKey(row)]"
+                    :disabled="!canToggleReplace(row) || !!replaceBusy[calcRowKey(row)]"
                     @change="toggleReplace(row, $event)"
                   />
+                  <!-- ⚠ — уведомление не дошло; клик повторяет отправку без снятия
+                       отметки (снять её может только администратор). Клик по значку
+                       внутри label не должен переключать чекбокс — prevent. -->
                   <span v-if="row.replace_needed"
                     class="replace-mail"
-                    :class="row.replace_notified_at ? 'replace-mail--ok' : 'replace-mail--err'"
+                    :class="[row.replace_notified_at ? 'replace-mail--ok' : 'replace-mail--err',
+                             { 'replace-mail--resend': !row.replace_notified_at && can('cost:articul_replace') }]"
+                    @click.stop.prevent="!row.replace_notified_at && can('cost:articul_replace') ? resendReplace(row) : null"
                   >{{ row.replace_notified_at ? '✉' : '⚠' }}</span>
+                </label>
+              </td>
+              <td v-if="ck === 'obsolete' && isVisible('obsolete')" class="col-obsolete" :title="obsoleteTitle(row)">
+                <label class="replace-cell" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="!!row.obsolete"
+                    :disabled="!can('cost:obsolete') || !!obsoleteBusy[obsoleteKey(row)]"
+                    @change="toggleObsolete(row, $event)"
+                  />
                 </label>
               </td>
               <td v-if="ck === 'reg713' && isVisible('reg713')" class="col-reg713" :title="reg713Title(row)">
@@ -2473,6 +2506,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'mp_price_rub', label: 'Цена для МП, рос. руб.' },
   { key: 'comment', label: 'Комментарий' },
   { key: 'replace', label: 'Замена артикула' },
+  { key: 'obsolete', label: 'Неактуальная модель/артикул' },
   { key: 'reg713', label: 'Согласование 713' },
   { key: 'avg_wholesale', label: 'Сред. опт' },
   { key: 'price_level', label: 'Уровень цен' },
@@ -2496,7 +2530,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
 
 // Column groupings for the settings modal
 const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','plan_id'];
-const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','reg713'];
+const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
 const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation'];
@@ -2554,7 +2588,7 @@ const STORAGE_KEY = 'cost_column_visibility';
  *
  * Порядок хранится списком ключей, а не индексами: список ключей переживает
  * добавление и удаление колонок в коде, а индексы — нет. */
-const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
+const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 const ORDER_STORAGE_KEY = 'cost_column_order';
 /** Все колонки таблицы: закреплённые слева плюс переносимые. */
 const ALL_COL_KEYS = [...STICKY_COL_KEYS, ...MOVABLE_COL_KEYS];
@@ -2688,6 +2722,7 @@ function collectPrefs() {
     pageSize: pageSize.value,
     filtersOpen: filtersOpen.value,
     hideDwhSent: hideDwhSentManual.value,
+    hideObsolete: hideObsolete.value,
     filters: collectFilterPrefs(),
   };
 }
@@ -2742,6 +2777,10 @@ function applyPrefs(doc: any) {
   }
   if (typeof doc.hideDwhSent === 'boolean' || doc.hideDwhSent === null) {
     hideDwhSentManual.value = doc.hideDwhSent;
+  }
+  if (typeof doc.hideObsolete === 'boolean') {
+    hideObsolete.value = doc.hideObsolete;
+    try { localStorage.setItem(HIDE_OBSOLETE_STORAGE_KEY, doc.hideObsolete ? '1' : '0'); } catch { /* ignore */ }
   }
   // Фильтры с сервера — только когда на этом устройстве их ещё нет.
   //
@@ -3344,6 +3383,25 @@ const dwhSentHiddenCount = computed(() =>
   hideDwhSent.value ? allAggregated.value.filter((r: any) => r._has_audit).length : 0
 );
 
+/** «Не показывать неактуальные» — скрыть строки со статусом «Неактуальная
+ * модель/артикул». По умолчанию выключено: неактуальные видны серыми, чтобы статус
+ * замечали; кому они мешают — снимает одной галочкой. Помнится на устройстве и в
+ * серверных настройках, как соседний фильтр по DWH. */
+const HIDE_OBSOLETE_STORAGE_KEY = 'cost_hide_obsolete';
+const hideObsolete = ref(false);
+onMounted(() => {
+  try { if (localStorage.getItem(HIDE_OBSOLETE_STORAGE_KEY) === '1') hideObsolete.value = true; } catch { /* ignore */ }
+});
+function setHideObsolete(checked: boolean) {
+  hideObsolete.value = checked;
+  try { localStorage.setItem(HIDE_OBSOLETE_STORAGE_KEY, checked ? '1' : '0'); } catch { /* ignore */ }
+  schedulePrefsPush();
+}
+const obsoleteHiddenCount = computed(() =>
+  hideObsolete.value && peoFilter.value !== 'obsolete'
+    ? allAggregated.value.filter((r: any) => r.obsolete).length : 0
+);
+
 /** Сколько мультипаков в текущей выдаче — цифра рядом с чекбоксом фильтра. */
 const multipackCount = computed(
   () => allAggregated.value.filter((r: any) => r.is_multipack).length
@@ -3454,6 +3512,9 @@ const filteredAggregated = computed(() => {
   return allAggregated.value.filter((row: any) => {
     // Отправленные в DWH — вне работы: править и согласовывать в них нечего.
     if (hideDwhSent.value && row._has_audit) return false;
+    // Неактуальные — если только их не попросили показать явно фильтром статуса:
+    // иначе «⚫ Неактуальная» в фильтре и галочка дали бы пустую таблицу.
+    if (hideObsolete.value && row.obsolete && peoFilter.value !== 'obsolete') return false;
     // Мультипаки среди тысяч калькуляций иначе не найти: в фильтрах раздела
     // нет ни модели, ни артикула, а паков на группу — единицы.
     if (multipackOnly.value && !row.is_multipack) return false;
@@ -6840,6 +6901,9 @@ const STAGE_LEGEND: StageInfo[] = [
   { key: 'returned', icon: '🟡', label: 'Цена БМ отправлена на корректировку экономисту', short: 'на корректировке' },
   { key: 'rejected', icon: '🔴', label: 'Отклонена руководителем ПЭО',                 short: 'отклонена' },
   { key: 'dwh',      icon: '🟣', label: 'Расценённая калькуляция загружена в DWH («лису»)', short: 'в DWH' },
+  // Не этап, а состояние изделия: модель/артикул сняты с актуальности
+  // калькулятором или ПЭО. Показывается поверх любого этапа.
+  { key: 'obsolete', icon: '⚫', label: 'Неактуальная модель/артикул',                   short: 'неактуальна' },
 ];
 const STAGE_NONE: StageInfo = { key: 'none', icon: '⚪', label: 'Ещё не согласована', short: 'нет статуса' };
 const STAGE_LEGEND_TEXT = 'Этапы прохождения калькуляции:\n' +
@@ -6848,6 +6912,7 @@ const STAGE_LEGEND_TEXT = 'Этапы прохождения калькуляц�
 
 function rowStage(row: any): StageInfo {
   if (!row) return STAGE_NONE;
+  if (row.obsolete) return STAGE_LEGEND[5];
   // Переоткрытая админом калькуляция снова в процессе: запись в DWH есть,
   // но показываем не её, а текущий шаг второго круга.
   if (row._in_dwh && !row._reopened) return STAGE_LEGEND[4];
@@ -6867,6 +6932,7 @@ function stageTitle(row: any): string {
     case 'returned':
     case 'rejected': return `${s.label}${who}`;
     case 'dwh':      return s.label + (row?._reopened ? ', открыта на исправление' : '');
+    case 'obsolete': return obsoleteTitle(row);
     default:         return s.label;
   }
 }
@@ -6906,6 +6972,15 @@ const replaceHeaderTitle = computed(() =>
   (replaceInfo.value && !replaceInfo.value.bitrix_enabled ? '\nВнимание: Битрикс не настроен, сообщения не уходят' : '')
 );
 
+/** Поставить отметку может любой с правом; снять уже стоящую — только
+ * администратор (заказчик, 09.09.2026: калькулятор, ПЭО и БМ снимали галочку
+ * после отправки). Сервер проверяет то же самое и отвечает 403. */
+function canToggleReplace(row: any): boolean {
+  if (!can('cost:articul_replace')) return false;
+  if (row.replace_needed && !can('cost:admin')) return false;
+  return true;
+}
+
 function replaceTitle(row: any): string {
   if (!row.replace_needed) {
     if (!can('cost:articul_replace')) return 'Отметку «нужна замена артикула» ставит бренд-менеджер (а также ПЭО и калькулятор)';
@@ -6920,14 +6995,66 @@ function replaceTitle(row: any): string {
     ? `\nУведомление отправлено ${fmtDt(row.replace_notified_at)}: ${replaceRecipientsText(row)}`
     : '\nУведомление не отправлено';
   if (row.replace_notify_error) s += `\nНе дошло: ${row.replace_notify_error}`;
+  if (!row.replace_notified_at && can('cost:articul_replace')) s += '\nКлик по ⚠ — отправить ещё раз';
+  if (!can('cost:admin')) s += '\nСнять отметку может только администратор';
   return s;
+}
+
+/** Повторная отправка сообщения без снятия отметки: сервер по needed=true
+ * поверх стоящей отметки шлёт уведомление заново (комментарий сохраняется). */
+async function resendReplace(row: any) {
+  const k = calcRowKey(row);
+  if (replaceBusy[k]) return;
+  replaceBusy[k] = true;
+  try {
+    const res = await postReplace(row, true, row.replace_comment || '');
+    applyReplaceResult(row, res, true);
+  } catch (e: any) {
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    delete replaceBusy[k];
+  }
+}
+
+async function postReplace(row: any, needed: boolean, comment: string): Promise<any> {
+  return await $fetch<any>(`${apiBase.value}/api/cost/articul-replace`, {
+    method: 'POST',
+    headers: fetchHeaders.value,
+    body: {
+      model: row['Модель'], articul: row['Артикул'],
+      calc_sign: row['Признак калькуляции'], plan_id: row['PLAN_ID'],
+      task_number: row['Номер задания производства'],
+      needed, comment,
+      context: {
+        model_name: row['Наименование модели'], level01: row['Level 01'],
+        country: row['Страна пр-ва'], brand_manager: row['Бренд-менеджер'],
+      },
+    },
+  });
+}
+
+function applyReplaceResult(row: any, res: any, checked: boolean) {
+  Object.assign(row, {
+    replace_needed: res.replace_needed, replace_comment: res.replace_comment,
+    replace_set_by: res.replace_set_by, replace_set_at: res.replace_set_at,
+    replace_notified_at: res.replace_notified_at, replace_notify_error: res.replace_notify_error,
+  });
+  // Отметка стоит в любом случае; баннер — только про доставку сообщения.
+  if (checked && res.notify && res.notify.status !== 'sent') {
+    lastError.value = `Отметка о замене артикула сохранена, но сообщение в Битрикс не дошло ` +
+      `(адресаты: ${(res.notify.recipients || []).join(', ') || '—'}): ${res.notify.error || res.notify.status}`;
+  } else if (checked && res.notify && res.notify.error) {
+    // Дошло, но не всем (например, у одного из адресатов нет ID в Битриксе):
+    // отметка стоит, но человеку стоит знать, чего не хватило.
+    lastError.value = `Отметка о замене артикула сохранена, сообщение в Битрикс отправлено не всем: ${res.notify.error}`;
+  }
 }
 
 async function toggleReplace(row: any, ev: Event) {
   const input = ev.target as HTMLInputElement;
   const checked = input.checked;
   const k = calcRowKey(row);
-  if (replaceBusy[k]) { input.checked = !!row.replace_needed; return; }
+  if (replaceBusy[k] || !canToggleReplace(row)) { input.checked = !!row.replace_needed; return; }
   let comment = '';
   if (checked) {
     const c = window.prompt(
@@ -6941,39 +7068,73 @@ async function toggleReplace(row: any, ev: Event) {
   }
   replaceBusy[k] = true;
   try {
-    const res = await $fetch<any>(`${apiBase.value}/api/cost/articul-replace`, {
-      method: 'POST',
-      headers: fetchHeaders.value,
-      body: {
-        model: row['Модель'], articul: row['Артикул'],
-        calc_sign: row['Признак калькуляции'], plan_id: row['PLAN_ID'],
-        task_number: row['Номер задания производства'],
-        needed: checked, comment,
-        context: {
-          model_name: row['Наименование модели'], level01: row['Level 01'],
-          country: row['Страна пр-ва'], brand_manager: row['Бренд-менеджер'],
-        },
-      },
-    });
-    Object.assign(row, {
-      replace_needed: res.replace_needed, replace_comment: res.replace_comment,
-      replace_set_by: res.replace_set_by, replace_set_at: res.replace_set_at,
-      replace_notified_at: res.replace_notified_at, replace_notify_error: res.replace_notify_error,
-    });
-    // Отметка стоит в любом случае; баннер — только про доставку сообщения.
-    if (checked && res.notify && res.notify.status !== 'sent') {
-      lastError.value = `Отметка о замене артикула сохранена, но сообщение в Битрикс не дошло ` +
-        `(адресаты: ${(res.notify.recipients || []).join(', ') || '—'}): ${res.notify.error || res.notify.status}`;
-    } else if (checked && res.notify && res.notify.error) {
-      // Дошло, но не всем (например, у одного из адресатов нет ID в Битриксе):
-      // отметка стоит, но человеку стоит знать, чего не хватило.
-      lastError.value = `Отметка о замене артикула сохранена, сообщение в Битрикс отправлено не всем: ${res.notify.error}`;
-    }
+    const res = await postReplace(row, checked, comment);
+    applyReplaceResult(row, res, checked);
   } catch (e: any) {
     input.checked = !!row.replace_needed;
     lastError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     delete replaceBusy[k];
+  }
+}
+
+// ── Статус «Неактуальная модель/артикул» (09.09.2026) ───────────────────────
+// Ставят калькулятор и ПЭО (право cost:obsolete). Ключ — модель + артикул:
+// статус ложится на все калькуляции изделия, поэтому после ответа сервера
+// обновляем все строки той же пары, а не только ту, где стояла галочка.
+// Строка серая (tr.row-obsolete), в «Этапе» ⚫, в фильтре статусов — отдельное
+// значение (серверный peo_filter='obsolete').
+const OBSOLETE_HEADER_TITLE = 'Неактуальная модель/артикул. Отмечают калькулятор и ПЭО; статус ложится на все калькуляции этой модели и артикула, строки подсвечиваются серым';
+const obsoleteBusy = reactive<Record<string, boolean>>({});
+const obsoleteKey = (row: any) => `${row?.['Модель'] || ''}\u0000${row?.['Артикул'] || ''}`;
+
+function obsoleteTitle(row: any): string {
+  const fmtDt = (v: any) => (v ? new Date(v).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '');
+  if (!row?.obsolete) {
+    return can('cost:obsolete')
+      ? 'Отметить модель/артикул как неактуальные (для всех калькуляций пары)'
+      : 'Статус «Неактуальная модель/артикул» ставят калькулятор и ПЭО';
+  }
+  let s = `Неактуальная модель/артикул — отметил(а) ${row.obsolete_set_by || '—'} ${fmtDt(row.obsolete_set_at)}`.trim();
+  if (row.obsolete_comment) s += `\nКомментарий: ${row.obsolete_comment}`;
+  if (can('cost:obsolete')) s += '\nСнять галочку — вернуть в актуальные';
+  return s;
+}
+
+async function toggleObsolete(row: any, ev: Event) {
+  const input = ev.target as HTMLInputElement;
+  const checked = input.checked;
+  const k = obsoleteKey(row);
+  if (obsoleteBusy[k] || !can('cost:obsolete')) { input.checked = !!row.obsolete; return; }
+  let comment = '';
+  if (checked) {
+    const c = window.prompt(
+      `Неактуальная модель/артикул: ${row['Модель'] || ''} / ${row['Артикул'] || ''}.\nСтатус ляжет на все калькуляции этой пары.\nКомментарий (можно оставить пустым):`,
+      row.obsolete_comment || '',
+    );
+    if (c === null) { input.checked = !!row.obsolete; return; }
+    comment = c.trim();
+  }
+  obsoleteBusy[k] = true;
+  try {
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/obsolete`, {
+      method: 'POST',
+      headers: fetchHeaders.value,
+      body: { model: row['Модель'], articul: row['Артикул'], obsolete: checked, comment },
+    });
+    const patch = {
+      obsolete: res.obsolete, obsolete_comment: res.obsolete_comment,
+      obsolete_set_by: res.obsolete_set_by, obsolete_set_at: res.obsolete_set_at,
+    };
+    for (const r of allAggregated.value) {
+      if (r['Модель'] === row['Модель'] && r['Артикул'] === row['Артикул']) Object.assign(r, patch);
+    }
+    Object.assign(row, patch);
+  } catch (e: any) {
+    input.checked = !!row.obsolete;
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    delete obsoleteBusy[k];
   }
 }
 
@@ -9570,6 +9731,14 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .replace-mail { font-size:13px; line-height:1; }
 .replace-mail--ok { color: var(--pos, #16a34a); }
 .replace-mail--err { color: var(--warn, #b76e00); }
+.replace-mail--resend { cursor:pointer; }
+.replace-mail--resend:hover { text-decoration: underline; }
+.col-obsolete { text-align:center; }
+/* Неактуальная модель/артикул: серый фон поверх остальных подсветок строки,
+   приглушённый текст. Стоит после row-pending/row-audit, чтобы выигрывать. */
+tr.row-obsolete { background-color: color-mix(in srgb, #6b7280 24%, transparent) !important; color: var(--text-muted, #6b7280); }
+tr.row-obsolete.selected { background-color: color-mix(in srgb, #6b7280 34%, transparent) !important; }
+.stage-obsolete { background: color-mix(in srgb, #374151 20%, transparent); }
 
 /* Согласование по постановлению 713 (пожелание № 8) */
 .col-reg713 { text-align:center; }
