@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import articul_replace, commercial, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
-from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
+from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
 from app.logship import log
 from app.middleware import require_perm
 from app.notify import notify_admins
@@ -4035,3 +4035,61 @@ async def purchase_invoice_delete(inv_id: int, _: str | None = Depends(_PURCHASE
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"ok": True}
+
+
+# ── Справочник моделей (Gpartner S_MODELI) ───────────────────────────────────
+#
+# Окно «Справочник моделей» на странице раздела: пользователь заходит посмотреть,
+# что завела Лиса по модели — состав, ТН ВЭД, нормы, плановые цены, габариты.
+# Только чтение, никаких правок: источник ведёт Лиса.
+
+_CATALOG_PAGE_MAX = 500
+
+
+@router.get("/models-catalog/folders")
+async def models_catalog_folders(_: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Папки номенклатуры для фильтров окна: бренд-менеджер и уровни Level 01-05.
+
+    Отдаём весь список папок (571 запись) один раз, а каскад фильтров считает
+    клиент: данных мало, зато выбор в фильтрах отзывается без похода в Лису — в
+    отличие от главной страницы, где каскад уровней уточняется запросом к DWH.
+    """
+    if _is_mock():
+        return mocks.models_catalog_folders()
+    try:
+        folders = await asyncio.get_event_loop().run_in_executor(None, fetch_modeli_folders)
+    except Exception as exc:  # noqa: BLE001 — источник за VPN
+        raise HTTPException(502, f"справочник моделей недоступен: {exc}")
+    return {"folders": folders}
+
+
+@router.post("/models-catalog")
+async def models_catalog(payload: dict, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Страница справочника моделей с фильтрами.
+
+    Body: { model?, articul?, naim?, brand_manager?: [], level01?..level05?: [],
+            limit?, offset?, all_columns?, all_versions? }
+
+    model/articul/naim ищутся подстрокой, остальные — списком значений.
+    `all_columns` добавляет к основным колонкам остальные поля представления.
+    `all_versions` показывает все версии пары модель+артикул, а не только
+    последнюю (по умолчанию последняя — как в остальном разделе).
+    Пагинация серверная: в справочнике 132 тыс. строк.
+    """
+    limit = max(1, min(int(payload.get("limit") or 100), _CATALOG_PAGE_MAX))
+    offset = max(0, int(payload.get("offset") or 0))
+    all_columns = bool(payload.get("all_columns"))
+    only_latest = not payload.get("all_versions")
+
+    if _is_mock():
+        return mocks.models_catalog(payload, limit, offset, all_columns)
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, fetch_models_catalog, payload, limit, offset, all_columns, only_latest
+        )
+    except Exception as exc:  # noqa: BLE001 — источник за VPN
+        raise HTTPException(502, f"справочник моделей недоступен: {exc}")
+
+    result.update({"limit": limit, "offset": offset, "count": len(result.get("data") or [])})
+    return result

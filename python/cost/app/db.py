@@ -20,7 +20,9 @@ import datetime
 import json
 import logging
 import os
+import time
 import uuid
+from decimal import Decimal
 
 from typing import Any
 
@@ -4542,3 +4544,377 @@ async def delete_manual_calc(batch_id: str, *, force: bool = False) -> dict:
             "DELETE FROM cost_manual_calc WHERE batch_id = $1::uuid", batch_id
         )
     return {"batch_id": batch_id, "rows": int(head["rows_count"])}
+
+
+# ── Справочник моделей Gpartner (S_MODELI) ───────────────────────────────────
+#
+# Читается «как есть», только для просмотра: пользователь заходит посмотреть,
+# что завела Лиса по модели — состав, ТН ВЭД, нормы, плановые цены, габариты.
+#
+# Бренд-менеджера в самом S_MODELI нет. Он висит на ПАПКЕ номенклатуры
+# (`www_folders.BRAND_FIO`), а модель ссылается на папку через PARENT_ID; путь
+# модели совпадает с путём папки во всех 132 047 строках (проверено 09.09.2026),
+# поэтому и уровни номенклатуры Level 01-05 берутся оттуда же. Папок всего 571 —
+# на два порядка меньше моделей, поэтому фильтры по бренд-менеджеру и уровням
+# сводятся к списку PARENT_ID в питоне, без разбора пути в SQL и без обращения к
+# DWH (там те же значения лежат в dim.groups, но это другой сервер).
+#
+# У www_folders две записи на папку — регионы by и ru; берём by, это базовый.
+
+# Разделитель пути номенклатуры и символ ESCAPE для LIKE — заданы кодом, чтобы
+# обратный слеш не размножался экранированием в шаблонах поиска.
+_PATH_SEP = chr(92)
+_LIKE_ESC = "!"
+
+_FOLDERS_REGION = "by"
+_FOLDERS_TTL_SEC = 300
+_folders_cache: tuple[float, list[dict[str, Any]]] | None = None
+
+# Подписи колонок справочника. Русская подпись стоит там, где смысл колонки
+# подтверждён (кодом раздела, отчётами заказчика или содержимым); остальные
+# показываем под именем из базы, чтобы не выдавать догадку за расшифровку.
+MODELI_COLUMN_LABELS: dict[str, str] = {
+    "MODEL": "Модель",
+    "ART": "Артикул",
+    "NAIM": "Наименование",
+    "BRAND_FIO": "Бренд-менеджер",
+    "FULL_PATH": "Путь номенклатуры",
+    "STATUS": "Статус",
+    "BRAND": "Бренд",
+    "COUNTRY": "Страна",
+    "KEDIZM": "Ед. изм.",
+    # Поля с неочевидным содержимым — подпись по тому, что в них ЛЕЖИТ
+    # (проверено 09.09.2026 по группам «Носки&Колготки», «Женщинам», «Ясли»):
+    # SOSTAV у одежды — материал крупно («ХЛОПОК», «ВИСКОЗА/ЭЛАСТАН»), у ЧНИ —
+    # размер («14», «29-31»); NSYRIE — процентный состав; NASSORTIMENT — код
+    # классификатора продукции, а не текст.
+    "SOSTAV": "Состав/размер",
+    "NVID": "Вид",
+    "NASSORTIMENT": "Ассортимент (код)",
+    "NSYRIE": "Сырьё (состав)",
+    "NGRUPPA": "Группа (возраст)",
+    "KTNVED": "Код ТН ВЭД",
+    "KOD_IKPU": "Код ИКПУ",
+    "PRICE_ROZN": "Розница, руб.",
+    "PRICE_OPT": "Опт, руб.",
+    "PRICE_MOPT": "Опт плановая, руб.",
+    "PRICE_UCH": "Учётная, руб.",
+    "PLAN_PRICE": "Плановая себестоимость, руб.",
+    "NDS": "НДС, %",
+    "RU_NDS": "НДС РФ, %",
+    "NORMA": "Норма расхода",
+    "NORMA_KROY": "Норма раскроя",
+    "NORMA_POSHIV": "Норма пошива",
+    "MASSA_ED": "Масса единицы",
+    "MASSA_NET": "Масса нетто",
+    "IN_BOX": "В коробке",
+    "PURCHASED": "Закупная",
+    "PR_ARH": "Архивная",
+    "SERTIFIKAT": "Сертификат",
+    "GOST1": "ГОСТ 1",
+    "GOST2": "ГОСТ 2",
+    "KOMPLEKT": "Комплект",
+    "NO_RAZMER": "Без размера",
+    "PACK_L": "Упаковка, длина",
+    "PACK_W": "Упаковка, ширина",
+    "PACK_H": "Упаковка, высота",
+    "IS_BAN": "Запрет",
+    "ITEM_ID": "ID записи",
+    "PARENT_ID": "ID папки",
+    "DATEVRKV": "Введено",
+    "USERVRKV": "Ввёл",
+    "DATEKRKV": "Изменено",
+    "USERKRKV": "Изменил",
+    "PROPER_NAIM1": "Свойство 1",
+    "PROPER_NAIM2": "Свойство 2",
+    "PROPER_NAIM3": "Свойство 3",
+    # PR1-PR4 — прейскуранты («Прейск. № 1носки от 01.03.2015»), а не признаки,
+    # как читается из имени.
+    "PR1": "Прейскурант 1",
+    "PR2": "Прейскурант 2",
+    "PR3": "Прейскурант 3",
+    "PR4": "Прейскурант 4",
+}
+
+# Колонки, видимые сразу. Остальные (служебные ID, даты и логины правок,
+# признаки без известного смысла) открываются кнопкой «показать все» — прятать
+# их совсем нельзя, справочник смотрят именно чтобы найти редкое поле.
+MODELI_MAIN_COLUMNS: list[str] = [
+    "MODEL", "ART", "NAIM", "BRAND_FIO", "FULL_PATH", "STATUS", "BRAND", "COUNTRY",
+    "KEDIZM", "SOSTAV", "NVID", "NASSORTIMENT", "NSYRIE", "NGRUPPA",
+    "KTNVED", "KOD_IKPU",
+    "PRICE_ROZN", "PRICE_OPT", "PRICE_MOPT", "PLAN_PRICE", "NDS", "RU_NDS",
+    "NORMA", "NORMA_KROY", "NORMA_POSHIV", "MASSA_ED", "IN_BOX",
+    "PURCHASED", "PR_ARH", "ITEM_ID",
+]
+
+# Колонки представления, которые в выдачу не идут: KOD и PRODUCER заполнены у
+# 0,0% моделей, FULL_ID дублирует путь, ISFOLDER всегда 0 (папки отсечены).
+_MODELI_SKIP_COLUMNS: set[str] = {"KOD", "PRODUCER", "FULL_ID", "ISFOLDER"}
+
+# BRAND_FIO приходит из www_folders, а не из S_MODELI — в SELECT он подставляется
+# отдельно, поэтому среди колонок представления его нет.
+_MODELI_FOLDER_COLUMNS: set[str] = {"BRAND_FIO"}
+
+_modeli_columns_cache: list[str] | None = None
+
+
+def _modeli_view_columns(cursor: Any) -> list[str]:
+    """Колонки представления S_MODELI в порядке объявления (кэш на процесс).
+
+    Список не зашит в код намеренно: Лиса добавляет поля (за последнее время
+    появились KOD_IKPU, PR_MARKING, IS_BAN), и справочник должен показывать их
+    без правки раздела.
+    """
+    global _modeli_columns_cache
+    if _modeli_columns_cache is None:
+        cursor.execute(
+            "SELECT c.name FROM sys.columns c"
+            " WHERE c.object_id = OBJECT_ID('[dbo].[S_MODELI]')"
+            " ORDER BY c.column_id"
+        )
+        _modeli_columns_cache = [r[0] for r in cursor.fetchall()]
+    return _modeli_columns_cache
+
+
+def _modeli_normalise(value: Any) -> Any:
+    """Значение колонки справочника → JSON-совместимое.
+
+    char-колонки представления добиты пробелами до объявленной длины (MODEL —
+    char(25)), поэтому строки обрезаем; numeric приходит Decimal, а он не
+    сериализуется.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, Decimal):
+        # Целые numeric отдаём int: ITEM_ID и признаки иначе приезжают как
+        # «18281.0» и «0.0», и в таблице это читается как ошибка данных.
+        as_float = float(value)
+        return int(as_float) if as_float.is_integer() else as_float
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray)):
+        return value.hex()
+    return value
+
+
+def _like_escape(text: str) -> str:
+    """Экранирование шаблонных символов LIKE (условие идёт с ESCAPE)."""
+    out = text.replace(_LIKE_ESC, _LIKE_ESC + _LIKE_ESC)
+    for ch in ("%", "_", "[", "]"):
+        out = out.replace(ch, _LIKE_ESC + ch)
+    return out
+
+
+def fetch_modeli_folders(force: bool = False) -> list[dict[str, Any]]:
+    """Папки номенклатуры: id, путь, уровни, бренд-менеджер.
+
+    571 запись, меняется редко — держим в памяти процесса 5 минут, иначе каждое
+    открытие фильтров тянуло бы её из Лисы заново.
+    """
+    global _folders_cache
+    now = time.time()
+    if not force and _folders_cache and now - _folders_cache[0] < _FOLDERS_TTL_SEC:
+        return _folders_cache[1]
+
+    conn = get_gpartner_conn()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT FOLDER_ID, RTRIM(FULL_PATH), RTRIM(ISNULL(BRAND_FIO, ''))"
+            "  FROM [dbo].[www_folders] WHERE REGION = ?",
+            [_FOLDERS_REGION],
+        )
+        folders: list[dict[str, Any]] = []
+        for folder_id, path, brand_fio in cursor.fetchall():
+            path = (path or "").strip()
+            folders.append({
+                "folder_id": int(folder_id),
+                "path": path,
+                # Уровни — сегменты пути; их же показывает главная страница как
+                # Level 01-05 (сверено с DWH.dim.groups.group1..group5).
+                "levels": [s.strip() for s in path.split(_PATH_SEP) if s.strip()][:5],
+                "brand_manager": (brand_fio or "").strip(),
+            })
+    finally:
+        conn.close()
+
+    _folders_cache = (now, folders)
+    return folders
+
+
+def _folder_ids_for_filters(
+    brand_managers: list[str], levels: dict[int, list[str]]
+) -> list[int] | None:
+    """Папки, попадающие под фильтры бренд-менеджера и уровней.
+
+    None — фильтров нет, условие по папкам не нужно. Это НЕ то же, что пустой
+    список: он означает «под фильтр не подходит ни одна папка», и выдача должна
+    быть пустой.
+    """
+    active_levels = {i: vals for i, vals in levels.items() if vals}
+    if not brand_managers and not active_levels:
+        return None
+
+    bm_set = {v.strip() for v in brand_managers if v and v.strip()}
+    ids: list[int] = []
+    for folder in fetch_modeli_folders():
+        if bm_set and folder["brand_manager"] not in bm_set:
+            continue
+        ok = True
+        for idx, values in active_levels.items():
+            got = folder["levels"][idx - 1] if len(folder["levels"]) >= idx else ""
+            if got not in {v.strip() for v in values if v}:
+                ok = False
+                break
+        if ok:
+            ids.append(folder["folder_id"])
+    return ids
+
+
+def fetch_models_catalog(
+    payload: dict[str, Any], limit: int, offset: int, all_columns: bool,
+    only_latest: bool = True,
+) -> dict[str, Any]:
+    """Страница справочника моделей с фильтрами.
+
+    Модель, артикул и наименование фильтруются подстрокой (LIKE '%…%');
+    бренд-менеджер и уровни Level 01-05 — списком значений, сводятся к PARENT_ID
+    (см. _folder_ids_for_filters). Пагинация серверная: в справочнике 132 тыс.
+    строк, целиком в браузер их отдавать незачем.
+
+    only_latest оставляет по паре модель+артикул последнюю запись. Так справочник
+    трактуется в остальном разделе (см. fetch_gpartner_planned, sync_plan_prices):
+    модель заводят заново, старая версия остаётся, и таких пар 14 912 из 95 849 —
+    без отбора соседние строки выдачи выглядят дублями. Снятый флаг показывает
+    все версии, различать их можно по ID записи.
+
+    ВЫБОРКА В ДВА ШАГА, и это не преждевременная оптимизация. `S_MODELI` —
+    представление из пятнадцати LEFT JOIN (расшифровки НДС, ТН ВЭД, свойств,
+    статуса, страны, бренда), поэтому любой полный проход по нему дорог: фильтры,
+    сортировка и пагинация прямо по представлению стоили 5 с на основных колонках
+    и 64 с на всех (замер 09.09.2026). Поэтому:
+
+    1. фильтры, отбор версии, сортировка и OFFSET — по БАЗОВОЙ таблице
+       `dbo.s_modeli`, где лежат все нужные для этого поля и есть индексы по
+       ITEM_ID, PARENT_ID и (MODEL, ART): 74 мс на COUNT и 119 мс на ключи;
+    2. сами данные — из представления по 100 конкретным ITEM_ID: ~1,1 с.
+
+    Бренд-менеджер подставляется из кэша папок (fetch_modeli_folders), а не
+    джойном — папка модели уже прочитана для фильтров.
+    """
+    levels = {i: (payload.get("level%02d" % i) or []) for i in range(1, 6)}
+    folder_ids = _folder_ids_for_filters(payload.get("brand_manager") or [], levels)
+    if folder_ids is not None and not folder_ids:
+        return {"data": [], "total": 0, "columns": []}
+
+    conn = get_gpartner_conn()
+    try:
+        cursor = conn.cursor()
+        view_columns = _modeli_view_columns(cursor)
+
+        # Порядок колонок: сначала основные (в заданном порядке), затем остальные
+        # как в представлении — так знакомое начало таблицы остаётся на месте и в
+        # полном режиме.
+        rest = [
+            c for c in view_columns
+            if c not in _MODELI_SKIP_COLUMNS and c not in MODELI_MAIN_COLUMNS
+        ]
+        keys = MODELI_MAIN_COLUMNS + (rest if all_columns else [])
+        columns = [{"key": k, "label": MODELI_COLUMN_LABELS.get(k, k)} for k in keys]
+
+        # ── Шаг 1: ключи страницы по базовой таблице ────────────────────────
+        where = ["ISFOLDER = 0"]
+        params: list[Any] = []
+
+        for field, column in (("model", "MODEL"), ("articul", "ART"), ("naim", "NAIM")):
+            needle = (payload.get(field) or "").strip()
+            if needle:
+                where.append("[%s] LIKE ? ESCAPE '%s'" % (column, _LIKE_ESC))
+                params.append("%" + _like_escape(needle) + "%")
+
+        if folder_ids is not None:
+            placeholders = ",".join("?" * len(folder_ids))
+            where.append("PARENT_ID IN (%s)" % placeholders)
+            params.extend(folder_ids)
+
+        where_sql = " AND ".join(where)
+
+        if only_latest:
+            # Число актуальных версий равно числу разных пар модель+артикул,
+            # поэтому COUNT обходится DISTINCT без оконной функции.
+            cursor.execute(
+                "SELECT COUNT(*) FROM ("
+                "  SELECT DISTINCT RTRIM(MODEL) AS mo, RTRIM(ART) AS ar"
+                "    FROM [dbo].[s_modeli] WHERE " + where_sql + ") t",
+                params,
+            )
+        else:
+            cursor.execute(
+                "SELECT COUNT(*) FROM [dbo].[s_modeli] WHERE " + where_sql, params
+            )
+        total = int(cursor.fetchone()[0] or 0)
+
+        # ORDER BY с ITEM_ID: на пару модель+артикул бывает несколько версий, и
+        # без третьего ключа порядок страниц не воспроизводится — OFFSET начинает
+        # выдавать дубли и пропуски.
+        order_page = (
+            " ORDER BY MODEL, ART, ITEM_ID DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
+        )
+        if only_latest:
+            cursor.execute(
+                "SELECT ITEM_ID FROM ("
+                "  SELECT ITEM_ID, MODEL, ART,"
+                "         ROW_NUMBER() OVER (PARTITION BY RTRIM(MODEL), RTRIM(ART)"
+                "                            ORDER BY ITEM_ID DESC) AS _rn"
+                "    FROM [dbo].[s_modeli] WHERE " + where_sql + ") t"
+                " WHERE _rn = 1" + order_page,
+                params + [offset, limit],
+            )
+        else:
+            cursor.execute(
+                "SELECT ITEM_ID FROM [dbo].[s_modeli] WHERE " + where_sql + order_page,
+                params + [offset, limit],
+            )
+        item_ids = [int(r[0]) for r in cursor.fetchall()]
+        if not item_ids:
+            return {"data": [], "total": total, "columns": columns}
+
+        # ── Шаг 2: данные из представления по ключам страницы ───────────────
+        # ITEM_ID нужен для сопоставления с порядком шага 1, PARENT_ID — чтобы
+        # подставить бренд-менеджера папки; в выдачу они попадут только если
+        # запрошены.
+        view_keys = [k for k in keys if k not in _MODELI_FOLDER_COLUMNS]
+        fetch_keys = list(dict.fromkeys(view_keys + ["ITEM_ID", "PARENT_ID"]))
+        placeholders = ",".join("?" * len(item_ids))
+        cursor.execute(
+            "SELECT " + ", ".join("[%s]" % k for k in fetch_keys)
+            + "  FROM [dbo].[S_MODELI]"
+            + " WHERE ITEM_ID IN (%s)" % placeholders,
+            item_ids,
+        )
+        by_id: dict[int, dict[str, Any]] = {}
+        for row in cursor.fetchall():
+            record = {k: _modeli_normalise(v) for k, v in zip(fetch_keys, row)}
+            by_id[int(record["ITEM_ID"])] = record
+    finally:
+        conn.close()
+
+    brand_by_folder = {f["folder_id"]: f["brand_manager"] for f in fetch_modeli_folders()}
+
+    data: list[dict[str, Any]] = []
+    for item_id in item_ids:
+        record = by_id.get(item_id)
+        if record is None:
+            # Представление отсекает записи, которых нет в базовой таблице
+            # только теоретически (оно её и читает), но молча терять строку
+            # страницы хуже, чем показать её пустой.
+            record = {"ITEM_ID": item_id}
+        row = {k: record.get(k) for k in keys}
+        if "BRAND_FIO" in keys:
+            row["BRAND_FIO"] = brand_by_folder.get(record.get("PARENT_ID"), "")
+        data.append(row)
+
+    return {"data": data, "total": total, "columns": columns}

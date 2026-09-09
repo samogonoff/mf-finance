@@ -992,3 +992,100 @@ def multipack_candidates(query: str = "") -> list[dict[str, Any]]:
         return rows
     return [r for r in rows if q in r["model"].lower() or q in r["articul"].lower()
             or q in (r["model_name"] or "").lower()]
+
+
+# ── Mock справочника моделей (S_MODELI) ──────────────────────────────────────
+
+_MOCK_CATALOG_FOLDERS = [
+    {"folder_id": 6, "path": "Женщинам\\Нижнее белье женщина\\Трусы женщина",
+     "levels": ["Женщинам", "Нижнее белье женщина", "Трусы женщина"],
+     "brand_manager": "КОЦУР С.А."},
+    {"folder_id": 21, "path": "Носки&Колготки\\Носки мужские\\Классические мужские",
+     "levels": ["Носки&Колготки", "Носки мужские", "Классические мужские"],
+     "brand_manager": "ДАНЧУК Е.Ю."},
+]
+
+_MOCK_CATALOG_ROWS = [
+    {
+        "MODEL": "107K-1916", "ART": "25107K", "NAIM": "НОСКИ МУЖСКИЕ",
+        "BRAND_FIO": "ДАНЧУК Е.Ю.",
+        "FULL_PATH": "Носки&Колготки\\Носки мужские\\Классические мужские",
+        "STATUS": "COLLECTION", "BRAND": "Mark Formelle", "COUNTRY": "Беларусь",
+        "KEDIZM": "пара", "SOSTAV": "80% хлопок; 18% полиамид; 2% эластан",
+        "NVID": "классические", "NASSORTIMENT": "14.31.10.300", "NSYRIE": "хлопок",
+        "NGRUPPA": None, "KTNVED": "6115 95 000 0", "KOD_IKPU": "06115950000",
+        "PRICE_ROZN": 6.9, "PRICE_OPT": 4.14, "PRICE_MOPT": 4.02,
+        "PLAN_PRICE": 1.87, "NDS": 20.0, "RU_NDS": 20.0,
+        "NORMA": 0.041, "NORMA_KROY": 0.0, "NORMA_POSHIV": 3.2,
+        "MASSA_ED": 0.062, "IN_BOX": 200, "PURCHASED": 0, "PR_ARH": 0,
+        "ITEM_ID": 140233, "PARENT_ID": 21,
+    },
+    {
+        "MODEL": "1007-2C", "ART": "1007-2C", "NAIM": "ТРУСЫ ЖЕНСКИЕ",
+        "BRAND_FIO": "КОЦУР С.А.",
+        "FULL_PATH": "Женщинам\\Нижнее белье женщина\\Трусы женщина",
+        "STATUS": "BASIC", "BRAND": "Mark Formelle", "COUNTRY": "Беларусь",
+        "KEDIZM": "шт", "SOSTAV": "95% хлопок; 5% эластан",
+        "NVID": "шорты", "NASSORTIMENT": "14.14.24.000", "NSYRIE": "хлопок",
+        "NGRUPPA": None, "KTNVED": "6108 21 000 0", "KOD_IKPU": "06108210000",
+        "PRICE_ROZN": 12.5, "PRICE_OPT": 7.5, "PRICE_MOPT": 7.2,
+        "PLAN_PRICE": 3.4, "NDS": 20.0, "RU_NDS": 20.0,
+        "NORMA": 0.118, "NORMA_KROY": 1.4, "NORMA_POSHIV": 5.6,
+        "MASSA_ED": 0.048, "IN_BOX": 100, "PURCHASED": 0, "PR_ARH": 0,
+        "ITEM_ID": 139001, "PARENT_ID": 6,
+    },
+]
+
+# Колонки «полного» режима, которых нет в основном наборе — чтобы кнопка
+# «показать все» в моке тоже что-то меняла.
+_MOCK_CATALOG_EXTRA = {
+    "MASSA_NET": 0.06, "KOMPLEKT": 1, "NO_RAZMER": 0, "SERTIFIKAT": "ТР ТС 017/2011",
+    "GOST1": "ГОСТ 31408-2009", "GOST2": None, "PACK_L": 120, "PACK_W": 80, "PACK_H": 20,
+    "IS_BAN": None, "DATEVRKV": "2026-02-11T09:14:22", "USERVRKV": "Лисица И.И.",
+    "DATEKRKV": "2026-08-30T16:02:41", "USERKRKV": "Лисица И.И.",
+    "PROPER_NAIM1": "с длинным рукавом", "PROPER_NAIM2": None, "PROPER_NAIM3": None,
+}
+
+
+def models_catalog_folders() -> dict:
+    return {"folders": _MOCK_CATALOG_FOLDERS}
+
+
+def models_catalog(payload: dict, limit: int, offset: int, all_columns: bool) -> dict:
+    """Мок справочника: те же фильтры, что на сервере, но по двум строкам."""
+    from app.db import MODELI_COLUMN_LABELS, MODELI_MAIN_COLUMNS
+
+    rows = [dict(r) for r in _MOCK_CATALOG_ROWS]
+    if all_columns:
+        for r in rows:
+            r.update(_MOCK_CATALOG_EXTRA)
+
+    for field, column in (("model", "MODEL"), ("articul", "ART"), ("naim", "NAIM")):
+        needle = (payload.get(field) or "").strip().lower()
+        if needle:
+            rows = [r for r in rows if needle in str(r.get(column) or "").lower()]
+
+    bm = [v.strip() for v in (payload.get("brand_manager") or []) if v]
+    if bm:
+        rows = [r for r in rows if r.get("BRAND_FIO") in bm]
+    for i in range(1, 6):
+        vals = [v.strip() for v in (payload.get("level%02d" % i) or []) if v]
+        if vals:
+            rows = [
+                r for r in rows
+                if (str(r.get("FULL_PATH") or "").split(chr(92)) + ["", "", "", "", ""])[i - 1] in vals
+            ]
+
+    keys = list(MODELI_MAIN_COLUMNS)
+    if all_columns:
+        keys += [k for k in _MOCK_CATALOG_EXTRA if k not in keys]
+
+    page = rows[offset:offset + limit]
+    return {
+        "data": [{k: r.get(k) for k in keys} for r in page],
+        "total": len(rows),
+        "count": len(page),
+        "limit": limit,
+        "offset": offset,
+        "columns": [{"key": k, "label": MODELI_COLUMN_LABELS.get(k, k)} for k in keys],
+    }

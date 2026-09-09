@@ -48,6 +48,11 @@
           <button class="btn btn-ghost btn-sm" @click="resetFilters">
             <Icon name="lucide:x" /> Сбросить
           </button>
+          <!-- Справочник Лисы: смотреть, что заведено по модели. Кнопка здесь, а
+               не в таблице, — окно не связано с выбранной строкой. -->
+          <button class="btn btn-ghost btn-sm" @click="openCatalog">
+            <Icon name="lucide:book-open" /> Справочник моделей
+          </button>
           <button class="btn btn-primary btn-sm" :disabled="loading" @click="loadData">
             <Icon name="lucide:refresh-cw" />
             {{ loading ? "Загрузка…" : "Загрузить данные" }}
@@ -862,6 +867,123 @@
         </table>
       </div>
     </section>
+
+    <!-- Справочник моделей (Gpartner S_MODELI) — только просмотр -->
+    <div v-if="showCatalogModal" class="modal-overlay" @click.self="showCatalogModal = false">
+      <div class="modal-content modal-wide" @click.stop>
+        <div class="modal-header">
+          <h2>
+            Справочник моделей
+            <span class="details-scope-hint">Лиса · S_MODELI</span>
+          </h2>
+          <div class="modal-header-actions">
+            <button class="modal-close" @click="showCatalogModal = false">×</button>
+          </div>
+        </div>
+
+        <!-- Поиск по тексту: подстрокой, применяется кнопкой или Enter -->
+        <div class="details-filters">
+          <label>Модель
+            <input v-model="catalogFilters.model" type="text" class="form-input"
+              placeholder="подстрока" @keydown.enter="loadCatalog(0)" />
+          </label>
+          <label>Артикул
+            <input v-model="catalogFilters.articul" type="text" class="form-input"
+              placeholder="подстрока" @keydown.enter="loadCatalog(0)" />
+          </label>
+          <label>Наименование
+            <input v-model="catalogFilters.naim" type="text" class="form-input"
+              placeholder="подстрока" @keydown.enter="loadCatalog(0)" />
+          </label>
+          <button class="btn btn-primary btn-sm" @click="loadCatalog(0)">Применить</button>
+          <button class="btn btn-ghost btn-sm" @click="resetCatalogFilters">Сбросить</button>
+        </div>
+
+        <!-- Бренд-менеджер и уровни номенклатуры. Каскад считается по списку
+             папок, загруженному при открытии окна, — без похода на сервер. -->
+        <div class="details-col-filters">
+          <div class="details-col-filter-item">
+            <label>Бренд-менеджер</label>
+            <CostMultiSelect
+              v-model="catalogFilters.brand_manager"
+              :options="catalogBrandManagerOptions"
+              placeholder="Все · бренд-менеджер"
+              @change="onCatalogScopeChange('brand_manager')"
+            />
+          </div>
+          <div v-for="lvl in CATALOG_LEVELS" :key="lvl.key" class="details-col-filter-item"
+            :class="{ locked: isCatalogLevelLocked(lvl.index) }">
+            <label>{{ lvl.label }}</label>
+            <CostMultiSelect
+              v-model="catalogFilters[lvl.key]"
+              :options="catalogLevelOptions[lvl.index] || []"
+              :placeholder="isCatalogLevelLocked(lvl.index) ? '—' : `Все · ${lvl.label.toLowerCase()}`"
+              :disabled="isCatalogLevelLocked(lvl.index)"
+              @change="onCatalogScopeChange(lvl.key)"
+            />
+          </div>
+          <a href="#" class="details-col-filter-reset" @click.prevent="resetCatalogFilters">Сбросить фильтры</a>
+        </div>
+
+        <div class="catalog-toolbar">
+          <label class="filter-checkbox" title="Добавить остальные поля представления — служебные ID, даты и логины правок">
+            <input v-model="catalogAllColumns" type="checkbox" @change="loadCatalog(catalogOffset)" />
+            <span>Все колонки</span>
+          </label>
+          <!-- На пару модель+артикул в справочнике бывает несколько записей:
+               модель заводят заново, старая остаётся. По умолчанию показываем
+               последнюю — иначе соседние строки читаются как дубли. -->
+          <label class="filter-checkbox" title="Показать все версии пары модель+артикул, а не только последнюю">
+            <input v-model="catalogAllVersions" type="checkbox" @change="loadCatalog(0)" />
+            <span>Все версии</span>
+          </label>
+
+          <div class="catalog-pager">
+            <span class="catalog-count">
+              <template v-if="catalogTotal">
+                {{ catalogOffset + 1 }}–{{ catalogOffset + catalogRows.length }} из {{ catalogTotal.toLocaleString('ru-RU') }}
+              </template>
+              <template v-else-if="!catalogLoading">Ничего не найдено</template>
+            </span>
+            <select v-model.number="catalogLimit" class="page-size-select" @change="loadCatalog(0)">
+              <option :value="50">50</option>
+              <option :value="100">100</option>
+              <option :value="200">200</option>
+              <option :value="500">500</option>
+            </select>
+            <button class="btn btn-ghost btn-sm" :disabled="catalogLoading || catalogOffset === 0"
+              @click="loadCatalog(Math.max(0, catalogOffset - catalogLimit))">‹ Назад</button>
+            <button class="btn btn-ghost btn-sm"
+              :disabled="catalogLoading || catalogOffset + catalogRows.length >= catalogTotal"
+              @click="loadCatalog(catalogOffset + catalogLimit)">Вперёд ›</button>
+          </div>
+        </div>
+
+        <div class="table-wrap details-table-wrap">
+          <div v-if="catalogLoading" class="muted" style="text-align:center;padding:24px">Загрузка справочника…</div>
+          <div v-else-if="catalogError" class="muted" style="text-align:center;padding:24px">{{ catalogError }}</div>
+          <div v-else-if="!catalogRows.length" class="muted" style="text-align:center;padding:24px">Нет данных</div>
+          <table v-else class="data-table compact">
+            <thead>
+              <tr>
+                <th v-for="col in catalogColumns" :key="col.key" :class="{ 'col-num': isCatalogNumericColumn(col.key) }">
+                  {{ col.label }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, i) in catalogRows" :key="i">
+                <td v-for="col in catalogColumns" :key="col.key"
+                  :class="isCatalogNumericColumn(col.key) ? 'col-num num' : null"
+                  :title="String(row[col.key] ?? '')">
+                  {{ formatCatalogValue(row[col.key]) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
 
     <!-- Details Modal -->
     <div v-if="showDetailsModal" class="modal-overlay" @click.self="showDetailsModal = false">
@@ -4264,6 +4386,207 @@ async function deletePlanPriceSet(setId: number) {
   } finally {
     planPricesSaving.value = false;
   }
+}
+
+
+// ── Справочник моделей (Gpartner S_MODELI) ───────────────────────────────────
+//
+// Окно только для просмотра: пользователь заходит посмотреть, что завела Лиса по
+// модели. Данных 132 тыс. строк, поэтому пагинация серверная, а фильтры уходят в
+// запрос — грузить справочник целиком в браузер нельзя.
+
+const showCatalogModal = ref(false);
+const catalogRows = ref<any[]>([]);
+const catalogColumns = ref<{ key: string; label: string }[]>([]);
+const catalogTotal = ref(0);
+const catalogOffset = ref(0);
+const catalogLimit = ref(100);
+const catalogLoading = ref(false);
+const catalogError = ref('');
+const catalogAllColumns = ref(false);
+const catalogAllVersions = ref(false);
+
+const CATALOG_LEVELS = [
+  { index: 1, key: 'level01', label: 'Level 01' },
+  { index: 2, key: 'level02', label: 'Level 02' },
+  { index: 3, key: 'level03', label: 'Level 03' },
+  { index: 4, key: 'level04', label: 'Level 04' },
+  { index: 5, key: 'level05', label: 'Level 05' },
+] as const;
+
+const catalogFilters = reactive<Record<string, any>>({
+  model: '', articul: '', naim: '',
+  brand_manager: [] as string[],
+  level01: [] as string[], level02: [] as string[], level03: [] as string[],
+  level04: [] as string[], level05: [] as string[],
+});
+
+/** Папки номенклатуры: по ним считаются варианты бренд-менеджера и уровней.
+ *
+ * Их 571 против 132 тыс. моделей, поэтому список тянем один раз за сеанс, а
+ * каскад пересчитываем на клиенте — в отличие от фильтров главной страницы, где
+ * каждое уточнение уровня идёт запросом в DWH. */
+const catalogFolders = ref<{ folder_id: number; path: string; levels: string[]; brand_manager: string }[]>([]);
+
+async function loadCatalogFolders() {
+  if (catalogFolders.value.length) return;
+  try {
+    const res = await $fetch<{ folders: any[] }>(
+      `${apiBase.value}/api/cost/models-catalog/folders`,
+      { headers: fetchHeaders.value }
+    );
+    catalogFolders.value = res.folders || [];
+  } catch (e: any) {
+    console.error('[cost] catalog folders failed', e);
+    catalogFolders.value = [];
+  }
+}
+
+const catalogBrandManagerOptions = computed(() => {
+  const seen = new Set<string>();
+  for (const f of catalogFolders.value) if (f.brand_manager) seen.add(f.brand_manager);
+  return Array.from(seen).sort();
+});
+
+/** Варианты уровней: каждый ограничен выбором бренд-менеджера и уровней выше. */
+const catalogLevelOptions = computed<Record<number, string[]>>(() => {
+  const out: Record<number, string[]> = {};
+  const bm = catalogFilters.brand_manager as string[];
+  for (const lvl of CATALOG_LEVELS) {
+    const seen = new Set<string>();
+    for (const folder of catalogFolders.value) {
+      if (bm.length && !bm.includes(folder.brand_manager)) continue;
+      let ok = true;
+      for (const higher of CATALOG_LEVELS) {
+        if (higher.index >= lvl.index) break;
+        const sel = catalogFilters[higher.key] as string[];
+        if (sel.length && !sel.includes(folder.levels[higher.index - 1] || '')) { ok = false; break; }
+      }
+      if (!ok) continue;
+      const value = folder.levels[lvl.index - 1];
+      if (value) seen.add(value);
+    }
+    out[lvl.index] = Array.from(seen).sort();
+  }
+  return out;
+});
+
+/** Уровень заблокирован, если выбран уровень НИЖЕ: иначе выбор сверху молча
+ *  обнулял бы уже сделанный выбор снизу (та же логика, что в детализации). */
+function isCatalogLevelLocked(index: number): boolean {
+  for (let i = CATALOG_LEVELS.length; i > index; i--) {
+    if ((catalogFilters[`level${String(i).padStart(2, '0')}`] as string[])?.length) return true;
+  }
+  return false;
+}
+
+/** Смена бренд-менеджера или уровня сбрасывает уровни ниже и перезагружает
+ *  первую страницу: под новым фильтром прежний offset ничего не значит. */
+function onCatalogScopeChange(changedKey: string) {
+  const changed = CATALOG_LEVELS.find((l) => l.key === changedKey);
+  const from = changed ? changed.index : 0;
+  for (const lvl of CATALOG_LEVELS) {
+    if (lvl.index > from) catalogFilters[lvl.key] = [];
+  }
+  loadCatalog(0);
+}
+
+async function openCatalog() {
+  showCatalogModal.value = true;
+  catalogError.value = '';
+  await loadCatalogFolders();
+  if (!catalogRows.value.length) await loadCatalog(0);
+}
+
+function resetCatalogFilters() {
+  catalogFilters.model = '';
+  catalogFilters.articul = '';
+  catalogFilters.naim = '';
+  catalogFilters.brand_manager = [];
+  for (const lvl of CATALOG_LEVELS) catalogFilters[lvl.key] = [];
+  loadCatalog(0);
+}
+
+// Ответы могут накладываться (быстрые клики по пагинации, смена фильтра во
+// время загрузки), а порядок их прихода не гарантирован — счётчик отбрасывает
+// устаревшие, иначе в таблице оказалась бы не та страница, что в счётчике.
+let catalogRequestSeq = 0;
+
+async function loadCatalog(offset: number) {
+  const seq = ++catalogRequestSeq;
+  catalogLoading.value = true;
+  catalogError.value = '';
+  try {
+    const body: Record<string, any> = {
+      limit: catalogLimit.value,
+      offset: Math.max(0, offset),
+      all_columns: catalogAllColumns.value,
+      all_versions: catalogAllVersions.value,
+    };
+    for (const field of ['model', 'articul', 'naim']) {
+      const value = String(catalogFilters[field] || '').trim();
+      if (value) body[field] = value;
+    }
+    if ((catalogFilters.brand_manager as string[]).length) {
+      body.brand_manager = catalogFilters.brand_manager;
+    }
+    for (const lvl of CATALOG_LEVELS) {
+      const sel = catalogFilters[lvl.key] as string[];
+      if (sel.length) body[lvl.key] = sel;
+    }
+
+    const res = await $fetch<{ data: any[]; total: number; columns: any[]; offset: number }>(
+      `${apiBase.value}/api/cost/models-catalog`,
+      { method: 'POST', body, headers: fetchHeaders.value }
+    );
+    if (seq !== catalogRequestSeq) return;
+    catalogRows.value = res.data || [];
+    // Колонки приходят вместе с данными: их состав задаёт сервер (основные или
+    // все поля представления), и он же знает подписи.
+    if (res.columns?.length) catalogColumns.value = res.columns;
+    catalogTotal.value = res.total || 0;
+    catalogOffset.value = res.offset ?? Math.max(0, offset);
+  } catch (e: any) {
+    if (seq !== catalogRequestSeq) return;
+    console.error('[cost] models-catalog failed', e);
+    const status = e?.statusCode || e?.status || e?.response?.status;
+    const detail = e?.data?.detail || e?.message;
+    catalogError.value = `Не удалось загрузить справочник${status ? ` (HTTP ${status})` : ''}`
+      + `${detail ? `: ${detail}` : ''}`;
+    catalogRows.value = [];
+    catalogTotal.value = 0;
+  } finally {
+    if (seq === catalogRequestSeq) catalogLoading.value = false;
+  }
+}
+
+// Числовые колонки выравниваем вправо. Тип берём по значению первой непустой
+// строки, а не по списку имён: состав колонок задаёт сервер и он меняется.
+const catalogNumericColumns = computed(() => {
+  const numeric = new Set<string>();
+  for (const col of catalogColumns.value) {
+    for (const row of catalogRows.value) {
+      const value = row[col.key];
+      if (value === null || value === undefined || value === '') continue;
+      if (typeof value === 'number') numeric.add(col.key);
+      break;
+    }
+  }
+  return numeric;
+});
+
+function isCatalogNumericColumn(key: string): boolean {
+  return catalogNumericColumns.value.has(key);
+}
+
+function formatCatalogValue(value: any): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'number') {
+    return Number.isInteger(value)
+      ? value.toLocaleString('ru-RU')
+      : value.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  }
+  return String(value);
 }
 
 // ── Details modal ────────────────────────────────────────────────────────────
@@ -8918,6 +9241,9 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .table-wrap { overflow-x: auto; max-width: 100%; }
 .details-table-wrap { overflow: auto; flex: 1; }
 .details-count { padding: var(--sp-2) var(--sp-5); font-size: var(--fs-xs); color: var(--text-muted); border-top: 1px solid var(--border); flex-shrink: 0; }
+.catalog-toolbar { padding: var(--sp-2) var(--sp-5); display: flex; gap: var(--sp-4); align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--border); background: var(--bg-surface-2); flex-shrink: 0; }
+.catalog-pager { margin-left: auto; display: flex; gap: var(--sp-2); align-items: center; }
+.catalog-count { font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; }
 .details-scope-hint { font-size: var(--fs-2xs, 10px); font-weight: var(--fw-normal, 400); color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; margin-left: var(--sp-2); }
 .details-scope-switch { display: inline-flex; border: 1px solid var(--border); border-radius: var(--rd-2); overflow: hidden; }
 .details-scope-switch button { border: none; background: var(--bg-surface); color: var(--text-muted); font-size: var(--fs-xs, 11px); font-weight: var(--fw-medium); padding: 4px 10px; cursor: pointer; white-space: nowrap; }
