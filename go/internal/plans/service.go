@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 )
@@ -20,6 +21,35 @@ type Service struct {
 	// (этапы 1.1–1.4 — агрегат состояния форм, см. stage_sync.go). nil →
 	// проверки нет, поведение как раньше.
 	cards CardReader
+	// retailSvod — товарооборот розницы для свода по ЮЛ. nil → в своде только МП.
+	retailSvod RetailSvodSource
+}
+
+// Каналы свода по ЮЛ. Совпадают с подписями Code_канала_для_маржи из справочника
+// прототипа: свод читают финансисты, привыкшие к этим названиям.
+const (
+	ChannelMarketplaces = "Маркетплейсы"
+	ChannelRetailBY     = "Розница РБ"
+	ChannelRetailRU     = "Розница РФ"
+	ChannelRetailKZ     = "Розница KZ"
+	ChannelRetailUZ     = "Розница UZ"
+)
+
+// retailChannelOf — канал свода по стране розницы. Неизвестная страна отдаётся
+// как есть: молча слить её с другой страной хуже, чем показать незнакомый код.
+func retailChannelOf(country string) string {
+	switch strings.ToUpper(strings.TrimSpace(country)) {
+	case "BY":
+		return ChannelRetailBY
+	case "RU":
+		return ChannelRetailRU
+	case "KZ":
+		return ChannelRetailKZ
+	case "UZ":
+		return ChannelRetailUZ
+	default:
+		return "Розница " + country
+	}
 }
 
 // CardReader — чтение карточек периода (реализует CardService).
@@ -98,8 +128,27 @@ func (s *Service) Instances(ctx context.Context) ([]InstanceSummary, error) {
 	return s.store.ListInstances(ctx)
 }
 
+// RetailSvodSource — товарооборот тактики РОЗНИЦЫ за период, свёрнутый по ЮЛ и
+// стране. Свод по ЮЛ обязан показывать весь комплект, а не только маркетплейсы
+// (замечание владельца процесса 09.09.2026: «в общий свод добавить реально все
+// данные, там ещё должна быть розница»).
+type RetailSvodSource interface {
+	SvodRows(ctx context.Context, year, month int) ([]SvodRow, error)
+}
+
+// WithRetailSvod подключает розницу к своду по ЮЛ. Без источника свод остаётся
+// прежним — только маркетплейсы.
+func (s *Service) WithRetailSvod(src RetailSvodSource) *Service {
+	s.retailSvod = src
+	return s
+}
+
 // Svod — свод TPL-08 по ЮЛ × канал (этап 1.6): агрегат товарооборота (1046)
-// сохранённой тактики, площадка→ЮЛ из dir_marketplace. Канал — Marketplaces.
+// сохранённой тактики. Маркетплейсы — из pl_metric (площадка→ЮЛ из
+// dir_marketplace), розница — из своих таблиц через RetailSvodSource.
+//
+// Валюта остаётся измерением строки: МП ведутся в RUB, розница — в нац. валюте
+// страны, и складывать их без курса нельзя. Пересчёт делает экран, если нужен.
 func (s *Service) Svod(ctx context.Context, year, month int) ([]SvodRow, error) {
 	plID, err := s.store.EnsureInstance(ctx, year, month)
 	if err != nil {
@@ -127,10 +176,33 @@ func (s *Service) Svod(ctx context.Context, year, month int) ([]SvodRow, error) 
 		if entity == "" {
 			entity = "(без ЮЛ)"
 		}
-		out = append(out, SvodRow{LegalEntity: entity, Channel: "Marketplaces", Currency: k.cur, Amount: v})
+		out = append(out, SvodRow{LegalEntity: entity, Channel: ChannelMarketplaces, Currency: k.cur, Amount: v})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].LegalEntity < out[j].LegalEntity })
+	if s.retailSvod != nil {
+		retail, err := s.retailSvod.SvodRows(ctx, year, month)
+		if err != nil {
+			// Розница недоступна — свод не пустой, но неполный: это надо видеть в
+			// логе, а не молча показывать одни маркетплейсы.
+			log.Printf("plans: розница не попала в свод по ЮЛ за %04d-%02d: %v", year, month, err)
+		} else {
+			out = append(out, retail...)
+		}
+	}
+	sortSvodRows(out)
 	return out, nil
+}
+
+// sortSvodRows — устойчивый порядок свода: ЮЛ, затем канал, затем валюта.
+func sortSvodRows(rows []SvodRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].LegalEntity != rows[j].LegalEntity {
+			return rows[i].LegalEntity < rows[j].LegalEntity
+		}
+		if rows[i].Channel != rows[j].Channel {
+			return rows[i].Channel < rows[j].Channel
+		}
+		return rows[i].Currency < rows[j].Currency
+	})
 }
 
 // Stages — этапы экземпляра PL; при отсутствии инициализирует по маршруту схемы

@@ -298,6 +298,18 @@ const inSection = (r: RetailForm["rows"][number], key: string): boolean => {
     case "under1y": return r.lfl_effective === "under1y";
     case "new": return r.lfl_effective === "new" || r.lfl_effective === "xxx";
     case "closed": return r.lfl_effective === "closed" || !!r.date_close;
+    // «Прочие статусы» — всё, что не подошло ни под один разрез выше
+    // («Реконструкция», пустой статус). Зеркало retailOtherRows на сервере:
+    // без него раскрытие такого разреза показывало пустой список.
+    case "other":
+      return !(
+        r.lfl_effective === "lfl" ||
+        r.lfl_effective === "under1y" ||
+        r.lfl_effective === "new" ||
+        r.lfl_effective === "xxx" ||
+        r.lfl_effective === "closed" ||
+        !!r.date_close
+      );
     default: return false;
   }
 };

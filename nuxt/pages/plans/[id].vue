@@ -234,7 +234,7 @@
           <tr><th>Юридическое лицо</th><th>Канал</th><th class="col-num">Товарооборот</th><th>Валюта</th></tr>
         </thead>
         <tbody>
-          <tr v-if="!svod.length"><td colspan="4" class="empty-cell">Нет данных тактики за период — заполните форму МП.</td></tr>
+          <tr v-if="!svod.length"><td colspan="4" class="empty-cell">Нет данных тактики за период — заполните формы МП и розницы.</td></tr>
           <tr v-for="(s, i) in svod" :key="i">
             <td class="le-cell">{{ s.legal_entity }}</td>
             <td>{{ s.channel }}</td>
@@ -242,8 +242,21 @@
             <td>{{ s.currency }}</td>
           </tr>
         </tbody>
+        <!-- Итог по валютам, а не одной строкой: маркетплейсы ведутся в RUB,
+             розница — в нац. валюте страны, и складывать их без курса нельзя. -->
+        <tfoot v-if="svod.length">
+          <tr v-for="t in svodTotals" :key="t.currency" class="tot-row">
+            <td class="le-cell">Итого</td>
+            <td>{{ t.channels }}</td>
+            <td class="col-num strong">{{ money(t.amount, { currency: "" }) }}</td>
+            <td>{{ t.currency }}</td>
+          </tr>
+        </tfoot>
       </table>
-      <p class="prov-note">Маппинг площадка → ЮЛ провизорный (на уточнении у аналитика).</p>
+      <p class="prov-note">
+        Свод собирает весь комплект: маркетплейсы и розницу по странам. Маппинг площадка → ЮЛ
+        провизорный (на уточнении у аналитика).
+      </p>
     </section>
 
     <!-- ===== Модалка возврата ===== -->
@@ -390,6 +403,21 @@ const cardsError = ref("");
 const openCard = ref(0);
 const cardApi = useMpConditions();
 const svod = ref<SvodRow[]>([]);
+// Итоги свода — по валютам: суммы разных валют не складываются, а сколько
+// каналов вошло в каждую, видно сразу.
+const svodTotals = computed(() => {
+  const by = new Map<string, { currency: string; amount: number; set: Set<string> }>();
+  for (const r of svod.value) {
+    const cur = r.currency || "—";
+    const t = by.get(cur) || { currency: cur, amount: 0, set: new Set<string>() };
+    t.amount += r.amount;
+    t.set.add(r.channel);
+    by.set(cur, t);
+  }
+  return [...by.values()]
+    .map((t) => ({ currency: t.currency, amount: t.amount, channels: [...t.set].sort().join(", ") }))
+    .sort((a, b) => a.currency.localeCompare(b.currency));
+});
 const error = ref("");
 const busy = ref(false);
 const tab = ref<"process" | "pnl" | "svod">("process");
@@ -672,6 +700,9 @@ onMounted(load);
 </script>
 
 <style scoped>
+/* Итоговые строки свода: тот же тон, что у шапки таблицы. */
+.tot-row td { background: var(--bg-tonal); font-weight: var(--fw-medium); }
+
 .segmented {
   display: inline-flex;
   gap: 2px;

@@ -483,3 +483,41 @@ func (r *pgRetailRepo) PrevMetric(ctx context.Context, country, metric string, y
 	}
 	return out, rows.Err()
 }
+
+// SvodRows — товарооборот тактики розницы за период, свёрнутый по ЮЛ и стране
+// (свод по ЮЛ × каналам, TPL-08).
+//
+// ЮЛ берётся из СТРОКИ (снапшот атрибутов магазина), а не из карточки: у страны
+// одно ЮЛ по V-08, но снапшот — то, при каких атрибутах план согласовали.
+// Пустое ЮЛ строки заменяется ЮЛ экземпляра, а если пусто и там — «(без ЮЛ)»:
+// потерять сумму из-за незаполненного справочника нельзя.
+//
+// Метрика только sales: payroll и rent — производные статьи расхода, в
+// товарооборот они не входят.
+func (r *pgRetailRepo) SvodRows(ctx context.Context, year, month int) ([]SvodRow, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT COALESCE(NULLIF(TRIM(w.legal_entity), ''), NULLIF(TRIM(i.legal_entity), ''), '(без ЮЛ)'),
+		       i.country, i.currency, SUM(v.amount)
+		  FROM tp_value v
+		  JOIN tp_row w      ON w.id = v.row_id
+		  JOIN tp_instance i ON i.id = w.instance_id
+		 WHERE v.period_year = $1 AND v.period_month = $2 AND v.metric = 'sales'
+		 GROUP BY 1, 2, 3`, year, month)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]SvodRow, 0, 8)
+	for rows.Next() {
+		var le, country, currency string
+		var amount float64
+		if err := rows.Scan(&le, &country, &currency, &amount); err != nil {
+			return nil, err
+		}
+		out = append(out, SvodRow{
+			LegalEntity: le, Channel: retailChannelOf(country),
+			Currency: currency, Amount: amount,
+		})
+	}
+	return out, rows.Err()
+}
