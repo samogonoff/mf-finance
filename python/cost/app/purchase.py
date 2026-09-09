@@ -132,14 +132,28 @@ def _read_portal_sync() -> dict[str, Any]:
         conn.close()
 
     # Справочник уровней цен — для опта от розницы.
+    # Плюс ставка НДС по модели-артикулу: портал её не отдаёт, а без неё наценка
+    # считается «грязной» — от розницы вместе с налогом. Жалоба 08.09.2026: у
+    # закупной показывалось 68 % вместо 40 %, потому что «Ставка НДС» приходила
+    # пустой и делитель (100 + НДС)/100 обращался в единицу. Источник выбран
+    # заказчиком 09.09.2026 — S_MODELI.NDS: заполнена у 129 671 модели
+    # (112 083 по 20 %, 17 588 по 10 %), у всех проверенных закупных стоит.
+    # RU_NDS рядом — это НДС России для цен РФ, не наш случай.
     gconn = get_gpartner_conn()
     try:
         gcur = gconn.cursor()
         gcur.execute("SELECT RTRIM(NAME), PRICE_TYPE1, PRICE_TYPE3 FROM [dbo].[s_price_level]")
         levels = [(_s(n), _f(p1), _f(p3)) for n, p1, p3 in gcur.fetchall()]
+        # Справочник целиком: 130 тыс. строк по двум коротким полям дешевле, чем
+        # запрос на каждую из сотен импортируемых калькуляций.
+        gcur.execute(
+            "SELECT LTRIM(RTRIM(MODEL)), LTRIM(RTRIM(ART)), NDS FROM [dbo].[S_MODELI] "
+            "WHERE NDS IS NOT NULL AND MODEL IS NOT NULL AND ART IS NOT NULL"
+        )
+        vat_by_pair = {(_s(m), _s(a)): _f(v) for m, a, v in gcur.fetchall()}
     finally:
         gconn.close()
-    return {"items": items, "jobs": jobs, "levels": levels}
+    return {"items": items, "jobs": jobs, "levels": levels, "vat": vat_by_pair}
 
 
 # ── Расчёт и разбор ──────────────────────────────────────────────────────────
@@ -215,23 +229,31 @@ def _parse_date(s: str) -> date | None:
 
 
 def build_row(item: dict[str, Any], job: dict[str, Any] | None, cost: dict[str, Any],
-              levels: list[tuple[str, float | None, float | None]]) -> dict[str, Any]:
+              levels: list[tuple[str, float | None, float | None]],
+              vat_by_pair: dict[tuple[str, str], float | None] | None = None) -> dict[str, Any]:
     """Строка cost_manual_calc для одной калькуляции (модель+артикул+план+задание)."""
     segs = [s.strip() for s in item["group_path"].replace("/", "\\").split("\\") if s.strip()]
     rate = cost["usd_to_byn"]
     retail = cost["retail_byn"]
     wholesale, level_name = wholesale_from_retail(retail, levels)
+    articul = _s((job or {}).get("article") or item["article"])
+    # Ставка НДС по модели-артикулу из S_MODELI. Не нашли — оставляем пустой:
+    # подставлять 20 % «по умолчанию» нельзя, детский ассортимент идёт по 10 %
+    # (17 588 моделей в справочнике), и молчаливая двадцатка исказила бы наценку
+    # ровно там, где её труднее всего заметить.
+    vat = (vat_by_pair or {}).get((_s(item["model"]), articul))
     qty = (job or {}).get("qty") or item.get("total_qty")
     updated = item.get("updated_at")
     calc_date = updated.date() if isinstance(updated, datetime) else date.today()
     row: dict[str, Any] = {
         "Бренд-менеджер": item["brand_manager"] or None,
         "Модель": item["model"],
-        "Артикул": (job or {}).get("article") or item["article"],
+        "Артикул": articul,
         "Признак калькуляции": IMPORT_CALC_SIGN,
         "дата расчета": calc_date,
         "дата производства": _parse_date(item["release_date"]),
         "Курс на дату расчета": rate,
+        "Ставка НДС": vat,
         "Уровень цен": level_name,
         "Страна пр-ва": guess_country(item["country"], item["plan_name"]),
         "Сезон": item["season"] or None,
@@ -327,6 +349,7 @@ async def run_import(user: str, *, dry_run: bool = False) -> dict[str, Any]:
         raise RuntimeError(f"портал недоступен: {exc}") from exc
 
     items, jobs, levels = portal["items"], portal["jobs"], portal["levels"]
+    vat_by_pair = portal.get("vat") or {}
     plans = {i["plan_number"] for i in items}
     skipped: dict[str, int] = {}
     created = updated = 0
@@ -349,7 +372,7 @@ async def run_import(user: str, *, dry_run: bool = False) -> dict[str, Any]:
             if not job["article"]:
                 skipped["задание без артикула"] = skipped.get("задание без артикула", 0) + 1
                 continue
-            prepared.append((item, job, cost, build_row(item, job, cost, levels)))
+            prepared.append((item, job, cost, build_row(item, job, cost, levels, vat_by_pair)))
 
     if dry_run:
         return {
