@@ -25,7 +25,7 @@
     <!-- ===== ПРОЦЕСС: календарный таймлайн ===== -->
     <section v-show="tab === 'process'" class="timeline card">
       <div class="tl-scroll">
-        <div class="tl-grid" :style="{ gridTemplateColumns: `var(--tl-track) repeat(${COLS.length}, minmax(150px, 1fr))` }">
+        <div class="tl-grid" :style="{ gridTemplateColumns: `var(--tl-track) repeat(${COLS.length}, minmax(var(--tl-col-min), 1fr))` }">
           <!-- шапка календаря -->
           <div class="tl-corner">Календарь</div>
           <div v-for="c in COLS" :key="c.key" class="tl-colhead">
@@ -740,6 +740,10 @@ onMounted(load);
 .timeline {
   padding: var(--sp-5);
   --tl-track: 150px;
+  /* Минимум колонки этапа. 150px не хватало на кнопку «К формам на решении»:
+     она вылезала за границу карточки. Колонка держит самую длинную кнопку
+     целиком, а лишнюю ширину забирает горизонтальная прокрутка .tl-scroll. */
+  --tl-col-min: 176px;
 }
 .tl-scroll {
   overflow-x: auto;
@@ -802,12 +806,14 @@ onMounted(load);
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
+  min-width: 0;
   background: var(--bg-surface-2);
   border-radius: var(--rd-4, 6px);
   padding: var(--sp-3);
   min-height: 56px;
 }
 .stage-card {
+  min-width: 0;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-left: 3px solid var(--border-strong);
@@ -935,6 +941,9 @@ onMounted(load);
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .sc-dep {
   color: var(--warn);
@@ -950,6 +959,23 @@ onMounted(load);
 .sc-actions {
   display: flex;
   gap: var(--sp-3);
+  /* Пара «Согласовать + Вернуть» в узкой колонке не помещалась в строку и
+     выходила за границу карточки — переносим на вторую строку. */
+  flex-wrap: wrap;
+}
+/* Базовая .btn — nowrap и фиксированная высота: длинная подпись не переносится
+   и вылезает наружу. В колонке таймлайна ширина задаётся сеткой, поэтому здесь
+   кнопке разрешено переносить текст и расти в высоту. */
+.sc-actions .btn {
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 28px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  white-space: normal;
+  text-align: left;
+  overflow-wrap: anywhere;
 }
 .sc-forms {
   display: flex;
