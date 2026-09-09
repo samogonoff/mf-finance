@@ -2558,7 +2558,7 @@ const COL_DEFAULT_WIDTHS: Record<string, number> = {
   planned_retail: 78, planned_wholesale: 78, planned_cost: 78,
   planned_profitability: 92, avg_retail_rub: 92, avg_rate: 72,
   retail_markup: 92, price_rf: 92, price_kz: 92, price_uz: 92,
-  mp_price_rub: 96, comment: 190, replace: 110, reg713: 72,
+  mp_price_rub: 96, comment: 190, replace: 110, obsolete: 64, reg713: 72,
   // рубли и уровень цен
   avg_wholesale: 92, price_level: 86,
   // валютные и себестоимость
