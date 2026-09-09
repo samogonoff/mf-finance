@@ -515,13 +515,18 @@ def details(key: str, scope: str = "model") -> dict:
     """Мок для details: возвращает 2 детальные строки.
 
     `scope="model"` — обе строки одной модели с разными артикулами;
-    `scope="articul"` — обе строки одного артикула с разными моделями (режим ЧНИ).
+    `scope="articul"` — обе строки одного артикула с разными моделями;
+    `scope="construction"` — разные и модели, и артикулы (режимы ЧНИ).
     """
-    by_articul = scope == "articul"
-    model = key if not by_articul else f"{key}-M1"
-    model2 = key if not by_articul else f"{key}-M2"
-    articul = "ART-20001" if not by_articul else key
-    articul2 = "ART-20002" if not by_articul else key
+    if scope == "articul":
+        model, model2 = f"{key}-M1", f"{key}-M2"
+        articul = articul2 = key
+    elif scope == "construction":
+        model, model2 = f"{key}-1001", f"{key}-1002"
+        articul, articul2 = "ART-20001", "ART-20002"
+    else:
+        model = model2 = key
+        articul, articul2 = "ART-20001", "ART-20002"
     rows = [
         {
             "Модель": model,

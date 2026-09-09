@@ -1175,37 +1175,58 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
 # ── Details по модели ────────────────────────────────────────────────────────
 
 
+# Конструкция ЧНИ — часть модели до первого дефиса («107K-1916» → «107K»).
+# Правило заказчика от 09.09.2026; см. докстринг get_details.
+_CONSTRUCTION_EXPR = """split_part(TRIM("Модель"), '-', 1)"""
+
+
 @router.post("/details")
 async def get_details(payload: dict) -> dict:
-    """Детализация по модели либо по артикулу с GROUP BY и опциональными фильтрами.
-
-    Ключ детализации задаёт `scope`:
+    """Детализация с GROUP BY и опциональными фильтрами; ключ задаёт `scope`.
 
     · `model` (по умолчанию) — все артикулы одной модели, историческое поведение;
-    · `articul` — все модели одного артикула. Нужен для ЧНИ («Носки&Колготки»,
-      Orodoro): там артикул — общая вязка, а модель — её цветовой/размерный
-      вариант, и один артикул тянет до 30 моделей (проверено на кэше 01.09.2026:
-      479 артикулов из 1430 в «Носки&Колготки» многомодельные). Сравнивать
-      себестоимость надо именно между моделями одного артикула. В остальных
-      группах номенклатуры связь 1:1, и переключатель просто вернёт одну модель.
+    · `articul` — все модели одного артикула;
+    · `construction` — все модели одной конструкции.
+
+    Последние два режима нужны ЧНИ («Носки&Колготки», Orodoro), где иерархия
+    номенклатуры устроена иначе, чем в остальных группах:
+
+    · артикул — общая вязка, модель — её цветовой/размерный вариант, поэтому на
+      один артикул приходится до 30 моделей (проверено на кэше 01.09.2026:
+      479 артикулов из 1430 в «Носки&Колготки» многомодельные);
+    · конструкция — часть модели до первого дефиса (в «107K-1916» это «107K»),
+      то есть мужской, женский или детский носок определённого кроя. Правило
+      заказчика от 09.09.2026. Конструкция объединяет и модели, и артикулы: в
+      «Носки&Колготки» 1341 модель складывается в 306 конструкций, у крупнейшей
+      («700K») 99 моделей и 90 артикулов.
+
+    В остальных группах номенклатуры связь модель↔артикул 1:1, а в модели часто
+    нет дефиса вовсе — тогда режимы вернут одну модель, и это не ошибка.
     """
     scope = (payload.get("scope") or "model").strip()
-    if scope not in ("model", "articul"):
-        raise HTTPException(400, "scope must be 'model' or 'articul'")
+    if scope not in ("model", "articul", "construction"):
+        raise HTTPException(400, "scope must be 'model', 'articul' or 'construction'")
 
-    model = (payload.get("model") or "").strip()
-    articul = (payload.get("articul") or "").strip()
-    key_value = articul if scope == "articul" else model
+    key_value = (payload.get({
+        "articul": "articul",
+        "construction": "construction",
+    }.get(scope, "model")) or "").strip()
     if not key_value:
-        raise HTTPException(400, "articul required" if scope == "articul" else "model required")
+        raise HTTPException(400, f"{scope} required")
 
     if _is_mock():
         return mocks.details(key_value, scope)
 
-    key_column = "Артикул" if scope == "articul" else "Модель"
+    # Условие ключа. Конструкция — не колонка, а вычисляемый префикс модели,
+    # поэтому сравнение идёт по split_part; индекса на выражении нет, но по
+    # мерке кэша это ~76 мс на 1 млн строк (замер 09.09.2026).
+    key_expr = {
+        "articul": """TRIM("Артикул")""",
+        "construction": _CONSTRUCTION_EXPR,
+    }.get(scope, """TRIM("Модель")""")
 
     params: list[Any] = []
-    where_parts: list[str] = [f'TRIM("{key_column}") = ${len(params) + 1}']
+    where_parts: list[str] = [f"{key_expr} = ${len(params) + 1}"]
     params.append(key_value)
 
     date_from = (payload.get("date_from") or "").strip()
@@ -1224,9 +1245,12 @@ async def get_details(payload: dict) -> dict:
         params.extend(calc_sign)
 
     where = " AND ".join(where_parts)
-    # В режиме артикула перебираются модели, поэтому вторым ключом сортировки
-    # идёт то поле, которое в этом режиме меняется.
-    order_column = "Модель" if scope == "articul" else "Артикул"
+    # Сортировка следует за режимом: вторым ключом идут те поля, которые в
+    # этом режиме меняются. У конструкции меняются оба.
+    order_tail = {
+        "articul": """TRIM("Модель")""",
+        "construction": """TRIM("Модель"), TRIM("Артикул")""",
+    }.get(scope, """TRIM("Артикул")""")
 
     query = f"""
         SELECT
@@ -1259,7 +1283,7 @@ async def get_details(payload: dict) -> dict:
             TRIM("Артикул"),
             TRIM("Наименование модели"),
             TRIM("Номер задания производства")
-        ORDER BY "дата расчета" DESC, TRIM("{order_column}")
+        ORDER BY "дата расчета" DESC, {order_tail}
     """
 
     async with pool().acquire() as conn:
