@@ -32,6 +32,31 @@ var retailSectionOrder = []struct {
 	}},
 }
 
+// retailOtherSection — строки, не попавшие НИ В ОДИН разрез выше: статусы вроде
+// «Реконструкция» или пустого/«n/a». Справочник статусов открытый (правка
+// 08.09.2026 п. 38: неизвестное значение импортируется как есть), поэтому список
+// разрезов заведомо неполон, и без этого раздела такие магазины просто исчезали
+// из свода — «в форме есть, в свод не попадают» (замечание 09.09.2026).
+//
+// Раздел показывается, только когда в нём есть строки: пустая строка «прочие» в
+// каждом своде мешала бы читать разрезы.
+func retailOtherRows(rows []RetailRow) []RetailRow {
+	out := make([]RetailRow, 0)
+	for _, r := range rows {
+		matched := false
+		for _, sec := range retailSectionOrder {
+			if sec.Match(r) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // Переключаемые дополнительные группировки (ТЗ §8). Считаем все сразу: их пять,
 // данные уже в памяти, и так UI переключает разрез без повторного запроса.
 var retailGroupDims = []struct {
@@ -44,6 +69,10 @@ var retailGroupDims = []struct {
 	{"store_type", "Тип магазина", func(r RetailRow) string { return r.StoreType }},
 	{"legal_entity", "ЮЛ", func(r RetailRow) string { return r.LegalEntity }},
 	{"category", "Категория", func(r RetailRow) string { return r.Category }},
+	// LFL-статус отдельной группировкой: справочник статусов открытый, и это
+	// единственный способ увидеть в своде статусы вроде «Реконструкция», под
+	// которые нет своего разреза (замечание владельца процесса 09.09.2026).
+	{"lfl_status", "LFL-статус", func(r RetailRow) string { return r.LFLEffective }},
 }
 
 // RetailSummaryMetrics — 11 показателей месяца (ТЗ §8). Денежные — в валюте
@@ -202,6 +231,14 @@ func ComputeRetailSummary(in RetailSummaryInput) RetailSummary {
 			block.Sections = append(block.Sections, RetailSummarySection{
 				Key: sec.Key, Title: sec.Title, Rows: len(part),
 				Metrics: scaleMetricsFx(aggregateMetrics(part, in), fx),
+			})
+		}
+		// Хвост: всё, что не подошло ни под один разрез. Без него сумма разрезов
+		// не сходится с итогом блока, и понять это по экрану невозможно.
+		if other := retailOtherRows(rows); len(other) > 0 {
+			block.Sections = append(block.Sections, RetailSummarySection{
+				Key: "other", Title: "в т.ч. прочие статусы", Rows: len(other),
+				Metrics: scaleMetricsFx(aggregateMetrics(other, in), fx),
 			})
 		}
 		out.Blocks = append(out.Blocks, block)

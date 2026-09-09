@@ -56,9 +56,19 @@ func TestSummary_CurrencyBlocksAndFieldSets(t *testing.T) {
 		}
 	}
 
-	// Дополнительные группировки ТЗ §8: город, РМ, тип, ЮЛ, категория.
-	if len(sum.Groups) != 5 {
-		t.Errorf("дополнительных группировок: got %d, want 5", len(sum.Groups))
+	// Дополнительные группировки: город, РМ, тип, ЮЛ, категория (ТЗ §8) плюс
+	// LFL-статус — им видны статусы вне четырёх разрезов («Реконструкция»).
+	if len(sum.Groups) != 6 {
+		t.Errorf("дополнительных группировок: got %d, want 6", len(sum.Groups))
+	}
+	var hasStatus bool
+	for _, g := range sum.Groups {
+		if g.Key == "lfl_status" {
+			hasStatus = true
+		}
+	}
+	if !hasStatus {
+		t.Error("нет группировки по LFL-статусу: статусы вне разрезов останутся невидимыми")
 	}
 }
 
@@ -425,5 +435,65 @@ func TestRetailImport_NoMonthColumns(t *testing.T) {
 	data, _ := writeXlsx("Розница", []string{"code_cfo", "cfo"}, [][]string{{"100", "Магазин"}})
 	if _, _, _, err := parseRetailImport(data, 2026, map[int]bool{7: true}, map[int]bool{100: true}, 0); err == nil {
 		t.Error("файл без колонок-месяцев должен отклоняться с ошибкой")
+	}
+}
+
+// Магазины со статусом вне известных разрезов («Реконструкция», пустой/«n/a»)
+// обязаны попадать в свод: справочник статусов открытый, и раньше такие строки
+// просто исчезали из разрезов — «в форме есть, в свод не попадают»
+// (замечание владельца процесса 09.09.2026).
+func TestSummary_UnknownStatusGoesToOtherSection(t *testing.T) {
+	rows := []RetailRow{
+		{CodeCFO: 1, LFLEffective: LFLYes, Values: []RetailValue{{Year: 2026, Month: 6, Amount: fptr(100)}}},
+		{CodeCFO: 2, LFLEffective: "реконструкция", Values: []RetailValue{{Year: 2026, Month: 6, Amount: fptr(30)}}},
+		{CodeCFO: 3, LFLEffective: "", Values: []RetailValue{{Year: 2026, Month: 6, Amount: fptr(7)}}},
+	}
+	in := RetailSummaryInput{
+		Country: "BY", NatCurrency: "BYN", Year: 2026, Month: 6,
+		PlanMonths: []int{6}, Rows: rows, DirectoryActiveCount: -1,
+	}
+	sum := ComputeRetailSummary(in)
+
+	var block RetailCurrencyBlock
+	for _, b := range sum.Blocks {
+		if b.Currency == "BYN" {
+			block = b
+		}
+	}
+	var other *RetailSummarySection
+	for i := range block.Sections {
+		if block.Sections[i].Key == "other" {
+			other = &block.Sections[i]
+		}
+	}
+	if other == nil {
+		t.Fatal("разрез «прочие статусы» не появился, магазины вне известных статусов потеряны")
+	}
+	if other.Rows != 2 {
+		t.Errorf("в разрезе прочих ожидались 2 строки, получено %d", other.Rows)
+	}
+	if got := other.Metrics.Tactic; got != 37 {
+		t.Errorf("тактика прочих = %.2f, ждали 37", got)
+	}
+	// Итог блока считается по ВСЕМ строкам и включает их же.
+	if got := block.Total.Tactic; got != 137 {
+		t.Errorf("итог блока = %.2f, ждали 137", got)
+	}
+}
+
+// Все статусы известны — пустого разреза «прочие» в своде быть не должно.
+func TestSummary_NoOtherSectionWhenAllKnown(t *testing.T) {
+	in := RetailSummaryInput{
+		Country: "BY", NatCurrency: "BYN", Year: 2026, Month: 6, PlanMonths: []int{6},
+		Rows: []RetailRow{{CodeCFO: 1, LFLEffective: LFLYes,
+			Values: []RetailValue{{Year: 2026, Month: 6, Amount: fptr(100)}}}},
+		DirectoryActiveCount: -1,
+	}
+	for _, b := range ComputeRetailSummary(in).Blocks {
+		for _, sec := range b.Sections {
+			if sec.Key == "other" {
+				t.Fatalf("разрез прочих не должен появляться при известных статусах: %+v", sec)
+			}
+		}
 	}
 }

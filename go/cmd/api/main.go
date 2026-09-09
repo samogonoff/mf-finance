@@ -376,6 +376,11 @@ func main() {
 
 	// Форма «Розница» (TPL-TO-RETAIL): карточка + сервис сетки/расчёта/валидаций.
 	plansRetailRepo := plans.NewRetailRepo(pool)
+	// Свод по ЮЛ показывает весь комплект: маркетплейсы из pl_metric, розницу —
+	// из её таблиц (замечание владельца процесса 09.09.2026).
+	if src, ok := plansRetailRepo.(plans.RetailSvodSource); ok {
+		plansSvc.WithRetailSvod(src)
+	}
 	plansRetailProvider := plans.NewRetailCardProvider(plansRetailRepo, plansRates)
 	plansCards.RegisterForm(plans.TemplateRetail, plansRetailProvider, plansRetailProvider)
 	plansRetail := plans.NewRetailService(plansRetailRepo, plansCards, plansRetailSource).
