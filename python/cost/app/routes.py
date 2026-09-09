@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import articul_replace, commercial, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
-from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
+from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
 from app.logship import log
 from app.middleware import require_perm
 from app.notify import notify_admins
@@ -29,6 +29,7 @@ from app.roles import (
     remove_user_role,
     update_role,
 )
+from app import obsolete
 
 router = APIRouter()
 
@@ -539,6 +540,17 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         log(logging.WARNING, "не удалось наложить отметки о замене артикула", error=str(exc))
         for row in data:
             row["replace_needed"] = False
+
+    # Статус «Неактуальная модель/артикул» (09.09.2026): ключ — модель + артикул,
+    # один статус на все калькуляции изделия. Накладывается до фильтра по
+    # статусу ниже, чтобы значение 'obsolete' в фильтре было чем отбирать.
+    try:
+        obs_keys = [obsolete.make_key(r.get("Модель"), r.get("Артикул")) for r in data]
+        obsolete.apply_flags(data, await obsolete.flags_for(obs_keys))
+    except Exception as exc:
+        log(logging.WARNING, "не удалось наложить статус неактуальности", error=str(exc))
+        for row in data:
+            row.update(obsolete.EMPTY)
 
     # Карточки согласования по постановлению 713 (пожелание № 8): ключ —
     # модель + артикул, одна карточка на все планы и этапы пары. Без карточки
@@ -1158,6 +1170,10 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     if peo_filter and peo_filter != "all":
         if peo_filter == "none":
             data = [r for r in data if r.get("peo_status") is None]
+        elif peo_filter == "obsolete":
+            # Неактуальные изделия — состояние модели/артикула, не этап
+            # согласования; в остальных значениях фильтра они не отсекаются.
+            data = [r for r in data if r.get("obsolete")]
         else:
             data = [r for r in data if r.get("peo_status") == peo_filter]
 
@@ -1175,37 +1191,58 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
 # ── Details по модели ────────────────────────────────────────────────────────
 
 
+# Конструкция ЧНИ — часть модели до первого дефиса («107K-1916» → «107K»).
+# Правило заказчика от 09.09.2026; см. докстринг get_details.
+_CONSTRUCTION_EXPR = """split_part(TRIM("Модель"), '-', 1)"""
+
+
 @router.post("/details")
 async def get_details(payload: dict) -> dict:
-    """Детализация по модели либо по артикулу с GROUP BY и опциональными фильтрами.
-
-    Ключ детализации задаёт `scope`:
+    """Детализация с GROUP BY и опциональными фильтрами; ключ задаёт `scope`.
 
     · `model` (по умолчанию) — все артикулы одной модели, историческое поведение;
-    · `articul` — все модели одного артикула. Нужен для ЧНИ («Носки&Колготки»,
-      Orodoro): там артикул — общая вязка, а модель — её цветовой/размерный
-      вариант, и один артикул тянет до 30 моделей (проверено на кэше 01.09.2026:
-      479 артикулов из 1430 в «Носки&Колготки» многомодельные). Сравнивать
-      себестоимость надо именно между моделями одного артикула. В остальных
-      группах номенклатуры связь 1:1, и переключатель просто вернёт одну модель.
+    · `articul` — все модели одного артикула;
+    · `construction` — все модели одной конструкции.
+
+    Последние два режима нужны ЧНИ («Носки&Колготки», Orodoro), где иерархия
+    номенклатуры устроена иначе, чем в остальных группах:
+
+    · артикул — общая вязка, модель — её цветовой/размерный вариант, поэтому на
+      один артикул приходится до 30 моделей (проверено на кэше 01.09.2026:
+      479 артикулов из 1430 в «Носки&Колготки» многомодельные);
+    · конструкция — часть модели до первого дефиса (в «107K-1916» это «107K»),
+      то есть мужской, женский или детский носок определённого кроя. Правило
+      заказчика от 09.09.2026. Конструкция объединяет и модели, и артикулы: в
+      «Носки&Колготки» 1341 модель складывается в 306 конструкций, у крупнейшей
+      («700K») 99 моделей и 90 артикулов.
+
+    В остальных группах номенклатуры связь модель↔артикул 1:1, а в модели часто
+    нет дефиса вовсе — тогда режимы вернут одну модель, и это не ошибка.
     """
     scope = (payload.get("scope") or "model").strip()
-    if scope not in ("model", "articul"):
-        raise HTTPException(400, "scope must be 'model' or 'articul'")
+    if scope not in ("model", "articul", "construction"):
+        raise HTTPException(400, "scope must be 'model', 'articul' or 'construction'")
 
-    model = (payload.get("model") or "").strip()
-    articul = (payload.get("articul") or "").strip()
-    key_value = articul if scope == "articul" else model
+    key_value = (payload.get({
+        "articul": "articul",
+        "construction": "construction",
+    }.get(scope, "model")) or "").strip()
     if not key_value:
-        raise HTTPException(400, "articul required" if scope == "articul" else "model required")
+        raise HTTPException(400, f"{scope} required")
 
     if _is_mock():
         return mocks.details(key_value, scope)
 
-    key_column = "Артикул" if scope == "articul" else "Модель"
+    # Условие ключа. Конструкция — не колонка, а вычисляемый префикс модели,
+    # поэтому сравнение идёт по split_part; индекса на выражении нет, но по
+    # мерке кэша это ~76 мс на 1 млн строк (замер 09.09.2026).
+    key_expr = {
+        "articul": """TRIM("Артикул")""",
+        "construction": _CONSTRUCTION_EXPR,
+    }.get(scope, """TRIM("Модель")""")
 
     params: list[Any] = []
-    where_parts: list[str] = [f'TRIM("{key_column}") = ${len(params) + 1}']
+    where_parts: list[str] = [f"{key_expr} = ${len(params) + 1}"]
     params.append(key_value)
 
     date_from = (payload.get("date_from") or "").strip()
@@ -1224,9 +1261,12 @@ async def get_details(payload: dict) -> dict:
         params.extend(calc_sign)
 
     where = " AND ".join(where_parts)
-    # В режиме артикула перебираются модели, поэтому вторым ключом сортировки
-    # идёт то поле, которое в этом режиме меняется.
-    order_column = "Модель" if scope == "articul" else "Артикул"
+    # Сортировка следует за режимом: вторым ключом идут те поля, которые в
+    # этом режиме меняются. У конструкции меняются оба.
+    order_tail = {
+        "articul": """TRIM("Модель")""",
+        "construction": """TRIM("Модель"), TRIM("Артикул")""",
+    }.get(scope, """TRIM("Артикул")""")
 
     query = f"""
         SELECT
@@ -1259,7 +1299,7 @@ async def get_details(payload: dict) -> dict:
             TRIM("Артикул"),
             TRIM("Наименование модели"),
             TRIM("Номер задания производства")
-        ORDER BY "дата расчета" DESC, TRIM("{order_column}")
+        ORDER BY "дата расчета" DESC, {order_tail}
     """
 
     async with pool().acquire() as conn:
@@ -3706,8 +3746,52 @@ async def articul_replace_set(
     set_by = (user or payload.get("user") or "system").strip() or "system"
     comment = str(payload.get("comment") or "").strip()[:1000]
 
+    # Снять уже стоящую отметку может только администратор (заказчик,
+    # 09.09.2026: калькулятор, ПЭО и БМ снимали галочку после отправки).
+    # Отметка — сообщение операторам; отозвать его молча нельзя. Повторная
+    # установка (needed=true поверх true) остаётся всем с правом: так
+    # повторяют рассылку, если она не дошла.
+    if not needed and user is not None:
+        current = (await articul_replace.flags_for([key])).get(key)
+        if current and current.get("replace_needed"):
+            perms = await get_user_permissions(user)
+            if "cost:admin" not in perms:
+                raise HTTPException(
+                    403, "Снять отметку «нужна замена артикула» может только администратор",
+                )
+
     return await articul_replace.set_flag(
         key, needed=needed, comment=comment, set_by=set_by, context=context,
+    )
+
+
+# ── Статус «Неактуальная модель/артикул» ──────────────────────────────────────
+
+@router.post("/obsolete")
+async def obsolete_set(
+    payload: dict,
+    user: str | None = Depends(_require_perm("cost:obsolete")),
+) -> dict:
+    """Поставить или снять статус «Неактуальная модель/артикул».
+
+    Body: { model, articul, obsolete: bool, comment? }
+
+    Ключ — модель + артикул: статус ложится на все калькуляции изделия. Право
+    `cost:obsolete` — у калькулятора, ПЭО и Full Admin (миграция 0056). Ответ —
+    поля `obsolete_*`, как в строках /aggregated; фронт накладывает их на все
+    строки той же пары.
+    """
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model и articul обязательны")
+    flag = payload.get("obsolete")
+    if not isinstance(flag, bool):
+        raise HTTPException(400, "obsolete должен быть true или false")
+    set_by = (user or payload.get("user") or "system").strip() or "system"
+    comment = str(payload.get("comment") or "").strip()[:1000]
+    return await obsolete.set_flag(
+        obsolete.make_key(model, articul), obsolete=flag, comment=comment, set_by=set_by,
     )
 
 
@@ -3951,3 +4035,61 @@ async def purchase_invoice_delete(inv_id: int, _: str | None = Depends(_PURCHASE
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"ok": True}
+
+
+# ── Справочник моделей (Gpartner S_MODELI) ───────────────────────────────────
+#
+# Окно «Справочник моделей» на странице раздела: пользователь заходит посмотреть,
+# что завела Лиса по модели — состав, ТН ВЭД, нормы, плановые цены, габариты.
+# Только чтение, никаких правок: источник ведёт Лиса.
+
+_CATALOG_PAGE_MAX = 500
+
+
+@router.get("/models-catalog/folders")
+async def models_catalog_folders(_: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Папки номенклатуры для фильтров окна: бренд-менеджер и уровни Level 01-05.
+
+    Отдаём весь список папок (571 запись) один раз, а каскад фильтров считает
+    клиент: данных мало, зато выбор в фильтрах отзывается без похода в Лису — в
+    отличие от главной страницы, где каскад уровней уточняется запросом к DWH.
+    """
+    if _is_mock():
+        return mocks.models_catalog_folders()
+    try:
+        folders = await asyncio.get_event_loop().run_in_executor(None, fetch_modeli_folders)
+    except Exception as exc:  # noqa: BLE001 — источник за VPN
+        raise HTTPException(502, f"справочник моделей недоступен: {exc}")
+    return {"folders": folders}
+
+
+@router.post("/models-catalog")
+async def models_catalog(payload: dict, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Страница справочника моделей с фильтрами.
+
+    Body: { model?, articul?, naim?, brand_manager?: [], level01?..level05?: [],
+            limit?, offset?, all_columns?, all_versions? }
+
+    model/articul/naim ищутся подстрокой, остальные — списком значений.
+    `all_columns` добавляет к основным колонкам остальные поля представления.
+    `all_versions` показывает все версии пары модель+артикул, а не только
+    последнюю (по умолчанию последняя — как в остальном разделе).
+    Пагинация серверная: в справочнике 132 тыс. строк.
+    """
+    limit = max(1, min(int(payload.get("limit") or 100), _CATALOG_PAGE_MAX))
+    offset = max(0, int(payload.get("offset") or 0))
+    all_columns = bool(payload.get("all_columns"))
+    only_latest = not payload.get("all_versions")
+
+    if _is_mock():
+        return mocks.models_catalog(payload, limit, offset, all_columns)
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, fetch_models_catalog, payload, limit, offset, all_columns, only_latest
+        )
+    except Exception as exc:  # noqa: BLE001 — источник за VPN
+        raise HTTPException(502, f"справочник моделей недоступен: {exc}")
+
+    result.update({"limit": limit, "offset": offset, "count": len(result.get("data") or [])})
+    return result

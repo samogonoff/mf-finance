@@ -48,6 +48,11 @@
           <button class="btn btn-ghost btn-sm" @click="resetFilters">
             <Icon name="lucide:x" /> Сбросить
           </button>
+          <!-- Справочник Лисы: смотреть, что заведено по модели. Кнопка здесь, а
+               не в таблице, — окно не связано с выбранной строкой. -->
+          <button class="btn btn-ghost btn-sm" @click="openCatalog">
+            <Icon name="lucide:book-open" /> Справочник моделей
+          </button>
           <button class="btn btn-primary btn-sm" :disabled="loading" @click="loadData">
             <Icon name="lucide:refresh-cw" />
             {{ loading ? "Загрузка…" : "Загрузить данные" }}
@@ -119,6 +124,20 @@
             </span>
           </label>
 
+          <!-- Неактуальные модели/артикулы (⚫): по умолчанию видны серыми, галочка
+               убирает их из выдачи (просьба заказчика 09.09.2026). -->
+          <label class="filter-checkbox" title="Скрыть калькуляции моделей/артикулов со статусом «Неактуальная модель/артикул» (⚫, серые строки)">
+            <input
+              type="checkbox"
+              :checked="hideObsolete"
+              @change="setHideObsolete(($event.target as HTMLInputElement).checked)"
+            />
+            <span>
+              Не показывать неактуальные
+              <template v-if="obsoleteHiddenCount"> ({{ obsoleteHiddenCount }})</template>
+            </span>
+          </label>
+
           <label class="peo-filter-label">
             Статус согласования
             <select v-model="peoFilter" class="peo-filter-select" @change="onPeoFilterChange">
@@ -127,6 +146,7 @@
               <option value="none">Не согласовано</option>
               <option value="rejected">🔴 Отклонено</option>
               <option value="returned">🟡 Возврат на корректировку</option>
+              <option value="obsolete">⚫ Неактуальная модель/артикул</option>
             </select>
           </label>
 
@@ -488,6 +508,9 @@
               <!-- Пожелание № 4: отметка «нужна замена артикула», при установке
                    уходит сообщение в Битрикс операторам (ЧНИ и остальное — разным людям). -->
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'replace' && isVisible('replace')" class="col-replace" :title="replaceHeaderTitle">Замена арт.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <!-- Статус «Неактуальная модель/артикул» (09.09.2026): ставят калькулятор и
+                   ПЭО, ключ — модель + артикул, строка серая, в «Этапе» ⚫. -->
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'obsolete' && isVisible('obsolete')" class="col-obsolete" :title="OBSOLETE_HEADER_TITLE">Неакт.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               <!-- Пожелание № 8: согласование цены с исполкомом по постановлению 713.
                    Значок — состояние карточки, клик открывает её. -->
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'reg713' && isVisible('reg713')" class="col-reg713" :title="REG713_LEGEND">713<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
@@ -607,7 +630,7 @@
             <tr
               v-for="(row, idx) in pageRows"
               :key="idx"
-              :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
+              :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, 'row-obsolete': !!row.obsolete, selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
               @click="selectRow(getOriginalIndex(row))"
             >
               <td v-if="isVisible('peo_sel')" :class="stickyClasses('peo_sel')" :style="stickyStyle('peo_sel')" class="col-peo-sel">
@@ -764,13 +787,28 @@
                   <input
                     type="checkbox"
                     :checked="!!row.replace_needed"
-                    :disabled="!can('cost:articul_replace') || !!replaceBusy[calcRowKey(row)]"
+                    :disabled="!canToggleReplace(row) || !!replaceBusy[calcRowKey(row)]"
                     @change="toggleReplace(row, $event)"
                   />
+                  <!-- ⚠ — уведомление не дошло; клик повторяет отправку без снятия
+                       отметки (снять её может только администратор). Клик по значку
+                       внутри label не должен переключать чекбокс — prevent. -->
                   <span v-if="row.replace_needed"
                     class="replace-mail"
-                    :class="row.replace_notified_at ? 'replace-mail--ok' : 'replace-mail--err'"
+                    :class="[row.replace_notified_at ? 'replace-mail--ok' : 'replace-mail--err',
+                             { 'replace-mail--resend': !row.replace_notified_at && can('cost:articul_replace') }]"
+                    @click.stop.prevent="!row.replace_notified_at && can('cost:articul_replace') ? resendReplace(row) : null"
                   >{{ row.replace_notified_at ? '✉' : '⚠' }}</span>
+                </label>
+              </td>
+              <td v-if="ck === 'obsolete' && isVisible('obsolete')" class="col-obsolete" :title="obsoleteTitle(row)">
+                <label class="replace-cell" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="!!row.obsolete"
+                    :disabled="!can('cost:obsolete') || !!obsoleteBusy[obsoleteKey(row)]"
+                    @change="toggleObsolete(row, $event)"
+                  />
                 </label>
               </td>
               <td v-if="ck === 'reg713' && isVisible('reg713')" class="col-reg713" :title="reg713Title(row)">
@@ -830,13 +868,130 @@
       </div>
     </section>
 
+    <!-- Справочник моделей (Gpartner S_MODELI) — только просмотр -->
+    <div v-if="showCatalogModal" class="modal-overlay" @click.self="showCatalogModal = false">
+      <div class="modal-content modal-wide" @click.stop>
+        <div class="modal-header">
+          <h2>
+            Справочник моделей
+            <span class="details-scope-hint">Лиса · S_MODELI</span>
+          </h2>
+          <div class="modal-header-actions">
+            <button class="modal-close" @click="showCatalogModal = false">×</button>
+          </div>
+        </div>
+
+        <!-- Поиск по тексту: подстрокой, применяется кнопкой или Enter -->
+        <div class="details-filters">
+          <label>Модель
+            <input v-model="catalogFilters.model" type="text" class="form-input"
+              placeholder="подстрока" @keydown.enter="loadCatalog(0)" />
+          </label>
+          <label>Артикул
+            <input v-model="catalogFilters.articul" type="text" class="form-input"
+              placeholder="подстрока" @keydown.enter="loadCatalog(0)" />
+          </label>
+          <label>Наименование
+            <input v-model="catalogFilters.naim" type="text" class="form-input"
+              placeholder="подстрока" @keydown.enter="loadCatalog(0)" />
+          </label>
+          <button class="btn btn-primary btn-sm" @click="loadCatalog(0)">Применить</button>
+          <button class="btn btn-ghost btn-sm" @click="resetCatalogFilters">Сбросить</button>
+        </div>
+
+        <!-- Бренд-менеджер и уровни номенклатуры. Каскад считается по списку
+             папок, загруженному при открытии окна, — без похода на сервер. -->
+        <div class="details-col-filters">
+          <div class="details-col-filter-item">
+            <label>Бренд-менеджер</label>
+            <CostMultiSelect
+              v-model="catalogFilters.brand_manager"
+              :options="catalogBrandManagerOptions"
+              placeholder="Все · бренд-менеджер"
+              @change="onCatalogScopeChange('brand_manager')"
+            />
+          </div>
+          <div v-for="lvl in CATALOG_LEVELS" :key="lvl.key" class="details-col-filter-item"
+            :class="{ locked: isCatalogLevelLocked(lvl.index) }">
+            <label>{{ lvl.label }}</label>
+            <CostMultiSelect
+              v-model="catalogFilters[lvl.key]"
+              :options="catalogLevelOptions[lvl.index] || []"
+              :placeholder="isCatalogLevelLocked(lvl.index) ? '—' : `Все · ${lvl.label.toLowerCase()}`"
+              :disabled="isCatalogLevelLocked(lvl.index)"
+              @change="onCatalogScopeChange(lvl.key)"
+            />
+          </div>
+          <a href="#" class="details-col-filter-reset" @click.prevent="resetCatalogFilters">Сбросить фильтры</a>
+        </div>
+
+        <div class="catalog-toolbar">
+          <label class="filter-checkbox" title="Добавить остальные поля представления — служебные ID, даты и логины правок">
+            <input v-model="catalogAllColumns" type="checkbox" @change="loadCatalog(catalogOffset)" />
+            <span>Все колонки</span>
+          </label>
+          <!-- На пару модель+артикул в справочнике бывает несколько записей:
+               модель заводят заново, старая остаётся. По умолчанию показываем
+               последнюю — иначе соседние строки читаются как дубли. -->
+          <label class="filter-checkbox" title="Показать все версии пары модель+артикул, а не только последнюю">
+            <input v-model="catalogAllVersions" type="checkbox" @change="loadCatalog(0)" />
+            <span>Все версии</span>
+          </label>
+
+          <div class="catalog-pager">
+            <span class="catalog-count">
+              <template v-if="catalogTotal">
+                {{ catalogOffset + 1 }}–{{ catalogOffset + catalogRows.length }} из {{ catalogTotal.toLocaleString('ru-RU') }}
+              </template>
+              <template v-else-if="!catalogLoading">Ничего не найдено</template>
+            </span>
+            <select v-model.number="catalogLimit" class="page-size-select" @change="loadCatalog(0)">
+              <option :value="50">50</option>
+              <option :value="100">100</option>
+              <option :value="200">200</option>
+              <option :value="500">500</option>
+            </select>
+            <button class="btn btn-ghost btn-sm" :disabled="catalogLoading || catalogOffset === 0"
+              @click="loadCatalog(Math.max(0, catalogOffset - catalogLimit))">‹ Назад</button>
+            <button class="btn btn-ghost btn-sm"
+              :disabled="catalogLoading || catalogOffset + catalogRows.length >= catalogTotal"
+              @click="loadCatalog(catalogOffset + catalogLimit)">Вперёд ›</button>
+          </div>
+        </div>
+
+        <div class="table-wrap details-table-wrap">
+          <div v-if="catalogLoading" class="muted" style="text-align:center;padding:24px">Загрузка справочника…</div>
+          <div v-else-if="catalogError" class="muted" style="text-align:center;padding:24px">{{ catalogError }}</div>
+          <div v-else-if="!catalogRows.length" class="muted" style="text-align:center;padding:24px">Нет данных</div>
+          <table v-else class="data-table compact">
+            <thead>
+              <tr>
+                <th v-for="col in catalogColumns" :key="col.key" :class="{ 'col-num': isCatalogNumericColumn(col.key) }">
+                  {{ col.label }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, i) in catalogRows" :key="i">
+                <td v-for="col in catalogColumns" :key="col.key"
+                  :class="isCatalogNumericColumn(col.key) ? 'col-num num' : null"
+                  :title="String(row[col.key] ?? '')">
+                  {{ formatCatalogValue(row[col.key]) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- Details Modal -->
     <div v-if="showDetailsModal" class="modal-overlay" @click.self="showDetailsModal = false">
       <div class="modal-content modal-wide" @click.stop>
         <div class="modal-header">
           <h2>
             Детализация: {{ detailsScopeKey || '—' }}
-            <span class="details-scope-hint">{{ detailsScope === 'articul' ? 'артикул' : 'модель' }}</span>
+            <span class="details-scope-hint">{{ DETAILS_SCOPE_HINT[detailsScope] }}</span>
           </h2>
           <div class="modal-header-actions">
             <!-- Собрать все модели одного артикула — режим для ЧНИ («Носки&Колготки»,
@@ -857,6 +1012,17 @@
                   : 'У строки нет артикула'"
                 @click="setDetailsScope('articul')"
               >Модели артикула</button>
+              <!-- Конструкция ЧНИ — часть модели до дефиса; собирает и модели,
+                   и артикулы одного кроя. -->
+              <button
+                type="button"
+                :class="{ active: detailsScope === 'construction' }"
+                :disabled="!detailsConstruction"
+                :title="detailsConstruction
+                  ? `Все модели и артикулы конструкции ${detailsConstruction}`
+                  : 'У строки нет модели'"
+                @click="setDetailsScope('construction')"
+              >Модели конструкции</button>
             </div>
             <button class="btn btn-ghost btn-sm" @click="openDetailsInNewTab">Открыть в новом окне <Icon name="lucide:external-link" /></button>
             <button class="modal-close" @click="showDetailsModal = false">×</button>
@@ -879,7 +1045,7 @@
         </div>
         <!-- Column filters row -->
         <div class="details-col-filters" v-if="detailsAllData.length">
-          <div v-for="cfg in detailsFilterConfig" :key="cfg.key" v-show="cfg.key !== detailsFixedKey" class="details-col-filter-item" :class="{ locked: isDetFilterLocked(cfg.key) }">
+          <div v-for="cfg in detailsFilterConfig" :key="cfg.key" v-show="!detailsHiddenFilterKeys.includes(cfg.key)" class="details-col-filter-item" :class="{ locked: isDetFilterLocked(cfg.key) }">
             <label>{{ cfg.label }}</label>
             <CostMultiSelect
               v-model="detailsColumnFilters[cfg.key]"
@@ -900,10 +1066,11 @@
               <tr>
                 <th>Дата</th>
                 <th>Пр.кальк</th>
-                <!-- Столбец меняющегося измерения: в режиме модели это артикул,
-                     в режиме артикула — модель. Фиксированное значение и так в
-                     заголовке окна, дублировать его в каждой строке незачем. -->
-                <th>{{ detailsScope === 'articul' ? 'Модель' : 'Артикул' }}</th>
+                <!-- Столбцы меняющихся измерений: в режиме модели это артикул,
+                     в режиме артикула — модель, в режиме конструкции — оба.
+                     Фиксированное значение и так в заголовке окна, дублировать
+                     его в каждой строке незачем. -->
+                <th v-for="col in detailsKeyColumns" :key="col.field">{{ col.label }}</th>
                 <th>Наименование</th>
                 <th>№ задания</th>
                 <th>Дата выпуска</th>
@@ -928,7 +1095,7 @@
               <tr v-for="(d, i) in detailsFilteredData" :key="i">
                 <td>{{ formatDate(d['дата расчета']) }}</td>
                 <td>{{ d['Признак калькуляции'] || '—' }}</td>
-                <td>{{ (detailsScope === 'articul' ? d['Модель'] : d['Артикул']) || '—' }}</td>
+                <td v-for="col in detailsKeyColumns" :key="col.field">{{ d[col.field] || '—' }}</td>
                 <td>{{ d['Наименование модели'] || '—' }}</td>
                 <td>{{ d['Номер задания производства'] || '—' }}</td>
                 <td>{{ formatDate(d['Дата выпуска']) }}</td>
@@ -950,7 +1117,9 @@
             </tbody>
           </table>
           <div v-if="detailsFilteredData.length" class="details-count">
-            Найдено строк: {{ detailsFilteredData.length }}<template v-if="detailsScope === 'articul'"> · моделей: {{ detailsModelsCount }}</template>
+            Найдено строк: {{ detailsFilteredData.length
+            }}<template v-if="detailsScope !== 'model'"> · моделей: {{ detailsModelsCount }}</template
+            ><template v-if="detailsScope === 'construction'"> · артикулов: {{ detailsArticulsCount }}</template>
           </div>
         </div>
       </div>
@@ -2459,6 +2628,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'mp_price_rub', label: 'Цена для МП, рос. руб.' },
   { key: 'comment', label: 'Комментарий' },
   { key: 'replace', label: 'Замена артикула' },
+  { key: 'obsolete', label: 'Неактуальная модель/артикул' },
   { key: 'reg713', label: 'Согласование 713' },
   { key: 'avg_wholesale', label: 'Сред. опт' },
   { key: 'price_level', label: 'Уровень цен' },
@@ -2482,7 +2652,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
 
 // Column groupings for the settings modal
 const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','plan_id'];
-const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','reg713'];
+const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
 const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation'];
@@ -2510,7 +2680,7 @@ const COL_DEFAULT_WIDTHS: Record<string, number> = {
   planned_retail: 78, planned_wholesale: 78, planned_cost: 78,
   planned_profitability: 92, avg_retail_rub: 92, avg_rate: 72,
   retail_markup: 92, price_rf: 92, price_kz: 92, price_uz: 92,
-  mp_price_rub: 96, comment: 190, replace: 110, reg713: 72,
+  mp_price_rub: 96, comment: 190, replace: 110, obsolete: 64, reg713: 72,
   // рубли и уровень цен
   avg_wholesale: 92, price_level: 86,
   // валютные и себестоимость
@@ -2540,7 +2710,7 @@ const STORAGE_KEY = 'cost_column_visibility';
  *
  * Порядок хранится списком ключей, а не индексами: список ключей переживает
  * добавление и удаление колонок в коде, а индексы — нет. */
-const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
+const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 const ORDER_STORAGE_KEY = 'cost_column_order';
 /** Все колонки таблицы: закреплённые слева плюс переносимые. */
 const ALL_COL_KEYS = [...STICKY_COL_KEYS, ...MOVABLE_COL_KEYS];
@@ -2674,6 +2844,7 @@ function collectPrefs() {
     pageSize: pageSize.value,
     filtersOpen: filtersOpen.value,
     hideDwhSent: hideDwhSentManual.value,
+    hideObsolete: hideObsolete.value,
     filters: collectFilterPrefs(),
   };
 }
@@ -2728,6 +2899,10 @@ function applyPrefs(doc: any) {
   }
   if (typeof doc.hideDwhSent === 'boolean' || doc.hideDwhSent === null) {
     hideDwhSentManual.value = doc.hideDwhSent;
+  }
+  if (typeof doc.hideObsolete === 'boolean') {
+    hideObsolete.value = doc.hideObsolete;
+    try { localStorage.setItem(HIDE_OBSOLETE_STORAGE_KEY, doc.hideObsolete ? '1' : '0'); } catch { /* ignore */ }
   }
   // Фильтры с сервера — только когда на этом устройстве их ещё нет.
   //
@@ -3330,6 +3505,25 @@ const dwhSentHiddenCount = computed(() =>
   hideDwhSent.value ? allAggregated.value.filter((r: any) => r._has_audit).length : 0
 );
 
+/** «Не показывать неактуальные» — скрыть строки со статусом «Неактуальная
+ * модель/артикул». По умолчанию выключено: неактуальные видны серыми, чтобы статус
+ * замечали; кому они мешают — снимает одной галочкой. Помнится на устройстве и в
+ * серверных настройках, как соседний фильтр по DWH. */
+const HIDE_OBSOLETE_STORAGE_KEY = 'cost_hide_obsolete';
+const hideObsolete = ref(false);
+onMounted(() => {
+  try { if (localStorage.getItem(HIDE_OBSOLETE_STORAGE_KEY) === '1') hideObsolete.value = true; } catch { /* ignore */ }
+});
+function setHideObsolete(checked: boolean) {
+  hideObsolete.value = checked;
+  try { localStorage.setItem(HIDE_OBSOLETE_STORAGE_KEY, checked ? '1' : '0'); } catch { /* ignore */ }
+  schedulePrefsPush();
+}
+const obsoleteHiddenCount = computed(() =>
+  hideObsolete.value && peoFilter.value !== 'obsolete'
+    ? allAggregated.value.filter((r: any) => r.obsolete).length : 0
+);
+
 /** Сколько мультипаков в текущей выдаче — цифра рядом с чекбоксом фильтра. */
 const multipackCount = computed(
   () => allAggregated.value.filter((r: any) => r.is_multipack).length
@@ -3440,6 +3634,9 @@ const filteredAggregated = computed(() => {
   return allAggregated.value.filter((row: any) => {
     // Отправленные в DWH — вне работы: править и согласовывать в них нечего.
     if (hideDwhSent.value && row._has_audit) return false;
+    // Неактуальные — если только их не попросили показать явно фильтром статуса:
+    // иначе «⚫ Неактуальная» в фильтре и галочка дали бы пустую таблицу.
+    if (hideObsolete.value && row.obsolete && peoFilter.value !== 'obsolete') return false;
     // Мультипаки среди тысяч калькуляций иначе не найти: в фильтрах раздела
     // нет ни модели, ни артикула, а паков на группу — единицы.
     if (multipackOnly.value && !row.is_multipack) return false;
@@ -4191,19 +4388,250 @@ async function deletePlanPriceSet(setId: number) {
   }
 }
 
+
+// ── Справочник моделей (Gpartner S_MODELI) ───────────────────────────────────
+//
+// Окно только для просмотра: пользователь заходит посмотреть, что завела Лиса по
+// модели. Данных 132 тыс. строк, поэтому пагинация серверная, а фильтры уходят в
+// запрос — грузить справочник целиком в браузер нельзя.
+
+const showCatalogModal = ref(false);
+const catalogRows = ref<any[]>([]);
+const catalogColumns = ref<{ key: string; label: string }[]>([]);
+const catalogTotal = ref(0);
+const catalogOffset = ref(0);
+const catalogLimit = ref(100);
+const catalogLoading = ref(false);
+const catalogError = ref('');
+const catalogAllColumns = ref(false);
+const catalogAllVersions = ref(false);
+
+const CATALOG_LEVELS = [
+  { index: 1, key: 'level01', label: 'Level 01' },
+  { index: 2, key: 'level02', label: 'Level 02' },
+  { index: 3, key: 'level03', label: 'Level 03' },
+  { index: 4, key: 'level04', label: 'Level 04' },
+  { index: 5, key: 'level05', label: 'Level 05' },
+] as const;
+
+const catalogFilters = reactive<Record<string, any>>({
+  model: '', articul: '', naim: '',
+  brand_manager: [] as string[],
+  level01: [] as string[], level02: [] as string[], level03: [] as string[],
+  level04: [] as string[], level05: [] as string[],
+});
+
+/** Папки номенклатуры: по ним считаются варианты бренд-менеджера и уровней.
+ *
+ * Их 571 против 132 тыс. моделей, поэтому список тянем один раз за сеанс, а
+ * каскад пересчитываем на клиенте — в отличие от фильтров главной страницы, где
+ * каждое уточнение уровня идёт запросом в DWH. */
+const catalogFolders = ref<{ folder_id: number; path: string; levels: string[]; brand_manager: string }[]>([]);
+
+async function loadCatalogFolders() {
+  if (catalogFolders.value.length) return;
+  try {
+    const res = await $fetch<{ folders: any[] }>(
+      `${apiBase.value}/api/cost/models-catalog/folders`,
+      { headers: fetchHeaders.value }
+    );
+    catalogFolders.value = res.folders || [];
+  } catch (e: any) {
+    console.error('[cost] catalog folders failed', e);
+    catalogFolders.value = [];
+  }
+}
+
+const catalogBrandManagerOptions = computed(() => {
+  const seen = new Set<string>();
+  for (const f of catalogFolders.value) if (f.brand_manager) seen.add(f.brand_manager);
+  return Array.from(seen).sort();
+});
+
+/** Варианты уровней: каждый ограничен выбором бренд-менеджера и уровней выше. */
+const catalogLevelOptions = computed<Record<number, string[]>>(() => {
+  const out: Record<number, string[]> = {};
+  const bm = catalogFilters.brand_manager as string[];
+  for (const lvl of CATALOG_LEVELS) {
+    const seen = new Set<string>();
+    for (const folder of catalogFolders.value) {
+      if (bm.length && !bm.includes(folder.brand_manager)) continue;
+      let ok = true;
+      for (const higher of CATALOG_LEVELS) {
+        if (higher.index >= lvl.index) break;
+        const sel = catalogFilters[higher.key] as string[];
+        if (sel.length && !sel.includes(folder.levels[higher.index - 1] || '')) { ok = false; break; }
+      }
+      if (!ok) continue;
+      const value = folder.levels[lvl.index - 1];
+      if (value) seen.add(value);
+    }
+    out[lvl.index] = Array.from(seen).sort();
+  }
+  return out;
+});
+
+/** Уровень заблокирован, если выбран уровень НИЖЕ: иначе выбор сверху молча
+ *  обнулял бы уже сделанный выбор снизу (та же логика, что в детализации). */
+function isCatalogLevelLocked(index: number): boolean {
+  for (let i = CATALOG_LEVELS.length; i > index; i--) {
+    if ((catalogFilters[`level${String(i).padStart(2, '0')}`] as string[])?.length) return true;
+  }
+  return false;
+}
+
+/** Смена бренд-менеджера или уровня сбрасывает уровни ниже и перезагружает
+ *  первую страницу: под новым фильтром прежний offset ничего не значит. */
+function onCatalogScopeChange(changedKey: string) {
+  const changed = CATALOG_LEVELS.find((l) => l.key === changedKey);
+  const from = changed ? changed.index : 0;
+  for (const lvl of CATALOG_LEVELS) {
+    if (lvl.index > from) catalogFilters[lvl.key] = [];
+  }
+  loadCatalog(0);
+}
+
+async function openCatalog() {
+  showCatalogModal.value = true;
+  catalogError.value = '';
+  await loadCatalogFolders();
+  if (!catalogRows.value.length) await loadCatalog(0);
+}
+
+function resetCatalogFilters() {
+  catalogFilters.model = '';
+  catalogFilters.articul = '';
+  catalogFilters.naim = '';
+  catalogFilters.brand_manager = [];
+  for (const lvl of CATALOG_LEVELS) catalogFilters[lvl.key] = [];
+  loadCatalog(0);
+}
+
+// Ответы могут накладываться (быстрые клики по пагинации, смена фильтра во
+// время загрузки), а порядок их прихода не гарантирован — счётчик отбрасывает
+// устаревшие, иначе в таблице оказалась бы не та страница, что в счётчике.
+let catalogRequestSeq = 0;
+
+async function loadCatalog(offset: number) {
+  const seq = ++catalogRequestSeq;
+  catalogLoading.value = true;
+  catalogError.value = '';
+  try {
+    const body: Record<string, any> = {
+      limit: catalogLimit.value,
+      offset: Math.max(0, offset),
+      all_columns: catalogAllColumns.value,
+      all_versions: catalogAllVersions.value,
+    };
+    for (const field of ['model', 'articul', 'naim']) {
+      const value = String(catalogFilters[field] || '').trim();
+      if (value) body[field] = value;
+    }
+    if ((catalogFilters.brand_manager as string[]).length) {
+      body.brand_manager = catalogFilters.brand_manager;
+    }
+    for (const lvl of CATALOG_LEVELS) {
+      const sel = catalogFilters[lvl.key] as string[];
+      if (sel.length) body[lvl.key] = sel;
+    }
+
+    const res = await $fetch<{ data: any[]; total: number; columns: any[]; offset: number }>(
+      `${apiBase.value}/api/cost/models-catalog`,
+      { method: 'POST', body, headers: fetchHeaders.value }
+    );
+    if (seq !== catalogRequestSeq) return;
+    catalogRows.value = res.data || [];
+    // Колонки приходят вместе с данными: их состав задаёт сервер (основные или
+    // все поля представления), и он же знает подписи.
+    if (res.columns?.length) catalogColumns.value = res.columns;
+    catalogTotal.value = res.total || 0;
+    catalogOffset.value = res.offset ?? Math.max(0, offset);
+  } catch (e: any) {
+    if (seq !== catalogRequestSeq) return;
+    console.error('[cost] models-catalog failed', e);
+    const status = e?.statusCode || e?.status || e?.response?.status;
+    const detail = e?.data?.detail || e?.message;
+    catalogError.value = `Не удалось загрузить справочник${status ? ` (HTTP ${status})` : ''}`
+      + `${detail ? `: ${detail}` : ''}`;
+    catalogRows.value = [];
+    catalogTotal.value = 0;
+  } finally {
+    if (seq === catalogRequestSeq) catalogLoading.value = false;
+  }
+}
+
+// Числовые колонки выравниваем вправо. Тип берём по значению первой непустой
+// строки, а не по списку имён: состав колонок задаёт сервер и он меняется.
+const catalogNumericColumns = computed(() => {
+  const numeric = new Set<string>();
+  for (const col of catalogColumns.value) {
+    for (const row of catalogRows.value) {
+      const value = row[col.key];
+      if (value === null || value === undefined || value === '') continue;
+      if (typeof value === 'number') numeric.add(col.key);
+      break;
+    }
+  }
+  return numeric;
+});
+
+function isCatalogNumericColumn(key: string): boolean {
+  return catalogNumericColumns.value.has(key);
+}
+
+function formatCatalogValue(value: any): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'number') {
+    return Number.isInteger(value)
+      ? value.toLocaleString('ru-RU')
+      : value.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  }
+  return String(value);
+}
+
 // ── Details modal ────────────────────────────────────────────────────────────
 const showDetailsModal = ref(false);
 const detailsModel = ref('');
 const detailsArticul = ref('');
-/** Что собирает детализация: все артикулы модели или все модели артикула.
+const detailsConstruction = ref('');
+
+/** Конструкция ЧНИ — часть модели до первого дефиса: «107K-1916» → «107K».
  *
- * Второй режим нужен ЧНИ («Носки&Колготки», Orodoro): там артикул — общая
- * вязка, а модель — её цветовой/размерный вариант, и один артикул тянет до 30
- * моделей. Сравнивать себестоимость надо между ними, а не между артикулами. */
-const detailsScope = ref<'model' | 'articul'>('model');
-const detailsScopeKey = computed(() =>
-  detailsScope.value === 'articul' ? detailsArticul.value : detailsModel.value
-);
+ * Правило заказчика от 09.09.2026: это мужской, женский или детский носок
+ * определённого кроя. Если дефиса нет (так устроены модели Orodoro — «224»,
+ * «447 TS»), конструкцией считаем модель целиком, и режим совпадёт с разбором
+ * по модели. */
+function constructionOf(model: string): string {
+  const m = String(model || '').trim();
+  const dash = m.indexOf('-');
+  return dash > 0 ? m.slice(0, dash) : m;
+}
+
+/** Что собирает детализация: артикулы модели, модели артикула или всю конструкцию.
+ *
+ * Второй и третий режимы нужны ЧНИ («Носки&Колготки», Orodoro), где иерархия
+ * номенклатуры устроена иначе: артикул — общая вязка, модель — её
+ * цветовой/размерный вариант (до 30 моделей на артикул), а конструкция
+ * объединяет и модели, и артикулы (у крупнейшей, «700K», 99 моделей и 90
+ * артикулов). Сравнивать себестоимость надо внутри этих группировок. */
+const detailsScope = ref<'model' | 'articul' | 'construction'>('model');
+const detailsScopeKey = computed(() => (
+  detailsScope.value === 'articul' ? detailsArticul.value
+  : detailsScope.value === 'construction' ? detailsConstruction.value
+  : detailsModel.value
+));
+const DETAILS_SCOPE_HINT: Record<string, string> = {
+  model: 'модель', articul: 'артикул', construction: 'конструкция',
+};
+
+/** Колонки меняющихся измерений: у конструкции меняются и модель, и артикул,
+ *  поэтому их число зависит от режима — см. шаблон и сборку попапа. */
+const detailsKeyColumns = computed<{ label: string; field: string }[]>(() => (
+  detailsScope.value === 'articul' ? [{ label: 'Модель', field: 'Модель' }]
+  : detailsScope.value === 'construction'
+    ? [{ label: 'Модель', field: 'Модель' }, { label: 'Артикул', field: 'Артикул' }]
+    : [{ label: 'Артикул', field: 'Артикул' }]
+));
 const detailDateFrom = ref('');
 const detailDateTo = ref('');
 const detailCalcSign = ref<string[]>([]);
@@ -4234,8 +4662,13 @@ const detailsFilterConfig = [
   { key: 'task_num', label: '№ задания', field: 'Номер задания производства' },
 ];
 
-/** Измерение, зафиксированное текущим режимом: его фильтр и колонка не нужны. */
-const detailsFixedKey = computed(() => (detailsScope.value === 'articul' ? 'articul' : 'model'));
+/** Измерения, зафиксированные текущим режимом: их фильтры и колонки не нужны.
+ *  У конструкции не зафиксировано ни одно — показываем оба фильтра. */
+const detailsHiddenFilterKeys = computed<string[]>(() => (
+  detailsScope.value === 'articul' ? ['articul']
+  : detailsScope.value === 'construction' ? []
+  : ['model']
+));
 
 const DET_COL_FILTER_KEYS = detailsFilterConfig.map((c) => c.key);
 
@@ -4313,8 +4746,10 @@ async function openDetails(row: any) {
   if (!model) return;
   detailsModel.value = model;
   detailsArticul.value = String(row['Артикул'] || '').trim();
+  detailsConstruction.value = constructionOf(model);
   // Режим всегда начинаем с модели: так детализация открывается ровно тем же,
-  // чем открывалась всегда, а расширение до артикула — осознанный клик.
+  // чем открывалась всегда, а расширение до артикула или конструкции —
+  // осознанный клик.
   detailsScope.value = 'model';
 
   // Copy current main filters as defaults
@@ -4338,7 +4773,9 @@ async function loadDetailsData() {
   try {
     const body: Record<string, any> = detailsScope.value === 'articul'
       ? { scope: 'articul', articul: detailsArticul.value }
-      : { scope: 'model', model: detailsModel.value };
+      : detailsScope.value === 'construction'
+        ? { scope: 'construction', construction: detailsConstruction.value }
+        : { scope: 'model', model: detailsModel.value };
     if (detailDateFrom.value) body.date_from = detailDateFrom.value;
     if (detailDateTo.value) body.date_to = detailDateTo.value;
     if (detailCalcSign.value.length) body.calc_sign = detailCalcSign.value;
@@ -4396,22 +4833,25 @@ async function openRawRows(row: any) {
 }
 
 /** Переключить режим детализации и перезагрузить данные. */
-async function setDetailsScope(scope: 'model' | 'articul') {
+async function setDetailsScope(scope: 'model' | 'articul' | 'construction') {
   if (detailsScope.value === scope) return;
   if (scope === 'articul' && !detailsArticul.value) return;
+  if (scope === 'construction' && !detailsConstruction.value) return;
   detailsScope.value = scope;
   await loadDetailsData();
 }
 
-/** Сколько разных моделей попало в выборку — видно, стоило ли переключаться. */
-const detailsModelsCount = computed(() => {
+/** Сколько разных значений попало в выборку — видно, стоило ли переключаться. */
+function detailsDistinctCount(field: string): number {
   const seen = new Set<string>();
   for (const r of detailsFilteredData.value) {
-    const v = String(r['Модель'] ?? '').trim();
+    const v = String(r[field] ?? '').trim();
     if (v) seen.add(v);
   }
   return seen.size;
-});
+}
+const detailsModelsCount = computed(() => detailsDistinctCount('Модель'));
+const detailsArticulsCount = computed(() => detailsDistinctCount('Артикул'));
 
 function resetDetailsFilters() {
   detailDateFrom.value = '';
@@ -4425,14 +4865,15 @@ function openDetailsInNewTab() {
   if (!w) return;
 
   const rows = detailsFilteredData.value;
-  const byArticul = detailsScope.value === 'articul';
-  // Ключ и подпись окна берём из текущего режима: попап должен открыться тем же,
-  // что видно в модалке, и его кнопка «Загрузить данные» — дотягивать то же.
+  // Ключ, подпись окна и набор столбцов берём из текущего режима: попап должен
+  // открыться тем же, что видно в модалке, а его кнопка «Загрузить данные» —
+  // дотягивать то же.
   const scopeKey = detailsScopeKey.value;
-  const scopeTitle = (byArticul ? 'Детализация по артикулу: ' : 'Детализация: ') + scopeKey;
-  // Столбец меняющегося измерения — как в модалке.
-  const keyColLabel = byArticul ? 'Модель' : 'Артикул';
-  const keyColField = byArticul ? 'Модель' : 'Артикул';
+  const scopeTitle = ({
+    articul: 'Детализация по артикулу: ',
+    construction: 'Детализация по конструкции: ',
+  }[detailsScope.value] || 'Детализация: ') + scopeKey;
+  const keyCols = detailsKeyColumns.value;
   const hasData = rows && rows.length > 0;
 
   function nf(v) {
@@ -4453,53 +4894,48 @@ function openDetailsInNewTab() {
     return `background-color:rgb(${Math.round(240 - 190 * t)},${Math.round(245 - 145 * t)},${Math.round(255 - 35 * t)});text-align:right;`;
   }
 
+  // Текстовые колонки попапа одним списком: их число зависит от режима (у
+  // конструкции меняются и модель, и артикул), поэтому и статическая таблица, и
+  // rt() внутри попапа, и шапка, и фильтры собираются из него, а не по
+  // фиксированным индексам.
+  //   date   — значение приводится к дате (обрезается время);
+  //   filter — попадает в набор фильтров колонок (у «Страны пр-ва» фильтра нет).
+  const popupTextCols: { key?: string; label: string; field: string; date?: boolean; filter?: boolean }[] = [
+    { key: 'col_date', label: 'Дата', field: 'дата расчета', date: true, filter: true },
+    { key: 'calc_sign', label: 'Пр.кальк', field: 'Признак калькуляции', filter: true },
+    ...keyCols.map((c) => ({
+      key: c.field === 'Модель' ? 'model' : 'articul',
+      label: c.label,
+      field: c.field,
+      filter: true,
+    })),
+    { key: 'name', label: 'Наименование', field: 'Наименование модели', filter: true },
+    { key: 'task_num', label: '№ задания', field: 'Номер задания производства', filter: true },
+    { key: 'release_date', label: 'Дата выпуска', field: 'Дата выпуска', date: true, filter: true },
+    // Пожелание № 16: страна производства; фильтра по ней нет.
+    { label: 'Страна', field: 'Страна пр-ва' },
+  ];
+
   // Build static table rows (always visible, JS-overridable)
   let tableHtml = '';
   for (let i = 0; i < (hasData ? rows.length : 0); i++) {
     const r = rows[i];
-    let dv = r['\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430'];
-    if (dv) {
-      const s = String(dv);
-      dv = s.includes('T') ? s.split('T')[0] : s;
-    } else { dv = '\u2014'; }
-    let dvRel = r['\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430'];
-    if (dvRel) {
-      const s = String(dvRel);
-      dvRel = s.includes('T') ? s.split('T')[0] : s;
-    } else { dvRel = '\u2014'; }
-    const cells = [
-      dv,
-      r['\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438'] || '\u2014',
-      r[keyColField] || '\u2014',
-      r['\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435 \u043C\u043E\u0434\u0435\u043B\u0438'] || '\u2014',
-      r['\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430'] || '\u2014',
-      dvRel,
-      r['\u0421\u0442\u0440\u0430\u043D\u0430 \u043F\u0440-\u0432\u0430'] || '\u2014',
-      nf(r['\u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431.']),
-      nf(r['\u041E\u043F\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431.']),
-      nf(r['\u041E\u0441\u043D. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431.']),
-      nf(r['\u0412\u0441\u043F\u043E\u043C. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431.']),
-      nf(r['\u041F\u043E\u0448\u0438\u0432, \u0440\u0443\u0431.']),
-      nf(r['\u0420\u0430\u0441\u043A\u0440\u043E\u0439, \u0440\u0443\u0431.']),
-      nf(r['\u0414\u0435\u043A\u043E\u0440, \u0440\u0443\u0431.']),
-      nf(r['\u0412\u044F\u0437\u0430\u043D\u0438\u0435, \u0440\u0443\u0431.']),
-      nf(r['\u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C, \u0440\u0443\u0431.']),
-      nf(r['\u041D\u0430\u0446\u0435\u043D\u043A\u0430, \u0440\u0443\u0431.']),
-      r['\u041D\u0430\u0446\u0435\u043D\u043A\u0430, %'] ?? '',
-      r['\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u044C, %'] ?? '',
-    ];
+    function popupDate(v: any): string {
+      if (!v) return '—';
+      const str = String(v);
+      return str.includes('T') ? str.split('T')[0] : str;
+    }
+    const textCells = popupTextCols.map((c) => (
+      c.date ? popupDate(r[c.field]) : (r[c.field] || '—')
+    ));
     const POPUP_NUM_FIELDS = [
       'Розничная цена, руб.', 'Оптовая цена, руб.', 'Осн. материалы, руб.', 'Вспом. материалы, руб.',
       'Пошив, минуты', 'Пошив, руб.', 'Раскрой, руб.', 'Декор, руб.', 'Вязание, руб.',
       'Себестоимость, руб.', 'Наценка, руб.', 'Наценка, %', 'Маржинальность, %',
     ];
-    // Первые 7 ячеек — текстовые (дата, признак, ключ, наименование, задание,
-    // дата выпуска, страна), дальше числа; два последних поля — проценты, их
-    // не форматируем как деньги.
-    const POPUP_TEXT_CELLS = 7;
     const POPUP_PCT_FROM = POPUP_NUM_FIELDS.length - 2;
     tableHtml += '<tr>';
-    for (let ci = 0; ci < POPUP_TEXT_CELLS; ci++) tableHtml += '<td>' + escHtml(String(cells[ci])) + '<\/td>';
+    for (let ci = 0; ci < textCells.length; ci++) tableHtml += '<td class="txt">' + escHtml(String(textCells[ci])) + '<\/td>';
     for (let ci = 0; ci < POPUP_NUM_FIELDS.length; ci++) {
       const field = POPUP_NUM_FIELDS[ci];
       const rawVal = r[field];
@@ -4510,17 +4946,12 @@ function openDetailsInNewTab() {
     tableHtml += '<\/tr>';
   }
 
-  // Filter config
-  const filterFields = [
-    { key: 'col_date', label: '\u0414\u0430\u0442\u0430', field: '\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430' },
-    { key: 'calc_sign', label: '\u041F\u0440.\u043A\u0430\u043B\u044C\u043A', field: '\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438' },
-    // Третье поле — меняющееся измерение: rt() в попапе рендерит третью
-    // колонку именно по FF[2], поэтому подмена здесь разворачивает и таблицу, и фильтр.
-    { key: byArticul ? 'model' : 'articul', label: keyColLabel, field: keyColField },
-    { key: 'name', label: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435', field: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435 \u043C\u043E\u0434\u0435\u043B\u0438' },
-    { key: 'task_num', label: '\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F', field: '\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430' },
-    { key: 'release_date', label: '\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430', field: '\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430' },
-  ];
+  // Фильтруемые колонки — те же текстовые колонки, что и в таблице (кроме
+  // «Страны пр-ва», у которой фильтра нет). Один источник, поэтому набор
+  // фильтров и набор колонок не могут разойтись.
+  const filterFields = popupTextCols
+    .filter((c) => c.filter)
+    .map((c) => ({ key: c.key as string, label: c.label, field: c.field }));
 
   // Build API-level filter HTML (date range, calc_sign multiselect, load button)
   let filterHtml = '<div class="filter-section-api" id="filterApi">';
@@ -4552,7 +4983,10 @@ var API_BASE=${JSON.stringify(apiBase.value)};
 var FK=${JSON.stringify(filterFields.map(f => f.key))};
 var FF=${JSON.stringify(filterFields.map(f => f.field))};
 var NF=${JSON.stringify(DETAILS_NUMERIC_FIELDS)};
-var CTRY=${JSON.stringify('Страна пр-ва')};
+// Текстовые колонки таблицы: поля и признак «это дата». Их число зависит от
+// режима, поэтому tc() идёт по массиву, а не по фиксированным индексам.
+var TF=${JSON.stringify(popupTextCols.map((c) => c.field))};
+var TD=${JSON.stringify(popupTextCols.map((c) => !!c.date))};
 // Compute per-column ranges for heatmap
 var RG={};
 for(var fi=0;fi<NF.length;fi++){
@@ -4610,18 +5044,21 @@ function msUpdateUI(k){
 }
 
 // Build table rows
+// Текстовые ячейки одной строки — по списку колонок текущего режима.
+function tc(r){
+  var h="";
+  for(var i=0;i<TF.length;i++){
+    var v=TD[i]?gv(r,TF[i]):(r[TF[i]]||"");
+    h+="<td class=\\"txt\\">"+escHtml(v||"\\u2014")+"<\\/td>";
+  }
+  return h;
+}
 function rt(rr){
   var h="";
   for(var i=0;i<rr.length;i++){
     var r=rr[i];
     h+="<tr>"
-      +"<td>"+gv(r,FF[0])+"<\\/td>"
-      +"<td>"+(r[FF[1]]||"\\u2014")+"<\\/td>"
-      +"<td>"+(r[FF[2]]||"\\u2014")+"<\\/td>"
-      +"<td>"+(r[FF[3]]||"\\u2014")+"<\\/td>"
-      +"<td>"+(r[FF[4]]||"\\u2014")+"<\\/td>"
-      +"<td>"+gv(r,FF[5])+"<\\/td>"
-      +"<td>"+(r[CTRY]||"\\u2014")+"<\\/td>"
+      +tc(r)
       +"<td style=\\""+hb(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."],"\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."])+"<\\/td>"
@@ -4771,7 +5208,8 @@ async function loadData(){
     var df=document.getElementById("f_dateFrom").value;
     var dt=document.getElementById("f_dateTo").value;
     var cs=MS_API_CS;
-    var body=SCOPE==="articul"?{scope:"articul",articul:SCOPE_KEY}:{scope:"model",model:SCOPE_KEY};
+    var body={scope:SCOPE};
+    body[SCOPE==="articul"?"articul":SCOPE==="construction"?"construction":"model"]=SCOPE_KEY;
     if(df)body.date_from=df;
     if(dt)body.date_to=dt;
     if(cs.length)body.calc_sign=cs;
@@ -4853,7 +5291,7 @@ document.getElementById("loadBtn").onclick=loadData;
     'table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}' +
     'th{background:#f8f9fa;border-bottom:2px solid #dee2e6;padding:8px;text-align:center;font-weight:700;font-size:11px;position:sticky;top:0}' +
     'td{padding:6px 8px;border-bottom:1px solid #eee;text-align:right}' +
-    'td:nth-child(-n+6){text-align:left}' +
+    'td.txt{text-align:left}' +
     'tbody tr:hover{background:#f1f3f5}' +
     '.count{padding:8px 24px;font-size:12px;color:#6c757d;border-top:1px solid #eee}' +
     '<\/style><\/head><body>' +
@@ -4862,7 +5300,7 @@ document.getElementById("loadBtn").onclick=loadData;
       '<div class="filters">' + filterHtml + '<\/div>' +
       '<div class="content">' +
         '<table><thead><tr>' +
-          '<th>\u0414\u0430\u0442\u0430<\/th><th>\u041F\u0440.\u043A\u0430\u043B\u044C\u043A<\/th><th>' + escHtml(keyColLabel) + '<\/th><th>\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435<\/th><th>\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F<\/th><th>\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430<\/th><th>\u0421\u0442\u0440\u0430\u043D\u0430<\/th>' +
+          popupTextCols.map((c) => '<th>' + escHtml(c.label) + '<\/th>').join('') +
           '<th>\u0420\u043E\u0437\u043D\u0438\u0446\u0430<\/th><th>\u041E\u043F\u0442<\/th><th>\u041E\u0441\u043D.\u043C\u0430\u0442<\/th><th>\u0412\u0441\u043F\u043E\u043C.<\/th><th>\u041F\u043E\u0448\u0438\u0432, \u043C\u0438\u043D<\/th><th>\u041F\u043E\u0448\u0438\u0432<\/th><th>\u0420\u0430\u0441\u043A\u0440\u043E\u0439<\/th><th>\u0414\u0435\u043A\u043E\u0440<\/th><th>\u0412\u044F\u0437\u0430\u043D\u0438\u0435<\/th>' +
           '<th>\u0421\u0435\u0431\u0435\u0441\u0442.<\/th><th>\u041D\u0430\u0446\u0435\u043D\u043A\u0430<\/th><th>\u041D\u0430\u0446\u0435\u043D\u043A\u0430%<\/th><th>\u041C\u0430\u0440\u0436\u0430%<\/th>' +
         '<\/tr><\/thead>' +
@@ -6786,6 +7224,9 @@ const STAGE_LEGEND: StageInfo[] = [
   { key: 'returned', icon: '🟡', label: 'Цена БМ отправлена на корректировку экономисту', short: 'на корректировке' },
   { key: 'rejected', icon: '🔴', label: 'Отклонена руководителем ПЭО',                 short: 'отклонена' },
   { key: 'dwh',      icon: '🟣', label: 'Расценённая калькуляция загружена в DWH («лису»)', short: 'в DWH' },
+  // Не этап, а состояние изделия: модель/артикул сняты с актуальности
+  // калькулятором или ПЭО. Показывается поверх любого этапа.
+  { key: 'obsolete', icon: '⚫', label: 'Неактуальная модель/артикул',                   short: 'неактуальна' },
 ];
 const STAGE_NONE: StageInfo = { key: 'none', icon: '⚪', label: 'Ещё не согласована', short: 'нет статуса' };
 const STAGE_LEGEND_TEXT = 'Этапы прохождения калькуляции:\n' +
@@ -6794,6 +7235,7 @@ const STAGE_LEGEND_TEXT = 'Этапы прохождения калькуляц�
 
 function rowStage(row: any): StageInfo {
   if (!row) return STAGE_NONE;
+  if (row.obsolete) return STAGE_LEGEND[5];
   // Переоткрытая админом калькуляция снова в процессе: запись в DWH есть,
   // но показываем не её, а текущий шаг второго круга.
   if (row._in_dwh && !row._reopened) return STAGE_LEGEND[4];
@@ -6813,6 +7255,7 @@ function stageTitle(row: any): string {
     case 'returned':
     case 'rejected': return `${s.label}${who}`;
     case 'dwh':      return s.label + (row?._reopened ? ', открыта на исправление' : '');
+    case 'obsolete': return obsoleteTitle(row);
     default:         return s.label;
   }
 }
@@ -6852,6 +7295,15 @@ const replaceHeaderTitle = computed(() =>
   (replaceInfo.value && !replaceInfo.value.bitrix_enabled ? '\nВнимание: Битрикс не настроен, сообщения не уходят' : '')
 );
 
+/** Поставить отметку может любой с правом; снять уже стоящую — только
+ * администратор (заказчик, 09.09.2026: калькулятор, ПЭО и БМ снимали галочку
+ * после отправки). Сервер проверяет то же самое и отвечает 403. */
+function canToggleReplace(row: any): boolean {
+  if (!can('cost:articul_replace')) return false;
+  if (row.replace_needed && !can('cost:admin')) return false;
+  return true;
+}
+
 function replaceTitle(row: any): string {
   if (!row.replace_needed) {
     if (!can('cost:articul_replace')) return 'Отметку «нужна замена артикула» ставит бренд-менеджер (а также ПЭО и калькулятор)';
@@ -6866,14 +7318,66 @@ function replaceTitle(row: any): string {
     ? `\nУведомление отправлено ${fmtDt(row.replace_notified_at)}: ${replaceRecipientsText(row)}`
     : '\nУведомление не отправлено';
   if (row.replace_notify_error) s += `\nНе дошло: ${row.replace_notify_error}`;
+  if (!row.replace_notified_at && can('cost:articul_replace')) s += '\nКлик по ⚠ — отправить ещё раз';
+  if (!can('cost:admin')) s += '\nСнять отметку может только администратор';
   return s;
+}
+
+/** Повторная отправка сообщения без снятия отметки: сервер по needed=true
+ * поверх стоящей отметки шлёт уведомление заново (комментарий сохраняется). */
+async function resendReplace(row: any) {
+  const k = calcRowKey(row);
+  if (replaceBusy[k]) return;
+  replaceBusy[k] = true;
+  try {
+    const res = await postReplace(row, true, row.replace_comment || '');
+    applyReplaceResult(row, res, true);
+  } catch (e: any) {
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    delete replaceBusy[k];
+  }
+}
+
+async function postReplace(row: any, needed: boolean, comment: string): Promise<any> {
+  return await $fetch<any>(`${apiBase.value}/api/cost/articul-replace`, {
+    method: 'POST',
+    headers: fetchHeaders.value,
+    body: {
+      model: row['Модель'], articul: row['Артикул'],
+      calc_sign: row['Признак калькуляции'], plan_id: row['PLAN_ID'],
+      task_number: row['Номер задания производства'],
+      needed, comment,
+      context: {
+        model_name: row['Наименование модели'], level01: row['Level 01'],
+        country: row['Страна пр-ва'], brand_manager: row['Бренд-менеджер'],
+      },
+    },
+  });
+}
+
+function applyReplaceResult(row: any, res: any, checked: boolean) {
+  Object.assign(row, {
+    replace_needed: res.replace_needed, replace_comment: res.replace_comment,
+    replace_set_by: res.replace_set_by, replace_set_at: res.replace_set_at,
+    replace_notified_at: res.replace_notified_at, replace_notify_error: res.replace_notify_error,
+  });
+  // Отметка стоит в любом случае; баннер — только про доставку сообщения.
+  if (checked && res.notify && res.notify.status !== 'sent') {
+    lastError.value = `Отметка о замене артикула сохранена, но сообщение в Битрикс не дошло ` +
+      `(адресаты: ${(res.notify.recipients || []).join(', ') || '—'}): ${res.notify.error || res.notify.status}`;
+  } else if (checked && res.notify && res.notify.error) {
+    // Дошло, но не всем (например, у одного из адресатов нет ID в Битриксе):
+    // отметка стоит, но человеку стоит знать, чего не хватило.
+    lastError.value = `Отметка о замене артикула сохранена, сообщение в Битрикс отправлено не всем: ${res.notify.error}`;
+  }
 }
 
 async function toggleReplace(row: any, ev: Event) {
   const input = ev.target as HTMLInputElement;
   const checked = input.checked;
   const k = calcRowKey(row);
-  if (replaceBusy[k]) { input.checked = !!row.replace_needed; return; }
+  if (replaceBusy[k] || !canToggleReplace(row)) { input.checked = !!row.replace_needed; return; }
   let comment = '';
   if (checked) {
     const c = window.prompt(
@@ -6887,39 +7391,73 @@ async function toggleReplace(row: any, ev: Event) {
   }
   replaceBusy[k] = true;
   try {
-    const res = await $fetch<any>(`${apiBase.value}/api/cost/articul-replace`, {
-      method: 'POST',
-      headers: fetchHeaders.value,
-      body: {
-        model: row['Модель'], articul: row['Артикул'],
-        calc_sign: row['Признак калькуляции'], plan_id: row['PLAN_ID'],
-        task_number: row['Номер задания производства'],
-        needed: checked, comment,
-        context: {
-          model_name: row['Наименование модели'], level01: row['Level 01'],
-          country: row['Страна пр-ва'], brand_manager: row['Бренд-менеджер'],
-        },
-      },
-    });
-    Object.assign(row, {
-      replace_needed: res.replace_needed, replace_comment: res.replace_comment,
-      replace_set_by: res.replace_set_by, replace_set_at: res.replace_set_at,
-      replace_notified_at: res.replace_notified_at, replace_notify_error: res.replace_notify_error,
-    });
-    // Отметка стоит в любом случае; баннер — только про доставку сообщения.
-    if (checked && res.notify && res.notify.status !== 'sent') {
-      lastError.value = `Отметка о замене артикула сохранена, но сообщение в Битрикс не дошло ` +
-        `(адресаты: ${(res.notify.recipients || []).join(', ') || '—'}): ${res.notify.error || res.notify.status}`;
-    } else if (checked && res.notify && res.notify.error) {
-      // Дошло, но не всем (например, у одного из адресатов нет ID в Битриксе):
-      // отметка стоит, но человеку стоит знать, чего не хватило.
-      lastError.value = `Отметка о замене артикула сохранена, сообщение в Битрикс отправлено не всем: ${res.notify.error}`;
-    }
+    const res = await postReplace(row, checked, comment);
+    applyReplaceResult(row, res, checked);
   } catch (e: any) {
     input.checked = !!row.replace_needed;
     lastError.value = e?.data?.detail || e?.message || String(e);
   } finally {
     delete replaceBusy[k];
+  }
+}
+
+// ── Статус «Неактуальная модель/артикул» (09.09.2026) ───────────────────────
+// Ставят калькулятор и ПЭО (право cost:obsolete). Ключ — модель + артикул:
+// статус ложится на все калькуляции изделия, поэтому после ответа сервера
+// обновляем все строки той же пары, а не только ту, где стояла галочка.
+// Строка серая (tr.row-obsolete), в «Этапе» ⚫, в фильтре статусов — отдельное
+// значение (серверный peo_filter='obsolete').
+const OBSOLETE_HEADER_TITLE = 'Неактуальная модель/артикул. Отмечают калькулятор и ПЭО; статус ложится на все калькуляции этой модели и артикула, строки подсвечиваются серым';
+const obsoleteBusy = reactive<Record<string, boolean>>({});
+const obsoleteKey = (row: any) => `${row?.['Модель'] || ''}\u0000${row?.['Артикул'] || ''}`;
+
+function obsoleteTitle(row: any): string {
+  const fmtDt = (v: any) => (v ? new Date(v).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '');
+  if (!row?.obsolete) {
+    return can('cost:obsolete')
+      ? 'Отметить модель/артикул как неактуальные (для всех калькуляций пары)'
+      : 'Статус «Неактуальная модель/артикул» ставят калькулятор и ПЭО';
+  }
+  let s = `Неактуальная модель/артикул — отметил(а) ${row.obsolete_set_by || '—'} ${fmtDt(row.obsolete_set_at)}`.trim();
+  if (row.obsolete_comment) s += `\nКомментарий: ${row.obsolete_comment}`;
+  if (can('cost:obsolete')) s += '\nСнять галочку — вернуть в актуальные';
+  return s;
+}
+
+async function toggleObsolete(row: any, ev: Event) {
+  const input = ev.target as HTMLInputElement;
+  const checked = input.checked;
+  const k = obsoleteKey(row);
+  if (obsoleteBusy[k] || !can('cost:obsolete')) { input.checked = !!row.obsolete; return; }
+  let comment = '';
+  if (checked) {
+    const c = window.prompt(
+      `Неактуальная модель/артикул: ${row['Модель'] || ''} / ${row['Артикул'] || ''}.\nСтатус ляжет на все калькуляции этой пары.\nКомментарий (можно оставить пустым):`,
+      row.obsolete_comment || '',
+    );
+    if (c === null) { input.checked = !!row.obsolete; return; }
+    comment = c.trim();
+  }
+  obsoleteBusy[k] = true;
+  try {
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/obsolete`, {
+      method: 'POST',
+      headers: fetchHeaders.value,
+      body: { model: row['Модель'], articul: row['Артикул'], obsolete: checked, comment },
+    });
+    const patch = {
+      obsolete: res.obsolete, obsolete_comment: res.obsolete_comment,
+      obsolete_set_by: res.obsolete_set_by, obsolete_set_at: res.obsolete_set_at,
+    };
+    for (const r of allAggregated.value) {
+      if (r['Модель'] === row['Модель'] && r['Артикул'] === row['Артикул']) Object.assign(r, patch);
+    }
+    Object.assign(row, patch);
+  } catch (e: any) {
+    input.checked = !!row.obsolete;
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    delete obsoleteBusy[k];
   }
 }
 
@@ -8703,6 +9241,9 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .table-wrap { overflow-x: auto; max-width: 100%; }
 .details-table-wrap { overflow: auto; flex: 1; }
 .details-count { padding: var(--sp-2) var(--sp-5); font-size: var(--fs-xs); color: var(--text-muted); border-top: 1px solid var(--border); flex-shrink: 0; }
+.catalog-toolbar { padding: var(--sp-2) var(--sp-5); display: flex; gap: var(--sp-4); align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--border); background: var(--bg-surface-2); flex-shrink: 0; }
+.catalog-pager { margin-left: auto; display: flex; gap: var(--sp-2); align-items: center; }
+.catalog-count { font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; }
 .details-scope-hint { font-size: var(--fs-2xs, 10px); font-weight: var(--fw-normal, 400); color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; margin-left: var(--sp-2); }
 .details-scope-switch { display: inline-flex; border: 1px solid var(--border); border-radius: var(--rd-2); overflow: hidden; }
 .details-scope-switch button { border: none; background: var(--bg-surface); color: var(--text-muted); font-size: var(--fs-xs, 11px); font-weight: var(--fw-medium); padding: 4px 10px; cursor: pointer; white-space: nowrap; }
@@ -9516,6 +10057,14 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .replace-mail { font-size:13px; line-height:1; }
 .replace-mail--ok { color: var(--pos, #16a34a); }
 .replace-mail--err { color: var(--warn, #b76e00); }
+.replace-mail--resend { cursor:pointer; }
+.replace-mail--resend:hover { text-decoration: underline; }
+.col-obsolete { text-align:center; }
+/* Неактуальная модель/артикул: серый фон поверх остальных подсветок строки,
+   приглушённый текст. Стоит после row-pending/row-audit, чтобы выигрывать. */
+tr.row-obsolete { background-color: color-mix(in srgb, #6b7280 24%, transparent) !important; color: var(--text-muted, #6b7280); }
+tr.row-obsolete.selected { background-color: color-mix(in srgb, #6b7280 34%, transparent) !important; }
+.stage-obsolete { background: color-mix(in srgb, #374151 20%, transparent); }
 
 /* Согласование по постановлению 713 (пожелание № 8) */
 .col-reg713 { text-align:center; }
