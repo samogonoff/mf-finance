@@ -394,6 +394,10 @@ func main() {
 	// блокирующие проверки. До этого проверки жили только в интерфейсе, и форму
 	// можно было отправить мимо них — согласующий обязан был вернуть её, и
 	// процесс делал лишний круг.
+	// Режим гейта (ответ 41 от 10.09.2026): проверки считаются всегда, блокировка
+	// переключаемая. Дефолт — мягкий: на стенде форма не должна вставать из-за
+	// расхождения, о котором согласующий и так увидит предупреждение.
+	plansCards.WithSubmitStrict(cfg.PlansSubmitStrict)
 	plansCards.WithSubmitGate(plans.TemplateRetail, plans.NewRetailSubmitGate(plansRetail))
 	plansRetailH := plans.NewRetailHandler(plansRetail, plansPrincipal)
 

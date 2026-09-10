@@ -120,6 +120,13 @@ type Config struct {
 	PlansMpSalesTable   string // MP.dbo.sales (веса SALES/SALES_RUB, ключ EAN)
 	PlansMpPenaltyTable string // DWH.dbo.wb_dimensions_penalty (НЕ копия в MP)
 
+	// PlansSubmitStrict — жёсткий режим гейта отправки форм (ответ аналитика 41
+	// от 10.09.2026): замечания и несошедшиеся сверки БЛОКИРУЮТ отправку на
+	// согласование. По умолчанию выключено — мягкий режим, в котором проверки
+	// считаются и показываются, но процесс не держат. Включать к промышленной
+	// эксплуатации.
+	PlansSubmitStrict bool
+
 	// Форма «Расходы ЦП» (TPL-CFO-EXP, этап 1.5). Источники — тот же OLAP,
 	// что у остальных форм модуля. Пусто или PlansMock=1 → фикстуры exp_mock.go.
 	PlansExpCostsProc string // процедура затрат: ZATRATY_DLYA_OKSANY_BYSTRYE (база BUDGETING)
@@ -221,6 +228,8 @@ func Load() Config {
 		PlansMpPenaltyTable: env("PLANS_MP_PENALTY_TABLE", "DWH.dbo.wb_dimensions_penalty"),
 		PlansPublishTargets: splitCSV(env("PLANS_PUBLISH_TARGETS",
 			"Budgeting.dbo.VFORMTOLOADTAKTTARGET,Budgeting.dbo.FormToLoaTaktTarget")),
+
+		PlansSubmitStrict: env("PLANS_SUBMIT_STRICT", "") == "1",
 
 		PlansExpCostsProc: env("PLANS_EXP_COSTS_PROC", "ZATRATY_DLYA_OKSANY_BYSTRYE"),
 		PlansExpCfoTable:  env("PLANS_EXP_CFO_TABLE", "FinDWH.dbo.[001 CodeCFO]"),

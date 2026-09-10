@@ -770,7 +770,8 @@ func (s *RetailService) Validate(ctx context.Context, p Principal, cardID int64)
 	}
 	return RetailValidationReport{
 		CardID: cardID, Blocking: blocking, Warnings: warnings,
-		CanSubmit: len(blocking) == 0, Reconciliations: sum.Reconciliations,
+		CanSubmit: len(blocking) == 0 || !s.submitStrict(),
+		Strict:    s.submitStrict(), Reconciliations: sum.Reconciliations,
 	}, nil
 }
 
@@ -807,4 +808,11 @@ func (s *RetailService) retailFx(ctx context.Context, nat, display string, year,
 		FactPrevYear: conv(year-1, month, FxScenarioFact),
 		Strategy:     conv(year, month, FxScenarioPlan),
 	}
+}
+
+// submitStrict — жёсткий ли режим гейта отправки (ответ 41 от 10.09.2026).
+// Режим живёт в оболочке процесса: гейт и отчёт валидаций обязаны отвечать
+// одинаково, иначе кнопка и плашка над ней разойдутся.
+func (s *RetailService) submitStrict() bool {
+	return s.cards != nil && s.cards.SubmitStrict()
 }

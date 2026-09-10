@@ -66,6 +66,10 @@
       </div>
     </div>
 
+    <p v-if="card && softWarning" class="cpp-soft">
+      <Icon name="lucide:triangle-alert" /> {{ softWarning }}
+    </p>
+
     <!-- ===== Действия по статусу ===== -->
     <div v-if="card" class="cpp-actions">
       <button
@@ -363,6 +367,14 @@ const props = withDefaults(
     canSubmit?: boolean;
     /** Чем именно заблокирована отправка — показываем рядом с кнопкой. */
     submitHint?: string;
+    /**
+     * Плашка мягкого режима (ответ аналитика 41 от 10.09.2026): «свод не
+     * сходится» с суммой расхождения. Показывается и заполняющему рядом с
+     * кнопкой отправки, и согласующему на следующем шаге — оба пункта ответа
+     * обязательны, поэтому плашка живёт в общей оболочке процесса, а не в
+     * шаблоне отдельной формы.
+     */
+    softWarning?: string;
   }>(),
   { canSubmit: true, submitHint: "" }
 );
@@ -665,6 +677,17 @@ defineExpose({ reload: load });
 .cpp-actions { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
 .cpp-sep { flex: 1; }
 .cpp-hint { font-size: var(--fs-2xs); color: var(--warn); }
+.cpp-soft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--rd-4);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--fs-sm);
+}
 
 .cpp-pub {
   border: 1px solid var(--border);
