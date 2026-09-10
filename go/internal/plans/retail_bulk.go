@@ -178,10 +178,12 @@ func ApplyRetailBulk(req RetailBulkRequest, ctx RetailBulkContext) (RetailBulkRe
 		err = bulkDistribute(&res, req, ctx, rows, months)
 	case BulkSalesIndex:
 		err = bulkSalesIndex(&res, req, ctx, rows, months)
-	case BulkPayroll:
-		err = bulkPayroll(&res, req, ctx, rows, months)
-	case BulkRent:
-		err = bulkRent(&res, req, ctx, rows, months)
+	case BulkPayroll, BulkRent:
+		// Ответ 35 (10.09.2026): расчёт ФОТ от продаж и аренда выполняются на
+		// этапе 1.5. Формулы оставлены в коде — их переиспользует форма 1.5, —
+		// но точка входа из формы продаж закрыта: иначе две формы считали бы
+		// одни статьи и писали их в один приёмник.
+		return res, fmt.Errorf("операция %q переехала на этап 1.5 «Расходы ЦП»", req.Op)
 	default:
 		return res, fmt.Errorf("неизвестная массовая операция %q", req.Op)
 	}

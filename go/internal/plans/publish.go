@@ -89,22 +89,27 @@ type PublishMapping struct {
 
 // PublishResult — итог публикации (и dry-run, и записи).
 type PublishResult struct {
-	CardID      int64            `json:"card_id"`
-	VersionNo   int              `json:"version_no"`
-	Mode        string           `json:"mode"`
-	Status      string           `json:"status"` // ok|failed|blocked
-	Target      string           `json:"target"`
-	RowsTotal   int              `json:"rows_total"`
-	RowsWritten int              `json:"rows_written"`
-	SumInput    float64          `json:"sum_input"`
-	SumTarget   float64          `json:"sum_target"`
-	Diff        float64          `json:"diff"`
-	Sandbox     bool             `json:"sandbox,omitempty"` // запись ушла в PG-песочницу, не в Budgeting
-	Error       string           `json:"error,omitempty"`
-	Unmapped    []string         `json:"unmapped,omitempty"` // строки формы без правила маппинга
-	Pending     []string         `json:"pending,omitempty"`  // правила есть, но выключены (ждут BI)
-	Preview     []PublishRow     `json:"preview,omitempty"`  // первые строки — для отчёта dry-run
-	Log         []PublishLogItem `json:"log,omitempty"`
+	CardID      int64    `json:"card_id"`
+	VersionNo   int      `json:"version_no"`
+	Mode        string   `json:"mode"`
+	Status      string   `json:"status"` // ok|failed|blocked
+	Target      string   `json:"target"`
+	RowsTotal   int      `json:"rows_total"`
+	RowsWritten int      `json:"rows_written"`
+	SumInput    float64  `json:"sum_input"`
+	SumTarget   float64  `json:"sum_target"`
+	Diff        float64  `json:"diff"`
+	Sandbox     bool     `json:"sandbox,omitempty"` // запись ушла в PG-песочницу, не в Budgeting
+	Error       string   `json:"error,omitempty"`
+	Unmapped    []string `json:"unmapped,omitempty"` // строки формы без правила маппинга
+	Pending     []string `json:"pending,omitempty"`  // правила есть, но выключены (ждут BI)
+	// Duplicates — пары «ЦФО + статья + месяц», пришедшие из РАЗНЫХ наборов
+	// формы. Ответ 34 (10.09.2026) прямо требует проверить дубли перед
+	// включением записи: свёртка по логическому ключу сложит их молча, и
+	// расхождение с формой станет заметно только в приёмнике.
+	Duplicates []string         `json:"duplicates,omitempty"`
+	Preview    []PublishRow     `json:"preview,omitempty"` // первые строки — для отчёта dry-run
+	Log        []PublishLogItem `json:"log,omitempty"`
 }
 
 // PublishLogItem — запись журнала публикаций.
@@ -187,6 +192,10 @@ func (s *CardService) Publish(ctx context.Context, cardID int64, mode string, ac
 	if err != nil {
 		return res, err
 	}
+
+	// Дубли считаем ДО свёртки: после неё два источника одной статьи уже сложены
+	// в одну сумму, и различить «так и задумано» от «посчитали дважды» нельзя.
+	res.Duplicates = ExpPublishDuplicates(rows)
 
 	mapped, rep := applyPublishMapping(c, rows, mappings)
 	res.RowsTotal = len(mapped)

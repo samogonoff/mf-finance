@@ -2,6 +2,7 @@ package plans
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -71,6 +72,8 @@ func expFilterFrom(r *http.Request) ExpFilter {
 		RegManager:  q.Get("reg_manager"),
 		Offset:      atoi("offset"),
 		Limit:       atoi("limit"),
+		Sort:        q.Get("sort"),
+		Desc:        q.Get("dir") == "desc",
 	}
 }
 
@@ -228,4 +231,80 @@ func (h *ExpHandler) RegistryDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, "exp_reg_delete", id)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// ValidateGet — GET /api/plans/exp/{cardId}/validate (ТЗ §8 и §9).
+func (h *ExpHandler) ValidateGet(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	rep, err := h.svc.Validate(r.Context(), h.principal(r), id)
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
+}
+
+// Export — GET /api/plans/exp/{cardId}/export (ТЗ §7.9). Выгружается ТЕКУЩАЯ
+// выборка: те же фильтры, что у формы.
+func (h *ExpHandler) Export(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	buf, name, err := h.svc.ExportForm(r.Context(), h.principal(r), id, expFilterFrom(r))
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	h.audit(r, "exp_export", id)
+	expXlsx(w, name, buf)
+}
+
+// ImportTemplate — GET /api/plans/exp/{cardId}/import-template (ТЗ §7.9).
+func (h *ExpHandler) ImportTemplate(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	buf, name, err := h.svc.ImportTemplate(r.Context(), h.principal(r), id)
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	expXlsx(w, name, buf)
+}
+
+// expXlsx — отдача .xlsx файлом.
+func expXlsx(w http.ResponseWriter, name string, buf []byte) {
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	_, _ = w.Write(buf)
+}
+
+// Import — POST /api/plans/exp/{cardId}/import?preview=1 (ТЗ §7.9).
+// Предпросмотр обязателен по ТЗ, поэтому это отдельный режим одной ручки, а не
+// отдельный эндпоинт: разойтись они не должны.
+func (h *ExpHandler) Import(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "файл не прочитан")
+		return
+	}
+	preview := r.URL.Query().Get("preview") == "1"
+	res, err := h.svc.ImportForm(r.Context(), h.principal(r), id, data, preview)
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	if !preview {
+		h.audit(r, "exp_import", id)
+	}
+	writeJSON(w, http.StatusOK, res)
 }

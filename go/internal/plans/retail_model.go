@@ -69,12 +69,27 @@ func RetailMetricCodePL(metric string) int { return retailMetricCodePL[metric] }
 // retailKnownMetrics — метрики, которые вообще существуют в форме. Проверяется
 // на входе сохранения: неизвестная метрика в tp_value — это мусор, который потом
 // не находится ни одним отчётом (и не удаляется массовой операцией).
+//
+// Ответ аналитика 35 (10.09.2026): ФОТ и аренда ПЕРЕЕХАЛИ на этап 1.5, и убрать
+// их из формы продаж велено полностью, а не сделать read-only. Поэтому здесь
+// осталась одна метрика: новый ввод payroll/rent/rent_assets отклоняется с
+// указанием, куда идти. Уже сохранённые значения не трогаем — утверждённые
+// периоды по тому же ответу не пересчитываются, и их состав должен остаться
+// таким, каким его согласовали.
 var retailKnownMetrics = map[string]bool{
-	MetricSales:      true,
+	MetricSales: true,
+}
+
+// retailMovedMetrics — метрики, переехавшие на этап 1.5. Отдельный список нужен,
+// чтобы отказ был осмысленным: «неизвестная метрика» про переезд не говорит.
+var retailMovedMetrics = map[string]bool{
 	MetricPayroll:    true,
 	MetricRent:       true,
 	MetricRentAssets: true,
 }
+
+// RetailMetricMoved — метрика переехала на этап 1.5 «Расходы ЦП».
+func RetailMetricMoved(metric string) bool { return retailMovedMetrics[metric] }
 
 // RetailMetricKnown — известна ли метрика форме.
 func RetailMetricKnown(metric string) bool {

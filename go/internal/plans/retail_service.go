@@ -333,13 +333,12 @@ func (s *RetailService) Form(ctx context.Context, p Principal, cardID int64, cur
 func (s *RetailService) rentHints(ctx context.Context, a retailAccess) []FieldHint {
 	py, pm := retailPrevMonth(a.card.Year, a.card.Month)
 	out := []FieldHint{}
+	// Ответ 35: аренда заводится на этапе 1.5, и подсказка по ней здесь больше
+	// не нужна — поля, к которому она относится, в форме нет.
 	for _, m := range []struct {
 		metric string
 		label  string
-	}{
-		{MetricRent, "аренда помещений (стоянки), статья 54"},
-		{MetricRentAssets, "аренда имущества, статья 55"},
-	} {
+	}{} {
 		prev, err := s.repo.PrevMetric(ctx, a.card.Country, m.metric, py, pm)
 		if err != nil {
 			log.Printf("plans retail: подсказка по аренде (%s) недоступна: %v", m.metric, err)
@@ -455,13 +454,14 @@ func (s *RetailService) SaveForm(ctx context.Context, p Principal, cardID int64,
 		if c.Metric == "" {
 			c.Metric = MetricSales
 		}
+		if RetailMetricMoved(c.Metric) {
+			// Ответ 35 (10.09.2026): ФОТ и аренда заводятся на этапе 1.5.
+			return RetailForm{}, errors.New("ФОТ и аренда переехали на этап 1.5 «Расходы ЦП» — заводите их там")
+		}
 		if !RetailMetricKnown(c.Metric) {
 			// Неизвестная метрика в tp_value не находится ни отчётом, ни массовой
 			// операцией — отклоняем на входе, а не «сохраним, разберёмся потом».
 			return RetailForm{}, fmt.Errorf("неизвестная метрика %q", c.Metric)
-		}
-		if c.Metric != MetricSales && !a.finance {
-			return RetailForm{}, errors.New("статьи ФОТ и аренды правит финансист, а не заполняющий")
 		}
 		if c.Year == 0 {
 			c.Year = a.card.Year

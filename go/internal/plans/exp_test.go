@@ -2,6 +2,7 @@ package plans
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -176,5 +177,48 @@ func TestExpDropRules(t *testing.T) {
 	}
 	if expScenarioRename["Стратегический бюджет"] != "План" || expScenarioRename["Факт по платежам"] != "Факт" {
 		t.Fatal("переименование сценариев не соответствует ТЗ §2.1 п.3")
+	}
+}
+
+// ORDER BY собирается ТОЛЬКО из белого списка: имя колонки приходит от клиента.
+func TestExpOrderBy_WhitelistOnly(t *testing.T) {
+	// Попытка подставить произвольное выражение уходит в порядок по умолчанию.
+	for _, bad := range []string{"id; DROP TABLE exp_row", "amount", "(SELECT 1)", "m13", "m00", "mxx"} {
+		got := expOrderBy(ExpFilter{Sort: bad})
+		if got != "group_pl, code_cfo, code_pl" {
+			t.Fatalf("сортировка %q не должна попадать в ORDER BY: %s", bad, got)
+		}
+	}
+	if got := expOrderBy(ExpFilter{Sort: "expense", Desc: true}); got != "expense DESC NULLS LAST, group_pl, code_cfo, code_pl" {
+		t.Fatalf("сортировка по статье собрана неверно: %s", got)
+	}
+}
+
+// Сортировка по месяцу: незаполненные уходят в конец при любом направлении —
+// ими и ищут «незаполненное или подозрительное значение» (ТЗ §7.3).
+func TestExpOrderBy_ByMonth(t *testing.T) {
+	got := expOrderBy(ExpFilter{Sort: "m07", Desc: true})
+	if !strings.Contains(got, "month = 7") || !strings.Contains(got, "DESC NULLS LAST") {
+		t.Fatalf("сортировка по июлю собрана неверно: %s", got)
+	}
+	// Второй ключ обязателен: без него строки с равными значениями скакали бы
+	// между страницами при подгрузке порциями.
+	if !strings.Contains(got, "group_pl, code_cfo, code_pl") {
+		t.Fatalf("в ORDER BY нет устойчивого второго ключа: %s", got)
+	}
+}
+
+// Месяц из имени колонки читается только в допустимом диапазоне.
+func TestExpSortMonth(t *testing.T) {
+	if m, ok := ExpSortMonth("m01"); !ok || m != 1 {
+		t.Fatalf("m01 → %d (%v)", m, ok)
+	}
+	if m, ok := ExpSortMonth("m12"); !ok || m != 12 {
+		t.Fatalf("m12 → %d (%v)", m, ok)
+	}
+	for _, bad := range []string{"m13", "m00", "m1", "month07", ""} {
+		if _, ok := ExpSortMonth(bad); ok {
+			t.Fatalf("%q не должен читаться как месяц", bad)
+		}
 	}
 }

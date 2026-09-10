@@ -26,6 +26,11 @@ type ExpRegistry struct {
 // WithRegistries подключает реестры к сервису формы.
 func (s *ExpService) WithRegistries(r ExpRegRepo) *ExpService { s.reg = r; return s }
 
+// WithTravelNorms подключает справочники командировок (суточные, нормативы
+// перелёта, курс). Без них строка командировки сохраняется, но расчётные части
+// остаются нулями — и это видно в самой строке, а не всплывает на своде.
+func (s *ExpService) WithTravelNorms(n ExpTravelNorms) *ExpService { s.norms = n; return s }
+
 // Registry — реестр формы по виду.
 func (s *ExpService) Registry(ctx context.Context, p Principal, cardID int64, kind string) (ExpRegistry, error) {
 	if !ExpRegKindKnown(kind) {
@@ -97,6 +102,9 @@ func (s *ExpService) SaveRegRow(ctx context.Context, p Principal, cardID int64, 
 	if err := validateExpRegRow(r); err != nil {
 		return 0, err
 	}
+	if r.Kind == ExpRegTravel {
+		s.computeTravelRow(ctx, in, &r)
+	}
 	return s.reg.SaveRegRow(ctx, in.ID, r, p.UserID)
 }
 
@@ -164,4 +172,78 @@ func expAttrInt(attrs map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+// computeTravelRow — расчётная часть строки командировки (находка Н3).
+//
+// Строка реестра командировок — это ОДНА поездка со своим месяцем, а не
+// двенадцать месяцев, как у остальных реестров (ТЗ §5.2: колонка «Месяц» —
+// поле ввода). Поэтому итог строки кладётся в месяц поездки, и только в него:
+// так итог реестра по месяцам считается тем же суммированием, что у ФОТ и ИТ,
+// без отдельной ветки.
+//
+// Нормативы читаются из справочников на каждом сохранении: пересчёт по старому
+// нормативу выглядел бы правильным, а был бы неверным.
+func (s *ExpService) computeTravelRow(ctx context.Context, in ExpInstance, r *ExpRegRow) {
+	if r.Attrs == nil {
+		r.Attrs = map[string]any{}
+	}
+	month := expAttrInt(r.Attrs, "month")
+	if month < 1 || month > 12 {
+		month = 1
+	}
+	country, _ := r.Attrs["country"].(string)
+	city, _ := r.Attrs["city"].(string)
+
+	calc := ExpTravelInput{
+		Country: country, City: city,
+		Days:    expAttrFloat(r.Attrs, "days"),
+		Nights:  expAttrFloat(r.Attrs, "nights"),
+		People:  expAttrFloat(r.Attrs, "people"),
+		OneWay:  expAttrBool(r.Attrs, "one_way"),
+		Lodging: expAttrFloat(r.Attrs, "lodging_rate"),
+	}
+	if s.norms != nil {
+		if v, ok := s.norms.PerDiem(ctx, country, in.PlanYear); ok {
+			calc.PerDiem = v
+		}
+		if v, ok := s.norms.FlightNorm(ctx, country, city); ok {
+			calc.FlightBYN = v
+		}
+		if v, ok := s.norms.FxUSD(ctx, in.Currency, in.PlanYear, month); ok {
+			calc.FxUSD = v
+		}
+	}
+	got := ExpTravelCalc(calc)
+
+	// Расчётные части кладём в атрибуты строки: их показывает форма и по ним
+	// раскладывается публикация (билеты и командировочные — статья 27,
+	// проживание — статья 30).
+	r.Attrs["tickets"] = got.Tickets
+	r.Attrs["lodging"] = got.Lodging
+	r.Attrs["per_diem"] = got.PerDiem
+	r.Attrs["total"] = got.Total
+	r.Attrs["per_diem_norm"] = calc.PerDiem
+	r.Attrs["flight_norm"] = calc.FlightBYN
+	r.Attrs["fx_usd"] = calc.FxUSD
+	r.CodePL = ExpPLTravel
+	r.Months = map[int]float64{month: got.Total}
+}
+
+// expAttrFloat — числовой атрибут строки.
+func expAttrFloat(attrs map[string]any, key string) float64 {
+	switch v := attrs[key].(type) {
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	default:
+		return 0
+	}
+}
+
+// expAttrBool — флаг-атрибут строки.
+func expAttrBool(attrs map[string]any, key string) bool {
+	v, _ := attrs[key].(bool)
+	return v
 }
