@@ -250,6 +250,12 @@ export interface RetailValidationReport {
   blocking: ValidationIssue[];
   warnings: ValidationIssue[];
   can_submit: boolean;
+  /**
+   * Жёсткий ли режим гейта (ответ 41 от 10.09.2026). В мягком режиме
+   * can_submit остаётся true при непустом blocking: замечания показываются,
+   * но отправку не держат — и подписи обязаны это различать.
+   */
+  strict: boolean;
   reconciliations: RetailReconciliation[];
 }
 

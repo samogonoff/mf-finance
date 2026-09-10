@@ -87,21 +87,33 @@ func expMockStatementsFor(kind string) []expMockStatement {
 	return expMockStatements
 }
 
-// Costs — факт фикстуры: по каждой паре «ЦФО × статья» двенадцать месяцев года.
-// Сценарий только «Факт»: план — это ввод пользователя, подставлять его в
-// фикстуре нельзя, иначе форма будет выглядеть заполненной сама собой.
+// Costs — фикстура: по каждой паре «ЦФО × статья» двенадцать месяцев года.
+//
+// Сценарии — только нередактируемые: ранний год отдаётся как «Факт», поздний как
+// «План» (стратегия). Тактику фикстура НЕ отдаёт: её заполняет пользователь, и
+// подстановка сделала бы форму заполненной самой собой.
 func (expMockSource) Costs(_ context.Context, kind, country string, years []int) ([]ExpCostCell, error) {
 	cfos := expMockCfo(kind, country)
 	stmts := expMockStatementsFor(kind)
+	earliest := 0
+	for _, y := range years {
+		if earliest == 0 || y < earliest {
+			earliest = y
+		}
+	}
 	out := make([]ExpCostCell, 0, len(cfos)*len(stmts)*12)
 	for _, y := range years {
+		scenario := ExpSrcStrategy
+		if y == earliest {
+			scenario = ExpSrcFact
+		}
 		for _, c := range cfos {
 			for si, st := range stmts {
 				for m := 1; m <= 12; m++ {
 					// Разброс без случайности: тест и стенд должны видеть одно и то же.
 					amt := float64((st.CodePL*100+c.CodeCFO)%900+120) * (1 + float64(m)/24) * (1 + float64(si)/10)
 					out = append(out, ExpCostCell{
-						Scenario: "Факт", Year: y, Month: m,
+						Scenario: scenario, Year: y, Month: m,
 						CodePL: st.CodePL, GroupPL: st.GroupPL, Expense: st.Expense,
 						CodeCFO: c.CodeCFO, CFO: c.CFO,
 						GroupCFO1: expKindGroup(kind), GroupCFO2: c.GroupCFO2,

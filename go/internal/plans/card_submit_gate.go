@@ -57,6 +57,16 @@ func (s *CardService) checkSubmitGate(ctx context.Context, c Card) error {
 	if len(reasons) == 0 {
 		return nil
 	}
+	// Мягкий режим (ответ 41 от 10.09.2026): проверки считаются всегда, но
+	// отправку не останавливают — расхождения показываются предупреждением.
+	// Жёсткий режим включается к промышленной эксплуатации настройкой, без
+	// правки кода. В лог пишем в обоих режимах: иначе «форма ушла с
+	// расхождениями» не восстановить постфактум.
+	if !s.submitStrict {
+		log.Printf("plans: форма %s/%s отправлена с замечаниями (мягкий режим): %s",
+			c.FormCode, c.ScopeKey, strings.Join(reasons, "; "))
+		return nil
+	}
 	return &SubmitBlockedError{Reasons: reasons}
 }
 

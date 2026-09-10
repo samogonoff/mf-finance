@@ -506,7 +506,7 @@ func blockToPL() map[string]int {
 			out[l.BlockType] = l.CodePL
 		}
 	}
-	out[BCostPenalties] = mpPenaltyPL
+	out[BCostPenalties] = mpPenaltyFactKey
 	return out
 }
 

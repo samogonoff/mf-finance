@@ -34,6 +34,11 @@ type RetailValidationReport struct {
 	Blocking  []ValidationIssue `json:"blocking"`
 	Warnings  []ValidationIssue `json:"warnings"`
 	CanSubmit bool              `json:"can_submit"`
+	// Strict — жёсткий ли режим гейта (ответ 41). В мягком режиме can_submit
+	// остаётся true при непустом blocking: замечания показываются, но отправку
+	// не держат. Интерфейс обязан различать эти два случая словами, иначе
+	// «отправка заблокирована» будет висеть над работающей кнопкой.
+	Strict bool `json:"strict"`
 	// Reconciliations — контрольные сверки согласующего (ТЗ §7): все должны быть 0.
 	Reconciliations []RetailReconciliation `json:"reconciliations"`
 }

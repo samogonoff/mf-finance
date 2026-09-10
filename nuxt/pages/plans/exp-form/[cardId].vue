@@ -30,6 +30,9 @@
         <NuxtLink v-if="card" :to="`/plans/exp/${card.pl_id}`" class="btn btn-ghost">
           <Icon name="lucide:arrow-left" /> К комплекту
         </NuxtLink>
+        <NuxtLink :to="`/plans/exp-registry/${cardId}`" class="btn btn-ghost">
+          <Icon name="lucide:list-checks" /> Реестры
+        </NuxtLink>
         <button class="btn btn-sm btn-primary" :disabled="!editable || busy || !dirty" @click="save">
           <Icon name="lucide:save" :class="{ spin: busy }" /> Сохранить
           <span v-if="dirty" class="dirty-dot" :title="`несохранённых ячеек: ${drafts.size}`">●</span>

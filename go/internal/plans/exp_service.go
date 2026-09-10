@@ -32,6 +32,8 @@ type ExpService struct {
 	factTTL  time.Duration
 	factMu   sync.Mutex
 	factSeen map[int64]time.Time
+	// reg — реестры формы (ТЗ §5). nil — форма работает без них, как до Ф4.
+	reg ExpRegRepo
 }
 
 // NewExpService — конструктор.
@@ -97,10 +99,11 @@ func (s *ExpService) Form(ctx context.Context, p Principal, cardID int64, f ExpF
 	if err != nil {
 		return ExpForm{}, err
 	}
-	SortExpRows(in.FormKind, rows)
+	groups := s.groupOrder(ctx, in.FormKind)
+	SortExpRowsBy(groups, rows)
 	return ExpForm{
 		Instance: in, Card: c, Rows: rows, Total: total, Offset: f.Offset,
-		Groups: ExpGroupOrder(in.FormKind), ReadOnly: !cardEditable(c),
+		Groups: groups, ReadOnly: !cardEditable(c),
 	}, nil
 }
 
@@ -116,8 +119,11 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance)
 	if s.factFresh(in.ID) {
 		return nil
 	}
+	// Прошлый год даёт состав строк и факт, плановый — стратегию как ориентир
+	// (ответ Н1: сценариев три, форма заполняет тактику и обязана показывать
+	// стратегию рядом, иначе заполнять не от чего).
 	prev := in.PlanYear - 1
-	cells, err := s.source.Costs(ctx, in.FormKind, in.Country, []int{prev})
+	cells, err := s.source.Costs(ctx, in.FormKind, in.Country, []int{prev, in.PlanYear})
 	if err != nil {
 		return err
 	}
@@ -132,6 +138,7 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance)
 
 	rowByKey := map[[2]int]ExpRow{}
 	fact := make([]ExpCell, 0, len(cells))
+	strategy := make([]ExpCell, 0, len(cells))
 	for _, cell := range cells {
 		key := [2]int{cell.CodeCFO, cell.CodePL}
 		if _, ok := rowByKey[key]; !ok {
@@ -157,8 +164,15 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance)
 			rowByKey[key] = r
 		}
 		amt := cell.Amount
-		fact = append(fact, ExpCell{CodeCFO: cell.CodeCFO, CodePL: cell.CodePL,
-			Month: cell.Month, Amount: &amt})
+		c := ExpCell{CodeCFO: cell.CodeCFO, CodePL: cell.CodePL, Month: cell.Month, Amount: &amt}
+		switch {
+		case cell.Scenario == ExpSrcFact && cell.Year == prev:
+			fact = append(fact, c)
+		case cell.Scenario == ExpSrcStrategy && cell.Year == in.PlanYear:
+			strategy = append(strategy, c)
+		}
+		// Тактику из источника не читаем: её и заполняет форма. Прочитать её
+		// значило бы затереть ввод пользователя снимком приёмника.
 	}
 	rows := make([]ExpRow, 0, len(rowByKey))
 	for _, r := range rowByKey {
@@ -167,7 +181,10 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance)
 	if _, err := s.repo.SyncRows(ctx, in.ID, rows); err != nil {
 		return err
 	}
-	if err := s.repo.SaveFact(ctx, in.ID, fact); err != nil {
+	if err := s.repo.SaveReadOnly(ctx, in.ID, ExpScenarioFact, fact); err != nil {
+		return err
+	}
+	if err := s.repo.SaveReadOnly(ctx, in.ID, ExpScenarioStrategy, strategy); err != nil {
 		return err
 	}
 	s.factSynced(in.ID)
@@ -289,4 +306,18 @@ func (s *ExpService) Totals(ctx context.Context, p Principal, cardID int64) (map
 		return nil, err
 	}
 	return s.repo.GroupTotals(ctx, in.ID)
+}
+
+// groupOrder — порядок групп PL: справочник, а при его отсутствии — перечень
+// ТЗ §7.3 из кода. Ошибку справочника не поднимаем: порядок групп не повод не
+// открыть форму, а фолбэк даёт ровно тот же порядок, каким его задало ТЗ.
+func (s *ExpService) groupOrder(ctx context.Context, kind string) []string {
+	got, err := s.repo.GroupOrder(ctx, kind)
+	if err != nil {
+		log.Printf("plans/exp: порядок групп PL (%s) не прочитан из справочника: %v", kind, err)
+	}
+	if len(got) > 0 {
+		return got
+	}
+	return ExpGroupOrder(kind)
 }

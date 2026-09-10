@@ -93,7 +93,9 @@
       <section v-if="report && (report.blocking.length || !report.can_submit)" class="card">
         <div class="card-header">
           <span class="card-title">Замечания формы</span>
-          <span class="badge badge-neg">блокирующих: {{ report.blocking.length }}</span>
+          <span class="badge" :class="report.strict ? 'badge-neg' : 'badge-warn'">
+            блокирующих: {{ report.blocking.length }}<template v-if="!report.strict"> · отправку не держат</template>
+          </span>
           <span v-if="report.warnings.length" class="badge badge-warn">предупреждений: {{ report.warnings.length }}</span>
         </div>
         <ul class="issue-ul">
@@ -181,6 +183,7 @@
       <CardProcessPanel
         :card-id="cardId"
         :can-submit="report ? report.can_submit : true"
+        :soft-warning="softWarning"
         :submit-hint="submitHint"
         @changed="load"
       />
@@ -190,6 +193,24 @@
 
 <script setup lang="ts">
 import CardProcessPanel from "~/components/plans/CardProcessPanel.vue";
+
+/**
+ * Плашка мягкого режима (ответ аналитика 41 от 10.09.2026). Проверки считаются
+ * всегда; когда блокировка выключена, замечания обязаны быть видны текстом —
+ * и заполняющему, и согласующему, — иначе форма уезжает дальше молча.
+ * Сумма расхождения берётся из несошедшихся сверок; пропущенные (источник
+ * недоступен) в сумму не входят — это не расхождение, а отсутствие данных.
+ */
+const softWarning = computed(() => {
+  const r = report.value;
+  if (!r || r.strict || !r.blocking.length) return "";
+  const diff = (r.reconciliations || [])
+    .filter((x) => !x.ok && !x.skipped)
+    .reduce((s, x) => s + Math.abs(x.diff), 0);
+  const head = `Свод не сходится: блокирующих замечаний ${r.blocking.length}`;
+  const tail = diff ? `, расхождение ${money(diff)}` : "";
+  return `${head}${tail}. Отправка разрешена — режим блокировки выключен.`;
+});
 import SkeletonTable from "~/components/SkeletonTable.vue";
 import { useMpConditions, type PlanCard } from "~/composables/useMpConditions";
 import {

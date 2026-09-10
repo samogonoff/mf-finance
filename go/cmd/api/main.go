@@ -394,6 +394,10 @@ func main() {
 	// блокирующие проверки. До этого проверки жили только в интерфейсе, и форму
 	// можно было отправить мимо них — согласующий обязан был вернуть её, и
 	// процесс делал лишний круг.
+	// Режим гейта (ответ 41 от 10.09.2026): проверки считаются всегда, блокировка
+	// переключаемая. Дефолт — мягкий: на стенде форма не должна вставать из-за
+	// расхождения, о котором согласующий и так увидит предупреждение.
+	plansCards.WithSubmitStrict(cfg.PlansSubmitStrict)
 	plansCards.WithSubmitGate(plans.TemplateRetail, plans.NewRetailSubmitGate(plansRetail))
 	plansRetailH := plans.NewRetailHandler(plansRetail, plansPrincipal)
 
@@ -405,7 +409,8 @@ func main() {
 		CostsProc: cfg.PlansExpCostsProc,
 		CfoTable:  cfg.PlansExpCfoTable,
 	})
-	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource)
+	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource).
+		WithRegistries(plans.NewExpRegRepo(pool))
 	plansExpH := plans.NewExpHandler(plansExp, plansPrincipal)
 
 	plansCardsH := plans.NewCardHandler(plansCards, plansScope, plansPrincipal).
@@ -470,6 +475,10 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormSave))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.BulkApply))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/totals", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.TotalsGet))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/registry/{kind}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryGet))
+	mux.HandleFunc("PUT /api/plans/exp/{cardId}/registry/{kind}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistrySave))
+	mux.HandleFunc("POST /api/plans/exp/{cardId}/registry/{kind}/{rowId}/copy", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryCopy))
+	mux.HandleFunc("DELETE /api/plans/exp/{cardId}/registry/{kind}/{rowId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryDelete))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormGet))
 	mux.HandleFunc("PUT /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormSave))
 	mux.HandleFunc("POST /api/plans/retail/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.BulkApply))

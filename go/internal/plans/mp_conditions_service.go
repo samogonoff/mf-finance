@@ -364,7 +364,7 @@ func (s *MpConditionsService) validate(ctx context.Context, card Card, platforms
 				if b, ok := blocks[r.CodePL]; ok {
 					in.FactPrev[r.CodeCFO][b] += r.Amount
 				}
-				if r.CodePL == mpPenaltyPL || r.CodePL == 66 {
+				if r.CodePL == mpPenaltyFactKey || r.CodePL == 66 {
 					in.PenaltiesFact[r.CodeCFO] += r.Amount
 				}
 			}

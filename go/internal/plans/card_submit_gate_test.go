@@ -45,6 +45,8 @@ func gateFixture(g SubmitGate) (*CardService, *fakeCardStore) {
 func TestSubmitGate_BlocksSubmitWithReasons(t *testing.T) {
 	g := &stubGate{reasons: []string{"V-01: не заполнен план по 12 магазинам", "V-05: сверка R-01 не сошлась"}}
 	svc, cards := gateFixture(g)
+	// Блокировка — жёсткий режим, к промышленной эксплуатации (ответ 41).
+	svc.WithSubmitStrict(true)
 
 	_, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7})
 	if err == nil {
@@ -111,5 +113,24 @@ func TestSubmitGate_FormWithoutGatePassesThrough(t *testing.T) {
 	svc, _ := gateFixture(nil)
 	if _, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7}); err != nil {
 		t.Fatalf("форма без гейта должна отправляться: %v", err)
+	}
+}
+
+// Мягкий режим (ответ 41 от 10.09.2026): «всё разрешать согласовывать, просто
+// расхождения — в предупреждения». Проверки при этом считаются как считались:
+// выключается только блокировка, а не сам расчёт, — иначе согласующий не узнает
+// о расхождении вовсе. Это дефолт до перехода в промышленную эксплуатацию.
+func TestSubmitGate_SoftModeAllowsSubmitWithReasons(t *testing.T) {
+	g := &stubGate{reasons: []string{"V-01: не заполнен план по 12 магазинам"}}
+	svc, _ := gateFixture(g)
+
+	if svc.SubmitStrict() {
+		t.Fatal("по умолчанию режим обязан быть мягким")
+	}
+	if _, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7}); err != nil {
+		t.Fatalf("в мягком режиме отправка не должна блокироваться: %v", err)
+	}
+	if g.calls != 1 {
+		t.Fatalf("проверки обязаны считаться и в мягком режиме — иначе расхождение никто не увидит; вызовов %d", g.calls)
 	}
 }

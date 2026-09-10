@@ -127,8 +127,9 @@ func TestExpMockSource(t *testing.T) {
 		if c.Month < 1 || c.Month > 12 {
 			t.Fatalf("месяц вне диапазона: %+v", c)
 		}
-		if c.Scenario != "Факт" {
-			t.Fatalf("фикстура обязана давать только факт, план — это ввод: %+v", c)
+		// Тактику фикстура отдавать не должна: её заполняет пользователь.
+		if c.Scenario == ExpSrcTactic {
+			t.Fatalf("фикстура не должна подставлять тактику — это ввод формы: %+v", c)
 		}
 		seen[[2]int{c.CodeCFO, c.CodePL}] = true
 	}
@@ -137,6 +138,26 @@ func TestExpMockSource(t *testing.T) {
 	}
 	if _, err := src.Cfo(context.Background(), ExpKindRetail, "BY"); err != nil {
 		t.Fatalf("справочник ЦФО фикстуры: %v", err)
+	}
+
+	// Два года — два нередактируемых сценария: ранний факт, поздний стратегия
+	// (ответ Н1: форма заполняет тактику, а рядом обязана быть стратегия).
+	both, err := src.Costs(context.Background(), ExpKindRetail, "BY", []int{2025, 2026})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byYear := map[int]map[string]bool{}
+	for _, c := range both {
+		if byYear[c.Year] == nil {
+			byYear[c.Year] = map[string]bool{}
+		}
+		byYear[c.Year][c.Scenario] = true
+	}
+	if !byYear[2025][ExpSrcFact] || byYear[2025][ExpSrcStrategy] {
+		t.Fatalf("2025 должен быть только фактом, получили %v", byYear[2025])
+	}
+	if !byYear[2026][ExpSrcStrategy] || byYear[2026][ExpSrcFact] {
+		t.Fatalf("2026 должен быть только стратегией, получили %v", byYear[2026])
 	}
 }
 

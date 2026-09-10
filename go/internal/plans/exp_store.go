@@ -18,9 +18,10 @@ type ExpRepo interface {
 	SyncRows(ctx context.Context, instanceID int64, rows []ExpRow) (int, error)
 	Rows(ctx context.Context, instanceID int64, f ExpFilter) ([]ExpRow, int, error)
 	SaveValues(ctx context.Context, instanceID int64, cells []ExpCell, actorID int64, cardVersion int) (int, error)
-	SaveFact(ctx context.Context, instanceID int64, cells []ExpCell) error
+	SaveReadOnly(ctx context.Context, instanceID int64, scenario string, cells []ExpCell) error
 	SaveComment(ctx context.Context, instanceID int64, codeCFO, codePL int, comment string) error
 	GroupTotals(ctx context.Context, instanceID int64) (map[string]float64, error)
+	GroupOrder(ctx context.Context, formKind string) ([]string, error)
 }
 
 type expRepo struct{ pool *pgxpool.Pool }
@@ -269,11 +270,15 @@ func (s *expRepo) SaveValues(ctx context.Context, instanceID int64, cells []ExpC
 	return n, tx.Commit(ctx)
 }
 
-// SaveFact — снимок факта из источника (ТЗ §2.5). Журнал не ведём: это не ввод
+// SaveReadOnly — снимок нередактируемого сценария из источника: факт прошлого
+// года и стратегия планового (ТЗ §2.5, ответ Н1). Журнал не ведём: это не ввод
 // человека, а перезаписываемое отражение источника.
-func (s *expRepo) SaveFact(ctx context.Context, instanceID int64, cells []ExpCell) error {
+func (s *expRepo) SaveReadOnly(ctx context.Context, instanceID int64, scenario string, cells []ExpCell) error {
 	if len(cells) == 0 {
 		return nil
+	}
+	if !ExpScenarioReadOnly(scenario) {
+		return fmt.Errorf("сценарий %q редактируется формой — перезаписывать его из источника нельзя", scenario)
 	}
 	b := &pgx.Batch{}
 	for _, c := range cells {
@@ -282,12 +287,12 @@ func (s *expRepo) SaveFact(ctx context.Context, instanceID int64, cells []ExpCel
 		}
 		b.Queue(`
 			INSERT INTO exp_value (row_id, scenario, month, amount, source)
-			SELECT r.id, 'fact', $3, $4, 'source'
+			SELECT r.id, $6, $3, $4, 'source'
 			  FROM exp_row r
 			 WHERE r.instance_id = $1 AND r.code_cfo = $2 AND r.code_pl = $5
 			ON CONFLICT (row_id, scenario, month) DO UPDATE SET
 			    amount = EXCLUDED.amount, updated_at = NOW()`,
-			instanceID, c.CodeCFO, c.Month, *c.Amount, c.CodePL)
+			instanceID, c.CodeCFO, c.Month, *c.Amount, c.CodePL, scenario)
 	}
 	br := s.pool.SendBatch(ctx, b)
 	defer br.Close()
@@ -351,4 +356,34 @@ func nullID(id int64) any {
 		return nil
 	}
 	return id
+}
+
+// GroupOrder — порядок групп PL из справочника dir_pl_group (ответ 36 от
+// 10.09.2026: «порядок групп задать справочником, не алфавитом»).
+//
+// Пустой результат — не ошибка: сервис откатывается на перечень ТЗ §7.3,
+// зашитый в код. Так форма открывается и на базе, где справочник ещё не залит.
+func (s *expRepo) GroupOrder(ctx context.Context, formKind string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.payload_json->>'group_pl'
+		  FROM plans_directory_row r
+		  JOIN plans_directory d ON d.id = r.directory_id
+		 WHERE d.code = 'dir_pl_group'
+		   AND r.payload_json->>'form_kind' = $1
+		 ORDER BY COALESCE((r.payload_json->>'sort_order')::int, 999)`, formKind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0, 14)
+	for rows.Next() {
+		var g *string
+		if err := rows.Scan(&g); err != nil {
+			return nil, err
+		}
+		if g != nil && *g != "" {
+			out = append(out, *g)
+		}
+	}
+	return out, rows.Err()
 }

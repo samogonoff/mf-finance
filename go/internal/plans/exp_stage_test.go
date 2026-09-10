@@ -77,8 +77,10 @@ func TestFormRegistry_HasExpForm(t *testing.T) {
 	if !ok {
 		t.Fatal("форма расходов ЦП не зарегистрирована в реестре форм")
 	}
-	if len(def.Scopes) != 4 {
-		t.Fatalf("областей формы %d, ТЗ §3/§4 задаёт четыре: розница РБ и три страны МП", len(def.Scopes))
+	// Ответ 42 (10.09.2026): страна — параметр карточки, розница планируется по
+	// всем четырём странам, а не только по РБ. Итого семь карточек.
+	if len(def.Scopes) != 7 {
+		t.Fatalf("областей формы %d, ожидали семь: розница BY/RU/KZ/UZ и МП RU/KZ/UZ", len(def.Scopes))
 	}
 	seen := map[string]string{}
 	for _, sc := range def.Scopes {
@@ -90,6 +92,11 @@ func TestFormRegistry_HasExpForm(t *testing.T) {
 			t.Fatalf("область %q: страна ключа %q не совпадает со страной карточки %q", sc.Key, country, sc.Country)
 		}
 		seen[sc.Key] = kind
+	}
+	for _, k := range []string{"R-BY", "R-RU", "R-KZ", "R-UZ"} {
+		if seen[k] != ExpKindRetail {
+			t.Fatalf("область %q должна быть розницей, получили %q", k, seen[k])
+		}
 	}
 	if seen["R-BY"] != ExpKindRetail || seen["MP-RU"] != ExpKindMP {
 		t.Fatalf("вид формы выводится из ключа неверно: %v", seen)

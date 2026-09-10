@@ -19,11 +19,23 @@ const (
 	ExpKindMP     = "mp"     // 1.5-МП: GroupCFO1='4.Маркетплейсы', страна по форме
 )
 
-// Сценарий колонки. plan — ввод пользователя, fact — read-only из источника.
+// Сценарии колонок формы.
+//
+// В эталоне их ТРИ, а не два (ответ Н1 от 10.09.2026): «Факт», «Стратегический
+// бюджет» и «Тактика бюджет (таргеты)». Этап 1.5 заполняет третий — то есть
+// ввод формы это ТАКТИКА, и публиковаться он должен под её сценарием, а не под
+// сценарием стратегии. Стратегия планового года лежит рядом как ориентир: с ней
+// сверяются при заполнении, менять её форма не может.
 const (
-	ExpScenarioPlan = "plan"
-	ExpScenarioFact = "fact"
+	ExpScenarioPlan     = "plan"     // ввод формы = «Тактика бюджет (таргеты)»
+	ExpScenarioFact     = "fact"     // факт прошлого года, read-only
+	ExpScenarioStrategy = "strategy" // «Стратегический бюджет» планового года, read-only
 )
+
+// ExpScenarioReadOnly — сценарий не редактируется формой.
+func ExpScenarioReadOnly(scenario string) bool {
+	return scenario == ExpScenarioFact || scenario == ExpScenarioStrategy
+}
 
 // Источник значения ячейки — тот же словарь, что у розницы (tp_value.source),
 // чтобы отчёты и журнал читались одинаково в обеих формах.
@@ -158,21 +170,25 @@ func ExpGroupOrder(kind string) []string {
 	return expGroupOrderRetail
 }
 
-// expGroupRank — позиция группы в порядке ТЗ. Группа, которой в ТЗ нет,
-// уходит в конец: источник живой, и новая группа не должна ронять сортировку.
-func expGroupRank(kind, group string) int {
-	for i, g := range ExpGroupOrder(kind) {
+// expGroupRank — позиция группы в заданном порядке. Группа, которой в порядке
+// нет, уходит в конец: источник живой, и новая группа не должна ронять сортировку.
+func expGroupRank(order []string, group string) int {
+	for i, g := range order {
 		if g == group {
 			return i
 		}
 	}
-	return len(ExpGroupOrder(kind))
+	return len(order)
 }
 
-// SortExpRows — порядок строк формы: группа PL по ТЗ, внутри — ЦФО, затем статья.
-func SortExpRows(kind string, rows []ExpRow) {
+// SortExpRows — порядок строк по перечню ТЗ §7.3 из кода.
+func SortExpRows(kind string, rows []ExpRow) { SortExpRowsBy(ExpGroupOrder(kind), rows) }
+
+// SortExpRowsBy — порядок строк формы: группа PL в порядке справочника
+// (ответ 36), внутри — ЦФО, затем статья.
+func SortExpRowsBy(order []string, rows []ExpRow) {
 	sort.SliceStable(rows, func(i, j int) bool {
-		ri, rj := expGroupRank(kind, rows[i].GroupPL), expGroupRank(kind, rows[j].GroupPL)
+		ri, rj := expGroupRank(order, rows[i].GroupPL), expGroupRank(order, rows[j].GroupPL)
 		if ri != rj {
 			return ri < rj
 		}

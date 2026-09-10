@@ -289,9 +289,7 @@
       <section v-if="report && reportOpen" class="card val-card">
         <div class="card-header">
           <span class="card-title">Проверка формы</span>
-          <span class="badge" :class="report.can_submit ? 'badge-pos' : 'badge-neg'">
-            {{ report.can_submit ? "можно отправлять на согласование" : "отправка заблокирована" }}
-          </span>
+          <span class="badge" :class="reportTone">{{ reportLabel }}</span>
           <button type="button" class="link-btn" @click="reportOpen = false">скрыть</button>
         </div>
         <p v-if="!report.blocking.length && !report.warnings.length" class="val-ok">
@@ -502,6 +500,7 @@
         :card-id="cardId"
         :can-submit="report ? report.can_submit : true"
         :submit-hint="report && !report.can_submit ? `блокирующих замечаний: ${report.blocking.length}` : ''"
+        :soft-warning="softWarning"
         @changed="reload"
       />
     </template>
@@ -576,6 +575,38 @@
 <script setup lang="ts">
 import BulkDiffPreview from "~/components/plans/BulkDiffPreview.vue";
 import CardProcessPanel from "~/components/plans/CardProcessPanel.vue";
+
+/**
+ * Плашка мягкого режима (ответ аналитика 41 от 10.09.2026). Проверки считаются
+ * всегда; когда блокировка выключена, замечания обязаны быть видны текстом —
+ * и заполняющему, и согласующему, — иначе форма уезжает дальше молча.
+ * Сумма расхождения берётся из несошедшихся сверок; пропущенные (источник
+ * недоступен) в сумму не входят — это не расхождение, а отсутствие данных.
+ */
+const softWarning = computed(() => {
+  const r = report.value;
+  if (!r || r.strict || !r.blocking.length) return "";
+  const diff = (r.reconciliations || [])
+    .filter((x) => !x.ok && !x.skipped)
+    .reduce((s, x) => s + Math.abs(x.diff), 0);
+  const head = `Свод не сходится: блокирующих замечаний ${r.blocking.length}`;
+  const tail = diff ? `, расхождение ${fmtNum(diff, 0)}` : "";
+  return `${head}${tail}. Отправка разрешена — режим блокировки выключен.`;
+});
+
+/** Подпись и тон плашки отчёта: мягкий режим — не «заблокирована», а «не сходится». */
+const reportTone = computed(() => {
+  const r = report.value;
+  if (!r) return "badge-muted";
+  if (!r.can_submit) return "badge-neg";
+  return r.blocking.length ? "badge-warn" : "badge-pos";
+});
+const reportLabel = computed(() => {
+  const r = report.value;
+  if (!r) return "";
+  if (!r.can_submit) return "отправка заблокирована";
+  return r.blocking.length ? "свод не сходится, отправка разрешена" : "можно отправлять на согласование";
+});
 import NumberField from "~/components/NumberField.vue";
 import PlansModal from "~/components/plans/PlansModal.vue";
 import SkeletonTable from "~/components/SkeletonTable.vue";

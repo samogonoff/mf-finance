@@ -156,3 +156,76 @@ func (h *ExpHandler) TotalsGet(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, t)
 }
+
+// RegistryGet — GET /api/plans/exp/{cardId}/registry/{kind} (ТЗ §5).
+func (h *ExpHandler) RegistryGet(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	reg, err := h.svc.Registry(r.Context(), h.principal(r), id, r.PathValue("kind"))
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, reg)
+}
+
+// RegistrySave — PUT /api/plans/exp/{cardId}/registry/{kind}. Тело — строка
+// реестра; id = 0 создаёт новую (ТЗ §5.5).
+func (h *ExpHandler) RegistrySave(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	var row ExpRegRow
+	if err := json.NewDecoder(r.Body).Decode(&row); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	row.Kind = r.PathValue("kind")
+	rowID, err := h.svc.SaveRegRow(r.Context(), h.principal(r), id, row)
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	h.audit(r, "exp_reg_save_"+row.Kind, id)
+	writeJSON(w, http.StatusOK, map[string]int64{"id": rowID})
+}
+
+// RegistryCopy — POST /api/plans/exp/{cardId}/registry/{kind}/{rowId}/copy.
+func (h *ExpHandler) RegistryCopy(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	rowID, ok := pathID(w, r, "rowId")
+	if !ok {
+		return
+	}
+	newID, err := h.svc.CopyRegRow(r.Context(), h.principal(r), id, rowID)
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	h.audit(r, "exp_reg_copy", id)
+	writeJSON(w, http.StatusOK, map[string]int64{"id": newID})
+}
+
+// RegistryDelete — DELETE /api/plans/exp/{cardId}/registry/{kind}/{rowId}.
+func (h *ExpHandler) RegistryDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	rowID, ok := pathID(w, r, "rowId")
+	if !ok {
+		return
+	}
+	if err := h.svc.DeleteRegRow(r.Context(), h.principal(r), id, rowID); err != nil {
+		expErr(w, err)
+		return
+	}
+	h.audit(r, "exp_reg_delete", id)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}

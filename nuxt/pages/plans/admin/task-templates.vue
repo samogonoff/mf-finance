@@ -93,7 +93,7 @@ const { hasRole, isAdmin } = useScope();
 const canEdit = computed(() => isAdmin.value || hasRole("ROLE_PLANS_ADMIN"));
 
 const STAGES = ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "2.1", "2.2", "2.3", "2.4", "3", "4"];
-const FORMS = ["TPL-TO-RETAIL", "TPL-MP", "TPL-WHOLESALE", "TPL-IM", "TPL-CFO-EXP", "TPL-PROD-MINUTES", "TPL-LE-APPROVE"];
+const FORMS = ["TPL-TO-RETAIL", "TPL-MP", "TPL-WHOLESALE", "TPL-IM", "TPL-CFO-EXP", "TPL-CZ-EXP", "TPL-PROD-MINUTES", "TPL-LE-APPROVE"];
 
 const templates = ref<TaskTemplate[]>([]);
 const error = ref("");
