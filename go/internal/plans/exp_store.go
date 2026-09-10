@@ -146,7 +146,7 @@ func (s *expRepo) Rows(ctx context.Context, instanceID int64, f ExpFilter) ([]Ex
 	q := `SELECT id, code_cfo, code_pl, cfo, group_cfo1, group_cfo2, group_pl, expense,
 	             legal_entity, country_company, store_type, reg_manager, comment
 	        FROM exp_row WHERE ` + where + `
-	       ORDER BY group_pl, code_cfo, code_pl
+	       ORDER BY ` + expOrderBy(f) + `
 	       LIMIT ` + fmt.Sprint(limit) + ` OFFSET ` + fmt.Sprint(max(f.Offset, 0))
 	rs, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -414,4 +414,33 @@ func (s *expRepo) ExpenseNames(ctx context.Context) (map[int]string, error) {
 		}
 	}
 	return out, rows.Err()
+}
+
+// expOrderBy — ORDER BY по запрошенной колонке (ТЗ §7.3).
+//
+// Имя колонки приходит от клиента, поэтому подставляется ТОЛЬКО из белого списка
+// expSortColumns; месяц — числом после проверки диапазона. Собирать ORDER BY из
+// внешней строки нельзя даже «внутри админки».
+//
+// Порядок по умолчанию всегда добавляется вторым ключом: без него строки с
+// одинаковым значением сортируемой колонки перескакивали бы между страницами, и
+// подгрузка порциями показывала бы одни и те же строки дважды.
+func expOrderBy(f ExpFilter) string {
+	const fallback = "group_pl, code_cfo, code_pl"
+	dir := "ASC"
+	if f.Desc {
+		dir = "DESC"
+	}
+	if col, ok := expSortColumns[f.Sort]; ok {
+		return col + " " + dir + " NULLS LAST, " + fallback
+	}
+	if m, ok := ExpSortMonth(f.Sort); ok {
+		// Незаполненные месяцы уходят в конец при любом направлении: ТЗ §7.3
+		// прямо говорит, что сортировкой по месяцу ищут «незаполненное или
+		// подозрительное значение», и пустые не должны тонуть в середине.
+		return fmt.Sprintf(
+			"(SELECT v.amount FROM exp_value v WHERE v.row_id = exp_row.id AND v.scenario = 'plan' AND v.month = %d) %s NULLS LAST, %s",
+			m, dir, fallback)
+	}
+	return fallback
 }

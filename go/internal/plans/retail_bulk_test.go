@@ -223,7 +223,7 @@ func TestBulk_PayrollCountryFund(t *testing.T) {
 	}
 
 	req := RetailBulkRequest{Op: BulkPayroll, Scope: BulkScopeAll, Months: []int{7}, Preview: true}
-	res, err := ApplyRetailBulk(req, bulkCtx(rows, ser, params))
+	res, err := applyRetailBulkFormula(req, bulkCtx(rows, ser, params))
 	if err != nil {
 		t.Fatalf("операция вернула ошибку: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestBulk_PayrollNetOfVat(t *testing.T) {
 	row := rowWithCell(100, LFLYes, 7, 1200, ValueManual)
 
 	req := RetailBulkRequest{Op: BulkPayroll, Scope: BulkScopeAll, Months: []int{7}, Preview: true}
-	res, err := ApplyRetailBulk(req, bulkCtx([]RetailRow{row}, ser, params))
+	res, err := applyRetailBulkFormula(req, bulkCtx([]RetailRow{row}, ser, params))
 	if err != nil {
 		t.Fatalf("операция вернула ошибку: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestBulk_PayrollCapLegacyBase(t *testing.T) {
 
 	req := RetailBulkRequest{Op: BulkPayroll, Scope: BulkScopeAll, Months: []int{7},
 		Preview: true, PayrollBase: IndexBaseStrategy}
-	res, err := ApplyRetailBulk(req, bulkCtx([]RetailRow{row}, ser, params))
+	res, err := applyRetailBulkFormula(req, bulkCtx([]RetailRow{row}, ser, params))
 	if err != nil {
 		t.Fatalf("операция вернула ошибку: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestBulk_PayrollCapLegacyBase(t *testing.T) {
 
 	// План ниже порога → порог не срабатывает: ФОТ = 0,10 × 1200/1,2 = 100.
 	under := rowWithCell(100, LFLYes, 7, 1200, ValueManual)
-	res, err = ApplyRetailBulk(req, bulkCtx([]RetailRow{under}, ser, params))
+	res, err = applyRetailBulkFormula(req, bulkCtx([]RetailRow{under}, ser, params))
 	if err != nil {
 		t.Fatalf("операция вернула ошибку: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestBulk_Rent(t *testing.T) {
 	ctx := bulkCtx([]RetailRow{row}, ser, params)
 	ctx.RentPrevFact = map[int]float64{100: 700}
 	req := RetailBulkRequest{Op: BulkRent, Scope: BulkScopeAll, Months: []int{7}, Preview: true}
-	res, err := ApplyRetailBulk(req, ctx)
+	res, err := applyRetailBulkFormula(req, ctx)
 	if err != nil {
 		t.Fatalf("операция вернула ошибку: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestBulk_Rent(t *testing.T) {
 	// Явный переходный режим: оборотная часть по параметрам периода.
 	reqTurnover := req
 	reqTurnover.RentTurnover = true
-	res, err = ApplyRetailBulk(reqTurnover, ctx)
+	res, err = applyRetailBulkFormula(reqTurnover, ctx)
 	if err != nil {
 		t.Fatalf("операция вернула ошибку: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestBulk_Rent(t *testing.T) {
 	// Оборотная часть запрошена, но параметров нет → только факт, с пометкой.
 	ctx2 := bulkCtx([]RetailRow{row}, ser, nil)
 	ctx2.RentPrevFact = map[int]float64{100: 700}
-	res, err = ApplyRetailBulk(reqTurnover, ctx2)
+	res, err = applyRetailBulkFormula(reqTurnover, ctx2)
 	if err != nil {
 		t.Fatalf("операция без параметров вернула ошибку: %v", err)
 	}
@@ -478,6 +478,48 @@ func TestValidateBulkRequest(t *testing.T) {
 		err := ValidateBulkRequest(c.req)
 		if (err != nil) != c.wantErr {
 			t.Errorf("%s: err=%v, ожидалась ошибка=%v", c.name, err, c.wantErr)
+		}
+	}
+}
+
+// applyRetailBulkFormula — вызов формулы напрямую, минуя диспетчер массовых
+// операций формы продаж. Ответ 35 закрыл точку входа BulkPayroll/BulkRent из
+// формы 1.1 (расчёты переехали на этап 1.5), но сами формулы остались в коде и
+// переиспользуются формой 1.5 — их поведение и проверяют тесты ниже.
+func applyRetailBulkFormula(req RetailBulkRequest, ctx RetailBulkContext) (RetailBulkResult, error) {
+	if req.Op != BulkPayroll && req.Op != BulkRent {
+		return ApplyRetailBulk(req, ctx)
+	}
+	res := RetailBulkResult{Op: req.Op, Scope: req.Scope, Preview: req.Preview, Diff: []RetailBulkDiff{}}
+	rows, err := bulkScopeRows(req, ctx.Rows)
+	if err != nil {
+		return res, err
+	}
+	res.RowsIn = len(rows)
+	months := req.Months
+	if len(months) == 0 {
+		months = ctx.PlanMonths
+	}
+	if req.Op == BulkPayroll {
+		err = bulkPayroll(&res, req, ctx, rows, months)
+	} else {
+		err = bulkRent(&res, req, ctx, rows, months)
+	}
+	if err != nil {
+		return res, err
+	}
+	sortBulkDiff(res.Diff)
+	res.Changed = len(res.Diff)
+	return res, nil
+}
+
+// Точка входа из формы продаж закрыта: расчёты переехали на этап 1.5 (ответ 35).
+func TestBulk_PayrollAndRentMovedOutOfSalesForm(t *testing.T) {
+	ctx := bulkCtx([]RetailRow{rowWithCell(100, LFLYes, 7, 5000, ValueManual)}, NewRetailSeries(), nil)
+	for _, op := range []string{BulkPayroll, BulkRent} {
+		_, err := ApplyRetailBulk(RetailBulkRequest{Op: op, Scope: BulkScopeAll, Months: []int{7}}, ctx)
+		if err == nil {
+			t.Fatalf("операция %q обязана быть закрыта в форме продаж", op)
 		}
 	}
 }

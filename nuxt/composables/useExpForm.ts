@@ -81,6 +81,9 @@ export interface ExpCell {
 }
 
 export interface ExpFilterQuery {
+  /** Колонка сортировки: атрибут или месяц вида "m07" (ТЗ §7.3). */
+  sort?: string;
+  dir?: "asc" | "desc";
   search?: string;
   group_pl?: string;
   code_pl?: number;
@@ -114,6 +117,16 @@ export interface ExpRecon {
   skipped?: boolean;
   note?: string;
   details?: { code_cfo?: number; code_pl?: number; month?: number; title?: string; left: number; right: number; diff: number }[];
+}
+
+export interface ExpImportResult {
+  preview: boolean;
+  rows_in_file: number;
+  rows_matched: number;
+  rows_unknown: number;
+  cells_saved: number;
+  changes?: { code_cfo: number; code_pl: number; month: number; old: number | null; new: number | null }[];
+  issues: { line: number; code_cfo?: number; code_pl?: number; message: string }[];
 }
 
 export interface ExpValidationReport {
@@ -232,6 +245,33 @@ export const useExpForm = () => {
   const cards = (plId: number): Promise<ExpCard[]> =>
     $fetch<ExpCard[]>(`${base}/api/plans/instances/${plId}/cards`, { headers: authHeader() });
 
+  /** Раскладка формы: состав, порядок и видимость колонок + сортировка (ТЗ §7.4). */
+  const presets = (): Promise<{ name: string; is_default: boolean; payload: Record<string, unknown> }[]> =>
+    $fetch(`${base}/api/plans/forms/TPL-CFO-EXP/presets`, { headers: authHeader() });
+
+  const savePreset = (name: string, payload: Record<string, unknown>) =>
+    $fetch(`${base}/api/plans/forms/TPL-CFO-EXP/presets`, {
+      method: "PUT",
+      body: { name, payload },
+      headers: authHeader()
+    });
+
+  const exportUrl = (cardId: number, q: ExpFilterQuery = {}): string => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) {
+      if (v !== undefined && v !== null && v !== "" && v !== 0) params.set(k, String(v));
+    }
+    const qs = params.toString();
+    return `${base}/api/plans/exp/${cardId}/export${qs ? `?${qs}` : ""}`;
+  };
+
+  const importFile = (cardId: number, file: File, preview: boolean) =>
+    $fetch<ExpImportResult>(`${base}/api/plans/exp/${cardId}/import?preview=${preview ? 1 : 0}`, {
+      method: "POST",
+      body: file,
+      headers: authHeader()
+    });
+
   const validate = (cardId: number): Promise<ExpValidationReport> =>
     $fetch(`${base}/api/plans/exp/${cardId}/validate`, { headers: authHeader() });
 
@@ -257,5 +297,8 @@ export const useExpForm = () => {
       headers: authHeader()
     });
 
-  return { form, save, bulk, totals, cards, validate, registry, saveRegRow, copyRegRow, deleteRegRow };
+  return {
+    form, save, bulk, totals, cards, validate, registry, saveRegRow, copyRegRow, deleteRegRow,
+    presets, savePreset, exportUrl, importFile
+  };
 };

@@ -145,6 +145,40 @@ type ExpFilter struct {
 	RegManager  string
 	Offset      int
 	Limit       int
+	// Sort — колонка сортировки (ТЗ §7.3): атрибут или месяц вида "m07".
+	// Пусто — порядок по умолчанию: группа PL, ЦФО, статья.
+	Sort string
+	// Desc — по убыванию. Три состояния ТЗ («возр./убыв./без сортировки»)
+	// собираются на клиенте: пустой Sort и есть третье состояние.
+	Desc bool
+}
+
+// expSortColumns — БЕЛЫЙ СПИСОК колонок сортировки. Имя приходит от клиента и
+// попадает в ORDER BY, поэтому подстановка идёт только отсюда: собирать ORDER BY
+// из внешней строки нельзя.
+var expSortColumns = map[string]string{
+	"code_cfo":     "code_cfo",
+	"cfo":          "cfo",
+	"code_pl":      "code_pl",
+	"expense":      "expense",
+	"group_pl":     "group_pl",
+	"group_cfo2":   "group_cfo2",
+	"legal_entity": "legal_entity",
+	"store_type":   "store_type",
+	"reg_manager":  "reg_manager",
+}
+
+// ExpSortMonth — номер месяца, если сортировка задана по месячной колонке
+// ("m01"…"m12"). Второй результат false — сортировка не по месяцу.
+func ExpSortMonth(sort string) (int, bool) {
+	if len(sort) != 3 || sort[0] != 'm' {
+		return 0, false
+	}
+	m := int(sort[1]-'0')*10 + int(sort[2]-'0')
+	if m < 1 || m > 12 {
+		return 0, false
+	}
+	return m, true
 }
 
 // expGroupOrderRetail — порядок групп PL формы 1.5-Р (ТЗ §7.3, четырнадцать групп).

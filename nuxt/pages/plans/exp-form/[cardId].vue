@@ -33,6 +33,16 @@
         <NuxtLink :to="`/plans/exp-registry/${cardId}`" class="btn btn-ghost">
           <Icon name="lucide:list-checks" /> Реестры
         </NuxtLink>
+        <button class="btn btn-sm btn-ghost" @click="columnsOpen = !columnsOpen">
+          <Icon name="lucide:columns-3" /> Колонки
+        </button>
+        <a class="btn btn-sm btn-ghost" :href="exportHref" target="_blank" rel="noopener">
+          <Icon name="lucide:download" /> Экспорт
+        </a>
+        <button class="btn btn-sm btn-ghost" :disabled="!editable" @click="importInput?.click()">
+          <Icon name="lucide:upload" /> Импорт
+        </button>
+        <input ref="importInput" type="file" accept=".xlsx" class="hidden-file" @change="onImportFile" />
         <button class="btn btn-sm btn-ghost" :disabled="checking" @click="check">
           <Icon name="lucide:shield-check" :class="{ spin: checking }" /> Проверить
         </button>
@@ -53,6 +63,76 @@
     <!-- Плашка мягкого режима (ответ 41): показывается и заполняющему, и
          согласующему, с суммой расхождения. -->
     <p v-if="softWarning" class="banner banner-warn">{{ softWarning }}</p>
+
+    <!-- ===== Колонки и раскладка (ТЗ §7.2, §7.4) ===== -->
+    <section v-if="columnsOpen" class="card cols-card">
+      <div class="card-header">
+        <span class="card-title">Колонки и раскладка</span>
+        <span class="cols-hint">перетаскиванием меняется порядок, флажком — видимость</span>
+        <button type="button" class="link-btn" @click="columnsOpen = false">скрыть</button>
+      </div>
+      <ul class="cols-list">
+        <li
+          v-for="(c, i) in attrColumns"
+          :key="c.key"
+          class="cols-item"
+          :class="{ locked: c.locked }"
+          draggable="true"
+          @dragstart="dragFrom = i"
+          @dragover.prevent
+          @drop="dropColumn(i)"
+        >
+          <Icon v-if="!c.locked" name="lucide:grip-vertical" class="cols-grip" />
+          <Icon v-else name="lucide:lock" class="cols-grip" :title="'колонка не перемещается и не скрывается'" />
+          <label class="cols-label">
+            <input type="checkbox" :checked="c.visible" :disabled="c.locked" @change="toggleColumn(c.key)" />
+            {{ c.label }}
+          </label>
+        </li>
+      </ul>
+      <div class="cols-actions">
+        <input v-model="presetName" class="input cols-name" placeholder="Имя раскладки" />
+        <button class="btn btn-sm btn-ghost" @click="storePreset(presetName)">Сохранить раскладку</button>
+        <select class="input cols-sel" @change="applyPreset(($event.target as HTMLSelectElement).value)">
+          <option value="">Выбрать сохранённую…</option>
+          <option v-for="pr in presetList" :key="pr.name" :value="pr.name">{{ pr.name || "последняя" }}</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- ===== Отчёт импорта (ТЗ §7.9: предпросмотр до применения) ===== -->
+    <section v-if="importReport" class="card imp-card">
+      <div class="card-header">
+        <span class="card-title">Импорт — предпросмотр</span>
+        <span class="badge badge-muted">строк в файле: {{ importReport.rows_in_file }}</span>
+        <span class="badge badge-pos">найдено: {{ importReport.rows_matched }}</span>
+        <span v-if="importReport.rows_unknown" class="badge badge-warn">не найдено: {{ importReport.rows_unknown }}</span>
+        <button type="button" class="link-btn" @click="importReport = null">закрыть</button>
+      </div>
+      <p class="imp-note">
+        Строки, которых нет в форме, не создаются: состав строк задаёт источник затрат.
+      </p>
+      <ul v-if="importReport.changes?.length" class="imp-ul">
+        <li v-for="(ch, i) in importReport.changes.slice(0, 30)" :key="i">
+          ЦФО {{ ch.code_cfo }} · статья {{ ch.code_pl }} · месяц {{ ch.month }}:
+          {{ ch.old === null ? "пусто" : money(ch.old) }} → {{ ch.new === null ? "пусто" : money(ch.new) }}
+        </li>
+      </ul>
+      <p v-if="(importReport.changes?.length || 0) > 30" class="val-more">
+        …и ещё {{ (importReport.changes?.length || 0) - 30 }} изменений.
+      </p>
+      <ul v-if="importReport.issues.length" class="imp-ul bad">
+        <li v-for="(is, i) in importReport.issues.slice(0, 20)" :key="i">
+          строка {{ is.line }}: {{ is.message }}
+        </li>
+      </ul>
+      <div class="imp-actions">
+        <button class="btn btn-sm btn-primary" :disabled="!editable || busy" @click="applyImport">
+          Применить импорт
+        </button>
+        <button class="btn btn-sm btn-ghost" @click="importReport = null">Отмена</button>
+      </div>
+    </section>
 
     <!-- ===== Отчёт проверок (§8 контроли + §9 валидации) ===== -->
     <section v-if="report" class="card val-card">
@@ -161,13 +241,22 @@
         <table class="data-table compact exp-table">
           <thead>
             <tr>
-              <th class="sticky-c c-cfo">Код ЦФО</th>
-              <th class="sticky-c c-name">{{ isRetail ? "Магазин" : "Площадка" }}</th>
-              <th class="c-pl">Код PL</th>
-              <th class="c-exp">Статья</th>
-              <th v-for="(m, i) in MONTHS_SHORT" :key="m" class="col-num c-mon" :title="`План ${planYear}, ${m}`">
-                {{ m }}
+              <th
+                v-for="c in visibleAttrColumns"
+                :key="c.key"
+                :class="[c.sticky ? 'sticky-c' : '', c.cls, 'th-sort']"
+                :title="sortHint(c.key)"
+                @click="toggleSort(c.key)"
+              >
+                {{ c.key === "cfo" && !isRetail ? "Площадка" : c.label }}{{ sortMark(c.key) }}
               </th>
+              <th
+                v-for="(m, i) in MONTHS_SHORT"
+                :key="m"
+                class="col-num c-mon th-sort"
+                :title="`План ${planYear}, ${m} · ${sortHint(monthKey(i + 1))}`"
+                @click="toggleSort(monthKey(i + 1))"
+              >{{ m }}{{ sortMark(monthKey(i + 1)) }}</th>
               <th class="col-num c-total">Итого план</th>
               <th class="col-num c-fact" :title="`Факт ${planYear - 1} за год`">Факт {{ planYear - 1 }}</th>
               <th class="c-act">Строка</th>
@@ -177,7 +266,7 @@
             <template v-for="g in visibleGroups" :key="g">
               <!-- Строка группы (ТЗ §7.6): свёртка и итог по группе. -->
               <tr class="grp-row" @click="toggleGroup(g)">
-                <td class="sticky-c grp-cell" colspan="4">
+                <td class="sticky-c grp-cell" :colspan="visibleAttrColumns.length">
                   <Icon :name="collapsed.has(g) ? 'lucide:chevron-right' : 'lucide:chevron-down'" />
                   {{ g }}
                   <span class="grp-count">{{ groupRows(g).length }}</span>
@@ -189,10 +278,12 @@
               </tr>
               <template v-if="!collapsed.has(g)">
                 <tr v-for="row in groupRows(g)" :key="row.id" :class="{ 'row-dirty': rowDirty(row) }">
-                  <td class="sticky-c c-cfo mono">{{ row.code_cfo }}</td>
-                  <td class="sticky-c c-name" :title="row.cfo">{{ row.cfo || "—" }}</td>
-                  <td class="c-pl mono">{{ row.code_pl }}</td>
-                  <td class="c-exp" :title="row.expense">{{ row.expense || "—" }}</td>
+                  <td
+                    v-for="c in visibleAttrColumns"
+                    :key="c.key"
+                    :class="[c.sticky ? 'sticky-c' : '', c.cls, c.mono ? 'mono' : '']"
+                    :title="String(attrValue(row, c.key) || '')"
+                  >{{ attrValue(row, c.key) || "—" }}</td>
                   <td v-for="m in 12" :key="m" class="col-num c-mon">
                     <input
                       class="cell-input"
@@ -249,7 +340,7 @@ import { money } from "~/utils/format";
 import { useGridNav } from "~/composables/useGridNav";
 import {
   useExpForm, expCell, expRowTotal, MONTHS_SHORT,
-  type ExpBulkAction, type ExpCell, type ExpForm, type ExpRow, type ExpValidationReport
+  type ExpBulkAction, type ExpCell, type ExpForm, type ExpImportResult, type ExpRow, type ExpValidationReport
 } from "~/composables/useExpForm";
 
 const route = useRoute();
@@ -271,6 +362,152 @@ const drafts = ref<Map<string, number | null>>(new Map());
 const dirty = computed(() => drafts.value.size > 0);
 
 const PAGE = 300;
+
+// ── Колонки, сортировка и раскладка (ТЗ §7.2, §7.3, §7.4) ───────────────────
+interface AttrCol { key: string; label: string; cls: string; sticky?: boolean; mono?: boolean; locked?: boolean; visible: boolean }
+
+/**
+ * Состав колонок атрибутов. Флажок выбора строки, код ЦФО и наименование
+ * магазина/площадки по ТЗ §7.2 НЕ перемещаются и НЕ скрываются — они помечены
+ * locked: без них строку не опознать.
+ */
+const DEFAULT_COLUMNS: AttrCol[] = [
+  { key: "code_cfo", label: "Код ЦФО", cls: "c-cfo", sticky: true, mono: true, locked: true, visible: true },
+  { key: "cfo", label: "Магазин", cls: "c-name", sticky: true, locked: true, visible: true },
+  { key: "code_pl", label: "Код PL", cls: "c-pl", mono: true, visible: true },
+  { key: "expense", label: "Статья", cls: "c-exp", visible: true },
+  { key: "group_pl", label: "Группа PL", cls: "c-grp", visible: false },
+  { key: "group_cfo2", label: "Город", cls: "c-city", visible: false },
+  { key: "legal_entity", label: "ЮЛ", cls: "c-le", visible: false },
+  { key: "store_type", label: "Тип магазина", cls: "c-type", visible: false },
+  { key: "reg_manager", label: "РМ", cls: "c-rm", visible: false }
+];
+
+const attrColumns = ref<AttrCol[]>(DEFAULT_COLUMNS.map((c) => ({ ...c })));
+const visibleAttrColumns = computed(() => attrColumns.value.filter((c) => c.visible));
+const columnsOpen = ref(false);
+const dragFrom = ref(-1);
+const presetName = ref("");
+const presetList = ref<{ name: string; is_default: boolean; payload: Record<string, unknown> }[]>([]);
+
+/** Сортировка: три состояния — по возрастанию, по убыванию, без сортировки (§7.3). */
+const sort = ref<{ key: string; desc: boolean } | null>(null);
+const monthKey = (m: number) => `m${String(m).padStart(2, "0")}`;
+const sortMark = (key: string) => (sort.value?.key === key ? (sort.value.desc ? " ↓" : " ↑") : "");
+const sortHint = (key: string) =>
+  sort.value?.key !== key ? "сортировать по возрастанию" : sort.value.desc ? "снять сортировку" : "сортировать по убыванию";
+
+const toggleSort = (key: string) => {
+  if (sort.value?.key !== key) sort.value = { key, desc: false };
+  else if (!sort.value.desc) sort.value = { key, desc: true };
+  else sort.value = null;
+  void reload({ keepFilter: true });
+};
+
+const attrValue = (row: ExpRow, key: string): string | number =>
+  (row as unknown as Record<string, string | number>)[key] ?? "";
+
+const toggleColumn = (key: string) => {
+  const c = attrColumns.value.find((x) => x.key === key);
+  if (!c || c.locked) return;
+  c.visible = !c.visible;
+  void storePreset("");
+};
+
+/** Перетаскивание порядка колонок. Закреплённые с места не двигаются (§7.2). */
+const dropColumn = (to: number) => {
+  const from = dragFrom.value;
+  dragFrom.value = -1;
+  if (from < 0 || from === to) return;
+  if (attrColumns.value[from]?.locked || attrColumns.value[to]?.locked) return;
+  const next = [...attrColumns.value];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  attrColumns.value = next;
+  void storePreset("");
+};
+
+/**
+ * Раскладка хранится на пару «пользователь + форма» (ТЗ §7.4). Имя "" — это
+ * «последняя использованная»: она и восстанавливается при следующем входе.
+ */
+const storePreset = async (name: string) => {
+  try {
+    await api.savePreset(name, {
+      columns: attrColumns.value.map((c) => ({ key: c.key, visible: c.visible })),
+      sort: sort.value
+    });
+    if (name) {
+      presetList.value = await api.presets();
+      note.value = `Раскладка «${name}» сохранена`;
+    }
+  } catch (e) {
+    error.value = apiError(e, "Раскладка не сохранена");
+  }
+};
+
+const applyPreset = (name: string) => {
+  const pr = presetList.value.find((x) => x.name === name);
+  if (!pr) return;
+  applyLayout(pr.payload);
+  void reload({ keepFilter: true });
+};
+
+const applyLayout = (payload: Record<string, unknown>) => {
+  const cols = payload?.columns as { key: string; visible: boolean }[] | undefined;
+  if (Array.isArray(cols)) {
+    const byKey = new Map(attrColumns.value.map((c) => [c.key, c]));
+    const next: AttrCol[] = [];
+    for (const c of cols) {
+      const found = byKey.get(c.key);
+      if (!found) continue;
+      // Закреплённые колонки видимость не меняют, как бы её ни сохранили.
+      next.push({ ...found, visible: found.locked ? true : !!c.visible });
+      byKey.delete(c.key);
+    }
+    for (const rest of byKey.values()) next.push(rest);
+    attrColumns.value = next;
+  }
+  const st = payload?.sort as { key: string; desc: boolean } | null | undefined;
+  sort.value = st && st.key ? { key: st.key, desc: !!st.desc } : null;
+};
+
+// ── Импорт (ТЗ §7.9) ────────────────────────────────────────────────────────
+const importInput = ref<HTMLInputElement | null>(null);
+const importReport = ref<ExpImportResult | null>(null);
+const importFileRef = ref<File | null>(null);
+
+const onImportFile = async (e: Event) => {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  (e.target as HTMLInputElement).value = "";
+  if (!file) return;
+  importFileRef.value = file;
+  error.value = "";
+  try {
+    // Сначала ВСЕГДА предпросмотр: ТЗ §7.9 требует показать, что изменится,
+    // до применения.
+    importReport.value = await api.importFile(cardId, file, true);
+  } catch (err) {
+    error.value = apiError(err, "Файл не принят");
+  }
+};
+
+const applyImport = async () => {
+  if (!importFileRef.value) return;
+  busy.value = true;
+  try {
+    const r = await api.importFile(cardId, importFileRef.value, false);
+    note.value = `Импорт применён, изменённых ячеек: ${r.cells_saved}`;
+    importReport.value = null;
+    importFileRef.value = null;
+    await reload({ keepFilter: true });
+  } catch (err) {
+    error.value = apiError(err, "Импорт не применён");
+  } finally {
+    busy.value = false;
+  }
+};
+
 const report = ref<ExpValidationReport | null>(null);
 const checking = ref(false);
 
@@ -360,6 +597,8 @@ const rowPlanTotal = (row: ExpRow): number => {
   }
   return t;
 };
+
+const exportHref = computed(() => api.exportUrl(cardId, { ...query(0), limit: 5000 }));
 
 const shownPlanTotal = computed(() => rows.value.reduce((s, r) => s + rowPlanTotal(r), 0));
 
@@ -486,7 +725,9 @@ const query = (offset: number) => ({
   city: filter.city || undefined,
   reg_manager: filter.reg_manager || undefined,
   offset,
-  limit: PAGE
+  limit: PAGE,
+  sort: sort.value?.key,
+  dir: sort.value?.desc ? ("desc" as const) : undefined
 });
 
 const reload = async (opts: { keepFilter?: boolean } = {}) => {
@@ -532,8 +773,17 @@ const beforeUnload = (e: BeforeUnloadEvent) => {
   e.preventDefault();
   e.returnValue = "";
 };
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener("beforeunload", beforeUnload);
+  // Раскладка восстанавливается ДО первой загрузки: иначе форма моргнёт
+  // дефолтным порядком колонок и чужой сортировкой.
+  try {
+    presetList.value = await api.presets();
+    const last = presetList.value.find((p) => p.name === "");
+    if (last) applyLayout(last.payload);
+  } catch {
+    // Нет пресетов — работаем на составе по умолчанию.
+  }
   void reload();
 });
 onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
@@ -613,6 +863,35 @@ onBeforeRouteLeave(() => {
 
 .row-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .btn-xs { height: 22px; padding: 0 var(--sp-3); font-size: var(--fs-2xs); }
+/* Колонки и раскладка (§7.2, §7.4). */
+.cols-card { padding: var(--sp-4) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); }
+.cols-hint { font-size: var(--fs-2xs); color: var(--text-muted); }
+.cols-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.cols-item {
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-radius: var(--rd-3);
+  padding: 2px var(--sp-3); font-size: var(--fs-sm); cursor: grab; background: var(--bg-surface);
+}
+.cols-item.locked { cursor: default; color: var(--text-muted); background: var(--bg-surface-2); }
+.cols-grip { color: var(--text-muted); }
+.cols-label { display: inline-flex; align-items: center; gap: 4px; }
+.cols-actions { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; }
+.cols-name { flex: 0 1 220px; }
+.cols-sel { flex: 0 1 240px; }
+.hidden-file { display: none; }
+
+/* Заголовок-сортировка: три состояния по клику (§7.3). */
+.th-sort { cursor: pointer; user-select: none; }
+.th-sort:hover { color: var(--accent); }
+
+/* Отчёт импорта (§7.9). */
+.imp-card { padding: var(--sp-4) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); }
+.imp-note { font-size: var(--fs-sm); color: var(--text-muted); margin: 0; }
+.imp-ul { margin: 0; padding-left: var(--sp-5); font-size: var(--fs-sm); display: flex; flex-direction: column; gap: 2px; }
+.imp-ul.bad { color: var(--neg); }
+.imp-actions { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+.c-grp, .c-city, .c-le, .c-type, .c-rm { width: 150px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .val-card { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4) var(--sp-5); }
 .val-card .data-table { width: 100%; }
 .rec-bad td { background: var(--neg-soft); }

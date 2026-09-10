@@ -412,6 +412,13 @@ func main() {
 	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource).
 		WithRegistries(plans.NewExpRegRepo(pool)).
 		WithTravelNorms(plans.NewExpTravelNorms(pool, plansRates))
+	// Публикация формы 1.5 (ТЗ §10). Ответы 34 и 11 перенесли сюда публикацию
+	// общих затрат МП и статей 51/52/54 под ЦФО 250 — из формы продаж они убраны
+	// в этом же релизе, иначе приёмник получил бы двойные затраты.
+	plansExpProvider := plans.NewExpCardProvider(plans.NewExpRepo(pool), plans.NewExpRegRepo(pool)).
+		WithCommonCosts(plansMpCond)
+	plansCards.RegisterForm(plans.TemplateExp, plansExpProvider, plansExpProvider)
+
 	// Гейт отправки формы 1.5: считает валидации §9 и контроли §8. Блокирует он
 	// или только предупреждает — решает PLANS_SUBMIT_STRICT (ответ 41).
 	plansCards.WithSubmitGate(plans.TemplateExp, plans.NewExpSubmitGate(plansExp))
@@ -479,6 +486,9 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormSave))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.BulkApply))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/totals", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.TotalsGet))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.Export))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/import-template", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ImportTemplate))
+	mux.HandleFunc("POST /api/plans/exp/{cardId}/import", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.Import))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/validate", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ValidateGet))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/registry/{kind}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryGet))
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/registry/{kind}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistrySave))

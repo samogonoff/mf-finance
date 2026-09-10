@@ -2,7 +2,6 @@ package plans
 
 import (
 	"context"
-	"log"
 	"time"
 )
 
@@ -158,34 +157,20 @@ func (p *MpCardProvider) PublishRows(ctx context.Context, c Card) ([]PublishRow,
 		out = append(out, row(m, mp, m.LineCode, m.Amount))
 	}
 
-	// Общие затраты по МП публикуются под ЦФО 250 (правка 08.09.2026 п. 12):
-	// именно ЦФО различает один и тот же КодPL в прямых и общих затратах.
-	if p.common != nil {
-		for seg := range segments {
-			rows, err := p.common.CommonCosts(ctx, c.PlID, seg, c.Year, c.Month)
-			if err != nil {
-				log.Printf("plans: общие затраты МП (%s) не прочитаны для публикации: %v", seg, err)
-				continue
-			}
-			for _, r := range rows {
-				if r.CodePL <= 0 || r.Amount == 0 {
-					continue
-				}
-				out = append(out, PublishRow{
-					BlockType: "common_cost",
-					Country:   mpCommonCostCountry,
-					CodeCFO:   mpCommonCostCFO,
-					GroupCFO1: "4.Маркетплейсы",
-					GroupCFO2: seg,
-					CFOName:   "Отдел маркетплейса",
-					CodePL:    r.CodePL,
-					Date:      time.Date(c.Year, time.Month(c.Month), 1, 0, 0, 0, 0, time.UTC),
-					Value:     r.Amount,
-					Currency:  firstNonEmpty(r.Currency, c.Currency),
-				})
-			}
-		}
-	}
+	// Общие затраты по МП под ЦФО 250 отсюда БОЛЬШЕ НЕ публикуются.
+	//
+	// Ответ аналитика 34 (10.09.2026): `mp_common_cost` остаётся хранилищем, но
+	// читает и публикует его форма этапа 1.5 — вместе со статьями 51 и 52 реестра
+	// логистики и строками ИТ с признаком «перенести на ЦФО 250». Ответ 11 про то
+	// же с другой стороны: статьи 51, 52 и 54 по ЦФО 250 публикуются только из
+	// формы 1.5, а в форме МП остаются расчётным индикатором для PL продаж и в
+	// приёмник затрат не пишут.
+	//
+	// Если публиковать их и здесь, и там, под одним логическим ключом окажутся
+	// два источника: свёртка сложит их в одну сумму молча, и приёмник получит
+	// двойные затраты. Реестр при этом продолжает наполняться в форме МП — сменился
+	// владелец публикации, а не владелец данных.
+	_ = p.common
 	return out, nil
 }
 

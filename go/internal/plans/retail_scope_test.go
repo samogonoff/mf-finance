@@ -102,7 +102,9 @@ func TestRetailMetrics_RentHasTwoArticles(t *testing.T) {
 // Неизвестная метрика отклоняется: строка в tp_value с чужой метрикой не
 // находится ни отчётом, ни массовой операцией.
 func TestRetailMetricKnown(t *testing.T) {
-	for _, m := range []string{"", MetricSales, MetricPayroll, MetricRent, MetricRentAssets} {
+	// Ответ 35 (10.09.2026): ФОТ и аренда переехали на этап 1.5 и убраны из формы
+	// продаж полностью, а не сделаны read-only. В форме осталась одна метрика.
+	for _, m := range []string{"", MetricSales} {
 		if !RetailMetricKnown(m) {
 			t.Errorf("метрика %q должна быть известна форме", m)
 		}
@@ -110,6 +112,16 @@ func TestRetailMetricKnown(t *testing.T) {
 	for _, m := range []string{"rent2", "SALES", "прочее"} {
 		if RetailMetricKnown(m) {
 			t.Errorf("метрика %q не должна приниматься", m)
+		}
+	}
+	// Переехавшие метрики отклоняются с ОСМЫСЛЕННЫМ поводом: «неизвестная
+	// метрика» про переезд ничего не говорит.
+	for _, m := range []string{MetricPayroll, MetricRent, MetricRentAssets} {
+		if RetailMetricKnown(m) {
+			t.Errorf("метрика %q убрана из формы продаж (ответ 35)", m)
+		}
+		if !RetailMetricMoved(m) {
+			t.Errorf("метрика %q должна опознаваться как переехавшая на этап 1.5", m)
 		}
 	}
 }
