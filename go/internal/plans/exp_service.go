@@ -34,6 +34,8 @@ type ExpService struct {
 	factSeen map[int64]time.Time
 	// reg — реестры формы (ТЗ §5). nil — форма работает без них, как до Ф4.
 	reg ExpRegRepo
+	// norms — справочники командировок: суточные, нормативы перелёта, курс.
+	norms ExpTravelNorms
 }
 
 // NewExpService — конструктор.

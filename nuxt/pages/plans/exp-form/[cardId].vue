@@ -33,6 +33,9 @@
         <NuxtLink :to="`/plans/exp-registry/${cardId}`" class="btn btn-ghost">
           <Icon name="lucide:list-checks" /> Реестры
         </NuxtLink>
+        <button class="btn btn-sm btn-ghost" :disabled="checking" @click="check">
+          <Icon name="lucide:shield-check" :class="{ spin: checking }" /> Проверить
+        </button>
         <button class="btn btn-sm btn-primary" :disabled="!editable || busy || !dirty" @click="save">
           <Icon name="lucide:save" :class="{ spin: busy }" /> Сохранить
           <span v-if="dirty" class="dirty-dot" :title="`несохранённых ячеек: ${drafts.size}`">●</span>
@@ -46,6 +49,75 @@
       Только просмотр: карточка не в работе или период закрыт. Изменение утверждённых сумм —
       через возврат или переоткрытие периода с причиной.
     </p>
+
+    <!-- Плашка мягкого режима (ответ 41): показывается и заполняющему, и
+         согласующему, с суммой расхождения. -->
+    <p v-if="softWarning" class="banner banner-warn">{{ softWarning }}</p>
+
+    <!-- ===== Отчёт проверок (§8 контроли + §9 валидации) ===== -->
+    <section v-if="report" class="card val-card">
+      <div class="card-header">
+        <span class="card-title">Проверка формы</span>
+        <span class="badge" :class="reportTone">{{ reportLabel }}</span>
+        <span v-if="report.unclosed_comments" class="badge badge-warn">
+          без комментария: {{ report.unclosed_comments }}
+        </span>
+        <button type="button" class="link-btn" @click="report = null">скрыть</button>
+      </div>
+
+      <!-- Контроли §8: каждый ненулевой обязан раскрываться до строк. -->
+      <table class="data-table compact">
+        <thead>
+          <tr><th>Код</th><th>Контроль</th><th class="col-num">Слева</th><th class="col-num">Справа</th><th class="col-num">Разница</th></tr>
+        </thead>
+        <tbody>
+          <template v-for="r in report.reconciliations" :key="r.code">
+            <tr :class="r.skipped ? 'rec-skip' : r.ok ? '' : 'rec-bad'">
+              <td><span class="badge" :class="r.skipped ? 'badge-muted' : r.ok ? 'badge-pos' : 'badge-neg'">{{ r.code }}</span></td>
+              <td>
+                {{ r.title }}
+                <span v-if="r.note" class="rec-note">{{ r.note }}</span>
+                <span v-if="r.skipped" class="rec-note">не проверено: {{ r.note || "нет данных" }}</span>
+              </td>
+              <td class="col-num">{{ r.skipped ? "—" : money(r.left) }}</td>
+              <td class="col-num">{{ r.skipped ? "—" : money(r.right) }}</td>
+              <td class="col-num" :class="!r.skipped && !r.ok ? 'bad' : ''">{{ r.skipped ? "—" : money(r.diff) }}</td>
+            </tr>
+            <!-- Расшифровка: ТЗ §8 — «контроль без расшифровки не принимается». -->
+            <tr v-for="(d, di) in (r.ok ? [] : r.details || [])" :key="`${r.code}-${di}`" class="rec-detail">
+              <td></td>
+              <td>ЦФО {{ d.code_cfo || "—" }}<template v-if="d.code_pl"> · статья {{ d.code_pl }}</template><template v-if="d.title"> · {{ d.title }}</template></td>
+              <td class="col-num">{{ money(d.left) }}</td>
+              <td class="col-num">{{ money(d.right) }}</td>
+              <td class="col-num bad">{{ money(d.diff) }}</td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+
+      <div v-if="report.blocking.length || report.warnings.length" class="val-lists">
+        <div v-if="report.blocking.length" class="val-col">
+          <span class="val-h val-h-neg">Блокирующие ({{ report.blocking.length }})</span>
+          <ul class="val-ul">
+            <li v-for="(i, k) in report.blocking.slice(0, 40)" :key="k">
+              <span class="badge badge-neg">{{ i.code }}</span>
+              <template v-if="i.code_cfo"> ЦФО {{ i.code_cfo }} · статья {{ i.code_pl }} — </template>{{ i.message }}
+            </li>
+          </ul>
+          <p v-if="report.blocking.length > 40" class="val-more">…и ещё {{ report.blocking.length - 40 }}.</p>
+        </div>
+        <div v-if="report.warnings.length" class="val-col">
+          <span class="val-h val-h-warn">Предупреждения ({{ report.warnings.length }})</span>
+          <ul class="val-ul">
+            <li v-for="(i, k) in report.warnings.slice(0, 40)" :key="k">
+              <span class="badge badge-warn">{{ i.code }}</span>
+              <template v-if="i.code_cfo"> ЦФО {{ i.code_cfo }} · статья {{ i.code_pl }} — </template>{{ i.message }}
+            </li>
+          </ul>
+        </div>
+      </div>
+      <p v-else class="val-ok">Замечаний нет.</p>
+    </section>
 
     <!-- ===== Фильтры (ТЗ §7.1) ===== -->
     <section class="card filters">
@@ -177,7 +249,7 @@ import { money } from "~/utils/format";
 import { useGridNav } from "~/composables/useGridNav";
 import {
   useExpForm, expCell, expRowTotal, MONTHS_SHORT,
-  type ExpBulkAction, type ExpCell, type ExpForm, type ExpRow
+  type ExpBulkAction, type ExpCell, type ExpForm, type ExpRow, type ExpValidationReport
 } from "~/composables/useExpForm";
 
 const route = useRoute();
@@ -199,6 +271,51 @@ const drafts = ref<Map<string, number | null>>(new Map());
 const dirty = computed(() => drafts.value.size > 0);
 
 const PAGE = 300;
+const report = ref<ExpValidationReport | null>(null);
+const checking = ref(false);
+
+/** Проверка формы: валидации §9 и контроли §8 считает сервер. */
+const check = async () => {
+  checking.value = true;
+  error.value = "";
+  try {
+    report.value = await api.validate(cardId);
+  } catch (e) {
+    error.value = apiError(e, "Проверка не выполнена");
+  } finally {
+    checking.value = false;
+  }
+};
+
+/**
+ * Плашка мягкого режима (ответ 41). Пункты 3 и 4 ответа названы обязательными:
+ * «свод не сходится» с суммой расхождения показывается и в самой форме рядом с
+ * кнопкой отправки, и согласующему на следующем шаге. Согласующий открывает эту
+ * же форму, поэтому плашка одна.
+ */
+const softWarning = computed(() => {
+  const r = report.value;
+  if (!r || r.strict) return "";
+  const bad = r.reconciliations.filter((x) => !x.ok && !x.skipped).length;
+  if (!bad && !r.blocking.length) return "";
+  const parts: string[] = [];
+  if (bad) parts.push(`несошедшихся контролей ${bad}, расхождение ${money(r.recon_diff)}`);
+  if (r.blocking.length) parts.push(`блокирующих замечаний ${r.blocking.length}`);
+  return `Свод не сходится: ${parts.join("; ")}. Отправка разрешена — режим блокировки выключен.`;
+});
+
+const reportTone = computed(() => {
+  const r = report.value;
+  if (!r) return "badge-muted";
+  if (!r.can_submit) return "badge-neg";
+  return r.blocking.length ? "badge-warn" : "badge-pos";
+});
+const reportLabel = computed(() => {
+  const r = report.value;
+  if (!r) return "";
+  if (!r.can_submit) return "отправка заблокирована";
+  return r.blocking.length ? "свод не сходится, отправка разрешена" : "можно отправлять на согласование";
+});
 const filter = reactive({ search: "", group_pl: "", city: "", reg_manager: "" });
 
 const card = computed(() => form.value?.card ?? null);
@@ -496,6 +613,21 @@ onBeforeRouteLeave(() => {
 
 .row-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .btn-xs { height: 22px; padding: 0 var(--sp-3); font-size: var(--fs-2xs); }
+.val-card { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4) var(--sp-5); }
+.val-card .data-table { width: 100%; }
+.rec-bad td { background: var(--neg-soft); }
+.rec-skip td { color: var(--text-muted); }
+.rec-detail td { font-size: var(--fs-2xs); color: var(--text-secondary); background: var(--bg-surface-2); }
+.rec-note { display: block; font-size: var(--fs-2xs); color: var(--text-muted); }
+.bad { color: var(--neg); font-weight: var(--fw-semibold); }
+.val-lists { display: flex; flex-wrap: wrap; gap: var(--sp-6); }
+.val-col { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 260px; flex: 1 1 320px; }
+.val-h { font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.04em; }
+.val-h-neg { color: var(--neg); }
+.val-h-warn { color: var(--warn); }
+.val-ul { margin: 0; padding-left: var(--sp-5); display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm); }
+.val-more, .val-ok { font-size: var(--fs-sm); color: var(--text-muted); margin: 0; }
+.link-btn { background: none; border: 0; color: var(--accent); font-size: var(--fs-2xs); cursor: pointer; margin-left: auto; }
 .grid-more { display: flex; justify-content: center; padding: var(--sp-4); border-top: 1px solid var(--border); }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

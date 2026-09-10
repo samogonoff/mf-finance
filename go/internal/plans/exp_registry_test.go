@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"context"
 	"math"
 	"testing"
 )
@@ -237,5 +238,79 @@ func TestValidateExpRegRow_MonthRange(t *testing.T) {
 	r := ExpRegRow{Kind: ExpRegTravel, Months: map[int]float64{13: 100}}
 	if err := validateExpRegRow(r); err == nil {
 		t.Fatal("месяц 13 должен отклоняться")
+	}
+}
+
+// stubNorms — справочники командировок с фиксированными значениями эталона.
+type stubNorms struct{ noFlight bool }
+
+func (s stubNorms) PerDiem(context.Context, string, int) (float64, bool) { return 40, true }
+func (s stubNorms) FlightNorm(context.Context, string, string) (float64, bool) {
+	if s.noFlight {
+		return 0, false
+	}
+	return 300, true
+}
+func (s stubNorms) FxUSD(context.Context, string, int, int) (float64, bool) { return 3.5, true }
+
+// Строка командировки — ОДНА поездка со своим месяцем (ТЗ §5.2), а не двенадцать
+// месяцев: итог обязан лечь ровно в месяц поездки, иначе итог реестра по месяцам
+// разъедется с формой.
+func TestComputeTravelRow_PutsTotalIntoTripMonth(t *testing.T) {
+	svc := &ExpService{norms: stubNorms{}}
+	in := ExpInstance{PlanYear: 2026, Currency: "BYN"}
+	row := ExpRegRow{Kind: ExpRegTravel, Attrs: map[string]any{
+		"month": float64(2), "country": "RU", "city": "Москва",
+		"days": float64(2), "nights": float64(2), "people": float64(1),
+		"lodging_rate": float64(150),
+	}}
+	svc.computeTravelRow(context.Background(), in, &row)
+
+	if !near(row.Attrs["tickets"].(float64), 600) {
+		t.Fatalf("билеты %v, эталон 600", row.Attrs["tickets"])
+	}
+	if !near(row.Attrs["lodging"].(float64), 1050) {
+		t.Fatalf("проживание %v, эталон 1 050", row.Attrs["lodging"])
+	}
+	if !near(row.Attrs["per_diem"].(float64), 280) {
+		t.Fatalf("командировочные %v, эталон 280", row.Attrs["per_diem"])
+	}
+	if len(row.Months) != 1 {
+		t.Fatalf("месяцев в строке %d, поездка занимает ровно один: %+v", len(row.Months), row.Months)
+	}
+	if !near(row.Months[2], 1930) {
+		t.Fatalf("итог поездки в феврале %v, эталон 1 930", row.Months[2])
+	}
+	if row.CodePL != ExpPLTravel {
+		t.Fatalf("статья строки %d, командировки идут на 27", row.CodePL)
+	}
+}
+
+// Норматива перелёта в справочнике нет — строка сохраняется, но билеты нулевые,
+// и это видно прямо в строке, а не всплывает потом на своде.
+func TestComputeTravelRow_MissingNormLeavesZero(t *testing.T) {
+	svc := &ExpService{norms: stubNorms{noFlight: true}}
+	row := ExpRegRow{Kind: ExpRegTravel, Attrs: map[string]any{
+		"month": float64(5), "country": "UZ", "city": "Фергана",
+		"days": float64(1), "people": float64(1),
+	}}
+	svc.computeTravelRow(context.Background(), ExpInstance{PlanYear: 2026, Currency: "BYN"}, &row)
+	if row.Attrs["tickets"].(float64) != 0 {
+		t.Fatalf("без норматива билеты обязаны быть нулевыми: %v", row.Attrs["tickets"])
+	}
+	if !near(row.Months[5], 140) { // суточные 40 × 1 день × 1 чел × 3,5
+		t.Fatalf("остальные части считаются: %v", row.Months[5])
+	}
+}
+
+// Месяц вне 1..12 не должен ронять строку в несуществующую колонку.
+func TestComputeTravelRow_MonthFallback(t *testing.T) {
+	svc := &ExpService{norms: stubNorms{}}
+	row := ExpRegRow{Kind: ExpRegTravel, Attrs: map[string]any{
+		"month": float64(0), "country": "RU", "days": float64(1), "people": float64(1),
+	}}
+	svc.computeTravelRow(context.Background(), ExpInstance{PlanYear: 2026, Currency: "BYN"}, &row)
+	if _, ok := row.Months[1]; !ok {
+		t.Fatalf("без месяца поездка должна попасть в январь: %+v", row.Months)
 	}
 }

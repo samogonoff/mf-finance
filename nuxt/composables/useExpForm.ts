@@ -93,6 +93,41 @@ export interface ExpFilterQuery {
   limit?: number;
 }
 
+export interface ExpIssue {
+  code: string;
+  blocking: boolean;
+  code_cfo?: number;
+  code_pl?: number;
+  month?: number;
+  message: string;
+  value?: number;
+}
+
+export interface ExpRecon {
+  code: string;
+  title: string;
+  left: number;
+  right: number;
+  diff: number;
+  ok: boolean;
+  /** Контроль не считался: нет источника или реестра. Не то же, что «сошёлся». */
+  skipped?: boolean;
+  note?: string;
+  details?: { code_cfo?: number; code_pl?: number; month?: number; title?: string; left: number; right: number; diff: number }[];
+}
+
+export interface ExpValidationReport {
+  card_id: number;
+  blocking: ExpIssue[];
+  warnings: ExpIssue[];
+  reconciliations: ExpRecon[];
+  can_submit: boolean;
+  /** Жёсткий ли режим гейта: в мягком can_submit остаётся true при замечаниях. */
+  strict: boolean;
+  recon_diff: number;
+  unclosed_comments: number;
+}
+
 /** Виды реестров формы (ТЗ §5). */
 export type ExpRegKind = "payroll" | "travel" | "logistics" | "it";
 
@@ -197,6 +232,9 @@ export const useExpForm = () => {
   const cards = (plId: number): Promise<ExpCard[]> =>
     $fetch<ExpCard[]>(`${base}/api/plans/instances/${plId}/cards`, { headers: authHeader() });
 
+  const validate = (cardId: number): Promise<ExpValidationReport> =>
+    $fetch(`${base}/api/plans/exp/${cardId}/validate`, { headers: authHeader() });
+
   const registry = (cardId: number, kind: ExpRegKind): Promise<ExpRegistry> =>
     $fetch(`${base}/api/plans/exp/${cardId}/registry/${kind}`, { headers: authHeader() });
 
@@ -219,5 +257,5 @@ export const useExpForm = () => {
       headers: authHeader()
     });
 
-  return { form, save, bulk, totals, cards, registry, saveRegRow, copyRegRow, deleteRegRow };
+  return { form, save, bulk, totals, cards, validate, registry, saveRegRow, copyRegRow, deleteRegRow };
 };

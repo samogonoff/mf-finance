@@ -387,3 +387,31 @@ func (s *expRepo) GroupOrder(ctx context.Context, formKind string) ([]string, er
 	}
 	return out, rows.Err()
 }
+
+// ExpenseNames — наименования статей справочника dir_pl_line по коду PL.
+// Нужны валидации E-17 «наименование статьи совпадает со справочником».
+// Справочник может быть не залит — тогда контроль просто не срабатывает.
+func (s *expRepo) ExpenseNames(ctx context.Context) (map[int]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT (r.payload_json->>'code_pl')::int, COALESCE(r.payload_json->>'expense_name','')
+		  FROM plans_directory_row r
+		  JOIN plans_directory d ON d.id = r.directory_id
+		 WHERE d.code = 'dir_pl_line'
+		   AND r.payload_json->>'code_pl' ~ '^[0-9]+$'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]string{}
+	for rows.Next() {
+		var code int
+		var name string
+		if err := rows.Scan(&code, &name); err != nil {
+			return nil, err
+		}
+		if name != "" {
+			out[code] = name
+		}
+	}
+	return out, rows.Err()
+}

@@ -54,14 +54,19 @@
           <thead>
             <tr>
               <th v-for="c in columns" :key="c.key" :class="c.num ? 'col-num' : ''">{{ c.label }}</th>
-              <th v-for="m in MONTHS_SHORT" :key="m" class="col-num c-mon">{{ m }}</th>
+              <template v-if="hasMonthColumns">
+                <th v-for="m in MONTHS_SHORT" :key="m" class="col-num c-mon">{{ m }}</th>
+              </template>
+              <template v-else>
+                <th v-for="c in calcColumns" :key="c.key" class="col-num c-calc">{{ c.label }}</th>
+              </template>
               <th class="col-num c-total">Итого</th>
               <th class="c-act">Строка</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="!rows.length">
-              <td :colspan="columns.length + 14" class="reg-empty">
+              <td :colspan="columns.length + (hasMonthColumns ? 14 : calcColumns.length + 2)" class="reg-empty">
                 Реестр пуст. Строки заводятся вручную — переноса из прошлого года нет намеренно:
                 нормативы меняются ежегодно.
               </td>
@@ -86,15 +91,24 @@
                   @change="setField(row, c.key, ($event.target as HTMLInputElement).value, c.num)"
                 />
               </td>
-              <td v-for="m in 12" :key="m" class="col-num c-mon">
-                <input
-                  class="cell-input num"
-                  :value="monthValue(row, m)"
-                  :disabled="readOnly"
-                  inputmode="decimal"
-                  @change="setMonth(row, m, ($event.target as HTMLInputElement).value)"
-                />
-              </td>
+              <template v-if="hasMonthColumns">
+                <td v-for="m in 12" :key="m" class="col-num c-mon">
+                  <input
+                    class="cell-input num"
+                    :value="monthValue(row, m)"
+                    :disabled="readOnly"
+                    inputmode="decimal"
+                    @change="setMonth(row, m, ($event.target as HTMLInputElement).value)"
+                  />
+                </td>
+              </template>
+              <!-- Командировки: расчётные части строки (находка Н3), только чтение.
+                   Считает сервер по справочникам нормативов — руками их не правят. -->
+              <template v-else>
+                <td v-for="c in calcColumns" :key="c.key" class="col-num c-calc calc-cell" :title="c.hint">
+                  {{ money(Number(row.attrs?.[c.key] || 0)) }}
+                </td>
+              </template>
               <td class="col-num c-total strong">{{ money(rowTotal(row)) }}</td>
               <td class="c-act">
                 <div class="row-acts">
@@ -107,7 +121,12 @@
           <tfoot v-if="rows.length">
             <tr>
               <td :colspan="columns.length" class="strong">Итого реестра</td>
-              <td v-for="m in 12" :key="m" class="col-num strong">{{ money(monthTotal(m)) }}</td>
+              <template v-if="hasMonthColumns">
+                <td v-for="m in 12" :key="m" class="col-num strong">{{ money(monthTotal(m)) }}</td>
+              </template>
+              <template v-else>
+                <td v-for="c in calcColumns" :key="c.key" class="col-num strong">{{ money(calcTotal(c.key)) }}</td>
+              </template>
               <td class="col-num strong">{{ money(yearTotal) }}</td>
               <td></td>
             </tr>
@@ -168,12 +187,18 @@ const columns = computed<Col[]>(() => {
         { key: "attrs.position", label: "Должность" }
       ];
     case "travel":
+      // Строка командировки — ОДНА поездка со своим месяцем (ТЗ §5.2), а не
+      // двенадцать месяцев: колонка «Месяц» это поле ввода.
       return [
+        { key: "attrs.month", label: "Месяц", num: true, hint: "1–12" },
         { key: "attrs.country", label: "Страна", hint: "RU" },
         { key: "attrs.city", label: "Город", hint: "Москва" },
         { key: "attrs.purpose", label: "Цель" },
         { key: "attrs.days", label: "Дней", num: true },
-        { key: "attrs.people", label: "Человек", num: true }
+        { key: "attrs.nights", label: "Ночей", num: true },
+        { key: "attrs.people", label: "Человек", num: true },
+        { key: "attrs.one_way", label: "В одну сторону", type: "flag" },
+        { key: "attrs.lodging_rate", label: "Проживание, USD/ночь", num: true, hint: "не нормировано" }
       ];
     case "logistics":
       return [
@@ -192,12 +217,31 @@ const columns = computed<Col[]>(() => {
   }
 });
 
+/**
+ * Месяцы-колонки есть у всех реестров, кроме командировок: там строка это одна
+ * поездка, и её итог ложится в месяц поездки (ТЗ §5.2).
+ */
+const hasMonthColumns = computed(() => kind.value !== "travel");
+
+/** Расчётная часть строки командировки — считает сервер по справочникам (Н3). */
+const calcColumns = computed<Col[]>(() =>
+  kind.value === "travel"
+    ? [
+        { key: "tickets", label: "Билеты", hint: "норматив перелёта × плечи × человек" },
+        { key: "lodging", label: "Проживание", hint: "ставка × ночей × человек × курс" },
+        { key: "per_diem", label: "Командировочные", hint: "суточные × дней × человек × курс" }
+      ]
+    : []
+);
+const calcTotal = (key: string): number =>
+  rows.value.reduce((s, r) => (r.excluded ? s : s + Number(r.attrs?.[key] || 0)), 0);
+
 const kindHint = computed(() => {
   switch (kind.value) {
     case "payroll":
       return "Только «ФОТ чистый»: налоги от выплат — самостоятельные статьи 26 и 86–89 со своими суммами, ставки соцвзносов здесь нет. Итог реестра идёт на статью 24.";
     case "travel":
-      return "Билеты = норматив перелёта × плечи × человек; проживание = ставка × ночей × человек × курс; командировочные = суточные × дней × человек × курс. Билеты и командировочные публикуются статьёй 27, проживание — статьёй 30.";
+      return "Строка — одна поездка со своим месяцем. Билеты, проживание и командировочные считает сервер по справочникам суточных, нормативов перелёта и курса; руками вводятся только условия поездки и ставка проживания за ночь (она не нормирована). Билеты и командировочные публикуются статьёй 27, проживание — статьёй 30.";
     case "logistics":
       return "Статьи 51 и 52 по ЦФО 250. План месяца = доля статьи в факте продаж × план продаж того же месяца.";
     default:
@@ -326,6 +370,10 @@ onMounted(async () => {
 .reg-scroll thead th { position: sticky; top: 0; z-index: 2; background: var(--bg-surface-2); }
 .reg-empty { color: var(--text-muted); font-size: var(--fs-sm); padding: var(--sp-6); text-align: center; }
 .c-mon { width: 86px; }
+.c-calc { width: 130px; }
+/* Расчётные части строки командировки не редактируются: их считает сервер по
+   справочникам нормативов. Показываем моноширинно, как остальные числа. */
+.calc-cell { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 .c-total { width: 110px; }
 .c-act { width: 132px; }
 .strong { font-weight: var(--fw-semibold); color: var(--text-strong); }

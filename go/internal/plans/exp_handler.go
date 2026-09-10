@@ -229,3 +229,17 @@ func (h *ExpHandler) RegistryDelete(w http.ResponseWriter, r *http.Request) {
 	h.audit(r, "exp_reg_delete", id)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
+// ValidateGet — GET /api/plans/exp/{cardId}/validate (ТЗ §8 и §9).
+func (h *ExpHandler) ValidateGet(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	rep, err := h.svc.Validate(r.Context(), h.principal(r), id)
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
+}
