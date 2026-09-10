@@ -175,7 +175,8 @@ def guess_country(explicit: str, plan_name: str) -> str | None:
 
 
 def parse_portal_json(raw: Any) -> dict[str, Any] | None:
-    """placement_price_usd + reference_snapshot → раскладка себестоимости.
+    """placement_price_usd + reference_snapshot → раскладка себестоимости по
+    формуле Авроры: цена × (пошлина % + транспорт % + сертификация % + тесты %).
     None — расчёта в строке нет (пустой JSON, нет цены или курса)."""
     if not raw:
         return None
@@ -192,7 +193,15 @@ def parse_portal_json(raw: Any) -> dict[str, Any] | None:
         return None
     duty = _f(snap.get("duty_pct")) or 0.0
     transport = _f(snap.get("transport_pct")) or 0.0
-    cert = (_f(snap.get("certification_usd")) or 0.0) + (_f(snap.get("testing_usd")) or 0.0)
+    # Сертификация и тесты: в снимке поля зовутся certification_usd / testing_usd,
+    # но Аврора считает их ПРОЦЕНТОМ от цены размещения, как пошлину и транспорт.
+    # Подтверждено её же выгрузкой «Калькуляция чек-листа» (mfportal
+    # bm_chl_audit_log, /api/export/xlsx): при 1 / 1 в снимке сертификация 0,07
+    # у.е. при цене 7,30, 0,04 при 4,00, 0,10 при 9,50 — ровно 1 %, и итог сходится
+    # только с процентами. До 10.09.2026 мы прибавляли 1 $ + 1 $ на единицу —
+    # отсюда жалоба «в Авроре центы, у нас 2 доллара» (план 9496, модель 701009).
+    cert_pct = (_f(snap.get("certification_usd")) or 0.0) + (_f(snap.get("testing_usd")) or 0.0)
+    cert = price * cert_pct / 100.0
     logistics = price * transport / 100.0
     customs = price * duty / 100.0
     total = price + logistics + customs + cert
@@ -352,7 +361,7 @@ async def run_import(user: str, *, dry_run: bool = False) -> dict[str, Any]:
     vat_by_pair = portal.get("vat") or {}
     plans = {i["plan_number"] for i in items}
     skipped: dict[str, int] = {}
-    created = updated = 0
+    created = updated = vat_filled = 0
     batch = uuid.uuid4()
     prepared: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any] | None]] = []
 
@@ -447,6 +456,29 @@ async def run_import(user: str, *, dry_run: bool = False) -> dict[str, Any]:
                                 "group_path": item["group_path"], "job": job}, ensure_ascii=False, default=str),
                     user,
                 )
+            # Дозаполнить ставку НДС там, где её нет, — у закупных строк любого
+            # источника. ПФКСС по приходу до 10.09.2026 писались без ставки, а
+            # переприменить инвойс нельзя; справочник уже в руках, так что
+            # импорт заодно закрывает и эти дыры. Только найденные ставки:
+            # пустое остаётся пустым, «двадцатки по умолчанию» нет (см. build_row).
+            vat_type = col_types.get("Ставка НДС", "numeric")
+            holes = await conn.fetch(
+                """SELECT DISTINCT trim("Модель") AS model, trim("Артикул") AS articul
+                     FROM cost_manual_calc
+                    WHERE source_calc_sign IN ($1, $2) AND "Ставка НДС" IS NULL""",
+                PORTAL_SOURCE_SIGN, INVOICE_SOURCE_SIGN,
+            )
+            for hole in holes:
+                vat = vat_by_pair.get((hole["model"], hole["articul"]))
+                if vat is None:
+                    continue
+                status = await conn.execute(
+                    """UPDATE cost_manual_calc SET "Ставка НДС" = $3
+                        WHERE source_calc_sign IN ($1, $2) AND "Ставка НДС" IS NULL
+                          AND trim("Модель") = $4 AND trim("Артикул") = $5""",
+                    PORTAL_SOURCE_SIGN, INVOICE_SOURCE_SIGN, _cast(vat, vat_type), hole["model"], hole["articul"],
+                )
+                vat_filled += int(status.rsplit(" ", 1)[-1] or 0)
             await conn.execute(
                 """UPDATE cost_purchase_import_run
                       SET status = 'done', finished_at = now(), plans = $2, items = $3,
@@ -458,7 +490,7 @@ async def run_import(user: str, *, dry_run: bool = False) -> dict[str, Any]:
 
     result = {
         "run_id": run_id, "plans": len(plans), "items": len(items), "created": created, "updated": updated,
-        "skipped": sum(skipped.values()), "skipped_reasons": skipped,
+        "skipped": sum(skipped.values()), "skipped_reasons": skipped, "vat_filled": vat_filled,
         "seconds": round((datetime.now(timezone.utc) - started).total_seconds(), 1),
     }
     log(logging.INFO, "импорт закупной готовой продукции из портала", user=user, **result)
@@ -601,6 +633,49 @@ async def hs_codes_for_pairs(pairs: list[Pair]) -> dict[str, str]:
     loop = asyncio.get_running_loop()
     codes = await loop.run_in_executor(None, _hs_codes_sync, uniq)
     return {f"{m}|{a}": code for (m, a), code in codes.items() if code}
+
+
+# ── Ставка НДС из справочника S_MODELI ───────────────────────────────────────
+
+def _vat_sync(pairs: list[Pair]) -> dict[Pair, float | None]:
+    """S_MODELI.NDS по парам модель+артикул, последняя версия пары по ITEM_ID.
+    Для прихода по инвойсу: строк там единицы, тянуть весь справочник, как при
+    импорте портала (_read_portal_sync), незачем. Пары без ставки в ответ не
+    попадают — вызывающий оставит поле пустым, а не подставит 20 %."""
+    if not pairs:
+        return {}
+    conn = get_gpartner_conn()
+    cur = conn.cursor()
+    try:
+        out: dict[Pair, float | None] = {}
+        for i in range(0, len(pairs), 400):
+            batch = pairs[i:i + 400]
+            conds = " OR ".join("(RTRIM(MODEL) = ? AND RTRIM(ART) = ?)" for _ in batch)
+            params: list[str] = []
+            for m, a in batch:
+                params.extend([m, a])
+            cur.execute(
+                f"""SELECT MODEL, ART, NDS FROM (
+                        SELECT RTRIM(MODEL) AS MODEL, RTRIM(ART) AS ART, NDS,
+                               ROW_NUMBER() OVER (PARTITION BY RTRIM(MODEL), RTRIM(ART) ORDER BY ITEM_ID DESC) AS rn
+                          FROM [dbo].[S_MODELI] WHERE NDS IS NOT NULL AND ({conds})
+                    ) t WHERE rn = 1""",
+                params,
+            )
+            for m, a, vat in cur.fetchall():
+                out[(_s(m), _s(a))] = _f(vat)
+        return out
+    finally:
+        conn.close()
+
+
+async def vat_for_pairs(pairs: list[Pair]) -> dict[Pair, float | None]:
+    """{(модель, артикул): ставка} — для строк ПФКСС по приходу."""
+    uniq = list({(_s(m), _s(a)) for m, a in pairs if _s(m) and _s(a)})
+    if not uniq:
+        return {}
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _vat_sync, uniq)
 
 
 # ── Курсы НБ РБ к бел. рублю (DWH.dim.valuta / valuta1) ─────────────────────
@@ -1007,6 +1082,18 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
                  or date.today())
     batch = uuid.uuid4()
     created = updated = 0
+    # Ставка НДС — из S_MODELI, как у КПСС из портала (источник выбран
+    # заказчиком 09.09.2026). До 10.09.2026 строка ПФКСС брала ставку только из
+    # КПСС-основы, а когда основы нет (план не из портала — 8355 на проде,
+    # инвойс SCH260254 от 08.09.2026), оставалась без НДС, и наценка на ней
+    # считалась «грязной»: 68 % вместо 40 %. Справочник недоступен — приход
+    # всё равно применяем, ставку дозаполнит следующий «Импорт закупной».
+    try:
+        vat_by_pair = await vat_for_pairs([(ln["model"], ln["articul"]) for ln in calc["lines"]])
+    except Exception as exc:  # noqa: BLE001 — Gpartner за VPN
+        log(logging.WARNING, "ПФКСС по приходу: ставка НДС из S_MODELI недоступна",
+            invoice_id=inv_id, error=str(exc)[:300])
+        vat_by_pair = {}
 
     async with acquire() as conn:
         cols = await _manual_columns(conn)
@@ -1050,6 +1137,9 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
                     row["Наименование модели"] = ln["name"]
                 if ln.get("color"):
                     row["color"] = ln["color"]
+                vat = vat_by_pair.get((_s(ln["model"]), _s(ln["articul"])))
+                if vat is not None:
+                    row["Ставка НДС"] = vat
                 values = [_cast(row.get(c), col_types[c]) for c in data_cols]
 
                 existing = await conn.fetchval(

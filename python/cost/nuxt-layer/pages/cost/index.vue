@@ -2223,7 +2223,7 @@
                 <template v-if="purchaseDetail.current.source === 'portal' && purchaseDetail.current.snapshot?.portal?.reference_snapshot">
                   · ставки портала: пошлина {{ purchaseDetail.current.snapshot.portal.reference_snapshot.duty_pct }} %,
                   транспорт {{ purchaseDetail.current.snapshot.portal.reference_snapshot.transport_pct }} %,
-                  сертификация {{ purchaseDetail.current.snapshot.portal.reference_snapshot.certification_usd }} $ + тесты {{ purchaseDetail.current.snapshot.portal.reference_snapshot.testing_usd }} $
+                  сертификация {{ purchaseDetail.current.snapshot.portal.reference_snapshot.certification_usd }} % + тесты {{ purchaseDetail.current.snapshot.portal.reference_snapshot.testing_usd }} %
                 </template>
               </div>
               <div class="muted purchase-hint">
@@ -7221,7 +7221,7 @@ interface StageInfo { key: StageKey; icon: string; label: string; short: string 
 const STAGE_LEGEND: StageInfo[] = [
   { key: 'approved', icon: '🟢', label: 'Себестоимость утверждена экономистом',        short: 'утверждена ПЭО' },
   { key: 'priced',   icon: '🔵', label: 'Цена установлена бренд-менеджером',           short: 'цена БМ' },
-  { key: 'returned', icon: '🟡', label: 'Цена БМ отправлена на корректировку экономисту', short: 'на корректировке' },
+  { key: 'returned', icon: '🟡', label: 'Экономист вернул цену бренд-менеджеру на корректировку', short: 'на корректировке' },
   { key: 'rejected', icon: '🔴', label: 'Отклонена руководителем ПЭО',                 short: 'отклонена' },
   { key: 'dwh',      icon: '🟣', label: 'Расценённая калькуляция загружена в DWH («лису»)', short: 'в DWH' },
   // Не этап, а состояние изделия: модель/артикул сняты с актуальности
@@ -7757,6 +7757,7 @@ async function runPurchaseImport() {
       method: 'POST', headers: fetchHeaders.value, body: {},
     });
     alert(`Импорт завершён за ${res.seconds} с.\nСоздано: ${res.created}, обновлено: ${res.updated}, пропущено: ${res.skipped}.\n` +
+      (res.vat_filled ? `Ставка НДС дозаполнена у закупных строк без неё: ${res.vat_filled}.\n` : '') +
       'Нажмите «Загрузить данные», чтобы увидеть строки (фильтр «🛒 Только закупная»).');
   } catch (e: any) {
     lastError.value = 'Импорт закупной не выполнен: ' + (e?.data?.detail || e?.message || String(e));
