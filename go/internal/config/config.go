@@ -120,6 +120,11 @@ type Config struct {
 	PlansMpSalesTable   string // MP.dbo.sales (веса SALES/SALES_RUB, ключ EAN)
 	PlansMpPenaltyTable string // DWH.dbo.wb_dimensions_penalty (НЕ копия в MP)
 
+	// Форма «Расходы ЦП» (TPL-CFO-EXP, этап 1.5). Источники — тот же OLAP,
+	// что у остальных форм модуля. Пусто или PlansMock=1 → фикстуры exp_mock.go.
+	PlansExpCostsProc string // процедура затрат: ZATRATY_DLYA_OKSANY_BYSTRYE (база BUDGETING)
+	PlansExpCfoTable  string // справочник ЦФО этапа 1.5: FinDWH.dbo.[001 CodeCFO]
+
 	// Форма «Розница» (TPL-TO-RETAIL, ТЗ Розница §11). Источники — тот же сервер
 	// FinDWH/Budgeting/Checks, что у МП; при PlansMock=1 или без MSSQL работают
 	// фикстуры (plans/retail_mock.go), форма и тесты не зависят от VPN.
@@ -198,16 +203,16 @@ func Load() Config {
 		DebtArhCpartyCol:    env("MSSQL_DEBT_ARH_CPARTY_COL", ""),
 		DebtArhSyncInterval: atoiDef(env("DEBTARH_SYNC_INTERVAL", "0"), 0),
 
-		PlansMock:           env("PLANS_MOCK", "0") == "1",
-		PlansMpFactTable:    env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),
-		PlansMpPlanTable:    env("PLANS_MP_PLAN_TABLE", "Budgeting.dbo.FormToLoadPlan"),
-		PlansMpTaktTable:    env("PLANS_MP_TAKT_TABLE", "Budgeting.dbo.FormToLoaTaktTarget"),
-		PlansMpPenaltyView:  env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
-		PlansAuditEnabled:   env("PLANS_AUDIT_ENABLED", "0") == "1",
-		PlansLegacyMpAPI:    env("PLANS_LEGACY_MP_API", "0") == "1",
-		PlansPublishEnabled: env("PLANS_PUBLISH_ENABLED", "0") == "1",
-		PlansPublishSandbox: env("PLANS_PUBLISH_SANDBOX", "0") == "1",
-		PlansCodePLTable:    env("PLANS_CODEPL_TABLE", "Budgeting.dbo.CodePL"),
+		PlansMock:                 env("PLANS_MOCK", "0") == "1",
+		PlansMpFactTable:          env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),
+		PlansMpPlanTable:          env("PLANS_MP_PLAN_TABLE", "Budgeting.dbo.FormToLoadPlan"),
+		PlansMpTaktTable:          env("PLANS_MP_TAKT_TABLE", "Budgeting.dbo.FormToLoaTaktTarget"),
+		PlansMpPenaltyView:        env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
+		PlansAuditEnabled:         env("PLANS_AUDIT_ENABLED", "0") == "1",
+		PlansLegacyMpAPI:          env("PLANS_LEGACY_MP_API", "0") == "1",
+		PlansPublishEnabled:       env("PLANS_PUBLISH_ENABLED", "0") == "1",
+		PlansPublishSandbox:       env("PLANS_PUBLISH_SANDBOX", "0") == "1",
+		PlansCodePLTable:          env("PLANS_CODEPL_TABLE", "Budgeting.dbo.CodePL"),
 		PlansFactSnapshot:         env("PLANS_FACT_SNAPSHOT", "1") == "1",
 		PlansFactSnapshotInterval: atoiDef(env("PLANS_FACT_SNAPSHOT_INTERVAL", "86400"), 86400),
 
@@ -216,6 +221,9 @@ func Load() Config {
 		PlansMpPenaltyTable: env("PLANS_MP_PENALTY_TABLE", "DWH.dbo.wb_dimensions_penalty"),
 		PlansPublishTargets: splitCSV(env("PLANS_PUBLISH_TARGETS",
 			"Budgeting.dbo.VFORMTOLOADTAKTTARGET,Budgeting.dbo.FormToLoaTaktTarget")),
+
+		PlansExpCostsProc: env("PLANS_EXP_COSTS_PROC", "ZATRATY_DLYA_OKSANY_BYSTRYE"),
+		PlansExpCfoTable:  env("PLANS_EXP_CFO_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
 
 		PlansRetailStoreTable:    env("PLANS_RETAIL_STORE_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
 		PlansRetailStoreGroup:    env("PLANS_RETAIL_STORE_GROUP", "Магазины"),

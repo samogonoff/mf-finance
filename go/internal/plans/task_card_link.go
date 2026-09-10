@@ -32,6 +32,11 @@ func (s *TaskStore) attachFormLinks(ctx context.Context, tasks []Task) {
 				t.CardID = c
 			}
 			t.FormPath = fmt.Sprintf("/plans/mp-form/%d", t.ID)
+		case TemplateExp:
+			// Этап 1.5: задание одно, а форм четыре (розница РБ и три страны
+			// маркетплейсов) — по 145 ЦФО задания страну не выбрать, поэтому
+			// ведём на экран комплекта, откуда открывается нужная карточка.
+			t.FormPath = fmt.Sprintf("/plans/exp/%d", t.PlID)
 		case TemplateRetail:
 			country := s.taskCountry(ctx, *t)
 			if country == "" {

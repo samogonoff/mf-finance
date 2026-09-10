@@ -197,6 +197,11 @@
             <NuxtLink v-if="c.form_code === 'TPL-TO-RETAIL'" :to="`/plans/retail-summary/${c.id}`" class="fc-link">
               <Icon name="lucide:layout-list" /> Свод
             </NuxtLink>
+            <!-- Расходы ЦП (этап 1.5): у формы четыре карточки — розница РБ и три
+                 страны МП, — и открывается она по карточке, как у розницы. -->
+            <NuxtLink v-if="c.form_code === 'TPL-CFO-EXP'" :to="`/plans/exp-form/${c.id}`" class="fc-link">
+              <Icon name="lucide:file-input" /> Форма
+            </NuxtLink>
             <button type="button" class="fc-link btn-like" @click="openCard = openCard === c.id ? 0 : c.id">
               <Icon name="lucide:check-check" /> Согласование
             </button>
@@ -359,6 +364,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { money } from "~/utils/format";
 import PlansModal from "~/components/plans/PlansModal.vue";
 import MpBoard from "~/components/plans/MpBoard.vue";
@@ -392,7 +398,7 @@ const doStrategyImport = async (ev: Event) => {
     const r = await importStrategy(id, f);
     pnlNote.value = `Импортировано стратегии: ${r.imported} строк`;
     boardKey.value++;
-  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка импорта стратегии"; }
+  } catch (e) { error.value = apiError(e, "Ошибка импорта стратегии"); }
   finally { if (stratInput.value) stratInput.value.value = ""; }
 };
 
@@ -621,7 +627,7 @@ const loadCards = async () => {
     await loadRoutes();
   } catch (e: unknown) {
     cards.value = [];
-    cardsError.value = e instanceof Error ? e.message : "Карточки форм недоступны";
+    cardsError.value = apiError(e, "Карточки форм недоступны");
   }
 };
 
@@ -651,7 +657,7 @@ const load = async () => {
       loadCards()
     ]);
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка загрузки";
+    error.value = apiError(e, "Ошибка загрузки");
   }
 };
 
@@ -661,7 +667,7 @@ const doAct = async (code: string, action: string) => {
   try {
     list.value = await stageAction(id, code, { action, year: year.value, month: month.value });
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка перехода";
+    error.value = apiError(e, "Ошибка перехода");
   } finally {
     busy.value = false;
   }
@@ -690,7 +696,7 @@ const submitReturn = async () => {
     await addComment(id, `Возврат ${ret.from} → ${ret.target}: ${ret.reason}`, `stage:${ret.from}`);
     ret.open = false;
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка возврата";
+    error.value = apiError(e, "Ошибка возврата");
   } finally {
     busy.value = false;
   }

@@ -397,6 +397,17 @@ func main() {
 	plansCards.WithSubmitGate(plans.TemplateRetail, plans.NewRetailSubmitGate(plansRetail))
 	plansRetailH := plans.NewRetailHandler(plansRetail, plansPrincipal)
 
+	// Форма «Расходы ЦП» (TPL-CFO-EXP, этап 1.5). Пока это сетка ввода и её
+	// источник: реестры, сверки E-01…E-08 и публикация — следующие фазы плана
+	// docs/reports/plans/stage-1.5-plan.md, публикация до ответов по В-1/В-2
+	// намеренно выключена в маршруте (миграция 0051).
+	plansExpSource := plans.NewExpSource(cfg.PlansMock, mssqlDB, plans.ExpTables{
+		CostsProc: cfg.PlansExpCostsProc,
+		CfoTable:  cfg.PlansExpCfoTable,
+	})
+	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource)
+	plansExpH := plans.NewExpHandler(plansExp, plansPrincipal)
+
 	plansCardsH := plans.NewCardHandler(plansCards, plansScope, plansPrincipal).
 		WithPresets(plans.NewPresetStore(pool))
 
@@ -455,6 +466,10 @@ func main() {
 	// Форма «Розница» (ТЗ Розница §12). Чтение — RolePlansUser (ABAC/РМ §9
 	// фильтрует магазины внутри сервиса), параметры периода и LFL-переопределение
 	// требуют финансиста и проверяются в сервисе, а не ролью на маршруте.
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormGet))
+	mux.HandleFunc("PUT /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormSave))
+	mux.HandleFunc("POST /api/plans/exp/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.BulkApply))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/totals", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.TotalsGet))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormGet))
 	mux.HandleFunc("PUT /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormSave))
 	mux.HandleFunc("POST /api/plans/retail/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.BulkApply))

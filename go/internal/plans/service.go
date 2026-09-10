@@ -313,7 +313,7 @@ func (s *Service) guardCardStage(ctx context.Context, plID int64, code, action s
 	if action != "approve" && action != "submit" && action != "start" {
 		return nil
 	}
-	if stepOrder(code) < 0 || s.cards == nil {
+	if s.cards == nil || (stepOrder(code) < 0 && code != expPeriodStage) {
 		return nil // этап без карточек — движется вручную, как раньше
 	}
 	cards, err := s.cards.Cards(ctx, plID)
@@ -325,7 +325,12 @@ func (s *Service) guardCardStage(ctx context.Context, plID int64, code, action s
 	}
 	var pending []string
 	for _, c := range cards {
-		if !cardPassedStep(c, code) {
+		// Этап держат только карточки СВОИХ форм: у расходов ЦП свой этап 1.5, и
+		// закрывать ими этап 1.1 (план продаж) нельзя — как и наоборот.
+		if !formDrivesStage(c.FormCode, code) {
+			continue
+		}
+		if !cardClosedForStage(c, code) {
 			pending = append(pending, c.Title+" — "+CardStatusLabel(c.Status, c.StepCode))
 		}
 	}
