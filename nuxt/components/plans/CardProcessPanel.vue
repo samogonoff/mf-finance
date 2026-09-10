@@ -342,6 +342,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import PlansModal from "~/components/plans/PlansModal.vue";
 import {
   useMpConditions,
@@ -493,13 +494,6 @@ const dt = (s?: string) => {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
 };
 
-const errText = (e: unknown, fallback: string): string => {
-  if (typeof e === "object" && e && "data" in e) {
-    const d = (e as { data?: { error?: string } }).data;
-    if (d?.error) return d.error;
-  }
-  return e instanceof Error ? e.message : fallback;
-};
 
 const load = async () => {
   loading.value = true;
@@ -519,7 +513,7 @@ const load = async () => {
       pubLog.value = [];
     }
   } catch (e: unknown) {
-    error.value = errText(e, "Не удалось загрузить карточку процесса");
+    error.value = apiError(e, "Не удалось загрузить карточку процесса");
   } finally {
     loading.value = false;
   }
@@ -543,7 +537,7 @@ const act = async (action: string, target = "", comment = "") => {
     note.value = ACTION_NOTE[action] || "Состояние карточки обновлено.";
     await load();
   } catch (e: unknown) {
-    error.value = errText(e, "Переход не выполнен");
+    error.value = apiError(e, "Переход не выполнен");
   } finally {
     busy.value = false;
   }
@@ -576,7 +570,7 @@ const doPublish = async (mode: "dry_run" | "write") => {
     pub.value = await api.publish(props.cardId, mode);
     if (mode === "write") await load();
   } catch (e: unknown) {
-    error.value = errText(e, "Публикация не выполнена");
+    error.value = apiError(e, "Публикация не выполнена");
   } finally {
     busy.value = false;
   }
@@ -589,7 +583,7 @@ const loadSandbox = async () => {
     sbx.rows = await api.publishSandbox(pub.value?.target || "", 50);
     sbx.loaded = true;
   } catch (e: unknown) {
-    error.value = errText(e, "Песочница приёмника недоступна");
+    error.value = apiError(e, "Песочница приёмника недоступна");
   } finally {
     busy.value = false;
   }
@@ -603,7 +597,7 @@ const openVersion = async (no: number) => {
     ver.text = JSON.stringify(payload, null, 2);
     ver.open = true;
   } catch (e: unknown) {
-    error.value = errText(e, "Снимок версии недоступен");
+    error.value = apiError(e, "Снимок версии недоступен");
   } finally {
     busy.value = false;
   }

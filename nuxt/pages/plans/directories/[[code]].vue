@@ -279,6 +279,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { useDirectories, type DirMeta, type DirectoryRow, type SyncLogEntry, type DirVersion } from "~/composables/useDirectories";
 import DirCell from "~/components/plans/DirCell.vue";
 import DirTree from "~/components/plans/DirTree.vue";
@@ -418,7 +419,7 @@ const open = async (code: string) => {
   try {
     rows.value = await api.rows(code);
   } catch (e) {
-    error.value = msg(e, "Ошибка загрузки записей");
+    error.value = apiError(e, "Ошибка загрузки записей");
     rows.value = [];
   }
 };
@@ -441,7 +442,7 @@ const doSync = async () => {
     await refreshRegistry();
     rows.value = await api.rows(active.value);
   } catch (e) {
-    error.value = msg(e, "Ошибка синхронизации");
+    error.value = apiError(e, "Ошибка синхронизации");
   } finally {
     busy.value = false;
   }
@@ -453,7 +454,7 @@ const doWarm = async () => {
   try {
     await api.warm(meta.value.code);
   } catch (e) {
-    error.value = msg(e, "Ошибка прогрева");
+    error.value = apiError(e, "Ошибка прогрева");
   } finally {
     busy.value = false;
   }
@@ -465,7 +466,7 @@ const openVersions = async () => {
   try {
     versions.value = await api.versions(meta.value.code);
   } catch (e) {
-    error.value = msg(e, "Ошибка загрузки версий");
+    error.value = apiError(e, "Ошибка загрузки версий");
   }
 };
 
@@ -475,7 +476,7 @@ const openLog = async () => {
   try {
     log.value = await api.log(meta.value.code);
   } catch (e) {
-    error.value = msg(e, "Ошибка журнала");
+    error.value = apiError(e, "Ошибка журнала");
   }
 };
 
@@ -486,7 +487,7 @@ const saveSettings = async () => {
     settingsOpen.value = false;
     await refreshRegistry();
   } catch (e) {
-    error.value = msg(e, "Ошибка настроек");
+    error.value = apiError(e, "Ошибка настроек");
   }
 };
 
@@ -509,7 +510,7 @@ const saveRecord = async () => {
     rows.value = await api.rows(active.value);
     void res;
   } catch (e) {
-    error.value = msg(e, "Ошибка сохранения");
+    error.value = apiError(e, "Ошибка сохранения");
   }
 };
 const delRecord = async () => {
@@ -523,12 +524,11 @@ const delRecord = async () => {
     await refreshRegistry();
     rows.value = await api.rows(active.value);
   } catch (e) {
-    error.value = msg(e, "Ошибка удаления");
+    error.value = apiError(e, "Ошибка удаления");
   }
 };
 
 // --- helpers ---
-const msg = (e: unknown, def: string) => (e instanceof Error ? e.message : def);
 const STATUS: Record<string, { l: string; t: string }> = {
   ok: { l: "синхронизирован", t: "badge-pos" },
   stale: { l: "устарел", t: "badge-warn" },
@@ -562,7 +562,7 @@ onMounted(async () => {
     await refreshRegistry();
     if (route.params.code) await open(String(route.params.code));
   } catch (e) {
-    error.value = msg(e, "Ошибка загрузки реестра");
+    error.value = apiError(e, "Ошибка загрузки реестра");
   }
 });
 </script>

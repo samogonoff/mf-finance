@@ -158,6 +158,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { num } from "~/utils/format";
 import type { MpLine } from "~/composables/useTasks";
 import {
@@ -248,7 +249,7 @@ const load = async () => {
     const cfo = Number(platform.value) > 0 ? [Number(platform.value)] : [];
     board.value = await api.board(props.plId, { ...filter, code_cfo: cfo });
   } catch (e) {
-    error.value = e instanceof Error ? e.message : "Ошибка загрузки свода";
+    error.value = apiError(e, "Ошибка загрузки свода");
   } finally {
     loading.value = false;
   }

@@ -184,6 +184,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { useTasks, TASK_ACTION_LABEL, type Task, type TaskData, type TaskDataRow, type TaskEvent } from "~/composables/useTasks";
 import { num } from "~/utils/format";
 import { usePlans } from "~/composables/usePlans";
@@ -215,7 +216,7 @@ const dataModal = ref<TaskData | null>(null);
 const fmt = (v: number | null) => (v === null || v === undefined ? "—" : num(v, 0));
 const diffTitle = (r: TaskDataRow) => r.original != null ? `было ${fmt(r.original)} → стало ${fmt(r.tactic)}${r.reason ? " · " + r.reason : ""}` : (r.reason || "корректировка");
 const openData = async (t: Task) => {
-  try { dataModal.value = await api.data(t.id); } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка данных"; }
+  try { dataModal.value = await api.data(t.id); } catch (e) { error.value = apiError(e, "Ошибка данных"); }
 };
 
 const periodLabel = computed(() => period.value.year ? `${period.value.year}-${String(period.value.month).padStart(2, "0")}` : `#${plId}`);
@@ -251,9 +252,9 @@ const load = async () => {
       await loadStageRows(plId, inst.period_year, inst.period_month, "RU").catch(() => {});
     }
     [tasks.value, owners.value] = await Promise.all([api.byInstance(plId), api.stageOwners(plId)]);
-  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка"; }
+  } catch (e) { error.value = apiError(e, "Ошибка"); }
 };
-const errShow = (e: unknown) => { error.value = e instanceof Error ? e.message : "Ошибка"; };
+const errShow = (e: unknown) => { error.value = apiError(e, "Ошибка"); };
 
 const regen = async () => {
   busy.value = true; error.value = ""; note.value = "";

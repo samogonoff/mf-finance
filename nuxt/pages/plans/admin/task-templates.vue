@@ -83,6 +83,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { useTasks, type TaskTemplate, type CfoFilter } from "~/composables/useTasks";
 
 definePageMeta({ middleware: "scope-guard" });
@@ -109,14 +110,14 @@ const filterLabel = (f: CfoFilter) => {
 };
 const groupLabel = (g: string) => ({ position: "по ТОПу", legal_entity: "по ЮЛ", none: "одно" }[g] ?? g);
 
-const load = async () => { try { templates.value = await api.templates(); } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка"; } };
+const load = async () => { try { templates.value = await api.templates(); } catch (e) { error.value = apiError(e, "Ошибка"); } };
 const openEdit = (t?: TaskTemplate) => {
   Object.assign(form, t ? { id: t.id, stage_code: t.stage_code, form_code: t.form_code, title: t.title, task_role: t.task_role, group_by: t.group_by, cfo_filter: { ...t.cfo_filter }, sort_order: t.sort_order }
     : { id: 0, stage_code: "1.1", form_code: "TPL-TO-RETAIL", title: "", task_role: "fill", group_by: "position", cfo_filter: {}, sort_order: 100 });
   modal.value = true;
 };
-const save = async () => { try { await api.saveTemplate({ ...form }); modal.value = false; await load(); } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка"; } };
-const remove = async (t: TaskTemplate) => { try { await api.deleteTemplate(t.id); await load(); } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка"; } };
+const save = async () => { try { await api.saveTemplate({ ...form }); modal.value = false; await load(); } catch (e) { error.value = apiError(e, "Ошибка"); } };
+const remove = async (t: TaskTemplate) => { try { await api.deleteTemplate(t.id); await load(); } catch (e) { error.value = apiError(e, "Ошибка"); } };
 
 onMounted(load);
 </script>

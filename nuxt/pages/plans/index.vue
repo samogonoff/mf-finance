@@ -154,6 +154,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { usePlans, type PlanInstance } from "~/composables/usePlans";
 import { useTasks, type Task } from "~/composables/useTasks";
 
@@ -193,7 +194,7 @@ const load = async () => {
   try {
     [list.value, tasks.value] = await Promise.all([instances(), mine().catch(() => [])]);
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка загрузки";
+    error.value = apiError(e, "Ошибка загрузки");
   } finally {
     loading.value = false;
   }
@@ -206,7 +207,7 @@ const create = async () => {
     await createInstance(newYear.value, newMonth.value);
     await load();
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка создания периода";
+    error.value = apiError(e, "Ошибка создания периода");
   } finally {
     creating.value = false;
   }

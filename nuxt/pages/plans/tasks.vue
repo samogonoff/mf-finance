@@ -96,6 +96,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { useTasks, type Task } from "~/composables/useTasks";
 import UserPicker from "~/components/plans/UserPicker.vue";
 
@@ -148,16 +149,16 @@ const actionsFor = (t: Task): Act[] => {
 
 const load = async () => {
   try { tasks.value = view.value === "all" ? await api.all() : await api.mine(); }
-  catch (e) { error.value = e instanceof Error ? e.message : "Ошибка"; }
+  catch (e) { error.value = apiError(e, "Ошибка"); }
 };
 const switchView = (v: "mine" | "all") => { view.value = v; load(); };
 const run = async (t: Task, act: string) => {
   if (act === "delegate") { delegateTask.value = t; return; }
-  try { await api.action(t.id, act); await load(); } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка действия"; }
+  try { await api.action(t.id, act); await load(); } catch (e) { error.value = apiError(e, "Ошибка действия"); }
 };
 const onDelegate = async (u: { id: number; name: string }) => {
   if (!delegateTask.value) return;
-  try { await api.action(delegateTask.value.id, "delegate", u.id); delegateTask.value = null; await load(); } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка делегирования"; }
+  try { await api.action(delegateTask.value.id, "delegate", u.id); delegateTask.value = null; await load(); } catch (e) { error.value = apiError(e, "Ошибка делегирования"); }
 };
 
 onMounted(() => { if (canAll.value) view.value = "all"; load(); });
