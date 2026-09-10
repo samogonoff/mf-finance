@@ -409,7 +409,8 @@ func main() {
 		CostsProc: cfg.PlansExpCostsProc,
 		CfoTable:  cfg.PlansExpCfoTable,
 	})
-	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource)
+	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource).
+		WithRegistries(plans.NewExpRegRepo(pool))
 	plansExpH := plans.NewExpHandler(plansExp, plansPrincipal)
 
 	plansCardsH := plans.NewCardHandler(plansCards, plansScope, plansPrincipal).
@@ -474,6 +475,10 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormSave))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.BulkApply))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/totals", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.TotalsGet))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/registry/{kind}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryGet))
+	mux.HandleFunc("PUT /api/plans/exp/{cardId}/registry/{kind}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistrySave))
+	mux.HandleFunc("POST /api/plans/exp/{cardId}/registry/{kind}/{rowId}/copy", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryCopy))
+	mux.HandleFunc("DELETE /api/plans/exp/{cardId}/registry/{kind}/{rowId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryDelete))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormGet))
 	mux.HandleFunc("PUT /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormSave))
 	mux.HandleFunc("POST /api/plans/retail/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.BulkApply))

@@ -32,6 +32,8 @@ type ExpService struct {
 	factTTL  time.Duration
 	factMu   sync.Mutex
 	factSeen map[int64]time.Time
+	// reg — реестры формы (ТЗ §5). nil — форма работает без них, как до Ф4.
+	reg ExpRegRepo
 }
 
 // NewExpService — конструктор.

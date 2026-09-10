@@ -93,6 +93,48 @@ export interface ExpFilterQuery {
   limit?: number;
 }
 
+/** Виды реестров формы (ТЗ §5). */
+export type ExpRegKind = "payroll" | "travel" | "logistics" | "it";
+
+export interface ExpRegRow {
+  id: number;
+  kind: ExpRegKind;
+  sort_order: number;
+  code_cfo: number;
+  code_pl: number;
+  /** ТЗ §5.4: признаки строки ИТ — флажки, а не текст в примечании. */
+  move_to_250: boolean;
+  excluded: boolean;
+  attrs: Record<string, unknown>;
+  note?: string;
+  /** Месяц → сумма. Отсутствующий ключ — не заполнено. */
+  months: Record<string, number>;
+}
+
+export interface ExpRegTotals {
+  by_month?: Record<string, number>;
+  year?: number;
+  /** Итоги реестра ИТ (ТЗ §5.4). */
+  transfer?: number;
+  total?: number;
+  common?: number;
+  excluded?: number;
+}
+
+export interface ExpRegistry {
+  kind: ExpRegKind;
+  rows: ExpRegRow[];
+  read_only: boolean;
+  totals: ExpRegTotals;
+}
+
+export const EXP_REG_TITLES: Record<ExpRegKind, string> = {
+  payroll: "ФОТ",
+  travel: "Командировки",
+  logistics: "Логистика ЦФО 250",
+  it: "ИТ-расходы"
+};
+
 /** Действия по строке (ТЗ §7.8). */
 export type ExpBulkAction = "spread_year" | "spread_to_end" | "clear_row";
 
@@ -155,5 +197,27 @@ export const useExpForm = () => {
   const cards = (plId: number): Promise<ExpCard[]> =>
     $fetch<ExpCard[]>(`${base}/api/plans/instances/${plId}/cards`, { headers: authHeader() });
 
-  return { form, save, bulk, totals, cards };
+  const registry = (cardId: number, kind: ExpRegKind): Promise<ExpRegistry> =>
+    $fetch(`${base}/api/plans/exp/${cardId}/registry/${kind}`, { headers: authHeader() });
+
+  const saveRegRow = (cardId: number, kind: ExpRegKind, row: Partial<ExpRegRow>) =>
+    $fetch<{ id: number }>(`${base}/api/plans/exp/${cardId}/registry/${kind}`, {
+      method: "PUT",
+      body: row,
+      headers: authHeader()
+    });
+
+  const copyRegRow = (cardId: number, kind: ExpRegKind, rowId: number) =>
+    $fetch<{ id: number }>(`${base}/api/plans/exp/${cardId}/registry/${kind}/${rowId}/copy`, {
+      method: "POST",
+      headers: authHeader()
+    });
+
+  const deleteRegRow = (cardId: number, kind: ExpRegKind, rowId: number) =>
+    $fetch<{ ok: boolean }>(`${base}/api/plans/exp/${cardId}/registry/${kind}/${rowId}`, {
+      method: "DELETE",
+      headers: authHeader()
+    });
+
+  return { form, save, bulk, totals, cards, registry, saveRegRow, copyRegRow, deleteRegRow };
 };
