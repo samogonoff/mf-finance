@@ -58,6 +58,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { usePlans, type AuditEvent } from "~/composables/usePlans";
 
 definePageMeta({ middleware: "scope-guard" });
@@ -77,7 +78,7 @@ const load = async () => {
   try {
     events.value = await audit(filter());
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка загрузки (нужна роль ROLE_PLANS_ADMIN)";
+    error.value = apiError(e, "Ошибка загрузки (нужна роль ROLE_PLANS_ADMIN)");
   }
 };
 
@@ -91,7 +92,7 @@ const exportCsv = async () => {
     a.click();
     URL.revokeObjectURL(url);
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка экспорта";
+    error.value = apiError(e, "Ошибка экспорта");
   }
 };
 

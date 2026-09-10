@@ -1,0 +1,499 @@
+<!--
+  Форма этапа 1.5 «Расходы центров прибыли» (ТЗ §3, §4, §7).
+
+  Строка формы — ПАРА «ЦФО × статья PL», период — плановый год целиком:
+  двенадцать колонок ввода и двенадцать колонок факта прошлого года справочно
+  (ТЗ §1.3, §2.5). Состав строк приходит из источника затрат, руками строки не
+  добавляются.
+
+  Реализовано: сетка и ввод (§7.8) с навигацией как в Excel и вставкой диапазона,
+  фильтры и поиск (§7.1), группировка со свёрткой по группе PL (§7.6), порции по
+  прокрутке (§7.10), размножение и очистка строки, блокировка ввода на закрытой
+  карточке (§1.1).
+
+  Ещё НЕ реализовано (следующие фазы плана): реестры §5, расчёты §6, свод и
+  контрольные сверки §8, валидации §9, экспорт/импорт §7.9, публикация §10,
+  перетаскивание и закрепление колонок §7.2/§7.5.
+-->
+<template>
+  <div class="page-exp">
+    <header class="page-header">
+      <div>
+        <h1 class="page-title">{{ card?.title || "Расходы ЦП" }} · {{ planYear }}</h1>
+        <p class="page-subtitle">
+          {{ form?.total ?? 0 }} строк · ввод в {{ card?.currency || "—" }} ·
+          план за год {{ money(shownPlanTotal) }}
+          <span v-if="card?.locked" class="lock-note"><Icon name="lucide:lock" /> период закрыт на запись</span>
+        </p>
+      </div>
+      <div class="page-actions">
+        <NuxtLink v-if="card" :to="`/plans/exp/${card.pl_id}`" class="btn btn-ghost">
+          <Icon name="lucide:arrow-left" /> К комплекту
+        </NuxtLink>
+        <button class="btn btn-sm btn-primary" :disabled="!editable || busy || !dirty" @click="save">
+          <Icon name="lucide:save" :class="{ spin: busy }" /> Сохранить
+          <span v-if="dirty" class="dirty-dot" :title="`несохранённых ячеек: ${drafts.size}`">●</span>
+        </button>
+      </div>
+    </header>
+
+    <p v-if="error" class="banner banner-neg">{{ error }}</p>
+    <p v-if="note" class="banner banner-pos">{{ note }}</p>
+    <p v-if="loaded && !editable" class="banner banner-warn">
+      Только просмотр: карточка не в работе или период закрыт. Изменение утверждённых сумм —
+      через возврат или переоткрытие периода с причиной.
+    </p>
+
+    <!-- ===== Фильтры (ТЗ §7.1) ===== -->
+    <section class="card filters">
+      <div class="f-row">
+        <input
+          v-model="filter.search"
+          class="input f-search"
+          type="search"
+          placeholder="Поиск: статья, код PL, код ЦФО, площадка или магазин"
+          @keydown.enter="reload"
+        />
+        <select v-model="filter.group_pl" class="input f-sel" @change="reload">
+          <option value="">Все группы PL</option>
+          <option v-for="g in form?.groups || []" :key="g" :value="g">{{ g }}</option>
+        </select>
+        <select v-if="isRetail" v-model="filter.city" class="input f-sel" @change="reload">
+          <option value="">Все города</option>
+          <option v-for="c in cities" :key="c" :value="c">{{ c }}</option>
+        </select>
+        <select v-if="isRetail" v-model="filter.reg_manager" class="input f-sel" @change="reload">
+          <option value="">Все РМ</option>
+          <option v-for="m in regManagers" :key="m" :value="m">{{ m }}</option>
+        </select>
+        <button class="btn btn-sm btn-ghost" @click="reload"><Icon name="lucide:search" /> Применить</button>
+        <button class="btn btn-sm btn-ghost" :disabled="!filterActive" @click="resetFilter">
+          <Icon name="lucide:filter-x" /> Сбросить
+        </button>
+      </div>
+    </section>
+
+    <SkeletonTable v-if="loading" :rows="16" :cols="13" label="Загружаю строки формы" />
+
+    <p v-else-if="!rows.length" class="banner banner-info">
+      Строк нет. Состав строк приходит из источника затрат по факту прошлого года — если источник
+      недоступен (нет VPN или пустой срез), форма откроется пустой.
+    </p>
+
+    <!-- ===== Сетка ===== -->
+    <section v-else class="card grid-card">
+      <div ref="gridRoot" class="grid-scroll" @paste="nav.onPaste">
+        <table class="data-table compact exp-table">
+          <thead>
+            <tr>
+              <th class="sticky-c c-cfo">Код ЦФО</th>
+              <th class="sticky-c c-name">{{ isRetail ? "Магазин" : "Площадка" }}</th>
+              <th class="c-pl">Код PL</th>
+              <th class="c-exp">Статья</th>
+              <th v-for="(m, i) in MONTHS_SHORT" :key="m" class="col-num c-mon" :title="`План ${planYear}, ${m}`">
+                {{ m }}
+              </th>
+              <th class="col-num c-total">Итого план</th>
+              <th class="col-num c-fact" :title="`Факт ${planYear - 1} за год`">Факт {{ planYear - 1 }}</th>
+              <th class="c-act">Строка</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-for="g in visibleGroups" :key="g">
+              <!-- Строка группы (ТЗ §7.6): свёртка и итог по группе. -->
+              <tr class="grp-row" @click="toggleGroup(g)">
+                <td class="sticky-c grp-cell" colspan="4">
+                  <Icon :name="collapsed.has(g) ? 'lucide:chevron-right' : 'lucide:chevron-down'" />
+                  {{ g }}
+                  <span class="grp-count">{{ groupRows(g).length }}</span>
+                </td>
+                <td v-for="m in 12" :key="m" class="col-num grp-num">{{ money(groupMonthTotal(g, m)) }}</td>
+                <td class="col-num grp-num strong">{{ money(groupTotal(g)) }}</td>
+                <td class="col-num grp-num">{{ money(groupFactTotal(g)) }}</td>
+                <td></td>
+              </tr>
+              <template v-if="!collapsed.has(g)">
+                <tr v-for="row in groupRows(g)" :key="row.id" :class="{ 'row-dirty': rowDirty(row) }">
+                  <td class="sticky-c c-cfo mono">{{ row.code_cfo }}</td>
+                  <td class="sticky-c c-name" :title="row.cfo">{{ row.cfo || "—" }}</td>
+                  <td class="c-pl mono">{{ row.code_pl }}</td>
+                  <td class="c-exp" :title="row.expense">{{ row.expense || "—" }}</td>
+                  <td v-for="m in 12" :key="m" class="col-num c-mon">
+                    <input
+                      class="cell-input"
+                      :class="{ 'is-dirty': isDirty(row, m) }"
+                      :data-grid-cell="`${rowIndex(row)}:${m - 1}`"
+                      :value="cellText(row, m)"
+                      :disabled="!editable"
+                      inputmode="decimal"
+                      @focus="nav.onFocusCell(rowIndex(row), m - 1)"
+                      @keydown="nav.onKeydown($event, rowIndex(row), m - 1)"
+                      @input="onInput(row, m, ($event.target as HTMLInputElement).value)"
+                    />
+                  </td>
+                  <td class="col-num c-total strong">{{ money(rowPlanTotal(row)) }}</td>
+                  <td class="col-num c-fact muted">{{ money(expRowTotal(row, 'fact')) }}</td>
+                  <td class="c-act">
+                    <div class="row-acts">
+                      <button
+                        class="btn btn-xs btn-ghost"
+                        :disabled="!editable || busy"
+                        title="Размножить значение января на все двенадцать месяцев"
+                        @click="spread(row, 'spread_year')"
+                      >на год</button>
+                      <button
+                        class="btn btn-xs btn-ghost"
+                        :disabled="!editable || busy"
+                        title="Очистить строку: во всех месяцах станет пусто (пусто не равно нулю)"
+                        @click="spread(row, 'clear_row')"
+                      >очистить</button>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Порции по прокрутке (ТЗ §7.10): в эталоне МП 31 595 строк, разом их
+           не отдаёт ни сервер, ни браузер. -->
+      <div v-if="hasMore" class="grid-more">
+        <button class="btn btn-sm btn-ghost" :disabled="loadingMore" @click="loadMore">
+          <Icon name="lucide:chevrons-down" :class="{ spin: loadingMore }" />
+          Показать ещё · загружено {{ rows.length }} из {{ form?.total }}
+        </button>
+      </div>
+    </section>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { apiError } from "~/utils/apiError";
+import { money } from "~/utils/format";
+import { useGridNav } from "~/composables/useGridNav";
+import {
+  useExpForm, expCell, expRowTotal, MONTHS_SHORT,
+  type ExpBulkAction, type ExpCell, type ExpForm, type ExpRow
+} from "~/composables/useExpForm";
+
+const route = useRoute();
+const cardId = Number(route.params.cardId);
+const api = useExpForm();
+
+const form = ref<ExpForm | null>(null);
+const rows = ref<ExpRow[]>([]);
+const loading = ref(true);
+const loadingMore = ref(false);
+const loaded = ref(false);
+const busy = ref(false);
+const error = ref("");
+const note = ref("");
+const collapsed = ref<Set<string>>(new Set());
+
+/** Несохранённые правки: ключ «ЦФО:статья:месяц» → значение (null = очистить). */
+const drafts = ref<Map<string, number | null>>(new Map());
+const dirty = computed(() => drafts.value.size > 0);
+
+const PAGE = 300;
+const filter = reactive({ search: "", group_pl: "", city: "", reg_manager: "" });
+
+const card = computed(() => form.value?.card ?? null);
+const planYear = computed(() => form.value?.instance.plan_year ?? card.value?.year ?? 0);
+const isRetail = computed(() => form.value?.instance.form_kind !== "mp");
+const editable = computed(() => !!form.value && !form.value.read_only);
+const hasMore = computed(() => !!form.value && rows.value.length < form.value.total);
+const filterActive = computed(() => !!(filter.search || filter.group_pl || filter.city || filter.reg_manager));
+
+const key = (codeCFO: number, codePL: number, month: number) => `${codeCFO}:${codePL}:${month}`;
+
+/**
+ * Значения живут в привязке к СТРОКЕ, а не к её позиции в таблице (ТЗ §7.3):
+ * поэтому ключ правки — «ЦФО + статья + месяц», и ни сортировка, ни смена
+ * фильтра несохранённый ввод не теряют.
+ */
+const isDirty = (row: ExpRow, month: number) => drafts.value.has(key(row.code_cfo, row.code_pl, month));
+const rowDirty = (row: ExpRow) => {
+  for (let m = 1; m <= 12; m++) if (isDirty(row, m)) return true;
+  return false;
+};
+
+const draftOrSaved = (row: ExpRow, month: number): number | undefined => {
+  const k = key(row.code_cfo, row.code_pl, month);
+  if (drafts.value.has(k)) {
+    const v = drafts.value.get(k);
+    return v === null ? undefined : v;
+  }
+  return expCell(row, "plan", month);
+};
+
+const cellText = (row: ExpRow, month: number): string => {
+  const v = draftOrSaved(row, month);
+  return v === undefined ? "" : String(v);
+};
+
+const rowPlanTotal = (row: ExpRow): number => {
+  let t = 0;
+  for (let m = 1; m <= 12; m++) {
+    const v = draftOrSaved(row, m);
+    if (v !== undefined) t += v;
+  }
+  return t;
+};
+
+const shownPlanTotal = computed(() => rows.value.reduce((s, r) => s + rowPlanTotal(r), 0));
+
+// ── Группировка (ТЗ §7.6) ────────────────────────────────────────────────────
+const visibleGroups = computed(() => {
+  const present = new Set(rows.value.map((r) => r.group_pl));
+  const ordered = (form.value?.groups || []).filter((g) => present.has(g));
+  // Группа, которой нет в порядке ТЗ, всё равно должна быть видна: источник живой.
+  for (const g of present) if (!ordered.includes(g)) ordered.push(g);
+  return ordered;
+});
+const groupRows = (g: string) => rows.value.filter((r) => r.group_pl === g);
+const groupTotal = (g: string) => groupRows(g).reduce((s, r) => s + rowPlanTotal(r), 0);
+const groupFactTotal = (g: string) => groupRows(g).reduce((s, r) => s + expRowTotal(r, "fact"), 0);
+const groupMonthTotal = (g: string, month: number) =>
+  groupRows(g).reduce((s, r) => s + (draftOrSaved(r, month) ?? 0), 0);
+const toggleGroup = (g: string) => {
+  const next = new Set(collapsed.value);
+  next.has(g) ? next.delete(g) : next.add(g);
+  collapsed.value = next;
+};
+
+const cities = computed(() => [...new Set(rows.value.map((r) => r.group_cfo2).filter(Boolean))].sort());
+const regManagers = computed(() => [...new Set(rows.value.map((r) => r.reg_manager).filter(Boolean))].sort());
+
+// ── Навигация по сетке как в Excel (ТЗ §7.8) ─────────────────────────────────
+/** Плоский порядок строк для координат сетки: свёрнутые группы в него не входят. */
+const flatRows = computed(() => {
+  const out: ExpRow[] = [];
+  for (const g of visibleGroups.value) {
+    if (collapsed.value.has(g)) continue;
+    out.push(...groupRows(g));
+  }
+  return out;
+});
+const rowIndex = (row: ExpRow) => flatRows.value.findIndex((r) => r.id === row.id);
+
+const nav = useGridNav({
+  rows: () => flatRows.value.length,
+  cols: () => 12,
+  onPaste: (anchor, matrix) => {
+    if (!editable.value) return;
+    matrix.forEach((line, di) => {
+      line.forEach((raw, dj) => {
+        const row = flatRows.value[anchor.row + di];
+        const month = anchor.col + dj + 1;
+        if (!row || month > 12) return;
+        const v = nav.parseCellNumber(raw);
+        setDraft(row, month, v === null ? null : v);
+      });
+    });
+  }
+});
+const gridRoot = nav.container;
+
+// ── Ввод и сохранение ────────────────────────────────────────────────────────
+const setDraft = (row: ExpRow, month: number, value: number | null) => {
+  const next = new Map(drafts.value);
+  next.set(key(row.code_cfo, row.code_pl, month), value);
+  drafts.value = next;
+};
+
+const onInput = (row: ExpRow, month: number, raw: string) => {
+  const s = raw.trim().replace(/\s/g, "").replace(",", ".");
+  // Пустая строка — это ОЧИСТКА ячейки, а не ноль (ТЗ §7.8): ноль вводится явно.
+  if (s === "") {
+    setDraft(row, month, null);
+    return;
+  }
+  const v = Number(s);
+  if (Number.isFinite(v)) setDraft(row, month, v);
+};
+
+const save = async () => {
+  if (!drafts.value.size) return;
+  busy.value = true;
+  error.value = "";
+  note.value = "";
+  const cells: ExpCell[] = [];
+  for (const [k, v] of drafts.value) {
+    const [cfo, pl, m] = k.split(":").map(Number);
+    cells.push({ code_cfo: cfo, code_pl: pl, month: m, amount: v });
+  }
+  try {
+    const r = await api.save(cardId, cells);
+    drafts.value = new Map();
+    note.value = `Сохранено, изменённых ячеек: ${r.changed}`;
+    await reload({ keepFilter: true });
+  } catch (e) {
+    error.value = apiError(e, "Не удалось сохранить значения");
+  } finally {
+    busy.value = false;
+  }
+};
+
+/** Размножение и очистка по строке (ТЗ §7.8). Идут на сервер: правило одно. */
+const spread = async (row: ExpRow, action: ExpBulkAction) => {
+  busy.value = true;
+  error.value = "";
+  note.value = "";
+  try {
+    const amount = action === "clear_row" ? null : (draftOrSaved(row, 1) ?? null);
+    if (action !== "clear_row" && amount === null) {
+      error.value = "Размножать нечего: сначала заполните январь этой строки";
+      return;
+    }
+    await api.bulk(cardId, { action, code_cfo: row.code_cfo, code_pl: row.code_pl, amount });
+    // Правки по этой строке уже не актуальны — их перезаписал сервер.
+    const next = new Map(drafts.value);
+    for (let m = 1; m <= 12; m++) next.delete(key(row.code_cfo, row.code_pl, m));
+    drafts.value = next;
+    await reload({ keepFilter: true });
+  } catch (e) {
+    error.value = apiError(e, "Массовая операция не выполнена");
+  } finally {
+    busy.value = false;
+  }
+};
+
+// ── Загрузка ─────────────────────────────────────────────────────────────────
+const query = (offset: number) => ({
+  search: filter.search || undefined,
+  group_pl: filter.group_pl || undefined,
+  city: filter.city || undefined,
+  reg_manager: filter.reg_manager || undefined,
+  offset,
+  limit: PAGE
+});
+
+const reload = async (opts: { keepFilter?: boolean } = {}) => {
+  if (!opts.keepFilter) collapsed.value = new Set();
+  loading.value = rows.value.length === 0;
+  error.value = "";
+  try {
+    const f = await api.form(cardId, query(0));
+    form.value = f;
+    rows.value = f.rows;
+    loaded.value = true;
+  } catch (e) {
+    error.value = apiError(e, "Не удалось загрузить форму");
+  } finally {
+    loading.value = false;
+  }
+};
+
+const loadMore = async () => {
+  loadingMore.value = true;
+  try {
+    const f = await api.form(cardId, query(rows.value.length));
+    form.value = { ...f, rows: [] };
+    rows.value = [...rows.value, ...f.rows];
+  } catch (e) {
+    error.value = apiError(e, "Не удалось загрузить следующую порцию");
+  } finally {
+    loadingMore.value = false;
+  }
+};
+
+const resetFilter = () => {
+  filter.search = "";
+  filter.group_pl = "";
+  filter.city = "";
+  filter.reg_manager = "";
+  void reload();
+};
+
+// Предупреждение о несохранённом вводе (ТЗ §7.8).
+const beforeUnload = (e: BeforeUnloadEvent) => {
+  if (!dirty.value) return;
+  e.preventDefault();
+  e.returnValue = "";
+};
+onMounted(() => {
+  window.addEventListener("beforeunload", beforeUnload);
+  void reload();
+});
+onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
+onBeforeRouteLeave(() => {
+  if (!dirty.value) return true;
+  return window.confirm("Есть несохранённые изменения. Уйти со страницы и потерять их?");
+});
+</script>
+
+<style scoped>
+.page-exp { display: flex; flex-direction: column; gap: var(--sp-4); }
+.lock-note { color: var(--neg); display: inline-flex; align-items: center; gap: 3px; margin-left: var(--sp-3); }
+.dirty-dot { color: var(--warn); margin-left: 4px; }
+
+.filters { padding: var(--sp-4); }
+.f-row { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; }
+.f-search { flex: 1 1 320px; min-width: 200px; }
+.f-sel { flex: 0 1 180px; min-width: 140px; }
+
+.grid-card { padding: 0; overflow: hidden; }
+/* Сетка шире экрана всегда: 12 месяцев плюс атрибуты. Прокрутка живёт внутри
+   карточки, страница по горизонтали не едет. */
+.grid-scroll { overflow: auto; max-height: 70vh; }
+.exp-table { min-width: 1180px; }
+.exp-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-surface-2);
+}
+/* Закрепление блока атрибутов при горизонтальной прокрутке (ТЗ §7.5): без него
+   на 24 колонках непонятно, к какому ЦФО относится ячейка. */
+.sticky-c { position: sticky; background: var(--bg-surface); z-index: 1; }
+.exp-table thead .sticky-c { z-index: 3; background: var(--bg-surface-2); }
+.c-cfo { left: 0; width: 74px; }
+.c-name { left: 74px; width: 200px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-pl { width: 62px; }
+.c-exp { width: 220px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-mon { width: 86px; }
+.c-total, .c-fact { width: 104px; }
+.c-act { width: 128px; }
+.mono { font-family: var(--font-mono); }
+.strong { font-weight: var(--fw-semibold); color: var(--text-strong); }
+.muted { color: var(--text-muted); }
+
+.grp-row { cursor: pointer; background: var(--bg-surface-3); }
+.grp-row:hover { background: var(--bg-tonal); }
+.grp-cell {
+  left: 0;
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-surface-3);
+}
+.grp-count { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-muted); }
+.grp-num { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-secondary); }
+
+.cell-input {
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  padding: 2px var(--sp-2);
+  border-radius: var(--rd-2);
+}
+.cell-input:hover:not(:disabled) { border-color: var(--border); }
+.cell-input:focus { outline: none; border-color: var(--border-focus); box-shadow: var(--shadow-focus); }
+.cell-input:disabled { color: var(--text-muted); }
+.cell-input.is-dirty { border-color: var(--warn); background: var(--warn-soft); }
+.row-dirty .sticky-c { border-left: 2px solid var(--warn); }
+
+.row-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.btn-xs { height: 22px; padding: 0 var(--sp-3); font-size: var(--fs-2xs); }
+.grid-more { display: flex; justify-content: center; padding: var(--sp-4); border-top: 1px solid var(--border); }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>

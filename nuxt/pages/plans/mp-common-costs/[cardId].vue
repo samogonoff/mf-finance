@@ -100,6 +100,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import NumberField from "~/components/NumberField.vue";
 import SkeletonTable from "~/components/SkeletonTable.vue";
 import {
@@ -177,13 +178,6 @@ const seed = () => {
   dirty.value = false;
 };
 
-const errText = (e: unknown, fallback: string): string => {
-  if (typeof e === "object" && e && "data" in e) {
-    const d = (e as { data?: { error?: string } }).data;
-    if (d?.error) return d.error;
-  }
-  return e instanceof Error ? e.message : fallback;
-};
 
 const load = async () => {
   loading.value = true;
@@ -199,7 +193,7 @@ const load = async () => {
     seed();
     loaded.value = true;
   } catch (e: unknown) {
-    error.value = errText(e, "Не удалось загрузить общие затраты");
+    error.value = apiError(e, "Не удалось загрузить общие затраты");
   } finally {
     loading.value = false;
   }
@@ -228,7 +222,7 @@ const save = async () => {
     seed();
     note.value = `Сохранено статей: ${payload.length}. Итого ${money(grandTotal.value)} ${currency.value}.`;
   } catch (e: unknown) {
-    error.value = errText(e, "Не удалось сохранить общие затраты");
+    error.value = apiError(e, "Не удалось сохранить общие затраты");
   } finally {
     busy.value = false;
   }

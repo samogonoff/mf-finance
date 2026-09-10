@@ -61,6 +61,39 @@ func cardPassedStep(c Card, step string) bool {
 	return ci > si
 }
 
+// expPeriodStage — этап схемы, за который отвечают карточки формы расходов ЦП.
+const expPeriodStage = "1.5"
+
+// formDrivesStage — двигают ли карточки формы этап периода с таким кодом.
+//
+// До появления формы расходов ЦП карточки были только у форм потока продаж, и
+// «все карточки периода» совпадало с «карточки этапов 1.1–1.4». Формы расходов
+// идут своим маршрутом с ТАКИМИ ЖЕ кодами шагов (1.1 → 1.2 → 1.4, но внутри
+// своей формы), поэтому без разделения этап 1.1 периода начал бы ждать формы
+// расходов — а они по схеме заполняются позже, на этапе 1.5.
+func formDrivesStage(formCode, stageCode string) bool {
+	if formCode == TemplateExp {
+		return stageCode == expPeriodStage
+	}
+	return stepOrder(stageCode) >= 0
+}
+
+// cardClosedForStage — карточка формы уже «сделала» этот этап периода.
+//
+// У потока продаж этап закрывается прохождением одноимённого шага маршрута. У
+// расходов ЦП шага с кодом «1.5» в маршруте нет: этап закрывает утверждение
+// формы целиком.
+func cardClosedForStage(c Card, stageCode string) bool {
+	if c.FormCode == TemplateExp {
+		switch c.Status {
+		case CardApproved, CardPublished, CardPublishFailed, CardArchived:
+			return true
+		}
+		return false
+	}
+	return cardPassedStep(c, stageCode)
+}
+
 // StageStatusFromCards — пересчёт статусов этапов по карточкам периода.
 //
 // Правила на один этап (только для тех, где есть соответствующие карточки):
@@ -80,15 +113,28 @@ func StageStatusFromCards(stages []StageState, cards []Card) []StageState {
 
 	for i := range out {
 		step := out[i].Code
-		if stepOrder(step) < 0 {
-			continue // этап без карточек (2.x, 1.5, 1.6, 3, 4) — движется вручную
+		if stepOrder(step) < 0 && step != expPeriodStage {
+			continue // этап без карточек (2.x, 1.6, 3, 4) — движется вручную
 		}
 		var total, passed, onStep, returned int
 		for _, c := range cards {
+			// Этап агрегируется только из карточек СВОИХ форм: иначе этап 1.1
+			// ждал бы расходы ЦП, а этап 1.5 — план продаж.
+			if !formDrivesStage(c.FormCode, step) {
+				continue
+			}
 			total++
 			switch {
-			case cardPassedStep(c, step):
+			case cardClosedForStage(c, step):
 				passed++
+			case c.FormCode == TemplateExp:
+				// У расходов ЦП шага с кодом этапа в маршруте нет, поэтому
+				// «в работе» и «возвращена» читаются по статусу формы.
+				if c.Status == CardReturned {
+					returned++
+				} else if c.Status == CardOnApproval {
+					onStep++
+				}
 			case c.StepCode == step && c.Status == CardReturned:
 				returned++
 			case c.StepCode == step:

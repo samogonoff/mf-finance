@@ -227,6 +227,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { usePlansRights, type Position, type ScopeAssignment, type PlanUser, type Deputy } from "~/composables/usePlansRights";
 import { useDirectories } from "~/composables/useDirectories";
 import UserPicker from "~/components/plans/UserPicker.vue";
@@ -307,7 +308,7 @@ const load = async () => {
     ]);
   } catch (e) { error.value = errMsg(e); }
 };
-const errMsg = (e: unknown) => (e instanceof Error ? e.message : "Ошибка");
+const errMsg = (e: unknown) => (apiError(e, "Ошибка"));
 
 const toggleStage = async (p: Position, st: string) => {
   const next = p.stage_codes.includes(st) ? p.stage_codes.filter((s) => s !== st) : [...p.stage_codes, st];

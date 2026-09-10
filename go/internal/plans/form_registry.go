@@ -44,6 +44,21 @@ func FormRegistry() []FormDef {
 			},
 		},
 		{
+			// Этап 1.5 (ТЗ §3, §4): форм две — розница и маркетплейсы, — и у
+			// каждой свой отбор строк из источника затрат. Розница по ТЗ только
+			// белорусская (Country='BY' и GroupCFO1='3.Магазины'), у МП страна
+			// приходит фильтром формы, поэтому карточек три.
+			// Ключ области несёт вид формы и страну: "R-BY", "MP-RU" — по нему
+			// exp_service выбирает отбор источника, а не по отдельной колонке.
+			Code: TemplateExp, Name: "Расходы ЦП",
+			Scopes: []FormScope{
+				{Key: "R-BY", Title: "Розница РБ", Country: "BY", LegalEntity: "F", Currency: "BYN"},
+				{Key: "MP-RU", Title: "Маркетплейсы РФ", Country: "RU", LegalEntity: "TDMF", Currency: "RUB"},
+				{Key: "MP-KZ", Title: "Маркетплейсы KZ", Country: "KZ", LegalEntity: "MFKaz", Currency: "KZT"},
+				{Key: "MP-UZ", Title: "Маркетплейсы UZ", Country: "UZ", LegalEntity: "MFUz", Currency: "UZS"},
+			},
+		},
+		{
 			Code: TemplateRetail, Name: "Розница",
 			Scopes: []FormScope{
 				{Key: "BY", Title: "Розница РБ", Country: "BY", LegalEntity: "F", Currency: "BYN"},

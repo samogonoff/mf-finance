@@ -367,6 +367,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import {
   useTasks,
   type MpTaskForm,
@@ -794,7 +795,7 @@ const load = async () => {
     seedFromCells();
     dirty.value = false;
     await loadCommonCosts();
-  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка загрузки формы"; }
+  } catch (e) { error.value = apiError(e, "Ошибка загрузки формы"); }
   finally { loading.value = false; }
 };
 
@@ -822,7 +823,7 @@ const doValidate = async () => {
     if (checkResult.value.can_submit) note.value = "Проверка пройдена: блокирующих замечаний нет.";
   } catch (e: unknown) {
     const d = typeof e === "object" && e && "data" in e ? (e as { data?: { error?: string } }).data : null;
-    error.value = d?.error || (e instanceof Error ? e.message : "Проверка не выполнена");
+    error.value = d?.error || (apiError(e, "Проверка не выполнена"));
   } finally {
     checking.value = false;
   }
@@ -852,7 +853,7 @@ const save = async () => {
     await api.saveMpForm(taskId, rows, currency.value);
     note.value = `Сохранено ${rows.length} значений`;
     dirty.value = false;
-  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка сохранения"; }
+  } catch (e) { error.value = apiError(e, "Ошибка сохранения"); }
   finally { saving.value = false; }
 };
 
@@ -863,7 +864,7 @@ const doExport = async () => {
     const a = document.createElement("a");
     a.href = url; a.download = `TPL-MP_task${taskId}.xlsx`; a.click();
     URL.revokeObjectURL(url);
-  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка экспорта"; }
+  } catch (e) { error.value = apiError(e, "Ошибка экспорта"); }
 };
 const doImport = async (ev: Event) => {
   const f = (ev.target as HTMLInputElement).files?.[0];
@@ -873,7 +874,7 @@ const doImport = async (ev: Event) => {
     const r = await api.importMpForm(taskId, f);
     note.value = `Импортировано ${r.imported} значений`;
     await load();
-  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка импорта"; }
+  } catch (e) { error.value = apiError(e, "Ошибка импорта"); }
   finally { if (fileInput.value) fileInput.value.value = ""; }
 };
 
