@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,7 +25,12 @@ type ExpService struct {
 	// factTTL — как часто перечитывать факт из источника. Факт меняется раз в
 	// сутки, а процедура затрат тяжёлая: дёргать её на каждое открытие формы
 	// нельзя, иначе форма будет открываться минутами.
+	//
+	// Сервис живёт один на процесс и вызывается из обработчиков параллельно,
+	// поэтому отметки под мьютексом: одновременная запись в map — это паника
+	// рантайма, а не «редкая гонка».
 	factTTL  time.Duration
+	factMu   sync.Mutex
 	factSeen map[int64]time.Time
 }
 
@@ -107,7 +113,7 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance)
 	if s.source == nil {
 		return nil
 	}
-	if seen, ok := s.factSeen[in.ID]; ok && time.Since(seen) < s.factTTL {
+	if s.factFresh(in.ID) {
 		return nil
 	}
 	prev := in.PlanYear - 1
@@ -164,8 +170,23 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance)
 	if err := s.repo.SaveFact(ctx, in.ID, fact); err != nil {
 		return err
 	}
-	s.factSeen[in.ID] = time.Now()
+	s.factSynced(in.ID)
 	return nil
+}
+
+// factFresh — факт по экземпляру перечитан недавно.
+func (s *ExpService) factFresh(instanceID int64) bool {
+	s.factMu.Lock()
+	defer s.factMu.Unlock()
+	seen, ok := s.factSeen[instanceID]
+	return ok && time.Since(seen) < s.factTTL
+}
+
+// factSynced — отметить, что факт перечитан.
+func (s *ExpService) factSynced(instanceID int64) {
+	s.factMu.Lock()
+	defer s.factMu.Unlock()
+	s.factSeen[instanceID] = time.Now()
 }
 
 // SaveCells — сохранение введённых значений.
