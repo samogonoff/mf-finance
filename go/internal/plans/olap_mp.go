@@ -38,7 +38,7 @@ func NewOlapFactSource(db *sql.DB, factTable, planTable, taktTable, penaltyView 
 }
 
 // MpFact — факт сегмента за период: продажи/себестоимость (FormToLoadFact, BYN) +
-// штрафы (FINDWHACCESSGROUP, RUB, CodePL=mpPenaltyPL). Валюта — в поле FactRow.Currency,
+// штрафы (FINDWHACCESSGROUP, RUB, CodePL=mpPenaltyFactKey). Валюта — в поле FactRow.Currency,
 // пересчёт в валюту формы делает MpFormData через convertAmount.
 func (s *OlapFactSource) MpFact(ctx context.Context, year, month int, segment string) ([]FactRow, error) {
 	platforms := segmentPlatforms(segment)
@@ -165,7 +165,7 @@ func (s *OlapFactSource) penaltyRows(ctx context.Context, year, month int, platf
 			continue
 		}
 		out = append(out, FactRow{
-			CodeCFO: int(cfo.Int64), NameCFO: platforms[int(cfo.Int64)], CodePL: mpPenaltyPL,
+			CodeCFO: int(cfo.Int64), NameCFO: platforms[int(cfo.Int64)], CodePL: mpPenaltyFactKey,
 			Year: year, Month: month, Scenario: "Факт", Currency: "RUB", Amount: amt.Float64,
 		})
 	}

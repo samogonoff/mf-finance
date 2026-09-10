@@ -153,7 +153,7 @@ func factSeed(factIdx map[[2]int]float64, block string, cfo int) (float64, bool)
 		}
 		return a + b, true
 	case BCostPenalties:
-		v, ok := factIdx[[2]int{cfo, mpPenaltyPL}] // штрафы FINDWH (FINDWHACCESSGROUP)
+		v, ok := factIdx[[2]int{cfo, mpPenaltyFactKey}] // штрафы FINDWH (FINDWHACCESSGROUP)
 		return v, ok
 	default:
 		pl, has := seedPL[block]

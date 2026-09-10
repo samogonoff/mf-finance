@@ -113,3 +113,35 @@ func TestMssqlPublisher_TargetWhitelist(t *testing.T) {
 		t.Fatal("таблица вне белого списка должна быть отклонена")
 	}
 }
+
+// Ответ 28 (10.09.2026): «публиковать код 66 одной строкой… в приёмник идёт сумма».
+// В форме штрафы и прочие удержания — ДВА поля ввода, и обе строки несут CodePL=66.
+// Приёмник обязан получить одну строку с суммой, иначе на одном логическом ключе
+// окажется два INSERT'а и идемпотентность записи ломается.
+func TestFoldPublishRows_PenaltiesAndOtherMergeIntoOne66(t *testing.T) {
+	date := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	rows := []PublishRow{
+		{BlockType: "penalties", Param: "ЗАТРАТЫ", Country: "RU", CodeCFO: 335, CodePL: 66, Date: date, Value: 1200.50},
+		{BlockType: "cost_other", Param: "ЗАТРАТЫ", Country: "RU", CodeCFO: 335, CodePL: 66, Date: date, Value: 800.25},
+		// Другая площадка тем же кодом не сливается: ключ включает ЦФО.
+		{BlockType: "penalties", Param: "ЗАТРАТЫ", Country: "RU", CodeCFO: 336, CodePL: 66, Date: date, Value: 10},
+	}
+	got := foldPublishRows(rows)
+	if len(got) != 2 {
+		t.Fatalf("строк после свёртки %d, ожидали 2 (две площадки): %+v", len(got), got)
+	}
+	if got[0].CodeCFO != 335 || got[0].Value != 2000.75 {
+		t.Fatalf("штрафы и прочие удержания должны сложиться в 2000,75: %+v", got[0])
+	}
+	if got[1].CodeCFO != 336 || got[1].Value != 10 {
+		t.Fatalf("вторая площадка не должна была слиться: %+v", got[1])
+	}
+}
+
+// Синтетического кода 6600 в приёмнике быть не может: ключ штрафов в индексе
+// факта отрицательный, а публикация неположительные коды отбрасывает.
+func TestPenaltyFactKey_IsNotAPublishableCode(t *testing.T) {
+	if mpPenaltyFactKey > 0 {
+		t.Fatalf("ключ штрафов %d выглядит как код PL — он может уехать в приёмник", mpPenaltyFactKey)
+	}
+}
