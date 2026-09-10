@@ -140,3 +140,22 @@ func (expMockSource) Cfo(_ context.Context, kind, country string) (map[int]ExpCf
 	}
 	return out, nil
 }
+
+// SalesPlan — план продаж фикстуры: ровный по месяцам, разный по объектам.
+// Нужен расчёту §6.1: без плана продаж ФОТ не считается вовсе.
+func (expMockSource) SalesPlan(_ context.Context, country string, _ int) (map[int]map[int]float64, error) {
+	out := map[int]map[int]float64{}
+	for _, kind := range []string{ExpKindRetail, ExpKindMP} {
+		for _, c := range expMockCfo(kind, country) {
+			if c.Country != country && country != "" {
+				continue
+			}
+			m := map[int]float64{}
+			for i := 1; i <= 12; i++ {
+				m[i] = float64(c.CodeCFO*100) * (1 + float64(i)/40)
+			}
+			out[c.CodeCFO] = m
+		}
+	}
+	return out, nil
+}
