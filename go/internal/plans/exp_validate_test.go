@@ -216,3 +216,38 @@ func TestExpReconcile_RegistryControls(t *testing.T) {
 		t.Fatalf("слева %v — ожидали билеты + командировочные = 880 без проживания", e05.Left)
 	}
 }
+
+// Свод §8: строки складываются по ключу «группа PL + статья + код PL», сценарии
+// не смешиваются. Свёртка §12.3 идёт по ТАКТИКЕ — по тому, что заполняет форма.
+func TestExpSummaryFold_ByPnlGroup(t *testing.T) {
+	rows := []ExpSummaryRow{
+		{GroupPL: "ВЫПЛАТЫ РАБОТНИКАМ", CodePL: 24, PnlGroup: "Заработная плата",
+			ByScenario: map[string]map[int]float64{
+				ExpScenarioPlan: {1: 100, 2: 200},
+				ExpScenarioFact: {1: 999}, // факт в свёртку не идёт
+			}},
+		{GroupPL: "ВЫПЛАТЫ РАБОТНИКАМ", CodePL: 26, PnlGroup: "Заработная плата",
+			ByScenario: map[string]map[int]float64{ExpScenarioPlan: {1: 50}}},
+		{GroupPL: "ПРОЧИЕ РАСХОДЫ", CodePL: 777, PnlGroup: ExpSummaryUnassigned,
+			ByScenario: map[string]map[int]float64{ExpScenarioPlan: {1: 7}}},
+	}
+	got := ExpFoldToPnlGroups(rows)
+	if len(got) != 2 {
+		t.Fatalf("групп %d, ожидали две: %+v", len(got), got)
+	}
+	if got[0].PnlGroup != "Заработная плата" || !near(got[0].Total, 350) {
+		t.Fatalf("зарплата свернулась неверно: %+v", got[0])
+	}
+	if !near(got[0].ByMonth[1], 150) {
+		t.Fatalf("январь зарплаты %v, ожидали 150 (100 + 50) без факта", got[0].ByMonth[1])
+	}
+	if len(got[0].CodesPL) != 2 {
+		t.Fatalf("группа обязана раскрываться до кодов PL: %+v", got[0].CodesPL)
+	}
+	// «Не распределено» — всегда последней и помечена: это остаток, а не
+	// подгруппа наравне (ответ 36: ошибкой не считается, публикацию не блокирует).
+	last := got[len(got)-1]
+	if last.PnlGroup != ExpSummaryUnassigned || !last.Unassigned {
+		t.Fatalf("нераспределённые коды должны идти последними и быть помечены: %+v", last)
+	}
+}

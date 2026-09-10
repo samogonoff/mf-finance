@@ -56,13 +56,22 @@ type ExpDataSource interface {
 	Costs(ctx context.Context, kind, country string, years []int) ([]ExpCostCell, error)
 	// Cfo — справочник ЦФО страны (ТЗ §2.4).
 	Cfo(ctx context.Context, kind, country string) (map[int]ExpCfoAttrs, error)
+	// SalesPlan — утверждённый план продаж как ВХОД ТОЛЬКО ДЛЯ ЧТЕНИЯ (ТЗ §2.2):
+	// ЦФО → месяц → сумма в национальной валюте. Форма 1.5 его не изменяет.
+	SalesPlan(ctx context.Context, country string, year int) (map[int]map[int]float64, error)
 }
+
+// expSalesParam — значение колонки «Параметр» плана продаж (ТЗ §2.2).
+const expSalesParam = "ПРОДАЖИ"
 
 // ExpTables — имена источников. Как и у остальных форм модуля, задаются env'ом:
 // на dev-стенде и в проде они отличаются, а зашивать их в код запрещено.
 type ExpTables struct {
 	CostsProc string // ZATRATY_DLYA_OKSANY_BYSTRYE, база BUDGETING
 	CfoTable  string // FinDWH.dbo.[001 CodeCFO]
+	// SalesTable — план продаж в НАЦИОНАЛЬНОЙ валюте: Budgeting.dbo.VFORMTOLOADPLAN
+	// (у BYN-пары FormToLoadPlan числа другие — ТЗ §2.2).
+	SalesTable string
 }
 
 // Отбор строк формы (ТЗ §2.1). Значения GroupCFO1 приходят из источника как есть.
@@ -256,6 +265,48 @@ func (s *expSource) Cfo(ctx context.Context, kind, country string) (map[int]ExpC
 		a.GroupCFO1, a.GroupCFO2, a.Country = g1.String, g2.String, cn.String
 		a.LegalEntity, a.StoreType, a.RegManager = le.String, storeType.String, regMgr.String
 		out[a.CodeCFO] = a
+	}
+	return out, rows.Err()
+}
+
+// SalesPlan — утверждённый план продаж (ТЗ §2.2). Вход только для чтения:
+// форма 1.5 его не изменяет и в приёмник продаж не пишет.
+func (s *expSource) SalesPlan(ctx context.Context, country string, year int) (map[int]map[int]float64, error) {
+	table := strings.TrimSpace(s.tables.SalesTable)
+	if table == "" {
+		return map[int]map[int]float64{}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT [КодЦФО], [Дата], SUM([Значение])
+		  FROM `+table+`
+		 WHERE [Параметр] = @p1 AND [Страна] = @p2
+		   AND [Дата] >= @p3 AND [Дата] < @p4
+		 GROUP BY [КодЦФО], [Дата]`,
+		expSalesParam, country,
+		time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(year+1, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[int]map[int]float64{}
+	for rows.Next() {
+		var (
+			cfo  sql.NullInt64
+			date time.Time
+			v    sql.NullFloat64
+		)
+		if err := rows.Scan(&cfo, &date, &v); err != nil {
+			return nil, err
+		}
+		c := int(cfo.Int64)
+		if out[c] == nil {
+			out[c] = map[int]float64{}
+		}
+		out[c][int(date.Month())] += v.Float64
 	}
 	return out, rows.Err()
 }

@@ -22,6 +22,8 @@ type ExpRepo interface {
 	SaveComment(ctx context.Context, instanceID int64, codeCFO, codePL int, comment string) error
 	GroupTotals(ctx context.Context, instanceID int64) (map[string]float64, error)
 	GroupOrder(ctx context.Context, formKind string) ([]string, error)
+	Params(ctx context.Context, instanceID int64) ([]ExpParamRow, error)
+	SaveParam(ctx context.Context, instanceID int64, p ExpParamRow, actorID int64) error
 }
 
 type expRepo struct{ pool *pgxpool.Pool }
@@ -443,4 +445,94 @@ func expOrderBy(f ExpFilter) string {
 			m, dir, fallback)
 	}
 	return fallback
+}
+
+// PnlGroups — второй уровень справочника статей: «код PL → укрупнённая группа
+// P&L» (ответ 36, поле pnl_group в dir_pl_line). Пустое поле — не ошибка: такой
+// код уходит в свод в группу «Не распределено» с подсветкой.
+func (s *expRepo) PnlGroups(ctx context.Context) (map[int]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT (r.payload_json->>'code_pl')::int, COALESCE(r.payload_json->>'pnl_group','')
+		  FROM plans_directory_row r
+		  JOIN plans_directory d ON d.id = r.directory_id
+		 WHERE d.code = 'dir_pl_line'
+		   AND r.payload_json->>'code_pl' ~ '^[0-9]+$'
+		   AND COALESCE(r.payload_json->>'pnl_group','') <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]string{}
+	for rows.Next() {
+		var code int
+		var g string
+		if err := rows.Scan(&code, &g); err != nil {
+			return nil, err
+		}
+		out[code] = g
+	}
+	return out, rows.Err()
+}
+
+// ExpParamRow — параметр периода (ТЗ §6.1).
+type ExpParamRow struct {
+	ParamCode  string  `json:"param_code"`
+	ScopeKind  string  `json:"scope_kind"`
+	ScopeValue string  `json:"scope_value"`
+	Value      float64 `json:"value"`
+}
+
+// Params — параметры периода формы.
+func (s *expRepo) Params(ctx context.Context, instanceID int64) ([]ExpParamRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT param_code, scope_kind, scope_value, value
+		  FROM exp_param WHERE instance_id = $1
+		 ORDER BY param_code, scope_kind, scope_value`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ExpParamRow, 0, 8)
+	for rows.Next() {
+		var p ExpParamRow
+		if err := rows.Scan(&p.ParamCode, &p.ScopeKind, &p.ScopeValue, &p.Value); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// SaveParam — параметр периода с записью в журнал (ТЗ §6.1: «кто и когда изменил
+// параметр — сохраняется»).
+func (s *expRepo) SaveParam(ctx context.Context, instanceID int64, p ExpParamRow, actorID int64) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var old *float64
+	_ = tx.QueryRow(ctx, `
+		SELECT value FROM exp_param
+		 WHERE instance_id = $1 AND param_code = $2 AND scope_kind = $3 AND scope_value = $4`,
+		instanceID, p.ParamCode, p.ScopeKind, p.ScopeValue).Scan(&old)
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO exp_param (instance_id, param_code, scope_kind, scope_value, value, updated_by)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (instance_id, param_code, scope_kind, scope_value) DO UPDATE SET
+		    value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+		instanceID, p.ParamCode, p.ScopeKind, p.ScopeValue, p.Value, nullID(actorID)); err != nil {
+		return err
+	}
+	if old == nil || *old != p.Value {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO exp_param_version (instance_id, param_code, scope_kind, scope_value, value_old, value_new, changed_by)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+			instanceID, p.ParamCode, p.ScopeKind, p.ScopeValue, old, p.Value, nullID(actorID)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }

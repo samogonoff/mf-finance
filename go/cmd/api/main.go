@@ -406,12 +406,14 @@ func main() {
 	// docs/reports/plans/stage-1.5-plan.md, публикация до ответов по В-1/В-2
 	// намеренно выключена в маршруте (миграция 0051).
 	plansExpSource := plans.NewExpSource(cfg.PlansMock, mssqlDB, plans.ExpTables{
-		CostsProc: cfg.PlansExpCostsProc,
-		CfoTable:  cfg.PlansExpCfoTable,
+		CostsProc:  cfg.PlansExpCostsProc,
+		CfoTable:   cfg.PlansExpCfoTable,
+		SalesTable: cfg.PlansRetailStrategyTable,
 	})
 	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource).
 		WithRegistries(plans.NewExpRegRepo(pool)).
-		WithTravelNorms(plans.NewExpTravelNorms(pool, plansRates))
+		WithTravelNorms(plans.NewExpTravelNorms(pool, plansRates)).
+		WithSalesPlan(plansExpSource)
 	// Публикация формы 1.5 (ТЗ §10). Ответы 34 и 11 перенесли сюда публикацию
 	// общих затрат МП и статей 51/52/54 под ЦФО 250 — из формы продаж они убраны
 	// в этом же релизе, иначе приёмник получил бы двойные затраты.
@@ -489,6 +491,10 @@ func main() {
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.Export))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/import-template", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ImportTemplate))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/import", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.Import))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/params", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ParamsGet))
+	mux.HandleFunc("PUT /api/plans/exp/{cardId}/params", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansExpH.ParamsSave))
+	mux.HandleFunc("POST /api/plans/exp/{cardId}/calc", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.CalcApply))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/summary", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.SummaryGet))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/validate", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ValidateGet))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/registry/{kind}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryGet))
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/registry/{kind}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistrySave))

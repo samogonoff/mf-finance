@@ -33,6 +33,9 @@
         <NuxtLink :to="`/plans/exp-registry/${cardId}`" class="btn btn-ghost">
           <Icon name="lucide:list-checks" /> Реестры
         </NuxtLink>
+        <NuxtLink :to="`/plans/exp-summary/${cardId}`" class="btn btn-ghost">
+          <Icon name="lucide:layout-list" /> Свод
+        </NuxtLink>
         <button class="btn btn-sm btn-ghost" @click="columnsOpen = !columnsOpen">
           <Icon name="lucide:columns-3" /> Колонки
         </button>
@@ -63,6 +66,72 @@
     <!-- Плашка мягкого режима (ответ 41): показывается и заполняющему, и
          согласующему, с суммой расхождения. -->
     <p v-if="softWarning" class="banner banner-warn">{{ softWarning }}</p>
+
+    <!-- ===== Параметры периода и расчёт ФОТ (ТЗ §6.1) ===== -->
+    <section v-if="isRetail" class="card params-card">
+      <div class="params-row">
+        <span class="params-title">ФОТ от продаж</span>
+        <label class="params-f">
+          Удельный вес
+          <input
+            class="input params-in"
+            :value="paramShare"
+            :disabled="!editable"
+            inputmode="decimal"
+            title="доля ФОТ в продажах; задаётся на страну, может переопределяться по магазину"
+            @change="setParam('payroll_share', ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+        <label class="params-f">
+          Порог базы
+          <input
+            class="input params-in"
+            :value="paramCap"
+            :disabled="!editable"
+            inputmode="decimal"
+            title="порог ограничивает БАЗУ начисления, а не сумму выплат; по умолчанию 1,06"
+            @change="setParam('payroll_cap', ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+        <button class="btn btn-sm btn-ghost" :disabled="calcBusy" @click="runCalc('payroll', true)">
+          <Icon name="lucide:calculator" :class="{ spin: calcBusy }" /> ФОТ (предпросмотр)
+        </button>
+        <button
+          class="btn btn-sm btn-ghost"
+          :disabled="calcBusy"
+          title="Аренда по факту предыдущего периода: расчёта от оборота нет — в эталоне помесячные суммы"
+          @click="runCalc('rent', true)"
+        ><Icon name="lucide:building" /> Аренда (предпросмотр)</button>
+        <span class="params-hint">
+          ФОТ = MIN(план продаж; база × порог) × удельный вес. База — факт того же месяца прошлого года.
+        </span>
+      </div>
+
+      <!-- Предпросмотр расчёта: ТЗ §6.1 требует показать прежние и новые
+           значения и число строк, где сработало ограничение. -->
+      <div v-if="calcResult" class="calc-prev">
+        <div class="calc-head">
+          <span class="badge badge-muted">строк: {{ calcResult.changed }}</span>
+          <span v-if="calcResult.capped" class="badge badge-warn">ограничено порогом: {{ calcResult.capped }}</span>
+          <span v-if="calcResult.no_base" class="badge badge-warn">без базы: {{ calcResult.no_base }}</span>
+          <button type="button" class="link-btn" @click="calcResult = null">закрыть</button>
+        </div>
+        <ul class="calc-ul">
+          <li v-for="(d, i) in calcResult.diff.slice(0, 25)" :key="i">
+            ЦФО {{ d.code_cfo }}<template v-if="d.cfo"> · {{ d.cfo }}</template> · месяц {{ d.month }}:
+            {{ d.before === null ? "пусто" : money(d.before) }} → {{ money(d.after) }}
+            <span v-if="d.note" class="calc-note">{{ d.note }}</span>
+          </li>
+        </ul>
+        <p v-if="calcResult.diff.length > 25" class="val-more">…и ещё {{ calcResult.diff.length - 25 }}.</p>
+        <div class="calc-actions">
+          <button class="btn btn-sm btn-primary" :disabled="!editable || calcBusy || !calcResult.changed" @click="runCalc(calcResult.op, false)">
+            Применить расчёт
+          </button>
+          <button class="btn btn-sm btn-ghost" @click="calcResult = null">Отмена</button>
+        </div>
+      </div>
+    </section>
 
     <!-- ===== Колонки и раскладка (ТЗ §7.2, §7.4) ===== -->
     <section v-if="columnsOpen" class="card cols-card">
@@ -237,7 +306,7 @@
 
     <!-- ===== Сетка ===== -->
     <section v-else class="card grid-card">
-      <div ref="gridRoot" class="grid-scroll" @paste="nav.onPaste">
+      <div ref="gridRoot" class="grid-scroll" @paste="nav.onPaste" @scroll="onScroll">
         <table class="data-table compact exp-table">
           <thead>
             <tr>
@@ -263,61 +332,67 @@
             </tr>
           </thead>
           <tbody>
-            <template v-for="g in visibleGroups" :key="g">
-              <!-- Строка группы (ТЗ §7.6): свёртка и итог по группе. -->
-              <tr class="grp-row" @click="toggleGroup(g)">
+            <!-- Виртуализация (ТЗ §7.10): в DOM живёт только окно строк, а место
+                 остальных занимают две распорки. Иначе 31 595 строк эталона
+                 браузер не удержит. Список окна плоский — и группы, и строки
+                 идут одним потоком, чтобы позиция считалась одним индексом. -->
+            <tr v-if="padTop > 0" class="v-pad" :style="{ height: padTop + 'px' }"><td :colspan="colCount"></td></tr>
+
+            <template v-for="item in windowItems" :key="item.key">
+              <tr v-if="item.kind === 'group'" class="grp-row" @click="toggleGroup(item.group)">
                 <td class="sticky-c grp-cell" :colspan="visibleAttrColumns.length">
-                  <Icon :name="collapsed.has(g) ? 'lucide:chevron-right' : 'lucide:chevron-down'" />
-                  {{ g }}
-                  <span class="grp-count">{{ groupRows(g).length }}</span>
+                  <Icon :name="collapsed.has(item.group) ? 'lucide:chevron-right' : 'lucide:chevron-down'" />
+                  {{ item.group }}
+                  <span class="grp-count">{{ groupRows(item.group).length }}</span>
                 </td>
-                <td v-for="m in 12" :key="m" class="col-num grp-num">{{ money(groupMonthTotal(g, m)) }}</td>
-                <td class="col-num grp-num strong">{{ money(groupTotal(g)) }}</td>
-                <td class="col-num grp-num">{{ money(groupFactTotal(g)) }}</td>
+                <td v-for="m in 12" :key="m" class="col-num grp-num">{{ money(groupMonthTotal(item.group, m)) }}</td>
+                <td class="col-num grp-num strong">{{ money(groupTotal(item.group)) }}</td>
+                <td class="col-num grp-num">{{ money(groupFactTotal(item.group)) }}</td>
                 <td></td>
               </tr>
-              <template v-if="!collapsed.has(g)">
-                <tr v-for="row in groupRows(g)" :key="row.id" :class="{ 'row-dirty': rowDirty(row) }">
-                  <td
-                    v-for="c in visibleAttrColumns"
-                    :key="c.key"
-                    :class="[c.sticky ? 'sticky-c' : '', c.cls, c.mono ? 'mono' : '']"
-                    :title="String(attrValue(row, c.key) || '')"
-                  >{{ attrValue(row, c.key) || "—" }}</td>
-                  <td v-for="m in 12" :key="m" class="col-num c-mon">
-                    <input
-                      class="cell-input"
-                      :class="{ 'is-dirty': isDirty(row, m) }"
-                      :data-grid-cell="`${rowIndex(row)}:${m - 1}`"
-                      :value="cellText(row, m)"
-                      :disabled="!editable"
-                      inputmode="decimal"
-                      @focus="nav.onFocusCell(rowIndex(row), m - 1)"
-                      @keydown="nav.onKeydown($event, rowIndex(row), m - 1)"
-                      @input="onInput(row, m, ($event.target as HTMLInputElement).value)"
-                    />
-                  </td>
-                  <td class="col-num c-total strong">{{ money(rowPlanTotal(row)) }}</td>
-                  <td class="col-num c-fact muted">{{ money(expRowTotal(row, 'fact')) }}</td>
-                  <td class="c-act">
-                    <div class="row-acts">
-                      <button
-                        class="btn btn-xs btn-ghost"
-                        :disabled="!editable || busy"
-                        title="Размножить значение января на все двенадцать месяцев"
-                        @click="spread(row, 'spread_year')"
-                      >на год</button>
-                      <button
-                        class="btn btn-xs btn-ghost"
-                        :disabled="!editable || busy"
-                        title="Очистить строку: во всех месяцах станет пусто (пусто не равно нулю)"
-                        @click="spread(row, 'clear_row')"
-                      >очистить</button>
-                    </div>
-                  </td>
-                </tr>
-              </template>
+
+              <tr v-else-if="item.row" :class="{ 'row-dirty': rowDirty(item.row) }">
+                <td
+                  v-for="c in visibleAttrColumns"
+                  :key="c.key"
+                  :class="[c.sticky ? 'sticky-c' : '', c.cls, c.mono ? 'mono' : '']"
+                  :title="String(attrValue(item.row, c.key) || '')"
+                >{{ attrValue(item.row, c.key) || "—" }}</td>
+                <td v-for="m in 12" :key="m" class="col-num c-mon">
+                  <input
+                    class="cell-input"
+                    :class="{ 'is-dirty': isDirty(item.row, m) }"
+                    :data-grid-cell="`${item.index}:${m - 1}`"
+                    :value="cellText(item.row, m)"
+                    :disabled="!editable"
+                    inputmode="decimal"
+                    @focus="nav.onFocusCell(item.index, m - 1)"
+                    @keydown="nav.onKeydown($event, item.index, m - 1)"
+                    @input="onInput(item.row, m, ($event.target as HTMLInputElement).value)"
+                  />
+                </td>
+                <td class="col-num c-total strong">{{ money(rowPlanTotal(item.row)) }}</td>
+                <td class="col-num c-fact muted">{{ money(expRowTotal(item.row, 'fact')) }}</td>
+                <td class="c-act">
+                  <div class="row-acts">
+                    <button
+                      class="btn btn-xs btn-ghost"
+                      :disabled="!editable || busy"
+                      title="Размножить значение января на все двенадцать месяцев"
+                      @click="spread(item.row, 'spread_year')"
+                    >на год</button>
+                    <button
+                      class="btn btn-xs btn-ghost"
+                      :disabled="!editable || busy"
+                      title="Очистить строку: во всех месяцах станет пусто (пусто не равно нулю)"
+                      @click="spread(item.row, 'clear_row')"
+                    >очистить</button>
+                  </div>
+                </td>
+              </tr>
             </template>
+
+            <tr v-if="padBottom > 0" class="v-pad" :style="{ height: padBottom + 'px' }"><td :colspan="colCount"></td></tr>
           </tbody>
         </table>
       </div>
@@ -340,7 +415,8 @@ import { money } from "~/utils/format";
 import { useGridNav } from "~/composables/useGridNav";
 import {
   useExpForm, expCell, expRowTotal, MONTHS_SHORT,
-  type ExpBulkAction, type ExpCell, type ExpForm, type ExpImportResult, type ExpRow, type ExpValidationReport
+  type ExpBulkAction, type ExpCalcResult, type ExpCell, type ExpForm, type ExpImportResult,
+  type ExpParamRow, type ExpRow, type ExpValidationReport
 } from "~/composables/useExpForm";
 
 const route = useRoute();
@@ -470,6 +546,51 @@ const applyLayout = (payload: Record<string, unknown>) => {
   }
   const st = payload?.sort as { key: string; desc: boolean } | null | undefined;
   sort.value = st && st.key ? { key: st.key, desc: !!st.desc } : null;
+};
+
+// ── Параметры периода и расчёт §6.1 ─────────────────────────────────────────
+const paramRows = ref<ExpParamRow[]>([]);
+const calcResult = ref<ExpCalcResult | null>(null);
+const calcBusy = ref(false);
+
+const paramOf = (code: string): string => {
+  const p = paramRows.value.find((x) => x.param_code === code && x.scope_kind !== "cfo");
+  return p ? String(p.value) : "";
+};
+const paramShare = computed(() => paramOf("payroll_share"));
+const paramCap = computed(() => paramOf("payroll_cap") || "1.06");
+
+const setParam = async (code: string, raw: string) => {
+  const v = Number(raw.replace(",", "."));
+  if (!Number.isFinite(v)) return;
+  try {
+    await api.saveParam(cardId, { param_code: code, scope_kind: "country", scope_value: "", value: v });
+    paramRows.value = await api.params(cardId);
+    note.value = "Параметр периода сохранён";
+  } catch (e) {
+    error.value = apiError(e, "Параметр не сохранён");
+  }
+};
+
+/** Расчёт §6.1. Предпросмотр обязателен: сначала показываем, что изменится. */
+const runCalc = async (op: string, preview: boolean) => {
+  calcBusy.value = true;
+  error.value = "";
+  try {
+    const r = await api.calc(cardId, op, preview);
+    if (preview) {
+      calcResult.value = r;
+      if (!r.changed) note.value = "Расчёт ничего не меняет: значения уже совпадают";
+    } else {
+      calcResult.value = null;
+      note.value = `Расчёт применён, ячеек изменено: ${r.changed}`;
+      await reload({ keepFilter: true });
+    }
+  } catch (e) {
+    error.value = apiError(e, "Расчёт не выполнен");
+  } finally {
+    calcBusy.value = false;
+  }
 };
 
 // ── Импорт (ТЗ §7.9) ────────────────────────────────────────────────────────
@@ -624,6 +745,67 @@ const toggleGroup = (g: string) => {
 const cities = computed(() => [...new Set(rows.value.map((r) => r.group_cfo2).filter(Boolean))].sort());
 const regManagers = computed(() => [...new Set(rows.value.map((r) => r.reg_manager).filter(Boolean))].sort());
 
+// ── Виртуализация окна (ТЗ §7.10) ───────────────────────────────────────────
+/**
+ * Эталон маркетплейсов — 31 595 строк. Столько узлов таблицы браузер не держит, поэтому в
+ * DOM живёт только окно, а место остальных занимают две распорки. Список окна
+ * ПЛОСКИЙ: строки групп и строки данных идут одним потоком, чтобы позиция
+ * считалась одним индексом и совпадала с координатами навигации по сетке.
+ */
+interface GridItem { key: string; kind: "group" | "row"; group: string; row?: ExpRow; index: number }
+
+/** Высота строки. Держим её и в CSS: расхождение сдвинет распорки. */
+const ROW_H = 30;
+/** Запас строк сверху и снизу окна — чтобы при быстрой прокрутке не мигало. */
+const OVERSCAN = 8;
+
+const scrollTop = ref(0);
+const viewportH = ref(600);
+
+const displayItems = computed<GridItem[]>(() => {
+  const out: GridItem[] = [];
+  let rowIndex = 0;
+  for (const g of visibleGroups.value) {
+    out.push({ key: `g:${g}`, kind: "group", group: g, index: -1 });
+    if (collapsed.value.has(g)) continue;
+    for (const r of groupRows(g)) {
+      out.push({ key: `r:${r.id}`, kind: "row", group: g, row: r, index: rowIndex++ });
+    }
+  }
+  return out;
+});
+
+const windowStart = computed(() => Math.max(0, Math.floor(scrollTop.value / ROW_H) - OVERSCAN));
+const windowEnd = computed(() =>
+  Math.min(displayItems.value.length, Math.ceil((scrollTop.value + viewportH.value) / ROW_H) + OVERSCAN)
+);
+const windowItems = computed(() => displayItems.value.slice(windowStart.value, windowEnd.value));
+const padTop = computed(() => windowStart.value * ROW_H);
+const padBottom = computed(() => Math.max(0, (displayItems.value.length - windowEnd.value) * ROW_H));
+/** Колонок всего: атрибуты + 12 месяцев + итог + факт + действия. */
+const colCount = computed(() => visibleAttrColumns.value.length + 15);
+
+const onScroll = (e: Event) => {
+  const el = e.target as HTMLElement;
+  scrollTop.value = el.scrollTop;
+  viewportH.value = el.clientHeight;
+};
+
+/**
+ * Показать строку перед фокусом: строки вне окна в DOM нет, и focus() было бы
+ * некуда ставить. Композабл навигации вызывает это перед переходом.
+ */
+const ensureRowVisible = (rowIndex: number) => {
+  const pos = displayItems.value.findIndex((i) => i.kind === "row" && i.index === rowIndex);
+  if (pos < 0) return;
+  const el = gridRoot.value;
+  if (!el) return;
+  const top = pos * ROW_H;
+  if (top < el.scrollTop) el.scrollTop = top;
+  else if (top + ROW_H > el.scrollTop + el.clientHeight) el.scrollTop = top + ROW_H - el.clientHeight;
+  scrollTop.value = el.scrollTop;
+};
+
 // ── Навигация по сетке как в Excel (ТЗ §7.8) ─────────────────────────────────
 /** Плоский порядок строк для координат сетки: свёрнутые группы в него не входят. */
 const flatRows = computed(() => {
@@ -639,6 +821,7 @@ const rowIndex = (row: ExpRow) => flatRows.value.findIndex((r) => r.id === row.i
 const nav = useGridNav({
   rows: () => flatRows.value.length,
   cols: () => 12,
+  ensureVisible: ensureRowVisible,
   onPaste: (anchor, matrix) => {
     if (!editable.value) return;
     matrix.forEach((line, di) => {
@@ -843,6 +1026,11 @@ onBeforeRouteLeave(() => {
 .grp-count { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-muted); }
 .grp-num { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-secondary); }
 
+.exp-table tbody tr { height: 30px; }
+/* Распорки виртуализации: занимают место строк вне окна рендера. Высота строки
+   продублирована в ROW_H — расхождение сдвинуло бы прокрутку. */
+.v-pad td { padding: 0; border: 0; }
+
 .cell-input {
   width: 100%;
   border: 1px solid transparent;
@@ -864,6 +1052,19 @@ onBeforeRouteLeave(() => {
 .row-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .btn-xs { height: 22px; padding: 0 var(--sp-3); font-size: var(--fs-2xs); }
 /* Колонки и раскладка (§7.2, §7.4). */
+/* Параметры периода и расчёт §6.1. */
+.params-card { padding: var(--sp-4) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); }
+.params-row { display: flex; flex-wrap: wrap; gap: var(--sp-4); align-items: center; }
+.params-title { font-weight: var(--fw-semibold); color: var(--text-strong); }
+.params-f { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); }
+.params-in { width: 90px; font-family: var(--font-mono); text-align: right; }
+.params-hint { font-size: var(--fs-2xs); color: var(--text-muted); flex: 1 1 260px; min-width: 0; }
+.calc-prev { display: flex; flex-direction: column; gap: var(--sp-2); border-top: 1px solid var(--border); padding-top: var(--sp-3); }
+.calc-head { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; }
+.calc-ul { margin: 0; padding-left: var(--sp-5); font-size: var(--fs-sm); display: flex; flex-direction: column; gap: 2px; }
+.calc-note { color: var(--warn); font-size: var(--fs-2xs); margin-left: 6px; }
+.calc-actions { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+
 .cols-card { padding: var(--sp-4) var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); }
 .cols-hint { font-size: var(--fs-2xs); color: var(--text-muted); }
 .cols-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-2); }

@@ -308,3 +308,73 @@ func (h *ExpHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, res)
 }
+
+// SummaryGet — GET /api/plans/exp/{cardId}/summary (ТЗ §8 и §12.3).
+func (h *ExpHandler) SummaryGet(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	sum, err := h.svc.Summary(r.Context(), h.principal(r), id)
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sum)
+}
+
+// ParamsGet — GET /api/plans/exp/{cardId}/params (ТЗ §6.1).
+func (h *ExpHandler) ParamsGet(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	rows, err := h.svc.Params(r.Context(), h.principal(r), id)
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// ParamsSave — PUT /api/plans/exp/{cardId}/params.
+func (h *ExpHandler) ParamsSave(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	var row ExpParamRow
+	if err := json.NewDecoder(r.Body).Decode(&row); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := h.svc.SaveParam(r.Context(), h.principal(r), id, row); err != nil {
+		expErr(w, err)
+		return
+	}
+	h.audit(r, "exp_param_save", id)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// CalcApply — POST /api/plans/exp/{cardId}/calc (ТЗ §6). preview=true в теле
+// ничего не сохраняет и возвращает предпросмотр.
+func (h *ExpHandler) CalcApply(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	var req ExpCalcRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	res, err := h.svc.Calc(r.Context(), h.principal(r), id, req)
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	if !req.Preview {
+		h.audit(r, "exp_calc_"+req.Op, id)
+	}
+	writeJSON(w, http.StatusOK, res)
+}

@@ -36,6 +36,8 @@ type ExpService struct {
 	reg ExpRegRepo
 	// norms — справочники командировок: суточные, нормативы перелёта, курс.
 	norms ExpTravelNorms
+	// sales — утверждённый план продаж: вход расчёта §6.1, только чтение.
+	sales ExpDataSource
 }
 
 // NewExpService — конструктор.

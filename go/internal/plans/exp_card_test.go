@@ -160,3 +160,8 @@ func TestExpPublishDuplicates(t *testing.T) {
 		t.Fatalf("дублей найдено %d, ожидали один: %v", len(got), got)
 	}
 }
+
+func (f *fakeExpRepo) Params(context.Context, int64) ([]ExpParamRow, error) { return nil, nil }
+func (f *fakeExpRepo) SaveParam(context.Context, int64, ExpParamRow, int64) error {
+	return nil
+}

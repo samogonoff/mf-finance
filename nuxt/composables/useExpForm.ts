@@ -119,6 +119,62 @@ export interface ExpRecon {
   details?: { code_cfo?: number; code_pl?: number; month?: number; title?: string; left: number; right: number; diff: number }[];
 }
 
+export interface ExpParamRow {
+  param_code: string;
+  scope_kind: string;
+  scope_value: string;
+  value: number;
+}
+
+export interface ExpCalcDiff {
+  code_cfo: number;
+  code_pl: number;
+  cfo?: string;
+  month: number;
+  before: number | null;
+  after: number;
+  note?: string;
+}
+
+export interface ExpCalcResult {
+  op: string;
+  preview: boolean;
+  rows: number;
+  changed: number;
+  /** В скольких строках сработало ограничение порогом (ТЗ §6.1). */
+  capped: number;
+  /** В скольких строках базы не нашлось: «порог не применён, нет базы». */
+  no_base: number;
+  diff: ExpCalcDiff[];
+}
+
+export interface ExpSummaryRow {
+  group_pl: string;
+  expense: string;
+  code_pl: number;
+  /** Укрупнённая группа P&L (§12.3). «Не распределено» — кода нет во втором уровне. */
+  pnl_group: string;
+  by_scenario: Record<string, Record<string, number>>;
+  totals: Record<string, number>;
+}
+
+export interface ExpSummaryGroup {
+  pnl_group: string;
+  by_month: Record<string, number>;
+  total: number;
+  codes_pl: number[];
+  unassigned?: boolean;
+}
+
+export interface ExpSummary {
+  card_id: number;
+  plan_year: number;
+  currency: string;
+  rows: ExpSummaryRow[];
+  groups: ExpSummaryGroup[];
+  reconciliations: ExpRecon[];
+}
+
 export interface ExpImportResult {
   preview: boolean;
   rows_in_file: number;
@@ -272,6 +328,26 @@ export const useExpForm = () => {
       headers: authHeader()
     });
 
+  const params = (cardId: number): Promise<ExpParamRow[]> =>
+    $fetch(`${base}/api/plans/exp/${cardId}/params`, { headers: authHeader() });
+
+  const saveParam = (cardId: number, row: ExpParamRow) =>
+    $fetch<{ ok: boolean }>(`${base}/api/plans/exp/${cardId}/params`, {
+      method: "PUT",
+      body: row,
+      headers: authHeader()
+    });
+
+  const calc = (cardId: number, op: string, preview: boolean) =>
+    $fetch<ExpCalcResult>(`${base}/api/plans/exp/${cardId}/calc`, {
+      method: "POST",
+      body: { op, preview },
+      headers: authHeader()
+    });
+
+  const summary = (cardId: number): Promise<ExpSummary> =>
+    $fetch(`${base}/api/plans/exp/${cardId}/summary`, { headers: authHeader() });
+
   const validate = (cardId: number): Promise<ExpValidationReport> =>
     $fetch(`${base}/api/plans/exp/${cardId}/validate`, { headers: authHeader() });
 
@@ -298,7 +374,8 @@ export const useExpForm = () => {
     });
 
   return {
-    form, save, bulk, totals, cards, validate, registry, saveRegRow, copyRegRow, deleteRegRow,
+    form, save, bulk, totals, cards, validate, summary, params, saveParam, calc,
+    registry, saveRegRow, copyRegRow, deleteRegRow,
     presets, savePreset, exportUrl, importFile
   };
 };
