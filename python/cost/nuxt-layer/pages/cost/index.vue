@@ -7221,7 +7221,7 @@ interface StageInfo { key: StageKey; icon: string; label: string; short: string 
 const STAGE_LEGEND: StageInfo[] = [
   { key: 'approved', icon: '🟢', label: 'Себестоимость утверждена экономистом',        short: 'утверждена ПЭО' },
   { key: 'priced',   icon: '🔵', label: 'Цена установлена бренд-менеджером',           short: 'цена БМ' },
-  { key: 'returned', icon: '🟡', label: 'Цена БМ отправлена на корректировку экономисту', short: 'на корректировке' },
+  { key: 'returned', icon: '🟡', label: 'Экономист вернул цену бренд-менеджеру на корректировку', short: 'на корректировке' },
   { key: 'rejected', icon: '🔴', label: 'Отклонена руководителем ПЭО',                 short: 'отклонена' },
   { key: 'dwh',      icon: '🟣', label: 'Расценённая калькуляция загружена в DWH («лису»)', short: 'в DWH' },
   // Не этап, а состояние изделия: модель/артикул сняты с актуальности
