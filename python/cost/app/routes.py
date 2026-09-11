@@ -781,8 +781,10 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                     if len(candidates) == 1:
                         row["planned_retail"] = candidates[0]
                     elif len(candidates) > 1:
-                        level1 = str(row.get("Level 01", "") or "").strip()
-                        mult = 1.3 if level1 in ("Девочкам", "Мальчикам") else 1.4
+                        # Та же целевая наценка, что у закупной и на фронте.
+                        # До 11.09.2026 здесь был свой список из двух групп, и
+                        # «Ясли» получали 1,4 вместо 1,3.
+                        mult = 1 + purchase.target_markup(row.get("Level 01")) / 100
                         target = price_mopt * mult * (1 + (nnds or 0) / 100)
                         row["planned_retail"] = min(candidates, key=lambda c: abs(c - target))
 

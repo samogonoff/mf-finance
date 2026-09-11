@@ -88,6 +88,27 @@ def portal_enabled() -> bool:
     return bool(os.environ.get("OLAP_SERVER_IP") and os.environ.get("OLAP_USER"))
 
 
+def _levels_from_cursor(cur) -> list[tuple[str, float | None, float | None]]:
+    """Справочник уровней цен: (имя, PRICE_TYPE1 = опт, PRICE_TYPE3 = розница).
+    436 строк на 11.09.2026 — читаем целиком, он нужен и импорту, и приходу."""
+    cur.execute("SELECT RTRIM(NAME), PRICE_TYPE1, PRICE_TYPE3 FROM [dbo].[s_price_level]")
+    return [(_s(n), _f(p1), _f(p3)) for n, p1, p3 in cur.fetchall()]
+
+
+def _price_levels_sync() -> list[tuple[str, float | None, float | None]]:
+    conn = get_gpartner_conn()
+    try:
+        return _levels_from_cursor(conn.cursor())
+    finally:
+        conn.close()
+
+
+async def price_levels() -> list[tuple[str, float | None, float | None]]:
+    """Справочник уровней цен для подбора опта вне импорта (приход по инвойсу)."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _price_levels_sync)
+
+
 def _read_portal_sync() -> dict[str, Any]:
     """Строки закупных планов, задания к ним и справочник уровней цен."""
     conn = portal_conn()
@@ -142,8 +163,7 @@ def _read_portal_sync() -> dict[str, Any]:
     gconn = get_gpartner_conn()
     try:
         gcur = gconn.cursor()
-        gcur.execute("SELECT RTRIM(NAME), PRICE_TYPE1, PRICE_TYPE3 FROM [dbo].[s_price_level]")
-        levels = [(_s(n), _f(p1), _f(p3)) for n, p1, p3 in gcur.fetchall()]
+        levels = _levels_from_cursor(gcur)
         # Справочник целиком: 130 тыс. строк по двум коротким полям дешевле, чем
         # запрос на каждую из сотен импортируемых калькуляций.
         gcur.execute(
@@ -215,16 +235,57 @@ def parse_portal_json(raw: Any) -> dict[str, Any] | None:
     }
 
 
-def wholesale_from_retail(retail: float | None, levels: list[tuple[str, float | None, float | None]]) -> tuple[float | None, str | None]:
-    """Опт и имя уровня по рознице: уровень, у которого PRICE_TYPE3 = розница.
-    Несколько уровней с одной розницей — берём первый по имени (стабильно)."""
+# Целевая розничная наценка по Level 01 — то же правило, что у собственного
+# ассортимента: детские группы 30 %, остальное 40 %. На фронте оно живёт в
+# getTargetMarkup (nuxt-layer/pages/cost/index.vue) и применяется, когда
+# бренд-менеджер сам выбирает розничную цену из списка. У закупной цена
+# приходит из портала уже заполненной, поэтому до фронта дело не доходит и
+# правило должно сработать здесь, на импорте.
+TARGET_MARKUP_30 = ("мальчикам", "девочкам", "ясли")
+TARGET_MARKUP_DEFAULT = 40.0
+
+
+def target_markup(level01: Any) -> float:
+    """Целевая наценка, %: 30 для мальчиков, девочек и яслей, 40 для остальных."""
+    return 30.0 if _s(level01).lower() in TARGET_MARKUP_30 else TARGET_MARKUP_DEFAULT
+
+
+def wholesale_from_retail(retail: float | None, levels: list[tuple[str, float | None, float | None]],
+                          *, vat: float | None = None, level01: Any = None) -> tuple[float | None, str | None]:
+    """Опт и имя уровня по рознице: среди уровней с PRICE_TYPE3 = розница берём
+    тот, чья наценка ближе к целевой для группы. Ничья — первый по имени.
+
+    Наценка считается так же, как в главной таблице и в дропдауне БМ:
+    `(розница / (100 + НДС) × 100) / опт − 1`. Поэтому уровень зависит от ставки
+    НДС строки: под розницу 24,99 «уровень 23д/1» даёт ровно 30 % при НДС 10 %,
+    а «уровень 23д20/1» — при НДС 20 % (в справочнике 436 уровней, у 70 из 94
+    розничных цен кандидатов несколько).
+
+    Ставка неизвестна — наценку посчитать нечем, остаётся прежнее поведение
+    «первый по имени». До 11.09.2026 так выбирались ВСЕ строки: у взрослых
+    первым по алфавиту случайно оказывался уровень на 40 % при НДС 20 %, а
+    детская позиция с НДС 10 % получала на том же уровне 52,7 % вместо 30 %
+    (жалоба 08.09.2026 «неверно подхватилась наценка и уровень цен»).
+    """
     if retail is None:
         return None, None
     cands = sorted(
         [(name, p1) for name, p1, p3 in levels if p3 is not None and round(p3, 2) == round(retail, 2) and p1],
         key=lambda x: x[0],
     )
-    return (cands[0][1], cands[0][0]) if cands else (None, None)
+    if not cands:
+        return None, None
+    if vat is None:
+        return cands[0][1], cands[0][0]
+    target = target_markup(level01)
+
+    def distance(cand: tuple[str, float]) -> tuple[float, str]:
+        markup = ((retail / (100.0 + vat) * 100.0) / cand[1] - 1) * 100.0
+        # Округление — чтобы ничью решало имя, а не шум последних знаков.
+        return round(abs(markup - target), 4), cand[0]
+
+    name, wholesale = min(cands, key=distance)
+    return wholesale, name
 
 
 def _parse_date(s: str) -> date | None:
@@ -244,13 +305,16 @@ def build_row(item: dict[str, Any], job: dict[str, Any] | None, cost: dict[str, 
     segs = [s.strip() for s in item["group_path"].replace("/", "\\").split("\\") if s.strip()]
     rate = cost["usd_to_byn"]
     retail = cost["retail_byn"]
-    wholesale, level_name = wholesale_from_retail(retail, levels)
     articul = _s((job or {}).get("article") or item["article"])
     # Ставка НДС по модели-артикулу из S_MODELI. Не нашли — оставляем пустой:
     # подставлять 20 % «по умолчанию» нельзя, детский ассортимент идёт по 10 %
     # (17 588 моделей в справочнике), и молчаливая двадцатка исказила бы наценку
     # ровно там, где её труднее всего заметить.
     vat = (vat_by_pair or {}).get((_s(item["model"]), articul))
+    # Уровень цен — по целевой наценке группы, поэтому ставка нужна раньше опта.
+    # Level 01 — первый сегмент пути номенклатуры портала («Девочкам\\…»).
+    wholesale, level_name = wholesale_from_retail(retail, levels, vat=vat,
+                                                  level01=segs[0] if segs else None)
     qty = (job or {}).get("qty") or item.get("total_qty")
     updated = item.get("updated_at")
     calc_date = updated.date() if isinstance(updated, datetime) else date.today()
@@ -1094,6 +1158,14 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
         log(logging.WARNING, "ПФКСС по приходу: ставка НДС из S_MODELI недоступна",
             invoice_id=inv_id, error=str(exc)[:300])
         vat_by_pair = {}
+    # Справочник уровней — чтобы подобрать уровень заново, а не унаследовать его
+    # от строки КПСС (см. ниже, у строки «Уровень цен»).
+    try:
+        levels = await price_levels()
+    except Exception as exc:  # noqa: BLE001 — Gpartner за VPN
+        log(logging.WARNING, "ПФКСС по приходу: справочник уровней цен недоступен",
+            invoice_id=inv_id, error=str(exc)[:300])
+        levels = []
 
     async with acquire() as conn:
         cols = await _manual_columns(conn)
@@ -1140,6 +1212,25 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
                 vat = vat_by_pair.get((_s(ln["model"]), _s(ln["articul"])))
                 if vat is not None:
                     row["Ставка НДС"] = vat
+                # Уровень цен и опт — заново по целевой наценке группы, а не
+                # снимком из строки КПСС. Причины две. Строка-основа могла быть
+                # импортирована старым правилом «первый по имени» (до
+                # 11.09.2026), и переприменить инвойс потом нельзя. И главное:
+                # в прейскурант Лисы PRICE_LEVEL_ID уходит ТОЛЬКО со строки
+                # ПФКСС (routes.apply_changes), поэтому исправленный уровень
+                # КПСС сам по себе до процедуры не доезжает.
+                row_vat = _f(row.get("Ставка НДС"))
+                row_retail = _f(row.get("Розничная цена по уровню, руб."))
+                if levels and row_retail and row_vat is not None:
+                    opt, level_name = wholesale_from_retail(
+                        row_retail, levels, vat=row_vat, level01=row.get("Level 01"),
+                    )
+                    if opt and level_name:
+                        row["Уровень цен"] = level_name
+                        row["Отпускная цена по уровню, руб"] = opt
+                        row["Отпускная цена по уровню, USD."] = (
+                            round(opt / usd_rate, 6) if usd_rate else None
+                        )
                 values = [_cast(row.get(c), col_types[c]) for c in data_cols]
 
                 existing = await conn.fetchval(
