@@ -123,9 +123,15 @@ func ExpReconcile(in ExpReconInput) []ExpRecon {
 	out = append(out, expRegRecon("E-04", "Итог реестра ФОТ равен статье 24",
 		in.Registries, ExpRegPayroll, byCodePL, ExpPLSalary,
 		"ответ 40: контроль упрощён до статьи 24 — в эталоне итог реестра переносится на неё"))
-	out = append(out, expRegRecon("E-05", "Итог реестра командировок равен статье 27",
+	// Командировки сверяются ДВУМЯ контролями (ответ И-3 от 11.09.2026):
+	// статья 27 — билеты и командировочные, статья 30 — проживание. Один контроль
+	// на весь реестр разошёлся бы ровно на сумму проживания.
+	out = append(out, expRegRecon("E-05", "Статья 27 равна билетам и командировочным реестра",
 		in.Registries, ExpRegTravel, byCodePL, ExpPLTravel,
-		"находка Н3: проживание публикуется статьёй 30 и в этот контроль не входит"))
+		"проживание идёт статьёй 30 и в этот контроль не входит (ответ И-3)"))
+	out = append(out, expRegRecon("E-05a", "Статья 30 равна проживанию реестра командировок",
+		in.Registries, ExpRegTravel, byCodePL, ExpPLLodging,
+		"отдельный контроль: проживание публикуется своей статьёй (ответ И-3)"))
 	out = append(out, expRegRecon("E-06", "Итог реестра ИТ равен статье 48",
 		in.Registries, ExpRegIT, byCodePL, ExpPLIT,
 		"учитываются признаки строк: «не учитывать» не входит, «перенести на 250» идёт под ЦФО 250"))
@@ -160,9 +166,16 @@ func expRegRecon(code, title string, regs map[string][]ExpRegRow, kind string,
 		// на 250 остаётся частью общих расходов реестра (ТЗ §5.4).
 		left = ExpITSum(rows).Common
 	case ExpRegTravel:
-		// Проживание идёт статьёй 30 (Н3), поэтому со статьёй 27 сверяется
-		// только сумма билетов и командировочных.
+		// Какую часть реестра сверять, определяет статья контроля: 27 — билеты и
+		// командировочные, 30 — проживание (ответ И-3).
 		for _, r := range rows {
+			if r.Excluded {
+				continue
+			}
+			if codePL == ExpPLLodging {
+				left += expAttrFloat(r.Attrs, "lodging")
+				continue
+			}
 			left += expAttrFloat(r.Attrs, "tickets") + expAttrFloat(r.Attrs, "per_diem")
 		}
 	default:

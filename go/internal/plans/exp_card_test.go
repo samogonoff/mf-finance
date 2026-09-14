@@ -165,3 +165,5 @@ func (f *fakeExpRepo) Params(context.Context, int64) ([]ExpParamRow, error) { re
 func (f *fakeExpRepo) SaveParam(context.Context, int64, ExpParamRow, int64) error {
 	return nil
 }
+
+func (f *fakeExpRepo) SyncPLLines(context.Context, []ExpPLLine) (int, error) { return 0, nil }

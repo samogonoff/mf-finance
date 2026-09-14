@@ -118,8 +118,8 @@ func (expMockSource) Costs(_ context.Context, kind, country string, years []int)
 						CodeCFO: c.CodeCFO, CFO: c.CFO,
 						GroupCFO1: expKindGroup(kind), GroupCFO2: c.GroupCFO2,
 						Country: c.Country, CountryCompany: c.Country,
-						Company: c.LegalEntity,
-						Amount:  float64(int(amt*100)) / 100,
+						Company: c.LegalEntity, Projects: expProjectsNone,
+						Amount: float64(int(amt*100)) / 100,
 					})
 				}
 			}

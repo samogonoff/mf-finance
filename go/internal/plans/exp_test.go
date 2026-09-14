@@ -175,8 +175,19 @@ func TestExpDropRules(t *testing.T) {
 	if expCutoffYear != 2024 {
 		t.Fatalf("отсечка %d, ТЗ §2.1 требует отбрасывать строки не позже 31.12.2023", expCutoffYear)
 	}
-	if expScenarioRename["Стратегический бюджет"] != "План" || expScenarioRename["Факт по платежам"] != "Факт" {
-		t.Fatal("переименование сценариев не соответствует ТЗ §2.1 п.3")
+	// Ответ 44 (11.09.2026): сценарии НЕ переименовываются на входе. В форму не
+	// идёт только «Факт по платежам» — на нём листы ввода эталона не построены, а
+	// сложение двух фактических сценариев дало бы двойные суммы.
+	if expScenarioForForm(ExpSrcFactPayments) {
+		t.Fatal("«Факт по платежам» в форму попадать не должен")
+	}
+	for _, sc := range []string{ExpSrcFact, ExpSrcStrategy, ExpSrcCurrent, ExpSrcTactic} {
+		if !expScenarioForForm(sc) {
+			t.Fatalf("сценарий %q обязан доходить до формы", sc)
+		}
+	}
+	if ExpSrcFact != "Факт по начислениям" {
+		t.Fatalf("фактический сценарий формы %q, ответ 44 называет «Факт по начислениям»", ExpSrcFact)
 	}
 }
 

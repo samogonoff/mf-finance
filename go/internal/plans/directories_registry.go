@@ -265,6 +265,17 @@ var dirSchemas = map[string]DirSchema{
 			{Key: "rate_byn", Label: "Курс к BYN", Type: ColMoney},
 		},
 	},
+	"dir_fx_per_usd": {
+		Code: "dir_fx_per_usd", Name: "Валюта за доллар", Group: GroupManual, Icon: "lucide:banknote",
+		Description: "Пара «валюта за доллар» — так курсы заданы в эталоне и так их правит финблок (ответ И-9 от 11.09.2026): тенге 515, сум 13 000 за доллар. Курс к BYN получается делением курса доллара на это число. Держится отдельно от dir_fx_rate: у них разные знаменатели.",
+		Stage:       "1.5",
+		Columns: []DirColumn{
+			{Key: "currency", Label: "Валюта", Type: ColBadge, Primary: true, Search: true, Width: "100px"},
+			{Key: "year", Label: "Год", Type: ColNumber, Width: "90px"},
+			{Key: "per_usd", Label: "За доллар", Type: ColMoney},
+			{Key: "note", Label: "Примечание", Type: ColText},
+		},
+	},
 	"dir_mp_norm": {
 		Code: "dir_mp_norm", Name: "Нормативы удержаний площадок", Group: GroupManual, Icon: "lucide:percent",
 		Description: "Норматив совокупных удержаний площадки с периодом действия (правка 08.09.2026). Покрывает шесть долей: комиссия, агентское вознаграждение, транспортная и складская логистика, штрафы и прочие удержания. Из него ВЫВОДИТСЯ доля агентского как остаток. Задан к выручке по ценам менеджера без НДС; к базе формы приводится делением на (1 − %СПП).",

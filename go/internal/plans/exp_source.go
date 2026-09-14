@@ -3,6 +3,7 @@ package plans
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -35,6 +36,9 @@ type ExpCostCell struct {
 	CountryCompany string
 	Company        string
 	Amount         float64
+	// Projects и SpecialAccess — измерения фильтра страницы эталона (ответ 5.4).
+	Projects      string
+	SpecialAccess string
 }
 
 // ExpCfoAttrs — атрибуты ЦФО из справочника (ТЗ §2.4): то, чего нет в строке
@@ -83,28 +87,47 @@ const (
 // expDropCodePL — служебные коды PL, которые ТЗ §2.1 велит отбросить.
 var expDropCodePL = map[int]bool{50: true, 93: true, 1: true}
 
-// Сценарии источника после переименования (ТЗ §2.1 + ответ Н1 от 10.09.2026).
-const (
-	ExpSrcFact     = "Факт"
-	ExpSrcStrategy = "План"
-	ExpSrcTactic   = "Тактика"
-)
+// expProjectsNone — значение измерения Projects, на котором построен эталон
+// (ответ 5.4 от 11.09.2026). Фиксировать его ОБЯЗАТЕЛЬНО: без этого условия
+// источник вернёт задвоение по проектам, и суммы формы разойдутся с эталоном на
+// величину, которую потом не объяснить.
+const expProjectsNone = "Нет проектов!"
 
-// expScenarioRename — переименование сценариев (ТЗ §2.1). Приёмник и вся форма
-// оперируют короткими словами, а процедура отдаёт длинные названия.
+// expSpecialAccessAll — второе условие фильтра страницы эталона. Значение «All»
+// означает «без отбора», поэтому строка проверяется только на непустоту.
+const expSpecialAccessAll = "All"
+
+// expScenarioForForm — сценарий источника идёт в форму.
 //
-// Третья строка добавлена ответом Н1: в эталоне сценария три, и этап 1.5
-// заполняет именно «Тактика бюджет (таргеты)».
-//
-// ВНИМАНИЕ. ТЗ §2.1 называет фактическим сценарием «Факт по платежам», а Н1 —
-// «Факт по начислениям». Это РАЗНЫЕ вещи, и сводить их в один «Факт» нельзя:
-// если процедура отдаёт оба, суммы удвоятся. Пока переименовываем только тот,
-// что назван в ТЗ; «Факт по начислениям» ждёт ответа (вопрос 44).
-var expScenarioRename = map[string]string{
-	"Стратегический бюджет":    ExpSrcStrategy,
-	"Факт по платежам":         ExpSrcFact,
-	"Тактика бюджет (таргеты)": ExpSrcTactic,
+// «Факт по платежам» отбрасывается: листы ввода эталона на нём не построены, а
+// сложение двух фактических сценариев дало бы двойные суммы (ответ 44).
+func expScenarioForForm(scenario string) bool {
+	return scenario != ExpSrcFactPayments && scenario != ""
 }
+
+// Сценарии источника. Имена ХРАНЯТСЯ КАК ПРИХОДЯТ (ответ 44 от 11.09.2026:
+// «сценарии не схлопывать и не переименовывать на входе; если нужно короткое имя
+// — делать отображением»).
+//
+// Их три — и это важно: ТЗ §2.1 велело переименовывать «Факт по платежам» → «Факт»,
+// а листы ввода эталона построены на «Факте ПО НАЧИСЛЕНИЯМ». Источник отдаёт оба,
+// они сосуществуют как разные значения одного измерения; схлопни их — и суммы
+// удвоятся, а колонка факта покажет не тот сценарий. От неё же зависят база
+// сравнения E-18 и база ограничения расчёта ФОТ §6.1.
+const (
+	// ExpSrcFact — факт, который читают листы ввода эталона.
+	ExpSrcFact = "Факт по начислениям"
+	// ExpSrcFactPayments — второй фактический сценарий. В форму НЕ идёт: он
+	// встречается только в сводных листах источника.
+	ExpSrcFactPayments = "Факт по платежам"
+	// ExpSrcStrategy — стратегический бюджет планового года.
+	ExpSrcStrategy = "Стратегический бюджет"
+	// ExpSrcCurrent — «Текущий бюджет». Есть только у МП_RU (ответ 44), у
+	// остальных карточек блока нет.
+	ExpSrcCurrent = "Текущий бюджет"
+	// ExpSrcTactic — то, что заполняет форма и что уходит в приёмник.
+	ExpSrcTactic = "Тактика бюджет (таргеты)"
+)
 
 // expCutoffYear — строки не позже 31.12.2023 отбрасываются (ТЗ §2.1).
 const expCutoffYear = 2024
@@ -160,32 +183,71 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 	}
 	defer rows.Close()
 
+	// Колонки берём ПО ИМЕНИ, а не по позиции: процедура без параметров, её
+	// состав колонок нам не подчиняется, и перестановка столбцов при очередной
+	// правке молча сдвинула бы все значения на одну колонку.
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	idx := map[string]int{}
+	for i, c := range cols {
+		idx[strings.ToLower(strings.TrimSpace(c))] = i
+	}
+	need := []string{"scenario", "month", "codepl", "grouppl", "expense", "codecfo",
+		"cfo", "groupcfo1", "groupcfo2", "country", "country_company", "company", "amount"}
+	for _, n := range need {
+		if _, ok := idx[n]; !ok {
+			return nil, fmt.Errorf("в выдаче процедуры %s нет колонки %q", proc, n)
+		}
+	}
+
 	out := make([]ExpCostCell, 0, 4096)
 	capped := false
+	raw := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range raw {
+		ptrs[i] = &raw[i]
+	}
+	str := func(name string) string {
+		i, ok := idx[name]
+		if !ok || raw[i] == nil {
+			return ""
+		}
+		switch v := raw[i].(type) {
+		case string:
+			return strings.TrimSpace(v)
+		case []byte:
+			return strings.TrimSpace(string(v))
+		default:
+			return strings.TrimSpace(fmt.Sprint(v))
+		}
+	}
+	num := func(name string) float64 {
+		i, ok := idx[name]
+		if !ok || raw[i] == nil {
+			return 0
+		}
+		switch v := raw[i].(type) {
+		case float64:
+			return v
+		case int64:
+			return float64(v)
+		default:
+			return 0
+		}
+	}
 	for rows.Next() {
-		var (
-			c        ExpCostCell
-			month    time.Time
-			scenario sql.NullString
-			expense  sql.NullString
-			groupPL  sql.NullString
-			cfo      sql.NullString
-			gr1, gr2 sql.NullString
-			cn, cnCo sql.NullString
-			company  sql.NullString
-			amount   sql.NullFloat64
-			codePL   sql.NullInt64
-			codeCFO  sql.NullInt64
-		)
-		if err := rows.Scan(&scenario, &month, &codePL, &groupPL, &expense, &codeCFO,
-			&cfo, &gr1, &gr2, &cn, &cnCo, &company, &amount); err != nil {
+		if err := rows.Scan(ptrs...); err != nil {
 			return nil, err
 		}
-		c.CodePL = int(codePL.Int64)
+		var c ExpCostCell
+		c.CodePL = int(num("codepl"))
 		// 1. служебные коды PL (ТЗ §2.1, п.1)
 		if expDropCodePL[c.CodePL] {
 			continue
 		}
+		month, _ := raw[idx["month"]].(time.Time)
 		// 2. история до 2024 года (ТЗ §2.1, п.2)
 		if month.Year() < expCutoffYear {
 			continue
@@ -194,23 +256,30 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 		if len(wantYear) > 0 && !wantYear[c.Year] {
 			continue
 		}
-		c.GroupCFO1 = gr1.String
+		c.GroupCFO1 = str("groupcfo1")
 		if c.GroupCFO1 != group {
 			continue
 		}
-		c.Country = cn.String
+		c.Country = str("country")
 		if country != "" && c.Country != country {
 			continue
 		}
-		// 3. переименование сценариев (ТЗ §2.1, п.3)
-		c.Scenario = scenario.String
-		if v, ok := expScenarioRename[c.Scenario]; ok {
-			c.Scenario = v
+		c.Projects, c.SpecialAccess = str("projects"), str("specialaccess")
+		// Фильтр страницы эталона (ответ 5.4): Projects обязателен, иначе
+		// источник задвоит строки по проектам.
+		if c.Projects != "" && c.Projects != expProjectsNone {
+			continue
 		}
-		c.GroupPL, c.Expense = groupPL.String, expense.String
-		c.CodeCFO, c.CFO = int(codeCFO.Int64), cfo.String
-		c.GroupCFO2, c.CountryCompany, c.Company = gr2.String, cnCo.String, company.String
-		c.Amount = amount.Float64
+		// 3. сценарий — КАК ПРИШЁЛ (ответ 44). Отбрасываем только «Факт по
+		// платежам»: на нём листы ввода эталона не построены.
+		c.Scenario = str("scenario")
+		if !expScenarioForForm(c.Scenario) {
+			continue
+		}
+		c.GroupPL, c.Expense = str("grouppl"), str("expense")
+		c.CodeCFO, c.CFO = int(num("codecfo")), str("cfo")
+		c.GroupCFO2, c.CountryCompany, c.Company = str("groupcfo2"), str("country_company"), str("company")
+		c.Amount = num("amount")
 		out = append(out, c)
 		if len(out) >= expRowCap {
 			capped = true

@@ -33,7 +33,7 @@ func TestExpExportImport_RoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := svc.rowIndex(context.Background(), 1)
+	idx, _, err := svc.rowIndex(context.Background(), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,26 +53,38 @@ func TestExpExportImport_RoundTrip(t *testing.T) {
 	if len(cols) != 12 {
 		t.Fatalf("колонок месяцев %d, ожидали 12", len(cols))
 	}
-	cfo, pl, err := expRowKey(table[0])
+	key, err := expRowKey(table[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfo != 101 || pl != 24 {
-		t.Fatalf("ключ строки %d/%d, ожидали 101/24", cfo, pl)
+	if key.CodeCFO != 101 || key.CodePL != 24 {
+		t.Fatalf("ключ строки %d/%d, ожидали 101/24", key.CodeCFO, key.CodePL)
 	}
 }
 
 // Ключ импорта — «ЦФО + статья», а не номер строки: файл правят руками, строки
 // в нём переставляют.
 func TestExpRowKey(t *testing.T) {
-	if _, _, err := expRowKey([]string{"101"}); err == nil {
+	if _, err := expRowKey([]string{"101"}); err == nil {
 		t.Fatal("короткая строка не даёт ключа")
 	}
-	if _, _, err := expRowKey([]string{"не число", "Магазин", "24"}); err == nil {
-		t.Fatal("нечисловой ЦФО должен отклоняться")
-	}
-	if _, _, err := expRowKey([]string{"101", "Магазин", "статья"}); err == nil {
+	if _, err := expRowKey([]string{"101", "Магазин", "статья"}); err == nil {
 		t.Fatal("нечисловой код PL должен отклоняться")
+	}
+
+	// Ответ И-8: в листе МП_UZ колонки CodeCFO нет — ключом становится
+	// наименование ЦФО. Отказываться от строки нельзя, иначе узбекская карточка
+	// не импортируется вовсе.
+	key, err := expRowKey([]string{"Uzum", "", "48"})
+	if err != nil {
+		t.Fatalf("строка без кода ЦФО должна сопоставляться по наименованию: %v", err)
+	}
+	if key.CodeCFO != 0 || key.Name != "Uzum" || key.CodePL != 48 {
+		t.Fatalf("ключ по наименованию собран неверно: %+v", key)
+	}
+
+	if _, err := expRowKey([]string{"", "", "48"}); err == nil {
+		t.Fatal("без кода и без наименования строку сопоставить не с чем")
 	}
 }
 
