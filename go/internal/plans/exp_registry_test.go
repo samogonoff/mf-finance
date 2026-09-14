@@ -141,33 +141,52 @@ func TestExpLogistics_SpecChecks(t *testing.T) {
 	}
 }
 
-// ТЗ §5.4: блок переноса 18 000 в месяц и 216 000 за год; тотал 25 500 и
-// 320 500; общие расходы 43 500 и 536 500. Арифметика: 25 500 + 18 000 = 43 500.
+// Ответ И-1 (11.09.2026): в эталоне ТРИ блока, и 18 000 — это первый блок по
+// ЦФО 40, а не блок переноса. ОБЩИЕ = Тотал основного блока + подытог первого:
+// 25 500 + 18 000 = 43 500 в месяц, 320 500 + 216 000 = 536 500 за год.
+// Прежняя формула «Тотал + перенос» давала 40 500 — расхождение в 3 000 в месяц.
 func TestExpITSum_SpecCheckNumbers(t *testing.T) {
-	rows := []ExpRegRow{
-		{Kind: ExpRegIT, MoveTo250: true, Months: twelve(18000)},
-		{Kind: ExpRegIT, Months: twelve(25500)},
-		// Строка со статьёй 85 и признаком «не учитывать» (ТЗ §5.4): в итоги не
-		// входит, но видна отдельной суммой.
-		{Kind: ExpRegIT, CodePL: 85, Excluded: true, Months: twelve(7000)},
-	}
-	got := ExpITSum(rows)
-	if !near(got.Transfer, 18000*12) {
-		t.Fatalf("перенос за год %v, эталон 216 000", got.Transfer)
+	first := ExpRegRow{Kind: ExpRegIT, CodeCFO: 40, Months: twelve(18000),
+		Attrs: map[string]any{"block": ExpITBlockFirst}}
+	transfer := ExpRegRow{Kind: ExpRegIT, CodeCFO: 250, MoveTo250: true, Months: twelve(15000)}
+	main := ExpRegRow{Kind: ExpRegIT, CodeCFO: 40, Months: twelve(25500)}
+	excluded := ExpRegRow{Kind: ExpRegIT, CodeCFO: 40, CodePL: 85, Excluded: true, Months: twelve(12000)}
+
+	got := ExpITSum([]ExpRegRow{first, transfer, main, excluded})
+	if !near(got.First, 18000*12) {
+		t.Fatalf("подытог первого блока %v, эталон 216 000 за год", got.First)
 	}
 	if !near(got.Total, 25500*12) {
-		t.Fatalf("тотал за год %v, эталон 320 500 при полном составе строк", got.Total)
+		t.Fatalf("Тотал %v, эталон 320 500 за год", got.Total)
 	}
 	if !near(got.Common, 43500*12) {
-		t.Fatalf("общие расходы за год %v, эталон 536 500 (тотал + перенос)", got.Common)
+		t.Fatalf("ОБЩИЕ РАСХОДЫ %v, эталон 536 500 = Тотал + первый блок", got.Common)
 	}
-	if !near(got.Excluded, 7000*12) {
+	if !near(got.Transfer, 15000*12) {
+		t.Fatalf("блок переноса %v, эталон 15 000 в месяц", got.Transfer)
+	}
+	// Перенос не входит ни в Тотал, ни в Общие: он публикуется отдельной суммой
+	// под ЦФО 250.
+	if near(got.Common, (25500+15000)*12) {
+		t.Fatal("блок переноса не должен складываться в ОБЩИЕ РАСХОДЫ")
+	}
+	if !near(got.Excluded, 12000*12) {
 		t.Fatalf("исключённые %v — они обязаны быть видны отдельно", got.Excluded)
 	}
-	// Исключённая строка в общие расходы не попадает — иначе «не берём в расчёт»
-	// ничего не значит.
-	if near(got.Common, (43500+7000)*12) {
-		t.Fatal("строка «не учитывать» не должна входить в общие расходы")
+	// Март эталона проверяет именно исключение: строка «не берём в расчёт»
+	// стоит 12 000, а Тотал остаётся 25 500.
+	if near(got.Total, (25500+12000)*12) {
+		t.Fatal("строка «не учитывать» не должна входить в Тотал")
+	}
+}
+
+// Строка, заведённая руками без явного блока, попадает в основной.
+func TestExpITBlockOf_DefaultsToMain(t *testing.T) {
+	if got := ExpITBlockOf(ExpRegRow{Kind: ExpRegIT}); got != ExpITBlockMain {
+		t.Fatalf("блок по умолчанию %q, ожидали основной", got)
+	}
+	if got := ExpITBlockOf(ExpRegRow{Kind: ExpRegIT, Attrs: map[string]any{"block": "first"}}); got != ExpITBlockFirst {
+		t.Fatalf("явный первый блок не распознан: %q", got)
 	}
 }
 
@@ -312,5 +331,45 @@ func TestComputeTravelRow_MonthFallback(t *testing.T) {
 	svc.computeTravelRow(context.Background(), ExpInstance{PlanYear: 2026, Currency: "BYN"}, &row)
 	if _, ok := row.Months[1]; !ok {
 		t.Fatalf("без месяца поездка должна попасть в январь: %+v", row.Months)
+	}
+}
+
+// Ответ 5.3 (11.09.2026): доля логистики — СРЕДНЕЕ помесячных долей базового
+// года, а не отношение годовых сумм. На эталоне 2024 по статье 51 помесячные
+// доли дают 0,0998; отношение годовых сумм дало бы другое число.
+func TestExpLogisticsAvgShare_MeanOfMonthlyShares(t *testing.T) {
+	item := map[int]float64{}
+	sales := map[int]float64{}
+	monthly := []float64{0.10701, 0.08733, 0.12999, 0.10037, 0.07396, 0.10924, 0.09853, 0.09178}
+	for i, d := range monthly {
+		// Продажи разные по месяцам — иначе среднее долей совпало бы с отношением
+		// сумм, и тест ничего бы не проверял.
+		s := 100000 * float64(i+1)
+		sales[i+1] = s
+		item[i+1] = d * s
+	}
+	got := ExpLogisticsAvgShare(item, sales)
+	if math.Abs(got-0.0998) > 0.0005 {
+		t.Fatalf("средняя доля %v, эталон 0,0998", got)
+	}
+
+	// Отношение годовых сумм даёт ДРУГОЕ число — на этом и строится ответ 5.3.
+	var si, ss float64
+	for m := 1; m <= 12; m++ {
+		si += item[m]
+		ss += sales[m]
+	}
+	if math.Abs(si/ss-got) < 0.0005 {
+		t.Fatal("тест не различает среднее долей и отношение сумм — фикстура вырождена")
+	}
+
+	// Месяц без продаж в среднее не входит: доля там не «ноль», а «не определена».
+	sales[3] = 0
+	item[3] = 0
+	if withZero := ExpLogisticsAvgShare(item, sales); math.Abs(withZero-got) < 1e-9 {
+		t.Fatal("месяц без продаж обязан выпадать из среднего, а не считаться нулём")
+	}
+	if ExpLogisticsAvgShare(map[int]float64{}, map[int]float64{}) != 0 {
+		t.Fatal("без данных доля равна нулю, а не NaN")
 	}
 }

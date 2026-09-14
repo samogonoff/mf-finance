@@ -185,6 +185,23 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance)
 	if _, err := s.repo.SyncRows(ctx, in.ID, rows); err != nil {
 		return err
 	}
+	// Справочник статей пополняется из того же среза (ответ И-12): перечень ТЗ
+	// неполон, а новый код PL не должен требовать релиза. Второй уровень
+	// (укрупнённая группа P&L) при этом не трогается — это решение НСИ.
+	lines := make([]ExpPLLine, 0, len(rowByKey))
+	seenPL := map[int]bool{}
+	for _, r := range rowByKey {
+		if seenPL[r.CodePL] {
+			continue
+		}
+		seenPL[r.CodePL] = true
+		lines = append(lines, ExpPLLine{CodePL: r.CodePL, Expense: r.Expense, GroupPL: r.GroupPL})
+	}
+	if n, err := s.repo.SyncPLLines(ctx, lines); err != nil {
+		log.Printf("plans/exp: справочник статей не пополнен: %v", err)
+	} else if n > 0 {
+		log.Printf("plans/exp: в справочник статей добавлено кодов PL: %d", n)
+	}
 	if err := s.repo.SaveReadOnly(ctx, in.ID, ExpScenarioFact, fact); err != nil {
 		return err
 	}

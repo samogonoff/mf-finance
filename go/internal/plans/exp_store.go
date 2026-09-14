@@ -24,6 +24,14 @@ type ExpRepo interface {
 	GroupOrder(ctx context.Context, formKind string) ([]string, error)
 	Params(ctx context.Context, instanceID int64) ([]ExpParamRow, error)
 	SaveParam(ctx context.Context, instanceID int64, p ExpParamRow, actorID int64) error
+	SyncPLLines(ctx context.Context, lines []ExpPLLine) (int, error)
+}
+
+// ExpPLLine — статья справочника, как она приходит из источника затрат.
+type ExpPLLine struct {
+	CodePL  int
+	Expense string
+	GroupPL string
 }
 
 type expRepo struct{ pool *pgxpool.Pool }
@@ -535,4 +543,45 @@ func (s *expRepo) SaveParam(ctx context.Context, instanceID int64, p ExpParamRow
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// SyncPLLines — пополнение справочника статей выгрузкой из источника (ответ И-12
+// от 11.09.2026: «формировать справочник выгрузкой из источника, а не перечнем в
+// ТЗ»). Перечень ТЗ оказался неполон: в файлах встречаются коды 10, 16, 17, 19,
+// 33, 38, 57, 63, 84, 90, 92, 94, 99, 100, которых в нём нет.
+//
+// Добавляются ТОЛЬКО отсутствующие коды. Существующие строки не трогаем: в них
+// живёт второй уровень (pnl_group) — решение НСИ, а не свойство источника, и
+// перезапись стёрла бы его при каждом открытии формы.
+func (s *expRepo) SyncPLLines(ctx context.Context, lines []ExpPLLine) (int, error) {
+	if len(lines) == 0 {
+		return 0, nil
+	}
+	var dirID int64
+	if err := s.pool.QueryRow(ctx, `
+		INSERT INTO plans_directory (code, source, sync_status)
+		VALUES ('dir_pl_line', 'olap', 'ok')
+		ON CONFLICT (code) DO UPDATE SET sync_status = 'ok', synced_at = NOW()
+		RETURNING id`).Scan(&dirID); err != nil {
+		return 0, err
+	}
+	added := 0
+	for _, l := range lines {
+		if l.CodePL <= 0 {
+			continue
+		}
+		ct, err := s.pool.Exec(ctx, `
+			INSERT INTO plans_directory_row (directory_id, external_id, payload_json)
+			SELECT $1, $2, jsonb_build_object(
+			           'code_pl', $3::int, 'expense_name', $4::text, 'group_pl', $5::text)
+			 WHERE NOT EXISTS (
+			        SELECT 1 FROM plans_directory_row r
+			         WHERE r.directory_id = $1 AND r.payload_json->>'code_pl' = $3::text)`,
+			dirID, fmt.Sprint(l.CodePL), l.CodePL, l.Expense, l.GroupPL)
+		if err != nil {
+			return added, err
+		}
+		added += int(ct.RowsAffected())
+	}
+	return added, nil
 }

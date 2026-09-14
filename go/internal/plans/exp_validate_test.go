@@ -1,6 +1,9 @@
 package plans
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func pv(v float64) *float64 { return &v }
 
@@ -44,15 +47,54 @@ func TestValidateExpForm_E11_EmptyIsNotZero(t *testing.T) {
 	}
 }
 
-// E-12: отрицательная сумма блокирует, кроме групп, где минус осмыслен.
-func TestValidateExpForm_E12_Negative(t *testing.T) {
-	bad := fullRow(101, 61, "ОСНОВНЫЕ РАСХОДЫ", "Коммунальные услуги", -500)
-	if got := ValidateExpForm(ExpValidationInput{Rows: []ExpRow{bad}}); !hasCode(got, "E-12") {
-		t.Fatal("отрицательный расход обязан блокировать")
+// E-12 после ответа И-2: минус допустим В ЛЮБОЙ статье, но требует комментария.
+// Белого списка групп больше нет — аналитик нашёл отрицательные суммы в семи
+// группах из восьми, включая те, где прежняя реализация их блокировала.
+func TestValidateExpForm_E12_NegativeIsWarningEverywhere(t *testing.T) {
+	// Коды, на которых прежняя версия блокировала законный ввод: 10, 54, 66, 99, 100.
+	for _, c := range []struct{ group, expense string }{
+		{"ОСНОВНЫЕ РАСХОДЫ", "Коммунальные услуги"},
+		{"РЕКЛАМА И МАРКЕТИНГ", "Трейд. Реклама в ТРЦ"},
+		{"АРЕНДА", "Аренда помещений (стоянки)"},
+		{"ПРОЧИЕ РАСХОДЫ", "Курсовые разницы, переоценка валюта"},
+	} {
+		got := ValidateExpForm(ExpValidationInput{Rows: []ExpRow{fullRow(101, 54, c.group, c.expense, -500)}})
+		var found *ExpIssue
+		for i := range got {
+			if got[i].Code == "E-12" {
+				found = &got[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("минус в группе %q обязан давать предупреждение", c.group)
+		}
+		if found.Blocking {
+			t.Fatalf("E-12 больше не блокирует (ответ И-2): %+v", *found)
+		}
 	}
-	ok := fullRow(101, 70, "ПРОЧИЕ ДОХОДЫ", "Прочие доходы", -500)
-	if got := ValidateExpForm(ExpValidationInput{Rows: []ExpRow{ok}}); hasCode(got, "E-12") {
-		t.Fatal("в группе доходов минус допустим")
+
+	// Одно предупреждение на строку, а не двенадцать: минус во всех месяцах —
+	// одна ситуация.
+	got := ValidateExpForm(ExpValidationInput{Rows: []ExpRow{fullRow(101, 54, "АРЕНДА", "Аренда", -500)}})
+	n := 0
+	for _, i := range got {
+		if i.Code == "E-12" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("предупреждений E-12 по строке %d, ожидали одно", n)
+	}
+
+	// Комментарий к строке меняет формулировку — он и есть то, чего требует ТЗ.
+	withComment := ValidateExpForm(ExpValidationInput{
+		Rows:         []ExpRow{fullRow(101, 54, "АРЕНДА", "Аренда", -500)},
+		CommentByRow: map[[2]int]string{{101, 54}: "корректировка по акту"},
+	})
+	for _, i := range withComment {
+		if i.Code == "E-12" && !strings.Contains(i.Message, "комментарий дан") {
+			t.Fatalf("с комментарием формулировка должна меняться: %q", i.Message)
+		}
 	}
 }
 
@@ -85,20 +127,47 @@ func TestValidateExpForm_E15_Currency(t *testing.T) {
 	}
 }
 
-// E-17: расхождение наименования со справочником видно, но НЕ блокирует.
-func TestValidateExpForm_E17_NameMismatchIsNotBlocking(t *testing.T) {
-	r := fullRow(101, 24, "ВЫПЛАТЫ РАБОТНИКАМ", "Зарплата", 100)
-	got := ValidateExpForm(ExpValidationInput{
-		Rows:            []ExpRow{r},
-		ExpenseByCodePL: map[int]string{24: "Заработная плата"},
+// E-17 после ответа И-10: расхождение наименования — предупреждение, а вот
+// отсутствие кода в справочнике целиком блокирует: строку не на что отнести.
+// Появление НОВОГО кода PL при этом останавливать отправку не должно только в
+// части второго уровня — он уводит код в «Не распределено» и публикацию не держит.
+func TestValidateExpForm_E17_MissingCodeBlocksNameMismatchDoesNot(t *testing.T) {
+	dir := map[int]string{24: "Заработная плата"}
+
+	mismatch := ValidateExpForm(ExpValidationInput{
+		Rows:            []ExpRow{fullRow(101, 24, "ВЫПЛАТЫ РАБОТНИКАМ", "Зарплата", 100)},
+		ExpenseByCodePL: dir,
 	})
-	if !hasCode(got, "E-17") {
+	for _, i := range mismatch {
+		if i.Code == "E-17" && i.Blocking {
+			t.Fatal("расхождение наименования по ответу И-10 не блокирует")
+		}
+	}
+	if !hasCode(mismatch, "E-17") {
 		t.Fatal("расхождение наименования обязано быть видно")
 	}
-	for _, i := range got {
+
+	unknown := ValidateExpForm(ExpValidationInput{
+		Rows:            []ExpRow{fullRow(101, 777, "ПРОЧИЕ РАСХОДЫ", "Неизвестная", 100)},
+		ExpenseByCodePL: dir,
+	})
+	blocked := false
+	for _, i := range unknown {
 		if i.Code == "E-17" && i.Blocking {
-			t.Fatal("E-17 по ТЗ §9 не блокирует")
+			blocked = true
 		}
+	}
+	if !blocked {
+		t.Fatal("кода, которого нет в справочнике, быть не должно — это блокирует")
+	}
+
+	// Справочник не залит — контроль молчит целиком, иначе форма не откроется
+	// на чистой базе.
+	empty := ValidateExpForm(ExpValidationInput{
+		Rows: []ExpRow{fullRow(101, 777, "ПРОЧИЕ РАСХОДЫ", "Неизвестная", 100)},
+	})
+	if hasCode(empty, "E-17") {
+		t.Fatal("без справочника E-17 срабатывать не должен")
 	}
 }
 

@@ -152,7 +152,7 @@ func (s *ExpService) ImportForm(ctx context.Context, p Principal, cardID int64, 
 		return res, err
 	}
 
-	known, err := s.rowIndex(ctx, in.ID)
+	known, byName, err := s.rowIndex(ctx, in.ID)
 	if err != nil {
 		return res, err
 	}
@@ -161,12 +161,19 @@ func (s *ExpService) ImportForm(ctx context.Context, p Principal, cardID int64, 
 	for i, line := range table {
 		lineNo := i + 2
 		res.RowsInFile++
-		cfo, pl, err := expRowKey(line)
+		key, err := expRowKey(line)
 		if err != nil {
 			res.Issues = append(res.Issues, ExpImportIssue{Line: lineNo, Message: err.Error()})
 			continue
 		}
+		cfo, pl := key.CodeCFO, key.CodePL
 		cur, ok := known[[2]int{cfo, pl}]
+		if !ok && key.Name != "" {
+			// Сопоставление по наименованию ЦФО (ответ И-8): так устроен лист МП_UZ.
+			if m, found := byName[expNameKey{strings.ToLower(key.Name), pl}]; found {
+				cfo, cur, ok = m.codeCFO, m.months, true
+			}
+		}
 		if !ok {
 			// Строки, которых нет в форме, НЕ создаются (ТЗ §7.9).
 			res.RowsUnknown++
@@ -218,14 +225,28 @@ func (s *ExpService) ImportForm(ctx context.Context, p Principal, cardID int64, 
 	return res, nil
 }
 
-// rowIndex — текущие значения формы по ключу «ЦФО + статья»: нужны, чтобы
-// предпросмотр показывал «было → стало», а не только «стало».
-func (s *ExpService) rowIndex(ctx context.Context, instanceID int64) (map[[2]int]map[int]*float64, error) {
+// expNameKey — ключ сопоставления по наименованию ЦФО (ответ И-8).
+type expNameKey struct {
+	name   string
+	codePL int
+}
+
+type expNameRow struct {
+	codeCFO int
+	months  map[int]*float64
+}
+
+// rowIndex — текущие значения формы по ключу «ЦФО + статья» и по ключу
+// «наименование + статья». Первый нужен для предпросмотра «было → стало», второй
+// — для листов без колонки CodeCFO (ответ И-8).
+func (s *ExpService) rowIndex(ctx context.Context, instanceID int64) (
+	map[[2]int]map[int]*float64, map[expNameKey]expNameRow, error) {
 	rows, _, err := s.repo.Rows(ctx, instanceID, ExpFilter{Limit: 5000})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := make(map[[2]int]map[int]*float64, len(rows))
+	byName := make(map[expNameKey]expNameRow, len(rows))
 	for _, r := range rows {
 		m := map[int]*float64{}
 		for _, v := range r.Values {
@@ -234,8 +255,11 @@ func (s *ExpService) rowIndex(ctx context.Context, instanceID int64) (map[[2]int
 			}
 		}
 		out[[2]int{r.CodeCFO, r.CodePL}] = m
+		if r.CFO != "" {
+			byName[expNameKey{strings.ToLower(r.CFO), r.CodePL}] = expNameRow{codeCFO: r.CodeCFO, months: m}
+		}
 	}
-	return out, nil
+	return out, byName, nil
 }
 
 // expMonthColumns — какие колонки файла соответствуют месяцам планового года.
@@ -255,18 +279,38 @@ func expMonthColumns(header []string, year int) (map[int]int, error) {
 	return out, nil
 }
 
-// expRowKey — ключ строки файла: код ЦФО и код PL (ТЗ §7.9).
-func expRowKey(line []string) (int, int, error) {
+// expFileKey — ключ строки файла: код ЦФО ЛИБО наименование ЦФО, плюс код PL.
+type expFileKey struct {
+	CodeCFO int
+	Name    string
+	CodePL  int
+}
+
+// expRowKey — ключ строки файла (ТЗ §7.9).
+//
+// Ответ И-8 (11.09.2026): в листе МП_UZ колонки CodeCFO НЕТ — привязка идёт по
+// названию ЦФО. Поэтому ключ допускает оба варианта: если в колонке кода не
+// число, берём наименование. Отказываться от строки нельзя — иначе узбекская
+// карточка не импортируется вовсе.
+func expRowKey(line []string) (expFileKey, error) {
 	if len(line) < 3 {
-		return 0, 0, fmt.Errorf("в строке меньше трёх колонок — ключ не прочитать")
-	}
-	cfo, err := strconv.Atoi(strings.TrimSpace(line[0]))
-	if err != nil || cfo <= 0 {
-		return 0, 0, fmt.Errorf("код ЦФО «%s» не число", strings.TrimSpace(line[0]))
+		return expFileKey{}, fmt.Errorf("в строке меньше трёх колонок — ключ не прочитать")
 	}
 	pl, err := strconv.Atoi(strings.TrimSpace(line[2]))
 	if err != nil || pl <= 0 {
-		return 0, 0, fmt.Errorf("код PL «%s» не число", strings.TrimSpace(line[2]))
+		return expFileKey{}, fmt.Errorf("код PL «%s» не число", strings.TrimSpace(line[2]))
 	}
-	return cfo, pl, nil
+	raw := strings.TrimSpace(line[0])
+	if cfo, err := strconv.Atoi(raw); err == nil && cfo > 0 {
+		return expFileKey{CodeCFO: cfo, CodePL: pl}, nil
+	}
+	// Кода нет — пробуем наименование из первой или второй колонки.
+	name := raw
+	if name == "" && len(line) > 1 {
+		name = strings.TrimSpace(line[1])
+	}
+	if name == "" {
+		return expFileKey{}, fmt.Errorf("ни кода ЦФО, ни наименования — строку не сопоставить")
+	}
+	return expFileKey{Name: name, CodePL: pl}, nil
 }
