@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from app import articul_replace, commercial, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
 from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
 from app.logship import log
+from app.db import get_source_change_flags
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -1150,6 +1151,37 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     except Exception:
         pass  # lock state is advisory — don't break the page
 
+    # ── Признак «источник изменился» (миграция 0057) ────────────────────────
+    # Активная версия сделана от снимка источника старее последнего: после
+    # создания версии CostHistory дополнил или пересчитал калькуляцию, а версия
+    # по-прежнему заменяет собой строки источника в кэше. Экономист должен сам
+    # посмотреть новый снимок в редакторе и сделать от него версию. Ключей с
+    # версиями мало, поэтому флаги берутся одним запросом и матчатся здесь.
+    try:
+        src_flags = await get_source_change_flags()
+        if src_flags:
+            # Легаси-версии с пустым заданием (до миграции 0032) относятся ко
+            # всем заданиям ключа.
+            src_any_task = {k[:4]: v for k, v in src_flags.items() if k[4] == ""}
+            for row in data:
+                m = str(row.get("Модель", "") or "").strip()
+                a = str(row.get("Артикул", "") or "").strip()
+                cs = str(row.get("Признак калькуляции", "") or "").strip()
+                pi = str(row.get("PLAN_ID", "") or "").strip()
+                tn = str(row.get("Номер задания производства", "") or "").strip()
+                flag = src_flags.get((m, a, cs, pi, tn)) or src_any_task.get((m, a, cs, pi))
+                if flag:
+                    row["_source_changed"] = True
+                    row["_source_latest_no"] = flag["latest_no"]
+                    row["_source_latest_at"] = flag["latest_at"]
+                    row["_source_base_no"] = flag["base_no"]
+                    row["_source_base_at"] = flag["base_at"]
+                    row["_source_active_version"] = flag["active_version"]
+    except Exception as exc:
+        # Признак справочный — таблицу из-за него не роняем, но молчать нельзя:
+        # иначе пропавший значок не отличить от «источник не менялся».
+        log(logging.WARNING, "не удалось вычислить признак «источник изменился»", error=str(exc))
+
     # ── Фильтр по отсутствию отпускной цены ────────────────────────────────
     # Считаем по ИТОГОВОМУ значению, то есть после наложения цен из
     # cost_price_pending и CostHistory_Changes: в самом кэше отпускной цены нет
@@ -2274,11 +2306,14 @@ async def raw_data_endpoint(request: Request, _: str = Depends(_require_perm("co
     plan_id = request.query_params.get("plan_id") or None
     date_str = request.query_params.get("date")
     task_number = request.query_params.get("task_number") or None
+    # Конкретный снимок источника (миграция 0057); без него — последний.
+    snapshot_raw = request.query_params.get("snapshot_id") or None
+    snapshot_id = int(snapshot_raw) if snapshot_raw and snapshot_raw.isdigit() else None
     if not model or not articul:
         raise HTTPException(400, "model and articul are required")
     if _is_mock():
         return mocks.get_raw_cache_rows(model, articul, calc_sign, plan_id, date_str)
-    return await get_raw_cache_rows(model, articul, calc_sign, plan_id, date_str, task_number)
+    return await get_raw_cache_rows(model, articul, calc_sign, plan_id, date_str, task_number, snapshot_id)
 
 
 @router.get("/versions")
@@ -2317,6 +2352,8 @@ async def create_version_endpoint(payload: dict, user_email: str = Depends(_requ
     rows = payload.get("rows", [])
     status = payload.get("status", "draft")
     task_number = payload.get("task_number") or None
+    # Основание версии — снимок источника, открытый в редакторе (миграция 0057).
+    source_version_id = payload.get("source_version_id") or None
     if not model or not articul:
         raise HTTPException(400, "model and articul are required")
     if status not in ("draft", "pending"):
@@ -2326,7 +2363,8 @@ async def create_version_endpoint(payload: dict, user_email: str = Depends(_requ
     if _is_mock():
         return mocks.create_version(model, articul, calc_sign, plan_id, date_str, username, rows, status)
     result = await create_version(
-        model, articul, calc_sign, plan_id, date_str, username, rows, status, task_number
+        model, articul, calc_sign, plan_id, date_str, username, rows, status, task_number,
+        source_version_id=source_version_id,
     )
     # Мультипак: связываем версию с последней сборкой, чтобы журнал отвечал «из
     # чего сложилась эта версия». Для обычной калькуляции — no-op.

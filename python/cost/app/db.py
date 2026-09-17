@@ -1157,9 +1157,16 @@ async def _load_cost_data_to_cache(partial_months: int | None = None) -> dict:
                 # сначала цены плана, затем версии калькуляций поверх них, потому
                 # что версия должна побеждать цену плана (миграция 0033).
                 await _reapply_applied_plan_price_sets(conn)
+                # Снимки источника (миграция 0057) — строго между наборами цен
+                # и версиями: после наложения версий строк источника в кэше уже
+                # нет, сравнивать нечего.
+                snapshots_created = await _snapshot_changed_sources(conn)
                 await _reapply_active_versions_to_cache(conn)
 
         await prod_fut
+        if snapshots_created:
+            log(logging.INFO, "обновление кэша: источник изменился под версиями",
+                snapshots_created=snapshots_created)
 
         await set_cache_completed(total_rows)
 
@@ -2546,44 +2553,47 @@ async def get_version_info(version_id) -> dict | None:
         return dict(row) if row else None
 
 
-async def get_raw_cache_rows(model, articul, calc_sign, plan_id, raw_date=None, task_number=None) -> dict:
-    """Return "Исходные данные" for the editor: the frozen 'original' version's
-    rows if this calc has already been saved/edited at least once (see
-    _ensure_original_version); otherwise the live cost_data_cache rows for the
-    CURRENT (max) "дата расчета" — always the latest recalculation from the
-    source, regardless of which historical date's row in the aggregated table
-    the user opened the editor from (см. миграцию 0027 — версии и "исходные
-    данные" принадлежат заданию, а не конкретной дате). *raw_date* принимается
-    только для обратной совместимости API и не используется.
+async def get_raw_cache_rows(model, articul, calc_sign, plan_id, raw_date=None, task_number=None, snapshot_id=None) -> dict:
+    """«Исходные данные» для редактора.
 
-    version_id is always None in the response regardless of which source was
-    used — the frontend relies on that to route saves through /create-version
-    (fork a new version) rather than treating this as an in-place-editable
-    version_id.
+    Если у ключа есть снимки источника (первый делается при первом сохранении,
+    следующие — обновлением кэша при изменении CostHistory, миграция 0057),
+    отдаются строки ПОСЛЕДНЕГО снимка, либо снимка *snapshot_id*, если он
+    относится к ключу. Вместе с ними — список всех снимков (`snapshots`, новые
+    первыми) для выбора в редакторе. Снимков нет — живые строки cost_data_cache
+    за актуальную (max) "дата расчета" ключа, независимо от того, из строки
+    какой исторической даты открыт редактор (миграция 0027). *raw_date*
+    принимается только для обратной совместимости API и не используется.
+
+    version_id в ответе всегда None — фронт по нему ведёт сохранение через
+    /create-version (новая версия), а не как правку существующей.
+    `snapshot_id` в ответе — какой снимок отдан (None для живого кэша); фронт
+    передаёт его в /create-version как основание версии.
     """
     task = (task_number or "").strip()
-    task_sql, task_params = _task_match_sql(task, 5)
     async with pool().acquire() as conn:
-        original = await conn.fetchrow(
-            f"""SELECT id FROM cost_calc_versions
-               WHERE model=$1 AND articul=$2
-                 AND calc_sign IS NOT DISTINCT FROM $3
-                 AND plan_id IS NOT DISTINCT FROM $4
-                 AND status = 'original'{task_sql}
-               ORDER BY task_number DESC
-               LIMIT 1""",
-            model, articul, calc_sign, plan_id, *task_params,
-        )
-        if original is not None:
+        snapshots = await list_source_snapshots(conn, model, articul, calc_sign, plan_id, task)
+        if snapshots:
+            chosen = snapshots[0]
+            if snapshot_id:
+                for s in snapshots:
+                    if int(s["id"]) == int(snapshot_id):
+                        chosen = s
+                        break
             rows = await conn.fetch(
                 """SELECT * FROM cost_calc_version_rows WHERE version_id=$1 ORDER BY sort_order""",
-                original["id"],
+                chosen["id"],
             )
-            return {"version_id": None, "rows": [dict(r) for r in rows]}
+            return {
+                "version_id": None,
+                "snapshot_id": chosen["id"],
+                "snapshots": snapshots,
+                "rows": [dict(r) for r in rows],
+            }
 
         date = await _current_cache_date(conn, model, articul, calc_sign, plan_id, task)
         if date is None:
-            return {"version_id": None, "rows": []}
+            return {"version_id": None, "snapshot_id": None, "snapshots": [], "rows": []}
         cache_task_sql = "" if task == "" else ' AND trim("Номер задания производства") = $6'
         cache_params = [model, articul, calc_sign, plan_id, date]
         if task != "":
@@ -2598,24 +2608,30 @@ async def get_raw_cache_rows(model, articul, calc_sign, plan_id, raw_date=None, 
                ORDER BY id""",
             *cache_params,
         )
-        return {"version_id": None, "rows": [dict(r) for r in rows]}
+        return {"version_id": None, "snapshot_id": None, "snapshots": [], "rows": [dict(r) for r in rows]}
 
 
 async def list_versions(model, articul, calc_sign, plan_id, raw_date=None, task_number=None) -> list[dict]:
     """Версии принадлежат заданию (model, articul, calc_sign, plan_id,
     task_number) целиком — *raw_date* принимается только для обратной
-    совместимости API и не используется (см. миграции 0027 и 0032)."""
-    task_sql, task_params = _task_match_sql(task_number, 5)
+    совместимости API и не используется (см. миграции 0027 и 0032).
+
+    `source_version_id` / `source_snapshot_no` — снимок источника, от которого
+    сделана версия (миграция 0057); фронт сравнивает его с последним снимком
+    ключа и показывает «источник изменился»."""
+    task_sql, task_params = _task_match_sql(task_number, 5, column="v.task_number")
     async with pool().acquire() as conn:
         rows = await conn.fetch(
-            f"""SELECT id, version, status, comment, created_at::text, created_by,
-                      approved_by, approved_at::text, task_number
-               FROM cost_calc_versions
-               WHERE model=$1 AND articul=$2
-                 AND calc_sign IS NOT DISTINCT FROM $3
-                 AND plan_id IS NOT DISTINCT FROM $4
-                 AND status != 'original'{task_sql}
-               ORDER BY version DESC""",
+            f"""SELECT v.id, v.version, v.status, v.comment, v.created_at::text, v.created_by,
+                      v.approved_by, v.approved_at::text, v.task_number,
+                      v.source_version_id, s.snapshot_no AS source_snapshot_no
+               FROM cost_calc_versions v
+               LEFT JOIN cost_calc_versions s ON s.id = v.source_version_id
+               WHERE v.model=$1 AND v.articul=$2
+                 AND v.calc_sign IS NOT DISTINCT FROM $3
+                 AND v.plan_id IS NOT DISTINCT FROM $4
+                 AND v.status != 'original'{task_sql}
+               ORDER BY v.version DESC""",
             model, articul, calc_sign, plan_id, *task_params,
         )
         return [dict(r) for r in rows]
@@ -2624,7 +2640,8 @@ async def list_versions(model, articul, calc_sign, plan_id, raw_date=None, task_
 async def get_version_rows(version_id) -> dict | None:
     async with pool().acquire() as conn:
         ver = await conn.fetchrow(
-            """SELECT id, version, status FROM cost_calc_versions WHERE id=$1""",
+            """SELECT id, version, status, snapshot_no, source_version_id
+               FROM cost_calc_versions WHERE id=$1""",
             version_id,
         )
         if ver is None:
@@ -2637,6 +2654,8 @@ async def get_version_rows(version_id) -> dict | None:
             "version_id": version_id,
             "version": ver["version"],
             "status": ver["status"],
+            "snapshot_no": ver["snapshot_no"],
+            "source_version_id": ver["source_version_id"],
             "rows": [dict(r) for r in rows],
         }
 
@@ -2702,40 +2721,78 @@ async def _current_cache_date(conn, model, articul, calc_sign, plan_id, task_num
     )
 
 
-async def _ensure_original_version(conn, model, articul, calc_sign, plan_id, username, task_number=None) -> None:
-    """Lazily snapshots cost_data_cache for this calc key into an immutable
-    version(version=0, status='original') the first time a real save happens
-    for this key. No-op if one already exists (ON CONFLICT DO NOTHING on the
-    partial unique index — safe under concurrent first-saves).
+# ── Снимки источника (миграции 0026, 0057) ─────────────────────────────────
+#
+# Снимок — запись cost_calc_versions со status='original', version=0 и своим
+# snapshot_no внутри ключа задания. Снимки неизменяемы; из снимка можно только
+# создать версию калькуляции. Версия запоминает основание (source_version_id).
+#
+# Зачем несколько. Версия калькуляции — снимок строк, и при каждом обновлении
+# кэша она заменяет собой строки источника по ключу. Если CostHistory дополнил
+# калькуляцию ПОСЛЕ создания версии (16.09.2026: 7 строк основных материалов
+# появились позже вспомогательных), новые строки в кэш «не доезжали», а
+# единственный замороженный снимок прятал их и в «Исходных данных». Теперь
+# обновление кэша сравнивает строки источника с последним снимком и при отличии
+# делает новый; активная версия с основанием старее последнего снимка
+# показывается в таблице с признаком «источник изменился». Решение заказчика:
+# без автоматического переноса правок — экономист смотрит новый снимок сам.
 
-    Deliberately cheap: only calculations that actually get edited pay for a
-    snapshot, unlike mirroring the whole ~1M-row cache. Trade-off: for calcs
-    already edited/submitted BEFORE this existed, the snapshot reflects
-    whatever is currently in cost_data_cache (possibly already modified), not
-    the true historical MSSQL original — accepted, see discussion with user.
+# Поля отпечатка — то, что в строке источника задаёт состав и стоимость
+# калькуляции. Розница/опт и уровень цен сюда не входят: их правит цикл
+# согласования цен, а не источник. Цена материала входит, хотя её меняет и
+# набор цен плана (миграция 0033): снимок делается после наложения набора, то
+# есть с той ценой, которую видит таблица, и это последовательно.
+_FINGERPRINT_COLUMNS: tuple[str, ...] = (
+    "дата расчета", "Материал/операция/декор(призн)", "Наименование",
+    "артикул материала", "свойство1", "свойство2", "свойство3",
+    "Норма", "цена материала, руб.", "цена материала, USD.",
+    "Пошив, минуты", "Раскрой, минуты",
+    "Основные материалы, руб.", "Вспомогательные материалы, руб.",
+    "Пошив, руб.", "Раскрой, руб.", "Декоры, руб.", "Вязание, руб.",
+    "выпуск шт",
+)
 
-    Key is (model, articul, calc_sign, plan_id, task_number) WITHOUT
-    "дата расчета" — see migrations 0027 and 0032: the version belongs to the
-    production task, not to a specific recalculation date, since the source
-    recalculates (and stamps a new date) repeatedly over the task's lifetime.
+
+async def _source_fingerprint(conn, model, articul, calc_sign, plan_id, task, date, table="cost_data_all") -> tuple[str | None, int]:
+    """Отпечаток (md5) и число строк источника по ключу за дату расчёта.
+
+    Строки складываются в отсортированный текст, поэтому порядок вставки в кэш
+    (SELECT * из MSSQL без ORDER BY) на отпечаток не влияет. NULL и пустая
+    строка неразличимы — это детектор изменений, а не подпись. Считается
+    целиком в SQL: значения приходят в тексте одинаково и при первом снимке,
+    и при проверке в refresh, без округлений на стороне Python.
     """
-    task = (task_number or "").strip()
-    date = await _current_cache_date(conn, model, articul, calc_sign, plan_id, task)
-    if date is None:
-        return  # для ключа сейчас нет данных в кэше — снимать нечего
-
-    new_id = await conn.fetchval(
-        """INSERT INTO cost_calc_versions
-               (model, articul, calc_sign, plan_id, task_number, "дата расчета", version, status, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, 0, 'original', $7)
-           ON CONFLICT (model, articul, calc_sign, plan_id, task_number) WHERE status = 'original'
-           DO NOTHING
-           RETURNING id""",
-        model, articul, calc_sign, plan_id, task, date, username,
+    parts = ", ".join(
+        f'coalesce(trim("{c}"::text), \'\')' for c in _FINGERPRINT_COLUMNS
     )
-    if new_id is None:
-        return  # уже существует
+    task_filter = "" if task == "" else ' AND trim("Номер задания производства") = $6'
+    params = [model, articul, calc_sign, plan_id, date]
+    if task != "":
+        params.append(task)
+    row = await conn.fetchrow(
+        f"""SELECT md5(string_agg(txt, '||' ORDER BY txt)) AS hash, count(*) AS n
+            FROM (
+                SELECT concat_ws('|', {parts}) AS txt
+                FROM {table}
+                WHERE "Модель"=$1 AND "Артикул"=$2
+                  AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+                  AND "PLAN_ID" IS NOT DISTINCT FROM $4
+                  AND "дата расчета"=$5{task_filter}
+            ) s""",
+        *params,
+    )
+    if row is None or not row["n"]:
+        return None, 0
+    return row["hash"], int(row["n"])
 
+
+async def _insert_snapshot_rows(conn, snapshot_id, model, articul, calc_sign, plan_id, task, date) -> int:
+    """Копирует строки ключа за дату расчёта из cost_data_all в снимок.
+
+    Строки нормализуются так же, как при открытии в редакторе (легаси-коды
+    типа → канонические, Норма/цена для операционных строк), чтобы из снимка
+    можно было сразу делать версию.
+    """
     col_list = ", ".join(f'"{c}"' for c in CACHE_COLUMNS)
     task_filter = "" if task == "" else ' AND trim("Номер задания производства") = $6'
     cache_params = [model, articul, calc_sign, plan_id, date]
@@ -2760,11 +2817,221 @@ async def _ensure_original_version(conn, model, articul, calc_sign, plan_id, use
                 (version_id, {col_list}, sort_order, change_type)
                 VALUES ($1, {", ".join(f"${j+2}" for j in range(len(CACHE_COLUMNS)))},
                         ${len(CACHE_COLUMNS)+2}, ${len(CACHE_COLUMNS)+3})""",
-            new_id, *insert_values, sort_order, 'original',
+            snapshot_id, *insert_values, sort_order, 'original',
         )
+    return len(cache_rows)
 
 
-async def create_version(model, articul, calc_sign, plan_id, raw_date, username, rows, status="draft", task_number=None) -> dict:
+async def _latest_snapshot(conn, model, articul, calc_sign, plan_id, task):
+    """Последний снимок источника ключа (или None). Пустое задание на входе
+    ищет и снимки с пустым заданием (легаси до 0032), как _task_match_sql."""
+    task_sql, task_params = _task_match_sql(task, 5)
+    return await conn.fetchrow(
+        f"""SELECT id, snapshot_no, source_hash, created_at
+            FROM cost_calc_versions
+            WHERE model=$1 AND articul=$2
+              AND calc_sign IS NOT DISTINCT FROM $3
+              AND plan_id IS NOT DISTINCT FROM $4
+              AND status = 'original'{task_sql}
+            ORDER BY task_number DESC, snapshot_no DESC NULLS LAST, id DESC
+            LIMIT 1""",
+        model, articul, calc_sign, plan_id, *task_params,
+    )
+
+
+async def _ensure_original_version(conn, model, articul, calc_sign, plan_id, username, task_number=None) -> int | None:
+    """Первый снимок источника по ключу — при первом реальном сохранении
+    калькуляции. Возвращает id ПОСЛЕДНЕГО снимка ключа (существующего или
+    только что созданного), None — если для ключа в кэше нет строк.
+
+    Дёшево намеренно: снимки платят только калькуляции, которые правят, а не
+    весь кэш на ~1М строк. Первый снимок отражает то, что лежит в кэше в момент
+    сохранения (с наложенным набором цен плана), а не исторический оригинал
+    MSSQL — компромисс, принятый при миграции 0026.
+
+    Ключ — (model, articul, calc_sign, plan_id, task_number) без "дата расчета"
+    (миграции 0027 и 0032): версия принадлежит заданию, а не дате пересчёта.
+    Последующие снимки создаёт обновление кэша (_snapshot_changed_sources).
+    """
+    task = (task_number or "").strip()
+    existing = await _latest_snapshot(conn, model, articul, calc_sign, plan_id, task)
+    if existing is not None:
+        return existing["id"]
+
+    date = await _current_cache_date(conn, model, articul, calc_sign, plan_id, task)
+    if date is None:
+        return None  # для ключа сейчас нет данных в кэше — снимать нечего
+
+    fp, _n = await _source_fingerprint(conn, model, articul, calc_sign, plan_id, task, date)
+    new_id = await conn.fetchval(
+        """INSERT INTO cost_calc_versions
+               (model, articul, calc_sign, plan_id, task_number, "дата расчета", version, status,
+                created_by, snapshot_no, source_hash)
+           VALUES ($1, $2, $3, $4, $5, $6, 0, 'original', $7, 1, $8)
+           ON CONFLICT (model, articul, calc_sign, plan_id, task_number, snapshot_no)
+               WHERE status = 'original'
+           DO NOTHING
+           RETURNING id""",
+        model, articul, calc_sign, plan_id, task, date, username, fp,
+    )
+    if new_id is None:
+        # Гонка двух первых сохранений: снимок уже сделал сосед.
+        existing = await _latest_snapshot(conn, model, articul, calc_sign, plan_id, task)
+        return existing["id"] if existing else None
+
+    await _insert_snapshot_rows(conn, new_id, model, articul, calc_sign, plan_id, task, date)
+    return new_id
+
+
+async def _snapshot_changed_sources(conn) -> int:
+    """После реимпорта кэша: новый снимок источника для каждого ключа, у
+    которого строки CostHistory отличаются от последнего снимка.
+
+    Вызывать ПОСЛЕ наложения наборов цен плана и ДО наложения версий — иначе
+    сравнивать будет нечего: версия уже заменит строки источника своими.
+
+    Снимки до миграции 0057 отпечатка не имеют. Чтобы на выкате не наплодить
+    снимков и признаков по всей базе, для них сравнивается только число строк:
+    совпало — отпечаток просто дописывается, отличается (как у задания 121884:
+    17 строк в снимке против 24 в источнике) — новый снимок.
+
+    Возвращает число созданных снимков.
+    """
+    keys = await conn.fetch(
+        """SELECT DISTINCT ON (model, articul, calc_sign, plan_id, task_number)
+                  id, snapshot_no, source_hash, model, articul, calc_sign, plan_id, task_number
+           FROM cost_calc_versions
+           WHERE status = 'original'
+           ORDER BY model, articul, calc_sign, plan_id, task_number,
+                    snapshot_no DESC NULLS LAST, id DESC"""
+    )
+    created = 0
+    for k in keys:
+        task = (k["task_number"] or "").strip()
+        table = await _calc_table(conn, k["model"], k["articul"], k["calc_sign"], k["plan_id"])
+        date = await _current_cache_date(
+            conn, k["model"], k["articul"], k["calc_sign"], k["plan_id"], task, table=table
+        )
+        if date is None:
+            continue  # калькуляция из кэша исчезла — снимать нечего
+        fp, n = await _source_fingerprint(
+            conn, k["model"], k["articul"], k["calc_sign"], k["plan_id"], task, date, table
+        )
+        if fp is None:
+            continue
+        if k["source_hash"] is None:
+            old_n = await conn.fetchval(
+                "SELECT count(*) FROM cost_calc_version_rows WHERE version_id = $1", k["id"]
+            )
+            if int(old_n or 0) == n:
+                await conn.execute(
+                    "UPDATE cost_calc_versions SET source_hash = $2 WHERE id = $1", k["id"], fp
+                )
+                continue
+        elif k["source_hash"] == fp:
+            continue
+
+        new_id = await conn.fetchval(
+            """INSERT INTO cost_calc_versions
+                   (model, articul, calc_sign, plan_id, task_number, "дата расчета", version, status,
+                    created_by, snapshot_no, source_hash)
+               VALUES ($1, $2, $3, $4, $5, $6, 0, 'original', 'refresh', $7, $8)
+               ON CONFLICT (model, articul, calc_sign, plan_id, task_number, snapshot_no)
+                   WHERE status = 'original'
+               DO NOTHING
+               RETURNING id""",
+            k["model"], k["articul"], k["calc_sign"], k["plan_id"], k["task_number"], date,
+            int(k["snapshot_no"] or 1) + 1, fp,
+        )
+        if new_id is None:
+            continue
+        await _insert_snapshot_rows(
+            conn, new_id, k["model"], k["articul"], k["calc_sign"], k["plan_id"], task, date
+        )
+        created += 1
+        log(logging.INFO, "новый снимок источника: строки CostHistory изменились",
+            model=k["model"], articul=k["articul"], calc_sign=k["calc_sign"],
+            plan_id=k["plan_id"], task_number=task, snapshot_no=int(k["snapshot_no"] or 1) + 1,
+            rows=n)
+    return created
+
+
+async def list_source_snapshots(conn, model, articul, calc_sign, plan_id, task_number=None) -> list[dict]:
+    """Снимки источника ключа, новые первыми. Для списка «Исходные данные» в
+    редакторе и для признака «источник изменился»."""
+    task_sql, task_params = _task_match_sql(task_number, 5, column="v.task_number")
+    rows = await conn.fetch(
+        f"""SELECT v.id, v.snapshot_no, v.created_at::text, v.created_by,
+                   v."дата расчета"::text AS calc_date,
+                   (SELECT count(*) FROM cost_calc_version_rows r WHERE r.version_id = v.id) AS rows_count
+            FROM cost_calc_versions v
+            WHERE v.model=$1 AND v.articul=$2
+              AND v.calc_sign IS NOT DISTINCT FROM $3
+              AND v.plan_id IS NOT DISTINCT FROM $4
+              AND v.status = 'original'{task_sql}
+            ORDER BY v.task_number DESC, v.snapshot_no DESC NULLS LAST, v.id DESC""",
+        model, articul, calc_sign, plan_id, *task_params,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_source_change_flags() -> dict[tuple[str, str, str, str, str], dict]:
+    """Ключи, у которых активная (pending/approved) версия сделана от снимка
+    старее последнего. Один запрос без параметров: таблица версий маленькая,
+    и матчить строки таблицы удобнее в Python, чем гонять батчи ключей.
+
+    Ключ словаря — (model, articul, calc_sign, plan_id, task_number), значения
+    приведены к trim-строкам, как в /aggregated. Легаси-версии с пустым
+    заданием попадают с task_number='' — вызывающий матчит их на любое задание
+    ключа.
+    """
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            """WITH latest AS (
+                   SELECT DISTINCT ON (model, articul, calc_sign, plan_id, task_number)
+                          id, snapshot_no, created_at, model, articul, calc_sign, plan_id, task_number
+                   FROM cost_calc_versions
+                   WHERE status = 'original'
+                   ORDER BY model, articul, calc_sign, plan_id, task_number,
+                            snapshot_no DESC NULLS LAST, id DESC
+               ),
+               active AS (
+                   SELECT DISTINCT ON (model, articul, calc_sign, plan_id, task_number)
+                          id, version, source_version_id, model, articul, calc_sign, plan_id, task_number
+                   FROM cost_calc_versions
+                   WHERE status IN ('pending', 'approved')
+                   ORDER BY model, articul, calc_sign, plan_id, task_number, created_at DESC
+               )
+               SELECT l.model, l.articul, l.calc_sign, l.plan_id, l.task_number,
+                      l.id AS latest_id, l.snapshot_no AS latest_no, l.created_at::text AS latest_at,
+                      a.version AS active_version,
+                      b.snapshot_no AS base_no, b.created_at::text AS base_at
+               FROM latest l
+               JOIN active a
+                 ON a.model = l.model AND a.articul = l.articul
+                AND a.calc_sign IS NOT DISTINCT FROM l.calc_sign
+                AND a.plan_id IS NOT DISTINCT FROM l.plan_id
+                AND a.task_number = l.task_number
+               LEFT JOIN cost_calc_versions b ON b.id = a.source_version_id
+               WHERE a.source_version_id IS NOT NULL
+                 AND a.source_version_id <> l.id"""
+        )
+    out: dict[tuple[str, str, str, str, str], dict] = {}
+    for r in rows:
+        key = (
+            str(r["model"] or "").strip(), str(r["articul"] or "").strip(),
+            str(r["calc_sign"] or "").strip(), str(r["plan_id"] or "").strip(),
+            str(r["task_number"] or "").strip(),
+        )
+        out[key] = {
+            "latest_no": r["latest_no"], "latest_at": r["latest_at"],
+            "active_version": r["active_version"],
+            "base_no": r["base_no"], "base_at": r["base_at"],
+        }
+    return out
+
+
+async def create_version(model, articul, calc_sign, plan_id, raw_date, username, rows, status="draft", task_number=None, source_version_id=None) -> dict:
     """Create a new version. If status='pending': applies rows to cache,
     archives previous pending versions for this key, resets PEO approval.
 
@@ -2774,11 +3041,29 @@ async def create_version(model, articul, calc_sign, plan_id, raw_date, username,
     cost_data_cache, а не из того, что прислал фронтенд (там может быть уже
     устаревшая дата, если источник успел пересчитать задание, пока была открыта
     форма).
+
+    *source_version_id* — снимок источника, от которого сделана версия
+    (миграция 0057). Фронт передаёт выбранный в редакторе снимок; если он не
+    передан или не относится к ключу — берётся последний снимок ключа.
     """
     task = (task_number or "").strip()
     async with pool().acquire() as conn:
         async with conn.transaction():
-            await _ensure_original_version(conn, model, articul, calc_sign, plan_id, username, task)
+            latest_snapshot_id = await _ensure_original_version(
+                conn, model, articul, calc_sign, plan_id, username, task
+            )
+            base_id = latest_snapshot_id
+            if source_version_id:
+                ok = await conn.fetchval(
+                    """SELECT 1 FROM cost_calc_versions
+                       WHERE id=$1 AND status='original'
+                         AND model=$2 AND articul=$3
+                         AND calc_sign IS NOT DISTINCT FROM $4
+                         AND plan_id IS NOT DISTINCT FROM $5""",
+                    int(source_version_id), model, articul, calc_sign, plan_id,
+                )
+                if ok:
+                    base_id = int(source_version_id)
             date = await _current_cache_date(conn, model, articul, calc_sign, plan_id, task)
             if date is None:
                 # для ключа сейчас нет строк в кэше — используем то, что прислал фронтенд
@@ -2797,11 +3082,11 @@ async def create_version(model, articul, calc_sign, plan_id, raw_date, username,
             version_id = await conn.fetchval(
                 """INSERT INTO cost_calc_versions
                    (model, articul, calc_sign, plan_id, task_number, "дата расчета", version,
-                    source_refreshed_at, created_by, status)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    source_refreshed_at, created_by, status, source_version_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                    RETURNING id""",
                 model, articul, calc_sign, plan_id, task, date, next_version,
-                source_refreshed_at, username, status,
+                source_refreshed_at, username, status, base_id,
             )
             col_names = CACHE_COLUMNS
             for row in rows:

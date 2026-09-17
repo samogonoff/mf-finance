@@ -626,7 +626,7 @@ def get_raw_cache_rows(model, articul, calc_sign, plan_id, date) -> dict:
     ]
     for r in filtered:
         r["change_type"] = "original"
-    return {"version_id": None, "rows": filtered}
+    return {"version_id": None, "snapshot_id": None, "snapshots": [], "rows": filtered}
 
 
 def list_versions(model, articul, calc_sign, plan_id, date) -> list[dict]:

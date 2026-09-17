@@ -156,6 +156,9 @@
             <span v-for="s in STAGE_LEGEND" :key="s.key" class="stage-legend-item">
               <span class="stage-badge" :class="'stage-' + s.key">{{ s.icon }}</span>{{ s.short }}
             </span>
+            <span class="stage-legend-item" title="CostHistory изменился после активной версии — в редакторе есть свежий снимок исходных данных">
+              <span class="stage-badge src-badge">🔄</span>источник изменился
+            </span>
           </span>
         </div>
 
@@ -860,6 +863,16 @@
                   :title="stageTitle(row)"
                   @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)"
                 >{{ rowStage(row).icon }}</span>
+                <!-- Источник изменился после активной версии (миграция 0057):
+                     CostHistory дополнил или пересчитал калькуляцию, а версия
+                     по-прежнему заменяет собой строки источника. Клик открывает
+                     редактор — там свежий снимок в списке «Исходные данные». -->
+                <span
+                  v-if="row._source_changed"
+                  class="stage-badge src-badge"
+                  :title="sourceChangedTitle(row)"
+                  @click.stop="openVersionEditor(row)"
+                >🔄</span>
               </td>
               </template>
             </tr>
@@ -1666,14 +1679,23 @@
             <label>Версия: </label>
             <select class="version-select editor-select"
                     :disabled="editingVersion.isEditing || loadingVersionData"
-                    :value="editingVersion.selectedVersionId ?? '__raw__'"
+                    :value="editingVersion.selectedVersionId ?? (editingVersion.selectedSnapshotId ? '__snap__' + editingVersion.selectedSnapshotId : '__raw__')"
                     @change="onVersionSelectChange($event)">
-              <option value="__raw__">Исходные данные</option>
+              <!-- Исходные данные — снимки источника (миграция 0057), новые
+                   первыми. Снимки неизменяемы: из любого можно только создать
+                   версию. Пока снимков нет — один пункт, живой кэш. -->
+              <template v-if="editingVersion.snapshots.length">
+                <option v-for="s in editingVersion.snapshots" :key="'s' + s.id" :value="'__snap__' + s.id">
+                  Исходные данные · снимок {{ s.snapshot_no }}<template v-if="s.created_at"> · {{ s.created_at.slice(0, 16) }}</template> · {{ s.rows_count }} стр.
+                </option>
+              </template>
+              <option v-else value="__raw__">Исходные данные</option>
               <option v-for="v in editingVersion.versions" :key="v.id" :value="v.id">
-                Версия {{ v.version }} · {{ v.status }}<template v-if="v.created_at"> · {{ v.created_at.slice(0, 16) }}</template>
+                Версия {{ v.version }} · {{ v.status }}<template v-if="v.created_at"> · {{ v.created_at.slice(0, 16) }}</template><template v-if="v.source_snapshot_no"> · от снимка {{ v.source_snapshot_no }}</template>
               </option>
             </select>
             <span v-if="currentVersionStatus" class="version-status-badge">{{ currentVersionStatus }}</span>
+            <span v-if="sourceChangedNote" class="version-status-badge src-changed-badge" :title="sourceChangedNote">🔄 {{ sourceChangedNote }}</span>
           </div>
           <div class="version-editor-toolbar">
             <button v-if="!editingVersion.isEditing" class="btn btn-sm btn-primary" :disabled="loadingVersionData || editingVersion._locked" @click="startEditing">✏️ Редактировать</button>
@@ -5486,6 +5508,12 @@ const editingVersion = ref<{
   brand_manager: string;
   rows: any[];
   versions: any[];
+  // Снимки источника (миграция 0057), новые первыми. Пусто — снимков ещё нет,
+  // «Исходные данные» читаются из живого кэша.
+  snapshots: any[];
+  // Какой снимок открыт как «Исходные данные»; он же уходит основанием в
+  // /create-version. null — живой кэш или открыта версия.
+  selectedSnapshotId: number | null;
   selectedVersionId: number | null;
   isEditing: boolean;
   version_id: number | null;
@@ -6040,7 +6068,7 @@ const openVersionEditor = async (row: any) => {
   });
   try {
     const [rawResp, versionsResp] = await Promise.all([
-      $fetch<{ version_id: number | null; rows: any[] }>(
+      $fetch<{ version_id: number | null; snapshot_id?: number | null; snapshots?: any[]; rows: any[] }>(
         `${apiBase.value}/api/cost/raw-data?${params}`,
         { headers: fetchHeaders.value }
       ),
@@ -6075,6 +6103,8 @@ const openVersionEditor = async (row: any) => {
       brand_manager: (r['Бренд-менеджер'] || '').toString().trim(),
       rows: initialRows.map((rr: any) => normalizeVersionRow(rr)),
       versions,
+      snapshots: rawResp.snapshots || [],
+      selectedSnapshotId: pending ? null : (rawResp.snapshot_id ?? null),
       selectedVersionId,
       isEditing: false,
       version_id: null,
@@ -6114,7 +6144,7 @@ const refreshVersions = async () => {
   }
 };
 
-const selectRawData = async () => {
+const selectRawData = async (snapshotId: number | null = null) => {
   if (!editingVersion.value) return;
   const ev = editingVersion.value;
   ev.selectedVersionId = null;
@@ -6128,12 +6158,15 @@ const selectRawData = async () => {
     date: ev.date,
     task_number: ev.task_number || '',
   });
+  if (snapshotId) params.set('snapshot_id', String(snapshotId));
   loadingVersionData.value = true;
   try {
-    const rawResp = await $fetch<{ version_id: number | null; rows: any[] }>(
+    const rawResp = await $fetch<{ version_id: number | null; snapshot_id?: number | null; snapshots?: any[]; rows: any[] }>(
       `${apiBase.value}/api/cost/raw-data?${params}`,
       { headers: fetchHeaders.value }
     );
+    ev.snapshots = rawResp.snapshots || [];
+    ev.selectedSnapshotId = rawResp.snapshot_id ?? null;
     ev.rows = (rawResp.rows || []).map((rr: any) => normalizeVersionRow(rr));
   } catch (e: any) {
     console.error('[cost] load raw data failed', e);
@@ -6147,6 +6180,7 @@ const selectVersion = async (versionId: number) => {
   if (!editingVersion.value || loadingVersionData.value) return;
   const ev = editingVersion.value;
   ev.selectedVersionId = versionId;
+  ev.selectedSnapshotId = null;
   ev.isEditing = false;
   ev.version_id = null;
   loadingVersionData.value = true;
@@ -6169,6 +6203,8 @@ const onVersionSelectChange = (event: Event) => {
   const value = (event.target as HTMLSelectElement).value;
   if (value === '__raw__') {
     selectRawData();
+  } else if (value.startsWith('__snap__')) {
+    selectRawData(parseInt(value.slice('__snap__'.length), 10));
   } else {
     selectVersion(parseInt(value, 10));
   }
@@ -6179,6 +6215,27 @@ const currentVersionStatus = computed(() => {
   if (editingVersion.value.selectedVersionId === null) return 'Исходные данные';
   const v = editingVersion.value.versions.find(vv => vv.id === editingVersion.value!.selectedVersionId);
   return v ? v.status : '';
+});
+
+// «Источник изменился» в редакторе (миграция 0057): открытая версия сделана от
+// снимка старее последнего, либо открыт не последний снимок. Подсказка, а не
+// действие — экономист сам открывает свежий снимок и делает от него версию.
+const sourceChangedNote = computed(() => {
+  const ev = editingVersion.value;
+  if (!ev || !ev.snapshots.length) return '';
+  const latest = ev.snapshots[0];
+  const when = latest.created_at ? ` от ${latest.created_at.slice(0, 16)}` : '';
+  if (ev.selectedVersionId !== null) {
+    const v = ev.versions.find((vv: any) => vv.id === ev.selectedVersionId);
+    if (v && v.source_version_id && v.source_version_id !== latest.id) {
+      return `Источник изменился после этой версии: есть снимок ${latest.snapshot_no}${when}`;
+    }
+    return '';
+  }
+  if (ev.selectedSnapshotId && ev.selectedSnapshotId !== latest.id) {
+    return `Есть более свежий снимок ${latest.snapshot_no}${when}`;
+  }
+  return '';
 });
 
 const startEditing = () => {
@@ -6236,6 +6293,7 @@ const saveDraft = async () => {
           username: username || 'system',
           rows: ev.rows,
           status: 'draft',
+          source_version_id: ev.selectedSnapshotId,
         }),
       });
       if (!resp.ok) {
@@ -6285,6 +6343,7 @@ const submitDraft = async () => {
           username: username || 'system',
           rows: ev.rows,
           status: 'pending',
+          source_version_id: ev.selectedSnapshotId,
         }),
       });
       if (!resp.ok) {
@@ -7231,7 +7290,17 @@ const STAGE_LEGEND: StageInfo[] = [
 const STAGE_NONE: StageInfo = { key: 'none', icon: '⚪', label: 'Ещё не согласована', short: 'нет статуса' };
 const STAGE_LEGEND_TEXT = 'Этапы прохождения калькуляции:\n' +
   STAGE_LEGEND.map((s) => `${s.icon} ${s.label}`).join('\n') +
-  `\n${STAGE_NONE.icon} ${STAGE_NONE.label}`;
+  `\n${STAGE_NONE.icon} ${STAGE_NONE.label}` +
+  '\n🔄 Источник (CostHistory) изменился после активной версии — посмотрите свежий снимок в редакторе';
+
+/** Подсказка значка «источник изменился» (миграция 0057). */
+function sourceChangedTitle(row: any): string {
+  const fmt = (s: any) => (s ? String(s).slice(0, 16).replace('T', ' ') : '');
+  const latest = row?._source_latest_no ? `снимок ${row._source_latest_no}${row._source_latest_at ? ' от ' + fmt(row._source_latest_at) : ''}` : 'новый снимок';
+  const base = row?._source_base_no ? `снимка ${row._source_base_no}${row._source_base_at ? ' от ' + fmt(row._source_base_at) : ''}` : 'более раннего снимка';
+  const ver = row?._source_active_version ? `Версия ${row._source_active_version}` : 'Активная версия';
+  return `Источник изменился: есть ${latest}. ${ver} сделана от ${base}. Откройте редактор и посмотрите свежие исходные данные.`;
+}
 
 function rowStage(row: any): StageInfo {
   if (!row) return STAGE_NONE;
@@ -10049,6 +10118,12 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .stage-legend { display:inline-flex; flex-wrap:wrap; align-items:center; gap: var(--sp-3, 10px); font-size: var(--fs-xs); color: var(--text-muted); cursor: help; }
 .stage-legend-item { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
 .stage-legend .stage-badge { min-width:18px; height:18px; font-size:11px; }
+/* «Источник изменился» (миграция 0057) — второй значок в колонке этапа,
+   поменьше основного, чтобы оба уместились в 48px. */
+.src-badge { min-width:18px; height:18px; font-size:11px; margin-left:2px; cursor:pointer;
+  background: color-mix(in srgb, #0ea5e9 18%, transparent); }
+.src-changed-badge { background: color-mix(in srgb, #0ea5e9 18%, transparent); color: #0369a1;
+  max-width: 420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor: help; }
 
 /* Отметка «нужна замена артикула» (пожелание № 4) */
 .col-replace { text-align:center; }
