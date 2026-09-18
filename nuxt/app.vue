@@ -73,7 +73,7 @@
           <Icon name="lucide:menu" />
         </button>
 
-        <EntitySwitcher />
+        <WorkspaceSwitcher />
 
         <div class="topbar-breadcrumbs">
           <span class="crumb-muted">Finance</span>

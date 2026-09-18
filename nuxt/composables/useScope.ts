@@ -10,7 +10,7 @@
  * проверки сводятся к простому includes().
  */
 
-type Scope = "finance" | "cost" | "analytics" | "admin" | "plans";
+type Scope = "finance" | "cost" | "analytics" | "admin" | "plans" | "budget";
 
 const SCOPE_ROLES: Record<Scope, string[]> = {
   admin: ["ROLE_ADMIN"],
@@ -19,7 +19,11 @@ const SCOPE_ROLES: Record<Scope, string[]> = {
   analytics: ["ROLE_ADMIN", "ROLE_FINANCE_ADMIN"],
   // Тактические планы — отдельный гейт; ROLE_PLANS_ADMIN ⊇ ROLE_PLANS_USER
   // разворачивается на бэке (auth.ExpandRoles), /api/auth/me отдаёт эффективный набор.
-  plans: ["ROLE_ADMIN", "ROLE_PLANS_ADMIN", "ROLE_PLANS_USER"]
+  plans: ["ROLE_ADMIN", "ROLE_PLANS_ADMIN", "ROLE_PLANS_USER"],
+  // Бюджетирование — обособленный контур в своём репозитории (/budget/).
+  // Здесь только видимость пункта в шапке; доступ к API раздела решает
+  // nginx-гейт auth_request → GET /api/auth/check?role=ROLE_BUDGET.
+  budget: ["ROLE_ADMIN", "ROLE_BUDGET_ADMIN", "ROLE_BUDGET"]
 };
 
 export const useScope = () => {

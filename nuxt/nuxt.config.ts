@@ -28,6 +28,10 @@ export default defineNuxtConfig({
     public: {
       apiBase: process.env.NUXT_PUBLIC_API_BASE || "http://api.finance.local",
       mpUrl: process.env.NUXT_PUBLIC_MP_URL || "https://mp.local",
+      // Раздел «Бюджетирование» — обособленный контур за nginx (/budget/).
+      // Пусто → пункт в переключателе разделов скрыт: пока контур не поднят,
+      // переход давал бы только 502.
+      budgetEnabled: process.env.NUXT_PUBLIC_BUDGET_ENABLED === "1",
       b24AuthUrl:
         process.env.NUXT_PUBLIC_B24_AUTH_URL ||
         "https://mfportal.by/oauth/authorize/",
