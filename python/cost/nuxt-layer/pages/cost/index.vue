@@ -284,12 +284,16 @@
         <button
           v-if="can('cost:approve') || can('cost:peo_mark') || can('cost:edit_price')"
           class="btn btn-primary"
-          :disabled="!changedRows.size || saving"
+          :disabled="!savableChanges.length || saving"
+          :title="heldNoPriceCount ? HELD_NO_PRICE_HINT : ''"
           @click="saveAllChanges"
         >
           <Icon name="lucide:save" />
-          <template v-if="changedRows.size">
-            {{ saving ? "Сохранение…" : `Сохранить изменения (${changedRows.size})` }}
+          <!-- Счётчик — по СОХРАНЯЕМЫМ строкам, а не по всем изменённым: строки
+               с прочерком в розничной цене не уходят на сервер, и обещать их в
+               подписи значит обмануть — сохранится меньше, чем на кнопке. -->
+          <template v-if="savableChanges.length">
+            {{ saving ? "Сохранение…" : `Сохранить изменения (${savableChanges.length})` }}
           </template>
           <template v-else>Сохранить изменения</template>
         </button>
@@ -301,6 +305,13 @@
           <Icon name="lucide:undo-2" />
           Сбросить введённые значения
         </button>
+        <!-- Видимая подсказка, а не только title на кнопке: когда ВСЕ правки
+             придержаны, кнопка гаснет, а подсказку на неактивной кнопке браузер
+             показывает не всегда — человек видел бы мёртвую кнопку без причины. -->
+        <span v-if="heldNoPriceCount" class="held-no-price" :title="HELD_NO_PRICE_HINT">
+          <Icon name="lucide:info" />
+          Строк с прочерком в розничной цене: {{ heldNoPriceCount }} — не сохраняются
+        </span>
       </div>
     </div>
 
@@ -5474,6 +5485,43 @@ const calcRowKey = (row: any): string => [
 const changedRows = reactive<Map<string, any>>(new Map());
 const saving = ref(false);
 
+/** Есть ли у строки розничная цена, то есть НЕ прочерк.
+ *
+ * Критерий ровно тот же, по которому селект розничной цены показывает «—»:
+ * `Number(...) || ''` схлопывает 0, null, '' и NaN в пустой пункт. Поэтому
+ * `!Number(...)` — это буквально «пользователь видит прочерк», а не догадка. */
+const hasRetailPrice = (row: any): boolean =>
+  !!Number(row?.['avg_Розничная цена по уровню, руб.']);
+
+/** Правки, которые есть смысл отправлять на сервер (просьба заказчика 18.09.2026).
+ *
+ * Строка без розничной цены — не заявка: согласовывать ПЭО там нечего, а сама
+ * запись в cost_price_pending вредна. Она блокирует строку бренд-менеджеру
+ * (_lock_reason='pending_changes'), перекрывает нулём реальную цену в выдаче,
+ * зажигает синий кружок «цена установлена» и, попав на уже рассмотренную
+ * заявку, стирает ON CONFLICT'ом отметку ПЭО (reviewed_by/reviewed_at).
+ *
+ * Отсекаем именно ЗДЕСЬ, на выходе, а не при записи в changedRows: список
+ * изменённых строк работает ещё и щитом для введённых значений — loadData
+ * чистит priceRF/KZ/UZ/comments у строк, которых нет ни в выдаче, ни в нём.
+ * Перестань мы отмечать такие строки — бренд-менеджер терял бы введённые цены
+ * РФ/КЗ/УЗ при первой же смене фильтра, а он должен править их дальше. */
+const savableChanges = computed(() =>
+  Array.from(changedRows.entries()).filter(([, row]) => hasRetailPrice(row))
+);
+
+/** Сколько правок придержано из-за прочерка. Это СОСТОЯНИЕ таблицы, а не итог
+ *  последнего сохранения: такие строки остаются отмеченными, пока по ним не
+ *  выберут цену или не нажмут «Сбросить введённые значения». Показываем и
+ *  подсказкой у кнопки, и припиской в сообщении после сохранения — молча
+ *  исчезнувшие строки читаются как «сохранение съело ввод». */
+const heldNoPriceCount = computed(() => changedRows.size - savableChanges.value.length);
+
+const HELD_NO_PRICE_HINT =
+  'Пока в розничной цене прочерк, заявка не создаётся: согласовывать ПЭО нечего, '
+  + 'а строка остаётся доступной для редактирования. Выберите цену — строка попадёт '
+  + 'в сохранение. Убрать отметку целиком — «Сбросить введённые значения».';
+
 function discardChanges() {
   changedRows.clear();
   loadData();
@@ -6752,10 +6800,14 @@ const onMarkupSelect = async (row: any, markupValue: string) => {
 };
 
 const saveAllChanges = async () => {
-  if (!changedRows.size) return;
+  if (!savableChanges.value.length) return;
   saving.value = true;
   try {
-    const changes = Array.from(changedRows.entries()).map(([key, row]) => {
+    // Снимок на момент отправки: computed пересчитается, пока идёт запрос, а
+    // разбирать ответ надо по тому набору, который реально ушёл.
+    const sent = savableChanges.value;
+    const heldCount = heldNoPriceCount.value;
+    const changes = sent.map(([key, row]) => {
       return {
         model: row["Модель"],
         articul: row["Артикул"],
@@ -6818,17 +6870,30 @@ const saveAllChanges = async () => {
         (f.calc_sign ?? '').toString().trim(),
       ].join(''))
     );
+    // Убираем ТОЛЬКО то, что действительно отправляли и что не вернулось
+    // ошибкой. Строки с прочерком не отправлялись — они обязаны остаться в
+    // changedRows, иначе loadData вычистит введённые по ним цены РФ/КЗ/УЗ и
+    // комментарий при первой же смене фильтра.
+    const sentKeys = new Set(sent.map(([key]) => key));
     for (const [key, row] of Array.from(changedRows.entries())) {
-      if (!failedKeys.has(calcRowKey(row))) changedRows.delete(key);
+      if (sentKeys.has(key) && !failedKeys.has(calcRowKey(row))) changedRows.delete(key);
     }
+    // Формулировка — СОСТОЯНИЕ, а не итог попытки: придержанные строки остаются
+    // отмеченными и после сохранения, поэтому «не отправлено N» повторялось бы
+    // из раза в раз и читалось как новая потеря.
+    const heldNote = heldCount
+      ? `\nОстаётся строк с прочерком в розничной цене: ${heldCount}. `
+        + 'Заявка по ним не создаётся, они доступны для редактирования.'
+      : '';
     if (result.success) {
-      alert(`Сохранено ${result.count} записей${result.mock ? " (mock-режим)" : ""}`);
+      alert(`Сохранено ${result.count} записей${result.mock ? " (mock-режим)" : ""}${heldNote}`);
     } else {
       lastError.value = result.error || "Не удалось сохранить изменения";
       alert(
         `Сохранено ${result.count} записей, не сохранено ${result.failed?.length ?? 0}.
 `
         + "Несохранённые строки остались отмеченными — можно нажать «Сохранить изменения» ещё раз."
+        + heldNote
       );
     }
   } catch (e: any) {
@@ -10116,6 +10181,10 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .stage-none     { background: transparent; opacity: 0.7; }
 
 .stage-legend { display:inline-flex; flex-wrap:wrap; align-items:center; gap: var(--sp-3, 10px); font-size: var(--fs-xs); color: var(--text-muted); cursor: help; }
+/* Подсказка о придержанных строках (прочерк в розничной цене) — рядом с
+   кнопкой сохранения, видима и когда кнопка неактивна. */
+.held-no-price { display:inline-flex; align-items:center; gap:6px; font-size: var(--fs-xs);
+  color: var(--text-muted); cursor: help; white-space: nowrap; }
 .stage-legend-item { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
 .stage-legend .stage-badge { min-width:18px; height:18px; font-size:11px; }
 /* «Источник изменился» (миграция 0057) — второй значок в колонке этапа,
