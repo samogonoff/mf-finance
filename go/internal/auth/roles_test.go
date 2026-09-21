@@ -26,7 +26,7 @@ func TestExpandRoles_AdminExpandsFullTree(t *testing.T) {
 	got := ExpandRoles([]string{RoleAdmin})
 	want := []string{
 		RoleAdmin, RoleCostAdmin, RoleCostUser, RoleFinanceAdmin,
-		RolePlansAdmin, RolePlansUser, RoleUser,
+		RolePlansAdmin, RolePlansUser, RoleBudgetAdmin, RoleBudgetUser, RoleUser,
 	}
 	sort.Strings(want)
 
@@ -82,6 +82,41 @@ func TestExpandRoles_FinanceAdminDoesNotImplyCost(t *testing.T) {
 	}
 	if !contains(got, RoleFinanceAdmin) || !contains(got, RoleUser) {
 		t.Errorf("ROLE_FINANCE_ADMIN must contain itself and ROLE_USER, got %v", got)
+	}
+}
+
+func TestExpandRoles_BudgetAdminExpandsToBudgetUser(t *testing.T) {
+	got := ExpandRoles([]string{RoleBudgetAdmin})
+	want := []string{RoleBudgetAdmin, RoleBudgetUser, RoleUser}
+	sort.Strings(want)
+
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ROLE_BUDGET_ADMIN should expand to ROLE_BUDGET + ROLE_USER\n want %v\n  got %v", want, got)
+	}
+}
+
+// Инвариант nginx-гейта раздела «Бюджетирование»: подзапрос auth_request
+// спрашивает именно ROLE_BUDGET, поэтому у глобального админа она обязана быть
+// в РАЗВЁРНУТОМ наборе. В MP это было багом: гейт пропускал, контур отдавал 403.
+func TestHasRole_AdminReachesBudgetAccessRole(t *testing.T) {
+	admin := &User{Roles: []string{RoleAdmin}}
+	if !HasRole(admin, RoleBudgetUser) {
+		t.Errorf("ROLE_ADMIN must reach ROLE_BUDGET via hierarchy")
+	}
+	if !HasRole(admin, RoleBudgetAdmin) {
+		t.Errorf("ROLE_ADMIN must reach ROLE_BUDGET_ADMIN via hierarchy")
+	}
+
+	budget := &User{Roles: []string{RoleBudgetUser}}
+	if HasRole(budget, RoleBudgetAdmin) {
+		t.Errorf("ROLE_BUDGET must NOT imply ROLE_BUDGET_ADMIN (hierarchy goes top-down)")
+	}
+}
+
+func TestFilterAllowed_KeepsBudgetRoles(t *testing.T) {
+	got := FilterAllowed([]string{RoleBudgetAdmin, RoleBudgetUser})
+	if !contains(got, RoleBudgetAdmin) || !contains(got, RoleBudgetUser) {
+		t.Errorf("FilterAllowed must keep budget roles, got %v", got)
 	}
 }
 

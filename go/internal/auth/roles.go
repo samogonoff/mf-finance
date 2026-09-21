@@ -4,9 +4,16 @@ package auth
 // (PUT /api/admin/users/{id}/roles) — валидируется по белому списку Allowed.
 //
 // Иерархия:
-//   ROLE_ADMIN        ⊇ ROLE_COST_ADMIN, ROLE_FINANCE_ADMIN, ROLE_PLANS_ADMIN
+//   ROLE_ADMIN        ⊇ ROLE_COST_ADMIN, ROLE_FINANCE_ADMIN, ROLE_PLANS_ADMIN,
+//                       ROLE_BUDGET_ADMIN
 //   ROLE_COST_ADMIN   ⊇ ROLE_COST_USER
 //   ROLE_PLANS_ADMIN  ⊇ ROLE_PLANS_USER
+//   ROLE_BUDGET_ADMIN ⊇ ROLE_BUDGET
+//
+// BUDGET-роли — гейт обособленного контура «Бюджетирование» (/budget/, свой
+// репозиторий). Их проверяет nginx подзапросом auth_request к
+// GET /api/auth/check?role=ROLE_BUDGET; сам контур ролями не распоряжается,
+// см. docs/budget/PLAN-budget-contour.md.
 //
 // PLANS-роли — гейт доступа к модулю «Тактические планы» (docs/reports/plans/SPEC.md §5.1).
 // PLANS_ADMIN — конфигуратор (НСИ, маршруты, назначение ответственных);
@@ -24,16 +31,19 @@ const (
 	RoleFinanceAdmin = "ROLE_FINANCE_ADMIN"
 	RolePlansAdmin   = "ROLE_PLANS_ADMIN"
 	RolePlansUser    = "ROLE_PLANS_USER"
+	RoleBudgetAdmin  = "ROLE_BUDGET_ADMIN"
+	RoleBudgetUser   = "ROLE_BUDGET"
 )
 
 // Allowed — роли, которые админ может присваивать через API.
 // ROLE_USER сюда не входит — она ставится автоматически.
-var Allowed = []string{RoleAdmin, RoleCostAdmin, RoleCostUser, RoleFinanceAdmin, RolePlansAdmin, RolePlansUser}
+var Allowed = []string{RoleAdmin, RoleCostAdmin, RoleCostUser, RoleFinanceAdmin, RolePlansAdmin, RolePlansUser, RoleBudgetAdmin, RoleBudgetUser}
 
 var hierarchy = map[string][]string{
-	RoleAdmin:      {RoleCostAdmin, RoleFinanceAdmin, RolePlansAdmin},
-	RoleCostAdmin:  {RoleCostUser},
-	RolePlansAdmin: {RolePlansUser},
+	RoleAdmin:       {RoleCostAdmin, RoleFinanceAdmin, RolePlansAdmin, RoleBudgetAdmin},
+	RoleCostAdmin:   {RoleCostUser},
+	RolePlansAdmin:  {RolePlansUser},
+	RoleBudgetAdmin: {RoleBudgetUser},
 }
 
 // ExpandRoles разворачивает прямые роли по иерархии и всегда добавляет
