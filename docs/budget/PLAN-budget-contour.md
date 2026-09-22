@@ -88,7 +88,11 @@ api.finance.local  → go-api:8080    [как сейчас; сюда же ухо
   (иначе админ не выдаст их через `PUT /api/admin/users/{id}/roles`).
   Тесты в `roles_test.go`, включая инвариант «глобальный админ достаёт до
   `ROLE_BUDGET`» — в MP это было багом: гейт пропускал, контур отдавал 403.
-* ⬜ **Осталось:** эндпоинт **`GET /api/auth/check?role=ROLE_BUDGET`**:
+* ✅ **Сделано:** эндпоинт **`GET /api/auth/check?role=ROLE_BUDGET`**
+  (`internal/auth/handler.go`, тесты в `check_test.go`, контракт и конфиг
+  фасада — `docs/budget/gate.md`). Неизвестная роль отдаёт `403`, а не `500`:
+  наружу nginx пропускает как есть только 401 и 403. Требования, по которым
+  он сделан:
   * Bearer невалиден/отсутствует → `401`; роли нет → `403`; иначе `200`;
   * заголовки ответа: `X-Auth-User-Id`, `X-Auth-Email`, `X-Auth-Name`
     (**urlencoded** — в заголовке только ASCII, а имена кириллические),
@@ -100,6 +104,10 @@ api.finance.local  → go-api:8080    [как сейчас; сюда же ухо
 
 Файлы: `swarm/config/default_dev.conf`, `swarm/docker-compose.dev.yml`,
 `swarm/Makefile`, `.env.example`.
+
+Пункт 1 (nginx) ✅ сделан — см. `swarm/config/default_dev.conf` и
+`docs/budget/gate.md`; конфиг прогнан на стенде с заглушками. Пункты 2–4
+(сервис `budget-app` в dev-compose, цели Makefile, переменные) остаются.
 
 1. В `server { server_name finance.local; }`:
    * `location = /_budget_auth` — `internal;`,
@@ -247,7 +255,7 @@ GET /api/app/users?q=                      поиск среди заведён�
 ## 4. Порядок и зависимости
 
 ```
-Ф1 (Go: роли ✅ + /api/auth/check)
+Ф1 (Go: роли ✅ + /api/auth/check ✅)
   └─► Ф2 (nginx dev + compose)  ─┬─► Ф4 (фронт контура)
         Ф3 (репо + FastAPI)  ────┘
                                   └─► Ф7 (прод; заявку DevOps — сразу после Ф2)

@@ -214,6 +214,20 @@ func TestFilterAllowed_EmptyInputEmptyOutput(t *testing.T) {
 	}
 }
 
+func TestKnownRole(t *testing.T) {
+	for _, r := range append([]string{RoleUser}, Allowed...) {
+		if !KnownRole(r) {
+			t.Errorf("KnownRole(%q) must be true", r)
+		}
+	}
+	// Опечатка в конфиге гейта не должна выглядеть как «роль есть».
+	for _, r := range []string{"", "ROLE_BUDGE", "role_budget", "ROLE_BOGUS"} {
+		if KnownRole(r) {
+			t.Errorf("KnownRole(%q) must be false", r)
+		}
+	}
+}
+
 func contains(s []string, v string) bool {
 	for _, x := range s {
 		if x == v {

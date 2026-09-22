@@ -81,6 +81,24 @@ func HasRole(u *User, role string) bool {
 	return false
 }
 
+// KnownRole — знает ли система такую роль (Allowed + техническая ROLE_USER).
+//
+// Нужна гейту обособленных контуров: опечатка в `?role=` — ошибка конфига, и
+// отвечать на неё надо 403 («не пущу»), а не 200. Отдавать именно 4xx важно и
+// по второй причине: наружу nginx пропускает как есть только 401 и 403, любой
+// иной ответ auth_request он превращает в 500 для каждого пользователя раздела.
+func KnownRole(role string) bool {
+	if role == RoleUser {
+		return true
+	}
+	for _, r := range Allowed {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
 // FilterAllowed — оставляет из входного списка только роли из Allowed,
 // дедуплицирует. Используется при валидации входящего PUT /roles.
 func FilterAllowed(in []string) []string {

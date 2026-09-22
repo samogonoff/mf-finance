@@ -113,10 +113,14 @@ UUID-токены, не JWT. `POST /api/auth/refresh` есть в Finance (в MP
 **Иерархия ролей.** `go/internal/auth/roles.go` — единственный источник истины. Прямые роли в БД (`users.roles` JSONB) разворачиваются `ExpandRoles` на выдаче токена и в middleware. Иерархия:
 
 ```
-ROLE_ADMIN        ⊇ ROLE_COST_ADMIN, ROLE_FINANCE_ADMIN
+ROLE_ADMIN        ⊇ ROLE_COST_ADMIN, ROLE_FINANCE_ADMIN, ROLE_PLANS_ADMIN, ROLE_BUDGET_ADMIN
 ROLE_COST_ADMIN   ⊇ ROLE_COST_USER
+ROLE_PLANS_ADMIN  ⊇ ROLE_PLANS_USER
+ROLE_BUDGET_ADMIN ⊇ ROLE_BUDGET
 ROLE_USER         — всегда добавляется
 ```
+
+**Гейт обособленных контуров.** `GET /api/auth/check?role=…` — ручка не для браузера, её зовёт nginx (`auth_request`) перед проксированием в раздел `/budget/`: контур токен не проверяет, а доверяет заголовкам `X-Auth-*`, которые фасад берёт из ответа этой ручки. Отвечает только 200/401/403 — всё остальное nginx превращает в 500 у пользователя. Подробности и конфиг фасада — `docs/budget/gate.md`.
 
 В Nuxt `useScope.hasScope('admin'|'cost'|'finance'|'analytics')` сводится к `roles.includes(...)` — потому что `/api/auth/me` возвращает уже эффективный набор. Новый пользователь после B24-логина создаётся без прикладных ролей; админ присваивает их через `PUT /api/admin/users/{id}/roles` (валидация по белому списку `auth.Allowed`).
 
