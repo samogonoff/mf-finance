@@ -3,6 +3,9 @@
 Раздел `/budget/` — обособленный контур: свой репозиторий (`finance-projects/budget`),
 свой образ, свой FastAPI. Кабинет отвечает за одно — **кто пущен внутрь**.
 
+Полная схема контура и фазы работ — `PLAN-budget-contour.md`; здесь только
+гейт: ручка кабинета, роли и конфиг фасада.
+
 Контур токен не проверяет и прав не раздаёт. Решение принимает nginx-фасад
 подзапросом `auth_request` в Go-API, а контуру уходит готовая identity
 заголовками `X-Auth-*`. Заголовкам от клиента контур не верит: фасад ставит свои
@@ -54,7 +57,7 @@ resolver 127.0.0.11 ipv6=off valid=30s;
 set $budget_upstream http://budget-app:8080;   # swarm-сервис в сети finance_shared
 # Если фасад вне swarm-сети — через опубликованный порт: http://127.0.0.1:9014
 
-location = /internal/budget-auth {
+location = /_budget_auth {
     internal;
     proxy_pass http://go-api:8080/api/auth/check?role=ROLE_BUDGET;
     proxy_pass_request_body off;
@@ -63,7 +66,7 @@ location = /internal/budget-auth {
 }
 
 location /budget/api/ {
-    auth_request /internal/budget-auth;
+    auth_request /_budget_auth;
     auth_request_set $budget_user_id $upstream_http_x_auth_user_id;
     auth_request_set $budget_email   $upstream_http_x_auth_email;
     auth_request_set $budget_name    $upstream_http_x_auth_name;
@@ -148,6 +151,8 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
 (`POST /api/auth/refresh`), а на домене кабинета весь `/api/*` уходит в Nuxt, где
 этой ручки нет.
 
-Пункт раздела в переключателе кабинета — `nuxt/composables/useWorkspaces.ts`,
-синхронно со списком `WORKSPACES` в `frontend/shell.js` контура. Выдача ролей
-пользователям — `/admin/users`.
+Пункт раздела в шапке кабинета уже есть (`nuxt/composables/useWorkspaces.ts`,
+`WorkspaceSwitcher.vue`), но скрыт, пока не задан `NUXT_PUBLIC_BUDGET_ENABLED=1` —
+его включаем последним, когда гейт и контур на проде уже отвечают. Список
+разделов продублирован в `frontend/shell.js` контура: правим оба места.
+Выдача ролей пользователям — `/admin/users`.

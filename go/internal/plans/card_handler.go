@@ -2,8 +2,10 @@ package plans
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // HTTP-контур карточек форм: состояние, переходы, лист согласования, версии,
@@ -165,6 +167,16 @@ func (h *CardHandler) CardAction(w http.ResponseWriter, r *http.Request) {
 
 	next, err := h.svc.Action(r.Context(), id, body)
 	if err != nil {
+		// Отказ гейта отдаём перечнем причин, а не одной строкой: человеку нужно
+		// знать, что именно исправить, а не «форма не проходит проверки».
+		var blocked *SubmitBlockedError
+		if errors.As(err, &blocked) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"error":   blocked.Error(),
+				"reasons": blocked.Reasons,
+			})
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -261,6 +273,30 @@ func (h *CardHandler) CardPublishLog(w http.ResponseWriter, r *http.Request) {
 		list = []PublishLogItem{}
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+// PublishSandbox — GET /api/plans/publish-sandbox?target=&limit=.
+// Что реально легло в песочницу приёмника. Только админ процессов: это отладочный
+// срез «внешнего контура», в обычном процессе его смотреть незачем.
+func (h *CardHandler) PublishSandbox(w http.ResponseWriter, r *http.Request) {
+	p := h.principal(r)
+	if !p.PlansAdmin {
+		writeErr(w, http.StatusForbidden, "песочница приёмника доступна администратору процессов")
+		return
+	}
+	limit := 0
+	if n, err := atoiPositive(r.URL.Query().Get("limit")); err == nil {
+		limit = n
+	}
+	rows, err := h.svc.SandboxRows(r.Context(), strings.TrimSpace(r.URL.Query().Get("target")), limit)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []PublishRow{}
+	}
+	writeJSON(w, http.StatusOK, rows)
 }
 
 // FormRoute — GET /api/plans/forms/{formCode}/route.

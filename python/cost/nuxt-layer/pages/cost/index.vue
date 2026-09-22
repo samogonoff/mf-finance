@@ -48,6 +48,11 @@
           <button class="btn btn-ghost btn-sm" @click="resetFilters">
             <Icon name="lucide:x" /> Сбросить
           </button>
+          <!-- Справочник Лисы: смотреть, что заведено по модели. Кнопка здесь, а
+               не в таблице, — окно не связано с выбранной строкой. -->
+          <button class="btn btn-ghost btn-sm" @click="openCatalog">
+            <Icon name="lucide:book-open" /> Справочник моделей
+          </button>
           <button class="btn btn-primary btn-sm" :disabled="loading" @click="loadData">
             <Icon name="lucide:refresh-cw" />
             {{ loading ? "Загрузка…" : "Загрузить данные" }}
@@ -85,6 +90,25 @@
           </label>
 
           <label class="filter-checkbox"
+                 title="Показать только мультипаки — модель-артикулы, себестоимость которых собрана из калькуляций одиночек">
+            <input v-model="multipackOnly" type="checkbox" />
+            <span>
+              📦 Только мультипаки
+              <template v-if="multipackCount"> ({{ multipackCount }})</template>
+            </span>
+          </label>
+
+          <label class="filter-checkbox"
+                 title="Только закупная готовая продукция — калькуляции из портала БМ и расчёты по приходу.
+Фильтр серверный: выдача перезагрузится и придут только закупные строки (это быстро — сотня строк вместо всего периода).">
+            <input v-model="purchasedOnly" type="checkbox" @change="onPurchasedOnlyChange" />
+            <span>
+              🛒 Только закупная
+              <template v-if="purchasedCount"> ({{ purchasedCount }})</template>
+            </span>
+          </label>
+
+          <label class="filter-checkbox"
                  :title="hideDwhSentDefault
                    ? 'Для роли Калькулятор и ПЭО включён по умолчанию: в отправленных в DWH калькуляциях править и согласовывать нечего. Снять можно'
                    : 'Скрыть калькуляции, уже отправленные в DWH (📤)'">
@@ -100,6 +124,20 @@
             </span>
           </label>
 
+          <!-- Неактуальные модели/артикулы (⚫): по умолчанию видны серыми, галочка
+               убирает их из выдачи (просьба заказчика 09.09.2026). -->
+          <label class="filter-checkbox" title="Скрыть калькуляции моделей/артикулов со статусом «Неактуальная модель/артикул» (⚫, серые строки)">
+            <input
+              type="checkbox"
+              :checked="hideObsolete"
+              @change="setHideObsolete(($event.target as HTMLInputElement).checked)"
+            />
+            <span>
+              Не показывать неактуальные
+              <template v-if="obsoleteHiddenCount"> ({{ obsoleteHiddenCount }})</template>
+            </span>
+          </label>
+
           <label class="peo-filter-label">
             Статус согласования
             <select v-model="peoFilter" class="peo-filter-select" @change="onPeoFilterChange">
@@ -107,9 +145,21 @@
               <option value="approved">🟢 Согласовано</option>
               <option value="none">Не согласовано</option>
               <option value="rejected">🔴 Отклонено</option>
-              <option value="returned">🟠 Возврат на корректировку</option>
+              <option value="returned">🟡 Возврат на корректировку</option>
+              <option value="obsolete">⚫ Неактуальная модель/артикул</option>
             </select>
           </label>
+
+          <!-- Легенда семафора этапов (пожелание № 2): те же значки, что в
+               колонке «Этап», в порядке прохождения калькуляции. -->
+          <span class="stage-legend" :title="STAGE_LEGEND_TEXT">
+            <span v-for="s in STAGE_LEGEND" :key="s.key" class="stage-legend-item">
+              <span class="stage-badge" :class="'stage-' + s.key">{{ s.icon }}</span>{{ s.short }}
+            </span>
+            <span class="stage-legend-item" title="CostHistory изменился после активной версии — в редакторе есть свежий снимок исходных данных">
+              <span class="stage-badge src-badge">🔄</span>источник изменился
+            </span>
+          </span>
         </div>
 
         <div v-if="cascadeBusy" class="filters-overlay">
@@ -148,6 +198,24 @@
         <button class="btn btn-ghost btn-sm" :disabled="cacheRefreshing" @click="refreshCache">
           <Icon name="lucide:refresh-cw" />
           {{ cacheRefreshing ? 'Обновление…' : 'Обновить кеш' }}
+        </button>
+        <!-- Импорт КПСС закупной готовой продукции из портала БМ (пожелания № 6/7).
+             Право — как у остальных правок закупной: калькулятор, ПЭО, админ.
+             Калькулятор добавлен по просьбе заказчика 07.09.2026 — импорт создаёт
+             калькуляции КПСС, это его работа, а не согласование. Условие зеркалит
+             серверное _PURCHASE_EDIT в app/routes.py; расходиться им нельзя, иначе
+             кнопка обещает то, что сервер отклонит с 403. -->
+        <button v-if="can('cost:edit_materials') || can('cost:approve') || can('cost:admin')" class="btn btn-ghost btn-sm"
+                :disabled="purchaseImporting" @click="runPurchaseImport"
+                title="Забрать из портала БМ калькуляции КПСС закупной готовой продукции (планы «заказ готовой»)">
+          <Icon name="lucide:shopping-cart" />
+          {{ purchaseImporting ? 'Импорт…' : 'Импорт закупной' }}
+        </button>
+        <!-- ПФКСС закупной по приходу (пожелание № 7): инвойс + накладные →
+             калькуляции ПФКСС. Смотреть могут все, править — кто правит расчёты. -->
+        <button class="btn btn-ghost btn-sm" @click="showPurchaseInvoice = true"
+                title="Приход закупной продукции: инвойс, накладные, распределение и расчёт ПФКСС">
+          <Icon name="lucide:receipt" /> Приход (ПФКСС)
         </button>
         <!-- Полное обновление — только админу раздела: TRUNCATE + перезалив всей
              CostHistory, ~25 минут, и на это время запросы к кэшу встают.
@@ -190,6 +258,11 @@
         <button v-if="can('cost:approve')" class="btn btn-ghost" @click="navigateTo('/cost/approvals')">
           <Icon name="lucide:clipboard-check" /> Страница согласования
         </button>
+        <!-- Отчёт по карточкам 713 (пожелание № 8): читать могут все, кто видит
+             таблицу; правки — только из карточки. -->
+        <button class="btn btn-ghost" @click="navigateTo('/cost/reg713')" title="Изделия, отмеченные на согласование с исполкомом: цены, аналоги, решения">
+          <Icon name="lucide:landmark" /> Согласование 713
+        </button>
         <!-- Считаем по sortedRows, а не по totalAllRecords: выгружается
              отфильтрованный диапазон, и кнопка должна гаснуть, когда фильтры
              колонок не оставили ни одной строки. Число в подписи показываем
@@ -201,6 +274,12 @@
         </button>
         <button v-if="can('cost:admin')" class="btn btn-ghost" @click="navigateTo('/cost/admin/roles')">
           <Icon name="lucide:settings" /> Администрирование
+        </button>
+        <!-- Настройка провайдера модели — отдельное право: управление ролями и
+             распоряжение внешним оплачиваемым ключом это разные полномочия. -->
+        <button v-if="can('cost:llm_admin')" class="btn btn-ghost"
+                @click="navigateTo('/cost/admin/llm')">
+          <Icon name="lucide:brain" /> Модель ИИ
         </button>
         <button
           v-if="can('cost:approve') || can('cost:peo_mark') || can('cost:edit_price')"
@@ -429,6 +508,15 @@
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'price_uz' && isVisible('price_uz')" class="col-num">Цена УЗ<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'mp_price_rub' && isVisible('mp_price_rub')" class="col-num">Цена для МП, рос. руб.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'comment' && isVisible('comment')">Комментарий<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <!-- Пожелание № 4: отметка «нужна замена артикула», при установке
+                   уходит сообщение в Битрикс операторам (ЧНИ и остальное — разным людям). -->
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'replace' && isVisible('replace')" class="col-replace" :title="replaceHeaderTitle">Замена арт.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <!-- Статус «Неактуальная модель/артикул» (09.09.2026): ставят калькулятор и
+                   ПЭО, ключ — модель + артикул, строка серая, в «Этапе» ⚫. -->
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'obsolete' && isVisible('obsolete')" class="col-obsolete" :title="OBSOLETE_HEADER_TITLE">Неакт.<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <!-- Пожелание № 8: согласование цены с исполкомом по постановлению 713.
+                   Значок — состояние карточки, клик открывает её. -->
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'reg713' && isVisible('reg713')" class="col-reg713" :title="REG713_LEGEND">713<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'avg_wholesale' && isVisible('avg_wholesale') && !showUSD" class="col-num" :class="{ sorted: sortField === 'avg_Отпускная цена по уровню, руб' }" @click="toggleSort('avg_Отпускная цена по уровню, руб')">
                 Сред. опт (руб)<span v-if="sortField === 'avg_Отпускная цена по уровню, руб'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
@@ -527,7 +615,7 @@
                 Откл. маржи (%)<span v-if="sortField === 'calc_margin_deviation'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
-              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'peo' && isVisible('peo')" class="col-peo">ПЭО<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'peo' && isVisible('peo')" class="col-peo" :title="STAGE_LEGEND_TEXT">Этап<span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span></th>
               </template>
             </tr>
           </thead>
@@ -545,7 +633,7 @@
             <tr
               v-for="(row, idx) in pageRows"
               :key="idx"
-              :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
+              :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, 'row-obsolete': !!row.obsolete, selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
               @click="selectRow(getOriginalIndex(row))"
             >
               <td v-if="isVisible('peo_sel')" :class="stickyClasses('peo_sel')" :style="stickyStyle('peo_sel')" class="col-peo-sel">
@@ -577,11 +665,23 @@
                   @click.stop="can('cost:admin') ? openReopenModal(row) : null">{{ row._reopened ? '🔓' : '📤' }}</span>
                 <!-- Калькуляция, созданная в приложении копией с другим признаком
                      (пункт 1). Значок кликабелен для тех, кто вправе её удалить. -->
-                <span v-if="row.is_manual"
+                <span v-if="row.is_manual && !row.purchase_source"
                   class="state-badge state-badge--manual"
                   :class="{ 'state-badge--action': can('cost:calc_sign_copy') }"
                   :title="manualCopyTitle(row)"
                   @click.stop="can('cost:calc_sign_copy') ? openCalcCopyDelete(row) : null">⧉</span>
+                <!-- Закупная готовая продукция (пожелания № 6/7): калькуляция пришла
+                     из портала БМ или посчитана по приходу. Клик — раскладка
+                     себестоимости: цена, курс, логистика, таможня, сертификация. -->
+                <span v-if="row.purchase_source"
+                  class="state-badge state-badge--purchase state-badge--action"
+                  :title="purchaseTitle(row)"
+                  @click.stop="openPurchaseDetail(row)">🛒</span>
+                <!-- Мультипак: продаётся как одна единица, себестоимость собрана
+                     из калькуляций одиночек. Состав виден в редакторе расчёта. -->
+                <span v-if="row.is_multipack"
+                  class="state-badge state-badge--multipack"
+                  title="Мультипак: себестоимость собрана из калькуляций одиночек. Состав — в редакторе расчёта">📦</span>
                 <button class="btn-details" @click.stop="openDetails(row)">🔍</button>
                 <!-- Право проверяем и здесь: без cost:edit_materials сервер
                      отклоняет сохранение (403), то есть кнопка обещала то, чего
@@ -685,6 +785,42 @@
                   @input="onCommentInput(row, ($event.target as HTMLInputElement).value)"
                 />
               </td>
+              <td v-if="ck === 'replace' && isVisible('replace')" class="col-replace" :title="replaceTitle(row)">
+                <label class="replace-cell" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="!!row.replace_needed"
+                    :disabled="!canToggleReplace(row) || !!replaceBusy[calcRowKey(row)]"
+                    @change="toggleReplace(row, $event)"
+                  />
+                  <!-- ⚠ — уведомление не дошло; клик повторяет отправку без снятия
+                       отметки (снять её может только администратор). Клик по значку
+                       внутри label не должен переключать чекбокс — prevent. -->
+                  <span v-if="row.replace_needed"
+                    class="replace-mail"
+                    :class="[row.replace_notified_at ? 'replace-mail--ok' : 'replace-mail--err',
+                             { 'replace-mail--resend': !row.replace_notified_at && can('cost:articul_replace') }]"
+                    @click.stop.prevent="!row.replace_notified_at && can('cost:articul_replace') ? resendReplace(row) : null"
+                  >{{ row.replace_notified_at ? '✉' : '⚠' }}</span>
+                </label>
+              </td>
+              <td v-if="ck === 'obsolete' && isVisible('obsolete')" class="col-obsolete" :title="obsoleteTitle(row)">
+                <label class="replace-cell" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="!!row.obsolete"
+                    :disabled="!can('cost:obsolete') || !!obsoleteBusy[obsoleteKey(row)]"
+                    @change="toggleObsolete(row, $event)"
+                  />
+                </label>
+              </td>
+              <td v-if="ck === 'reg713' && isVisible('reg713')" class="col-reg713" :title="reg713Title(row)">
+                <span
+                  class="reg713-badge"
+                  :class="['reg713-' + reg713State(row).key, { 'reg713-readonly': !can('cost:reg713') }]"
+                  @click.stop="openReg713(row)"
+                >{{ reg713State(row).icon }}</span>
+              </td>
               <td v-if="ck === 'avg_wholesale' && isVisible('avg_wholesale') && !showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
               <td v-if="ck === 'price_level' && isVisible('price_level')">{{ row['Уровень цен'] || '—' }}</td>
               <td v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
@@ -715,14 +851,28 @@
               </td>
               <td v-if="ck === 'calc_margin_pct' && isVisible('calc_margin_pct')" class="col-num num col-metric col-metric-hl">{{ calc(row, showUSD).marginPct.toFixed(1) }}%</td>
               <td v-if="ck === 'calc_margin_deviation' && isVisible('calc_margin_deviation')" class="col-num num col-metric" :class="marginDevClass(row, showUSD)">{{ marginDevText(row, showUSD) }}</td>
+              <!-- Семафор этапа (пожелание № 2): один значок на строку показывает,
+                   где калькуляция в процессе — утверждена ПЭО, расценена БМ,
+                   вернулась на корректировку, отклонена или уже в DWH. Этап
+                   считает rowStage(); клик по-прежнему открывает окно ПЭО, пока
+                   строка не заблокирована. -->
               <td v-if="ck === 'peo' && isVisible('peo')" class="col-peo" :class="{ 'peo-readonly': !can('cost:approve') && !can('cost:peo_mark'), 'peo-active': approvalTarget === row }">
-                <span v-if="row.peo_status === 'approved'" class="peo-badge peo-approved" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Согласовано: ' + (row.peo_approved_by || '—') + (row.peo_approved_at ? ' ' + new Date(row.peo_approved_at).toLocaleDateString('ru-RU') : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟢</span>
-                <span v-else-if="row.peo_status === 'rejected'" class="peo-badge peo-rejected" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🔴</span>
-                <!-- Возврат на корректировку: не «отклонено», а «жду исправленную
-                     цену». Введённое бренд-менеджером значение при возврате
-                     сохраняется, поэтому строка остаётся с заполненной ценой. -->
-                <span v-else-if="row.peo_status === 'returned'" class="peo-badge peo-returned" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" :title="'Возврат на корректировку' + (row.peo_approved_by ? ': ' + row.peo_approved_by : '')" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">🟠</span>
-                <span v-else class="peo-badge peo-none" :class="{ 'peo-readonly': isRowLocked(row) || row._has_audit }" @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)">⚪</span>
+                <span
+                  class="peo-badge stage-badge"
+                  :class="['stage-' + rowStage(row).key, { 'peo-readonly': isRowLocked(row) || row._has_audit }]"
+                  :title="stageTitle(row)"
+                  @click.stop="(isRowLocked(row) || row._has_audit) ? null : openApprovalPopup(row)"
+                >{{ rowStage(row).icon }}</span>
+                <!-- Источник изменился после активной версии (миграция 0057):
+                     CostHistory дополнил или пересчитал калькуляцию, а версия
+                     по-прежнему заменяет собой строки источника. Клик открывает
+                     редактор — там свежий снимок в списке «Исходные данные». -->
+                <span
+                  v-if="row._source_changed"
+                  class="stage-badge src-badge"
+                  :title="sourceChangedTitle(row)"
+                  @click.stop="openVersionEditor(row)"
+                >🔄</span>
               </td>
               </template>
             </tr>
@@ -731,12 +881,162 @@
       </div>
     </section>
 
+    <!-- Справочник моделей (Gpartner S_MODELI) — только просмотр -->
+    <div v-if="showCatalogModal" class="modal-overlay" @click.self="showCatalogModal = false">
+      <div class="modal-content modal-wide" @click.stop>
+        <div class="modal-header">
+          <h2>
+            Справочник моделей
+            <span class="details-scope-hint">Лиса · S_MODELI</span>
+          </h2>
+          <div class="modal-header-actions">
+            <button class="modal-close" @click="showCatalogModal = false">×</button>
+          </div>
+        </div>
+
+        <!-- Поиск по тексту: подстрокой, применяется кнопкой или Enter -->
+        <div class="details-filters">
+          <label>Модель
+            <input v-model="catalogFilters.model" type="text" class="form-input"
+              placeholder="подстрока" @keydown.enter="loadCatalog(0)" />
+          </label>
+          <label>Артикул
+            <input v-model="catalogFilters.articul" type="text" class="form-input"
+              placeholder="подстрока" @keydown.enter="loadCatalog(0)" />
+          </label>
+          <label>Наименование
+            <input v-model="catalogFilters.naim" type="text" class="form-input"
+              placeholder="подстрока" @keydown.enter="loadCatalog(0)" />
+          </label>
+          <button class="btn btn-primary btn-sm" @click="loadCatalog(0)">Применить</button>
+          <button class="btn btn-ghost btn-sm" @click="resetCatalogFilters">Сбросить</button>
+        </div>
+
+        <!-- Бренд-менеджер и уровни номенклатуры. Каскад считается по списку
+             папок, загруженному при открытии окна, — без похода на сервер. -->
+        <div class="details-col-filters">
+          <div class="details-col-filter-item">
+            <label>Бренд-менеджер</label>
+            <CostMultiSelect
+              v-model="catalogFilters.brand_manager"
+              :options="catalogBrandManagerOptions"
+              placeholder="Все · бренд-менеджер"
+              @change="onCatalogScopeChange('brand_manager')"
+            />
+          </div>
+          <div v-for="lvl in CATALOG_LEVELS" :key="lvl.key" class="details-col-filter-item"
+            :class="{ locked: isCatalogLevelLocked(lvl.index) }">
+            <label>{{ lvl.label }}</label>
+            <CostMultiSelect
+              v-model="catalogFilters[lvl.key]"
+              :options="catalogLevelOptions[lvl.index] || []"
+              :placeholder="isCatalogLevelLocked(lvl.index) ? '—' : `Все · ${lvl.label.toLowerCase()}`"
+              :disabled="isCatalogLevelLocked(lvl.index)"
+              @change="onCatalogScopeChange(lvl.key)"
+            />
+          </div>
+          <a href="#" class="details-col-filter-reset" @click.prevent="resetCatalogFilters">Сбросить фильтры</a>
+        </div>
+
+        <div class="catalog-toolbar">
+          <label class="filter-checkbox" title="Добавить остальные поля представления — служебные ID, даты и логины правок">
+            <input v-model="catalogAllColumns" type="checkbox" @change="loadCatalog(catalogOffset)" />
+            <span>Все колонки</span>
+          </label>
+          <!-- На пару модель+артикул в справочнике бывает несколько записей:
+               модель заводят заново, старая остаётся. По умолчанию показываем
+               последнюю — иначе соседние строки читаются как дубли. -->
+          <label class="filter-checkbox" title="Показать все версии пары модель+артикул, а не только последнюю">
+            <input v-model="catalogAllVersions" type="checkbox" @change="loadCatalog(0)" />
+            <span>Все версии</span>
+          </label>
+
+          <div class="catalog-pager">
+            <span class="catalog-count">
+              <template v-if="catalogTotal">
+                {{ catalogOffset + 1 }}–{{ catalogOffset + catalogRows.length }} из {{ catalogTotal.toLocaleString('ru-RU') }}
+              </template>
+              <template v-else-if="!catalogLoading">Ничего не найдено</template>
+            </span>
+            <select v-model.number="catalogLimit" class="page-size-select" @change="loadCatalog(0)">
+              <option :value="50">50</option>
+              <option :value="100">100</option>
+              <option :value="200">200</option>
+              <option :value="500">500</option>
+            </select>
+            <button class="btn btn-ghost btn-sm" :disabled="catalogLoading || catalogOffset === 0"
+              @click="loadCatalog(Math.max(0, catalogOffset - catalogLimit))">‹ Назад</button>
+            <button class="btn btn-ghost btn-sm"
+              :disabled="catalogLoading || catalogOffset + catalogRows.length >= catalogTotal"
+              @click="loadCatalog(catalogOffset + catalogLimit)">Вперёд ›</button>
+          </div>
+        </div>
+
+        <div class="table-wrap details-table-wrap">
+          <div v-if="catalogLoading" class="muted" style="text-align:center;padding:24px">Загрузка справочника…</div>
+          <div v-else-if="catalogError" class="muted" style="text-align:center;padding:24px">{{ catalogError }}</div>
+          <div v-else-if="!catalogRows.length" class="muted" style="text-align:center;padding:24px">Нет данных</div>
+          <table v-else class="data-table compact">
+            <thead>
+              <tr>
+                <th v-for="col in catalogColumns" :key="col.key" :class="{ 'col-num': isCatalogNumericColumn(col.key) }">
+                  {{ col.label }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, i) in catalogRows" :key="i">
+                <td v-for="col in catalogColumns" :key="col.key"
+                  :class="isCatalogNumericColumn(col.key) ? 'col-num num' : null"
+                  :title="String(row[col.key] ?? '')">
+                  {{ formatCatalogValue(row[col.key]) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- Details Modal -->
     <div v-if="showDetailsModal" class="modal-overlay" @click.self="showDetailsModal = false">
       <div class="modal-content modal-wide" @click.stop>
         <div class="modal-header">
-          <h2>Детализация: {{ detailsModel }}</h2>
+          <h2>
+            Детализация: {{ detailsScopeKey || '—' }}
+            <span class="details-scope-hint">{{ DETAILS_SCOPE_HINT[detailsScope] }}</span>
+          </h2>
           <div class="modal-header-actions">
+            <!-- Собрать все модели одного артикула — режим для ЧНИ («Носки&Колготки»,
+                 Orodoro), где артикул один, а моделей под ним десятки. -->
+            <div class="details-scope-switch" role="group" aria-label="Что собирать в детализации">
+              <button
+                type="button"
+                :class="{ active: detailsScope === 'model' }"
+                title="Все артикулы этой модели"
+                @click="setDetailsScope('model')"
+              >Артикулы модели</button>
+              <button
+                type="button"
+                :class="{ active: detailsScope === 'articul' }"
+                :disabled="!detailsArticul"
+                :title="detailsArticul
+                  ? `Все модели артикула ${detailsArticul}`
+                  : 'У строки нет артикула'"
+                @click="setDetailsScope('articul')"
+              >Модели артикула</button>
+              <!-- Конструкция ЧНИ — часть модели до дефиса; собирает и модели,
+                   и артикулы одного кроя. -->
+              <button
+                type="button"
+                :class="{ active: detailsScope === 'construction' }"
+                :disabled="!detailsConstruction"
+                :title="detailsConstruction
+                  ? `Все модели и артикулы конструкции ${detailsConstruction}`
+                  : 'У строки нет модели'"
+                @click="setDetailsScope('construction')"
+              >Модели конструкции</button>
+            </div>
             <button class="btn btn-ghost btn-sm" @click="openDetailsInNewTab">Открыть в новом окне <Icon name="lucide:external-link" /></button>
             <button class="modal-close" @click="showDetailsModal = false">×</button>
           </div>
@@ -758,7 +1058,7 @@
         </div>
         <!-- Column filters row -->
         <div class="details-col-filters" v-if="detailsAllData.length">
-          <div v-for="cfg in detailsFilterConfig" :key="cfg.key" class="details-col-filter-item" :class="{ locked: isDetFilterLocked(cfg.key) }">
+          <div v-for="cfg in detailsFilterConfig" :key="cfg.key" v-show="!detailsHiddenFilterKeys.includes(cfg.key)" class="details-col-filter-item" :class="{ locked: isDetFilterLocked(cfg.key) }">
             <label>{{ cfg.label }}</label>
             <CostMultiSelect
               v-model="detailsColumnFilters[cfg.key]"
@@ -779,14 +1079,21 @@
               <tr>
                 <th>Дата</th>
                 <th>Пр.кальк</th>
-                <th>Артикул</th>
+                <!-- Столбцы меняющихся измерений: в режиме модели это артикул,
+                     в режиме артикула — модель, в режиме конструкции — оба.
+                     Фиксированное значение и так в заголовке окна, дублировать
+                     его в каждой строке незачем. -->
+                <th v-for="col in detailsKeyColumns" :key="col.field">{{ col.label }}</th>
                 <th>Наименование</th>
                 <th>№ задания</th>
                 <th>Дата выпуска</th>
+                <!-- Пожелание № 16: страна производства и минуты пошива в детализации. -->
+                <th>Страна</th>
                 <th class="col-num">Розница (руб)</th>
                 <th class="col-num">Опт (руб)</th>
                 <th class="col-num">Осн. мат.</th>
                 <th class="col-num">Вспом.</th>
+                <th class="col-num" title="Пошив, минуты (среднее по строкам калькуляции)">Пошив, мин</th>
                 <th class="col-num">Пошив</th>
                 <th class="col-num">Раскрой</th>
                 <th class="col-num">Декор</th>
@@ -801,14 +1108,16 @@
               <tr v-for="(d, i) in detailsFilteredData" :key="i">
                 <td>{{ formatDate(d['дата расчета']) }}</td>
                 <td>{{ d['Признак калькуляции'] || '—' }}</td>
-                <td>{{ d['Артикул'] || '—' }}</td>
+                <td v-for="col in detailsKeyColumns" :key="col.field">{{ d[col.field] || '—' }}</td>
                 <td>{{ d['Наименование модели'] || '—' }}</td>
                 <td>{{ d['Номер задания производства'] || '—' }}</td>
                 <td>{{ formatDate(d['Дата выпуска']) }}</td>
+                <td>{{ d['Страна пр-ва'] || '—' }}</td>
                 <td class="col-num num" :style="heatBg(d['Розничная цена, руб.'], 'Розничная цена, руб.')">{{ fmt(d['Розничная цена, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Оптовая цена, руб.'], 'Оптовая цена, руб.')">{{ fmt(d['Оптовая цена, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Осн. материалы, руб.'], 'Осн. материалы, руб.')">{{ fmt(d['Осн. материалы, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Вспом. материалы, руб.'], 'Вспом. материалы, руб.')">{{ fmt(d['Вспом. материалы, руб.']) }}</td>
+                <td class="col-num num" :style="heatBg(d['Пошив, минуты'], 'Пошив, минуты')">{{ fmt(d['Пошив, минуты']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Пошив, руб.'], 'Пошив, руб.')">{{ fmt(d['Пошив, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Раскрой, руб.'], 'Раскрой, руб.')">{{ fmt(d['Раскрой, руб.']) }}</td>
                 <td class="col-num num" :style="heatBg(d['Декор, руб.'], 'Декор, руб.')">{{ fmt(d['Декор, руб.']) }}</td>
@@ -820,7 +1129,11 @@
               </tr>
             </tbody>
           </table>
-          <div v-if="detailsFilteredData.length" class="details-count">Найдено строк: {{ detailsFilteredData.length }}</div>
+          <div v-if="detailsFilteredData.length" class="details-count">
+            Найдено строк: {{ detailsFilteredData.length
+            }}<template v-if="detailsScope !== 'model'"> · моделей: {{ detailsModelsCount }}</template
+            ><template v-if="detailsScope === 'construction'"> · артикулов: {{ detailsArticulsCount }}</template>
+          </div>
         </div>
       </div>
     </div>
@@ -1366,14 +1679,23 @@
             <label>Версия: </label>
             <select class="version-select editor-select"
                     :disabled="editingVersion.isEditing || loadingVersionData"
-                    :value="editingVersion.selectedVersionId ?? '__raw__'"
+                    :value="editingVersion.selectedVersionId ?? (editingVersion.selectedSnapshotId ? '__snap__' + editingVersion.selectedSnapshotId : '__raw__')"
                     @change="onVersionSelectChange($event)">
-              <option value="__raw__">Исходные данные</option>
+              <!-- Исходные данные — снимки источника (миграция 0057), новые
+                   первыми. Снимки неизменяемы: из любого можно только создать
+                   версию. Пока снимков нет — один пункт, живой кэш. -->
+              <template v-if="editingVersion.snapshots.length">
+                <option v-for="s in editingVersion.snapshots" :key="'s' + s.id" :value="'__snap__' + s.id">
+                  Исходные данные · снимок {{ s.snapshot_no }}<template v-if="s.created_at"> · {{ s.created_at.slice(0, 16) }}</template> · {{ s.rows_count }} стр.
+                </option>
+              </template>
+              <option v-else value="__raw__">Исходные данные</option>
               <option v-for="v in editingVersion.versions" :key="v.id" :value="v.id">
-                Версия {{ v.version }} · {{ v.status }}<template v-if="v.created_at"> · {{ v.created_at.slice(0, 16) }}</template>
+                Версия {{ v.version }} · {{ v.status }}<template v-if="v.created_at"> · {{ v.created_at.slice(0, 16) }}</template><template v-if="v.source_snapshot_no"> · от снимка {{ v.source_snapshot_no }}</template>
               </option>
             </select>
             <span v-if="currentVersionStatus" class="version-status-badge">{{ currentVersionStatus }}</span>
+            <span v-if="sourceChangedNote" class="version-status-badge src-changed-badge" :title="sourceChangedNote">🔄 {{ sourceChangedNote }}</span>
           </div>
           <div class="version-editor-toolbar">
             <button v-if="!editingVersion.isEditing" class="btn btn-sm btn-primary" :disabled="loadingVersionData || editingVersion._locked" @click="startEditing">✏️ Редактировать</button>
@@ -1386,6 +1708,157 @@
               <button class="btn btn-sm btn-ghost" @click="cancelEditing">Отмена</button>
             </template>
           </div>
+          <!-- ── Состав мультипака ────────────────────────────────────────
+               Пак продаётся как одна единица, а состоит из нескольких одиночек.
+               Себестоимость = Σ (количество × себестоимость одиночки) + упаковка,
+               добавленная руками обычной кнопкой «+ Добавить строку». -->
+          <div v-if="multipackState?.is_pack || can('cost:multipack')" class="mp-block">
+            <div class="mp-head">
+              <button class="mp-toggle" @click="mpExpanded = !mpExpanded">
+                {{ mpExpanded ? '▾' : '▸' }} Мультипак
+                <span v-if="multipackState?.is_pack" class="mp-count">
+                  {{ mpItems.length }} позиц. · {{ mpQtyTotal }} шт
+                </span>
+              </button>
+              <span class="spacer"></span>
+              <template v-if="multipackState?.is_pack">
+                <label class="mp-inline-field" title="Сколько единиц в паке по паспорту (3/5/7)">
+                  в паке, шт
+                  <input type="number" step="1" min="0" class="editor-input mp-size"
+                         :value="mpPackSize ?? ''"
+                         @input="(e: any) => { mpPackSize = e.target.value === '' ? null : parseFloat(e.target.value); mpDirty = true; }" />
+                </label>
+                <button class="btn btn-sm" :disabled="!can('cost:multipack')" @click="mpOpenSearch">
+                  + Добавить одиночку
+                </button>
+                <button class="btn btn-sm" :disabled="!can('cost:multipack') || !mpDirty || multipackSaving"
+                        @click="mpSaveComposition">
+                  {{ multipackSaving ? 'Сохранение…' : '💾 Сохранить состав' }}
+                </button>
+                <button class="btn btn-sm btn-primary"
+                        :disabled="!can('cost:multipack') || multipackBuilding || !mpItems.length || editingVersion._locked"
+                        title="Пересчитать строки состава по актуальной себестоимости одиночек. Упаковка сохранится."
+                        @click="mpBuild">
+                  {{ multipackBuilding ? 'Сборка…' : '⟳ Собрать строки' }}
+                </button>
+                <button class="btn btn-sm btn-ghost" :disabled="!can('cost:multipack') || multipackSaving"
+                        @click="mpDeleteComposition">Распустить</button>
+              </template>
+              <button v-else class="btn btn-sm" @click="mpMarkPack">
+                Сделать мультипаком
+              </button>
+            </div>
+
+            <template v-if="multipackState?.is_pack && mpExpanded">
+              <div v-if="multipackLoading" class="muted mp-empty">Загрузка состава…</div>
+              <div v-else-if="!mpItems.length" class="muted mp-empty">
+                Состав пуст. Добавьте калькуляции одиночек, из которых собирается пак.
+              </div>
+              <table v-else class="version-editor-table mp-table">
+                <thead>
+                  <tr>
+                    <th>Модель</th>
+                    <th>Артикул</th>
+                    <th>Наименование</th>
+                    <th>Взято из</th>
+                    <th class="col-num">Кол-во, шт</th>
+                    <th class="col-num">С/с за шт, руб.</th>
+                    <th class="col-num">Сумма, руб.</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(it, ii) in mpItems" :key="ii" :class="{ 'mp-row-missing': !it.found }">
+                    <td>{{ it.src_model }}</td>
+                    <td>{{ it.src_articul }}</td>
+                    <td class="muted">{{ it.model_name || '—' }}</td>
+                    <td class="mp-src">
+                      <template v-if="it.found">
+                        <!-- Что именно взято: этап и план могут отличаться от
+                             запрошенных, и молчаливого выбора здесь быть не должно. -->
+                        <span class="mp-pin" :class="{ 'mp-pin--on': it.pinned_calc_sign }"
+                              :title="it.pinned_calc_sign
+                                ? 'Этап зафиксирован — клик, чтобы следовать этапу пака'
+                                : 'Этап следует за паком — клик, чтобы зафиксировать'"
+                              @click="mpTogglePin(it, 'calc_sign')">
+                          {{ it.actual_calc_sign || it.src_calc_sign || '—' }}{{ it.pinned_calc_sign ? ' 📌' : '' }}
+                        </span>
+                        ·
+                        <span class="mp-pin" :class="{ 'mp-pin--on': it.pinned_plan_id }"
+                              :title="it.pinned_plan_id
+                                ? 'План зафиксирован — клик, чтобы брать самый свежий'
+                                : 'Берётся самый свежий план — клик, чтобы зафиксировать этот'"
+                              @click="mpTogglePin(it, 'plan_id')">
+                          план {{ it.actual_plan_id || it.src_plan_id || '—' }}{{ it.pinned_plan_id ? ' 📌' : '' }}
+                        </span>
+                        <span v-if="it.task" class="muted"> · зад. {{ it.task }}</span>
+                        <span v-if="(it.tasks_total || 1) > 1" class="mp-hint"
+                              :title="'В плане ' + it.tasks_total + ' заданий, взято самое дорогое — как при простановке цены'">
+                          из {{ it.tasks_total }} зад.
+                        </span>
+                      </template>
+                      <span v-else class="mp-missing-text">калькуляция не найдена</span>
+                    </td>
+                    <td class="col-num">
+                      <input type="number" step="0.001" min="0" class="editor-input col-num mp-qty"
+                             :disabled="!can('cost:multipack')"
+                             :value="it.qty" @input="mpOnQtyInput(it, $event)" />
+                    </td>
+                    <td class="col-num num">{{ fmtPrice4(it.unit_rub) }}</td>
+                    <td class="col-num num">{{ fmtPrice4((Number(it.qty) || 0) * (Number(it.unit_rub) || 0)) }}</td>
+                    <td>
+                      <button class="btn-mp-del" :disabled="!can('cost:multipack')"
+                              title="Убрать из состава" @click="mpRemoveItem(ii)">✕</button>
+                    </td>
+                  </tr>
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colspan="4" class="mp-total-label">Состав</td>
+                    <td class="col-num num">{{ mpQtyTotal }}</td>
+                    <td></td>
+                    <td class="col-num num">{{ fmtPrice4(mpItemsRub) }}</td>
+                    <td></td>
+                  </tr>
+                  <tr>
+                    <td colspan="6" class="mp-total-label">
+                      Упаковка и прочие строки, добавленные вручную
+                    </td>
+                    <td class="col-num num">{{ fmtPrice4(mpPackagingRub) }}</td>
+                    <td></td>
+                  </tr>
+                  <tr class="mp-total-row">
+                    <td colspan="6" class="mp-total-label">Себестоимость мультипака</td>
+                    <td class="col-num num">{{ fmtPrice4(mpItemsRub + mpPackagingRub) }}</td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+              </table>
+
+              <div v-if="mpDirty" class="mp-warn mp-warn--dirty">
+                Состав изменён и не сохранён. Сборка идёт по сохранённому составу —
+                нажмите «Сохранить состав».
+              </div>
+              <div v-if="multipackState?.stale?.length" class="mp-warn">
+                В источнике пересчитали одиночки после последней сборки:
+                <span v-for="(s, si) in multipackState.stale" :key="si">
+                  <template v-if="si">, </template>
+                  {{ s.src_model }} / {{ s.src_articul }}
+                  ({{ fmtPrice4(s.was_unit_rub) }} → {{ fmtPrice4(s.now_unit_rub) }} руб.)
+                </span>.
+                Нажмите «Собрать строки», чтобы обновить расчёт.
+              </div>
+              <div v-for="(w, wi) in (multipackState?.warnings || [])" :key="'w' + wi" class="mp-warn">
+                {{ w }}
+              </div>
+              <div v-if="multipackState?.last_build" class="mp-built muted">
+                Последняя сборка: {{ formatDate(multipackState.last_build.built_at) }},
+                {{ multipackState.last_build.built_by }} —
+                {{ fmtPrice4(multipackState.last_build.total_rub) }} руб.
+              </div>
+            </template>
+          </div>
+
           <!-- Явно говорим, что с чем сравниваем: иначе отсутствие колонок
                прошлых этапов не отличить от «функция не работает». -->
           <div class="stage-note">
@@ -1430,10 +1903,13 @@
               </thead>
               <tbody>
                 <tr v-for="(vr, vi) in editingVersion.rows" :key="vi"
-                  :class="{ 'row-added': vr.change_type === 'added', 'row-modified': vr.change_type === 'modified', 'row-zero-cost': isZeroCostRow(vr) }">
+                  :class="{ 'row-added': vr.change_type === 'added', 'row-modified': vr.change_type === 'modified', 'row-zero-cost': isZeroCostRow(vr), 'row-multipack': isMultipackRow(vr) }">
                   <td v-if="editingVersion.isEditing"><input type="checkbox" v-model="vr._selected" /></td>
+                  <!-- Строки состава мультипака руками не правятся: их значения
+                       приходят из калькуляций одиночек, и ручная правка пропала
+                       бы при следующей пересборке. Меняется состав, а не строка. -->
                   <td>
-                    <select v-if="editingVersion.isEditing && editingTypeCell === vi" :value="vr['Материал/операция/декор(призн)']" class="editor-select" autofocus @change="onVersionRowEdit(vr, $event, 'Материал/операция/декор(призн)')" @blur="editingTypeCell = -1">
+                    <select v-if="editingVersion.isEditing && editingTypeCell === vi && !isMultipackRow(vr)" :value="vr['Материал/операция/декор(призн)']" class="editor-select" autofocus @change="onVersionRowEdit(vr, $event, 'Материал/операция/декор(призн)')" @blur="editingTypeCell = -1">
                       <option value="Материал основной">Материал основной</option>
                       <option value="Материал вспомогательный">Материал вспомогательный</option>
                       <option value="Декор">Декор</option>
@@ -1441,14 +1917,17 @@
                       <option value="Раскрой">Раскрой</option>
                       <option value="Вязание">Вязание</option>
                     </select>
+                    <span v-else-if="isMultipackRow(vr)" class="type-tag" title="Строка из состава мультипака — правится через состав, не здесь">
+                      📦 {{ typeDisplayValue(vr) || '—' }}
+                    </span>
                     <span v-else-if="editingVersion.isEditing" class="type-tag clickable" @click="editingTypeCell = vi">{{ typeDisplayValue(vr) || '—' }}</span>
                     <span v-else>{{ typeDisplayValue(vr) }}</span>
                   </td>
-                  <td><input v-if="editingVersion.isEditing" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ nameDisplayValue(vr) || '—' }}</span></td>
-                  <td><input v-if="editingVersion.isEditing" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
+                  <td><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ nameDisplayValue(vr) || '—' }}</span></td>
+                  <td><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
                   <td>
                     <input
-                      v-if="editingVersion.isEditing"
+                      v-if="editingVersion.isEditing && !isMultipackRow(vr)"
                       :value="vr._propRaw"
                       class="editor-input"
                       placeholder="свойства через запятую"
@@ -1471,13 +1950,13 @@
                   <!-- У декоров нормы и цены материала в источнике нет: их стоимость
                        задаётся суммой в колонках «Сумма» ниже. Поля скрыты намеренно —
                        если их заполнить, произведение затрёт сумму декора. -->
-                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted" title="У декора нет нормы — стоимость задаётся суммой">—</span><input v-else-if="editingVersion.isEditing" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else>{{ fmtNorm(vr['Норма']) }}</span></td>
-                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing" :value="vr['цена материала, руб.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else>{{ fmtPrice4(vr['цена материала, руб.']) }}</span></td>
-                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing" :value="vr['цена материала, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ fmtPrice4(vr['цена материала, USD.']) }}</span></td>
-                  <td class="col-num"><input v-if="editingVersion.isEditing" :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /><span v-else>{{ vr['Курс на дату расчета'] }}</span></td>
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted" title="У декора нет нормы — стоимость задаётся суммой">—</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else :title="isMultipackRow(vr) ? 'Количество штук в паке — меняется в составе' : ''">{{ fmtNorm(vr['Норма']) }}</span></td>
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['цена материала, руб.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else :title="isMultipackRow(vr) ? 'Себестоимость статьи у одиночки за штуку' : ''">{{ fmtPrice4(vr['цена материала, руб.']) }}</span></td>
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['цена материала, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ fmtPrice4(vr['цена материала, USD.']) }}</span></td>
+                  <td class="col-num"><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /><span v-else>{{ vr['Курс на дату расчета'] }}</span></td>
                   <!-- Для декора сумма редактируется напрямую, для материала считается. -->
-                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing" :value="vr['Декоры, руб.']" type="number" step="0.0001" class="editor-input col-num" title="Стоимость декора — задаётся суммой" @input="onVersionRowEdit(vr, $event, 'Декоры, руб.')" /><span v-else>{{ fmtPrice4(versionRowSum(vr, 'руб.')) }}</span></td>
-                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing" :value="vr['Декоры, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Декоры, USD.')" /><span v-else>{{ fmtPrice4(versionRowSum(vr, 'USD.')) }}</span></td>
+                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Декоры, руб.']" type="number" step="0.0001" class="editor-input col-num" title="Стоимость декора — задаётся суммой" @input="onVersionRowEdit(vr, $event, 'Декоры, руб.')" /><span v-else>{{ fmtPrice4(isMultipackRow(vr) && isDecorRow(vr) ? vr['Декоры, руб.'] : versionRowSum(vr, 'руб.')) }}</span></td>
+                  <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Декоры, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Декоры, USD.')" /><span v-else>{{ fmtPrice4(isMultipackRow(vr) && isDecorRow(vr) ? vr['Декоры, USD.'] : versionRowSum(vr, 'USD.')) }}</span></td>
                   <td><input v-if="editingVersion.isEditing" :value="vr.row_comment" class="editor-input" placeholder="..." @input="onVersionRowEdit(vr, $event, 'row_comment')" /><span v-else>{{ vr.row_comment }}</span></td>
                 </tr>
               </tbody>
@@ -1511,6 +1990,111 @@
                 </table>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Поиск калькуляций-одиночек для состава мультипака.
+         Связь пак → одиночки из данных не выводится (у пака артикул
+         B3-263430A, у одиночки B2-124430A — общего корня нет), поэтому состав
+         набирается поиском вручную. -->
+    <Teleport to="body">
+      <div v-if="mpSearchOpen" class="modal-overlay" @click.self="mpSearchOpen = false">
+        <!-- modal-content даёт колонку с max-height 95vh; тело прокручивается
+             само, шапка и футер остаются на месте. Классы маленькой модалки
+             ПЭО (.approval-modal, 400px) здесь не годятся: таблица на восемь
+             колонок вылезала из неё и растягивалась за экран. -->
+        <div class="modal-content mp-search-modal" @click.stop>
+          <div class="modal-header">
+            <h2>Добавить одиночку в состав</h2>
+            <span class="mp-search-ctx">
+              пак {{ editingVersion?.model }} / {{ editingVersion?.articul }}
+              <template v-if="editingVersion?.calc_sign"> · этап {{ editingVersion.calc_sign }}</template>
+            </span>
+            <button class="modal-close" @click="mpSearchOpen = false">×</button>
+          </div>
+
+          <!-- Фильтры. Стартуют от пака: тот же этап, та же группа — иначе
+               первый список был бы «весь раздел по алфавиту». -->
+          <div class="mp-search-filters">
+            <input v-model="mpSearchQuery" class="mp-search-input"
+                   placeholder="Модель, артикул или наименование…"
+                   @keyup.enter="mpSearch" />
+            <label class="mp-search-field">
+              Этап
+              <select v-model="mpSearchSign" class="mp-search-select" @change="mpSearch">
+                <option value="">как у пака{{ editingVersion?.calc_sign ? ` (${editingVersion.calc_sign})` : '' }}</option>
+                <option v-for="s in MP_SEARCH_SIGNS" :key="s" :value="s">{{ s }}</option>
+                <option value="*">любой</option>
+              </select>
+            </label>
+            <label class="mp-search-field">
+              Группа (Level 01)
+              <select v-model="mpSearchLevel01" class="mp-search-select" @change="mpSearch">
+                <option value="">любая</option>
+                <option v-for="l in (filterOptions.level01 || [])" :key="l" :value="l">{{ l }}</option>
+              </select>
+            </label>
+            <label class="mp-search-field">
+              Бренд-менеджер
+              <select v-model="mpSearchBm" class="mp-search-select" @change="mpSearch">
+                <option value="">любой</option>
+                <option v-for="b in (filterOptions.brand_manager || [])" :key="b" :value="b">{{ b }}</option>
+              </select>
+            </label>
+            <button class="btn btn-sm btn-primary" :disabled="mpSearchLoading" @click="mpSearch">
+              {{ mpSearchLoading ? 'Поиск…' : 'Найти' }}
+            </button>
+            <button class="btn btn-sm btn-ghost" :disabled="mpSearchLoading" @click="mpResetSearchFilters">Сбросить</button>
+          </div>
+
+          <div class="mp-search-body">
+            <div v-if="mpSearchLoading" class="muted mp-empty">Поиск…</div>
+            <div v-else-if="!mpSearchRows.length" class="muted mp-empty">
+              Ничего не найдено. Проверьте фильтры этапа и группы: одиночки могут быть
+              на другом этапе. Мультипаки в список не попадают — пак в пак вкладывать нельзя.
+            </div>
+            <table v-else class="data-table compact mp-search-table">
+              <thead>
+                <tr>
+                  <th>Модель</th>
+                  <th>Артикул</th>
+                  <th>Наименование</th>
+                  <th>Группа</th>
+                  <th>Этап</th>
+                  <th>План</th>
+                  <th>Дата расчёта</th>
+                  <th class="col-num">С/с за шт, руб.</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(c, ci) in mpSearchRows" :key="ci">
+                  <td>{{ c.model }}</td>
+                  <td>{{ c.articul }}</td>
+                  <td class="muted">{{ c.model_name || '—' }}</td>
+                  <td class="muted">{{ c.level01 || '—' }}</td>
+                  <td>{{ c.calc_sign || '—' }}</td>
+                  <td>{{ c.plan_id || '—' }}<span v-if="(c.tasks_total || 1) > 1" class="mp-hint" :title="'В плане ' + c.tasks_total + ' заданий, показано самое дорогое'"> · {{ c.tasks_total }} зад.</span></td>
+                  <td>{{ formatDate(c.calc_date) }}</td>
+                  <td class="col-num num">{{ fmtPrice4(c.unit_rub) }}</td>
+                  <td>
+                    <button class="btn btn-sm" @click="mpAddCandidate(c)">Добавить</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="approval-modal-footer">
+            <span class="mp-search-status">
+              <template v-if="mpSearchTruncated">
+                Показаны первые {{ mpSearchLimit }} — уточните поиск или фильтры.
+              </template>
+              <template v-else>Найдено: {{ mpSearchRows.length }}.</template>
+              Количество штук задаётся в составе после добавления.
+            </span>
+            <button class="btn btn-ghost btn-sm" @click="mpSearchOpen = false">Закрыть</button>
           </div>
         </div>
       </div>
@@ -1598,6 +2182,185 @@
     </Teleport>
 
     <Teleport to="body">
+      <!-- Приход закупной продукции: инвойс → ПФКСС (пожелание № 7) -->
+      <CostPurchaseInvoice
+        v-if="showPurchaseInvoice"
+        :api-base="apiBase"
+        :headers="fetchHeaders"
+        :all-rows="allAggregated"
+        :visible-rows="sortedRows"
+        :can-edit="can('cost:edit_materials') || can('cost:approve') || can('cost:admin')"
+        @close="showPurchaseInvoice = false"
+      />
+
+      <!-- Раскладка себестоимости закупной готовой продукции (пожелания № 6/7) -->
+      <div v-if="purchaseTarget" class="modal-overlay" @click.self="purchaseTarget = null">
+        <div class="modal approval-modal purchase-modal">
+          <div class="modal-header">
+            <span>Себестоимость закупной продукции</span>
+            <span class="modal-subtitle">
+              {{ purchaseTarget['Модель'] || '—' }} / {{ purchaseTarget['Артикул'] || '—' }}
+              · {{ purchaseTarget['Признак калькуляции'] || '—' }} · план {{ purchaseTarget['PLAN_ID'] || '—' }}
+              <template v-if="purchaseTarget['Номер задания производства']"> · задание {{ purchaseTarget['Номер задания производства'] }}</template>
+            </span>
+            <button class="modal-close" @click="purchaseTarget = null">✕</button>
+          </div>
+          <div class="approval-body purchase-body">
+            <div v-if="purchaseLoading" class="muted">Загрузка…</div>
+            <div v-else-if="purchaseError" class="reg713-error">{{ purchaseError }}</div>
+            <template v-else-if="purchaseDetail">
+              <div class="muted purchase-src">
+                Источник: {{ purchaseDetail.current.source === 'portal' ? 'портал БМ (КПСС)' : 'приход по инвойсу (ПФКСС)' }}
+                · курс $ → BYN {{ fmt(purchaseDetail.current.usd_to_byn) }}
+                <template v-if="purchaseDetail.current.qty"> · количество {{ fmt(purchaseDetail.current.qty) }}</template>
+              </div>
+              <table class="purchase-table">
+                <thead>
+                  <tr>
+                    <th>Статья</th>
+                    <th class="col-num">$ / ед.</th>
+                    <th class="col-num">BYN / ед.</th>
+                    <template v-if="purchaseDetail.plan">
+                      <th class="col-num">План КПСС, BYN</th>
+                      <th class="col-num">Откл., BYN</th>
+                    </template>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="a in PURCHASE_ARTICLES" :key="a.key" :class="{ total: a.key === 'total' }">
+                    <td>{{ a.label }}</td>
+                    <td class="col-num num">{{ fmt(purchaseDetail.current[a.key + '_usd']) }}</td>
+                    <td class="col-num num">{{ fmt(purchaseDetail.current[a.key + '_byn']) }}</td>
+                    <template v-if="purchaseDetail.plan">
+                      <td class="col-num num">{{ fmt(purchaseDetail.plan[a.key + '_byn']) }}</td>
+                      <td class="col-num num" :class="devClass(purchaseDetail.current[a.key + '_byn'], purchaseDetail.plan[a.key + '_byn'])">
+                        {{ devText(purchaseDetail.current[a.key + '_byn'], purchaseDetail.plan[a.key + '_byn']) }}
+                      </td>
+                    </template>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="muted purchase-hint">
+                Розница {{ fmt(purchaseDetail.current.retail_byn) }} · опт {{ fmt(purchaseDetail.current.wholesale_byn) }}
+                <template v-if="purchaseDetail.current.source === 'portal' && purchaseDetail.current.snapshot?.portal?.reference_snapshot">
+                  · ставки портала: пошлина {{ purchaseDetail.current.snapshot.portal.reference_snapshot.duty_pct }} %,
+                  транспорт {{ purchaseDetail.current.snapshot.portal.reference_snapshot.transport_pct }} %,
+                  сертификация {{ purchaseDetail.current.snapshot.portal.reference_snapshot.certification_usd }} % + тесты {{ purchaseDetail.current.snapshot.portal.reference_snapshot.testing_usd }} %
+                </template>
+              </div>
+              <div class="muted purchase-hint">
+                В главной таблице вся себестоимость закупной показана одним итогом в «Основных материалах»; раскладка хранится здесь.
+              </div>
+            </template>
+            <div class="approval-actions">
+              <button class="btn btn-ghost" type="button" @click="purchaseTarget = null">Закрыть</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Карточка согласования по постановлению 713 (пожелание № 8) -->
+      <div v-if="reg713Target" class="modal-overlay" @click.self="closeReg713">
+        <div class="modal approval-modal reg713-modal">
+          <div class="modal-header">
+            <span>Согласование по постановлению 713</span>
+            <!-- Карточка одна на модель+артикул: признак и план в подзаголовке
+                 только сбивали бы с толку — решение действует на все. -->
+            <span class="modal-subtitle">
+              {{ reg713Target['Модель'] || '—' }} / {{ reg713Target['Артикул'] || '—' }}
+            </span>
+            <button class="modal-close" @click="closeReg713">✕</button>
+          </div>
+          <div class="approval-body reg713-body">
+            <div class="reg713-name muted">{{ reg713Target['Наименование модели'] || '' }}</div>
+
+            <label class="reg713-check">
+              <input type="checkbox" v-model="reg713Form.required" :disabled="!can('cost:reg713')" />
+              <span>Требуется согласование с исполкомом</span>
+            </label>
+
+            <div class="reg713-row">
+              <span class="approval-label">Вид:</span>
+              <label class="reg713-radio"><input type="radio" value="price_increase" v-model="reg713Form.kind" :disabled="!can('cost:reg713')" /> Повышение цены</label>
+              <label class="reg713-radio"><input type="radio" value="novelty" v-model="reg713Form.kind" :disabled="!can('cost:reg713')" /> Новинка</label>
+              <button v-if="reg713Form.kind" class="btn btn-ghost btn-sm" type="button" :disabled="!can('cost:reg713')" @click="reg713Form.kind = null">сбросить</button>
+            </div>
+
+            <div class="reg713-block">
+              <div class="reg713-block-title">Артикул аналога</div>
+              <div v-if="reg713Form.analog_articul" class="reg713-analog">
+                <div>
+                  <b>{{ reg713Form.analog_articul }}</b> / {{ reg713Form.analog_model || '—' }}
+                  <span class="muted">{{ reg713Form.analog_name || '' }}</span>
+                </div>
+                <button class="btn btn-ghost btn-sm" type="button" :disabled="!can('cost:reg713')" @click="clearReg713Analog">Сменить</button>
+              </div>
+              <div v-else class="reg713-search">
+                <input
+                  type="text"
+                  class="reg713-search-input"
+                  v-model="reg713Query"
+                  :disabled="!can('cost:reg713')"
+                  placeholder="Артикул, модель или наименование — от 2 символов"
+                  autocomplete="off"
+                  @input="onReg713QueryInput"
+                  @keydown.esc.prevent="reg713Results = []"
+                />
+                <div v-if="reg713Searching" class="muted reg713-hint">Ищу в справочнике…</div>
+                <div v-else-if="reg713Query.trim().length >= 2 && !reg713Results.length && reg713Searched" class="muted reg713-hint">Ничего не найдено</div>
+                <ul v-if="reg713Results.length" class="reg713-results">
+                  <li v-for="it in reg713Results" :key="it.item_id ?? (it.model + '|' + it.articul)" @click="pickReg713Analog(it)">
+                    <b>{{ it.articul }}</b> / {{ it.model }}
+                    <span class="muted">{{ it.name }}</span>
+                    <span v-if="it.archived" class="reg713-arch">архив</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div class="reg713-prices">
+                <div class="reg713-price">
+                  <span class="approval-label">Розница:</span>
+                  <input type="number" step="0.01" min="0" v-model="reg713Form.analog_retail" :disabled="!can('cost:reg713')" @change="reg713Form.analog_price_source = 'manual'" />
+                </div>
+                <div class="reg713-price">
+                  <span class="approval-label">Опт:</span>
+                  <input type="number" step="0.01" min="0" v-model="reg713Form.analog_wholesale" :disabled="!can('cost:reg713')" @change="reg713Form.analog_price_source = 'manual'" />
+                </div>
+                <button class="btn btn-ghost btn-sm" type="button" :disabled="!reg713Form.analog_articul || reg713PricesLoading || !can('cost:reg713')" @click="fetchReg713Prices" title="Подтянуть цены аналога заново: последняя калькуляция → утверждённая цена → плановая">
+                  {{ reg713PricesLoading ? 'Загрузка…' : 'Обновить цены' }}
+                </button>
+              </div>
+              <div class="muted reg713-hint">{{ reg713SourceText }}</div>
+            </div>
+
+            <div class="reg713-block">
+              <div class="reg713-block-title">Решение исполкома</div>
+              <div class="reg713-row">
+                <label class="reg713-radio"><input type="radio" :value="null" v-model="reg713Form.decision" :disabled="!can('cost:reg713')" /> Не рассмотрено</label>
+                <label class="reg713-radio"><input type="radio" value="approved" v-model="reg713Form.decision" :disabled="!can('cost:reg713')" /> ✅ Согласовано</label>
+                <label class="reg713-radio"><input type="radio" value="rejected" v-model="reg713Form.decision" :disabled="!can('cost:reg713')" /> ❌ Не согласовано</label>
+              </div>
+              <input type="text" class="reg713-doc" v-model="reg713Form.decision_doc" :disabled="!can('cost:reg713')" placeholder="№ и дата письма исполкома (если есть)" maxlength="200" />
+              <textarea class="reg713-comment" v-model="reg713Form.comment" :disabled="!can('cost:reg713')" rows="2" placeholder="Комментарий" maxlength="1000"></textarea>
+            </div>
+
+            <div v-if="reg713Target.reg713_updated_by" class="muted reg713-hint">
+              Изменено: {{ reg713Target.reg713_updated_by }}
+              {{ reg713Target.reg713_updated_at ? new Date(reg713Target.reg713_updated_at).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '' }}
+              <template v-if="reg713History.length"> · записей в истории: {{ reg713History.length }}</template>
+            </div>
+            <div v-if="reg713Error" class="reg713-error">{{ reg713Error }}</div>
+
+            <div class="approval-actions">
+              <button class="btn btn-primary" type="button" :disabled="!can('cost:reg713') || reg713Saving" @click="saveReg713">
+                {{ reg713Saving ? 'Сохранение…' : 'Сохранить' }}
+              </button>
+              <button class="btn btn-ghost" type="button" @click="closeReg713">Закрыть</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div v-if="approvalTarget" class="modal-overlay" @click.self="closeApprovalPopup">
         <div class="modal approval-modal">
           <div class="modal-header">
@@ -1610,8 +2373,13 @@
               <span class="approval-label">Статус ПЭО:</span>
               <span v-if="approvalTarget.peo_status === 'approved'" class="peo-badge peo-approved">🟢 Согласовано</span>
               <span v-else-if="approvalTarget.peo_status === 'rejected'" class="peo-badge peo-rejected">🔴 Отклонено</span>
-              <span v-else-if="approvalTarget.peo_status === 'returned'" class="peo-badge peo-returned">🟠 Возврат на корректировку</span>
+              <span v-else-if="approvalTarget.peo_status === 'returned'" class="peo-badge peo-returned">🟡 Возврат на корректировку</span>
               <span v-else class="peo-badge peo-none">⚪ Нет статуса</span>
+            </div>
+            <div class="approval-info-row">
+              <span class="approval-label">Этап:</span>
+              <span class="stage-badge" :class="'stage-' + rowStage(approvalTarget).key">{{ rowStage(approvalTarget).icon }}</span>
+              <span>{{ rowStage(approvalTarget).label }}</span>
             </div>
             <div v-if="approvalTarget.peo_approved_by" class="approval-info-row">
               <span class="approval-label">Кто:</span>
@@ -1881,6 +2649,9 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'price_uz', label: 'Цена УЗ' },
   { key: 'mp_price_rub', label: 'Цена для МП, рос. руб.' },
   { key: 'comment', label: 'Комментарий' },
+  { key: 'replace', label: 'Замена артикула' },
+  { key: 'obsolete', label: 'Неактуальная модель/артикул' },
+  { key: 'reg713', label: 'Согласование 713' },
   { key: 'avg_wholesale', label: 'Сред. опт' },
   { key: 'price_level', label: 'Уровень цен' },
   { key: 'avg_retail_usd', label: 'Сред. розница ($)' },
@@ -1898,12 +2669,12 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'calc_markup_pct', label: 'Рентабельность (%)' },
   { key: 'calc_margin_pct', label: 'Маржа (%)' },
   { key: 'calc_margin_deviation', label: 'Откл. маржи (%)' },
-  { key: 'peo', label: 'ПЭО' },
+  { key: 'peo', label: 'Этап (семафор ПЭО)' },
 ];
 
 // Column groupings for the settings modal
 const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','plan_id'];
-const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment'];
+const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
 const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation'];
@@ -1931,7 +2702,7 @@ const COL_DEFAULT_WIDTHS: Record<string, number> = {
   planned_retail: 78, planned_wholesale: 78, planned_cost: 78,
   planned_profitability: 92, avg_retail_rub: 92, avg_rate: 72,
   retail_markup: 92, price_rf: 92, price_kz: 92, price_uz: 92,
-  mp_price_rub: 96, comment: 190,
+  mp_price_rub: 96, comment: 190, replace: 110, obsolete: 64, reg713: 72,
   // рубли и уровень цен
   avg_wholesale: 92, price_level: 86,
   // валютные и себестоимость
@@ -1961,7 +2732,7 @@ const STORAGE_KEY = 'cost_column_visibility';
  *
  * Порядок хранится списком ключей, а не индексами: список ключей переживает
  * добавление и удаление колонок в коде, а индексы — нет. */
-const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
+const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 const ORDER_STORAGE_KEY = 'cost_column_order';
 /** Все колонки таблицы: закреплённые слева плюс переносимые. */
 const ALL_COL_KEYS = [...STICKY_COL_KEYS, ...MOVABLE_COL_KEYS];
@@ -2095,6 +2866,8 @@ function collectPrefs() {
     pageSize: pageSize.value,
     filtersOpen: filtersOpen.value,
     hideDwhSent: hideDwhSentManual.value,
+    hideObsolete: hideObsolete.value,
+    filters: collectFilterPrefs(),
   };
 }
 
@@ -2148,6 +2921,27 @@ function applyPrefs(doc: any) {
   }
   if (typeof doc.hideDwhSent === 'boolean' || doc.hideDwhSent === null) {
     hideDwhSentManual.value = doc.hideDwhSent;
+  }
+  if (typeof doc.hideObsolete === 'boolean') {
+    hideObsolete.value = doc.hideObsolete;
+    try { localStorage.setItem(HIDE_OBSOLETE_STORAGE_KEY, doc.hideObsolete ? '1' : '0'); } catch { /* ignore */ }
+  }
+  // Фильтры с сервера — только когда на этом устройстве их ещё нет.
+  //
+  // Здесь сервер НЕ главнее, в отличие от колонок: последний набор фильтров —
+  // это состояние рабочего места, и локальная запись всегда свежее серверной
+  // (та приходит с задержкой и отстаёт на один сеанс). Пока приоритет был у
+  // сервера, документ с пустыми фильтрами, сохранённый при самом первом заходе,
+  // затирал восстановленный выбор через доли секунды после загрузки —
+  // мультиселекты обнулялись, а даты, которых в том документе не было,
+  // оставались. Серверная копия нужна для другого: первый вход с новой машины.
+  let hasLocalFilters = false;
+  try { hasLocalFilters = !!localStorage.getItem(FILTERS_STORAGE_KEY); } catch { /* ignore */ }
+  if (doc.filters && !hasLocalFilters && !filtersTouchedAfterMount) {
+    applyFilterPrefs(doc.filters);
+    try {
+      localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(collectFilterPrefs()));
+    } catch { /* ignore */ }
   }
 }
 
@@ -2386,6 +3180,7 @@ const activeFilterCount = computed(() => {
   if (dateFrom.value || dateTo.value) n += 1;
   if (noWholesaleOnly.value) n += 1;
   if (peoFilter.value !== 'all') n += 1;
+  if (purchasedOnly.value) n += 1;
   return n;
 });
 
@@ -2544,6 +3339,26 @@ const fetchHeaders = computed(() => {
   return email ? { "X-Cost-User": email } : {};
 });
 const noWholesaleOnly = ref(false);
+/** «Только мультипаки» — клиентский фильтр по пометке из /aggregated. */
+const multipackOnly = ref(false);
+/** «Только закупная» — СЕРВЕРНЫЙ фильтр: уходит в тело /aggregated как
+ *  purchased_only, и сервер отдаёт только закупные калькуляции.
+ *
+ *  Раньше галочка фильтровала уже загруженные строки, и это было её главным
+ *  недостатком: сервер всё равно считал и отдавал весь период (замер
+ *  04.09.2026 — 13 723 строки и 35,9 МБ за 6–9 с), а нужны были 123 строки.
+ *  Теперь переключение перезагружает выдачу; включённый фильтр отвечает почти
+ *  мгновенно, потому что запрос уходит только в таблицу закупных калькуляций.
+ *  Предикат в filteredRows оставлен подстраховкой на случай, когда строки уже
+ *  загружены без флага. */
+const purchasedOnly = ref(false);
+const purchasedCount = computed(() => allAggregated.value.filter((r: any) => r.purchase_source).length);
+
+function onPurchasedOnlyChange() {
+  // Данные ещё не грузили — не дёргаем сервер: человек только настраивает фильтры.
+  if (!allAggregated.value.length && !loading.value) return;
+  loadData();
+}
 
 const approvalTarget = ref<any>(null);
 const approvalComment = ref('');
@@ -2605,6 +3420,89 @@ const hideDwhSentDefault = computed(() =>
 );
 
 const hideDwhSentManual = ref<boolean | null>(null);
+
+/* Последний набор фильтров запоминается (просьба пользователей 31.08.2026):
+ * человек настроил панель — после перезагрузки страницы она такая же, а изменил
+ * что-то — в следующий раз откроется новый вариант.
+ *
+ * Хранится там же, где остальные настройки таблицы: localStorage для мгновенного
+ * применения (фильтры нужны ДО первых запросов, иначе каскад уровней сходит с
+ * тех значений, которых человек не выбирал) плюс JSONB на сервере, чтобы
+ * настройка переезжала на другой компьютер (см. collectPrefs/applyPrefs).
+ *
+ * Данные автоматически НЕ загружаются: широкая выдача идёт десятки секунд, и
+ * тянуть её на каждое открытие страницы никто не просил. Восстанавливаются
+ * только фильтры — дальше «Загрузить данные». */
+const FILTERS_STORAGE_KEY = 'cost_filters';
+/** Пока восстанавливаем, наблюдатель молчит: иначе первое же присваивание
+ *  сохранило бы полупустое состояние поверх полного. */
+let filtersRestoring = false;
+/** Человек уже менял фильтры в этой сессии — значит серверный документ,
+ *  пришедший с задержкой, применять поверх нельзя. */
+let filtersTouchedAfterMount = false;
+
+function collectFilterPrefs() {
+  return {
+    selected: Object.fromEntries(filterConfig.map(f => [f.key, [...(selected[f.key] || [])]])),
+    dateFrom: dateFrom.value,
+    dateTo: dateTo.value,
+    noWholesaleOnly: noWholesaleOnly.value,
+    showUSD: showUSD.value,
+    // peoFilter храним вместе с признаком «человек трогал его сам»: иначе
+    // дефолт роли бренд-менеджера ('approved') каждый раз перебивал бы выбор.
+    peoFilter: peoFilter.value,
+    peoFilterTouched: peoFilterTouched.value,
+  };
+}
+
+function applyFilterPrefs(doc: any) {
+  if (!doc || typeof doc !== 'object') return;
+  filtersRestoring = true;
+  try {
+    const sel = doc.selected;
+    if (sel && typeof sel === 'object') {
+      for (const f of filterConfig) {
+        const vals = sel[f.key];
+        // Значения не сверяем со списком опций: опции подгружаются позже и
+        // каскадом, а отбросив сейчас, мы потеряли бы выбор пользователя.
+        if (Array.isArray(vals)) selected[f.key] = vals.filter(v => typeof v === 'string');
+      }
+    }
+    if (typeof doc.dateFrom === 'string') dateFrom.value = doc.dateFrom;
+    if (typeof doc.dateTo === 'string') dateTo.value = doc.dateTo;
+    if (typeof doc.noWholesaleOnly === 'boolean') noWholesaleOnly.value = doc.noWholesaleOnly;
+    if (typeof doc.showUSD === 'boolean') showUSD.value = doc.showUSD;
+    if (typeof doc.peoFilterTouched === 'boolean' && doc.peoFilterTouched) {
+      peoFilterTouched.value = true;
+      if (typeof doc.peoFilter === 'string') peoFilter.value = doc.peoFilter;
+    }
+  } finally {
+    filtersRestoring = false;
+  }
+}
+
+function persistFilterPrefs() {
+  if (filtersRestoring) return;
+  filtersTouchedAfterMount = true;
+  try {
+    localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(collectFilterPrefs()));
+  } catch { /* приватный режим — переживём, останется серверная копия */ }
+  schedulePrefsPush();
+}
+
+// Восстанавливаем СИНХРОННО, до onMounted и до первых запросов: loadFilters
+// строит каскад по текущему выбору, и опоздавшее восстановление дало бы
+// уровни, посчитанные без фильтров.
+try {
+  const raw = localStorage.getItem(FILTERS_STORAGE_KEY);
+  if (raw) applyFilterPrefs(JSON.parse(raw));
+} catch { /* повреждённая запись — открываемся с пустыми фильтрами */ }
+
+watch(
+  [selected, dateFrom, dateTo, noWholesaleOnly, showUSD, peoFilter],
+  () => persistFilterPrefs(),
+  { deep: true },
+);
 onMounted(() => {
   try {
     const stored = localStorage.getItem(HIDE_DWH_STORAGE_KEY);
@@ -2627,6 +3525,30 @@ function setHideDwhSent(checked: boolean) {
  * как потеря данных. */
 const dwhSentHiddenCount = computed(() =>
   hideDwhSent.value ? allAggregated.value.filter((r: any) => r._has_audit).length : 0
+);
+
+/** «Не показывать неактуальные» — скрыть строки со статусом «Неактуальная
+ * модель/артикул». По умолчанию выключено: неактуальные видны серыми, чтобы статус
+ * замечали; кому они мешают — снимает одной галочкой. Помнится на устройстве и в
+ * серверных настройках, как соседний фильтр по DWH. */
+const HIDE_OBSOLETE_STORAGE_KEY = 'cost_hide_obsolete';
+const hideObsolete = ref(false);
+onMounted(() => {
+  try { if (localStorage.getItem(HIDE_OBSOLETE_STORAGE_KEY) === '1') hideObsolete.value = true; } catch { /* ignore */ }
+});
+function setHideObsolete(checked: boolean) {
+  hideObsolete.value = checked;
+  try { localStorage.setItem(HIDE_OBSOLETE_STORAGE_KEY, checked ? '1' : '0'); } catch { /* ignore */ }
+  schedulePrefsPush();
+}
+const obsoleteHiddenCount = computed(() =>
+  hideObsolete.value && peoFilter.value !== 'obsolete'
+    ? allAggregated.value.filter((r: any) => r.obsolete).length : 0
+);
+
+/** Сколько мультипаков в текущей выдаче — цифра рядом с чекбоксом фильтра. */
+const multipackCount = computed(
+  () => allAggregated.value.filter((r: any) => r.is_multipack).length
 );
 
 // ── Data loading ────────────────────────────────────────────────────────────
@@ -2734,6 +3656,13 @@ const filteredAggregated = computed(() => {
   return allAggregated.value.filter((row: any) => {
     // Отправленные в DWH — вне работы: править и согласовывать в них нечего.
     if (hideDwhSent.value && row._has_audit) return false;
+    // Неактуальные — если только их не попросили показать явно фильтром статуса:
+    // иначе «⚫ Неактуальная» в фильтре и галочка дали бы пустую таблицу.
+    if (hideObsolete.value && row.obsolete && peoFilter.value !== 'obsolete') return false;
+    // Мультипаки среди тысяч калькуляций иначе не найти: в фильтрах раздела
+    // нет ни модели, ни артикула, а паков на группу — единицы.
+    if (multipackOnly.value && !row.is_multipack) return false;
+    if (purchasedOnly.value && !row.purchase_source) return false;
     return columnFilterConfig.every((cfg) => {
       const sel = columnFilters[cfg.key];
       if (!sel || sel.length === 0) return true;
@@ -2836,6 +3765,9 @@ async function loadData() {
   try {
     const payload = buildFilters();
     if (peoFilter.value !== 'all') payload.peo_filter = peoFilter.value;
+    // Серверный фильтр закупной продукции: отсекает ветку кэша в cost_data_all,
+    // поэтому выдача приходит за единицы миллисекунд вместо секунд.
+    if (purchasedOnly.value) payload.purchased_only = true;
     const result = await $fetch<{ data: any[]; count: number; mp_formula_inputs: MpFormulaInputs | null }>(
       `${apiBase.value}/api/cost/aggregated`,
       { method: "POST", body: payload, headers: fetchHeaders.value }
@@ -3127,20 +4059,25 @@ async function loadPlanPrices() {
     ]);
     planPriceSets.value = setsResp.data || [];
     // Грид заполняем средними ценами из источника — их и правит пользователь.
+    // «Цена» — то, что сейчас в расчёте (cache_*: с учётом применённого
+    // набора), «Исх. цена» — цена источника (avg_*: сервер подменяет её из
+    // применённого набора). Раньше обе колонки заполнялись avg, и после
+    // «Применить» форма показывала исходные цены — пользователь читал это как
+    // «цены вернулись, набор не применился» (31.08, планы 9572/9537).
     planPriceRows.value = (matsResp.data || []).map((m: any) => ({
       ...m,
       source_price_rub: m.avg_price_rub,
       source_price_usd: m.avg_price_usd,
-      price_rub: m.avg_price_rub,
-      price_usd: m.avg_price_usd,
+      price_rub: m.cache_price_rub ?? m.avg_price_rub,
+      price_usd: m.cache_price_usd ?? m.avg_price_usd,
     }));
     planDecorRows.value = (matsResp.decors || []).map((d: any) => ({
       ...d,
       row_kind: 'decor',
       source_price_rub: d.avg_price_rub,
       source_price_usd: d.avg_price_usd,
-      price_rub: d.avg_price_rub,
-      price_usd: d.avg_price_usd,
+      price_rub: d.cache_price_rub ?? d.avg_price_rub,
+      price_usd: d.cache_price_usd ?? d.avg_price_usd,
     }));
     resetPlanPriceForm();
     // Курс по умолчанию — средний по плану, если он один и тот же.
@@ -3162,8 +4099,16 @@ async function loadPlanPrices() {
 function resetPlanPriceForm() {
   planPriceForm.value = { set_id: null, title: '', rate: planPriceForm.value.rate, status: 'draft' };
   for (const r of [...planPriceRows.value, ...planDecorRows.value]) {
-    r.price_rub = r.source_price_rub;
-    r.price_usd = r.source_price_usd;
+    // Сбрасываем к тому, что СЕЙЧАС в расчёте (cache_*), а не к цене источника.
+    // Иначе после применения набора грид показывал исходные цены: loadPlanPrices
+    // заполняет строки применёнными ценами и сразу вызывает эту функцию, которая
+    // затирала их источником. Из-за этого правки выглядели «вернувшимися»
+    // (жалобы 28–31.08, планы 9528, 9537, 9565, 9572) — и предыдущий фикс
+    // 90aa756 на проде не давал эффекта, хотя данные уже были верные.
+    const cacheRub = (r as any).cache_price_rub;
+    const cacheUsd = (r as any).cache_price_usd;
+    r.price_rub = cacheRub ?? r.source_price_rub;
+    r.price_usd = cacheUsd ?? r.source_price_usd;
     (r as any)._usdManual = false; // доллары снова исходные, не заданные вручную
   }
 }
@@ -3199,6 +4144,16 @@ async function openPlanPriceSet(setId: number) {
     };
     for (const r of planPriceRows.value) {
       const saved = byKey.get(planRowKey(r));
+      // Исходную цену берём из СТРОКИ НАБОРА, а не из кэша. После «Применить»
+      // в кэше уже лежат цены набора, и «исходная» из /plan-materials равна
+      // правленой — фильтр planPriceOverridden считал правку неизменённой,
+      // строка не попадала в сохранение, а в расчёт уходила старая цена
+      // (жалоба от 28.08, план 9528, наборы 145/147). Набор хранит исходник
+      // с момента создания — он и есть точка отсчёта.
+      if (saved && saved.source_price_rub !== null && saved.source_price_rub !== undefined) {
+        r.source_price_rub = saved.source_price_rub;
+        if (saved.source_price_usd !== null && saved.source_price_usd !== undefined) r.source_price_usd = saved.source_price_usd;
+      }
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
       r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
       // доллар в наборе задан явно — значит его правили вручную
@@ -3206,6 +4161,10 @@ async function openPlanPriceSet(setId: number) {
     }
     for (const r of planDecorRows.value) {
       const saved = byDecor.get(String(r['Декоры, наименование'] ?? '').trim());
+      if (saved && saved.source_price_rub !== null && saved.source_price_rub !== undefined) {
+        r.source_price_rub = saved.source_price_rub;
+        if (saved.source_price_usd !== null && saved.source_price_usd !== undefined) r.source_price_usd = saved.source_price_usd;
+      }
       r.price_rub = saved ? saved.price_rub : r.source_price_rub;
       r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
       (r as any)._usdManual = !!(saved && saved.price_usd !== null && saved.price_usd !== undefined);
@@ -3323,7 +4282,7 @@ async function savePlanPriceSet() {
   planPricesError.value = '';
   planPricesSaving.value = true;
   try {
-    const resp = await $fetch<{ set_id: number }>(`${apiBase.value}/api/cost/plan-price-sets`, {
+    const resp = await $fetch<{ set_id: number; rows_saved?: number; skipped_empty?: number }>(`${apiBase.value}/api/cost/plan-price-sets`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
       body: {
@@ -3342,7 +4301,8 @@ async function savePlanPriceSet() {
             'свойство1': r['свойство1'],
             'свойство2': r['свойство2'],
             'свойство3': r['свойство3'],
-            price_rub: r.price_rub,
+            // planPriceNorm: стёртое поле — это null, а не '' (см. ELK 25–28.08, 51 падение)
+            price_rub: planPriceNorm(r.price_rub),
             // null → сервер посчитает доллар из рубля по курсу набора
             price_usd: planUsdIsDerived(r) ? null : r.price_usd,
             source_price_rub: r.source_price_rub,
@@ -3354,8 +4314,9 @@ async function savePlanPriceSet() {
           ...planDecorRows.value.filter(planPriceOverridden).map(r => ({
             row_kind: 'decor',
             'Декоры, наименование': r['Декоры, наименование'],
-            price_rub: r.price_rub,
-            price_usd: r.price_usd,
+            // planPriceNorm: стёртое поле — это null, а не '' (см. ELK 25–28.08, 51 падение)
+            price_rub: planPriceNorm(r.price_rub),
+            price_usd: planPriceNorm(r.price_usd),
             source_price_rub: r.source_price_rub,
             source_price_usd: r.source_price_usd,
             rows_count: r.rows_count,
@@ -3364,9 +4325,17 @@ async function savePlanPriceSet() {
       },
     });
     planPriceForm.value.set_id = resp.set_id;
-    planPricesStatus.value = planPriceOverriddenCount.value
-      ? `Набор сохранён: строк с переопределённой ценой ${planPriceOverriddenCount.value}`
-      : 'Набор сохранён пустым — ни одна цена не отличается от источника';
+    // Считаем по ответу сервера, а не по локальному счётчику: строки со
+    // стёртой ценой сервер пропускает, и локальный счёт отчитался бы о
+    // сохранении строк, которых в наборе нет.
+    const saved = resp.rows_saved ?? planPriceOverriddenCount.value;
+    const skipped = resp.skipped_empty ?? 0;
+    planPricesStatus.value = saved
+      ? `Набор сохранён: строк с переопределённой ценой ${saved}`
+        + (skipped ? `, пропущено строк с пустой ценой ${skipped}` : '')
+      : (skipped
+        ? `Набор сохранён пустым: у ${skipped} строк цена стёрта — введите число или верните исходную`
+        : 'Набор сохранён пустым — ни одна цена не отличается от источника');
     await reloadPlanPriceSets();
   } catch (e: any) {
     console.error('[cost] save plan price set failed', e);
@@ -3441,9 +4410,250 @@ async function deletePlanPriceSet(setId: number) {
   }
 }
 
+
+// ── Справочник моделей (Gpartner S_MODELI) ───────────────────────────────────
+//
+// Окно только для просмотра: пользователь заходит посмотреть, что завела Лиса по
+// модели. Данных 132 тыс. строк, поэтому пагинация серверная, а фильтры уходят в
+// запрос — грузить справочник целиком в браузер нельзя.
+
+const showCatalogModal = ref(false);
+const catalogRows = ref<any[]>([]);
+const catalogColumns = ref<{ key: string; label: string }[]>([]);
+const catalogTotal = ref(0);
+const catalogOffset = ref(0);
+const catalogLimit = ref(100);
+const catalogLoading = ref(false);
+const catalogError = ref('');
+const catalogAllColumns = ref(false);
+const catalogAllVersions = ref(false);
+
+const CATALOG_LEVELS = [
+  { index: 1, key: 'level01', label: 'Level 01' },
+  { index: 2, key: 'level02', label: 'Level 02' },
+  { index: 3, key: 'level03', label: 'Level 03' },
+  { index: 4, key: 'level04', label: 'Level 04' },
+  { index: 5, key: 'level05', label: 'Level 05' },
+] as const;
+
+const catalogFilters = reactive<Record<string, any>>({
+  model: '', articul: '', naim: '',
+  brand_manager: [] as string[],
+  level01: [] as string[], level02: [] as string[], level03: [] as string[],
+  level04: [] as string[], level05: [] as string[],
+});
+
+/** Папки номенклатуры: по ним считаются варианты бренд-менеджера и уровней.
+ *
+ * Их 571 против 132 тыс. моделей, поэтому список тянем один раз за сеанс, а
+ * каскад пересчитываем на клиенте — в отличие от фильтров главной страницы, где
+ * каждое уточнение уровня идёт запросом в DWH. */
+const catalogFolders = ref<{ folder_id: number; path: string; levels: string[]; brand_manager: string }[]>([]);
+
+async function loadCatalogFolders() {
+  if (catalogFolders.value.length) return;
+  try {
+    const res = await $fetch<{ folders: any[] }>(
+      `${apiBase.value}/api/cost/models-catalog/folders`,
+      { headers: fetchHeaders.value }
+    );
+    catalogFolders.value = res.folders || [];
+  } catch (e: any) {
+    console.error('[cost] catalog folders failed', e);
+    catalogFolders.value = [];
+  }
+}
+
+const catalogBrandManagerOptions = computed(() => {
+  const seen = new Set<string>();
+  for (const f of catalogFolders.value) if (f.brand_manager) seen.add(f.brand_manager);
+  return Array.from(seen).sort();
+});
+
+/** Варианты уровней: каждый ограничен выбором бренд-менеджера и уровней выше. */
+const catalogLevelOptions = computed<Record<number, string[]>>(() => {
+  const out: Record<number, string[]> = {};
+  const bm = catalogFilters.brand_manager as string[];
+  for (const lvl of CATALOG_LEVELS) {
+    const seen = new Set<string>();
+    for (const folder of catalogFolders.value) {
+      if (bm.length && !bm.includes(folder.brand_manager)) continue;
+      let ok = true;
+      for (const higher of CATALOG_LEVELS) {
+        if (higher.index >= lvl.index) break;
+        const sel = catalogFilters[higher.key] as string[];
+        if (sel.length && !sel.includes(folder.levels[higher.index - 1] || '')) { ok = false; break; }
+      }
+      if (!ok) continue;
+      const value = folder.levels[lvl.index - 1];
+      if (value) seen.add(value);
+    }
+    out[lvl.index] = Array.from(seen).sort();
+  }
+  return out;
+});
+
+/** Уровень заблокирован, если выбран уровень НИЖЕ: иначе выбор сверху молча
+ *  обнулял бы уже сделанный выбор снизу (та же логика, что в детализации). */
+function isCatalogLevelLocked(index: number): boolean {
+  for (let i = CATALOG_LEVELS.length; i > index; i--) {
+    if ((catalogFilters[`level${String(i).padStart(2, '0')}`] as string[])?.length) return true;
+  }
+  return false;
+}
+
+/** Смена бренд-менеджера или уровня сбрасывает уровни ниже и перезагружает
+ *  первую страницу: под новым фильтром прежний offset ничего не значит. */
+function onCatalogScopeChange(changedKey: string) {
+  const changed = CATALOG_LEVELS.find((l) => l.key === changedKey);
+  const from = changed ? changed.index : 0;
+  for (const lvl of CATALOG_LEVELS) {
+    if (lvl.index > from) catalogFilters[lvl.key] = [];
+  }
+  loadCatalog(0);
+}
+
+async function openCatalog() {
+  showCatalogModal.value = true;
+  catalogError.value = '';
+  await loadCatalogFolders();
+  if (!catalogRows.value.length) await loadCatalog(0);
+}
+
+function resetCatalogFilters() {
+  catalogFilters.model = '';
+  catalogFilters.articul = '';
+  catalogFilters.naim = '';
+  catalogFilters.brand_manager = [];
+  for (const lvl of CATALOG_LEVELS) catalogFilters[lvl.key] = [];
+  loadCatalog(0);
+}
+
+// Ответы могут накладываться (быстрые клики по пагинации, смена фильтра во
+// время загрузки), а порядок их прихода не гарантирован — счётчик отбрасывает
+// устаревшие, иначе в таблице оказалась бы не та страница, что в счётчике.
+let catalogRequestSeq = 0;
+
+async function loadCatalog(offset: number) {
+  const seq = ++catalogRequestSeq;
+  catalogLoading.value = true;
+  catalogError.value = '';
+  try {
+    const body: Record<string, any> = {
+      limit: catalogLimit.value,
+      offset: Math.max(0, offset),
+      all_columns: catalogAllColumns.value,
+      all_versions: catalogAllVersions.value,
+    };
+    for (const field of ['model', 'articul', 'naim']) {
+      const value = String(catalogFilters[field] || '').trim();
+      if (value) body[field] = value;
+    }
+    if ((catalogFilters.brand_manager as string[]).length) {
+      body.brand_manager = catalogFilters.brand_manager;
+    }
+    for (const lvl of CATALOG_LEVELS) {
+      const sel = catalogFilters[lvl.key] as string[];
+      if (sel.length) body[lvl.key] = sel;
+    }
+
+    const res = await $fetch<{ data: any[]; total: number; columns: any[]; offset: number }>(
+      `${apiBase.value}/api/cost/models-catalog`,
+      { method: 'POST', body, headers: fetchHeaders.value }
+    );
+    if (seq !== catalogRequestSeq) return;
+    catalogRows.value = res.data || [];
+    // Колонки приходят вместе с данными: их состав задаёт сервер (основные или
+    // все поля представления), и он же знает подписи.
+    if (res.columns?.length) catalogColumns.value = res.columns;
+    catalogTotal.value = res.total || 0;
+    catalogOffset.value = res.offset ?? Math.max(0, offset);
+  } catch (e: any) {
+    if (seq !== catalogRequestSeq) return;
+    console.error('[cost] models-catalog failed', e);
+    const status = e?.statusCode || e?.status || e?.response?.status;
+    const detail = e?.data?.detail || e?.message;
+    catalogError.value = `Не удалось загрузить справочник${status ? ` (HTTP ${status})` : ''}`
+      + `${detail ? `: ${detail}` : ''}`;
+    catalogRows.value = [];
+    catalogTotal.value = 0;
+  } finally {
+    if (seq === catalogRequestSeq) catalogLoading.value = false;
+  }
+}
+
+// Числовые колонки выравниваем вправо. Тип берём по значению первой непустой
+// строки, а не по списку имён: состав колонок задаёт сервер и он меняется.
+const catalogNumericColumns = computed(() => {
+  const numeric = new Set<string>();
+  for (const col of catalogColumns.value) {
+    for (const row of catalogRows.value) {
+      const value = row[col.key];
+      if (value === null || value === undefined || value === '') continue;
+      if (typeof value === 'number') numeric.add(col.key);
+      break;
+    }
+  }
+  return numeric;
+});
+
+function isCatalogNumericColumn(key: string): boolean {
+  return catalogNumericColumns.value.has(key);
+}
+
+function formatCatalogValue(value: any): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'number') {
+    return Number.isInteger(value)
+      ? value.toLocaleString('ru-RU')
+      : value.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  }
+  return String(value);
+}
+
 // ── Details modal ────────────────────────────────────────────────────────────
 const showDetailsModal = ref(false);
 const detailsModel = ref('');
+const detailsArticul = ref('');
+const detailsConstruction = ref('');
+
+/** Конструкция ЧНИ — часть модели до первого дефиса: «107K-1916» → «107K».
+ *
+ * Правило заказчика от 09.09.2026: это мужской, женский или детский носок
+ * определённого кроя. Если дефиса нет (так устроены модели Orodoro — «224»,
+ * «447 TS»), конструкцией считаем модель целиком, и режим совпадёт с разбором
+ * по модели. */
+function constructionOf(model: string): string {
+  const m = String(model || '').trim();
+  const dash = m.indexOf('-');
+  return dash > 0 ? m.slice(0, dash) : m;
+}
+
+/** Что собирает детализация: артикулы модели, модели артикула или всю конструкцию.
+ *
+ * Второй и третий режимы нужны ЧНИ («Носки&Колготки», Orodoro), где иерархия
+ * номенклатуры устроена иначе: артикул — общая вязка, модель — её
+ * цветовой/размерный вариант (до 30 моделей на артикул), а конструкция
+ * объединяет и модели, и артикулы (у крупнейшей, «700K», 99 моделей и 90
+ * артикулов). Сравнивать себестоимость надо внутри этих группировок. */
+const detailsScope = ref<'model' | 'articul' | 'construction'>('model');
+const detailsScopeKey = computed(() => (
+  detailsScope.value === 'articul' ? detailsArticul.value
+  : detailsScope.value === 'construction' ? detailsConstruction.value
+  : detailsModel.value
+));
+const DETAILS_SCOPE_HINT: Record<string, string> = {
+  model: 'модель', articul: 'артикул', construction: 'конструкция',
+};
+
+/** Колонки меняющихся измерений: у конструкции меняются и модель, и артикул,
+ *  поэтому их число зависит от режима — см. шаблон и сборку попапа. */
+const detailsKeyColumns = computed<{ label: string; field: string }[]>(() => (
+  detailsScope.value === 'articul' ? [{ label: 'Модель', field: 'Модель' }]
+  : detailsScope.value === 'construction'
+    ? [{ label: 'Модель', field: 'Модель' }, { label: 'Артикул', field: 'Артикул' }]
+    : [{ label: 'Артикул', field: 'Артикул' }]
+));
 const detailDateFrom = ref('');
 const detailDateTo = ref('');
 const detailCalcSign = ref<string[]>([]);
@@ -3462,13 +4672,25 @@ const detailsAggregatedRow = ref<any>(null);
 const rawRowsData = ref<any[]>([]);
 const rawRowsLoading = ref(false);
 
+// Набор фильтров колонок один на оба режима: у фиксированного измерения
+// значение единственное, поэтому его фильтр просто не показываем (см. шаблон),
+// а выбор в нём всегда пустой и на каскад не влияет.
 const detailsFilterConfig = [
   { key: 'col_date', label: 'Дата', field: 'дата расчета' },
   { key: 'calc_sign', label: 'Пр.кальк', field: 'Признак калькуляции' },
+  { key: 'model', label: 'Модель', field: 'Модель' },
   { key: 'articul', label: 'Артикул', field: 'Артикул' },
   { key: 'name', label: 'Наименование', field: 'Наименование модели' },
   { key: 'task_num', label: '№ задания', field: 'Номер задания производства' },
 ];
+
+/** Измерения, зафиксированные текущим режимом: их фильтры и колонки не нужны.
+ *  У конструкции не зафиксировано ни одно — показываем оба фильтра. */
+const detailsHiddenFilterKeys = computed<string[]>(() => (
+  detailsScope.value === 'articul' ? ['articul']
+  : detailsScope.value === 'construction' ? []
+  : ['model']
+));
 
 const DET_COL_FILTER_KEYS = detailsFilterConfig.map((c) => c.key);
 
@@ -3545,6 +4767,12 @@ async function openDetails(row: any) {
   const model = String(row['Модель'] || '').trim();
   if (!model) return;
   detailsModel.value = model;
+  detailsArticul.value = String(row['Артикул'] || '').trim();
+  detailsConstruction.value = constructionOf(model);
+  // Режим всегда начинаем с модели: так детализация открывается ровно тем же,
+  // чем открывалась всегда, а расширение до артикула или конструкции —
+  // осознанный клик.
+  detailsScope.value = 'model';
 
   // Copy current main filters as defaults
   detailDateFrom.value = dateFrom.value;
@@ -3555,10 +4783,21 @@ async function openDetails(row: any) {
   await loadDetailsData();
 }
 
+// Запросы детализации могут накладываться (переключатель режима, «Применить»,
+// смена признака калькуляции), а порядок ответов не гарантирован. Без счётчика
+// поздний ответ старого запроса перезаписывал бы данные, и в шапке был бы один
+// ключ, а в таблице — строки другого.
+let detailsRequestSeq = 0;
+
 async function loadDetailsData() {
+  const seq = ++detailsRequestSeq;
   detailsLoading.value = true;
   try {
-    const body: Record<string, any> = { model: detailsModel.value };
+    const body: Record<string, any> = detailsScope.value === 'articul'
+      ? { scope: 'articul', articul: detailsArticul.value }
+      : detailsScope.value === 'construction'
+        ? { scope: 'construction', construction: detailsConstruction.value }
+        : { scope: 'model', model: detailsModel.value };
     if (detailDateFrom.value) body.date_from = detailDateFrom.value;
     if (detailDateTo.value) body.date_to = detailDateTo.value;
     if (detailCalcSign.value.length) body.calc_sign = detailCalcSign.value;
@@ -3567,14 +4806,16 @@ async function loadDetailsData() {
       `${apiBase.value}/api/cost/details`,
       { method: 'POST', body }
     );
+    if (seq !== detailsRequestSeq) return;
     detailsAllData.value = result.data || [];
     resetDetailsColumnFilters();
   } catch (e: any) {
+    if (seq !== detailsRequestSeq) return;
     console.error('[cost] details load failed', e);
     detailsAllData.value = [];
     detailsFilteredData.value = [];
   } finally {
-    detailsLoading.value = false;
+    if (seq === detailsRequestSeq) detailsLoading.value = false;
   }
 }
 
@@ -3613,6 +4854,27 @@ async function openRawRows(row: any) {
   await loadRawRows();
 }
 
+/** Переключить режим детализации и перезагрузить данные. */
+async function setDetailsScope(scope: 'model' | 'articul' | 'construction') {
+  if (detailsScope.value === scope) return;
+  if (scope === 'articul' && !detailsArticul.value) return;
+  if (scope === 'construction' && !detailsConstruction.value) return;
+  detailsScope.value = scope;
+  await loadDetailsData();
+}
+
+/** Сколько разных значений попало в выборку — видно, стоило ли переключаться. */
+function detailsDistinctCount(field: string): number {
+  const seen = new Set<string>();
+  for (const r of detailsFilteredData.value) {
+    const v = String(r[field] ?? '').trim();
+    if (v) seen.add(v);
+  }
+  return seen.size;
+}
+const detailsModelsCount = computed(() => detailsDistinctCount('Модель'));
+const detailsArticulsCount = computed(() => detailsDistinctCount('Артикул'));
+
 function resetDetailsFilters() {
   detailDateFrom.value = '';
   detailDateTo.value = '';
@@ -3625,7 +4887,15 @@ function openDetailsInNewTab() {
   if (!w) return;
 
   const rows = detailsFilteredData.value;
-  const model = detailsModel.value;
+  // Ключ, подпись окна и набор столбцов берём из текущего режима: попап должен
+  // открыться тем же, что видно в модалке, а его кнопка «Загрузить данные» —
+  // дотягивать то же.
+  const scopeKey = detailsScopeKey.value;
+  const scopeTitle = ({
+    articul: 'Детализация по артикулу: ',
+    construction: 'Детализация по конструкции: ',
+  }[detailsScope.value] || 'Детализация: ') + scopeKey;
+  const keyCols = detailsKeyColumns.value;
   const hasData = rows && rows.length > 0;
 
   function nf(v) {
@@ -3646,66 +4916,64 @@ function openDetailsInNewTab() {
     return `background-color:rgb(${Math.round(240 - 190 * t)},${Math.round(245 - 145 * t)},${Math.round(255 - 35 * t)});text-align:right;`;
   }
 
+  // Текстовые колонки попапа одним списком: их число зависит от режима (у
+  // конструкции меняются и модель, и артикул), поэтому и статическая таблица, и
+  // rt() внутри попапа, и шапка, и фильтры собираются из него, а не по
+  // фиксированным индексам.
+  //   date   — значение приводится к дате (обрезается время);
+  //   filter — попадает в набор фильтров колонок (у «Страны пр-ва» фильтра нет).
+  const popupTextCols: { key?: string; label: string; field: string; date?: boolean; filter?: boolean }[] = [
+    { key: 'col_date', label: 'Дата', field: 'дата расчета', date: true, filter: true },
+    { key: 'calc_sign', label: 'Пр.кальк', field: 'Признак калькуляции', filter: true },
+    ...keyCols.map((c) => ({
+      key: c.field === 'Модель' ? 'model' : 'articul',
+      label: c.label,
+      field: c.field,
+      filter: true,
+    })),
+    { key: 'name', label: 'Наименование', field: 'Наименование модели', filter: true },
+    { key: 'task_num', label: '№ задания', field: 'Номер задания производства', filter: true },
+    { key: 'release_date', label: 'Дата выпуска', field: 'Дата выпуска', date: true, filter: true },
+    // Пожелание № 16: страна производства; фильтра по ней нет.
+    { label: 'Страна', field: 'Страна пр-ва' },
+  ];
+
   // Build static table rows (always visible, JS-overridable)
   let tableHtml = '';
   for (let i = 0; i < (hasData ? rows.length : 0); i++) {
     const r = rows[i];
-    let dv = r['\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430'];
-    if (dv) {
-      const s = String(dv);
-      dv = s.includes('T') ? s.split('T')[0] : s;
-    } else { dv = '\u2014'; }
-    let dvRel = r['\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430'];
-    if (dvRel) {
-      const s = String(dvRel);
-      dvRel = s.includes('T') ? s.split('T')[0] : s;
-    } else { dvRel = '\u2014'; }
-    const cells = [
-      dv,
-      r['\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438'] || '\u2014',
-      r['\u0410\u0440\u0442\u0438\u043A\u0443\u043B'] || '\u2014',
-      r['\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435 \u043C\u043E\u0434\u0435\u043B\u0438'] || '\u2014',
-      r['\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430'] || '\u2014',
-      dvRel,
-      nf(r['\u0420\u043E\u0437\u043D\u0438\u0447\u043D\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431.']),
-      nf(r['\u041E\u043F\u0442\u043E\u0432\u0430\u044F \u0446\u0435\u043D\u0430, \u0440\u0443\u0431.']),
-      nf(r['\u041E\u0441\u043D. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431.']),
-      nf(r['\u0412\u0441\u043F\u043E\u043C. \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B, \u0440\u0443\u0431.']),
-      nf(r['\u041F\u043E\u0448\u0438\u0432, \u0440\u0443\u0431.']),
-      nf(r['\u0420\u0430\u0441\u043A\u0440\u043E\u0439, \u0440\u0443\u0431.']),
-      nf(r['\u0414\u0435\u043A\u043E\u0440, \u0440\u0443\u0431.']),
-      nf(r['\u0412\u044F\u0437\u0430\u043D\u0438\u0435, \u0440\u0443\u0431.']),
-      nf(r['\u0421\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C, \u0440\u0443\u0431.']),
-      nf(r['\u041D\u0430\u0446\u0435\u043D\u043A\u0430, \u0440\u0443\u0431.']),
-      r['\u041D\u0430\u0446\u0435\u043D\u043A\u0430, %'] ?? '',
-      r['\u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u044C, %'] ?? '',
-    ];
+    function popupDate(v: any): string {
+      if (!v) return '—';
+      const str = String(v);
+      return str.includes('T') ? str.split('T')[0] : str;
+    }
+    const textCells = popupTextCols.map((c) => (
+      c.date ? popupDate(r[c.field]) : (r[c.field] || '—')
+    ));
     const POPUP_NUM_FIELDS = [
       'Розничная цена, руб.', 'Оптовая цена, руб.', 'Осн. материалы, руб.', 'Вспом. материалы, руб.',
-      'Пошив, руб.', 'Раскрой, руб.', 'Декор, руб.', 'Вязание, руб.',
+      'Пошив, минуты', 'Пошив, руб.', 'Раскрой, руб.', 'Декор, руб.', 'Вязание, руб.',
       'Себестоимость, руб.', 'Наценка, руб.', 'Наценка, %', 'Маржинальность, %',
     ];
+    const POPUP_PCT_FROM = POPUP_NUM_FIELDS.length - 2;
     tableHtml += '<tr>';
-    for (let ci = 0; ci < 6; ci++) tableHtml += '<td>' + escHtml(String(cells[ci])) + '<\/td>';
+    for (let ci = 0; ci < textCells.length; ci++) tableHtml += '<td class="txt">' + escHtml(String(textCells[ci])) + '<\/td>';
     for (let ci = 0; ci < POPUP_NUM_FIELDS.length; ci++) {
       const field = POPUP_NUM_FIELDS[ci];
       const rawVal = r[field];
       const style = hbStyleStr(rawVal, field);
-      const display = ci >= 10 ? (rawVal ?? '') : nf(rawVal);
+      const display = ci >= POPUP_PCT_FROM ? (rawVal ?? '') : nf(rawVal);
       tableHtml += '<td style="' + style + '">' + escHtml(String(display)) + '<\/td>';
     }
     tableHtml += '<\/tr>';
   }
 
-  // Filter config
-  const filterFields = [
-    { key: 'col_date', label: '\u0414\u0430\u0442\u0430', field: '\u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u0447\u0435\u0442\u0430' },
-    { key: 'calc_sign', label: '\u041F\u0440.\u043A\u0430\u043B\u044C\u043A', field: '\u041F\u0440\u0438\u0437\u043D\u0430\u043A \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438' },
-    { key: 'articul', label: '\u0410\u0440\u0442\u0438\u043A\u0443\u043B', field: '\u0410\u0440\u0442\u0438\u043A\u0443\u043B' },
-    { key: 'name', label: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435', field: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435 \u043C\u043E\u0434\u0435\u043B\u0438' },
-    { key: 'task_num', label: '\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F', field: '\u041D\u043E\u043C\u0435\u0440 \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430' },
-    { key: 'release_date', label: '\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430', field: '\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430' },
-  ];
+  // Фильтруемые колонки — те же текстовые колонки, что и в таблице (кроме
+  // «Страны пр-ва», у которой фильтра нет). Один источник, поэтому набор
+  // фильтров и набор колонок не могут разойтись.
+  const filterFields = popupTextCols
+    .filter((c) => c.filter)
+    .map((c) => ({ key: c.key as string, label: c.label, field: c.field }));
 
   // Build API-level filter HTML (date range, calc_sign multiselect, load button)
   let filterHtml = '<div class="filter-section-api" id="filterApi">';
@@ -3731,11 +4999,16 @@ function openDetailsInNewTab() {
   // JS to embed in popup (completely self-contained, no toString() serialization)
   const popupScript = `try{
 var R=${JSON.stringify(rows)};
-var MODEL=${JSON.stringify(detailsModel.value)};
+var SCOPE=${JSON.stringify(detailsScope.value)};
+var SCOPE_KEY=${JSON.stringify(scopeKey)};
 var API_BASE=${JSON.stringify(apiBase.value)};
 var FK=${JSON.stringify(filterFields.map(f => f.key))};
 var FF=${JSON.stringify(filterFields.map(f => f.field))};
 var NF=${JSON.stringify(DETAILS_NUMERIC_FIELDS)};
+// Текстовые колонки таблицы: поля и признак «это дата». Их число зависит от
+// режима, поэтому tc() идёт по массиву, а не по фиксированным индексам.
+var TF=${JSON.stringify(popupTextCols.map((c) => c.field))};
+var TD=${JSON.stringify(popupTextCols.map((c) => !!c.date))};
 // Compute per-column ranges for heatmap
 var RG={};
 for(var fi=0;fi<NF.length;fi++){
@@ -3793,21 +5066,26 @@ function msUpdateUI(k){
 }
 
 // Build table rows
+// Текстовые ячейки одной строки — по списку колонок текущего режима.
+function tc(r){
+  var h="";
+  for(var i=0;i<TF.length;i++){
+    var v=TD[i]?gv(r,TF[i]):(r[TF[i]]||"");
+    h+="<td class=\\"txt\\">"+escHtml(v||"\\u2014")+"<\\/td>";
+  }
+  return h;
+}
 function rt(rr){
   var h="";
   for(var i=0;i<rr.length;i++){
     var r=rr[i];
     h+="<tr>"
-      +"<td>"+gv(r,FF[0])+"<\\/td>"
-      +"<td>"+(r[FF[1]]||"\\u2014")+"<\\/td>"
-      +"<td>"+(r[FF[2]]||"\\u2014")+"<\\/td>"
-      +"<td>"+(r[FF[3]]||"\\u2014")+"<\\/td>"
-      +"<td>"+(r[FF[4]]||"\\u2014")+"<\\/td>"
-      +"<td>"+gv(r,FF[5])+"<\\/td>"
+      +tc(r)
       +"<td style=\\""+hb(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0420\\u043E\\u0437\\u043D\\u0438\\u0447\\u043D\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."],"\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u043F\\u0442\\u043E\\u0432\\u0430\\u044F \\u0446\\u0435\\u043D\\u0430, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."],"\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041E\\u0441\\u043D. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."],"\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0412\\u0441\\u043F\\u043E\\u043C. \\u043C\\u0430\\u0442\\u0435\\u0440\\u0438\\u0430\\u043B\\u044B, \\u0440\\u0443\\u0431."])+"<\\/td>"
+      +"<td style=\\""+hb(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u043C\\u0438\\u043D\\u0443\\u0442\\u044B"],"\\u041F\\u043E\\u0448\\u0438\\u0432, \\u043C\\u0438\\u043D\\u0443\\u0442\\u044B")+"\\">"+nf(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u043C\\u0438\\u043D\\u0443\\u0442\\u044B"])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431."],"\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u041F\\u043E\\u0448\\u0438\\u0432, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431."],"\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0420\\u0430\\u0441\\u043A\\u0440\\u043E\\u0439, \\u0440\\u0443\\u0431."])+"<\\/td>"
       +"<td style=\\""+hb(r["\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431."],"\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431.")+"\\">"+nf(r["\\u0414\\u0435\\u043A\\u043E\\u0440, \\u0440\\u0443\\u0431."])+"<\\/td>"
@@ -3952,7 +5230,8 @@ async function loadData(){
     var df=document.getElementById("f_dateFrom").value;
     var dt=document.getElementById("f_dateTo").value;
     var cs=MS_API_CS;
-    var body={model:MODEL};
+    var body={scope:SCOPE};
+    body[SCOPE==="articul"?"articul":SCOPE==="construction"?"construction":"model"]=SCOPE_KEY;
     if(df)body.date_from=df;
     if(dt)body.date_to=dt;
     if(cs.length)body.calc_sign=cs;
@@ -3998,7 +5277,7 @@ document.getElementById("loadBtn").onclick=loadData;
   const html =
     '<!DOCTYPE html>' +
     '<html lang="ru"><head><meta charset="utf-8">' +
-    '<title>\u0414\u0435\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F: ' + escHtml(model) + '<\/title>' +
+    '<title>' + escHtml(scopeTitle) + '<\/title>' +
     '<style>' +
     '*{box-sizing:border-box;margin:0;padding:0}' +
     'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:20px;background:#f5f5f5}' +
@@ -4034,17 +5313,17 @@ document.getElementById("loadBtn").onclick=loadData;
     'table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}' +
     'th{background:#f8f9fa;border-bottom:2px solid #dee2e6;padding:8px;text-align:center;font-weight:700;font-size:11px;position:sticky;top:0}' +
     'td{padding:6px 8px;border-bottom:1px solid #eee;text-align:right}' +
-    'td:nth-child(-n+6){text-align:left}' +
+    'td.txt{text-align:left}' +
     'tbody tr:hover{background:#f1f3f5}' +
     '.count{padding:8px 24px;font-size:12px;color:#6c757d;border-top:1px solid #eee}' +
     '<\/style><\/head><body>' +
     '<div class="container">' +
-      '<div class="header"><h1>\u0414\u0435\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F: ' + escHtml(model) + '<\/h1><\/div>' +
+      '<div class="header"><h1>' + escHtml(scopeTitle) + '<\/h1><\/div>' +
       '<div class="filters">' + filterHtml + '<\/div>' +
       '<div class="content">' +
         '<table><thead><tr>' +
-          '<th>\u0414\u0430\u0442\u0430<\/th><th>\u041F\u0440.\u043A\u0430\u043B\u044C\u043A<\/th><th>\u0410\u0440\u0442\u0438\u043A\u0443\u043B<\/th><th>\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435<\/th><th>\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F<\/th><th>\u0414\u0430\u0442\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430<\/th>' +
-          '<th>\u0420\u043E\u0437\u043D\u0438\u0446\u0430<\/th><th>\u041E\u043F\u0442<\/th><th>\u041E\u0441\u043D.\u043C\u0430\u0442<\/th><th>\u0412\u0441\u043F\u043E\u043C.<\/th><th>\u041F\u043E\u0448\u0438\u0432<\/th><th>\u0420\u0430\u0441\u043A\u0440\u043E\u0439<\/th><th>\u0414\u0435\u043A\u043E\u0440<\/th><th>\u0412\u044F\u0437\u0430\u043D\u0438\u0435<\/th>' +
+          popupTextCols.map((c) => '<th>' + escHtml(c.label) + '<\/th>').join('') +
+          '<th>\u0420\u043E\u0437\u043D\u0438\u0446\u0430<\/th><th>\u041E\u043F\u0442<\/th><th>\u041E\u0441\u043D.\u043C\u0430\u0442<\/th><th>\u0412\u0441\u043F\u043E\u043C.<\/th><th>\u041F\u043E\u0448\u0438\u0432, \u043C\u0438\u043D<\/th><th>\u041F\u043E\u0448\u0438\u0432<\/th><th>\u0420\u0430\u0441\u043A\u0440\u043E\u0439<\/th><th>\u0414\u0435\u043A\u043E\u0440<\/th><th>\u0412\u044F\u0437\u0430\u043D\u0438\u0435<\/th>' +
           '<th>\u0421\u0435\u0431\u0435\u0441\u0442.<\/th><th>\u041D\u0430\u0446\u0435\u043D\u043A\u0430<\/th><th>\u041D\u0430\u0446\u0435\u043D\u043A\u0430%<\/th><th>\u041C\u0430\u0440\u0436\u0430%<\/th>' +
         '<\/tr><\/thead>' +
         '<tbody id="popupBody">' + tableHtml + '<\/tbody><\/table>' +
@@ -4220,8 +5499,21 @@ const editingVersion = ref<{
   calc_sign: string;
   plan_id: string;
   date: string;
+  // Номер задания входит в ключ версии (миграция 0032) и в контекст сборки
+  // мультипака. У ПКПСС заданий не бывает — там пустая строка.
+  task_number: string;
+  // Группа и бренд-менеджер строки — значения по умолчанию для фильтров поиска
+  // одиночек мультипака: носки ищут среди носков, а не по всему разделу.
+  level01: string;
+  brand_manager: string;
   rows: any[];
   versions: any[];
+  // Снимки источника (миграция 0057), новые первыми. Пусто — снимков ещё нет,
+  // «Исходные данные» читаются из живого кэша.
+  snapshots: any[];
+  // Какой снимок открыт как «Исходные данные»; он же уходит основанием в
+  // /create-version. null — живой кэш или открыта версия.
+  selectedSnapshotId: number | null;
   selectedVersionId: number | null;
   isEditing: boolean;
   version_id: number | null;
@@ -4350,6 +5642,318 @@ const onCommentInput = (row: any, value: string) => {
   changedRows.set(calcRowKey(row), row);
 };
 
+// ── Мультипаки ──────────────────────────────────────────────────────────────
+// Пак (3/5/7 пар в одной единице продажи) собирается из калькуляций-одиночек:
+// на каждую одиночку сервер генерирует по строке НА СТАТЬЮ (Норма = количество,
+// цена = себестоимость статьи за штуку), а упаковку калькулятор добавляет руками
+// обычной кнопкой «+ Добавить строку». Дальше пак живёт как обычная
+// калькуляция — цена, согласование ПЭО, запись в DWH.
+//
+// Состав хранится на (модель, артикул) и работает на всех этапах калькуляции;
+// сборка привязана к конкретной калькуляции (этап, план, задание). Строки
+// состава помечены «свойство3» = MP_MARKER: по нему пересборка отличает свои
+// строки от упаковки, а таблица блокирует ручной ввод в них.
+
+const MP_MARKER = 'мультипак';
+
+/** Строка расчёта сгенерирована из состава пака (а не добавлена руками). */
+const isMultipackRow = (row: any): boolean =>
+  ((row?.['свойство3'] ?? '') as string).toString().trim() === MP_MARKER;
+
+const multipackState = ref<any | null>(null);
+const multipackLoading = ref(false);
+const multipackBuilding = ref(false);
+const multipackSaving = ref(false);
+/** Редактируемая копия состава: правки применяются кнопкой, а не на каждый ввод. */
+const mpItems = ref<any[]>([]);
+const mpPackSize = ref<number | null>(null);
+const mpNote = ref('');
+const mpExpanded = ref(true);
+const mpDirty = ref(false);
+/** Поиск одиночек для добавления в состав. */
+const mpSearchOpen = ref(false);
+const mpSearchQuery = ref('');
+const mpSearchRows = ref<any[]>([]);
+const mpSearchLoading = ref(false);
+/** Фильтры поиска. Этап: '' = этап пака (ПКПСС собирается из ПКПСС), '*' = любой.
+ *  Группа и бренд-менеджер по умолчанию — как у пака, снимаются вручную. */
+const mpSearchSign = ref('');
+const mpSearchLevel01 = ref('');
+const mpSearchBm = ref('');
+const mpSearchTruncated = ref(false);
+const mpSearchLimit = ref(50);
+const MP_SEARCH_SIGNS = ['ПКПСС', 'КПСС', 'ПФКСС', 'ФКСС'];
+
+const mpQtyTotal = computed(() =>
+  mpItems.value.reduce((s, it) => s + (Number(it.qty) || 0), 0)
+);
+
+/** Себестоимость состава по текущим (не пересобранным) данным сервера. */
+const mpItemsRub = computed(() =>
+  mpItems.value.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_rub) || 0), 0)
+);
+
+/** Упаковка = строки редактора, которые НЕ из состава. */
+const mpPackagingRub = computed(() => {
+  const rows = editingVersion.value?.rows || [];
+  return rows
+    .filter((r: any) => !isMultipackRow(r))
+    .reduce((s: number, r: any) => s + versionRowSum(r, 'руб.'), 0);
+});
+
+async function loadMultipackState() {
+  const ev = editingVersion.value;
+  if (!ev) return;
+  multipackLoading.value = true;
+  try {
+    const params = new URLSearchParams({
+      model: ev.model,
+      articul: ev.articul,
+      calc_sign: ev.calc_sign || '',
+      plan_id: ev.plan_id || '',
+      task_number: ev.task_number || '',
+    });
+    const data: any = await $fetch(
+      `${apiBase.value}/api/cost/multipack?${params}`,
+      { headers: fetchHeaders.value },
+    );
+    multipackState.value = data;
+    mpItems.value = (data.items || []).map((i: any) => ({ ...i }));
+    mpPackSize.value = data.pack_size ?? null;
+    mpNote.value = data.note || '';
+    mpDirty.value = false;
+  } catch (e: any) {
+    // Состав — дополнение к расчёту: если не отдался, редактор должен работать.
+    console.error('[cost] load multipack state failed', e);
+    multipackState.value = null;
+    mpItems.value = [];
+  } finally {
+    multipackLoading.value = false;
+  }
+}
+
+function mpMarkPack() {
+  // «Сделать мультипаком» — пустой состав, который тут же можно наполнить.
+  multipackState.value = { is_pack: true, items: [], warnings: [], stale: [] };
+  mpItems.value = [];
+  mpPackSize.value = null;
+  mpNote.value = '';
+  mpDirty.value = true;
+  mpExpanded.value = true;
+}
+
+async function mpSaveComposition() {
+  const ev = editingVersion.value;
+  if (!ev) return;
+  multipackSaving.value = true;
+  try {
+    const resp = await fetch(`${apiBase.value}/api/cost/multipack`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+      body: JSON.stringify({
+        model: ev.model,
+        articul: ev.articul,
+        pack_size: mpPackSize.value,
+        note: mpNote.value,
+        items: mpItems.value.map((it: any) => ({
+          src_model: it.src_model,
+          src_articul: it.src_articul,
+          // Пустой признак = «этап пака», пустой план = «любой, самый свежий».
+          src_calc_sign: it.pinned_calc_sign ? (it.src_calc_sign || '') : '',
+          src_plan_id: it.pinned_plan_id ? (it.src_plan_id || '') : '',
+          qty: Number(it.qty) || 0,
+        })),
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err?.detail || `HTTP ${resp.status}`);
+    }
+    await loadMultipackState();
+  } catch (e: any) {
+    alert('Не удалось сохранить состав: ' + (e?.message || String(e)));
+  } finally {
+    multipackSaving.value = false;
+  }
+}
+
+async function mpDeleteComposition() {
+  const ev = editingVersion.value;
+  if (!ev) return;
+  if (!confirm(
+    'Распустить мультипак?\n\n'
+    + 'Состав и журнал сборок будут удалены. Строки расчёта останутся в версии — '
+    + 'уберите их вручную и сохраните версию, иначе себестоимость пака не изменится.'
+  )) return;
+  multipackSaving.value = true;
+  try {
+    const params = new URLSearchParams({ model: ev.model, articul: ev.articul });
+    const resp = await fetch(`${apiBase.value}/api/cost/multipack?${params}`, {
+      method: 'DELETE',
+      headers: fetchHeaders.value,
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err?.detail || `HTTP ${resp.status}`);
+    }
+    await loadMultipackState();
+  } catch (e: any) {
+    alert('Не удалось распустить мультипак: ' + (e?.message || String(e)));
+  } finally {
+    multipackSaving.value = false;
+  }
+}
+
+async function mpBuild() {
+  const ev = editingVersion.value;
+  if (!ev) return;
+  if (mpDirty.value) {
+    alert('Сначала сохраните состав — сборка идёт по сохранённому составу.');
+    return;
+  }
+  const hadComponents = (ev.rows || []).some((r: any) => isMultipackRow(r));
+  if (hadComponents && !confirm(
+    'Пересобрать строки состава по актуальной себестоимости одиночек?\n\n'
+    + 'Строки упаковки, добавленные вручную, сохранятся.'
+  )) return;
+  multipackBuilding.value = true;
+  try {
+    const resp = await fetch(`${apiBase.value}/api/cost/multipack/build`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+      body: JSON.stringify({
+        model: ev.model,
+        articul: ev.articul,
+        calc_sign: ev.calc_sign || '',
+        plan_id: ev.plan_id || '',
+        task_number: ev.task_number || '',
+        rows: ev.rows || [],
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err?.detail || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    ev.rows = (data.rows || []).map((rr: any) => normalizeVersionRow(rr));
+    // Сборка ничего не сохраняет: строки надо принять — «Сохранить» или
+    // «Отправить на утверждение». Поэтому сразу включаем режим правки.
+    if (!ev.isEditing) startEditing();
+    if (data.state) {
+      multipackState.value = data.state;
+      mpItems.value = (data.state.items || []).map((i: any) => ({ ...i }));
+    }
+  } catch (e: any) {
+    alert('Не удалось собрать мультипак: ' + (e?.message || String(e)));
+  } finally {
+    multipackBuilding.value = false;
+  }
+}
+
+function mpRemoveItem(idx: number) {
+  mpItems.value.splice(idx, 1);
+  mpDirty.value = true;
+}
+
+function mpOnQtyInput(item: any, event: Event) {
+  const val = (event.target as HTMLInputElement).value;
+  item.qty = val === '' ? 0 : parseFloat(val);
+  mpDirty.value = true;
+}
+
+function mpTogglePin(item: any, field: 'calc_sign' | 'plan_id') {
+  // Фиксация источника: «брать именно этот этап/план», а не следовать контексту.
+  if (field === 'calc_sign') {
+    item.pinned_calc_sign = !item.pinned_calc_sign;
+    if (item.pinned_calc_sign) item.src_calc_sign = item.actual_calc_sign || item.src_calc_sign || '';
+  } else {
+    item.pinned_plan_id = !item.pinned_plan_id;
+    if (item.pinned_plan_id) item.src_plan_id = item.actual_plan_id || item.src_plan_id || '';
+  }
+  mpDirty.value = true;
+}
+
+async function mpSearch() {
+  const ev = editingVersion.value;
+  if (!ev) return;
+  mpSearchLoading.value = true;
+  try {
+    const sign = mpSearchSign.value === '*' ? '' : (mpSearchSign.value || ev.calc_sign || '');
+    const params = new URLSearchParams({
+      q: mpSearchQuery.value || '',
+      calc_sign: sign,
+      level01: mpSearchLevel01.value || '',
+      brand_manager: mpSearchBm.value || '',
+      exclude_model: ev.model,
+      exclude_articul: ev.articul,
+      limit: String(mpSearchLimit.value),
+    });
+    const data: any = await $fetch(
+      `${apiBase.value}/api/cost/multipack/candidates?${params}`,
+      { headers: fetchHeaders.value },
+    );
+    mpSearchRows.value = data.data || [];
+    mpSearchTruncated.value = !!data.truncated;
+  } catch (e: any) {
+    console.error('[cost] multipack candidates failed', e);
+    mpSearchRows.value = [];
+    mpSearchTruncated.value = false;
+  } finally {
+    mpSearchLoading.value = false;
+  }
+}
+
+function mpOpenSearch() {
+  const ev = editingVersion.value;
+  mpSearchOpen.value = true;
+  mpSearchQuery.value = '';
+  mpSearchRows.value = [];
+  mpSearchTruncated.value = false;
+  // Стартовые фильтры — от самого пака: тот же этап и та же группа. Так первый
+  // список уже про носки, а не про весь раздел по алфавиту.
+  mpSearchSign.value = '';
+  mpSearchLevel01.value = ev?.level01 || '';
+  mpSearchBm.value = '';
+  mpSearch();
+}
+
+function mpResetSearchFilters() {
+  mpSearchQuery.value = '';
+  mpSearchSign.value = '*';
+  mpSearchLevel01.value = '';
+  mpSearchBm.value = '';
+  mpSearch();
+}
+
+function mpAddCandidate(c: any) {
+  const dup = mpItems.value.some(
+    (it: any) => it.src_model === c.model && it.src_articul === c.articul
+  );
+  if (dup) {
+    alert('Эта одиночка уже в составе — задайте ей количество.');
+    return;
+  }
+  mpItems.value.push({
+    src_model: c.model,
+    src_articul: c.articul,
+    src_calc_sign: c.calc_sign,
+    src_plan_id: c.plan_id,
+    actual_calc_sign: c.calc_sign,
+    actual_plan_id: c.plan_id,
+    // По умолчанию источник НЕ зафиксирован: состав должен переезжать между
+    // этапами сам. Фиксирует человек галочками, если нужен конкретный расчёт.
+    pinned_calc_sign: false,
+    pinned_plan_id: false,
+    model_name: c.model_name,
+    unit_rub: c.unit_rub,
+    qty: 1,
+    found: true,
+    tasks_total: c.tasks_total,
+  });
+  mpDirty.value = true;
+  mpSearchOpen.value = false;
+}
+
 // ── Цены предыдущих этапов калькулирования ──────────────────────────────────
 // ПКПСС — первый этап, сравнивать не с чем. На КПСС показываем цены ПКПСС, на
 // ПФКСС — КПСС и ПКПСС. Сопоставление идёт по ключу материала, поэтому колонки
@@ -4464,7 +6068,7 @@ const openVersionEditor = async (row: any) => {
   });
   try {
     const [rawResp, versionsResp] = await Promise.all([
-      $fetch<{ version_id: number | null; rows: any[] }>(
+      $fetch<{ version_id: number | null; snapshot_id?: number | null; snapshots?: any[]; rows: any[] }>(
         `${apiBase.value}/api/cost/raw-data?${params}`,
         { headers: fetchHeaders.value }
       ),
@@ -4495,8 +6099,12 @@ const openVersionEditor = async (row: any) => {
       plan_id: r['PLAN_ID'] || '',
       date: r['дата расчета'] || '',
       task_number: r['Номер задания производства'] || '',
+      level01: (r['Level 01'] || '').toString().trim(),
+      brand_manager: (r['Бренд-менеджер'] || '').toString().trim(),
       rows: initialRows.map((rr: any) => normalizeVersionRow(rr)),
       versions,
+      snapshots: rawResp.snapshots || [],
+      selectedSnapshotId: pending ? null : (rawResp.snapshot_id ?? null),
       selectedVersionId,
       isEditing: false,
       version_id: null,
@@ -4505,6 +6113,9 @@ const openVersionEditor = async (row: any) => {
     // Справочные цены прошлых этапов — отдельным запросом и без await в общей
     // цепочке: редактор открывается сразу, колонки появляются по готовности.
     void loadStagePrices(r);
+    // Состав мультипака — тем же принципом: блок появляется по готовности и не
+    // задерживает открытие расчёта.
+    void loadMultipackState();
   } catch (e: any) {
     console.error('[cost] load version editor failed', e);
     lastError.value = e?.data?.detail || e?.message || String(e);
@@ -4533,7 +6144,7 @@ const refreshVersions = async () => {
   }
 };
 
-const selectRawData = async () => {
+const selectRawData = async (snapshotId: number | null = null) => {
   if (!editingVersion.value) return;
   const ev = editingVersion.value;
   ev.selectedVersionId = null;
@@ -4547,12 +6158,15 @@ const selectRawData = async () => {
     date: ev.date,
     task_number: ev.task_number || '',
   });
+  if (snapshotId) params.set('snapshot_id', String(snapshotId));
   loadingVersionData.value = true;
   try {
-    const rawResp = await $fetch<{ version_id: number | null; rows: any[] }>(
+    const rawResp = await $fetch<{ version_id: number | null; snapshot_id?: number | null; snapshots?: any[]; rows: any[] }>(
       `${apiBase.value}/api/cost/raw-data?${params}`,
       { headers: fetchHeaders.value }
     );
+    ev.snapshots = rawResp.snapshots || [];
+    ev.selectedSnapshotId = rawResp.snapshot_id ?? null;
     ev.rows = (rawResp.rows || []).map((rr: any) => normalizeVersionRow(rr));
   } catch (e: any) {
     console.error('[cost] load raw data failed', e);
@@ -4566,6 +6180,7 @@ const selectVersion = async (versionId: number) => {
   if (!editingVersion.value || loadingVersionData.value) return;
   const ev = editingVersion.value;
   ev.selectedVersionId = versionId;
+  ev.selectedSnapshotId = null;
   ev.isEditing = false;
   ev.version_id = null;
   loadingVersionData.value = true;
@@ -4588,6 +6203,8 @@ const onVersionSelectChange = (event: Event) => {
   const value = (event.target as HTMLSelectElement).value;
   if (value === '__raw__') {
     selectRawData();
+  } else if (value.startsWith('__snap__')) {
+    selectRawData(parseInt(value.slice('__snap__'.length), 10));
   } else {
     selectVersion(parseInt(value, 10));
   }
@@ -4598,6 +6215,27 @@ const currentVersionStatus = computed(() => {
   if (editingVersion.value.selectedVersionId === null) return 'Исходные данные';
   const v = editingVersion.value.versions.find(vv => vv.id === editingVersion.value!.selectedVersionId);
   return v ? v.status : '';
+});
+
+// «Источник изменился» в редакторе (миграция 0057): открытая версия сделана от
+// снимка старее последнего, либо открыт не последний снимок. Подсказка, а не
+// действие — экономист сам открывает свежий снимок и делает от него версию.
+const sourceChangedNote = computed(() => {
+  const ev = editingVersion.value;
+  if (!ev || !ev.snapshots.length) return '';
+  const latest = ev.snapshots[0];
+  const when = latest.created_at ? ` от ${latest.created_at.slice(0, 16)}` : '';
+  if (ev.selectedVersionId !== null) {
+    const v = ev.versions.find((vv: any) => vv.id === ev.selectedVersionId);
+    if (v && v.source_version_id && v.source_version_id !== latest.id) {
+      return `Источник изменился после этой версии: есть снимок ${latest.snapshot_no}${when}`;
+    }
+    return '';
+  }
+  if (ev.selectedSnapshotId && ev.selectedSnapshotId !== latest.id) {
+    return `Есть более свежий снимок ${latest.snapshot_no}${when}`;
+  }
+  return '';
 });
 
 const startEditing = () => {
@@ -4655,6 +6293,7 @@ const saveDraft = async () => {
           username: username || 'system',
           rows: ev.rows,
           status: 'draft',
+          source_version_id: ev.selectedSnapshotId,
         }),
       });
       if (!resp.ok) {
@@ -4704,6 +6343,7 @@ const submitDraft = async () => {
           username: username || 'system',
           rows: ev.rows,
           status: 'pending',
+          source_version_id: ev.selectedSnapshotId,
         }),
       });
       if (!resp.ok) {
@@ -4725,6 +6365,10 @@ const closeVersionEditor = () => {
   editingVersion.value = null;
   editingTypeCell.value = -1;
   stagePrices.value = [];
+  multipackState.value = null;
+  mpItems.value = [];
+  mpDirty.value = false;
+  mpSearchOpen.value = false;
 };
 
 const addVersionRow = () => {
@@ -4766,6 +6410,15 @@ const addVersionRow = () => {
     template['Декоры, USD.'] = 0;
     template['Вязание, руб.'] = 0;
     template['Вязание, USD.'] = 0;
+    // Коэффициент источника (миграция 0031) шаблоном НЕ наследуется. Он
+    // поглощает расхождение «Норма × цена ≠ стоимость» у КОНКРЕТНОГО материала
+    // источника, и у чужой строки он произвольный: по носкам 25-й процентиль —
+    // 0,000241, а у трети калькуляций коэффициент первой строки далёк от
+    // единицы. Унаследованный коэффициент умножил бы введённую цену на 0,0002 —
+    // статья молча обнулилась бы. null = «неизвестен, считать 1»
+    // (_recalc_cost_buckets в app/db.py).
+    template['cost_factor_rub'] = null;
+    template['cost_factor_usd'] = null;
   }
   template.change_type = 'added';
   template._selected = false;
@@ -5145,22 +6798,45 @@ const saveAllChanges = async () => {
         comment: comments[key] || "",
       };
     });
-    const result = await $fetch<{ success: boolean; count: number; error?: string; mock?: boolean }>(
+    const result = await $fetch<{
+      success: boolean; count: number; error?: string; mock?: boolean;
+      failed?: { model?: string; articul?: string; plan_id?: string; calc_sign?: string; reason?: string }[];
+    }>(
       `${apiBase.value}/api/cost/save-batch`,
       { method: "POST", body: { changes, author_name: user.value?.email || '' }, headers: fetchHeaders.value }
     );
     if (result.mock) mockMode.value = true;
+    // Из списка правок убираем ТОЛЬКО сохранённое. Раньше здесь стоял
+    // changedRows.clear() во всех ветках, включая ошибку, — введённые цены
+    // пропадали, и человек вводил их заново. Теперь несохранённые строки
+    // остаются изменёнными, и «Сохранить» можно нажать повторно.
+    const failedKeys = new Set(
+      (result.failed || []).map(f => [
+        (f.model ?? '').toString().trim(),
+        (f.articul ?? '').toString().trim(),
+        (f.plan_id ?? '').toString().trim(),
+        (f.calc_sign ?? '').toString().trim(),
+      ].join(''))
+    );
+    for (const [key, row] of Array.from(changedRows.entries())) {
+      if (!failedKeys.has(calcRowKey(row))) changedRows.delete(key);
+    }
     if (result.success) {
       alert(`Сохранено ${result.count} записей${result.mock ? " (mock-режим)" : ""}`);
-      changedRows.clear();
     } else {
-      changedRows.clear();
-      alert("Ошибка: " + (result.error || "unknown"));
+      lastError.value = result.error || "Не удалось сохранить изменения";
+      alert(
+        `Сохранено ${result.count} записей, не сохранено ${result.failed?.length ?? 0}.
+`
+        + "Несохранённые строки остались отмеченными — можно нажать «Сохранить изменения» ещё раз."
+      );
     }
   } catch (e: any) {
-    changedRows.clear();
+    // Ничего не стираем: значения остаются на экране и в списке изменений,
+    // повторное нажатие «Сохранить» отправит их снова.
     console.error("[cost] save-batch failed", e);
-    lastError.value = e?.data?.detail || e?.message || String(e);
+    lastError.value = (e?.data?.detail || e?.message || String(e))
+      + " — введённые значения сохранены на экране, попробуйте нажать «Сохранить изменения» ещё раз";
   } finally {
     saving.value = false;
   }
@@ -5590,6 +7266,574 @@ async function submitRevokeReopen() {
 }
 
 const openApprovalPopup = (row: any) => { if (!can('cost:approve') && !can('cost:peo_mark')) return; approvalTarget.value = row; approvalComment.value = ''; };
+
+// ── Семафор этапов (пожелание № 2) ───────────────────────────────────────────
+// Один значок на строку: где калькуляция в процессе. Порядок проверок — от
+// конца процесса к началу, потому что признаки накладываются: у записанной в
+// DWH строки остаётся и статус ПЭО, и заявка на цену; у возвращённой на
+// корректировку заявка тоже не удаляется (с 25.08.2026 введённая БМ цена
+// сохраняется). Поэтому сначала смотрим DWH, потом решения ПЭО по цене,
+// потом наличие цены, и только потом согласование себестоимости.
+type StageKey = 'dwh' | 'rejected' | 'returned' | 'priced' | 'approved' | 'none';
+interface StageInfo { key: StageKey; icon: string; label: string; short: string }
+
+const STAGE_LEGEND: StageInfo[] = [
+  { key: 'approved', icon: '🟢', label: 'Себестоимость утверждена экономистом',        short: 'утверждена ПЭО' },
+  { key: 'priced',   icon: '🔵', label: 'Цена установлена бренд-менеджером',           short: 'цена БМ' },
+  { key: 'returned', icon: '🟡', label: 'Экономист вернул цену бренд-менеджеру на корректировку', short: 'на корректировке' },
+  { key: 'rejected', icon: '🔴', label: 'Отклонена руководителем ПЭО',                 short: 'отклонена' },
+  { key: 'dwh',      icon: '🟣', label: 'Расценённая калькуляция загружена в DWH («лису»)', short: 'в DWH' },
+  // Не этап, а состояние изделия: модель/артикул сняты с актуальности
+  // калькулятором или ПЭО. Показывается поверх любого этапа.
+  { key: 'obsolete', icon: '⚫', label: 'Неактуальная модель/артикул',                   short: 'неактуальна' },
+];
+const STAGE_NONE: StageInfo = { key: 'none', icon: '⚪', label: 'Ещё не согласована', short: 'нет статуса' };
+const STAGE_LEGEND_TEXT = 'Этапы прохождения калькуляции:\n' +
+  STAGE_LEGEND.map((s) => `${s.icon} ${s.label}`).join('\n') +
+  `\n${STAGE_NONE.icon} ${STAGE_NONE.label}` +
+  '\n🔄 Источник (CostHistory) изменился после активной версии — посмотрите свежий снимок в редакторе';
+
+/** Подсказка значка «источник изменился» (миграция 0057). */
+function sourceChangedTitle(row: any): string {
+  const fmt = (s: any) => (s ? String(s).slice(0, 16).replace('T', ' ') : '');
+  const latest = row?._source_latest_no ? `снимок ${row._source_latest_no}${row._source_latest_at ? ' от ' + fmt(row._source_latest_at) : ''}` : 'новый снимок';
+  const base = row?._source_base_no ? `снимка ${row._source_base_no}${row._source_base_at ? ' от ' + fmt(row._source_base_at) : ''}` : 'более раннего снимка';
+  const ver = row?._source_active_version ? `Версия ${row._source_active_version}` : 'Активная версия';
+  return `Источник изменился: есть ${latest}. ${ver} сделана от ${base}. Откройте редактор и посмотрите свежие исходные данные.`;
+}
+
+function rowStage(row: any): StageInfo {
+  if (!row) return STAGE_NONE;
+  if (row.obsolete) return STAGE_LEGEND[5];
+  // Переоткрытая админом калькуляция снова в процессе: запись в DWH есть,
+  // но показываем не её, а текущий шаг второго круга.
+  if (row._in_dwh && !row._reopened) return STAGE_LEGEND[4];
+  if (row.peo_status === 'rejected') return STAGE_LEGEND[3];
+  if (row.peo_status === 'returned') return STAGE_LEGEND[2];
+  if (row._has_pending) return STAGE_LEGEND[1];
+  if (row.peo_status === 'approved') return STAGE_LEGEND[0];
+  return STAGE_NONE;
+}
+
+function stageTitle(row: any): string {
+  const s = rowStage(row);
+  const who = row?.peo_approved_by ? `: ${row.peo_approved_by}` : '';
+  const when = row?.peo_approved_at ? ` ${new Date(row.peo_approved_at).toLocaleDateString('ru-RU')}` : '';
+  switch (s.key) {
+    case 'approved': return `${s.label}${who}${when}`;
+    case 'returned':
+    case 'rejected': return `${s.label}${who}`;
+    case 'dwh':      return s.label + (row?._reopened ? ', открыта на исправление' : '');
+    case 'obsolete': return obsoleteTitle(row);
+    default:         return s.label;
+  }
+}
+
+// ── Отметка «нужна замена артикула» (пожелание № 4) ─────────────────────────
+// Галочка в строке; при установке сервер шлёт сообщение в Битрикс операторам
+// (почтовый канал убран 08.09.2026 по решению заказчика). Адресаты зависят от
+// ассортимента: ЧНИ (носки и Orodoro по Level 01) и всё остальное уходят разным
+// людям. Список адресатов и настроен ли Битрикс подтягиваем с сервера, чтобы
+// подсказка говорила правду, а не повторяла захардкоженные фамилии.
+const CHNI_LEVEL01 = ['Носки&Колготки', 'Orodoro'];
+const isChniRow = (row: any) => CHNI_LEVEL01.includes(String(row?.['Level 01'] || '').trim());
+
+interface ReplaceInfo { recipients: { segment: string; email: string; name: string; b24_id: number | null }[]; bitrix_enabled: boolean }
+const replaceInfo = ref<ReplaceInfo | null>(null);
+const replaceBusy = reactive<Record<string, boolean>>({});
+
+async function loadReplaceInfo() {
+  try {
+    replaceInfo.value = await $fetch<ReplaceInfo>(`${apiBase.value}/api/cost/articul-replace/recipients`, { headers: fetchHeaders.value });
+  } catch { replaceInfo.value = null; }
+}
+onMounted(() => { loadReplaceInfo(); });
+
+function replaceRecipientsText(row: any): string {
+  const seg = isChniRow(row) ? 'chni' : 'other';
+  const list = (replaceInfo.value?.recipients || []).filter((r) => r.segment === seg);
+  if (!list.length) return isChniRow(row) ? 'адресатам по ЧНИ' : 'адресату по остальному ассортименту';
+  return list.map((r) => r.name || r.email).join(', ');
+}
+
+const replaceHeaderTitle = computed(() =>
+  'Нужна замена артикула. Отметка шлёт сообщение в Битрикс: ЧНИ (носки, Orodoro) — ' +
+  ((replaceInfo.value?.recipients || []).filter((r) => r.segment === 'chni').map((r) => r.name || r.email).join(', ') || '—') +
+  '; остальное — ' +
+  ((replaceInfo.value?.recipients || []).filter((r) => r.segment === 'other').map((r) => r.name || r.email).join(', ') || '—') +
+  (replaceInfo.value && !replaceInfo.value.bitrix_enabled ? '\nВнимание: Битрикс не настроен, сообщения не уходят' : '')
+);
+
+/** Поставить отметку может любой с правом; снять уже стоящую — только
+ * администратор (заказчик, 09.09.2026: калькулятор, ПЭО и БМ снимали галочку
+ * после отправки). Сервер проверяет то же самое и отвечает 403. */
+function canToggleReplace(row: any): boolean {
+  if (!can('cost:articul_replace')) return false;
+  if (row.replace_needed && !can('cost:admin')) return false;
+  return true;
+}
+
+function replaceTitle(row: any): string {
+  if (!row.replace_needed) {
+    if (!can('cost:articul_replace')) return 'Отметку «нужна замена артикула» ставит бренд-менеджер (а также ПЭО и калькулятор)';
+    return 'Нужна замена артикула? Отметьте — сообщение в Битрикс уйдёт: ' + replaceRecipientsText(row);
+  }
+  const fmtDt = (v: any) => (v ? new Date(v).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '');
+  let s = `Нужна замена артикула — отметил(а) ${row.replace_set_by || '—'} ${fmtDt(row.replace_set_at)}`.trim();
+  if (row.replace_comment) s += `\nКомментарий: ${row.replace_comment}`;
+  // Уведомление — сообщение в Битрикс по ID адресата на портале. notified_at —
+  // дошло хотя бы одному, notify_error — кому и почему нет.
+  s += row.replace_notified_at
+    ? `\nУведомление отправлено ${fmtDt(row.replace_notified_at)}: ${replaceRecipientsText(row)}`
+    : '\nУведомление не отправлено';
+  if (row.replace_notify_error) s += `\nНе дошло: ${row.replace_notify_error}`;
+  if (!row.replace_notified_at && can('cost:articul_replace')) s += '\nКлик по ⚠ — отправить ещё раз';
+  if (!can('cost:admin')) s += '\nСнять отметку может только администратор';
+  return s;
+}
+
+/** Повторная отправка сообщения без снятия отметки: сервер по needed=true
+ * поверх стоящей отметки шлёт уведомление заново (комментарий сохраняется). */
+async function resendReplace(row: any) {
+  const k = calcRowKey(row);
+  if (replaceBusy[k]) return;
+  replaceBusy[k] = true;
+  try {
+    const res = await postReplace(row, true, row.replace_comment || '');
+    applyReplaceResult(row, res, true);
+  } catch (e: any) {
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    delete replaceBusy[k];
+  }
+}
+
+async function postReplace(row: any, needed: boolean, comment: string): Promise<any> {
+  return await $fetch<any>(`${apiBase.value}/api/cost/articul-replace`, {
+    method: 'POST',
+    headers: fetchHeaders.value,
+    body: {
+      model: row['Модель'], articul: row['Артикул'],
+      calc_sign: row['Признак калькуляции'], plan_id: row['PLAN_ID'],
+      task_number: row['Номер задания производства'],
+      needed, comment,
+      context: {
+        model_name: row['Наименование модели'], level01: row['Level 01'],
+        country: row['Страна пр-ва'], brand_manager: row['Бренд-менеджер'],
+      },
+    },
+  });
+}
+
+function applyReplaceResult(row: any, res: any, checked: boolean) {
+  Object.assign(row, {
+    replace_needed: res.replace_needed, replace_comment: res.replace_comment,
+    replace_set_by: res.replace_set_by, replace_set_at: res.replace_set_at,
+    replace_notified_at: res.replace_notified_at, replace_notify_error: res.replace_notify_error,
+  });
+  // Отметка стоит в любом случае; баннер — только про доставку сообщения.
+  if (checked && res.notify && res.notify.status !== 'sent') {
+    lastError.value = `Отметка о замене артикула сохранена, но сообщение в Битрикс не дошло ` +
+      `(адресаты: ${(res.notify.recipients || []).join(', ') || '—'}): ${res.notify.error || res.notify.status}`;
+  } else if (checked && res.notify && res.notify.error) {
+    // Дошло, но не всем (например, у одного из адресатов нет ID в Битриксе):
+    // отметка стоит, но человеку стоит знать, чего не хватило.
+    lastError.value = `Отметка о замене артикула сохранена, сообщение в Битрикс отправлено не всем: ${res.notify.error}`;
+  }
+}
+
+async function toggleReplace(row: any, ev: Event) {
+  const input = ev.target as HTMLInputElement;
+  const checked = input.checked;
+  const k = calcRowKey(row);
+  if (replaceBusy[k] || !canToggleReplace(row)) { input.checked = !!row.replace_needed; return; }
+  let comment = '';
+  if (checked) {
+    const c = window.prompt(
+      `Нужна замена артикула: ${row['Модель'] || ''} / ${row['Артикул'] || ''}.\nСообщение в Битрикс уйдёт: ${replaceRecipientsText(row)}.\nКомментарий к сообщению (можно оставить пустым):`,
+      row.replace_comment || '',
+    );
+    // Отмена диалога — отметку не ставим; :checked привязан к row, но DOM уже
+    // переключился, поэтому возвращаем его руками.
+    if (c === null) { input.checked = !!row.replace_needed; return; }
+    comment = c.trim();
+  }
+  replaceBusy[k] = true;
+  try {
+    const res = await postReplace(row, checked, comment);
+    applyReplaceResult(row, res, checked);
+  } catch (e: any) {
+    input.checked = !!row.replace_needed;
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    delete replaceBusy[k];
+  }
+}
+
+// ── Статус «Неактуальная модель/артикул» (09.09.2026) ───────────────────────
+// Ставят калькулятор и ПЭО (право cost:obsolete). Ключ — модель + артикул:
+// статус ложится на все калькуляции изделия, поэтому после ответа сервера
+// обновляем все строки той же пары, а не только ту, где стояла галочка.
+// Строка серая (tr.row-obsolete), в «Этапе» ⚫, в фильтре статусов — отдельное
+// значение (серверный peo_filter='obsolete').
+const OBSOLETE_HEADER_TITLE = 'Неактуальная модель/артикул. Отмечают калькулятор и ПЭО; статус ложится на все калькуляции этой модели и артикула, строки подсвечиваются серым';
+const obsoleteBusy = reactive<Record<string, boolean>>({});
+const obsoleteKey = (row: any) => `${row?.['Модель'] || ''}\u0000${row?.['Артикул'] || ''}`;
+
+function obsoleteTitle(row: any): string {
+  const fmtDt = (v: any) => (v ? new Date(v).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '');
+  if (!row?.obsolete) {
+    return can('cost:obsolete')
+      ? 'Отметить модель/артикул как неактуальные (для всех калькуляций пары)'
+      : 'Статус «Неактуальная модель/артикул» ставят калькулятор и ПЭО';
+  }
+  let s = `Неактуальная модель/артикул — отметил(а) ${row.obsolete_set_by || '—'} ${fmtDt(row.obsolete_set_at)}`.trim();
+  if (row.obsolete_comment) s += `\nКомментарий: ${row.obsolete_comment}`;
+  if (can('cost:obsolete')) s += '\nСнять галочку — вернуть в актуальные';
+  return s;
+}
+
+async function toggleObsolete(row: any, ev: Event) {
+  const input = ev.target as HTMLInputElement;
+  const checked = input.checked;
+  const k = obsoleteKey(row);
+  if (obsoleteBusy[k] || !can('cost:obsolete')) { input.checked = !!row.obsolete; return; }
+  let comment = '';
+  if (checked) {
+    const c = window.prompt(
+      `Неактуальная модель/артикул: ${row['Модель'] || ''} / ${row['Артикул'] || ''}.\nСтатус ляжет на все калькуляции этой пары.\nКомментарий (можно оставить пустым):`,
+      row.obsolete_comment || '',
+    );
+    if (c === null) { input.checked = !!row.obsolete; return; }
+    comment = c.trim();
+  }
+  obsoleteBusy[k] = true;
+  try {
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/obsolete`, {
+      method: 'POST',
+      headers: fetchHeaders.value,
+      body: { model: row['Модель'], articul: row['Артикул'], obsolete: checked, comment },
+    });
+    const patch = {
+      obsolete: res.obsolete, obsolete_comment: res.obsolete_comment,
+      obsolete_set_by: res.obsolete_set_by, obsolete_set_at: res.obsolete_set_at,
+    };
+    for (const r of allAggregated.value) {
+      if (r['Модель'] === row['Модель'] && r['Артикул'] === row['Артикул']) Object.assign(r, patch);
+    }
+    Object.assign(row, patch);
+  } catch (e: any) {
+    input.checked = !!row.obsolete;
+    lastError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    delete obsoleteBusy[k];
+  }
+}
+
+// ── Согласование по постановлению 713 (пожелание № 8) ───────────────────────
+// Карточка на калькуляцию (ключ — как у цены: модель, артикул, признак, план):
+// требуется ли согласование с исполкомом, вид (повышение цены / новинка),
+// артикул-аналог из S_MODELI с ценами «как в главной таблице», решение
+// исполкома. Поля reg713_* приходят с /aggregated, карточка правится в окне.
+interface Reg713State { key: 'none' | 'required' | 'approved' | 'rejected'; icon: string; label: string }
+const REG713_STATES: Record<Reg713State['key'], Reg713State> = {
+  none:     { key: 'none',     icon: '·',  label: 'Согласование по 713 не требуется' },
+  required: { key: 'required', icon: '📋', label: 'Требуется согласование с исполкомом, решения ещё нет' },
+  approved: { key: 'approved', icon: '✅', label: 'Согласовано в исполкоме' },
+  rejected: { key: 'rejected', icon: '❌', label: 'Не согласовано в исполкоме' },
+};
+const REG713_LEGEND = 'Согласование цены с исполкомом по постановлению 713:\n' +
+  '· — не требуется\n📋 — требуется, решения нет\n✅ — согласовано\n❌ — не согласовано\nКлик — открыть карточку';
+const REG713_KIND_LABEL: Record<string, string> = { price_increase: 'повышение цены', novelty: 'новинка' };
+const REG713_SOURCE_LABEL: Record<string, string> = {
+  calc: 'последняя калькуляция аналога в CostHistory',
+  dwh: 'утверждённая цена аналога в DWH',
+  gpartner: 'плановая цена из справочника S_MODELI',
+  manual: 'введено вручную',
+};
+
+function reg713State(row: any): Reg713State {
+  if (!row?.reg713_required) return REG713_STATES.none;
+  if (row.reg713_decision === 'approved') return REG713_STATES.approved;
+  if (row.reg713_decision === 'rejected') return REG713_STATES.rejected;
+  return REG713_STATES.required;
+}
+
+function reg713Title(row: any): string {
+  const s = reg713State(row);
+  const parts = [s.label];
+  if (row?.reg713_required) {
+    if (row.reg713_kind) parts.push(`Вид: ${REG713_KIND_LABEL[row.reg713_kind] || row.reg713_kind}`);
+    if (row.reg713_analog_articul) {
+      let a = `Аналог: ${row.reg713_analog_articul}${row.reg713_analog_model ? ' / ' + row.reg713_analog_model : ''}`;
+      const pr: string[] = [];
+      if (row.reg713_analog_retail != null) pr.push(`розница ${fmt(row.reg713_analog_retail)}`);
+      if (row.reg713_analog_wholesale != null) pr.push(`опт ${fmt(row.reg713_analog_wholesale)}`);
+      if (pr.length) a += ` (${pr.join(', ')})`;
+      parts.push(a);
+    }
+    if (row.reg713_decision_doc) parts.push(row.reg713_decision_doc);
+  }
+  parts.push(can('cost:reg713') ? 'Клик — открыть карточку' : 'Клик — посмотреть карточку');
+  return parts.join('\n');
+}
+
+const reg713Target = ref<any>(null);
+const reg713Form = reactive<any>({
+  required: false, kind: null as string | null,
+  analog_model: null as string | null, analog_articul: null as string | null, analog_name: null as string | null,
+  analog_retail: null as number | string | null, analog_wholesale: null as number | string | null,
+  analog_price_source: null as string | null,
+  decision: null as string | null, decision_doc: '', comment: '',
+});
+const reg713History = ref<any[]>([]);
+const reg713Query = ref('');
+const reg713Results = ref<any[]>([]);
+const reg713Searching = ref(false);
+const reg713Searched = ref(false);
+const reg713PricesLoading = ref(false);
+const reg713Saving = ref(false);
+const reg713Error = ref('');
+let reg713SearchTimer: ReturnType<typeof setTimeout> | null = null;
+let reg713SearchSeq = 0;
+
+const reg713SourceText = computed(() => {
+  if (!reg713Form.analog_articul) return 'Выберите аналог — цены подтянутся по правилам главной таблицы: последняя калькуляция, затем утверждённая цена, затем плановая.';
+  const src = reg713Form.analog_price_source;
+  if (!src) return 'Цены аналога не найдены ни в калькуляциях, ни в справочнике — введите вручную или нажмите «Обновить цены».';
+  return 'Источник цен: ' + (REG713_SOURCE_LABEL[src] || src) + '.';
+});
+
+// Ключ карточки — модель + артикул (решение заказчика 03.09.2026): исполком
+// согласует цену изделия, одно решение действует на все планы и этапы пары.
+function reg713Key(row: any) {
+  return { model: String(row['Модель'] || '').trim(), articul: String(row['Артикул'] || '').trim() };
+}
+
+async function openReg713(row: any) {
+  reg713Target.value = row;
+  reg713Error.value = '';
+  reg713Query.value = '';
+  reg713Results.value = [];
+  reg713Searched.value = false;
+  reg713History.value = [];
+  Object.assign(reg713Form, {
+    required: !!row.reg713_required, kind: row.reg713_kind || null,
+    analog_model: row.reg713_analog_model || null, analog_articul: row.reg713_analog_articul || null,
+    analog_name: row.reg713_analog_name || null,
+    analog_retail: row.reg713_analog_retail ?? null, analog_wholesale: row.reg713_analog_wholesale ?? null,
+    analog_price_source: row.reg713_analog_price_source || null,
+    decision: row.reg713_decision || null, decision_doc: row.reg713_decision_doc || '', comment: row.reg713_comment || '',
+  });
+  // История — фоном, окно открывается сразу.
+  try {
+    const k = reg713Key(row);
+    const q = new URLSearchParams(k).toString();
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/card?${q}`, { headers: fetchHeaders.value });
+    if (reg713Target.value === row) reg713History.value = res?.history || [];
+  } catch { /* история — украшение */ }
+}
+
+function closeReg713() {
+  reg713Target.value = null;
+  if (reg713SearchTimer) { clearTimeout(reg713SearchTimer); reg713SearchTimer = null; }
+}
+
+function onReg713QueryInput() {
+  if (reg713SearchTimer) clearTimeout(reg713SearchTimer);
+  const q = reg713Query.value.trim();
+  reg713Searched.value = false;
+  if (q.length < 2) { reg713Results.value = []; return; }
+  reg713SearchTimer = setTimeout(async () => {
+    const seq = ++reg713SearchSeq;
+    reg713Searching.value = true;
+    try {
+      const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/articuls?q=${encodeURIComponent(q)}&limit=30`, { headers: fetchHeaders.value });
+      if (seq !== reg713SearchSeq) return; // пришёл ответ на устаревший запрос
+      reg713Results.value = res?.items || [];
+      reg713Searched.value = true;
+    } catch (e: any) {
+      if (seq === reg713SearchSeq) { reg713Results.value = []; reg713Error.value = e?.data?.detail || e?.message || String(e); }
+    } finally {
+      if (seq === reg713SearchSeq) reg713Searching.value = false;
+    }
+  }, 350);
+}
+
+async function pickReg713Analog(it: any) {
+  reg713Form.analog_model = it.model;
+  reg713Form.analog_articul = it.articul;
+  reg713Form.analog_name = it.name;
+  reg713Form.analog_retail = null;
+  reg713Form.analog_wholesale = null;
+  reg713Form.analog_price_source = null;
+  reg713Results.value = [];
+  reg713Query.value = '';
+  await fetchReg713Prices();
+}
+
+function clearReg713Analog() {
+  reg713Form.analog_model = null;
+  reg713Form.analog_articul = null;
+  reg713Form.analog_name = null;
+  reg713Form.analog_retail = null;
+  reg713Form.analog_wholesale = null;
+  reg713Form.analog_price_source = null;
+}
+
+async function fetchReg713Prices() {
+  if (!reg713Form.analog_articul) return;
+  reg713PricesLoading.value = true;
+  reg713Error.value = '';
+  try {
+    const q = new URLSearchParams({ model: reg713Form.analog_model || '', articul: reg713Form.analog_articul }).toString();
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/analog-prices?${q}`, { headers: fetchHeaders.value });
+    reg713Form.analog_retail = res?.retail ?? null;
+    reg713Form.analog_wholesale = res?.wholesale ?? null;
+    reg713Form.analog_price_source = res?.source || null;
+    if (res?.name && !reg713Form.analog_name) reg713Form.analog_name = res.name;
+  } catch (e: any) {
+    reg713Error.value = 'Не удалось получить цены аналога: ' + (e?.data?.detail || e?.message || String(e));
+  } finally {
+    reg713PricesLoading.value = false;
+  }
+}
+
+async function saveReg713() {
+  const row = reg713Target.value;
+  if (!row) return;
+  if (reg713Form.required && !reg713Form.kind) {
+    reg713Error.value = 'Укажите вид: повышение цены или новинка.';
+    return;
+  }
+  reg713Saving.value = true;
+  reg713Error.value = '';
+  try {
+    const num = (v: any) => (v === '' || v == null ? null : Number(v));
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/card`, {
+      method: 'POST', headers: fetchHeaders.value,
+      body: {
+        ...reg713Key(row),
+        required: !!reg713Form.required, kind: reg713Form.kind || null,
+        analog_model: reg713Form.analog_model, analog_articul: reg713Form.analog_articul, analog_name: reg713Form.analog_name,
+        analog_retail: num(reg713Form.analog_retail), analog_wholesale: num(reg713Form.analog_wholesale),
+        analog_price_source: reg713Form.analog_articul ? (reg713Form.analog_price_source || 'manual') : null,
+        decision: reg713Form.decision || null, decision_doc: reg713Form.decision_doc || null, comment: reg713Form.comment || null,
+      },
+    });
+    const c = res?.card || {};
+    // Обновляем ВСЕ строки с этой парой модель+артикул: карточка одна на
+    // изделие, а строк (планов, этапов, заданий) у него может быть много.
+    const k = reg713Key(row);
+    for (const r of allAggregated.value) {
+      const rk = reg713Key(r);
+      if (rk.model !== k.model || rk.articul !== k.articul) continue;
+      Object.assign(r, {
+        reg713_required: !!c.required, reg713_kind: c.kind ?? null,
+        reg713_analog_model: c.analog_model ?? null, reg713_analog_articul: c.analog_articul ?? null, reg713_analog_name: c.analog_name ?? null,
+        reg713_analog_retail: c.analog_retail ?? null, reg713_analog_wholesale: c.analog_wholesale ?? null,
+        reg713_analog_price_source: c.analog_price_source ?? null,
+        reg713_decision: c.decision ?? null, reg713_decision_at: c.decision_at ?? null, reg713_decision_doc: c.decision_doc ?? null,
+        reg713_comment: c.comment ?? null, reg713_updated_by: c.updated_by ?? null, reg713_updated_at: c.updated_at ?? null,
+      });
+    }
+    closeReg713();
+  } catch (e: any) {
+    reg713Error.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    reg713Saving.value = false;
+  }
+}
+
+// ── Закупная готовая продукция (пожелания № 6/7) ────────────────────────────
+// Калькуляции КПСС приходят импортом из портала БМ, ПФКСС считается по приходу.
+// В строке таблицы виден один итог в «Основных материалах», раскладка (цена,
+// логистика, таможня, сертификация) — в окне по значку 🛒.
+const PURCHASE_ARTICLES = [
+  { key: 'price', label: 'Цена по инвойсу / размещения' },
+  { key: 'logistics', label: 'Логистика' },
+  { key: 'customs', label: 'Таможня' },
+  { key: 'cert', label: 'Сертификация' },
+  { key: 'total', label: 'Себестоимость' },
+];
+const purchaseTarget = ref<any>(null);
+const purchaseDetail = ref<any>(null);
+const purchaseLoading = ref(false);
+const purchaseError = ref('');
+const purchaseImporting = ref(false);
+const showPurchaseInvoice = ref(false);
+
+function purchaseTitle(row: any): string {
+  const src = row.purchase_source === 'portal' ? 'КПСС из портала БМ' : 'ПФКСС по приходу';
+  const parts = [`Закупная готовая продукция: ${src}`];
+  if (row.purchase_total_byn != null) {
+    parts.push(`Себестоимость ${fmt(row.purchase_total_byn)} BYN = цена ${fmt(row.purchase_price_byn)}` +
+      ` + логистика ${fmt(row.purchase_logistics_byn)} + таможня ${fmt(row.purchase_customs_byn)} + сертификация ${fmt(row.purchase_cert_byn)}`);
+  }
+  parts.push('Клик — раскладка себестоимости');
+  return parts.join('\n');
+}
+
+async function openPurchaseDetail(row: any) {
+  purchaseTarget.value = row;
+  purchaseDetail.value = null;
+  purchaseError.value = '';
+  purchaseLoading.value = true;
+  try {
+    const q = new URLSearchParams({
+      model: String(row['Модель'] || '').trim(), articul: String(row['Артикул'] || '').trim(),
+      calc_sign: String(row['Признак калькуляции'] || '').trim(), plan_id: String(row['PLAN_ID'] || '').trim(),
+      task_number: String(row['Номер задания производства'] || '').trim(),
+    }).toString();
+    purchaseDetail.value = await $fetch<any>(`${apiBase.value}/api/cost/purchase/detail?${q}`, { headers: fetchHeaders.value });
+  } catch (e: any) {
+    purchaseError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    purchaseLoading.value = false;
+  }
+}
+
+function devText(fact: any, plan: any): string {
+  if (fact == null || plan == null) return '—';
+  const d = Number(fact) - Number(plan);
+  return (d > 0 ? '+' : '') + fmt(d);
+}
+function devClass(fact: any, plan: any): string {
+  if (fact == null || plan == null) return '';
+  const d = Number(fact) - Number(plan);
+  return d > 0.005 ? 'delta-neg' : d < -0.005 ? 'delta-pos' : '';
+}
+
+/** Импорт КПСС из портала: сначала пробный прогон с цифрами, потом запись. */
+async function runPurchaseImport() {
+  if (purchaseImporting.value) return;
+  purchaseImporting.value = true;
+  lastError.value = '';
+  try {
+    const dry = await $fetch<any>(`${apiBase.value}/api/cost/purchase/import`, {
+      method: 'POST', headers: fetchHeaders.value, body: { dry_run: true },
+    });
+    const reasons = Object.entries(dry.skipped_reasons || {}).map(([k, v]) => `   · ${k}: ${v}`).join('\n');
+    const ok = confirm(
+      'Импорт закупной готовой продукции из портала БМ.\n\n' +
+      `Планов «заказ готовой»: ${dry.plans}, строк: ${dry.items}.\n` +
+      `Будет создано или обновлено калькуляций КПСС: ${dry.to_write}.\n` +
+      `Пропущено: ${dry.skipped}` + (reasons ? '\n' + reasons : '') + '\n\n' +
+      'Существующие импортированные строки обновятся, остальные данные не затрагиваются. Продолжить?'
+    );
+    if (!ok) return;
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/purchase/import`, {
+      method: 'POST', headers: fetchHeaders.value, body: {},
+    });
+    alert(`Импорт завершён за ${res.seconds} с.\nСоздано: ${res.created}, обновлено: ${res.updated}, пропущено: ${res.skipped}.\n` +
+      (res.vat_filled ? `Ставка НДС дозаполнена у закупных строк без неё: ${res.vat_filled}.\n` : '') +
+      'Нажмите «Загрузить данные», чтобы увидеть строки (фильтр «🛒 Только закупная»).');
+  } catch (e: any) {
+    lastError.value = 'Импорт закупной не выполнен: ' + (e?.data?.detail || e?.message || String(e));
+  } finally {
+    purchaseImporting.value = false;
+  }
+}
 const closeApprovalPopup = () => { approvalTarget.value = null; };
 
 const recomputeGroupApproved = (row: any) => {
@@ -6373,7 +8617,11 @@ async function applyPendingChanges() {
           wholesale_rub: Number(pc['Отпускная цена по уровню, руб'] ?? pc.wholesale_rub ?? 0),
           calc_sign: calcSign,
           price_type: priceType,
-          author_name: user.value?.email || 'system',
+          // Автора прейскуранта подставляет сервер — бренд-менеджера строки
+          // (просьба пользователей 08.09.2026). Отсюда уходил email нажавшего, и
+          // в Лису он попадал обрезанным до 15 символов: 31.07 в поле «кто ввёл»
+          // записалось «mariy.zuravskay». Оставляем бренд-менеджера как фолбэк.
+          author_name: String(pc['Бренд-менеджер'] ?? pc.brand_manager ?? ''),
           cost_rub: Number(pc['Себестоимость, руб.'] ?? pc.cost_rub ?? 0),
         };
       })
@@ -6740,6 +8988,7 @@ const DETAILS_NUMERIC_FIELDS = [
   'Оптовая цена, руб.',
   'Осн. материалы, руб.',
   'Вспом. материалы, руб.',
+  'Пошив, минуты',
   'Пошив, руб.',
   'Раскрой, руб.',
   'Декор, руб.',
@@ -7062,6 +9311,16 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 .table-wrap { overflow-x: auto; max-width: 100%; }
 .details-table-wrap { overflow: auto; flex: 1; }
 .details-count { padding: var(--sp-2) var(--sp-5); font-size: var(--fs-xs); color: var(--text-muted); border-top: 1px solid var(--border); flex-shrink: 0; }
+.catalog-toolbar { padding: var(--sp-2) var(--sp-5); display: flex; gap: var(--sp-4); align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--border); background: var(--bg-surface-2); flex-shrink: 0; }
+.catalog-pager { margin-left: auto; display: flex; gap: var(--sp-2); align-items: center; }
+.catalog-count { font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; }
+.details-scope-hint { font-size: var(--fs-2xs, 10px); font-weight: var(--fw-normal, 400); color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; margin-left: var(--sp-2); }
+.details-scope-switch { display: inline-flex; border: 1px solid var(--border); border-radius: var(--rd-2); overflow: hidden; }
+.details-scope-switch button { border: none; background: var(--bg-surface); color: var(--text-muted); font-size: var(--fs-xs, 11px); font-weight: var(--fw-medium); padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+.details-scope-switch button + button { border-left: 1px solid var(--border); }
+.details-scope-switch button:hover:not(:disabled) { background: var(--bg-surface-2); color: var(--text-strong); }
+.details-scope-switch button.active { background: var(--accent, #4f46e5); color: var(--accent-fg, #fff); }
+.details-scope-switch button:disabled { opacity: .45; cursor: not-allowed; }
 .btn-details { background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 12px; }
 .btn-details:hover { opacity: 0.7; }
 /* Кнопки строк не наезжают друг на друга */
@@ -7327,6 +9586,12 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
    спутать с оранжевым «возврат» и синим «в DWH». */
 .state-badge--manual {
   color: var(--accent);
+}
+
+/* Пометка мультипака. Эмодзи цветное само, поэтому только курсор-подсказка:
+   значок информационный, кликом ничего не делает. */
+.state-badge--multipack {
+  cursor: help;
 }
 
 /* Перенос колонок мышью (пожелания № 9 и № 14).
@@ -7723,6 +9988,67 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .editor-select:focus { border-color:var(--accent-color, #4338ca); outline:none; }
 .row-added { background:#ecfdf5; }
 .row-modified { background:#fefce8; }
+
+/* ── Мультипаки ─────────────────────────────────────────────────────────── */
+/* Строка состава: приходит из калькуляции одиночки, руками не правится.
+   Цвет — тонированный акцент, чтобы отличаться от «добавлено» (зелёный) и
+   «изменено» (жёлтый), которые про ручные правки. */
+.row-multipack { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.mp-block { border-bottom: 1px solid var(--border-color, #e5e7eb); padding: 8px 16px; }
+.mp-head { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.mp-head .spacer { flex:1; }
+.mp-toggle {
+  background:none; border:none; cursor:pointer; padding:0;
+  font-size:13px; font-weight:600; color:var(--text);
+}
+.mp-count { font-weight:400; color:var(--text-muted); margin-left:6px; }
+.mp-inline-field { font-size:var(--fs-xs, 12px); color:var(--text-secondary, #6b7280); display:flex; gap:4px; align-items:center; }
+.mp-size { width:64px; border:1px solid var(--border-color, #e5e7eb); border-radius:4px; }
+.mp-table { margin-top:8px; width:auto; min-width:720px; }
+.mp-table tfoot td { border-top:1px solid var(--border-color, #e5e7eb); font-size:12px; color:var(--text-secondary, #6b7280); }
+.mp-table tfoot .mp-total-row td { font-weight:600; color:var(--text); }
+.mp-total-label { text-align:right; }
+.mp-qty { width:80px; border:1px solid var(--border-color, #e5e7eb); border-radius:4px; }
+.mp-empty { padding:12px 0; font-size:var(--fs-xs, 12px); }
+.mp-src { font-size:var(--fs-xs, 12px); color:var(--text-secondary, #6b7280); }
+.mp-pin { cursor:pointer; border-bottom:1px dashed var(--border-color, #e5e7eb); }
+.mp-pin--on { color:var(--text); font-weight:600; }
+.mp-hint { margin-left:4px; color:var(--text-muted); }
+.mp-row-missing { background: color-mix(in srgb, #ef4444 10%, transparent); }
+.mp-missing-text { color:#b91c1c; }
+.btn-mp-del { background:none; border:none; cursor:pointer; color:var(--text-muted); }
+.btn-mp-del:hover:not(:disabled) { color:#b91c1c; }
+.mp-warn {
+  margin-top:6px; padding:6px 8px; font-size:var(--fs-xs, 12px);
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  border-left:2px solid #f59e0b; color:var(--text);
+}
+.mp-warn--dirty { background: color-mix(in srgb, var(--accent) 12%, transparent); border-left-color:var(--accent); }
+.mp-built { margin-top:6px; font-size:var(--fs-xs, 12px); }
+/* Поиск одиночек. Ширина под девять колонок; высоту ограничивает
+   .modal-content (95vh), прокручивается только тело. */
+.mp-search-modal { width: min(1200px, 96vw); }
+.mp-search-ctx { font-size: var(--fs-xs, 12px); color: var(--text-muted); margin-left: auto; margin-right: var(--sp-4); }
+.mp-search-filters {
+  display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;
+  padding: var(--sp-3) var(--sp-5);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.mp-search-input {
+  flex: 1 1 260px; min-width: 200px;
+  border:1px solid var(--border-color, #e5e7eb); border-radius:4px;
+  padding:6px 8px; font-size:13px; background: var(--bg-surface); color: var(--text-strong);
+}
+.mp-search-field { display:flex; flex-direction:column; gap:2px; font-size: var(--fs-xs, 12px); color: var(--text-muted); }
+.mp-search-select {
+  min-width: 150px; max-width: 240px;
+  border:1px solid var(--border-color, #e5e7eb); border-radius:4px;
+  padding:5px 8px; font-size:13px; background: var(--bg-surface); color: var(--text-strong);
+}
+.mp-search-body { flex: 1 1 auto; overflow: auto; padding: 0 var(--sp-5); min-height: 160px; }
+.mp-search-table thead th { position: sticky; top: 0; background: var(--bg-surface); z-index: 1; }
+.mp-search-status { font-size: var(--fs-xs, 12px); color: var(--text-muted); }
 .row-zero-cost { background: color-mix(in srgb, #ef4444 10%, transparent) !important; }
 .type-tag.clickable { cursor:pointer; padding:2px 6px; border-radius:4px; background:var(--bg-tonal, #f3f4f6); border:1px solid var(--border-color, #e5e7eb); }
 .type-tag.clickable:hover { background:var(--bg-hover, #e5e7eb); }
@@ -7778,6 +10104,83 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .peo-badge { cursor:pointer; font-size:16px; }
 .peo-readonly .peo-badge { cursor:default; }
 .peo-active .peo-badge { background:rgba(99,102,241,0.15); border-radius:4px; }
+
+/* Семафор этапов (пожелание № 2). Значок — эмодзи-кружок, цветная подложка
+   дублирует его цвет для тех, у кого эмодзи рисуются монохромно. */
+.stage-badge { display:inline-flex; align-items:center; justify-content:center; min-width:22px; height:22px; border-radius:6px; font-size:14px; line-height:1; }
+.stage-approved { background: color-mix(in srgb, var(--pos, #16a34a) 14%, transparent); }
+.stage-priced   { background: color-mix(in srgb, #2563eb 14%, transparent); }
+.stage-returned { background: color-mix(in srgb, #eab308 18%, transparent); }
+.stage-rejected { background: color-mix(in srgb, var(--neg, #dc2626) 14%, transparent); }
+.stage-dwh      { background: color-mix(in srgb, #7c3aed 14%, transparent); }
+.stage-none     { background: transparent; opacity: 0.7; }
+
+.stage-legend { display:inline-flex; flex-wrap:wrap; align-items:center; gap: var(--sp-3, 10px); font-size: var(--fs-xs); color: var(--text-muted); cursor: help; }
+.stage-legend-item { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
+.stage-legend .stage-badge { min-width:18px; height:18px; font-size:11px; }
+/* «Источник изменился» (миграция 0057) — второй значок в колонке этапа,
+   поменьше основного, чтобы оба уместились в 48px. */
+.src-badge { min-width:18px; height:18px; font-size:11px; margin-left:2px; cursor:pointer;
+  background: color-mix(in srgb, #0ea5e9 18%, transparent); }
+.src-changed-badge { background: color-mix(in srgb, #0ea5e9 18%, transparent); color: #0369a1;
+  max-width: 420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor: help; }
+
+/* Отметка «нужна замена артикула» (пожелание № 4) */
+.col-replace { text-align:center; }
+.replace-cell { display:inline-flex; align-items:center; gap:4px; cursor:pointer; }
+.replace-cell input { cursor:pointer; }
+.replace-cell input:disabled { cursor:default; }
+.replace-mail { font-size:13px; line-height:1; }
+.replace-mail--ok { color: var(--pos, #16a34a); }
+.replace-mail--err { color: var(--warn, #b76e00); }
+.replace-mail--resend { cursor:pointer; }
+.replace-mail--resend:hover { text-decoration: underline; }
+.col-obsolete { text-align:center; }
+/* Неактуальная модель/артикул: серый фон поверх остальных подсветок строки,
+   приглушённый текст. Стоит после row-pending/row-audit, чтобы выигрывать. */
+tr.row-obsolete { background-color: color-mix(in srgb, #6b7280 24%, transparent) !important; color: var(--text-muted, #6b7280); }
+tr.row-obsolete.selected { background-color: color-mix(in srgb, #6b7280 34%, transparent) !important; }
+.stage-obsolete { background: color-mix(in srgb, #374151 20%, transparent); }
+
+/* Согласование по постановлению 713 (пожелание № 8) */
+.col-reg713 { text-align:center; }
+.reg713-badge { display:inline-flex; align-items:center; justify-content:center; min-width:22px; height:22px; border-radius:6px; font-size:14px; line-height:1; cursor:pointer; }
+.reg713-badge.reg713-none { color: var(--text-muted); font-size:16px; opacity:0.6; }
+.reg713-badge.reg713-required { background: color-mix(in srgb, #2563eb 14%, transparent); }
+.reg713-badge.reg713-approved { background: color-mix(in srgb, var(--pos, #16a34a) 14%, transparent); }
+.reg713-badge.reg713-rejected { background: color-mix(in srgb, var(--neg, #dc2626) 14%, transparent); }
+.reg713-badge.reg713-readonly { cursor:help; }
+.reg713-modal { width: 560px; max-width: calc(100vw - 32px); }
+.reg713-body { gap: 10px; }
+.reg713-name { font-size: 13px; margin-top: -4px; }
+.reg713-check { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; }
+.reg713-row { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+.reg713-radio { display:inline-flex; align-items:center; gap:6px; cursor:pointer; }
+.reg713-block { border:1px solid var(--border-color, #e5e7eb); border-radius:8px; padding:10px 12px; display:flex; flex-direction:column; gap:8px; }
+.reg713-block-title { font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color: var(--text-muted, #6b7280); }
+.reg713-analog { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.reg713-search { position:relative; }
+.reg713-search-input, .reg713-doc, .reg713-comment { width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; font-family:inherit; }
+.reg713-results { list-style:none; margin:4px 0 0; padding:0; max-height:220px; overflow-y:auto; border:1px solid var(--border-color, #d1d5db); border-radius:4px; background: var(--bg-surface, #fff); }
+.reg713-results li { padding:6px 8px; cursor:pointer; font-size:13px; display:flex; gap:6px; align-items:baseline; flex-wrap:wrap; }
+.reg713-results li:hover { background: var(--bg-tonal, #f3f4f6); }
+.reg713-arch { font-size:11px; color: var(--text-muted); border:1px solid var(--border-color, #d1d5db); border-radius:999px; padding:0 6px; }
+.reg713-prices { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+.reg713-price { display:inline-flex; align-items:center; gap:6px; }
+.reg713-price input { width:110px; padding:4px 6px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-variant-numeric: tabular-nums; }
+.reg713-hint { font-size:12px; }
+.reg713-error { color: var(--neg, #dc2626); font-size:13px; }
+
+/* Закупная готовая продукция (пожелания № 6/7) */
+.state-badge--purchase { background: color-mix(in srgb, #0e7490 14%, transparent); }
+.purchase-modal { width: 640px; max-width: calc(100vw - 32px); }
+.purchase-body { gap: 10px; }
+.purchase-src, .purchase-hint { font-size: 12px; }
+.purchase-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.purchase-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted, #6b7280); padding: 6px 8px; border-bottom: 1px solid var(--border-color, #e5e7eb); }
+.purchase-table td { padding: 6px 8px; border-bottom: 1px solid var(--border-color, #eef0f3); }
+.purchase-table tr.total td { font-weight: 600; border-top: 2px solid var(--border-color, #d1d5db); }
+.purchase-table .num { font-variant-numeric: tabular-nums; font-family: 'JetBrains Mono', ui-monospace, monospace; }
 .peo-filter-select { padding:4px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; }
 .approval-modal { width:400px; background:#fff; color:#1f2937; }
 .approval-modal .modal-header { background:#fff; color:#1f2937; border-bottom:1px solid #e5e7eb; }

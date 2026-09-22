@@ -22,10 +22,21 @@
         <p class="page-subtitle">
           {{ form?.task.title }} · {{ form?.year }}-{{ String(form?.month || 0).padStart(2, "0") }} ·
           показано {{ visiblePlatforms.length }} из {{ form?.platforms.length || 0 }} площадок ·
-          <span :title="'эффективная ставка первой площадки из справочника; расчёт идёт по ставке каждой площадки'">
-            НДС {{ vatLabel }}
-          </span> · {{ currency }} ·
+          <span :title="vatHint">НДС {{ vatLabel }}</span> · {{ currency }} ·
           <span class="mode-tag" :class="{ inv: isInverse }" :title="modeHint">{{ modeLabel }}</span>
+        </p>
+        <!-- Отметка снимка факта (правка ТЗ МП §12): форма читает снимок, а не
+             OLAP вживую, и обязана показывать, когда он собран. «Не собран» —
+             отдельное состояние: показать нули вместо него значит соврать. -->
+        <p v-if="form" class="snap-line" :class="{ warn: !form.fact_snapshot?.collected || !!form.fact_snapshot?.error }">
+          <Icon name="lucide:database" />
+          <template v-if="form.fact_snapshot?.collected">
+            данные факта актуальны на {{ snapAsOf }}
+            <span v-if="form.fact_snapshot?.error" class="snap-err">· ошибка сбора: {{ form.fact_snapshot.error }}</span>
+          </template>
+          <template v-else>
+            снимок факта за период ещё не собран — колонки факта пусты (не нули)
+          </template>
         </p>
       </div>
       <div class="page-actions">
@@ -187,6 +198,11 @@
                   <Icon name="lucide:maximize-2" class="plat-ic" />
                 </button>
                 <span class="cfo">ЦФО {{ p.code_cfo }}</span>
+                <span
+                  class="cfo vat-tag"
+                  :class="{ 'vat-miss': form?.vat_by_cfo?.[p.code_cfo]?.missing }"
+                  :title="vatSourceOf(p.code_cfo) || vatHint"
+                >НДС {{ pctLabel(vatRateOf(p.code_cfo)) }}</span>
               </th>
               <th class="col-total num">Итого<span v-if="totalScoped" class="cfo">по фильтру</span></th>
             </tr>
@@ -198,7 +214,22 @@
                 <td class="col-line">
                   <span class="line-name">{{ line.name }}</span>
                   <span v-if="line.code_pl" class="cp">PL {{ line.code_pl }}</span>
-                  <Icon v-if="line.formula" name="lucide:info" class="fi" :title="line.formula" />
+                  <!-- Формула раскрывается ТЕКСТОМ по клику, а не нативной
+                       подсказкой: у иконки крохотная зона наведения, и подсказка
+                       обрезалась — аналитик 08.09.2026 «вопросик не работает,
+                       описание есть, просто не попадает». -->
+                  <button
+                    v-if="line.formula"
+                    type="button"
+                    class="fi-btn"
+                    :class="{ on: openFormula.has(line.block_type) }"
+                    :aria-expanded="openFormula.has(line.block_type)"
+                    :title="openFormula.has(line.block_type) ? 'Скрыть формулу' : 'Показать формулу'"
+                    @click="toggleFormula(line.block_type)"
+                  >
+                    <Icon name="lucide:info" class="fi" />
+                  </button>
+                  <div v-if="openFormula.has(line.block_type)" class="line-formula">{{ line.formula }}</div>
                 </td>
 
                 <!-- ячейки по площадкам -->
@@ -220,13 +251,28 @@
                       <button v-if="canEdit && line.kind === 'input'" class="corr-btn" :class="{ on: isCorr(p.code_cfo, line.block_type) }" title="Корректировка с причиной (ADJ-02)" @click="toggleCorr(p.code_cfo, line.block_type)"><Icon name="lucide:pencil" /></button>
                     </div>
                     <span v-if="line.kind === 'input' && factOf(p.code_cfo, line.block_type) != null" class="fact">факт: {{ fmtMoney(factOf(p.code_cfo, line.block_type)) }}</span>
+                    <!-- Подсказка к полю ввода (правки ТЗ 02.09.2026, часть 1):
+                         %СПП и штрафы вводятся руками, а фактическое значение
+                         показывается РЯДОМ — вместе с расхождением и оговорками
+                         источника. В значение оно не подставляется. -->
+                    <span
+                      v-if="cellHint(p.code_cfo, line.block_type, displayInput(line, p.code_cfo))"
+                      class="hint-line"
+                      :title="cellHint(p.code_cfo, line.block_type, displayInput(line, p.code_cfo))"
+                    >
+                      <Icon name="lucide:lightbulb" />
+                      {{ hintShort(p.code_cfo, line.block_type) }}
+                    </span>
                     <span v-if="prevOf(p.code_cfo, line.block_type) != null" class="prev">пр. год: {{ fmt(line, prevOf(p.code_cfo, line.block_type)) }}</span>
                     <span v-if="stratOf(p.code_cfo, line.block_type) != null" class="strat">страт: {{ fmt(line, stratOf(p.code_cfo, line.block_type)) }}</span>
                     <span v-if="targetOf(p.code_cfo, line.block_type) != null" class="target">таргет: {{ fmt(line, targetOf(p.code_cfo, line.block_type)) }}</span>
                     <!-- В inverse суммы статей — производные от доли: показываем и долю
                          из условий, и посчитанную по ней сумму. Пустое поле = «берём
                          расчёт», заполненное = ручное переопределение (ТЗ §7.2). -->
-                    <span v-if="isInverse && line.cost_line" class="share">доля {{ fmtPct(condShare(line, p.code_cfo)) }}</span>
+                    <!-- Доля статьи под каждой суммой — главное замечание заказчика
+                         (07.09.2026): раньше доля была одна, итоговая по площадке.
+                         В inverse она ЗАДАНА условиями, в legacy считается от суммы. -->
+                    <span v-if="line.cost_line" class="share">доля {{ fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}</span>
                     <span v-if="isInverse && line.cost_line && displayInput(line, p.code_cfo) == null" class="calc-hint">
                       по доле: {{ fmtMoney(cellValue(line, p.code_cfo)) }}
                     </span>
@@ -264,9 +310,10 @@
                — ТЗ §1 п.25, отдельный пункт приёмки. -->
           <tfoot v-if="form.platforms.length">
             <tr class="tot-row">
-              <td class="col-line">PL формы (сумма)</td>
+              <td class="col-line">PL формы (сумма) · {{ plModeLabel }}</td>
               <td :colspan="visiblePlatforms.length" class="tot-note">
-                = цена площадки без НДС − себестоимость отпускная − общие затраты − прямые затраты + комиссии
+                = цена площадки без НДС − себестоимость отпускная − прямые затраты + комиссии<template
+                  v-if="form.pl_with_common"> − общие затраты</template>
               </td>
               <td class="total-cell strong">{{ fmtMoney(formTotals.pl) }}</td>
             </tr>
@@ -311,7 +358,7 @@
       :inverse="isInverse"
       :editable="canEdit"
       :currency="currency"
-      :vat-fallback="form?.vat || 0.2"
+      :vat-fallback="platformModal ? vatRateOf(platformModal.code_cfo) : form?.vat || 0.2"
       :card-id="cardId"
       @close="platformModal = null"
       @input="onPlatformInput"
@@ -320,10 +367,20 @@
 </template>
 
 <script setup lang="ts">
-import { useTasks, type MpTaskForm, type MpLine, type MpSaveRow, type MpFormCell, type MpFormPlatform } from "~/composables/useTasks";
+import { apiError } from "~/utils/apiError";
+import {
+  useTasks,
+  type MpTaskForm,
+  type MpLine,
+  type MpSaveRow,
+  type MpFormCell,
+  type MpFormPlatform,
+  type FieldHint
+} from "~/composables/useTasks";
 import {
   computePlatform,
   computePlatformInverse,
+  vatBasisFromRate,
   computeFormTotals,
   vatByCountry,
   B,
@@ -339,6 +396,9 @@ definePageMeta({ middleware: "scope-guard" });
 
 const route = useRoute();
 const taskId = Number(route.params.taskId);
+// Разрез карточки (large|small) приходит ссылкой из блока «Формы периода»:
+// крупные и мелкие МП — разные карточки с разными согласующими.
+const scope = computed(() => String(route.query.scope || ""));
 const api = useTasks();
 const cardApi = useMpConditions();
 const { user } = useAuth();
@@ -421,6 +481,13 @@ const sections = computed(() => {
 
 // Одна форма на все МП (миграция 0029): площадки обоих сегментов приходят одним
 // заданием, фильтры ниже — только представление, они не влияют на сохранение.
+// Раскрытые формулы строк: показываем текст под названием показателя.
+const openFormula = reactive(new Set<string>());
+const toggleFormula = (block: string) => {
+  if (openFormula.has(block)) openFormula.delete(block);
+  else openFormula.add(block);
+};
+
 const platformFilter = ref("0");
 const segmentFilter = ref("");
 const legalFilter = ref("");
@@ -443,7 +510,75 @@ const totalScoped = computed(() => visiblePlatforms.value.length !== (form.value
 // Ставка НДС выводится с двумя знаками: у площадок она ЭФФЕКТИВНАЯ и не равна
 // законодательной (20,36 % у WB/Lamoda/Ozon, 16,62 % у Yandex Market — ТЗ §3.4).
 // Округление до целых стирало бы это отличие.
-const vatLabel = computed(() => `${((form.value?.vat || 0) * 100).toFixed(2).replace(".", ",")} %`);
+// Ставка НДС: одно число в шапке допустимо, только если она одна на всю форму.
+// У площадок ставки разные (20,36 % у WB, 16,62 % у Yandex Market), и раньше
+// шапка показывала ставку первой площадки, пока расчёт шёл по другой.
+const pctLabel = (v: number): string => `${(v * 100).toFixed(2).replace(".", ",")} %`;
+const vatRateOf = (cfo: number): number => {
+  const b = form.value?.vat_by_cfo?.[cfo];
+  return b ? b.ratio - 1 : form.value?.vat || 0;
+};
+// Откуда взята ставка: план месяца формы, план предыдущего месяца либо её нет
+// вовсе (тогда отправку блокирует МП-12).
+const vatSourceOf = (cfo: number): string => {
+  const b = form.value?.vat_by_cfo?.[cfo];
+  if (!b) return "";
+  if (b.missing) return "нет базы для расчёта ставки — отправка заблокирована";
+  if (!b.from_plan) return "ставка из справочника dir_vat";
+  return `из плана ${b.year}-${String(b.month).padStart(2, "0")}`;
+};
+const vatLabel = computed(() => (form.value?.vat_mixed ? "по площадкам" : pctLabel(form.value?.vat || 0)));
+const vatHint = computed(() =>
+  form.value?.vat_mixed
+    ? "ставка у каждой площадки своя — она подписана в заголовке колонки"
+    : form.value?.vat_from_plan
+      ? "эффективная ставка: отношение плановых сумм с НДС и без НДС того же месяца"
+      : "ставка из справочника dir_vat: плановых сумм за период нет"
+);
+
+/** Когда собран снимок факта (правка ТЗ МП §12): дата и время, а не только дата —
+ *  источник переливается несколько раз в сутки, и «сегодня» ничего не говорит. */
+const snapAsOf = computed(() => {
+  const at = form.value?.fact_snapshot?.refreshed_at;
+  if (!at) return "—";
+  const d = new Date(at);
+  return Number.isNaN(d.getTime())
+    ? at
+    : d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+});
+
+/** Подсказки к полям ввода по площадке и строке (правки ТЗ, часть 1).
+ *  Ключ — `${code_cfo}:${block_type}`: подсказка привязана к КОНКРЕТНОЙ ячейке. */
+const hintByCell = computed(() => {
+  const m: Record<string, FieldHint> = {};
+  for (const h of form.value?.hints || []) m[`${h.code_cfo}:${h.block_type}`] = h;
+  return m;
+});
+
+/** Короткая подпись подсказки под полем: только значение (подробности — в title). */
+const hintShort = (cfo: number, block: string): string => {
+  const h = hintByCell.value[`${cfo}:${block}`];
+  if (!h) return "";
+  return block === "spp"
+    ? `подсказка: ${(h.value * 100).toFixed(2).replace(".", ",")} %`
+    : `подсказка: ${num(h.value, 2)}`;
+};
+
+/** Текст подсказки для ячейки: значение + расхождение с введённым. */
+const cellHint = (cfo: number, block: string, current: number | null | undefined): string => {
+  const h = hintByCell.value[`${cfo}:${block}`];
+  if (!h) return "";
+  const isPct = block === "spp";
+  const shown = isPct ? `${(h.value * 100).toFixed(2).replace(".", ",")} %` : num(h.value, 2);
+  let text = `Факт: ${shown} (${h.source}${h.as_of ? `, ${h.as_of}` : ""})`;
+  if (typeof current === "number" && current !== 0) {
+    const diff = isPct ? (current - h.value) * 100 : current - h.value;
+    const diffText = isPct ? `${diff.toFixed(2).replace(".", ",")} п.п.` : num(diff, 2);
+    text += ` · расхождение с введённым: ${diffText}`;
+  }
+  if (h.note) text += ` · ${h.note}`;
+  return text;
+};
 
 const segmentTitle = computed(() => {
   if (segments.value.length > 1) return "все площадки";
@@ -485,7 +620,9 @@ const platformValues = computed<Record<number, Record<string, number>>>(() => {
     for (const l of form.value?.lines || []) {
       if (l.scope === "platform" && l.editable) inp[l.block_type] = inputs[key(p.code_cfo, l.block_type)];
     }
-    const vat = vatByCountry(p.country);
+    // Базис НДС приходит с сервера по каждой площадке (отношение плановых сумм);
+    // законодательная ставка страны — фолбэк, если ответ его не содержит.
+    const vat = form.value?.vat_by_cfo?.[p.code_cfo] ?? vatBasisFromRate(vatByCountry(p.country));
     const cond = condOf(p.code_cfo);
     map[p.code_cfo] = isInverse.value && cond ? computePlatformInverse(inp, cond, vat) : computePlatform(inp, vat);
   }
@@ -496,9 +633,13 @@ const platformValues = computed<Record<number, Record<string, number>>>(() => {
 const formTotals = computed(() =>
   computeFormTotals(
     (form.value?.platforms || []).map((p) => platformValues.value[p.code_cfo] || {}),
-    commonCostTotal.value
+    commonCostTotal.value,
+    form.value?.pl_with_common === true
   )
 );
+// Какой из двух вариантов PL показан: до общих затрат (этапы 1.1/1.2) или полный
+// (с 1.5). Без подписи два разных числа за один период читаются как ошибка.
+const plModeLabel = computed(() => (form.value?.pl_with_common ? "PL полный" : "PL до общих затрат"));
 
 const cellValue = (line: MpLine, cfo: number): number => platformValues.value[cfo]?.[line.block_type] ?? 0;
 // Итог считается по ВИДИМЫМ площадкам: отфильтровав срез, пользователь ждёт итог
@@ -507,6 +648,16 @@ const sumBlock = (block: string): number =>
   visiblePlatforms.value.reduce((s, p) => s + (platformValues.value[p.code_cfo]?.[block] ?? 0), 0);
 
 // Итого по строке: сумма денег; проценты пересчитываются из агрегатов.
+/**
+ * Итог строки по всем видимым площадкам.
+ *
+ * Проценты НЕ складываются: итог считается из сумм (взвешенно). Раньше строки,
+ * которых не было в списке ниже, попадали в `default: return 0` — из-за этого
+ * итоговая эффективная ставка НДС и контроль норматива показывали ноль при
+ * ненулевых колонках (замечание аналитика 08.09.2026). Теперь неизвестная
+ * процентная строка взвешивается по цене площадки без НДС — это база всех долей
+ * формы, — а не обнуляется.
+ */
 const totalValue = (line: MpLine): number => {
   if (line.scope === "total") return Number(totals[line.block_type]) || 0;
   if (line.value_kind === "money") return sumBlock(line.block_type);
@@ -518,15 +669,41 @@ const totalValue = (line: MpLine): number => {
     case B.retailMarginPct: return net === 0 ? 0 : sumBlock(B.retailMargin) / net;
     case B.grossMarginPct: return net === 0 ? 0 : sumBlock(B.grossMargin) / net;
     case B.plPlatformPct: return net === 0 ? 0 : sumBlock(B.plPlatform) / net;
-    case B.directShare: { const mgr = sumBlock(B.salesManagerNet); return mgr === 0 ? 0 : sumBlock(B.platformCosts) / mgr; }
-    default: return 0;
+    case B.plPlatformTotalCostPct: return net === 0 ? 0 : sumBlock(B.plPlatformTotalCost) / net;
+    // Ставка НДС взвешивается по выручке: у площадок она разная, и среднее
+    // арифметическое дало бы ставку, которой нет ни у одной из них.
+    case B.vatRate: {
+      const mgrNet = sumBlock(B.salesManagerNet);
+      return mgrNet === 0 ? 0 : sumBlock(B.salesManagerGross) / mgrNet - 1;
+    }
+    // База долей — цена площадки без НДС (решение звонка 07.09.2026).
+    case B.directShare: return net === 0 ? 0 : sumBlock(B.platformCosts) / net;
+    case B.directShareTurnover:
+      return net === 0 ? 0 : (sumBlock(B.platformCosts) - sumBlock(B.commission)) / net;
+    default:
+      return weightedByPlatNet(line.block_type);
   }
 };
 
+/** Взвешивание доли по цене площадки без НДС: Σ(доля × база) ÷ Σбаза. */
+const weightedByPlatNet = (block: string): number => {
+  let num = 0;
+  let den = 0;
+  for (const p of visiblePlatforms.value) {
+    const base = platformValues.value[p.code_cfo]?.[B.salesPlatNet] ?? 0;
+    num += (platformValues.value[p.code_cfo]?.[block] ?? 0) * base;
+    den += base;
+  }
+  return den === 0 ? 0 : num / den;
+};
+
 // Доля статьи затрат в выручке по ценам менеджера (без НДС).
+// Доля статьи в выручке. База — цена площадки БЕЗ НДС (решение звонка
+// 07.09.2026): СПП уже удержан переходом к цене площадки, и мерить расход от цены
+// менеджера значит считать комиссию внутри каждой доли ещё раз.
 const shareOf = (line: MpLine, cfo: number): number => {
-  const mgrNet = platformValues.value[cfo]?.[B.salesManagerNet] ?? 0;
-  return mgrNet === 0 ? 0 : cellValue(line, cfo) / mgrNet;
+  const platNet = platformValues.value[cfo]?.[B.salesPlatNet] ?? 0;
+  return platNet === 0 ? 0 : cellValue(line, cfo) / platNet;
 };
 
 const cellRef = (cfo: number, block: string) => form.value?.cells.find((c) => c.code_cfo === cfo && c.block_type === block);
@@ -614,11 +791,11 @@ const copyTarget = () => copyScenario((c) => c.target, "таргет");
 const load = async () => {
   loading.value = true;
   try {
-    form.value = await api.mpForm(taskId, currency.value);
+    form.value = await api.mpForm(taskId, currency.value, scope.value);
     seedFromCells();
     dirty.value = false;
     await loadCommonCosts();
-  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка загрузки формы"; }
+  } catch (e) { error.value = apiError(e, "Ошибка загрузки формы"); }
   finally { loading.value = false; }
 };
 
@@ -646,7 +823,7 @@ const doValidate = async () => {
     if (checkResult.value.can_submit) note.value = "Проверка пройдена: блокирующих замечаний нет.";
   } catch (e: unknown) {
     const d = typeof e === "object" && e && "data" in e ? (e as { data?: { error?: string } }).data : null;
-    error.value = d?.error || (e instanceof Error ? e.message : "Проверка не выполнена");
+    error.value = d?.error || (apiError(e, "Проверка не выполнена"));
   } finally {
     checking.value = false;
   }
@@ -676,7 +853,7 @@ const save = async () => {
     await api.saveMpForm(taskId, rows, currency.value);
     note.value = `Сохранено ${rows.length} значений`;
     dirty.value = false;
-  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка сохранения"; }
+  } catch (e) { error.value = apiError(e, "Ошибка сохранения"); }
   finally { saving.value = false; }
 };
 
@@ -687,7 +864,7 @@ const doExport = async () => {
     const a = document.createElement("a");
     a.href = url; a.download = `TPL-MP_task${taskId}.xlsx`; a.click();
     URL.revokeObjectURL(url);
-  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка экспорта"; }
+  } catch (e) { error.value = apiError(e, "Ошибка экспорта"); }
 };
 const doImport = async (ev: Event) => {
   const f = (ev.target as HTMLInputElement).files?.[0];
@@ -697,7 +874,7 @@ const doImport = async (ev: Event) => {
     const r = await api.importMpForm(taskId, f);
     note.value = `Импортировано ${r.imported} значений`;
     await load();
-  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка импорта"; }
+  } catch (e) { error.value = apiError(e, "Ошибка импорта"); }
   finally { if (fileInput.value) fileInput.value.value = ""; }
 };
 
@@ -705,6 +882,21 @@ onMounted(load);
 </script>
 
 <style scoped>
+/* Кнопка формулы: иконка с нормальной зоной клика вместо нативного title. */
+.fi-btn { border: 0; background: none; padding: 2px; margin-left: 4px; cursor: pointer; color: var(--text-muted); line-height: 1; }
+.fi-btn:hover, .fi-btn.on { color: var(--accent); }
+/* Текст формулы — под названием строки, с переносом: он длинный и в подсказке не помещался. */
+.line-formula {
+  margin-top: 2px;
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+/* Ставка без базы: суммы посчитаны по аварийному фолбэку, отправка заблокирована. */
+.vat-miss { color: var(--neg); }
+
 .banner { padding: var(--sp-4) var(--sp-5); border-radius: var(--rd-4, 6px); margin-bottom: var(--sp-5); font-size: var(--fs-sm); }
 .banner-neg { background: var(--neg-soft); color: var(--neg-strong); }
 .banner-pos { background: var(--pos-soft); color: var(--pos-strong); }
@@ -765,6 +957,13 @@ onMounted(load);
 .hint-val, .fact, .prev, .strat, .target, .share { display: block; font-size: var(--fs-2xs); font-family: var(--font-mono); margin-top: 2px; }
 .hint-val { color: var(--warn); }
 .fact { color: var(--text-muted); }
+/* Подсказка к полю ввода: заметная, но не спорящая с введённым значением
+   (правки ТЗ 02.09.2026, часть 1 — подсказка не подставляется и не блокирует). */
+.hint-line { color: var(--warn); display: inline-flex; align-items: center; gap: 2px; cursor: help; }
+/* Отметка снимка факта: строка под подзаголовком, при проблеме — предупреждающая. */
+.snap-line { margin: 2px 0 0; font-size: var(--fs-2xs); color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
+.snap-line.warn { color: var(--warn); }
+.snap-err { color: var(--neg); }
 .prev { color: var(--text-muted); }
 .strat { color: var(--accent); }
 .target { color: var(--pos-strong); }

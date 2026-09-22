@@ -145,6 +145,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import NumberField from "~/components/NumberField.vue";
 import SkeletonTable from "~/components/SkeletonTable.vue";
 import { useMpConditions, type RouteStep } from "~/composables/useMpConditions";
@@ -184,13 +185,6 @@ const signature = (r: RouteStep): string =>
 const toRow = (r: RouteStep): EditableStep => ({ ...r, _origin: signature(r) });
 const isDirty = (r: EditableStep) => signature(r) !== r._origin;
 
-const errText = (e: unknown, fallback: string): string => {
-  if (typeof e === "object" && e && "data" in e) {
-    const d = (e as { data?: { error?: string } }).data;
-    if (d?.error) return d.error;
-  }
-  return e instanceof Error ? e.message : fallback;
-};
 
 const load = async () => {
   loading.value = true;
@@ -199,7 +193,7 @@ const load = async () => {
     const steps = await api.formRoute(formCode.value);
     rows.value = (steps || []).slice().sort((a, b) => a.sort_order - b.sort_order).map(toRow);
   } catch (e: unknown) {
-    error.value = errText(e, "Не удалось загрузить маршрут формы");
+    error.value = apiError(e, "Не удалось загрузить маршрут формы");
   } finally {
     loading.value = false;
   }
@@ -232,7 +226,7 @@ const saveRow = async (r: EditableStep) => {
     rows.value = (steps || []).slice().sort((a, b) => a.sort_order - b.sort_order).map(toRow);
     note.value = `Шаг ${r.step_code} сохранён: ${r.enabled ? "включён в маршрут" : "выключен"}.`;
   } catch (e: unknown) {
-    error.value = errText(e, "Не удалось сохранить шаг маршрута");
+    error.value = apiError(e, "Не удалось сохранить шаг маршрута");
   } finally {
     busy.value = false;
   }

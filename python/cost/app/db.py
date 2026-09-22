@@ -18,11 +18,18 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import logging
 import os
+import time
 import uuid
+from decimal import Decimal
+
+from typing import Any
 
 import asyncpg
 import pyodbc
+
+from app.logship import log
 
 # ── postgres-cost (asyncpg pool) ─────────────────────────────────────────────
 
@@ -181,11 +188,13 @@ def call_calc_sign_procedure(json_str: str) -> None:
     proc_name = os.environ.get("PROC_DB_PROCEDURE", "")
     conn = get_proc_db_conn()
     if conn is None:
-        print(f"[cost] proc-db not configured — skipping, {len(json_str)} bytes", flush=True)
+        log(logging.WARNING, "прейскурант: proc-db не настроен, вызов пропущен",
+            bytes=len(json_str))
         return
 
     if not proc_name:
-        print(f"[cost] PROC_DB_PROCEDURE not set — stub, {len(json_str)} bytes", flush=True)
+        log(logging.WARNING, "прейскурант: PROC_DB_PROCEDURE не задан, вызов пропущен",
+            bytes=len(json_str))
         conn.close()
         return
 
@@ -218,23 +227,34 @@ def call_calc_sign_procedure(json_str: str) -> None:
 
         conn.commit()
 
+        # Ответ процедуры — единственный способ узнать, ЧТО применилось: в нём
+        # PLAN_PRICE_UPDATED и PRICE_LEVEL_UPDATED. Уровень цен процедура
+        # обновляет только у карточек, где он ещё пуст, поэтому «прейскурант
+        # создан» и «уровень записан» — разные события, и по одному факту вызова
+        # второе не следует. Разбор 08.09.2026: жалоба «в Лису опять записались
+        # неверные уровни» диагностировалась вслепую именно потому, что этот
+        # ответ уходил в print и в ELK не попадал.
         if result_val:
-            print(f"[cost] {proc_name} RETURN: {result_val}", flush=True)
+            updated: dict[str, Any] = {}
+            try:
+                parsed = json.loads(result_val)
+                updated = {
+                    k.lower(): parsed.get(k)
+                    for k in ("NO_VALID", "MESS", "TOTAL_RECORDS", "TOTAL_DOCUMENTS",
+                              "PLAN_PRICE_UPDATED", "PRICE_LEVEL_UPDATED")
+                    if k in parsed
+                }
+            except (ValueError, TypeError):
+                pass
+            log(logging.INFO, "прейскурант: процедура ответила",
+                proc=proc_name, bytes=len(json_str),
+                result=result_val[:2000], **updated)
         else:
-            print(f"[cost] {proc_name} ok (no output), {len(json_str)} bytes", flush=True)
+            log(logging.INFO, "прейскурант: процедура выполнена без ответа",
+                proc=proc_name, bytes=len(json_str))
     except Exception as exc:
-        print(f"[cost] procedure failed: {exc}", flush=True)
-    finally:
-        conn.close()
-        return
-
-    cursor = conn.cursor()
-    try:
-        cursor.execute(f"EXEC {proc_name} @JSON_IN = ?", json_str)
-        conn.commit()
-        print(f"[cost] {proc_name} ok, {len(json_str)} bytes", flush=True)
-    except Exception as exc:
-        print(f"[cost] procedure failed: {exc}", flush=True)
+        log(logging.ERROR, "прейскурант: процедура не выполнена",
+            proc=proc_name, bytes=len(json_str), error=str(exc))
     finally:
         conn.close()
 
@@ -243,6 +263,91 @@ def call_calc_sign_procedure(json_str: str) -> None:
 # лимит ODBC/MSSQL — ~2100; 500 × 4 = 2000, с запасом (проверено: 520 ключей
 # проходят, 530 уже падают).
 _OLAP_KEYS_PER_BATCH = 500
+# Пар на один запрос плановых цен: по два параметра на пару, предел ODBC ~2100.
+_GPARTNER_PAIRS_PER_BATCH = 500
+
+
+_OLAP_WHOLE_TABLE_FROM_KEYS = 200
+_OLAP_WHOLE_TABLE_ROW_CAP = 20_000
+
+_OLAP_COLUMNS = (
+    "Модель, Артикул, calc_sign, plan_id, "
+    "Розничная_цена_руб, Отпускная_цена_руб, "
+    "price_rf, price_kz, price_uz, comment, approved_at, Уровень_цен"
+)
+
+
+def _olap_normalise(rec: dict) -> dict:
+    """Имена колонок источника → соглашение кэша."""
+    rec["retail_rub"] = rec.pop("Розничная_цена_руб")
+    rec["wholesale_rub"] = rec.pop("Отпускная_цена_руб")
+    rec["price_level"] = rec.pop("Уровень_цен")
+    return rec
+
+
+def _olap_key(rec: dict) -> tuple[str, str, str, str]:
+    return (
+        str(rec.get("Модель") or "").strip(),
+        str(rec.get("Артикул") or "").strip(),
+        str(rec.get("calc_sign") or "").strip() if rec.get("calc_sign") else "",
+        str(rec.get("plan_id") or "").strip() if rec.get("plan_id") else "",
+    )
+
+
+def _olap_is_newer(candidate: dict, current: dict) -> bool:
+    """Свежее ли candidate по approved_at. NULL считаем самым старым — так
+    дедуп «последняя запись на ключ» не зависит от порядка выдачи сервера."""
+    a, b = candidate.get("approved_at"), current.get("approved_at")
+    if a is None:
+        return False
+    if b is None:
+        return True
+    return a > b
+
+
+def _fetch_olap_changes_whole(cursor, keys: set[tuple[str, str, str, str]]) -> list[dict] | None:
+    """Прочитать таблицу целиком и оставить нужные ключи.
+
+    Форма запроса не зависит от набора ключей, поэтому MSSQL берёт готовый план:
+    OR-цепочка из тысяч условий компилировалась заново на каждом новом фильтре
+    и стоила от 11,5 до 25,8 с на первом запросе (замер 04.09.2026), тогда как
+    полное чтение 665 строк — 40 мс.
+
+    Возвращает None, если таблица выросла сверх лимита: тогда вызывающий код
+    возвращается к перечислению ключей батчами.
+    """
+    cursor.execute(
+        f"""SELECT TOP (?) {_OLAP_COLUMNS} FROM (
+                SELECT {_OLAP_COLUMNS},
+                       ROW_NUMBER() OVER (
+                           PARTITION BY Модель, Артикул, calc_sign, plan_id
+                           ORDER BY approved_at DESC) AS rn
+                  FROM CostHistory_Changes
+            ) t WHERE rn = 1""",
+        _OLAP_WHOLE_TABLE_ROW_CAP + 1,
+    )
+    cols = [d[0] for d in cursor.description]
+    rows = cursor.fetchall()
+    if len(rows) > _OLAP_WHOLE_TABLE_ROW_CAP:
+        print(
+            f"[cost] CostHistory_Changes выросла свыше {_OLAP_WHOLE_TABLE_ROW_CAP} "
+            "уникальных ключей — читаем цены батчами по ключам",
+            flush=True,
+        )
+        return None
+
+    best: dict[tuple[str, str, str, str], dict] = {}
+    for row in rows:
+        rec = dict(zip(cols, row))
+        key = _olap_key(rec)
+        if key not in keys:
+            continue
+        # ROW_NUMBER уже оставил по одной строке на ключ источника, но ключ
+        # источника и ключ кэша не совпадают: NULL и '' в calc_sign/plan_id —
+        # разные партиции и один ключ кэша. Поэтому сверяем ещё и здесь.
+        if key not in best or _olap_is_newer(rec, best[key]):
+            best[key] = rec
+    return [_olap_normalise(rec) for rec in best.values()]
 
 
 def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
@@ -250,7 +355,12 @@ def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
 
     keys: список (model, articul, calc_sign, plan_id).
     Возвращает список записей — последнюю для каждой уникальной комбинации
-    (Модель, Артикул, calc_sign, plan_id), отсортированную по approved_at DESC.
+    (Модель, Артикул, calc_sign, plan_id).
+
+    На широких выборках (свыше 200 ключей) таблица читается целиком одним
+    запросом постоянной формы, а ключи сопоставляются в питоне. На узких —
+    перечисление ключей батчами, как раньше: для одного-двух ключей читать
+    таблицу целиком расточительно.
     """
     if not keys:
         return []
@@ -258,6 +368,11 @@ def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
     olap = get_olap_conn()
     cursor = olap.cursor()
     try:
+        if len(keys) > _OLAP_WHOLE_TABLE_FROM_KEYS:
+            whole = _fetch_olap_changes_whole(cursor, set(keys))
+            if whole is not None:
+                return whole
+
         seen: set[tuple[str, str, str, str]] = set()
         result: list[dict] = []
 
@@ -291,19 +406,10 @@ def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
             # ORDER BY approved_at DESC.
             for row in cursor.fetchall():
                 rec = dict(zip(cols, row))
-                key = (
-                    str(rec.get("Модель") or "").strip(),
-                    str(rec.get("Артикул") or "").strip(),
-                    str(rec.get("calc_sign") or "").strip() if rec.get("calc_sign") else "",
-                    str(rec.get("plan_id") or "").strip() if rec.get("plan_id") else "",
-                )
+                key = _olap_key(rec)
                 if key not in seen:
                     seen.add(key)
-                    # Normalise column names to match cache convention
-                    rec["retail_rub"] = rec.pop("Розничная_цена_руб")
-                    rec["wholesale_rub"] = rec.pop("Отпускная_цена_руб")
-                    rec["price_level"] = rec.pop("Уровень_цен")
-                    result.append(rec)
+                    result.append(_olap_normalise(rec))
         return result
     finally:
         olap.close()
@@ -329,21 +435,51 @@ def fetch_gpartner_planned(pairs: list[tuple[str, str]]) -> dict[tuple[str, str]
     cursor = conn.cursor()
     try:
         result: dict[tuple[str, str], dict] = {}
-        # ODBC/MSSQL ограничивает число параметров запроса (~2100) — при большом
-        # наборе пар (напр. "Цена для МП" по всему незафильтрованному датасету,
-        # тысячи уникальных (model, articul)) один запрос на все пары падает с
-        # pyodbc.Error 07002 "COUNT field incorrect". Бьём на батчи по 500 пар
-        # (=1000 параметров), с запасом от лимита.
-        batch_size = 500
-        for i in range(0, len(pairs), batch_size):
-            batch = pairs[i:i + batch_size]
-            conditions = " OR ".join("(MODEL = ? AND ART = ?)" for _ in batch)
+
+        # Пары передаём производной таблицей VALUES и ДЖОЙНИМ, а не перечисляем
+        # цепочкой OR. Замеры 04.09.2026 на одном соединении, 695 пар:
+        #
+        #   OR-цепочка (как было)         3429 мс
+        #   VALUES + JOIN + ROW_NUMBER     139 мс   ← выбрано, в 25 раз быстрее
+        #   #temp + JOIN + ROW_NUMBER      253 мс   (99 мс из них — вставка строк)
+        #
+        # Причина разницы: [dbo].[S_MODELI] — ПРЕДСТАВЛЕНИЕ из пятнадцати
+        # LEFT JOIN, и с цепочкой OR сервер прогоняет его на каждое условие, а с
+        # JOIN — один проход по ключу. На полном периоде это была самая дорогая
+        # статья /aggregated: 2,7 с из 6.
+        #
+        # Временную таблицу отбросил замер, и не только по времени: она падала с
+        # «Не удалось разрешить конфликт параметров сортировки между
+        # Cyrillic_General_BIN и Cyrillic_General_CI_AS» — колонки MODEL и ART у
+        # представления объявлены как char(25) COLLATE Cyrillic_General_BIN, а
+        # tempdb создаёт свои в сортировке базы. У VALUES этой беды нет: параметр
+        # приводится к сортировке колонки.
+        #
+        # Батчи по 500 пар остаются: у VALUES параметры есть (два на пару), а
+        # предел ODBC/MSSQL — ~2100.
+        for i in range(0, len(pairs), _GPARTNER_PAIRS_PER_BATCH):
+            batch = pairs[i:i + _GPARTNER_PAIRS_PER_BATCH]
+            values = ", ".join("(?, ?)" for _ in batch)
             params: list[str] = []
             for m, a in batch:
                 params.extend([m, a])
 
+            # ROW_NUMBER по ITEM_ID DESC — актуальная версия пары. На пару
+            # модель+артикул в справочнике бывает несколько записей (14 912 из
+            # 95 849: модель заводят заново, старая остаётся), и раньше выбор
+            # зависел от порядка выдачи сервера — «последняя выигрывает» в
+            # питоне. Теперь тот же выбор, что в load_gpartner_plan_prices ниже:
+            # последняя по ITEM_ID.
             cursor.execute(
-                f"SELECT MODEL, ART, PRICE_MOPT, NDS, PLAN_PRICE, RU_NDS FROM [dbo].[S_MODELI] WHERE {conditions}",
+                f"""SELECT MODEL, ART, PRICE_MOPT, NDS, PLAN_PRICE, RU_NDS FROM (
+                        SELECT RTRIM(m.MODEL) AS MODEL, RTRIM(m.ART) AS ART,
+                               m.PRICE_MOPT, m.NDS, m.PLAN_PRICE, m.RU_NDS,
+                               ROW_NUMBER() OVER (PARTITION BY RTRIM(m.MODEL), RTRIM(m.ART)
+                                                  ORDER BY m.ITEM_ID DESC) AS rn
+                          FROM [dbo].[S_MODELI] m
+                          JOIN (VALUES {values}) AS p(MODEL, ART)
+                            ON p.MODEL = m.MODEL AND p.ART = m.ART
+                    ) t WHERE rn = 1""",
                 params,
             )
             for row in cursor.fetchall():
@@ -565,6 +701,78 @@ async def set_cache_completed(row_count: int) -> None:
     # Строго ПОСЛЕ снятия is_refreshing: пересчёт может занять секунды, и
     # держать раздел в состоянии «обновляюсь» из-за аналитики незачем.
     await refresh_calc_mv()
+    # Плановые цены — независимый справочник Лисы, но обновлять их вместе с кэшем
+    # логично: дашборд сравнивает их с себестоимостью из кэша, и расхождение
+    # свежести читалось бы как расхождение данных.
+    await sync_plan_prices()
+
+
+async def sync_plan_prices() -> int:
+    """Справочник плановой себестоимости единицы из Gpartner.dbo.S_MODELI.
+
+    PLAN_PRICE — «План. себ-ть, руб.» отчётов Power BI заказчика; нужна листу
+    «Отклонения по артикулам» дашборда маржи (миграция 0050).
+
+    Ноль в источнике означает «план не заведён», а не «себестоимость нулевая» —
+    пишем NULL, иначе отклонение по таким артикулам вышло бы −100%.
+
+    Ошибка Лисы (VPN, недоступность) НЕ валит обновление кэша: прежние плановые
+    цены остаются, а расхождение свежести видно по synced_at. Возвращает число
+    синхронизированных пар, 0 — синхронизация не удалась.
+    """
+    try:
+        conn = get_gpartner_conn()
+    except Exception as exc:  # noqa: BLE001 — источник за VPN, причин отказа много
+        print(f"[cost] ВНИМАНИЕ: плановые цены не синхронизированы, нет связи с Gpartner: {exc}", flush=True)
+        return 0
+    try:
+        cursor = conn.cursor()
+        # На пару модель+артикул в справочнике бывает несколько записей (14 912 пар
+        # из 95 849): модель заводят заново, старая остаётся. Берём ПОСЛЕДНЮЮ по
+        # ITEM_ID — актуальную версию.
+        #
+        # Известное упрощение: Power BI джойнит справочник по MODEL_ID строки
+        # выпуска и берёт цену той самой версии, а у нас в кэше ITEM_ID модели нет,
+        # ключ — модель+артикул. Расходится это только там, где у версий РАЗНАЯ
+        # ненулевая плановая цена — 437 пар (0,5% справочника).
+        cursor.execute(
+            "SELECT MODEL, ART, PLAN_PRICE FROM ("
+            "  SELECT RTRIM(MODEL) AS MODEL, RTRIM(ART) AS ART, PLAN_PRICE,"
+            "         ROW_NUMBER() OVER (PARTITION BY RTRIM(MODEL), RTRIM(ART)"
+            "                            ORDER BY ITEM_ID DESC) AS rn"
+            "  FROM [dbo].[S_MODELI]"
+            "  WHERE MODEL IS NOT NULL AND ART IS NOT NULL"
+            ") t WHERE rn = 1"
+        )
+        rows = [
+            (m, a, float(p) if p is not None and float(p) > 0 else None)
+            for m, a, p in cursor.fetchall()
+            if m and a
+        ]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cost] ВНИМАНИЕ: запрос плановых цен к Gpartner упал: {exc}", flush=True)
+        return 0
+    finally:
+        conn.close()
+
+    if not rows:
+        print("[cost] ВНИМАНИЕ: S_MODELI вернул пусто — справочник плановых цен не трогаем", flush=True)
+        return 0
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    async with pool().acquire() as pg:
+        async with pg.transaction():
+            # Полная замена, а не UPSERT: модель могли удалить из справочника, и
+            # оставшаяся у нас плановая цена была бы призраком.
+            await pg.execute("TRUNCATE TABLE cost_plan_prices")
+            await pg.copy_records_to_table(
+                "cost_plan_prices",
+                records=[(m, a, p, now) for m, a, p in rows],
+                columns=["model", "articul", "plan_price", "synced_at"],
+            )
+    with_price = sum(1 for _, _, p in rows if p is not None)
+    print(f"[cost] плановые цены обновлены: {len(rows)} пар, с ценой {with_price}", flush=True)
+    return len(rows)
 
 
 async def try_acquire_refresh_lock() -> bool:
@@ -949,9 +1157,16 @@ async def _load_cost_data_to_cache(partial_months: int | None = None) -> dict:
                 # сначала цены плана, затем версии калькуляций поверх них, потому
                 # что версия должна побеждать цену плана (миграция 0033).
                 await _reapply_applied_plan_price_sets(conn)
+                # Снимки источника (миграция 0057) — строго между наборами цен
+                # и версиями: после наложения версий строк источника в кэше уже
+                # нет, сравнивать нечего.
+                snapshots_created = await _snapshot_changed_sources(conn)
                 await _reapply_active_versions_to_cache(conn)
 
         await prod_fut
+        if snapshots_created:
+            log(logging.INFO, "обновление кэша: источник изменился под версиями",
+                snapshots_created=snapshots_created)
 
         await set_cache_completed(total_rows)
 
@@ -2338,44 +2553,47 @@ async def get_version_info(version_id) -> dict | None:
         return dict(row) if row else None
 
 
-async def get_raw_cache_rows(model, articul, calc_sign, plan_id, raw_date=None, task_number=None) -> dict:
-    """Return "Исходные данные" for the editor: the frozen 'original' version's
-    rows if this calc has already been saved/edited at least once (see
-    _ensure_original_version); otherwise the live cost_data_cache rows for the
-    CURRENT (max) "дата расчета" — always the latest recalculation from the
-    source, regardless of which historical date's row in the aggregated table
-    the user opened the editor from (см. миграцию 0027 — версии и "исходные
-    данные" принадлежат заданию, а не конкретной дате). *raw_date* принимается
-    только для обратной совместимости API и не используется.
+async def get_raw_cache_rows(model, articul, calc_sign, plan_id, raw_date=None, task_number=None, snapshot_id=None) -> dict:
+    """«Исходные данные» для редактора.
 
-    version_id is always None in the response regardless of which source was
-    used — the frontend relies on that to route saves through /create-version
-    (fork a new version) rather than treating this as an in-place-editable
-    version_id.
+    Если у ключа есть снимки источника (первый делается при первом сохранении,
+    следующие — обновлением кэша при изменении CostHistory, миграция 0057),
+    отдаются строки ПОСЛЕДНЕГО снимка, либо снимка *snapshot_id*, если он
+    относится к ключу. Вместе с ними — список всех снимков (`snapshots`, новые
+    первыми) для выбора в редакторе. Снимков нет — живые строки cost_data_cache
+    за актуальную (max) "дата расчета" ключа, независимо от того, из строки
+    какой исторической даты открыт редактор (миграция 0027). *raw_date*
+    принимается только для обратной совместимости API и не используется.
+
+    version_id в ответе всегда None — фронт по нему ведёт сохранение через
+    /create-version (новая версия), а не как правку существующей.
+    `snapshot_id` в ответе — какой снимок отдан (None для живого кэша); фронт
+    передаёт его в /create-version как основание версии.
     """
     task = (task_number or "").strip()
-    task_sql, task_params = _task_match_sql(task, 5)
     async with pool().acquire() as conn:
-        original = await conn.fetchrow(
-            f"""SELECT id FROM cost_calc_versions
-               WHERE model=$1 AND articul=$2
-                 AND calc_sign IS NOT DISTINCT FROM $3
-                 AND plan_id IS NOT DISTINCT FROM $4
-                 AND status = 'original'{task_sql}
-               ORDER BY task_number DESC
-               LIMIT 1""",
-            model, articul, calc_sign, plan_id, *task_params,
-        )
-        if original is not None:
+        snapshots = await list_source_snapshots(conn, model, articul, calc_sign, plan_id, task)
+        if snapshots:
+            chosen = snapshots[0]
+            if snapshot_id:
+                for s in snapshots:
+                    if int(s["id"]) == int(snapshot_id):
+                        chosen = s
+                        break
             rows = await conn.fetch(
                 """SELECT * FROM cost_calc_version_rows WHERE version_id=$1 ORDER BY sort_order""",
-                original["id"],
+                chosen["id"],
             )
-            return {"version_id": None, "rows": [dict(r) for r in rows]}
+            return {
+                "version_id": None,
+                "snapshot_id": chosen["id"],
+                "snapshots": snapshots,
+                "rows": [dict(r) for r in rows],
+            }
 
         date = await _current_cache_date(conn, model, articul, calc_sign, plan_id, task)
         if date is None:
-            return {"version_id": None, "rows": []}
+            return {"version_id": None, "snapshot_id": None, "snapshots": [], "rows": []}
         cache_task_sql = "" if task == "" else ' AND trim("Номер задания производства") = $6'
         cache_params = [model, articul, calc_sign, plan_id, date]
         if task != "":
@@ -2390,24 +2608,30 @@ async def get_raw_cache_rows(model, articul, calc_sign, plan_id, raw_date=None, 
                ORDER BY id""",
             *cache_params,
         )
-        return {"version_id": None, "rows": [dict(r) for r in rows]}
+        return {"version_id": None, "snapshot_id": None, "snapshots": [], "rows": [dict(r) for r in rows]}
 
 
 async def list_versions(model, articul, calc_sign, plan_id, raw_date=None, task_number=None) -> list[dict]:
     """Версии принадлежат заданию (model, articul, calc_sign, plan_id,
     task_number) целиком — *raw_date* принимается только для обратной
-    совместимости API и не используется (см. миграции 0027 и 0032)."""
-    task_sql, task_params = _task_match_sql(task_number, 5)
+    совместимости API и не используется (см. миграции 0027 и 0032).
+
+    `source_version_id` / `source_snapshot_no` — снимок источника, от которого
+    сделана версия (миграция 0057); фронт сравнивает его с последним снимком
+    ключа и показывает «источник изменился»."""
+    task_sql, task_params = _task_match_sql(task_number, 5, column="v.task_number")
     async with pool().acquire() as conn:
         rows = await conn.fetch(
-            f"""SELECT id, version, status, comment, created_at::text, created_by,
-                      approved_by, approved_at::text, task_number
-               FROM cost_calc_versions
-               WHERE model=$1 AND articul=$2
-                 AND calc_sign IS NOT DISTINCT FROM $3
-                 AND plan_id IS NOT DISTINCT FROM $4
-                 AND status != 'original'{task_sql}
-               ORDER BY version DESC""",
+            f"""SELECT v.id, v.version, v.status, v.comment, v.created_at::text, v.created_by,
+                      v.approved_by, v.approved_at::text, v.task_number,
+                      v.source_version_id, s.snapshot_no AS source_snapshot_no
+               FROM cost_calc_versions v
+               LEFT JOIN cost_calc_versions s ON s.id = v.source_version_id
+               WHERE v.model=$1 AND v.articul=$2
+                 AND v.calc_sign IS NOT DISTINCT FROM $3
+                 AND v.plan_id IS NOT DISTINCT FROM $4
+                 AND v.status != 'original'{task_sql}
+               ORDER BY v.version DESC""",
             model, articul, calc_sign, plan_id, *task_params,
         )
         return [dict(r) for r in rows]
@@ -2416,7 +2640,8 @@ async def list_versions(model, articul, calc_sign, plan_id, raw_date=None, task_
 async def get_version_rows(version_id) -> dict | None:
     async with pool().acquire() as conn:
         ver = await conn.fetchrow(
-            """SELECT id, version, status FROM cost_calc_versions WHERE id=$1""",
+            """SELECT id, version, status, snapshot_no, source_version_id
+               FROM cost_calc_versions WHERE id=$1""",
             version_id,
         )
         if ver is None:
@@ -2429,6 +2654,8 @@ async def get_version_rows(version_id) -> dict | None:
             "version_id": version_id,
             "version": ver["version"],
             "status": ver["status"],
+            "snapshot_no": ver["snapshot_no"],
+            "source_version_id": ver["source_version_id"],
             "rows": [dict(r) for r in rows],
         }
 
@@ -2494,40 +2721,78 @@ async def _current_cache_date(conn, model, articul, calc_sign, plan_id, task_num
     )
 
 
-async def _ensure_original_version(conn, model, articul, calc_sign, plan_id, username, task_number=None) -> None:
-    """Lazily snapshots cost_data_cache for this calc key into an immutable
-    version(version=0, status='original') the first time a real save happens
-    for this key. No-op if one already exists (ON CONFLICT DO NOTHING on the
-    partial unique index — safe under concurrent first-saves).
+# ── Снимки источника (миграции 0026, 0057) ─────────────────────────────────
+#
+# Снимок — запись cost_calc_versions со status='original', version=0 и своим
+# snapshot_no внутри ключа задания. Снимки неизменяемы; из снимка можно только
+# создать версию калькуляции. Версия запоминает основание (source_version_id).
+#
+# Зачем несколько. Версия калькуляции — снимок строк, и при каждом обновлении
+# кэша она заменяет собой строки источника по ключу. Если CostHistory дополнил
+# калькуляцию ПОСЛЕ создания версии (16.09.2026: 7 строк основных материалов
+# появились позже вспомогательных), новые строки в кэш «не доезжали», а
+# единственный замороженный снимок прятал их и в «Исходных данных». Теперь
+# обновление кэша сравнивает строки источника с последним снимком и при отличии
+# делает новый; активная версия с основанием старее последнего снимка
+# показывается в таблице с признаком «источник изменился». Решение заказчика:
+# без автоматического переноса правок — экономист смотрит новый снимок сам.
 
-    Deliberately cheap: only calculations that actually get edited pay for a
-    snapshot, unlike mirroring the whole ~1M-row cache. Trade-off: for calcs
-    already edited/submitted BEFORE this existed, the snapshot reflects
-    whatever is currently in cost_data_cache (possibly already modified), not
-    the true historical MSSQL original — accepted, see discussion with user.
+# Поля отпечатка — то, что в строке источника задаёт состав и стоимость
+# калькуляции. Розница/опт и уровень цен сюда не входят: их правит цикл
+# согласования цен, а не источник. Цена материала входит, хотя её меняет и
+# набор цен плана (миграция 0033): снимок делается после наложения набора, то
+# есть с той ценой, которую видит таблица, и это последовательно.
+_FINGERPRINT_COLUMNS: tuple[str, ...] = (
+    "дата расчета", "Материал/операция/декор(призн)", "Наименование",
+    "артикул материала", "свойство1", "свойство2", "свойство3",
+    "Норма", "цена материала, руб.", "цена материала, USD.",
+    "Пошив, минуты", "Раскрой, минуты",
+    "Основные материалы, руб.", "Вспомогательные материалы, руб.",
+    "Пошив, руб.", "Раскрой, руб.", "Декоры, руб.", "Вязание, руб.",
+    "выпуск шт",
+)
 
-    Key is (model, articul, calc_sign, plan_id, task_number) WITHOUT
-    "дата расчета" — see migrations 0027 and 0032: the version belongs to the
-    production task, not to a specific recalculation date, since the source
-    recalculates (and stamps a new date) repeatedly over the task's lifetime.
+
+async def _source_fingerprint(conn, model, articul, calc_sign, plan_id, task, date, table="cost_data_all") -> tuple[str | None, int]:
+    """Отпечаток (md5) и число строк источника по ключу за дату расчёта.
+
+    Строки складываются в отсортированный текст, поэтому порядок вставки в кэш
+    (SELECT * из MSSQL без ORDER BY) на отпечаток не влияет. NULL и пустая
+    строка неразличимы — это детектор изменений, а не подпись. Считается
+    целиком в SQL: значения приходят в тексте одинаково и при первом снимке,
+    и при проверке в refresh, без округлений на стороне Python.
     """
-    task = (task_number or "").strip()
-    date = await _current_cache_date(conn, model, articul, calc_sign, plan_id, task)
-    if date is None:
-        return  # для ключа сейчас нет данных в кэше — снимать нечего
-
-    new_id = await conn.fetchval(
-        """INSERT INTO cost_calc_versions
-               (model, articul, calc_sign, plan_id, task_number, "дата расчета", version, status, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, 0, 'original', $7)
-           ON CONFLICT (model, articul, calc_sign, plan_id, task_number) WHERE status = 'original'
-           DO NOTHING
-           RETURNING id""",
-        model, articul, calc_sign, plan_id, task, date, username,
+    parts = ", ".join(
+        f'coalesce(trim("{c}"::text), \'\')' for c in _FINGERPRINT_COLUMNS
     )
-    if new_id is None:
-        return  # уже существует
+    task_filter = "" if task == "" else ' AND trim("Номер задания производства") = $6'
+    params = [model, articul, calc_sign, plan_id, date]
+    if task != "":
+        params.append(task)
+    row = await conn.fetchrow(
+        f"""SELECT md5(string_agg(txt, '||' ORDER BY txt)) AS hash, count(*) AS n
+            FROM (
+                SELECT concat_ws('|', {parts}) AS txt
+                FROM {table}
+                WHERE "Модель"=$1 AND "Артикул"=$2
+                  AND "Признак калькуляции" IS NOT DISTINCT FROM $3
+                  AND "PLAN_ID" IS NOT DISTINCT FROM $4
+                  AND "дата расчета"=$5{task_filter}
+            ) s""",
+        *params,
+    )
+    if row is None or not row["n"]:
+        return None, 0
+    return row["hash"], int(row["n"])
 
+
+async def _insert_snapshot_rows(conn, snapshot_id, model, articul, calc_sign, plan_id, task, date) -> int:
+    """Копирует строки ключа за дату расчёта из cost_data_all в снимок.
+
+    Строки нормализуются так же, как при открытии в редакторе (легаси-коды
+    типа → канонические, Норма/цена для операционных строк), чтобы из снимка
+    можно было сразу делать версию.
+    """
     col_list = ", ".join(f'"{c}"' for c in CACHE_COLUMNS)
     task_filter = "" if task == "" else ' AND trim("Номер задания производства") = $6'
     cache_params = [model, articul, calc_sign, plan_id, date]
@@ -2552,11 +2817,221 @@ async def _ensure_original_version(conn, model, articul, calc_sign, plan_id, use
                 (version_id, {col_list}, sort_order, change_type)
                 VALUES ($1, {", ".join(f"${j+2}" for j in range(len(CACHE_COLUMNS)))},
                         ${len(CACHE_COLUMNS)+2}, ${len(CACHE_COLUMNS)+3})""",
-            new_id, *insert_values, sort_order, 'original',
+            snapshot_id, *insert_values, sort_order, 'original',
         )
+    return len(cache_rows)
 
 
-async def create_version(model, articul, calc_sign, plan_id, raw_date, username, rows, status="draft", task_number=None) -> dict:
+async def _latest_snapshot(conn, model, articul, calc_sign, plan_id, task):
+    """Последний снимок источника ключа (или None). Пустое задание на входе
+    ищет и снимки с пустым заданием (легаси до 0032), как _task_match_sql."""
+    task_sql, task_params = _task_match_sql(task, 5)
+    return await conn.fetchrow(
+        f"""SELECT id, snapshot_no, source_hash, created_at
+            FROM cost_calc_versions
+            WHERE model=$1 AND articul=$2
+              AND calc_sign IS NOT DISTINCT FROM $3
+              AND plan_id IS NOT DISTINCT FROM $4
+              AND status = 'original'{task_sql}
+            ORDER BY task_number DESC, snapshot_no DESC NULLS LAST, id DESC
+            LIMIT 1""",
+        model, articul, calc_sign, plan_id, *task_params,
+    )
+
+
+async def _ensure_original_version(conn, model, articul, calc_sign, plan_id, username, task_number=None) -> int | None:
+    """Первый снимок источника по ключу — при первом реальном сохранении
+    калькуляции. Возвращает id ПОСЛЕДНЕГО снимка ключа (существующего или
+    только что созданного), None — если для ключа в кэше нет строк.
+
+    Дёшево намеренно: снимки платят только калькуляции, которые правят, а не
+    весь кэш на ~1М строк. Первый снимок отражает то, что лежит в кэше в момент
+    сохранения (с наложенным набором цен плана), а не исторический оригинал
+    MSSQL — компромисс, принятый при миграции 0026.
+
+    Ключ — (model, articul, calc_sign, plan_id, task_number) без "дата расчета"
+    (миграции 0027 и 0032): версия принадлежит заданию, а не дате пересчёта.
+    Последующие снимки создаёт обновление кэша (_snapshot_changed_sources).
+    """
+    task = (task_number or "").strip()
+    existing = await _latest_snapshot(conn, model, articul, calc_sign, plan_id, task)
+    if existing is not None:
+        return existing["id"]
+
+    date = await _current_cache_date(conn, model, articul, calc_sign, plan_id, task)
+    if date is None:
+        return None  # для ключа сейчас нет данных в кэше — снимать нечего
+
+    fp, _n = await _source_fingerprint(conn, model, articul, calc_sign, plan_id, task, date)
+    new_id = await conn.fetchval(
+        """INSERT INTO cost_calc_versions
+               (model, articul, calc_sign, plan_id, task_number, "дата расчета", version, status,
+                created_by, snapshot_no, source_hash)
+           VALUES ($1, $2, $3, $4, $5, $6, 0, 'original', $7, 1, $8)
+           ON CONFLICT (model, articul, calc_sign, plan_id, task_number, snapshot_no)
+               WHERE status = 'original'
+           DO NOTHING
+           RETURNING id""",
+        model, articul, calc_sign, plan_id, task, date, username, fp,
+    )
+    if new_id is None:
+        # Гонка двух первых сохранений: снимок уже сделал сосед.
+        existing = await _latest_snapshot(conn, model, articul, calc_sign, plan_id, task)
+        return existing["id"] if existing else None
+
+    await _insert_snapshot_rows(conn, new_id, model, articul, calc_sign, plan_id, task, date)
+    return new_id
+
+
+async def _snapshot_changed_sources(conn) -> int:
+    """После реимпорта кэша: новый снимок источника для каждого ключа, у
+    которого строки CostHistory отличаются от последнего снимка.
+
+    Вызывать ПОСЛЕ наложения наборов цен плана и ДО наложения версий — иначе
+    сравнивать будет нечего: версия уже заменит строки источника своими.
+
+    Снимки до миграции 0057 отпечатка не имеют. Чтобы на выкате не наплодить
+    снимков и признаков по всей базе, для них сравнивается только число строк:
+    совпало — отпечаток просто дописывается, отличается (как у задания 121884:
+    17 строк в снимке против 24 в источнике) — новый снимок.
+
+    Возвращает число созданных снимков.
+    """
+    keys = await conn.fetch(
+        """SELECT DISTINCT ON (model, articul, calc_sign, plan_id, task_number)
+                  id, snapshot_no, source_hash, model, articul, calc_sign, plan_id, task_number
+           FROM cost_calc_versions
+           WHERE status = 'original'
+           ORDER BY model, articul, calc_sign, plan_id, task_number,
+                    snapshot_no DESC NULLS LAST, id DESC"""
+    )
+    created = 0
+    for k in keys:
+        task = (k["task_number"] or "").strip()
+        table = await _calc_table(conn, k["model"], k["articul"], k["calc_sign"], k["plan_id"])
+        date = await _current_cache_date(
+            conn, k["model"], k["articul"], k["calc_sign"], k["plan_id"], task, table=table
+        )
+        if date is None:
+            continue  # калькуляция из кэша исчезла — снимать нечего
+        fp, n = await _source_fingerprint(
+            conn, k["model"], k["articul"], k["calc_sign"], k["plan_id"], task, date, table
+        )
+        if fp is None:
+            continue
+        if k["source_hash"] is None:
+            old_n = await conn.fetchval(
+                "SELECT count(*) FROM cost_calc_version_rows WHERE version_id = $1", k["id"]
+            )
+            if int(old_n or 0) == n:
+                await conn.execute(
+                    "UPDATE cost_calc_versions SET source_hash = $2 WHERE id = $1", k["id"], fp
+                )
+                continue
+        elif k["source_hash"] == fp:
+            continue
+
+        new_id = await conn.fetchval(
+            """INSERT INTO cost_calc_versions
+                   (model, articul, calc_sign, plan_id, task_number, "дата расчета", version, status,
+                    created_by, snapshot_no, source_hash)
+               VALUES ($1, $2, $3, $4, $5, $6, 0, 'original', 'refresh', $7, $8)
+               ON CONFLICT (model, articul, calc_sign, plan_id, task_number, snapshot_no)
+                   WHERE status = 'original'
+               DO NOTHING
+               RETURNING id""",
+            k["model"], k["articul"], k["calc_sign"], k["plan_id"], k["task_number"], date,
+            int(k["snapshot_no"] or 1) + 1, fp,
+        )
+        if new_id is None:
+            continue
+        await _insert_snapshot_rows(
+            conn, new_id, k["model"], k["articul"], k["calc_sign"], k["plan_id"], task, date
+        )
+        created += 1
+        log(logging.INFO, "новый снимок источника: строки CostHistory изменились",
+            model=k["model"], articul=k["articul"], calc_sign=k["calc_sign"],
+            plan_id=k["plan_id"], task_number=task, snapshot_no=int(k["snapshot_no"] or 1) + 1,
+            rows=n)
+    return created
+
+
+async def list_source_snapshots(conn, model, articul, calc_sign, plan_id, task_number=None) -> list[dict]:
+    """Снимки источника ключа, новые первыми. Для списка «Исходные данные» в
+    редакторе и для признака «источник изменился»."""
+    task_sql, task_params = _task_match_sql(task_number, 5, column="v.task_number")
+    rows = await conn.fetch(
+        f"""SELECT v.id, v.snapshot_no, v.created_at::text, v.created_by,
+                   v."дата расчета"::text AS calc_date,
+                   (SELECT count(*) FROM cost_calc_version_rows r WHERE r.version_id = v.id) AS rows_count
+            FROM cost_calc_versions v
+            WHERE v.model=$1 AND v.articul=$2
+              AND v.calc_sign IS NOT DISTINCT FROM $3
+              AND v.plan_id IS NOT DISTINCT FROM $4
+              AND v.status = 'original'{task_sql}
+            ORDER BY v.task_number DESC, v.snapshot_no DESC NULLS LAST, v.id DESC""",
+        model, articul, calc_sign, plan_id, *task_params,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_source_change_flags() -> dict[tuple[str, str, str, str, str], dict]:
+    """Ключи, у которых активная (pending/approved) версия сделана от снимка
+    старее последнего. Один запрос без параметров: таблица версий маленькая,
+    и матчить строки таблицы удобнее в Python, чем гонять батчи ключей.
+
+    Ключ словаря — (model, articul, calc_sign, plan_id, task_number), значения
+    приведены к trim-строкам, как в /aggregated. Легаси-версии с пустым
+    заданием попадают с task_number='' — вызывающий матчит их на любое задание
+    ключа.
+    """
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            """WITH latest AS (
+                   SELECT DISTINCT ON (model, articul, calc_sign, plan_id, task_number)
+                          id, snapshot_no, created_at, model, articul, calc_sign, plan_id, task_number
+                   FROM cost_calc_versions
+                   WHERE status = 'original'
+                   ORDER BY model, articul, calc_sign, plan_id, task_number,
+                            snapshot_no DESC NULLS LAST, id DESC
+               ),
+               active AS (
+                   SELECT DISTINCT ON (model, articul, calc_sign, plan_id, task_number)
+                          id, version, source_version_id, model, articul, calc_sign, plan_id, task_number
+                   FROM cost_calc_versions
+                   WHERE status IN ('pending', 'approved')
+                   ORDER BY model, articul, calc_sign, plan_id, task_number, created_at DESC
+               )
+               SELECT l.model, l.articul, l.calc_sign, l.plan_id, l.task_number,
+                      l.id AS latest_id, l.snapshot_no AS latest_no, l.created_at::text AS latest_at,
+                      a.version AS active_version,
+                      b.snapshot_no AS base_no, b.created_at::text AS base_at
+               FROM latest l
+               JOIN active a
+                 ON a.model = l.model AND a.articul = l.articul
+                AND a.calc_sign IS NOT DISTINCT FROM l.calc_sign
+                AND a.plan_id IS NOT DISTINCT FROM l.plan_id
+                AND a.task_number = l.task_number
+               LEFT JOIN cost_calc_versions b ON b.id = a.source_version_id
+               WHERE a.source_version_id IS NOT NULL
+                 AND a.source_version_id <> l.id"""
+        )
+    out: dict[tuple[str, str, str, str, str], dict] = {}
+    for r in rows:
+        key = (
+            str(r["model"] or "").strip(), str(r["articul"] or "").strip(),
+            str(r["calc_sign"] or "").strip(), str(r["plan_id"] or "").strip(),
+            str(r["task_number"] or "").strip(),
+        )
+        out[key] = {
+            "latest_no": r["latest_no"], "latest_at": r["latest_at"],
+            "active_version": r["active_version"],
+            "base_no": r["base_no"], "base_at": r["base_at"],
+        }
+    return out
+
+
+async def create_version(model, articul, calc_sign, plan_id, raw_date, username, rows, status="draft", task_number=None, source_version_id=None) -> dict:
     """Create a new version. If status='pending': applies rows to cache,
     archives previous pending versions for this key, resets PEO approval.
 
@@ -2566,11 +3041,29 @@ async def create_version(model, articul, calc_sign, plan_id, raw_date, username,
     cost_data_cache, а не из того, что прислал фронтенд (там может быть уже
     устаревшая дата, если источник успел пересчитать задание, пока была открыта
     форма).
+
+    *source_version_id* — снимок источника, от которого сделана версия
+    (миграция 0057). Фронт передаёт выбранный в редакторе снимок; если он не
+    передан или не относится к ключу — берётся последний снимок ключа.
     """
     task = (task_number or "").strip()
     async with pool().acquire() as conn:
         async with conn.transaction():
-            await _ensure_original_version(conn, model, articul, calc_sign, plan_id, username, task)
+            latest_snapshot_id = await _ensure_original_version(
+                conn, model, articul, calc_sign, plan_id, username, task
+            )
+            base_id = latest_snapshot_id
+            if source_version_id:
+                ok = await conn.fetchval(
+                    """SELECT 1 FROM cost_calc_versions
+                       WHERE id=$1 AND status='original'
+                         AND model=$2 AND articul=$3
+                         AND calc_sign IS NOT DISTINCT FROM $4
+                         AND plan_id IS NOT DISTINCT FROM $5""",
+                    int(source_version_id), model, articul, calc_sign, plan_id,
+                )
+                if ok:
+                    base_id = int(source_version_id)
             date = await _current_cache_date(conn, model, articul, calc_sign, plan_id, task)
             if date is None:
                 # для ключа сейчас нет строк в кэше — используем то, что прислал фронтенд
@@ -2589,11 +3082,11 @@ async def create_version(model, articul, calc_sign, plan_id, raw_date, username,
             version_id = await conn.fetchval(
                 """INSERT INTO cost_calc_versions
                    (model, articul, calc_sign, plan_id, task_number, "дата расчета", version,
-                    source_refreshed_at, created_by, status)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    source_refreshed_at, created_by, status, source_version_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                    RETURNING id""",
                 model, articul, calc_sign, plan_id, task, date, next_version,
-                source_refreshed_at, username, status,
+                source_refreshed_at, username, status, base_id,
             )
             col_names = CACHE_COLUMNS
             for row in rows:
@@ -3558,12 +4051,32 @@ async def aggregate_plan_materials(plan_id: str) -> list[dict]:
                 FROM cost_calc_versions
                 WHERE status IN ('pending', 'approved')
                   AND COALESCE(plan_id, '') = $1
+            ),
+            -- Строки ПРИМЕНЁННОГО набора: после apply в кэше уже лежат его цены,
+            -- и «исходная» из кэша равна правленой. Тогда фильтр «строка
+            -- переопределена» на фронте считал правку неизменённой, она не
+            -- попадала в сохранение, а в расчёт уходила старая цена (28.08, план
+            -- 9528). Исходник хранится в самом наборе с момента создания — им и
+            -- подменяем среднюю по кэшу для затронутых строк.
+            applied_rows AS (
+                SELECT r."Наименование" AS k0, r."артикул материала" AS k1,
+                       r."свойство1" AS k2, r."свойство2" AS k3, r."свойство3" AS k4,
+                       r.source_price_rub, r.source_price_usd
+                FROM cost_plan_price_set_rows r
+                JOIN cost_plan_price_sets s ON s.id = r.set_id
+                WHERE s.plan_id = $1 AND s.status = 'applied' AND r.row_kind = 'material'
             )
             SELECT mat.k0 AS "Наименование", mat.k1 AS "артикул материала",
                    mat.k2 AS "свойство1", mat.k3 AS "свойство2", mat.k4 AS "свойство3",
                    count(*) AS rows_count,
-                   round(avg(mat.pr), 4) AS avg_price_rub,
-                   round(avg(mat.pu), 4) AS avg_price_usd,
+                   COALESCE(max(ar.source_price_rub), round(avg(mat.pr), 4)) AS avg_price_rub,
+                   COALESCE(max(ar.source_price_usd), round(avg(mat.pu), 4)) AS avg_price_usd,
+                   -- что реально стоит в кэше сейчас (с учётом набора): форма
+                   -- показывает это в колонке «Цена», иначе после применения
+                   -- набора она показывала исходную и читалась как «цены
+                   -- вернулись» (жалоба 31.08, планы 9572/9537)
+                   round(avg(mat.pr), 4) AS cache_price_rub,
+                   round(avg(mat.pu), 4) AS cache_price_usd,
                    round(avg(mat.rate), 4) AS avg_rate,
                    count(DISTINCT mat.pr) AS distinct_prices,
                    round(min(mat.pr), 4) AS min_price_rub,
@@ -3576,6 +4089,9 @@ async def aggregate_plan_materials(plan_id: str) -> list[dict]:
                   -- Пустое task_number у версии = легаси-версия старого формата,
                   -- она охватывает все задания ключа (см. миграцию 0032).
                   AND (active.t = mat.t OR active.t = '')
+            LEFT JOIN applied_rows ar
+                   ON ar.k0 = mat.k0 AND ar.k1 = mat.k1 AND ar.k2 = mat.k2
+                  AND ar.k3 = mat.k3 AND ar.k4 = mat.k4
             GROUP BY mat.k0, mat.k1, mat.k2, mat.k3, mat.k4
             ORDER BY mat.k0, mat.k1, mat.k2, mat.k3, mat.k4
             """,
@@ -3621,11 +4137,22 @@ async def aggregate_plan_decors(plan_id: str) -> list[dict]:
                 FROM cost_calc_versions
                 WHERE status IN ('pending', 'approved')
                   AND COALESCE(plan_id, '') = $1
+            ),
+            -- Исходная цена декора при ПРИМЕНЁННОМ наборе — из самого набора:
+            -- в кэше после apply уже лежит правленая, и без подмены форма
+            -- зацикливалась так же, как у материалов (см. aggregate_plan_materials).
+            applied_rows AS (
+                SELECT r."Наименование" AS nm, r.source_price_rub, r.source_price_usd
+                FROM cost_plan_price_set_rows r
+                JOIN cost_plan_price_sets s ON s.id = r.set_id
+                WHERE s.plan_id = $1 AND s.status = 'applied' AND r.row_kind = 'decor'
             )
             SELECT dec.nm AS "Декоры, наименование",
                    count(*) AS rows_count,
-                   round(avg(dec.rub), 4) AS avg_price_rub,
-                   round(avg(dec.usd), 4) AS avg_price_usd,
+                   COALESCE(max(ar.source_price_rub), round(avg(dec.rub), 4)) AS avg_price_rub,
+                   COALESCE(max(ar.source_price_usd), round(avg(dec.usd), 4)) AS avg_price_usd,
+                   round(avg(dec.rub), 4) AS cache_price_rub,
+                   round(avg(dec.usd), 4) AS cache_price_usd,
                    round(avg(dec.rate), 4) AS avg_rate,
                    count(DISTINCT dec.rub) AS distinct_prices,
                    round(min(dec.rub), 4) AS min_price_rub,
@@ -3636,6 +4163,7 @@ async def aggregate_plan_decors(plan_id: str) -> list[dict]:
                    ON active.model = dec.m AND active.articul = dec.a
                   AND active.cs = dec.cs
                   AND (active.t = dec.t OR active.t = '')
+            LEFT JOIN applied_rows ar ON ar.nm = dec.nm
             GROUP BY dec.nm
             ORDER BY dec.nm
             """,
@@ -3685,6 +4213,30 @@ async def get_plan_price_set(set_id: int) -> dict | None:
         return {"set": dict(s), "rows": [dict(r) for r in rows]}
 
 
+def _plan_price_num(v, *, field: str, row_name: str):
+    """Число из формы набора цен: пустое поле — это NULL, а не пустая строка.
+
+    В ELK за 25–28.08.2026 — 51 падение POST /plan-price-sets с
+    «invalid input for query argument $8: ''»: человек стирал цену в поле, и
+    пустая строка уходила в numeric-колонку как есть. Ошибка приходила как
+    «Внутренняя ошибка сервиса», и это была та самая жалоба «не нажимается
+    создать набор» от 26.08, которую тогда не удалось воспроизвести.
+    """
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    # Excel вставляет неразрывный (U+00A0) и узкий (U+202F) пробел как
+    # разделитель разрядов: «1 234,50» должно стать 1234.5, а не 400.
+    t = str(v).strip().replace(",", ".").replace(" ", "").replace(" ", "").replace(" ", "")
+    if not t:
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        raise ValueError(f"«{row_name}»: {field} должна быть числом, получено {v!r}")
+
+
 async def save_plan_price_set(
     plan_id: str, title: str, rate, rows: list[dict], username: str,
     set_id: int | None = None, comment: str | None = None,
@@ -3723,12 +4275,23 @@ async def save_plan_price_set(
                 await conn.execute(
                     "DELETE FROM cost_plan_price_set_rows WHERE set_id = $1", set_id
                 )
+            saved = skipped = 0
             for r in rows:
                 # row_kind: 'material' (ключ из пяти полей) либо 'decor' —
                 # у декора ключ один, «Декоры, наименование», и кладётся он в
                 # колонку "Наименование" (см. миграцию 0035).
                 kind = "decor" if str(r.get("row_kind") or "") == "decor" else "material"
                 name = r.get("Декоры, наименование") if kind == "decor" else r.get("Наименование")
+                price_rub = _plan_price_num(r.get("price_rub"), field="цена, руб.", row_name=str(name or ""))
+                price_usd = _plan_price_num(r.get("price_usd"), field="цена, $", row_name=str(name or ""))
+                # Строка без обеих цен ничего не переопределяет: наложение идёт
+                # через COALESCE(r.price_rub, …), декоры — r.price_rub IS NOT NULL.
+                # Раньше такая строка писалась и была no-op; теперь не пишется, а
+                # в ответе честно считается пропущенной.
+                if price_rub is None and price_usd is None:
+                    skipped += 1
+                    continue
+                saved += 1
                 await conn.execute(
                     """INSERT INTO cost_plan_price_set_rows
                            (set_id, row_kind, "Наименование", "артикул материала",
@@ -3742,11 +4305,13 @@ async def save_plan_price_set(
                     str(r.get("свойство1") or "").strip(),
                     str(r.get("свойство2") or "").strip(),
                     str(r.get("свойство3") or "").strip(),
-                    r.get("price_rub"), r.get("price_usd"),
-                    r.get("source_price_rub"), r.get("source_price_usd"),
+                    price_rub,
+                    price_usd,
+                    _plan_price_num(r.get("source_price_rub"), field="исходная цена, руб.", row_name=str(name or "")),
+                    _plan_price_num(r.get("source_price_usd"), field="исходная цена, $", row_name=str(name or "")),
                     int(r.get("rows_count") or 0),
                 )
-    return set_id
+    return {"set_id": set_id, "rows_saved": saved, "skipped_empty": skipped}
 
 
 async def delete_plan_price_set(set_id: int) -> None:
@@ -4264,3 +4829,377 @@ async def delete_manual_calc(batch_id: str, *, force: bool = False) -> dict:
             "DELETE FROM cost_manual_calc WHERE batch_id = $1::uuid", batch_id
         )
     return {"batch_id": batch_id, "rows": int(head["rows_count"])}
+
+
+# ── Справочник моделей Gpartner (S_MODELI) ───────────────────────────────────
+#
+# Читается «как есть», только для просмотра: пользователь заходит посмотреть,
+# что завела Лиса по модели — состав, ТН ВЭД, нормы, плановые цены, габариты.
+#
+# Бренд-менеджера в самом S_MODELI нет. Он висит на ПАПКЕ номенклатуры
+# (`www_folders.BRAND_FIO`), а модель ссылается на папку через PARENT_ID; путь
+# модели совпадает с путём папки во всех 132 047 строках (проверено 09.09.2026),
+# поэтому и уровни номенклатуры Level 01-05 берутся оттуда же. Папок всего 571 —
+# на два порядка меньше моделей, поэтому фильтры по бренд-менеджеру и уровням
+# сводятся к списку PARENT_ID в питоне, без разбора пути в SQL и без обращения к
+# DWH (там те же значения лежат в dim.groups, но это другой сервер).
+#
+# У www_folders две записи на папку — регионы by и ru; берём by, это базовый.
+
+# Разделитель пути номенклатуры и символ ESCAPE для LIKE — заданы кодом, чтобы
+# обратный слеш не размножался экранированием в шаблонах поиска.
+_PATH_SEP = chr(92)
+_LIKE_ESC = "!"
+
+_FOLDERS_REGION = "by"
+_FOLDERS_TTL_SEC = 300
+_folders_cache: tuple[float, list[dict[str, Any]]] | None = None
+
+# Подписи колонок справочника. Русская подпись стоит там, где смысл колонки
+# подтверждён (кодом раздела, отчётами заказчика или содержимым); остальные
+# показываем под именем из базы, чтобы не выдавать догадку за расшифровку.
+MODELI_COLUMN_LABELS: dict[str, str] = {
+    "MODEL": "Модель",
+    "ART": "Артикул",
+    "NAIM": "Наименование",
+    "BRAND_FIO": "Бренд-менеджер",
+    "FULL_PATH": "Путь номенклатуры",
+    "STATUS": "Статус",
+    "BRAND": "Бренд",
+    "COUNTRY": "Страна",
+    "KEDIZM": "Ед. изм.",
+    # Поля с неочевидным содержимым — подпись по тому, что в них ЛЕЖИТ
+    # (проверено 09.09.2026 по группам «Носки&Колготки», «Женщинам», «Ясли»):
+    # SOSTAV у одежды — материал крупно («ХЛОПОК», «ВИСКОЗА/ЭЛАСТАН»), у ЧНИ —
+    # размер («14», «29-31»); NSYRIE — процентный состав; NASSORTIMENT — код
+    # классификатора продукции, а не текст.
+    "SOSTAV": "Состав/размер",
+    "NVID": "Вид",
+    "NASSORTIMENT": "Ассортимент (код)",
+    "NSYRIE": "Сырьё (состав)",
+    "NGRUPPA": "Группа (возраст)",
+    "KTNVED": "Код ТН ВЭД",
+    "KOD_IKPU": "Код ИКПУ",
+    "PRICE_ROZN": "Розница, руб.",
+    "PRICE_OPT": "Опт, руб.",
+    "PRICE_MOPT": "Опт плановая, руб.",
+    "PRICE_UCH": "Учётная, руб.",
+    "PLAN_PRICE": "Плановая себестоимость, руб.",
+    "NDS": "НДС, %",
+    "RU_NDS": "НДС РФ, %",
+    "NORMA": "Норма расхода",
+    "NORMA_KROY": "Норма раскроя",
+    "NORMA_POSHIV": "Норма пошива",
+    "MASSA_ED": "Масса единицы",
+    "MASSA_NET": "Масса нетто",
+    "IN_BOX": "В коробке",
+    "PURCHASED": "Закупная",
+    "PR_ARH": "Архивная",
+    "SERTIFIKAT": "Сертификат",
+    "GOST1": "ГОСТ 1",
+    "GOST2": "ГОСТ 2",
+    "KOMPLEKT": "Комплект",
+    "NO_RAZMER": "Без размера",
+    "PACK_L": "Упаковка, длина",
+    "PACK_W": "Упаковка, ширина",
+    "PACK_H": "Упаковка, высота",
+    "IS_BAN": "Запрет",
+    "ITEM_ID": "ID записи",
+    "PARENT_ID": "ID папки",
+    "DATEVRKV": "Введено",
+    "USERVRKV": "Ввёл",
+    "DATEKRKV": "Изменено",
+    "USERKRKV": "Изменил",
+    "PROPER_NAIM1": "Свойство 1",
+    "PROPER_NAIM2": "Свойство 2",
+    "PROPER_NAIM3": "Свойство 3",
+    # PR1-PR4 — прейскуранты («Прейск. № 1носки от 01.03.2015»), а не признаки,
+    # как читается из имени.
+    "PR1": "Прейскурант 1",
+    "PR2": "Прейскурант 2",
+    "PR3": "Прейскурант 3",
+    "PR4": "Прейскурант 4",
+}
+
+# Колонки, видимые сразу. Остальные (служебные ID, даты и логины правок,
+# признаки без известного смысла) открываются кнопкой «показать все» — прятать
+# их совсем нельзя, справочник смотрят именно чтобы найти редкое поле.
+MODELI_MAIN_COLUMNS: list[str] = [
+    "MODEL", "ART", "NAIM", "BRAND_FIO", "FULL_PATH", "STATUS", "BRAND", "COUNTRY",
+    "KEDIZM", "SOSTAV", "NVID", "NASSORTIMENT", "NSYRIE", "NGRUPPA",
+    "KTNVED", "KOD_IKPU",
+    "PRICE_ROZN", "PRICE_OPT", "PRICE_MOPT", "PLAN_PRICE", "NDS", "RU_NDS",
+    "NORMA", "NORMA_KROY", "NORMA_POSHIV", "MASSA_ED", "IN_BOX",
+    "PURCHASED", "PR_ARH", "ITEM_ID",
+]
+
+# Колонки представления, которые в выдачу не идут: KOD и PRODUCER заполнены у
+# 0,0% моделей, FULL_ID дублирует путь, ISFOLDER всегда 0 (папки отсечены).
+_MODELI_SKIP_COLUMNS: set[str] = {"KOD", "PRODUCER", "FULL_ID", "ISFOLDER"}
+
+# BRAND_FIO приходит из www_folders, а не из S_MODELI — в SELECT он подставляется
+# отдельно, поэтому среди колонок представления его нет.
+_MODELI_FOLDER_COLUMNS: set[str] = {"BRAND_FIO"}
+
+_modeli_columns_cache: list[str] | None = None
+
+
+def _modeli_view_columns(cursor: Any) -> list[str]:
+    """Колонки представления S_MODELI в порядке объявления (кэш на процесс).
+
+    Список не зашит в код намеренно: Лиса добавляет поля (за последнее время
+    появились KOD_IKPU, PR_MARKING, IS_BAN), и справочник должен показывать их
+    без правки раздела.
+    """
+    global _modeli_columns_cache
+    if _modeli_columns_cache is None:
+        cursor.execute(
+            "SELECT c.name FROM sys.columns c"
+            " WHERE c.object_id = OBJECT_ID('[dbo].[S_MODELI]')"
+            " ORDER BY c.column_id"
+        )
+        _modeli_columns_cache = [r[0] for r in cursor.fetchall()]
+    return _modeli_columns_cache
+
+
+def _modeli_normalise(value: Any) -> Any:
+    """Значение колонки справочника → JSON-совместимое.
+
+    char-колонки представления добиты пробелами до объявленной длины (MODEL —
+    char(25)), поэтому строки обрезаем; numeric приходит Decimal, а он не
+    сериализуется.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, Decimal):
+        # Целые numeric отдаём int: ITEM_ID и признаки иначе приезжают как
+        # «18281.0» и «0.0», и в таблице это читается как ошибка данных.
+        as_float = float(value)
+        return int(as_float) if as_float.is_integer() else as_float
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray)):
+        return value.hex()
+    return value
+
+
+def _like_escape(text: str) -> str:
+    """Экранирование шаблонных символов LIKE (условие идёт с ESCAPE)."""
+    out = text.replace(_LIKE_ESC, _LIKE_ESC + _LIKE_ESC)
+    for ch in ("%", "_", "[", "]"):
+        out = out.replace(ch, _LIKE_ESC + ch)
+    return out
+
+
+def fetch_modeli_folders(force: bool = False) -> list[dict[str, Any]]:
+    """Папки номенклатуры: id, путь, уровни, бренд-менеджер.
+
+    571 запись, меняется редко — держим в памяти процесса 5 минут, иначе каждое
+    открытие фильтров тянуло бы её из Лисы заново.
+    """
+    global _folders_cache
+    now = time.time()
+    if not force and _folders_cache and now - _folders_cache[0] < _FOLDERS_TTL_SEC:
+        return _folders_cache[1]
+
+    conn = get_gpartner_conn()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT FOLDER_ID, RTRIM(FULL_PATH), RTRIM(ISNULL(BRAND_FIO, ''))"
+            "  FROM [dbo].[www_folders] WHERE REGION = ?",
+            [_FOLDERS_REGION],
+        )
+        folders: list[dict[str, Any]] = []
+        for folder_id, path, brand_fio in cursor.fetchall():
+            path = (path or "").strip()
+            folders.append({
+                "folder_id": int(folder_id),
+                "path": path,
+                # Уровни — сегменты пути; их же показывает главная страница как
+                # Level 01-05 (сверено с DWH.dim.groups.group1..group5).
+                "levels": [s.strip() for s in path.split(_PATH_SEP) if s.strip()][:5],
+                "brand_manager": (brand_fio or "").strip(),
+            })
+    finally:
+        conn.close()
+
+    _folders_cache = (now, folders)
+    return folders
+
+
+def _folder_ids_for_filters(
+    brand_managers: list[str], levels: dict[int, list[str]]
+) -> list[int] | None:
+    """Папки, попадающие под фильтры бренд-менеджера и уровней.
+
+    None — фильтров нет, условие по папкам не нужно. Это НЕ то же, что пустой
+    список: он означает «под фильтр не подходит ни одна папка», и выдача должна
+    быть пустой.
+    """
+    active_levels = {i: vals for i, vals in levels.items() if vals}
+    if not brand_managers and not active_levels:
+        return None
+
+    bm_set = {v.strip() for v in brand_managers if v and v.strip()}
+    ids: list[int] = []
+    for folder in fetch_modeli_folders():
+        if bm_set and folder["brand_manager"] not in bm_set:
+            continue
+        ok = True
+        for idx, values in active_levels.items():
+            got = folder["levels"][idx - 1] if len(folder["levels"]) >= idx else ""
+            if got not in {v.strip() for v in values if v}:
+                ok = False
+                break
+        if ok:
+            ids.append(folder["folder_id"])
+    return ids
+
+
+def fetch_models_catalog(
+    payload: dict[str, Any], limit: int, offset: int, all_columns: bool,
+    only_latest: bool = True,
+) -> dict[str, Any]:
+    """Страница справочника моделей с фильтрами.
+
+    Модель, артикул и наименование фильтруются подстрокой (LIKE '%…%');
+    бренд-менеджер и уровни Level 01-05 — списком значений, сводятся к PARENT_ID
+    (см. _folder_ids_for_filters). Пагинация серверная: в справочнике 132 тыс.
+    строк, целиком в браузер их отдавать незачем.
+
+    only_latest оставляет по паре модель+артикул последнюю запись. Так справочник
+    трактуется в остальном разделе (см. fetch_gpartner_planned, sync_plan_prices):
+    модель заводят заново, старая версия остаётся, и таких пар 14 912 из 95 849 —
+    без отбора соседние строки выдачи выглядят дублями. Снятый флаг показывает
+    все версии, различать их можно по ID записи.
+
+    ВЫБОРКА В ДВА ШАГА, и это не преждевременная оптимизация. `S_MODELI` —
+    представление из пятнадцати LEFT JOIN (расшифровки НДС, ТН ВЭД, свойств,
+    статуса, страны, бренда), поэтому любой полный проход по нему дорог: фильтры,
+    сортировка и пагинация прямо по представлению стоили 5 с на основных колонках
+    и 64 с на всех (замер 09.09.2026). Поэтому:
+
+    1. фильтры, отбор версии, сортировка и OFFSET — по БАЗОВОЙ таблице
+       `dbo.s_modeli`, где лежат все нужные для этого поля и есть индексы по
+       ITEM_ID, PARENT_ID и (MODEL, ART): 74 мс на COUNT и 119 мс на ключи;
+    2. сами данные — из представления по 100 конкретным ITEM_ID: ~1,1 с.
+
+    Бренд-менеджер подставляется из кэша папок (fetch_modeli_folders), а не
+    джойном — папка модели уже прочитана для фильтров.
+    """
+    levels = {i: (payload.get("level%02d" % i) or []) for i in range(1, 6)}
+    folder_ids = _folder_ids_for_filters(payload.get("brand_manager") or [], levels)
+    if folder_ids is not None and not folder_ids:
+        return {"data": [], "total": 0, "columns": []}
+
+    conn = get_gpartner_conn()
+    try:
+        cursor = conn.cursor()
+        view_columns = _modeli_view_columns(cursor)
+
+        # Порядок колонок: сначала основные (в заданном порядке), затем остальные
+        # как в представлении — так знакомое начало таблицы остаётся на месте и в
+        # полном режиме.
+        rest = [
+            c for c in view_columns
+            if c not in _MODELI_SKIP_COLUMNS and c not in MODELI_MAIN_COLUMNS
+        ]
+        keys = MODELI_MAIN_COLUMNS + (rest if all_columns else [])
+        columns = [{"key": k, "label": MODELI_COLUMN_LABELS.get(k, k)} for k in keys]
+
+        # ── Шаг 1: ключи страницы по базовой таблице ────────────────────────
+        where = ["ISFOLDER = 0"]
+        params: list[Any] = []
+
+        for field, column in (("model", "MODEL"), ("articul", "ART"), ("naim", "NAIM")):
+            needle = (payload.get(field) or "").strip()
+            if needle:
+                where.append("[%s] LIKE ? ESCAPE '%s'" % (column, _LIKE_ESC))
+                params.append("%" + _like_escape(needle) + "%")
+
+        if folder_ids is not None:
+            placeholders = ",".join("?" * len(folder_ids))
+            where.append("PARENT_ID IN (%s)" % placeholders)
+            params.extend(folder_ids)
+
+        where_sql = " AND ".join(where)
+
+        if only_latest:
+            # Число актуальных версий равно числу разных пар модель+артикул,
+            # поэтому COUNT обходится DISTINCT без оконной функции.
+            cursor.execute(
+                "SELECT COUNT(*) FROM ("
+                "  SELECT DISTINCT RTRIM(MODEL) AS mo, RTRIM(ART) AS ar"
+                "    FROM [dbo].[s_modeli] WHERE " + where_sql + ") t",
+                params,
+            )
+        else:
+            cursor.execute(
+                "SELECT COUNT(*) FROM [dbo].[s_modeli] WHERE " + where_sql, params
+            )
+        total = int(cursor.fetchone()[0] or 0)
+
+        # ORDER BY с ITEM_ID: на пару модель+артикул бывает несколько версий, и
+        # без третьего ключа порядок страниц не воспроизводится — OFFSET начинает
+        # выдавать дубли и пропуски.
+        order_page = (
+            " ORDER BY MODEL, ART, ITEM_ID DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
+        )
+        if only_latest:
+            cursor.execute(
+                "SELECT ITEM_ID FROM ("
+                "  SELECT ITEM_ID, MODEL, ART,"
+                "         ROW_NUMBER() OVER (PARTITION BY RTRIM(MODEL), RTRIM(ART)"
+                "                            ORDER BY ITEM_ID DESC) AS _rn"
+                "    FROM [dbo].[s_modeli] WHERE " + where_sql + ") t"
+                " WHERE _rn = 1" + order_page,
+                params + [offset, limit],
+            )
+        else:
+            cursor.execute(
+                "SELECT ITEM_ID FROM [dbo].[s_modeli] WHERE " + where_sql + order_page,
+                params + [offset, limit],
+            )
+        item_ids = [int(r[0]) for r in cursor.fetchall()]
+        if not item_ids:
+            return {"data": [], "total": total, "columns": columns}
+
+        # ── Шаг 2: данные из представления по ключам страницы ───────────────
+        # ITEM_ID нужен для сопоставления с порядком шага 1, PARENT_ID — чтобы
+        # подставить бренд-менеджера папки; в выдачу они попадут только если
+        # запрошены.
+        view_keys = [k for k in keys if k not in _MODELI_FOLDER_COLUMNS]
+        fetch_keys = list(dict.fromkeys(view_keys + ["ITEM_ID", "PARENT_ID"]))
+        placeholders = ",".join("?" * len(item_ids))
+        cursor.execute(
+            "SELECT " + ", ".join("[%s]" % k for k in fetch_keys)
+            + "  FROM [dbo].[S_MODELI]"
+            + " WHERE ITEM_ID IN (%s)" % placeholders,
+            item_ids,
+        )
+        by_id: dict[int, dict[str, Any]] = {}
+        for row in cursor.fetchall():
+            record = {k: _modeli_normalise(v) for k, v in zip(fetch_keys, row)}
+            by_id[int(record["ITEM_ID"])] = record
+    finally:
+        conn.close()
+
+    brand_by_folder = {f["folder_id"]: f["brand_manager"] for f in fetch_modeli_folders()}
+
+    data: list[dict[str, Any]] = []
+    for item_id in item_ids:
+        record = by_id.get(item_id)
+        if record is None:
+            # Представление отсекает записи, которых нет в базовой таблице
+            # только теоретически (оно её и читает), но молча терять строку
+            # страницы хуже, чем показать её пустой.
+            record = {"ITEM_ID": item_id}
+        row = {k: record.get(k) for k in keys}
+        if "BRAND_FIO" in keys:
+            row["BRAND_FIO"] = brand_by_folder.get(record.get("PARENT_ID"), "")
+        data.append(row)
+
+    return {"data": data, "total": total, "columns": columns}

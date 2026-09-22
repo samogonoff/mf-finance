@@ -12,6 +12,7 @@
 export const B = {
   salesManagerGross: "sales_manager_price",
   salesManagerNet: "sales_manager_price_net",
+  vatRate: "vat_rate",
   spp: "spp",
   salesPlatGross: "sales_platform_price",
   salesPlatNet: "sales_platform_price_net",
@@ -42,10 +43,27 @@ export const COST_BLOCKS = [
   "cost_it", "penalties", "cost_other",
 ];
 
-// Ставка НДС: законодательная по стране — ФОЛБЭК на случай, когда сервер не
-// прислал эффективную ставку площадки. Эффективная ставка своя у каждой площадки
-// (20,36 % у WB/Lamoda/Ozon, 16,62 % у Yandex Market — ТЗ §3.4), поэтому она
-// приходит с сервера из справочника dir_vat, а не считается здесь.
+// Базис перевода «с НДС → без НДС» площадки — зеркало MpVatBasis
+// (go/internal/plans/mpform_vat.go). Ставки здесь нет и быть не может: в
+// прототипе суммы без НДС получаются делением на ОТНОШЕНИЕ плановых сумм того же
+// месяца и площадки, и оно своё на каждом уровне цены. Базис приходит с сервера
+// (form.vat_by_cfo); считать его на клиенте нельзя — плана здесь нет.
+export interface MpVatBasis {
+  /** Отношение план 1046 ÷ план 1045 площадки. Одно на оба уровня цены. */
+  ratio: number;
+  from_plan?: boolean;
+  /** Период плана, из которого взято отношение (месяц формы либо предыдущий). */
+  year?: number;
+  month?: number;
+  /** Базы нет: суммы посчитаны по аварийной ставке, отправку блокирует МП-12. */
+  missing?: boolean;
+}
+
+// vatBasisFromRate — базис из ставки. Нужен ровно в двух случаях: сервер базис не
+// прислал (старый ответ) и ставка задана руками в условиях площадки.
+export const vatBasisFromRate = (vat: number): MpVatBasis => ({ ratio: 1 + vat });
+
+// Законодательная ставка страны — фолбэк последней очереди.
 export const vatByCountry = (country: string): number =>
   country === "KZ" || country === "UZ" ? 0.12 : 0.20;
 
@@ -63,19 +81,22 @@ export interface MpConditions {
 }
 
 // computePlatform — каскад legacy («суммы → доли»).
-export function computePlatform(input: Record<string, number | null | undefined>, vat: number): Record<string, number> {
+export function computePlatform(input: Record<string, number | null | undefined>, vat: MpVatBasis): Record<string, number> {
   const out: Record<string, number> = {};
   const managerGross = n(input[B.salesManagerGross]);
   const spp = n(input[B.spp]);
   let shipments = n(input[B.shipments]);
   let cogs = n(input[B.cogsTotal]);
 
-  const managerNet = div(managerGross, 1 + vat);
+  // Оба уровня цены делятся на ОДНУ ставку (правка 08.09.2026): только так
+  // контроль связности «1 − [1006]/[1045] = %СПП» сходится по определению.
+  const managerNet = div(managerGross, vat.ratio);
   const platGross = managerGross * (1 - spp);
-  const platNet = div(platGross, 1 + vat);
+  const platNet = div(platGross, vat.ratio);
 
   out[B.salesManagerGross] = managerGross;
   out[B.salesManagerNet] = managerNet;
+  out[B.vatRate] = vat.ratio - 1;
   out[B.spp] = spp;
   out[B.salesPlatGross] = platGross;
   out[B.salesPlatNet] = platNet;
@@ -115,14 +136,22 @@ export function computePlatform(input: Record<string, number | null | undefined>
     direct += v;
   }
   out[B.platformCosts] = direct;
-  out[B.directShare] = div(direct, managerNet);
+  // База доли — цена площадки без НДС (решение звонка 07.09.2026): та же база,
+  // что у самих статей, иначе доля не сходится с суммой долей, из которых сложена.
+  out[B.directShare] = div(direct, platNet);
 
-  const pl = (platNet - cogs) - direct;
+  // PL по площадке (правка ТЗ 02.09.2026 МП §21):
+  //   PL = площадка без НДС − СС по отпускным ценам − прямые затраты
+  // Из формулы убраны «общие затраты» и «+ Σ комиссия площадки», а вместо
+  // себестоимости общей вычитается себестоимость по отпускным ценам. Комиссия
+  // второй раз не вычитается: цена площадки уже за вычетом СПП.
+  const directNoCommission = direct - commission;
+  const pl = platNet - shipments - directNoCommission;
   out[B.plPlatform] = pl;
   out[B.plPlatformPct] = div(pl, platNet);
-  out[B.plPlatformTotalCost] = out[B.grossMargin] - (direct - commission);
+  out[B.plPlatformTotalCost] = platNet - cogs - directNoCommission;
   out[B.plPlatformTotalCostPct] = div(out[B.plPlatformTotalCost], platNet);
-  out[B.directShareTurnover] = div(direct - commission, platNet);
+  out[B.directShareTurnover] = div(directNoCommission, platNet);
   return out;
 }
 
@@ -132,16 +161,22 @@ export function computePlatform(input: Record<string, number | null | undefined>
 export function computePlatformInverse(
   input: Record<string, number | null | undefined>,
   cond: MpConditions,
-  vatFallback: number
+  vatBasis: MpVatBasis
 ): Record<string, number> {
   const out: Record<string, number> = {};
-  const vat = typeof cond.vat_rate === "number" && cond.vat_rate > 0 ? cond.vat_rate : vatFallback;
+  // Ставка, заданная руками в условиях площадки, старше отношения из плана —
+  // это решение заполняющего (зеркало conditionsToInput).
+  const ratio =
+    typeof cond.vat_rate === "number" && cond.vat_rate > 0
+      ? 1 + cond.vat_rate
+      : vatBasis.ratio;
   const spp = n(cond.spp_pct);
   const shares = cond.shares ?? {};
 
   const managerGross = n(input[B.salesManagerGross]);
-  const managerNet = div(managerGross, 1 + vat);
+  const managerNet = div(managerGross, ratio);
   out[B.salesManagerGross] = managerGross;
+  out[B.vatRate] = ratio - 1;
   out[B.salesManagerNet] = managerNet;
   out[B.spp] = spp;
   out[B.salesPlatGross] = managerGross * (1 - spp);
@@ -166,18 +201,24 @@ export function computePlatformInverse(
     // Ручное переопределение суммы статьи имеет приоритет над расчётом по доле
     // (ТЗ §7.2: автопересчёт не перезатирает ручной ввод).
     const manual = input[b];
-    const v = typeof manual === "number" && !Number.isNaN(manual) ? manual : managerNet * n(shares[b]);
+    // База начисления статьи — цена ПЛОЩАДКИ без НДС (правка ТЗ МП §20; было по
+    // ценам менеджера). СПП уже удержан переходом к цене площадки, и начислять
+    // статьи на цену менеджера значило считать комиссию внутри каждой статьи.
+    const v = typeof manual === "number" && !Number.isNaN(manual) ? manual : platNet * n(shares[b]);
     out[b] = v;
     direct += v;
   }
   out[B.platformCosts] = direct;
-  out[B.directShare] = div(direct, managerNet);
+  // База доли — цена площадки без НДС (решение звонка 07.09.2026): та же база,
+  // что у самих статей, иначе доля не сходится с суммой долей, из которых сложена.
+  out[B.directShare] = div(direct, platNet);
 
-  // PL считается от маржи за вычетом прямых затрат БЕЗ комиссии: комиссия уже
-  // удержана переходом к цене площадки, второй раз её вычитать нельзя.
-  out[B.plPlatform] = out[B.retailMargin] - (direct - commission);
+  // PL = площадка без НДС − СС по отпускным ценам − прямые затраты без комиссии
+  // (правка ТЗ МП §21). Комиссия уже удержана переходом к цене площадки, второй
+  // раз её вычитать нельзя.
+  out[B.plPlatform] = platNet - out[B.shipments] - (direct - commission);
   out[B.plPlatformPct] = div(out[B.plPlatform], platNet);
-  out[B.plPlatformTotalCost] = out[B.grossMargin] - (direct - commission);
+  out[B.plPlatformTotalCost] = platNet - out[B.cogsTotal] - (direct - commission);
   out[B.plPlatformTotalCostPct] = div(out[B.plPlatformTotalCost], platNet);
   out[B.directShareTurnover] = div(direct - commission, platNet);
   return out;
@@ -204,9 +245,16 @@ export interface MpTotals {
   directShareTurnover: number;
 }
 
+/**
+ * Итоги формы. withCommon — вычитать ли общие затраты из PL: на этапах 1.1/1.2
+ * они не участвуют, начиная с 1.5 участвуют (правка 08.09.2026 п. 10). Признак
+ * приходит с сервера (form.pl_with_common): раньше клиент вычитал их всегда, а
+ * сервер — никогда, и два PL за один период расходились ровно на эту сумму.
+ */
 export function computeFormTotals(
   platforms: Record<string, number>[],
-  commonCosts = 0
+  commonCosts = 0,
+  withCommon = false
 ): MpTotals {
   const t: MpTotals = {
     salesManagerGross: 0, salesManagerNet: 0, salesPlatNet: 0, sppPct: 0,
@@ -225,7 +273,8 @@ export function computeFormTotals(
     t.directCosts += n(v[B.platformCosts]);
   }
   t.sppPct = div(t.salesManagerNet - t.salesPlatNet, t.salesManagerNet);
-  t.pl = t.salesPlatNet - t.shipments - commonCosts - t.directCosts + t.commission;
+  t.pl = t.salesPlatNet - t.shipments - (t.directCosts - t.commission);
+  if (withCommon) t.pl -= commonCosts;
   t.plPct = div(t.pl, t.salesPlatNet);
   t.directShareTurnover = div(t.directCosts - t.commission, t.salesPlatNet);
   return t;

@@ -3,6 +3,8 @@ package plans
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"sort"
 	"strings"
 )
@@ -15,7 +17,48 @@ type Service struct {
 	scope ScopeStore
 	// cal — календари стран из БД (plans_country_calendar). nil → CalendarSeed().
 	cal CalendarStore
+	// cards — карточки форм: по ним проверяется, можно ли закрыть этап руками
+	// (этапы 1.1–1.4 — агрегат состояния форм, см. stage_sync.go). nil →
+	// проверки нет, поведение как раньше.
+	cards CardReader
+	// retailSvod — товарооборот розницы для свода по ЮЛ. nil → в своде только МП.
+	retailSvod RetailSvodSource
 }
+
+// Каналы свода по ЮЛ. Совпадают с подписями Code_канала_для_маржи из справочника
+// прототипа: свод читают финансисты, привыкшие к этим названиям.
+const (
+	ChannelMarketplaces = "Маркетплейсы"
+	ChannelRetailBY     = "Розница РБ"
+	ChannelRetailRU     = "Розница РФ"
+	ChannelRetailKZ     = "Розница KZ"
+	ChannelRetailUZ     = "Розница UZ"
+)
+
+// retailChannelOf — канал свода по стране розницы. Неизвестная страна отдаётся
+// как есть: молча слить её с другой страной хуже, чем показать незнакомый код.
+func retailChannelOf(country string) string {
+	switch strings.ToUpper(strings.TrimSpace(country)) {
+	case "BY":
+		return ChannelRetailBY
+	case "RU":
+		return ChannelRetailRU
+	case "KZ":
+		return ChannelRetailKZ
+	case "UZ":
+		return ChannelRetailUZ
+	default:
+		return "Розница " + country
+	}
+}
+
+// CardReader — чтение карточек периода (реализует CardService).
+type CardReader interface {
+	Cards(ctx context.Context, plID int64) ([]Card, error)
+}
+
+// WithCards подключает карточки форм к процессу этапов.
+func (s *Service) WithCards(c CardReader) *Service { s.cards = c; return s }
 
 // NewService — конструктор.
 func NewService(store MetricStore, fact MpFactSource, scope ScopeStore) *Service {
@@ -85,8 +128,27 @@ func (s *Service) Instances(ctx context.Context) ([]InstanceSummary, error) {
 	return s.store.ListInstances(ctx)
 }
 
+// RetailSvodSource — товарооборот тактики РОЗНИЦЫ за период, свёрнутый по ЮЛ и
+// стране. Свод по ЮЛ обязан показывать весь комплект, а не только маркетплейсы
+// (замечание владельца процесса 09.09.2026: «в общий свод добавить реально все
+// данные, там ещё должна быть розница»).
+type RetailSvodSource interface {
+	SvodRows(ctx context.Context, year, month int) ([]SvodRow, error)
+}
+
+// WithRetailSvod подключает розницу к своду по ЮЛ. Без источника свод остаётся
+// прежним — только маркетплейсы.
+func (s *Service) WithRetailSvod(src RetailSvodSource) *Service {
+	s.retailSvod = src
+	return s
+}
+
 // Svod — свод TPL-08 по ЮЛ × канал (этап 1.6): агрегат товарооборота (1046)
-// сохранённой тактики, площадка→ЮЛ из dir_marketplace. Канал — Marketplaces.
+// сохранённой тактики. Маркетплейсы — из pl_metric (площадка→ЮЛ из
+// dir_marketplace), розница — из своих таблиц через RetailSvodSource.
+//
+// Валюта остаётся измерением строки: МП ведутся в RUB, розница — в нац. валюте
+// страны, и складывать их без курса нельзя. Пересчёт делает экран, если нужен.
 func (s *Service) Svod(ctx context.Context, year, month int) ([]SvodRow, error) {
 	plID, err := s.store.EnsureInstance(ctx, year, month)
 	if err != nil {
@@ -114,10 +176,33 @@ func (s *Service) Svod(ctx context.Context, year, month int) ([]SvodRow, error) 
 		if entity == "" {
 			entity = "(без ЮЛ)"
 		}
-		out = append(out, SvodRow{LegalEntity: entity, Channel: "Marketplaces", Currency: k.cur, Amount: v})
+		out = append(out, SvodRow{LegalEntity: entity, Channel: ChannelMarketplaces, Currency: k.cur, Amount: v})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].LegalEntity < out[j].LegalEntity })
+	if s.retailSvod != nil {
+		retail, err := s.retailSvod.SvodRows(ctx, year, month)
+		if err != nil {
+			// Розница недоступна — свод не пустой, но неполный: это надо видеть в
+			// логе, а не молча показывать одни маркетплейсы.
+			log.Printf("plans: розница не попала в свод по ЮЛ за %04d-%02d: %v", year, month, err)
+		} else {
+			out = append(out, retail...)
+		}
+	}
+	sortSvodRows(out)
 	return out, nil
+}
+
+// sortSvodRows — устойчивый порядок свода: ЮЛ, затем канал, затем валюта.
+func sortSvodRows(rows []SvodRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].LegalEntity != rows[j].LegalEntity {
+			return rows[i].LegalEntity < rows[j].LegalEntity
+		}
+		if rows[i].Channel != rows[j].Channel {
+			return rows[i].Channel < rows[j].Channel
+		}
+		return rows[i].Currency < rows[j].Currency
+	})
 }
 
 // Stages — этапы экземпляра PL; при отсутствии инициализирует по маршруту схемы
@@ -187,6 +272,12 @@ func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year
 	if err != nil {
 		return nil, err
 	}
+	// Этапы 1.1–1.4 — агрегат состояния КАРТОЧЕК форм (stage_sync.go), и закрывать
+	// их руками нельзя: иначе таймлайн говорит «согласовано», пока формы лежат в
+	// черновиках. Ровно на это наткнулся заказчик, двигая этапы вместо карточек.
+	if err := s.guardCardStage(ctx, plID, code, action); err != nil {
+		return nil, err
+	}
 	next, err := applyStageAction(stages, code, action, target)
 	if err != nil {
 		return nil, err
@@ -211,6 +302,50 @@ func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year
 		}
 	}
 	return next, nil
+}
+
+// guardCardStage — запрет ручного движения этапов, за которые отвечают карточки.
+//
+// Возврат этапа при этом разрешаем: он не подменяет решение по форме, а помечает
+// сам этап (и это единственный способ вернуть период назад, если формы уже
+// закрыты). Запрещается только «закрыть этап» вручную.
+func (s *Service) guardCardStage(ctx context.Context, plID int64, code, action string) error {
+	if action != "approve" && action != "submit" && action != "start" {
+		return nil
+	}
+	if s.cards == nil || (stepOrder(code) < 0 && code != expPeriodStage) {
+		return nil // этап без карточек — движется вручную, как раньше
+	}
+	cards, err := s.cards.Cards(ctx, plID)
+	if err != nil || len(cards) == 0 {
+		return nil // карточек нет — блокировать нечего
+	}
+	if action == "start" {
+		return nil // «взять в работу» безвредно: статус всё равно пересчитается
+	}
+	var pending []string
+	for _, c := range cards {
+		// Этап держат только карточки СВОИХ форм: у расходов ЦП свой этап 1.5, и
+		// закрывать ими этап 1.1 (план продаж) нельзя — как и наоборот.
+		if !formDrivesStage(c.FormCode, code) {
+			continue
+		}
+		if !cardClosedForStage(c, code) {
+			pending = append(pending, c.Title+" — "+CardStatusLabel(c.Status, c.StepCode))
+		}
+	}
+	if len(pending) == 0 {
+		// Все формы прошли шаг: этап и так станет completed при пересчёте.
+		return nil
+	}
+	const limit = 4
+	shown := pending
+	suffix := ""
+	if len(shown) > limit {
+		shown, suffix = shown[:limit], fmt.Sprintf(" и ещё %d", len(pending)-limit)
+	}
+	return fmt.Errorf("этап %s закрывается сам, когда формы пройдут шаг %s — решение принимается в карточке формы. Ещё не прошли: %s%s",
+		code, code, strings.Join(shown, "; "), suffix)
 }
 
 // Approvals — лист согласования экземпляра (история решений, включая revoked).

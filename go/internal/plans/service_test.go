@@ -2,6 +2,7 @@ package plans
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -450,13 +451,67 @@ func TestSvod_AggregatesByLegalEntity(t *testing.T) {
 		if r.LegalEntity == "TD Mark Formelle" {
 			tdmf = r.Amount
 		}
-		if r.Channel != "Marketplaces" {
-			t.Errorf("канал должен быть Marketplaces, got %q", r.Channel)
+		if r.Channel != ChannelMarketplaces {
+			t.Errorf("канал должен быть %q, got %q", ChannelMarketplaces, r.Channel)
 		}
 	}
 	if tdmf != 1500 {
 		t.Errorf("свод TD Mark Formelle = %v, want 1500 (335+337)", tdmf)
 	}
+}
+
+// Свод по ЮЛ показывает ВЕСЬ комплект, а не только маркетплейсы: розница
+// приходит своим источником и встаёт в те же строки ЮЛ × канал (замечание
+// владельца процесса 09.09.2026).
+func TestSvod_IncludesRetail(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, NewMockFactSource(), newMemScope()).
+		WithRetailSvod(stubRetailSvod{rows: []SvodRow{
+			{LegalEntity: "ФОРМЭЛЬ ООО", Channel: ChannelRetailBY, Currency: "BYN", Amount: 34_233_712},
+			{LegalEntity: "TDMF", Channel: ChannelRetailRU, Currency: "RUB", Amount: 12_000_000},
+		}})
+	ctx := context.Background()
+
+	rows, err := svc.Svod(ctx, 2026, 6)
+	if err != nil {
+		t.Fatalf("Svod: %v", err)
+	}
+	byChannel := map[string]float64{}
+	for _, r := range rows {
+		byChannel[r.Channel] += r.Amount
+	}
+	if got := byChannel[ChannelRetailBY]; got != 34_233_712 {
+		t.Errorf("розница РБ в своде = %v, want 34 233 712", got)
+	}
+	if got := byChannel[ChannelRetailRU]; got != 12_000_000 {
+		t.Errorf("розница РФ в своде = %v, want 12 000 000", got)
+	}
+	// Порядок устойчивый: ЮЛ, затем канал.
+	for i := 1; i < len(rows); i++ {
+		if rows[i-1].LegalEntity > rows[i].LegalEntity {
+			t.Fatalf("свод не отсортирован по ЮЛ: %+v", rows)
+		}
+	}
+}
+
+// Источник розницы недоступен — свод отдаёт маркетплейсы, а не падает целиком:
+// иначе недоступная розница гасит и то, что посчитано.
+func TestSvod_RetailSourceFailureKeepsMp(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, NewMockFactSource(), newMemScope()).
+		WithRetailSvod(stubRetailSvod{err: errors.New("нет соединения")})
+	if _, err := svc.Svod(context.Background(), 2026, 6); err != nil {
+		t.Fatalf("свод не должен падать из-за розницы: %v", err)
+	}
+}
+
+type stubRetailSvod struct {
+	rows []SvodRow
+	err  error
+}
+
+func (s stubRetailSvod) SvodRows(context.Context, int, int) ([]SvodRow, error) {
+	return s.rows, s.err
 }
 
 func TestStages_LazyInitAndAction(t *testing.T) {

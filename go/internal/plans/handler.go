@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -67,6 +68,10 @@ type Handler struct {
 	org        *OrgStore
 	jobpos     *JobPositionStore
 	tasks      *TaskStore
+	// factSnap — снимок факта МП: ручной прогон регламента (правка ТЗ МП §12).
+	factSnap *MpFactSnapshot
+	// cards — оболочка процесса: карточки форм создаются вместе с периодом.
+	cards *CardService
 }
 
 // SetOrgStore подключает структуру компании (nil — недоступна).
@@ -74,6 +79,14 @@ func (h *Handler) SetOrgStore(o *OrgStore) { h.org = o }
 
 // SetTaskStore подключает движок заданий процесса (nil — недоступен).
 func (h *Handler) SetTaskStore(t *TaskStore) { h.tasks = t }
+
+// SetFactSnapshot подключает снимок факта МП: ручной прогон регламента и отметка
+// «данные актуальны на …» (правка ТЗ 02.09.2026 МП §12).
+func (h *Handler) SetFactSnapshot(s *MpFactSnapshot) { h.factSnap = s }
+
+// SetCards подключает оболочку процесса: карточки форм заводятся сразу при
+// создании периода, а не при первом открытии экрана.
+func (h *Handler) SetCards(c *CardService) { h.cards = c }
 
 // SetJobPositions подключает должности (nil — недоступны).
 func (h *Handler) SetJobPositions(j *JobPositionStore) { h.jobpos = j }
@@ -657,6 +670,20 @@ func (h *Handler) StagesList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// На какие этапы вообще заведены шаблоны заданий: интерфейс не должен
+	// предлагать «сгенерировать задания» там, где генерация ничего не создаст
+	// (этапы согласования — это карточки форм, а не задания-ввода).
+	if h.tasks != nil {
+		if tmpls, terr := h.tasks.ListTemplates(r.Context()); terr == nil {
+			withTasks := map[string]bool{}
+			for _, t := range tmpls {
+				withTasks[t.StageCode] = true
+			}
+			for i := range stages {
+				stages[i].HasTaskTemplates = withTasks[stages[i].Code]
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, stages)
 }
 
@@ -763,6 +790,18 @@ func (h *Handler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Карточки форм создаём сразу вместе с периодом. Раньше они появлялись при
+	// первом открытии экрана периода, и до этого момента процесс выглядел
+	// незапущенным: задания есть, этапы есть, а формы «не созданы» — и этапы,
+	// которые считаются по карточкам, оставались в pending.
+	if h.cards != nil {
+		actor, _ := h.principal(r)
+		if _, err := h.cards.EnsureCards(r.Context(), id, actor.UserID); err != nil {
+			// Не фатально: карточки создадутся при открытии периода. Но знать об
+			// этом нужно — иначе «почему нет форм» превращается в загадку.
+			log.Printf("plans: карточки периода %d не созданы при старте: %v", id, err)
+		}
 	}
 	h.rec(r, "create_instance", "pl_instance", id)
 	writeJSON(w, http.StatusOK, map[string]int64{"id": id})

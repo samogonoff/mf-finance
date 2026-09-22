@@ -194,7 +194,7 @@ func aggValue(vals []*float64) *float64 {
 
 // boardTotalPct — итог по процентной строке: пересчёт из агрегатов (сумма
 // процентов смысла не имеет). Зеркалит totalValue() фронта.
-func boardTotalPct(block string, agg map[string]float64) float64 {
+func boardTotalPct(block string, agg map[string]float64, weighted map[string]float64) float64 {
 	net, mgr := agg[BSalesPlatNet], agg[BSalesManagerNet]
 	switch block {
 	case BSPP:
@@ -209,10 +209,22 @@ func boardTotalPct(block string, agg map[string]float64) float64 {
 		return safeDiv(agg[BGrossMargin], net)
 	case BPlPlatformPct:
 		return safeDiv(agg[BPlPlatform], net)
+	case BPlPlatformTotalCostPct:
+		return safeDiv(agg[BPlPlatformTotalCost], net)
+	// Ставка НДС у площадок разная, поэтому итог взвешивается по выручке:
+	// среднее арифметическое дало бы ставку, которой нет ни у одной площадки.
+	case BVatRate:
+		return safeDiv(agg[BSalesManagerGross], mgr) - boolToF(mgr != 0)
+	// База долей — цена площадки без НДС (решение звонка 07.09.2026).
 	case BDirectShare:
-		return safeDiv(agg[BPlatformCosts], mgr)
+		return safeDiv(agg[BPlatformCosts], net)
+	case BDirectShareTurnover:
+		return safeDiv(agg[BPlatformCosts]-agg[BCommission], net)
 	default:
-		return 0
+		// Норматив, контроль норматива и прочие доли: взвешиваем по той же базе,
+		// от которой они посчитаны. Возвращать ноль нельзя — в своде появлялись
+		// нули при ненулевых колонках площадок (замечание аналитика 08.09.2026).
+		return safeDiv(weighted[block], net)
 	}
 }
 
@@ -247,19 +259,37 @@ func (s *TaskStore) BoardData(ctx context.Context, plID int64, f BoardFilter, al
 	tactic, manual, reason := s.boardTactic(ctx, plID, f.Currency)
 	tasksByCfo := s.boardTasksByCfo(ctx, plID)
 
-	// Каскад по каждой площадке — ровно как в форме ввода.
+	// Каскад по каждой площадке — ровно как в форме ввода, включая базис НДС:
+	// свод, посчитанный по другой ставке, расходился бы с формой (доклад
+	// 07.09.2026: в своде стояли законодательные 20 %).
+	segList := make([]string, 0, len(segments))
+	for seg := range segments {
+		segList = append(segList, seg)
+	}
+	planLayer := mpPlanByBlock(ctx, s.fact, b.Year, b.Month, segList)
+	prevY, prevM := prevMonth(b.Year, b.Month)
+	planPrev := mpPlanByBlock(ctx, s.fact, prevY, prevM, segList)
 	values := map[int]map[string]float64{}
 	for _, p := range platforms {
 		l := layersBySegment[p.Segment]
-		values[p.CodeCFO] = computeMpPlatform(mpPlatformInputs(p.CodeCFO, tactic, l.fact), vatByCountry(p.Country))
+		vat := mpVatBasis(planLayer, planPrev, p.CodeCFO, b.Year, b.Month, s.vatRate(ctx, p.Country, p.CodeCFO))
+		values[p.CodeCFO] = computeMpPlatform(mpPlatformInputs(p.CodeCFO, tactic, l), vat)
 	}
 	// Агрегаты денежных строк — база для процентных итогов.
 	agg := map[string]float64{}
+	// weighted — числитель взвешенного итога процентных строк: доля × база
+	// площадки. Знаменатель общий (Σ цены площадки без НДС), поэтому храним
+	// только числители.
+	weighted := map[string]float64{}
+	spec := mpLineByBlock()
 	for _, p := range platforms {
+		base := values[p.CodeCFO][BSalesPlatNet]
 		for block, v := range values[p.CodeCFO] {
-			if mpLineByBlock()[block].ValueKind == ValueMoney {
+			if spec[block].ValueKind == ValueMoney {
 				agg[block] += v
+				continue
 			}
+			weighted[block] += v * base
 		}
 	}
 
@@ -329,7 +359,7 @@ func (s *TaskStore) BoardData(ctx context.Context, plID int64, f BoardFilter, al
 		}
 
 		if line.ValueKind == ValuePct {
-			row.Total = BoardValues{Calc: boardTotalPct(line.BlockType, agg)}
+			row.Total = BoardValues{Calc: boardTotalPct(line.BlockType, agg, weighted)}
 		} else {
 			row.Total = BoardValues{
 				Calc:     agg[line.BlockType],

@@ -186,7 +186,7 @@ func TestConvertRetailRows_PercentsNotRecomputed(t *testing.T) {
 		ser, 2026, 7, []int{7})
 	before := rows[0].Indicators
 
-	converted := ConvertRetailRows(rows, 0.5)
+	converted := ConvertRetailRows(rows, SameRetailFx(0.5))
 	after := converted[0].Indicators
 
 	retApprox(t, "факт ПГ пересчитан", after.FactPrevYearMonth, 50)

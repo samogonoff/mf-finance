@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 )
 
 // CardService — процесс поверх карточек форм: создание карточек периода, переходы
@@ -21,6 +22,26 @@ type CardService struct {
 	sources   map[string]PublishSource
 	owners    StepOwnerResolver
 	audit     AuditSink
+	// legalEntities — УНП ЮЛ по стране для колонки «Компания» приёмника тактики
+	// (правки ТЗ 02.09.2026 §15/§16).
+	legalEntities LegalEntityResolver
+	// notify — уведомления по карточкам (кому форма пришла на решение). nil —
+	// процесс работает молча, как раньше.
+	notify CardNotifier
+	// gates — проверки «можно ли отправить форму на согласование» по form_code.
+	// Без гейта форма ведёт себя как раньше (валидации только в интерфейсе).
+	gates map[string]SubmitGate
+	// submitStrict — жёсткий режим гейта: замечания БЛОКИРУЮТ отправку.
+	// Ответ 41 (10.09.2026): считать проверки всегда, а блокировку сделать
+	// переключаемой; по умолчанию мягкий режим, жёсткий — к промышленной
+	// эксплуатации. Поэтому false здесь — осознанный дефолт, а не забытый флаг.
+	submitStrict bool
+	// stages — этапы периода: их статус пересчитывается по карточкам, чтобы
+	// таймлайн и формы не расходились (stage_sync.go).
+	stages StageStore
+	// fillTasks — задания заполнения: закрываются отправкой формы, возвращаются
+	// вместе с ней (task_card_sync.go).
+	fillTasks FillTaskSyncer
 }
 
 // SnapshotProvider — отдаёт снимок значений формы для версии карточки.
@@ -72,11 +93,24 @@ func (s *CardService) RegisterForm(formCode string, snap SnapshotProvider, src P
 	}
 }
 
+// WithLegalEntities подключает справочник ЮЛ: план пишется на реальный УНП.
+func (s *CardService) WithLegalEntities(r LegalEntityResolver) *CardService {
+	s.legalEntities = r
+	return s
+}
+
 // WithOwners подключает резолвер владельцев шагов (skip_if_same_user).
 func (s *CardService) WithOwners(r StepOwnerResolver) *CardService { s.owners = r; return s }
 
 // WithAudit подключает журнал.
 func (s *CardService) WithAudit(a AuditSink) *CardService { s.audit = a; return s }
+
+// WithSubmitStrict включает жёсткий режим гейта отправки (ответ 41).
+func (s *CardService) WithSubmitStrict(v bool) *CardService { s.submitStrict = v; return s }
+
+// SubmitStrict — включён ли жёсткий режим. Нужен интерфейсу: в мягком режиме
+// замечания показываются плашкой «не блокирует», а не «отправка заблокирована».
+func (s *CardService) SubmitStrict() bool { return s.submitStrict }
 
 // EnsureCards создаёт карточки периода по реестру форм (идемпотентно).
 func (s *CardService) EnsureCards(ctx context.Context, plID int64, actorID int64) ([]Card, error) {
@@ -142,6 +176,13 @@ func (s *CardService) Action(ctx context.Context, cardID int64, in CardActionInp
 	if err != nil {
 		return Card{}, err
 	}
+	// Отправка на согласование — единственное место, где формальные проверки
+	// формы обязательны: дальше по маршруту значения уже заморожены.
+	if strings.TrimSpace(in.Action) == "submit" {
+		if err := s.checkSubmitGate(ctx, c); err != nil {
+			return Card{}, err
+		}
+	}
 	if in.StepOwner == nil && s.owners != nil {
 		if owners, err := s.owners.StepOwners(ctx, c.PlID, c.FormCode, c.ScopeKey); err == nil {
 			in.StepOwner = owners
@@ -187,6 +228,12 @@ func (s *CardService) Action(ctx context.Context, cardID int64, in CardActionInp
 			next = fresh
 		}
 	}
+	// Этапы периода — агрегат состояния карточек: пересчитываем сразу после
+	// перехода, иначе таймлайн показывает не то, что происходит с формами.
+	s.syncStages(ctx, next.PlID)
+	// Уведомления — последним шагом и в фоне: получатель узнаёт об уже
+	// состоявшемся переходе, а сбой канала не откатывает маршрут.
+	s.notifyCardTransition(ctx, c, next, in)
 	return next, nil
 }
 

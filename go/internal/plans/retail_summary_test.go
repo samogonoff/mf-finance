@@ -13,12 +13,14 @@ func summaryInput(rows []RetailRow, ser RetailSeries) RetailSummaryInput {
 	return RetailSummaryInput{
 		CardID: 1, Country: "BY", NatCurrency: "BYN", Year: 2026, Month: 7,
 		PlanMonths: []int{7, 8}, Rows: rows, Series: ser,
-		FxRates: map[string]float64{"BYN": 1, "USD": 0.3}, DirectoryActiveCount: -1,
+		FxRates: map[string]RetailFxRates{"BYN": SameRetailFx(1), "RUB": SameRetailFx(0.0376)}, DirectoryActiveCount: -1,
 	}
 }
 
-// TestSummary_CurrencyBlocksAndFieldSets — три валютных блока (ТЗ §8): нац.
-// валюта — все 11 показателей, BYN и USD — сокращённый набор из 6.
+// TestSummary_CurrencyBlocksAndFieldSets — валютные блоки: нац. валюта (все 11
+// показателей) и BYN (сокращённый набор из 6). USD-блока в рознице НЕТ —
+// правка ТЗ 02.09.2026 §27: в исходном файле такого листа не существует,
+// требование было перенесено из файлов ЦЗ ошибочно.
 func TestSummary_CurrencyBlocksAndFieldSets(t *testing.T) {
 	ser := NewRetailSeries()
 	ser.AddFact([]RetailFactCell{{CodeCFO: 100, Year: 2025, Month: 7, Amount: 1000}})
@@ -26,9 +28,9 @@ func TestSummary_CurrencyBlocksAndFieldSets(t *testing.T) {
 
 	sum := ComputeRetailSummary(summaryInput(rows, ser))
 
-	// Нац. валюта BY — BYN, поэтому дубль блока не создаётся: BYN + USD = 2 блока.
-	if len(sum.Blocks) != 2 {
-		t.Fatalf("валютных блоков: got %d, want 2 (BYN нац. + USD)", len(sum.Blocks))
+	// Нац. валюта BY — BYN, дубль блока не создаётся, USD не добавляется.
+	if len(sum.Blocks) != 1 {
+		t.Fatalf("валютных блоков: got %d, want 1 (только нац. BYN)", len(sum.Blocks))
 	}
 	nat := sum.Blocks[0]
 	if nat.Currency != "BYN" || !nat.Full {
@@ -37,12 +39,10 @@ func TestSummary_CurrencyBlocksAndFieldSets(t *testing.T) {
 	if len(nat.Fields) != 11 {
 		t.Errorf("нац. блок: показателей %d, ТЗ §8 требует 11", len(nat.Fields))
 	}
-	usd := sum.Blocks[1]
-	if usd.Currency != "USD" || usd.Full {
-		t.Errorf("второй блок должен быть USD с сокращённым набором, got %q full=%v", usd.Currency, usd.Full)
-	}
-	if len(usd.Fields) != 6 {
-		t.Errorf("USD-блок: показателей %d, ТЗ §8 требует 6", len(usd.Fields))
+	for _, b := range sum.Blocks {
+		if b.Currency == "USD" {
+			t.Fatal("USD-блока в рознице быть не должно (правка ТЗ §27)")
+		}
 	}
 
 	// Обязательные разрезы ТЗ §8: LFL / до года / новые / закрыты.
@@ -56,31 +56,48 @@ func TestSummary_CurrencyBlocksAndFieldSets(t *testing.T) {
 		}
 	}
 
-	// Дополнительные группировки ТЗ §8: город, РМ, тип, ЮЛ, категория.
-	if len(sum.Groups) != 5 {
-		t.Errorf("дополнительных группировок: got %d, want 5", len(sum.Groups))
+	// Дополнительные группировки: город, РМ, тип, ЮЛ, категория (ТЗ §8) плюс
+	// LFL-статус — им видны статусы вне четырёх разрезов («Реконструкция»).
+	if len(sum.Groups) != 6 {
+		t.Errorf("дополнительных группировок: got %d, want 6", len(sum.Groups))
+	}
+	var hasStatus bool
+	for _, g := range sum.Groups {
+		if g.Key == "lfl_status" {
+			hasStatus = true
+		}
+	}
+	if !hasStatus {
+		t.Error("нет группировки по LFL-статусу: статусы вне разрезов останутся невидимыми")
 	}
 }
 
 // TestSummary_MoneyScaledPercentsNot — в валютном блоке пересчитываются только
-// денежные показатели; проценты остаются теми же (ТЗ §4/§8).
+// денежные показатели; проценты остаются теми же (ТЗ §4/§8). Проверяем на паре
+// «нац. валюта РФ + BYN»: в BY-карточке второго блока теперь нет вовсе.
 func TestSummary_MoneyScaledPercentsNot(t *testing.T) {
 	ser := NewRetailSeries()
 	ser.AddFact([]RetailFactCell{{CodeCFO: 100, Year: 2025, Month: 7, Amount: 1000}})
 	rows := []RetailRow{retailFilledRow(100, LFLYes, []int{7, 8}, 1200)}
 
-	sum := ComputeRetailSummary(summaryInput(rows, ser))
-	nat, usd := sum.Blocks[0].Total, sum.Blocks[1].Total
+	in := summaryInput(rows, ser)
+	in.Country, in.NatCurrency = "RU", "RUB"
+	in.FxRates = map[string]RetailFxRates{"RUB": SameRetailFx(1), "BYN": SameRetailFx(0.0376)}
+	sum := ComputeRetailSummary(in)
+	if len(sum.Blocks) != 2 {
+		t.Fatalf("для РФ ожидались блоки RUB + BYN, got %d", len(sum.Blocks))
+	}
+	nat, byn := sum.Blocks[0].Total, sum.Blocks[1].Total
 
 	if math.Abs(nat.Tactic-1200) > 1e-9 {
 		t.Errorf("тактика в нац. валюте: got %.2f, want 1200", nat.Tactic)
 	}
-	if math.Abs(usd.Tactic-360) > 1e-6 {
-		t.Errorf("тактика в USD (курс 0.3): got %.2f, want 360", usd.Tactic)
+	if math.Abs(byn.Tactic-45.12) > 1e-6 {
+		t.Errorf("тактика в BYN (курс 0,0376): got %.2f, want 45.12", byn.Tactic)
 	}
 	// LFL = 1200/1000 − 1 = 0.2 в ОБОИХ блоках.
-	if math.Abs(nat.LFL-0.2) > 1e-9 || math.Abs(usd.LFL-0.2) > 1e-9 {
-		t.Errorf("LFL должен быть одинаков в блоках: нац. %.4f, USD %.4f", nat.LFL, usd.LFL)
+	if math.Abs(nat.LFL-0.2) > 1e-9 || math.Abs(byn.LFL-0.2) > 1e-9 {
+		t.Errorf("LFL должен быть одинаков в блоках: нац. %.4f, BYN %.4f", nat.LFL, byn.LFL)
 	}
 }
 
@@ -418,5 +435,65 @@ func TestRetailImport_NoMonthColumns(t *testing.T) {
 	data, _ := writeXlsx("Розница", []string{"code_cfo", "cfo"}, [][]string{{"100", "Магазин"}})
 	if _, _, _, err := parseRetailImport(data, 2026, map[int]bool{7: true}, map[int]bool{100: true}, 0); err == nil {
 		t.Error("файл без колонок-месяцев должен отклоняться с ошибкой")
+	}
+}
+
+// Магазины со статусом вне известных разрезов («Реконструкция», пустой/«n/a»)
+// обязаны попадать в свод: справочник статусов открытый, и раньше такие строки
+// просто исчезали из разрезов — «в форме есть, в свод не попадают»
+// (замечание владельца процесса 09.09.2026).
+func TestSummary_UnknownStatusGoesToOtherSection(t *testing.T) {
+	rows := []RetailRow{
+		{CodeCFO: 1, LFLEffective: LFLYes, Values: []RetailValue{{Year: 2026, Month: 6, Amount: fptr(100)}}},
+		{CodeCFO: 2, LFLEffective: "реконструкция", Values: []RetailValue{{Year: 2026, Month: 6, Amount: fptr(30)}}},
+		{CodeCFO: 3, LFLEffective: "", Values: []RetailValue{{Year: 2026, Month: 6, Amount: fptr(7)}}},
+	}
+	in := RetailSummaryInput{
+		Country: "BY", NatCurrency: "BYN", Year: 2026, Month: 6,
+		PlanMonths: []int{6}, Rows: rows, DirectoryActiveCount: -1,
+	}
+	sum := ComputeRetailSummary(in)
+
+	var block RetailCurrencyBlock
+	for _, b := range sum.Blocks {
+		if b.Currency == "BYN" {
+			block = b
+		}
+	}
+	var other *RetailSummarySection
+	for i := range block.Sections {
+		if block.Sections[i].Key == "other" {
+			other = &block.Sections[i]
+		}
+	}
+	if other == nil {
+		t.Fatal("разрез «прочие статусы» не появился, магазины вне известных статусов потеряны")
+	}
+	if other.Rows != 2 {
+		t.Errorf("в разрезе прочих ожидались 2 строки, получено %d", other.Rows)
+	}
+	if got := other.Metrics.Tactic; got != 37 {
+		t.Errorf("тактика прочих = %.2f, ждали 37", got)
+	}
+	// Итог блока считается по ВСЕМ строкам и включает их же.
+	if got := block.Total.Tactic; got != 137 {
+		t.Errorf("итог блока = %.2f, ждали 137", got)
+	}
+}
+
+// Все статусы известны — пустого разреза «прочие» в своде быть не должно.
+func TestSummary_NoOtherSectionWhenAllKnown(t *testing.T) {
+	in := RetailSummaryInput{
+		Country: "BY", NatCurrency: "BYN", Year: 2026, Month: 6, PlanMonths: []int{6},
+		Rows: []RetailRow{{CodeCFO: 1, LFLEffective: LFLYes,
+			Values: []RetailValue{{Year: 2026, Month: 6, Amount: fptr(100)}}}},
+		DirectoryActiveCount: -1,
+	}
+	for _, b := range ComputeRetailSummary(in).Blocks {
+		for _, sec := range b.Sections {
+			if sec.Key == "other" {
+				t.Fatalf("разрез прочих не должен появляться при известных статусах: %+v", sec)
+			}
+		}
 	}
 }

@@ -80,6 +80,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { usePlans, type StageRoute } from "~/composables/usePlans";
 import { usePlansRights, type ScopeAssignment, type Position } from "~/composables/usePlansRights";
 
@@ -108,7 +109,7 @@ const STAGE_FORMS: Record<string, string[]> = {
   "1.5": ["TPL-CFO-EXP · Затраты ЦП"],
   "1.6": ["Свод ЮЛ × канал"],
   "2.1": ["TPL-PROD-MINUTES · Минуты и объёмы"],
-  "2.3": ["TPL-CFO-EXP · Затраты ЦЗ"],
+  "2.3": ["TPL-CZ-EXP · Затраты ЦЗ"],
   "2.4": ["Свод по ЮЛ"]
 };
 
@@ -128,7 +129,7 @@ const save = async (s: StageRoute) => {
     saved.value = true;
     setTimeout(() => (saved.value = false), 2000);
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка сохранения";
+    error.value = apiError(e, "Ошибка сохранения");
   }
 };
 
@@ -139,7 +140,7 @@ onMounted(async () => {
       [assignments.value, positions.value] = await Promise.all([rights.assignments(), rights.positions()]);
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка загрузки";
+    error.value = apiError(e, "Ошибка загрузки");
   }
 });
 </script>

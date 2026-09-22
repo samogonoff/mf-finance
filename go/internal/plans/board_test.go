@@ -62,19 +62,34 @@ func TestBoardTotalPct(t *testing.T) {
 		BRetailMarginPct: 0.375,
 		BGrossMarginPct:  0.5,
 		BPlPlatformPct:   0.25,
-		BDirectShare:     0.25,
+		// База доли прямых затрат — цена площадки без НДС (250/800).
+		BDirectShare: 0.3125,
+		// Ставка НДС взвешена по выручке: 1000/800 − 1 (в агрегатах 1046 = 1000
+		// приходит из BSalesManagerGross ниже).
 	}
+	agg[BSalesManagerGross] = 1200
+	cases[BVatRate] = 0.2 // 1200/1000 − 1
+	cases[BDirectShareTurnover] = 0.25
+	agg[BCommission] = 50 // (250 − 50)/800
 	for block, want := range cases {
-		if got := boardTotalPct(block, agg); math.Abs(got-want) > 1e-9 {
+		if got := boardTotalPct(block, agg, map[string]float64{}); math.Abs(got-want) > 1e-9 {
 			t.Errorf("%s = %v, ждали %v", block, got, want)
 		}
+	}
+
+	// Строка, которой нет в списке (норматив, контроль норматива), взвешивается
+	// по цене площадки без НДС, а НЕ обнуляется: в своде появлялись нули при
+	// ненулевых колонках площадок (замечание аналитика 08.09.2026).
+	weighted := map[string]float64{BNormShare: 0.62 * 800}
+	if got := boardTotalPct(BNormShare, agg, weighted); math.Abs(got-0.62) > 1e-9 {
+		t.Errorf("норматив в итоге = %v, ждали 0,62", got)
 	}
 }
 
 // Пустые агрегаты не должны давать деления на ноль / NaN.
 func TestBoardTotalPctEmpty(t *testing.T) {
 	for _, block := range []string{BSPP, BMarkup, BMarkupTotal, BRetailMarginPct, BGrossMarginPct, BPlPlatformPct, BDirectShare} {
-		if got := boardTotalPct(block, map[string]float64{}); got != 0 || math.IsNaN(got) {
+		if got := boardTotalPct(block, map[string]float64{}, map[string]float64{}); got != 0 || math.IsNaN(got) {
 			t.Errorf("%s на пустых агрегатах = %v, ждали 0", block, got)
 		}
 	}
@@ -100,18 +115,38 @@ func TestMpPlatformInputs(t *testing.T) {
 		{335, 1006}: 700,
 		{335, 8006}: 400,
 	}
-	tactic := map[string]float64{layerKey(335, BSalesManagerGross): 1200}
+	tactic := map[string]float64{
+		layerKey(335, BSalesManagerGross): 1200,
+		layerKey(335, BShipments):         400, // сохранена прежним периодом
+	}
 
-	in := mpPlatformInputs(335, tactic, factIdx)
+	in := mpPlatformInputs(335, tactic, mpLayers{fact: factIdx, strategy: map[string]float64{}, target: map[string]float64{}})
 	if in[BSalesManagerGross] != 1200 {
 		t.Errorf("тактика должна перебивать факт: %v", in[BSalesManagerGross])
 	}
+	// Себестоимость больше не вводится и из ФАКТА не сидируется (решение звонка
+	// 07.09.2026: её ведёт наценка), но сохранённое значение прежних периодов
+	// читается — иначе утверждённая форма пересчиталась бы в нули.
 	if in[BShipments] != 400 {
-		t.Errorf("себестоимость из факта: %v", in[BShipments])
+		t.Errorf("сохранённая себестоимость должна читаться: %v", in[BShipments])
 	}
-	wantSPP := 1 - 700.0/833.0
-	if math.Abs(in[BSPP]-wantSPP) > 1e-9 {
-		t.Errorf("%%СПП = %v, ждали %v", in[BSPP], wantSPP)
+	if got := mpPlatformInputs(335, map[string]float64{}, mpLayers{fact: factIdx, strategy: map[string]float64{}, target: map[string]float64{}})[BShipments]; got != 0 {
+		t.Errorf("себестоимость не должна подставляться из факта: %v", got)
+	}
+	// %СПП НЕ подставляется из источника (правки ТЗ 02.09.2026, часть 1 и МП §8):
+	// в форме Excel за ним нет формулы, значит это поле ввода. Фактическое
+	// значение уходит подсказкой рядом с полем — deriveSPP считает именно её.
+	if _, ok := in[BSPP]; ok {
+		t.Errorf("%%СПП не должен сидироваться из источника, получено %v", in[BSPP])
+	}
+	wantHint := 1 - 700.0/833.0
+	if got := deriveSPP(factIdx, 335); math.Abs(got-wantHint) > 1e-9 {
+		t.Errorf("подсказка %%СПП = %v, ждали %v", got, wantHint)
+	}
+	// Штрафы — тоже поле ввода (правка МП §14): общего реестра нет, в DWH только
+	// габаритные штрафы Wildberries.
+	if _, ok := in[BCostPenalties]; ok {
+		t.Errorf("штрафы не должны сидироваться из источника, получено %v", in[BCostPenalties])
 	}
 	if _, ok := in[BMarkup]; ok {
 		t.Errorf("наценка не сидируется — она расчётная")

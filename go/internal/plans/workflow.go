@@ -30,7 +30,11 @@ func stageDefs() []StageDef {
 		{Code: "1.2", Track: "sales", Name: "Согласование руководителем подразделения", DueRD: 3, DependsOn: []string{"1.1"}, IsApproval: true},
 		{Code: "1.3", Track: "sales", Name: "Согласование директором направления", DueRD: 3, DependsOn: []string{"1.2"}, IsApproval: true},
 		{Code: "2.3", Track: "production", Name: "Обновление бюджетов ЦЗ", DueRD: 3, DependsOn: []string{"2.2"}},
-		{Code: "1.4", Track: "sales", Name: "Финальное согласование потока продаж", DueRD: 4, DependsOn: []string{"1.3"}, IsApproval: true},
+		// 1.4 — именно УТВЕРЖДЕНИЕ: оно закрывает период на запись для всех,
+		// включая автора (ТЗ §2.4). Прежнее «Финальное согласование потока
+		// продаж» вводило в заблуждение — после 1.4 идут ещё 1.5, 1.6, 3 и 4,
+		// а слово «финальное» уже занято колонкой календаря.
+		{Code: "1.4", Track: "sales", Name: "Утверждение потока продаж", DueRD: 4, DependsOn: []string{"1.3"}, IsApproval: true},
 		{Code: "2.4", Track: "production", Name: "Формирование бюджетов по ЮЛ (пр-во)", DueRD: 4, DependsOn: []string{"2.3"}},
 		{Code: "1.5", Track: "sales", Name: "Обновление расходов в бюджетах ЦП", DueRD: 5, DependsOn: []string{"1.4"}},
 		{Code: "1.6", Track: "sales", Name: "Формирование по ЮЛ и каналам", DueRD: 5, DependsOn: []string{"1.5", "2.4"}}, // WF-DEP-01
@@ -57,6 +61,14 @@ type StageState struct {
 	DueDate     string   `json:"due_at"`
 	DependsOn   []string `json:"depends_on"`
 	Responsible string   `json:"responsible"` // ответственные/согласующие (из маршрута)
+	// IsApproval — этап СОГЛАСОВАНИЯ. У него нет заданий-ввода: согласование идёт
+	// по карточкам форм (лист согласования каждой формы), а этап отражает срок и
+	// факт прохождения. Без этого признака интерфейс предлагал «сгенерировать
+	// задания» там, где их не бывает, и человек искал несуществующую кнопку.
+	IsApproval bool `json:"is_approval"`
+	// HasTaskTemplates — на этап заведены шаблоны заданий (конструктор). Пусто —
+	// значит генерация ничего не создаст, и предлагать её нельзя.
+	HasTaskTemplates bool `json:"has_task_templates"`
 }
 
 // RouteSeed — ответственные по схеме ТЗ (fallback, если plans_route_config пуст).
@@ -100,6 +112,7 @@ func initStages(year, month int, country string, seed []CountryCalendar, resp ma
 			}
 		}
 		out = append(out, StageState{
+			IsApproval: d.IsApproval,
 			Code: d.Code, Track: d.Track, Name: d.Name,
 			Status: "pending", DueDate: due, DependsOn: d.DependsOn,
 			Responsible: resp[d.Code],

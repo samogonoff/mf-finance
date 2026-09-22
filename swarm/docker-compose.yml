@@ -34,7 +34,7 @@ services:
     #  retries: 5
     #  start_period: 15s
     networks:
-      - network
+      - finance_shared
 
 
   nuxt:
@@ -47,7 +47,7 @@ services:
       - source: %%CONFIG_NAME%%
         target: /var/www/nuxt_app/.env
     networks:
-      - network
+      - finance_shared
 
 
   python-cost:
@@ -61,7 +61,7 @@ services:
     ports:
       - "8091:8091"
     networks:
-      - network
+      - finance_shared
 
 
   redis:
@@ -84,7 +84,7 @@ services:
     deploy:
       <<: *default-deploy
     networks:
-      - network
+      - finance_shared
 
 
 
@@ -100,5 +100,6 @@ volumes:
   bugtracker_uploads:
 
 networks:
-  network:
-    driver: overlay
+  finance_shared:
+    external: true
+    name: finance_shared

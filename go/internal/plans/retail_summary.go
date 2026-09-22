@@ -32,6 +32,31 @@ var retailSectionOrder = []struct {
 	}},
 }
 
+// retailOtherSection — строки, не попавшие НИ В ОДИН разрез выше: статусы вроде
+// «Реконструкция» или пустого/«n/a». Справочник статусов открытый (правка
+// 08.09.2026 п. 38: неизвестное значение импортируется как есть), поэтому список
+// разрезов заведомо неполон, и без этого раздела такие магазины просто исчезали
+// из свода — «в форме есть, в свод не попадают» (замечание 09.09.2026).
+//
+// Раздел показывается, только когда в нём есть строки: пустая строка «прочие» в
+// каждом своде мешала бы читать разрезы.
+func retailOtherRows(rows []RetailRow) []RetailRow {
+	out := make([]RetailRow, 0)
+	for _, r := range rows {
+		matched := false
+		for _, sec := range retailSectionOrder {
+			if sec.Match(r) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // Переключаемые дополнительные группировки (ТЗ §8). Считаем все сразу: их пять,
 // данные уже в памяти, и так UI переключает разрез без повторного запроса.
 var retailGroupDims = []struct {
@@ -44,6 +69,10 @@ var retailGroupDims = []struct {
 	{"store_type", "Тип магазина", func(r RetailRow) string { return r.StoreType }},
 	{"legal_entity", "ЮЛ", func(r RetailRow) string { return r.LegalEntity }},
 	{"category", "Категория", func(r RetailRow) string { return r.Category }},
+	// LFL-статус отдельной группировкой: справочник статусов открытый, и это
+	// единственный способ увидеть в своде статусы вроде «Реконструкция», под
+	// которые нет своего разреза (замечание владельца процесса 09.09.2026).
+	{"lfl_status", "LFL-статус", func(r RetailRow) string { return r.LFLEffective }},
 }
 
 // RetailSummaryMetrics — 11 показателей месяца (ТЗ §8). Денежные — в валюте
@@ -81,8 +110,13 @@ type RetailSummaryGroup struct {
 	Sections []RetailSummarySection `json:"sections"`
 }
 
-// RetailCurrencyBlock — валютный блок (ТЗ §8: нац. валюта — все 11 показателей,
-// BYN и USD — сокращённый набор из 6).
+// RetailCurrencyBlock — валютный блок. Нац. валюта — все 11 показателей, BYN —
+// сокращённый набор.
+//
+// БЛОКА USD В РОЗНИЦЕ НЕТ (правка ТЗ 02.09.2026 §27): в исходном файле
+// Розница_BY_магазины_2026_2пг.xlsx шесть листов, листа в USD среди них нет.
+// Требование пришло из файлов ЦЗ с месячными листами и было перенесено в ТЗ
+// розницы ошибочно. Не добавлять обратно «на всякий случай».
 type RetailCurrencyBlock struct {
 	Currency string `json:"currency"`
 	// Full=true — показывать все 11 показателей; false — сокращённый набор.
@@ -104,12 +138,11 @@ func retailFullFields() []string {
 	}
 }
 
-// retailShortFields — сокращённый набор из 6 для блоков BYN и USD (ТЗ §8).
+// retailShortFields — сокращённый набор из 6 для блока BYN (ТЗ §8).
 //
-// ТЗ состав шести не перечисляет. Берём ДЕНЕЖНЫЕ величины: пересчёт в BYN/USD —
+// ТЗ состав шести не перечисляет. Берём ДЕНЕЖНЫЕ величины: пересчёт в BYN —
 // слой отображения (§4), и проценты в нём те же самые числа, что в нац. блоке, —
-// дублировать их значит показать согласующему одно и то же трижды. Состав
-// подтвердить у аналитика (см. отчёт: открытые вопросы).
+// дублировать их значит показать согласующему одно и то же дважды.
 func retailShortFields() []string {
 	return []string{"fact_prev_year", "strategy", "tactic", "fact_cur", "period_total", "year_expectation"}
 }
@@ -168,37 +201,44 @@ func ComputeRetailSummary(in RetailSummaryInput) RetailSummary {
 		Rows:        len(rows),
 	}
 
-	// Валютные блоки: нац. валюта (все 11) + BYN и USD (сокращённые), ТЗ §8.
-	// Нац. валюта BY — BYN, поэтому дубль блока не создаём.
+	// Валютные блоки: нац. валюта (все 11) + BYN (сокращённый). USD-блока нет —
+	// правка ТЗ §27. Нац. валюта BY — BYN, поэтому дубль блока не создаём.
 	blocks := []struct {
 		cur  string
 		full bool
 	}{{in.NatCurrency, true}}
-	for _, c := range []string{"BYN", "USD"} {
-		if c != in.NatCurrency {
-			blocks = append(blocks, struct {
-				cur  string
-				full bool
-			}{c, false})
-		}
+	if in.NatCurrency != "BYN" {
+		blocks = append(blocks, struct {
+			cur  string
+			full bool
+		}{"BYN", false})
 	}
 	for _, b := range blocks {
-		rate := 1.0
-		if r, ok := in.FxRates[b.cur]; ok && r != 0 {
-			rate = r
+		fx := SameRetailFx(1)
+		if r, ok := in.FxRates[b.cur]; ok && r.Tactic != 0 {
+			fx = r
 		}
-		block := RetailCurrencyBlock{Currency: b.cur, Full: b.full, FxRate: rate}
+		// В подпись блока идёт курс тактики: это курс колонки, которую вводят.
+		block := RetailCurrencyBlock{Currency: b.cur, Full: b.full, FxRate: fx.Tactic}
 		if b.full {
 			block.Fields = retailFullFields()
 		} else {
 			block.Fields = retailShortFields()
 		}
-		block.Total = scaleMetrics(aggregateMetrics(rows, in), rate)
+		block.Total = scaleMetricsFx(aggregateMetrics(rows, in), fx)
 		for _, sec := range retailSectionOrder {
 			part := filterRows(rows, sec.Match)
 			block.Sections = append(block.Sections, RetailSummarySection{
 				Key: sec.Key, Title: sec.Title, Rows: len(part),
-				Metrics: scaleMetrics(aggregateMetrics(part, in), rate),
+				Metrics: scaleMetricsFx(aggregateMetrics(part, in), fx),
+			})
+		}
+		// Хвост: всё, что не подошло ни под один разрез. Без него сумма разрезов
+		// не сходится с итогом блока, и понять это по экрану невозможно.
+		if other := retailOtherRows(rows); len(other) > 0 {
+			block.Sections = append(block.Sections, RetailSummarySection{
+				Key: "other", Title: "в т.ч. прочие статусы", Rows: len(other),
+				Metrics: scaleMetricsFx(aggregateMetrics(other, in), fx),
 			})
 		}
 		out.Blocks = append(out.Blocks, block)
@@ -244,9 +284,13 @@ type RetailSummaryInput struct {
 	PlanMonths  []int
 	Rows        []RetailRow
 	Series      RetailSeries
-	// FxRates — курс нац. валюты к валюте блока (сколько единиц валюты блока в
+	// FxRates — курсы нац. валюты к валюте блока ПО НАЗНАЧЕНИЮ показателя (у
+	// тактики свой курс — факта предыдущего месяца). Ключ — валюта блока.
+	// Прежнее «одно число на блок» осталось в подписи (RetailCurrencyBlock.FxRate).
+	//
+	// Историческая формулировка: курс нац. валюты к валюте блока (сколько единиц валюты блока в
 	// одной единице нац. валюты). Считается RateBook'ом снаружи.
-	FxRates map[string]float64
+	FxRates map[string]RetailFxRates
 	// SourceFactTotal — итог факта ИЗ ИСТОЧНИКА за период по всей стране
 	// (сверка §7 №2). nil → источник недоступен, сверка помечается skipped:
 	// «нет данных» и «расхождение 0» — разные ответы согласующему.
@@ -295,16 +339,28 @@ func aggregateMetrics(rows []RetailRow, in RetailSummaryInput) RetailSummaryMetr
 // scaleMetrics — пересчёт денежных показателей в валюту блока. Проценты НЕ
 // пересчитываются (ТЗ §4: «индикаторы на слое отображения не пересчитываются»).
 func scaleMetrics(m RetailSummaryMetrics, rate float64) RetailSummaryMetrics {
-	if rate == 1 || rate == 0 {
+	return scaleMetricsFx(m, SameRetailFx(rate))
+}
+
+// scaleMetricsFx — то же с курсами ПО НАЗНАЧЕНИЮ показателя: тактика
+// пересчитывается курсом тактики (факта предыдущего месяца), факт — своим,
+// стратегия — плановым. Свод обязан считать теми же курсами, что и форма, иначе
+// согласующий видит не те числа, что заполняющий.
+func scaleMetricsFx(m RetailSummaryMetrics, fx RetailFxRates) RetailSummaryMetrics {
+	if fx.identity() {
 		return m
 	}
-	m.FactPrevYear *= rate
-	m.Strategy *= rate
-	m.Tactic *= rate
-	m.FactCur *= rate
-	m.FactPrevMonth *= rate
-	m.PeriodTotal *= rate
-	m.YearExpectation *= rate
+	tactic := fx.Tactic
+	if tactic == 0 {
+		tactic = 1
+	}
+	m.FactPrevYear *= fx.with(fx.FactPrevYear)
+	m.Strategy *= fx.with(fx.Strategy)
+	m.FactCur *= fx.with(fx.FactCurrent)
+	m.FactPrevMonth *= fx.with(fx.FactCurrent)
+	m.Tactic *= tactic
+	m.PeriodTotal *= tactic
+	m.YearExpectation *= tactic
 	return m
 }
 

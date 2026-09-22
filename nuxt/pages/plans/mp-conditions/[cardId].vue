@@ -78,7 +78,7 @@
       <div class="card-header">
         <span class="card-title">Условия по площадкам</span>
         <span class="hdr-hint">
-          Доли — от выручки по ценам менеджера без НДС. Отрицательная доля допустима только для компенсаций (статья 66).
+          Доли — от выручки по цене площадки без НДС. Отрицательная доля допустима только для компенсаций (статья 66).
         </span>
       </div>
       <div class="table-scroll">
@@ -209,6 +209,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import NumberField from "~/components/NumberField.vue";
 import SkeletonTable from "~/components/SkeletonTable.vue";
 import { useMpConditions, type MpConditionsRow, type MpConditionsView, type MpRecalcResult, type PlanCard } from "~/composables/useMpConditions";
@@ -243,8 +244,8 @@ interface EditableRow extends MpConditionsRow {
 const COST_LABELS: Record<string, [string, string]> = {
   cost_agent: ["Агент.", "Агентское (комиссионное) вознаграждение"],
   cost_freight: ["Груз.экс", "Грузоперевозки экспорт"],
-  cost_log_transport: ["Трансп.", "Транспортная логистика"],
-  cost_log_warehouse: ["Склад", "Складская логистика"],
+  cost_log_transport: ["Развоз", "Грузоперевозки развоз и перемещение"],
+  cost_log_warehouse: ["Аренда", "Аренда помещений (стоянки)"],
   cost_ads: ["Реклама", "РЕКЛАМА И МАРКЕТИНГ"],
   cost_ads_social: ["Соцсети", "Реклама — социальные сети"],
   cost_packaging: ["Упак.", "Расходы на упаковку (пакеты)"],
@@ -320,7 +321,7 @@ const load = async () => {
     card.value = v.card || null;
     rows.value = (v.conditions || []).map(toRow);
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Не удалось загрузить условия";
+    error.value = apiError(e, "Не удалось загрузить условия");
   } finally {
     loading.value = false;
   }
@@ -348,7 +349,7 @@ const saveRow = async (r: EditableRow) => {
     note.value = `Условия «${r.name_cfo || r.code_cfo}» сохранены (версия ${saved.version}).`;
     await load();
   } catch (e: unknown) {
-    error.value = errText(e, "Не удалось сохранить условия");
+    error.value = apiError(e, "Не удалось сохранить условия");
   } finally {
     busy.value = false;
   }
@@ -364,7 +365,7 @@ const doCopy = async () => {
       : "В прошлом месяце условий нет — заполните вручную.";
     await load();
   } catch (e: unknown) {
-    error.value = errText(e, "Не удалось скопировать условия");
+    error.value = apiError(e, "Не удалось скопировать условия");
   } finally {
     busy.value = false;
   }
@@ -381,19 +382,12 @@ const runRecalc = async (preview: boolean) => {
     recalcResult.value = await api.recalc(cardId, preview);
     if (!preview) note.value = "Расходная часть пересчитана и сохранена в тактике.";
   } catch (e: unknown) {
-    error.value = errText(e, "Пересчёт не выполнен");
+    error.value = apiError(e, "Пересчёт не выполнен");
   } finally {
     busy.value = false;
   }
 };
 
-const errText = (e: unknown, fallback: string): string => {
-  if (typeof e === "object" && e && "data" in e) {
-    const d = (e as { data?: { error?: string } }).data;
-    if (d?.error) return d.error;
-  }
-  return e instanceof Error ? e.message : fallback;
-};
 
 onMounted(load);
 </script>

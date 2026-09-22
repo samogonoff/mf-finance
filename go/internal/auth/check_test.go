@@ -23,7 +23,7 @@ func TestCheck_OKPassesIdentityInHeaders(t *testing.T) {
 		Roles: []string{RoleBudgetAdmin}}
 	w := httptest.NewRecorder()
 
-	(&Handler{}).Check(w, requestWithUser("/api/auth/check?role="+RoleBudget, u))
+	(&Handler{}).Check(w, requestWithUser("/api/auth/check?role="+RoleBudgetUser, u))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", w.Code)
@@ -47,10 +47,10 @@ func TestCheck_OKPassesIdentityInHeaders(t *testing.T) {
 }
 
 func TestCheck_AsciiHeadersOnly(t *testing.T) {
-	u := &User{ID: 1, Email: "пользователь@mf.ru", Name: "Пётр", Roles: []string{RoleBudget}}
+	u := &User{ID: 1, Email: "пользователь@mf.ru", Name: "Пётр", Roles: []string{RoleBudgetUser}}
 	w := httptest.NewRecorder()
 
-	(&Handler{}).Check(w, requestWithUser("/api/auth/check?role="+RoleBudget, u))
+	(&Handler{}).Check(w, requestWithUser("/api/auth/check?role="+RoleBudgetUser, u))
 
 	for _, h := range []string{"X-Auth-Email", "X-Auth-Name"} {
 		for _, b := range []byte(w.Header().Get(h)) {
@@ -65,7 +65,7 @@ func TestCheck_ForbiddenWhenRoleMissing(t *testing.T) {
 	u := &User{ID: 7, Email: "a@mf.ru", Roles: []string{RoleCostUser}}
 	w := httptest.NewRecorder()
 
-	(&Handler{}).Check(w, requestWithUser("/api/auth/check?role="+RoleBudget, u))
+	(&Handler{}).Check(w, requestWithUser("/api/auth/check?role="+RoleBudgetUser, u))
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("want 403, got %d", w.Code)
@@ -105,7 +105,7 @@ func TestCheck_EmptyRoleChecksSessionOnly(t *testing.T) {
 func TestCheck_NoUserIsUnauthorized(t *testing.T) {
 	w := httptest.NewRecorder()
 
-	(&Handler{}).Check(w, requestWithUser("/api/auth/check?role="+RoleBudget, nil))
+	(&Handler{}).Check(w, requestWithUser("/api/auth/check?role="+RoleBudgetUser, nil))
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("want 401, got %d", w.Code)

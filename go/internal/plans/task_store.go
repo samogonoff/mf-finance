@@ -88,6 +88,12 @@ type TaskStore struct {
 	cards CardStore
 	cond  MpConditionsStore
 	rates *RateBook
+	// hints — подсказки к полям ввода (%СПП, штрафы). nil → подсказок нет, поля
+	// остаются полями ввода: это и есть требование части 1 правок 02.09.2026.
+	hints HintSource
+	// factSnap — снимок факта МП: из него берётся отметка «данные актуальны на …»
+	// (правка ТЗ 02.09.2026 МП §12).
+	factSnap *MpFactSnapshot
 }
 
 // NewTaskStore — конструктор. fact может быть nil (факт тогда пуст).
@@ -103,6 +109,20 @@ func (s *TaskStore) WithCalcContext(cards CardStore, cond MpConditionsStore, rat
 	return s
 }
 
+// WithHints подключает подсказки к полям ввода (правки ТЗ 02.09.2026, часть 1):
+// фактическое значение показывается РЯДОМ с полем, в само поле не подставляется.
+func (s *TaskStore) WithHints(h HintSource) *TaskStore {
+	s.hints = h
+	return s
+}
+
+// WithFactSnapshot подключает снимок факта: форма показывает отметку
+// «данные актуальны на …» (правка ТЗ МП §12).
+func (s *TaskStore) WithFactSnapshot(snap *MpFactSnapshot) *TaskStore {
+	s.factSnap = snap
+	return s
+}
+
 // calcModeFor — режим расчёта карточки МП периода. Карточка ищется по сегменту
 // задания; при её отсутствии (старые периоды) остаётся legacy.
 func (s *TaskStore) calcModeFor(ctx context.Context, plID int64, segment string) (string, Card) {
@@ -110,6 +130,8 @@ func (s *TaskStore) calcModeFor(ctx context.Context, plID int64, segment string)
 		return CalcLegacy, Card{}
 	}
 	scopes := []string{segment}
+	// Разрез задан (в том числе разрезом карточки из запроса формы) — берём
+	// карточку именно этого разреза: у крупных и мелких МП свои маршруты.
 	if segment == "" || segment == "all" {
 		// Объединённая форма: режим берём из карточки large (обе группы идут в
 		// одном режиме — иначе числа в своде будут несопоставимы).
@@ -243,7 +265,19 @@ func (s *TaskStore) leDirectors(ctx context.Context) map[string]*int64 {
 	return out
 }
 
-// Generate раскрывает шаблоны в задания на период (перегенерирует с нуля).
+// Generate раскрывает шаблоны в задания на период.
+//
+// НЕ «с нуля»: повторный вызов ОБНОВЛЯЕТ существующие задания и добавляет
+// недостающие. Прежняя версия сносила только нетронутые (pending) задания и
+// вставляла новые, из-за чего каждое повторное нажатие «Генерировать» плодило
+// копии тронутых — в 2026-06 на этапе 1.1 висели два одинаковых задания
+// «Маркетплейсы large» на те же 4 ЦФО. Уникальный ключ слота
+// (период, шаблон, должность, ЮЛ) закреплён индексом uq_pl_task_slot
+// (миграция 0049), поэтому дубль невозможен даже при гонке двух генераций.
+//
+// Что обновляется: название, набор ЦФО и — только пока задание не тронуто —
+// исполнитель по умолчанию. Назначенного руками исполнителя, делегата и статус
+// генерация не трогает: это работа людей, а не данные шаблона.
 func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 	tmpls, err := s.templates(ctx)
 	if err != nil {
@@ -256,18 +290,29 @@ func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	// Сносим прежние НЕтронутые задания (pending) — сделанные сохраняем.
-	if _, err := tx.Exec(ctx, `DELETE FROM pl_task WHERE pl_id=$1 AND status='pending'`, plID); err != nil {
-		return 0, err
-	}
 
 	batch := &pgx.Batch{}
 	n := 0
+	// Слот задания — (период, шаблон, должность, ЮЛ). Он же уникальный ключ в БД.
+	// COALESCE(position_id,0) в индексе повторён здесь через ON CONFLICT по тому
+	// же выражению: иначе Postgres не свяжет upsert с частичным индексом.
 	queue := func(t taskTemplate, title string, codes []int, posID, assignee *int64, le string) {
 		cj, _ := json.Marshal(codes)
 		batch.Queue(`
 			INSERT INTO pl_task (pl_id, stage_code, template_id, form_code, title, cfo_codes, task_role, position_id, legal_entity, assignee_user_id, status)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending')`,
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending')
+			ON CONFLICT (pl_id, template_id, COALESCE(position_id, 0), legal_entity) DO UPDATE
+			   SET stage_code = EXCLUDED.stage_code,
+			       form_code  = EXCLUDED.form_code,
+			       title      = EXCLUDED.title,
+			       cfo_codes  = EXCLUDED.cfo_codes,
+			       task_role  = EXCLUDED.task_role,
+			       -- исполнитель по умолчанию проставляется, только пока задание
+			       -- не тронуто и никто не назначен руками
+			       assignee_user_id = CASE
+			           WHEN pl_task.status = 'pending' AND pl_task.assignee_user_id IS NULL
+			           THEN EXCLUDED.assignee_user_id ELSE pl_task.assignee_user_id END,
+			       updated_at = NOW()`,
 			plID, t.Stage, t.ID, t.Form, title, cj, t.Role, posID, le, assignee)
 		n++
 	}
@@ -306,9 +351,11 @@ func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 				queue(t, t.Title, codes, &p, holderOf[posID], "")
 			}
 			if len(unassigned) > 0 {
-				// «без ТОПа» — внутренний жаргон: у ЦФО не задана должность-владелец.
-				// В UI пишем то, что от человека требуется: назначить исполнителя.
-				queue(t, t.Title+" · исполнитель не назначен", unassigned, nil, nil, "")
+				// ЦФО без должности-владельца. Раньше в название дописывалось
+				// «· исполнитель не назначен» (а до того — жаргонное «· без ТОПа»),
+				// хотя рядом стоит бейдж того же смысла: исполнителю название
+				// должно говорить, ЧТО заполнять, а не в каком состоянии задание.
+				queue(t, t.Title, unassigned, nil, nil, "")
 			}
 		}
 	}
@@ -321,6 +368,17 @@ func (s *TaskStore) Generate(ctx context.Context, plID int64) (int, error) {
 		}
 	}
 	if err := br.Close(); err != nil {
+		return 0, err
+	}
+	// Осиротевшие задания: шаблон убрали или его фильтр перестал давать ЦФО.
+	// Убираем только НЕтронутые и никому не назначенные — работу людей генерация
+	// не удаляет. NOW() в транзакции один на все запросы, поэтому «старее NOW()»
+	// это ровно «не затронуто текущей генерацией».
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM pl_task
+		 WHERE pl_id = $1 AND status = 'pending'
+		   AND assignee_user_id IS NULL AND delegate_user_id IS NULL
+		   AND updated_at < NOW()`, plID); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -609,9 +667,15 @@ func (s *TaskStore) nameMap(ctx context.Context, dir, codeKey, nameKey string) m
 	return out
 }
 
-// TaskData собирает срез данных задания: pl_metric по его ЦФО (или ЦФО его ЮЛ),
-// факт/стратегия/тактика/расчёт + корректировки (для проверки промежуточных
-// результатов ответственным/согласующим, ТЗ WF-05/ADJ-04/05).
+// TaskData собирает срез данных задания: факт/стратегия/тактика/расчёт по его ЦФО
+// (или ЦФО его ЮЛ) + корректировки — для проверки промежуточных результатов
+// ответственным и согласующим (ТЗ WF-05/ADJ-04/05).
+//
+// ВАЖНО про два слоя значений. МП пишет значения в pl_metric, а «Розница» — в
+// tp_value (свой слой, миграция 0035: у розницы единица ввода «магазин × месяц»,
+// и все 12 месяцев года читаются сразу). Поэтому чтение только pl_metric
+// показывало «данных пока нет» на заполненной форме розницы — задание было
+// «готово», а модалка пустая. Слой выбирается по form_code задания.
 func (s *TaskStore) TaskData(ctx context.Context, taskID int64) (TaskData, error) {
 	var out TaskData
 	var raw []byte
@@ -650,6 +714,18 @@ func (s *TaskStore) TaskData(ctx context.Context, taskID int64) (TaskData, error
 	cfoNames := s.nameMap(ctx, "dir_cfo", "code_cfo", "name_cfo")
 	plNames := s.nameMap(ctx, "dir_pl_line", "code_pl", "expense_name")
 
+	// «Розница» держит значения в своём слое — читаем его, иначе модалка врёт
+	// «форма ещё не заполнена» на заполненной форме.
+	if out.Task.FormCode == TemplateRetail {
+		retailRows, err := s.retailTaskRows(ctx, out.Task, codes, cfoNames)
+		if err != nil {
+			return out, err
+		}
+		out.Rows = retailRows
+		out.HasData = len(retailRows) > 0
+		return out, nil
+	}
+
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.profit_center, m.line_code, m.block_type,
 		       m.amount_fact, m.amount_strategy, m.amount, m.amount_calc, m.is_manual,
@@ -679,6 +755,76 @@ func (s *TaskStore) TaskData(ctx context.Context, taskID int64) (TaskData, error
 	}
 	out.HasData = len(out.Rows) > 0
 	return out, rows.Err()
+}
+
+// retailTaskRows — значения формы «Розница» для модалки данных задания.
+//
+// Строка модалки — это «магазин × метрика», а не «магазин × месяц»: задание
+// покрывает до 144 магазинов, и 12 месяцев на каждый дали бы 1700 строк, по
+// которым согласующий ничего не увидит. Поэтому месяцы СВЁРНУТЫ в сумму по
+// плановому периоду карточки — ровно то число, которое согласующий сверяет со
+// сводом. Факт и стратегия берутся так же, из своих метрик слоя.
+func (s *TaskStore) retailTaskRows(ctx context.Context, t Task, codes []int, cfoNames map[int]string) ([]TaskDataRow, error) {
+	// Экземпляр розницы ищем по карточке периода: у формы четыре карточки (по
+	// стране), и задание относится к одной из них.
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.code_cfo, v.metric, SUM(v.amount)::float8,
+		       BOOL_OR(v.source = 'manual'), MAX(COALESCE(v.note, ''))
+		  FROM tp_instance i
+		  JOIN form_card c ON c.id = i.card_id
+		  JOIN tp_row r ON r.instance_id = i.id
+		  JOIN tp_value v ON v.row_id = r.id
+		 WHERE c.pl_id = $1 AND c.form_code = $2
+		   AND r.code_cfo = ANY($3)
+		   AND v.amount IS NOT NULL
+		 GROUP BY r.code_cfo, v.metric
+		 ORDER BY r.code_cfo, v.metric`, t.PlID, TemplateRetail, codes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TaskDataRow, 0, 256)
+	for rows.Next() {
+		var code int
+		var metric string
+		var amount float64
+		var manual bool
+		var note string
+		if err := rows.Scan(&code, &metric, &amount, &manual, &note); err != nil {
+			return nil, err
+		}
+		v := amount
+		row := TaskDataRow{
+			CodeCFO:  code,
+			NameCFO:  cfoNames[code],
+			LineCode: RetailMetricCodePL(metric),
+			IsManual: manual,
+			Reason:   note,
+		}
+		row.ExpenseName = retailMetricTitle(metric)
+		// План розницы вводится в колонку тактики — там же его и сверяют.
+		row.Tactic = &v
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// retailMetricTitle — подпись метрики в модалке данных. Пишем по-человечески:
+// «sales» в интерфейсе не читается, а согласующий должен понять строку без
+// словаря.
+func retailMetricTitle(metric string) string {
+	switch metric {
+	case MetricSales:
+		return "План продаж (сумма периода)"
+	case MetricPayroll:
+		return "ФОТ (сумма периода)"
+	case MetricRent:
+		return "Аренда помещений, статья 54 (сумма периода)"
+	case MetricRentAssets:
+		return "Аренда имущества, статья 55 (сумма периода)"
+	}
+	return metric
 }
 
 // --- Конструктор: шаблоны заданий этапа ---

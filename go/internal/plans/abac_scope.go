@@ -77,6 +77,22 @@ func (f ScopeFilter) AllowsStep(step string) bool {
 	return false
 }
 
+// HasExplicitStep — есть ли правило ИМЕННО на этот шаг маршрута.
+//
+// Отличается от AllowsStep: там правило с пустым stage_code разрешает любой шаг
+// («человек участвует во всём процессе»). Для роли ФИНАНСИСТА этого мало —
+// право переопределять LFL-статус и расчётные статьи должно быть выдано явно,
+// иначе любой участник процесса с широким правилом получал бы полномочия
+// финансового контролёра.
+func (f ScopeFilter) HasExplicitStep(step string) bool {
+	for _, r := range f.Rules {
+		if r.StageCode == step {
+			return true
+		}
+	}
+	return false
+}
+
 // AllowsCard — доступ к карточке формы (по стране и ЮЛ карточки).
 func (f ScopeFilter) AllowsCard(c Card) bool {
 	return f.Allows(0, c.Country, c.LegalEntity)

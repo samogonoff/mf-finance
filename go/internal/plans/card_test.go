@@ -65,6 +65,30 @@ func TestCardRoute_SkipSelfApproval(t *testing.T) {
 	}
 }
 
+// Владелец шага НЕ НАЗНАЧЕН — шаг не пропускается.
+//
+// Раньше отсутствие владельца приводило к тому же результату, что и
+// самосогласование: шаг проскакивался, а в листе оставалось «согласовано
+// автоматически» без человека. Отличить такой пропуск от настоящего решения
+// невозможно, поэтому согласование обязано остаться на месте — админ назначит
+// владельца в кокпите процесса.
+func TestCardRoute_NoOwnerDoesNotSkipStep(t *testing.T) {
+	c := Card{Status: CardDraft, StepCode: "1.1"}
+	in := CardActionInput{Action: "submit", ActorID: 42, StepOwner: map[string]int64{}}
+	tr, err := applyCardAction(c, routeFixture(false, true), in)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if tr.StepCode != "1.2" {
+		t.Fatalf("без владельца шаг 1.2 обязан остаться, карточка на %s", tr.StepCode)
+	}
+	for _, a := range tr.Approvals {
+		if a.Decision == "auto_skipped" {
+			t.Fatalf("пропуска без владельца быть не должно: %+v", a)
+		}
+	}
+}
+
 // Другой согласующий на 1.2 — шаг не пропускается.
 func TestCardRoute_SkipOnlyForSameUser(t *testing.T) {
 	c := Card{Status: CardDraft, StepCode: "1.1"}

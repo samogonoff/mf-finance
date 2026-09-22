@@ -89,8 +89,48 @@ type Config struct {
 	// «Параметр», агрегат vs детализация, BYN-пара, уникальный индекс приёмника).
 	// PlansPublishTargets — белый список таблиц: имя приёмника приходит из данных
 	// маппинга, поэтому произвольная таблица записи недопустима.
+	// PlansPublishSandbox=1 → при недоступном приёмнике (нет MSSQL / выключен
+	// PlansPublishEnabled) запись идёт в PG-песочницу publish_sandbox тем же
+	// алгоритмом (DELETE+INSERT в транзакции, обратное чтение суммы, контроль
+	// расхождения, идемпотентность). Нужна, чтобы путь записи можно было проверить
+	// целиком без Budgeting. ТОЛЬКО dev/тест: карточка получает статус published,
+	// хотя в приёмнике ничего нет. Прод-приёмник всегда приоритетнее песочницы.
 	PlansPublishEnabled bool
+	PlansPublishSandbox bool
 	PlansPublishTargets []string
+
+	// Справочник статей PL (Budgeting.dbo.CodePL, 423 записи) — источник подписей,
+	// НОРМАТИВНОГО НДС по странам (колонки VAT_*) и статьи ДДС. Пусто или нет
+	// MSSQL → справочник остаётся на сиде PLLineSeed (нормативная проверка НДС
+	// работает только по статьям сида).
+	PlansCodePLTable string
+
+	// Подсказки формы МП (правки ТЗ 02.09.2026, часть 1 и МП §9/§14). Значения в
+	// форму НЕ подставляются — показываются рядом с полем ввода. Пусто или нет
+	// MSSQL → подсказок не будет, поля остаются полями ввода.
+	// Снимок факта МП (правка ТЗ 02.09.2026 МП §12). 1 (дефолт) → форма читает
+	// таблицу снимка с отметкой «данные актуальны на …»; живое чтение OLAP
+	// запрещено, потому что таблицы источников перезаливаются через TRUNCATE и
+	// суммы плавают в динамике. 0 — аварийный откат на прямое чтение.
+	// Интервал регламента в секундах, дефолт сутки.
+	PlansFactSnapshot         bool
+	PlansFactSnapshotInterval int
+
+	PlansMpSppTable     string // MP.dbo.WB_Price_SPP_Analysis (spp + цена)
+	PlansMpSalesTable   string // MP.dbo.sales (веса SALES/SALES_RUB, ключ EAN)
+	PlansMpPenaltyTable string // DWH.dbo.wb_dimensions_penalty (НЕ копия в MP)
+
+	// PlansSubmitStrict — жёсткий режим гейта отправки форм (ответ аналитика 41
+	// от 10.09.2026): замечания и несошедшиеся сверки БЛОКИРУЮТ отправку на
+	// согласование. По умолчанию выключено — мягкий режим, в котором проверки
+	// считаются и показываются, но процесс не держат. Включать к промышленной
+	// эксплуатации.
+	PlansSubmitStrict bool
+
+	// Форма «Расходы ЦП» (TPL-CFO-EXP, этап 1.5). Источники — тот же OLAP,
+	// что у остальных форм модуля. Пусто или PlansMock=1 → фикстуры exp_mock.go.
+	PlansExpCostsProc string // процедура затрат: ZATRATY_DLYA_OKSANY_BYSTRYE (база BUDGETING)
+	PlansExpCfoTable  string // справочник ЦФО этапа 1.5: FinDWH.dbo.[001 CodeCFO]
 
 	// Форма «Розница» (TPL-TO-RETAIL, ТЗ Розница §11). Источники — тот же сервер
 	// FinDWH/Budgeting/Checks, что у МП; при PlansMock=1 или без MSSQL работают
@@ -98,7 +138,6 @@ type Config struct {
 	PlansRetailStoreTable    string // справочник магазинов: FinDWH.dbo.[001 CodeCFO]
 	PlansRetailStoreGroup    string // значение GroupCFO1 справочника ('Магазины')
 	PlansRetailFactTable     string // факт продаж (выручка с НДС) из FOX
-	PlansRetailFactColumns   string // CSV колонок факта: ЦФО, дата, сумма (колонки не подтверждены пробой)
 	PlansRetailStrategyTable string // стратегия в нац. валюте: Budgeting.dbo.VFORMTOLOADPLAN
 	PlansRetailStrategyGroup string // ГруппыЦФО1 таблицы плана ('3.Магазины' — НЕ равно группе справочника)
 	PlansRetailPlanHistTable string // история плана: Checks.dbo.plan_saler_st
@@ -106,6 +145,11 @@ type Config struct {
 	// PlansRetailValueLimits — верхняя граница значения ячейки по стране (V-02),
 	// формат «BY=5000000,RU=50000000». Страна без записи → границы нет.
 	PlansRetailValueLimits map[string]float64
+	// PlansRetailReconBlocking — запрещать ли отправку формы розницы, когда
+	// контрольная сверка V-05 не сошлась. По умолчанию НЕТ (решение 08.09.2026):
+	// расхождение остаётся предупреждением в отчёте, но не держит работу над
+	// формой, пока причину ищут в данных факта.
+	PlansRetailReconBlocking bool
 
 	// Справочники Лисы (ТЗ §«Справочники из Лисы»): MSSQL-БД Gpartner (FOX_*).
 	// LisaMock=1 → синхронизация из фикстур (как PLANS_MOCK), без сети к FOX.
@@ -166,26 +210,39 @@ func Load() Config {
 		DebtArhCpartyCol:    env("MSSQL_DEBT_ARH_CPARTY_COL", ""),
 		DebtArhSyncInterval: atoiDef(env("DEBTARH_SYNC_INTERVAL", "0"), 0),
 
-		PlansMock:           env("PLANS_MOCK", "0") == "1",
-		PlansMpFactTable:    env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),
-		PlansMpPlanTable:    env("PLANS_MP_PLAN_TABLE", "Budgeting.dbo.FormToLoadPlan"),
-		PlansMpTaktTable:    env("PLANS_MP_TAKT_TABLE", "Budgeting.dbo.FormToLoaTaktTarget"),
-		PlansMpPenaltyView:  env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
-		PlansAuditEnabled:   env("PLANS_AUDIT_ENABLED", "0") == "1",
-		PlansLegacyMpAPI:    env("PLANS_LEGACY_MP_API", "0") == "1",
-		PlansPublishEnabled: env("PLANS_PUBLISH_ENABLED", "0") == "1",
+		PlansMock:                 env("PLANS_MOCK", "0") == "1",
+		PlansMpFactTable:          env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),
+		PlansMpPlanTable:          env("PLANS_MP_PLAN_TABLE", "Budgeting.dbo.FormToLoadPlan"),
+		PlansMpTaktTable:          env("PLANS_MP_TAKT_TABLE", "Budgeting.dbo.FormToLoaTaktTarget"),
+		PlansMpPenaltyView:        env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
+		PlansAuditEnabled:         env("PLANS_AUDIT_ENABLED", "0") == "1",
+		PlansLegacyMpAPI:          env("PLANS_LEGACY_MP_API", "0") == "1",
+		PlansPublishEnabled:       env("PLANS_PUBLISH_ENABLED", "0") == "1",
+		PlansPublishSandbox:       env("PLANS_PUBLISH_SANDBOX", "0") == "1",
+		PlansCodePLTable:          env("PLANS_CODEPL_TABLE", "Budgeting.dbo.CodePL"),
+		PlansFactSnapshot:         env("PLANS_FACT_SNAPSHOT", "1") == "1",
+		PlansFactSnapshotInterval: atoiDef(env("PLANS_FACT_SNAPSHOT_INTERVAL", "86400"), 86400),
+
+		PlansMpSppTable:     env("PLANS_MP_SPP_TABLE", "MP.dbo.WB_Price_SPP_Analysis"),
+		PlansMpSalesTable:   env("PLANS_MP_SALES_TABLE", "MP.dbo.sales"),
+		PlansMpPenaltyTable: env("PLANS_MP_PENALTY_TABLE", "DWH.dbo.wb_dimensions_penalty"),
 		PlansPublishTargets: splitCSV(env("PLANS_PUBLISH_TARGETS",
 			"Budgeting.dbo.VFORMTOLOADTAKTTARGET,Budgeting.dbo.FormToLoaTaktTarget")),
+
+		PlansSubmitStrict: env("PLANS_SUBMIT_STRICT", "") == "1",
+
+		PlansExpCostsProc: env("PLANS_EXP_COSTS_PROC", "ZATRATY_DLYA_OKSANY_BYSTRYE"),
+		PlansExpCfoTable:  env("PLANS_EXP_CFO_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
 
 		PlansRetailStoreTable:    env("PLANS_RETAIL_STORE_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
 		PlansRetailStoreGroup:    env("PLANS_RETAIL_STORE_GROUP", "Магазины"),
 		PlansRetailFactTable:     env("PLANS_RETAIL_FACT_TABLE", "FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail"),
-		PlansRetailFactColumns:   env("PLANS_RETAIL_FACT_COLUMNS", "CodeCFO,Date,Summa"),
 		PlansRetailStrategyTable: env("PLANS_RETAIL_STRATEGY_TABLE", "Budgeting.dbo.VFORMTOLOADPLAN"),
 		PlansRetailStrategyGroup: env("PLANS_RETAIL_STRATEGY_GROUP", "3.Магазины"),
 		PlansRetailPlanHistTable: env("PLANS_RETAIL_PLAN_HISTORY_TABLE", "Checks.dbo.plan_saler_st"),
 		PlansRetailPlanHistNew:   env("PLANS_RETAIL_PLAN_HISTORY_NEW_TABLE", "Checks.dbo.plan_saler_st_new_stores"),
 		PlansRetailValueLimits:   parseCountryLimits(env("PLANS_RETAIL_VALUE_LIMITS", "")),
+		PlansRetailReconBlocking: env("PLANS_RETAIL_RECON_BLOCKING", "") == "1",
 
 		LisaHost:          env("FOX_HOST", ""),
 		LisaPort:          env("FOX_PORT", "1433"),

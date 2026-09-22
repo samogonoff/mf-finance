@@ -44,6 +44,27 @@ func FormRegistry() []FormDef {
 			},
 		},
 		{
+			// Этап 1.5 (ТЗ §3, §4): форм две — розница и маркетплейсы, — и у
+			// каждой свой отбор строк из источника затрат.
+			// Ключ области несёт вид формы и страну: "R-BY", "MP-RU" — по нему
+			// exp_service выбирает отбор источника, а не по отдельной колонке.
+			Code: TemplateExp, Name: "Расходы ЦП",
+			Scopes: []FormScope{
+				// Ответ 42 (10.09.2026): источник у всех стран один, страна —
+				// параметр карточки (Country = <страна> AND GroupCFO1 =
+				// '3.Магазины'). Поэтому у розницы карточек ЧЕТЫРЕ, а не одна:
+				// ТЗ §2.1 показывал только отбор РБ, но расходы планируются по
+				// всем четырём странам, как и продажи на этапе 1.1.
+				{Key: "R-BY", Title: "Розница РБ", Country: "BY", LegalEntity: "F", Currency: "BYN"},
+				{Key: "R-RU", Title: "Розница РФ", Country: "RU", LegalEntity: "TDMF", Currency: "RUB"},
+				{Key: "R-KZ", Title: "Розница KZ", Country: "KZ", LegalEntity: "MFKaz", Currency: "KZT"},
+				{Key: "R-UZ", Title: "Розница UZ", Country: "UZ", LegalEntity: "MFUz", Currency: "UZS"},
+				{Key: "MP-RU", Title: "Маркетплейсы РФ", Country: "RU", LegalEntity: "TDMF", Currency: "RUB"},
+				{Key: "MP-KZ", Title: "Маркетплейсы KZ", Country: "KZ", LegalEntity: "MFKaz", Currency: "KZT"},
+				{Key: "MP-UZ", Title: "Маркетплейсы UZ", Country: "UZ", LegalEntity: "MFUz", Currency: "UZS"},
+			},
+		},
+		{
 			Code: TemplateRetail, Name: "Розница",
 			Scopes: []FormScope{
 				{Key: "BY", Title: "Розница РБ", Country: "BY", LegalEntity: "F", Currency: "BYN"},

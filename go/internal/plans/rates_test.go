@@ -5,17 +5,30 @@ import (
 	"testing"
 )
 
-// Эффективная ставка площадки перебивает страновой дефолт (ТЗ МП §3.4).
+// Эффективная ставка площадки перебивает страновой дефолт. Значения — ответ
+// аналитика от 28.08.2026 (1 − КодPL 1006/1022), а не ТЗ §3.4: основной
+// российский контур ≈ 19,6 %, ТЕКС ≈ 18,7 %, КЗ ровно 16 %, УЗ ровно 12 %.
 func TestPickVat_PlatformOverridesCountry(t *testing.T) {
 	rows := VatSeed()
-	if got := pickVat(rows, "RU", 954); got != 0.1662 {
-		t.Fatalf("Yandex Market: ожидалась эффективная 16,62 %%, получено %.4f", got)
-	}
-	if got := pickVat(rows, "RU", 335); got != 0.2036 {
-		t.Fatalf("Wildberries: ожидалась эффективная 20,36 %%, получено %.4f", got)
+	for _, c := range []struct {
+		country string
+		cfo     int
+		want    float64
+		name    string
+	}{
+		{"RU", 335, 0.1960, "Wildberries"},
+		{"RU", 336, 0.1965, "Lamoda"},
+		{"RU", 954, 0.1871, "Yandex Market"},
+		{"RU", 990, 0.1868, "Wildberries ТЕКС"},
+		{"KZ", 474, 0.1600, "Ozon KZ"},
+		{"UZ", 339, 0.1200, "Uzmarket"},
+	} {
+		if got := pickVat(rows, c.country, c.cfo); got != c.want {
+			t.Errorf("%s (ЦФО %d): ожидалось %.4f, получено %.4f", c.name, c.cfo, c.want, got)
+		}
 	}
 	// Площадка без своей строки — страновой дефолт.
-	if got := pickVat(rows, "KZ", 474); got != 0.12 {
+	if got := pickVat(rows, "KZ", 999); got != 0.12 {
 		t.Fatalf("KZ-площадка без своей ставки: ожидалось 12 %%, получено %.4f", got)
 	}
 	if got := pickVat(rows, "XX", 0); got != 0.20 {
@@ -31,19 +44,19 @@ func TestPickFx_MonthlyPrecedence(t *testing.T) {
 		{Currency: "RUB", Year: 2026, Month: 6, RateBYN: 0.0390}, // на месяц
 		{Currency: "KZT", RateBYN: 0.0068},
 	}
-	if got := pickFx(rows, "RUB", 2026, 6); got != 0.0390 {
+	if got := pickFx(rows, "RUB", 2026, 6, ""); got != 0.0390 {
 		t.Fatalf("июнь-2026: ожидался помесячный курс, получено %.4f", got)
 	}
-	if got := pickFx(rows, "RUB", 2026, 7); got != 0.0380 {
+	if got := pickFx(rows, "RUB", 2026, 7, ""); got != 0.0380 {
 		t.Fatalf("июль-2026: ожидался годовой курс, получено %.4f", got)
 	}
-	if got := pickFx(rows, "RUB", 2025, 3); got != 0.0376 {
+	if got := pickFx(rows, "RUB", 2025, 3, ""); got != 0.0376 {
 		t.Fatalf("2025: ожидался дефолтный курс, получено %.4f", got)
 	}
-	if got := pickFx(rows, "BYN", 2026, 6); got != 1.0 {
+	if got := pickFx(rows, "BYN", 2026, 6, ""); got != 1.0 {
 		t.Fatalf("BYN — база, ожидался 1.0, получено %.4f", got)
 	}
-	if got := pickFx(rows, "UZS", 2026, 6); got != 1.0 {
+	if got := pickFx(rows, "UZS", 2026, 6, ""); got != 1.0 {
 		t.Fatalf("валюта без курса: ожидался нейтральный 1.0, получено %.4f", got)
 	}
 }

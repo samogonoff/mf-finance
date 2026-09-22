@@ -5,7 +5,9 @@ package plans
 // из разбора аналитика (var/plan/plan/) и SPEC §11.1. Функция чистая (без БД):
 // на ней держится корректность и она зеркалится в TS для живого пересчёта.
 
-// vatByCountry — ставка НДС по стране разреза (large — всё RU = 20%).
+// vatByCountry — законодательная ставка страны. Остаётся ФОЛБЭКОМ последней
+// очереди: ведущий механизм — отношение плановых сумм (см. mpform_vat.go), за ним
+// эффективная ставка справочника dir_vat.
 func vatByCountry(country string) float64 {
 	switch country {
 	case "KZ", "UZ":
@@ -32,8 +34,10 @@ var mpCostBlocks = []string{
 
 // computeMpPlatform считает весь каскад по площадке из введённых значений.
 // in — значения редактируемых строк (block_type → сумма/доля), включая %СПП и
-// статьи затрат. Возвращает полный набор значений по всем block_type строки формы.
-func computeMpPlatform(in map[string]float64, vat float64) map[string]float64 {
+// статьи затрат. vat — базис перевода «с НДС → без НДС» этой площадки (отношение
+// плановых сумм, ставка справочника только фолбэком). Возвращает полный набор
+// значений по всем block_type строки формы.
+func computeMpPlatform(in map[string]float64, vat MpVatBasis) map[string]float64 {
 	out := map[string]float64{}
 
 	managerGross := in[BSalesManagerGross]
@@ -41,12 +45,15 @@ func computeMpPlatform(in map[string]float64, vat float64) map[string]float64 {
 	shipments := in[BShipments]
 	cogs := in[BCogsTotal]
 
-	managerNet := safeDiv(managerGross, 1+vat)
+	// Оба уровня цены делятся на ОДНУ ставку (правка 08.09.2026): только так
+	// контроль связности «1 − [1006]/[1045] = %СПП» сходится по определению.
+	managerNet := safeDiv(managerGross, vat.Ratio)
 	platGross := managerGross * (1 - spp)
-	platNet := safeDiv(platGross, 1+vat)
+	platNet := safeDiv(platGross, vat.Ratio)
 
 	out[BSalesManagerGross] = managerGross
 	out[BSalesManagerNet] = managerNet
+	out[BVatRate] = vat.Rate()
 	out[BSPP] = spp
 	out[BSalesPlatGross] = platGross
 	out[BSalesPlatNet] = platNet
@@ -78,7 +85,7 @@ func computeMpPlatform(in map[string]float64, vat float64) map[string]float64 {
 	out[BGrossMargin] = platNet - cogs
 	out[BGrossMarginPct] = safeDiv(platNet-cogs, platNet)
 
-	// Комиссия площадки = удержание МП = менеджер_без_НДС − площадка_без_НДС.
+	// Комиссия площадки = менеджер_без_НДС − площадка_без_НДС (ТЗ МП §22).
 	commission := managerNet - platNet
 	out[BCommission] = commission
 
@@ -90,11 +97,30 @@ func computeMpPlatform(in map[string]float64, vat float64) map[string]float64 {
 		directTotal += v
 	}
 	out[BPlatformCosts] = directTotal
-	out[BDirectShare] = safeDiv(directTotal, managerNet)
+	// База долей — цена площадки БЕЗ НДС (решение звонка 07.09.2026; в прототипе
+	// E81 делит на цену менеджера). Та же база, что у статей в inverse-каскаде:
+	// СПП уже удержан переходом к цене площадки, и мерить расход от цены
+	// менеджера значит считать комиссию внутри каждой доли ещё раз.
+	out[BDirectShare] = safeDiv(directTotal, platNet)
 
-	pl := (platNet - cogs) - directTotal
+	// PL по площадке (правка ТЗ 02.09.2026 МП §21):
+	//   PL = продажи по цене площадки без НДС − себестоимость по отпускным ценам
+	//        − прямые затраты
+	// Из прежней формулы убраны «общие затраты» и слагаемое «+ Σ комиссия
+	// площадки», и вместо себестоимости ОБЩЕЙ (COGS осн+пошив) вычитается
+	// себестоимость ПО ОТПУСКНЫМ ЦЕНАМ (8006).
+	//
+	// Комиссия в PL не вычитается: цена площадки уже за вычетом СПП, и вычесть
+	// её ещё раз значит посчитать дважды. В прежней формуле «+ Σ комиссия»
+	// компенсировало базу по ценам менеджера — теперь компенсировать нечего.
+	directNoCommission := directTotal - commission
+	pl := platNet - shipments - directNoCommission
 	out[BPlPlatform] = pl
 	out[BPlPlatformPct] = safeDiv(pl, platNet)
+	// PL от себестоимости ОБЩЕЙ — тот же расчёт, но с COGS: показатель формы,
+	// а не альтернативная трактовка §21.
+	out[BPlPlatformTotalCost] = platNet - cogs - directNoCommission
+	out[BPlPlatformTotalCostPct] = safeDiv(out[BPlPlatformTotalCost], platNet)
 
 	return out
 }

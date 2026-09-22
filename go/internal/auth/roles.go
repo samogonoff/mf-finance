@@ -4,22 +4,21 @@ package auth
 // (PUT /api/admin/users/{id}/roles) — валидируется по белому списку Allowed.
 //
 // Иерархия:
-//   ROLE_ADMIN        ⊇ ROLE_COST_ADMIN, ROLE_FINANCE_ADMIN, ROLE_PLANS_ADMIN, ROLE_BUDGET_ADMIN
+//   ROLE_ADMIN        ⊇ ROLE_COST_ADMIN, ROLE_FINANCE_ADMIN, ROLE_PLANS_ADMIN,
+//                       ROLE_BUDGET_ADMIN
 //   ROLE_COST_ADMIN   ⊇ ROLE_COST_USER
 //   ROLE_PLANS_ADMIN  ⊇ ROLE_PLANS_USER
 //   ROLE_BUDGET_ADMIN ⊇ ROLE_BUDGET
+//
+// BUDGET-роли — гейт обособленного контура «Бюджетирование» (/budget/, свой
+// репозиторий). Их проверяет nginx подзапросом auth_request к
+// GET /api/auth/check?role=ROLE_BUDGET; сам контур ролями не распоряжается,
+// см. docs/budget/PLAN-budget-contour.md.
 //
 // PLANS-роли — гейт доступа к модулю «Тактические планы» (docs/reports/plans/SPEC.md §5.1).
 // PLANS_ADMIN — конфигуратор (НСИ, маршруты, назначение ответственных);
 // PLANS_USER — участник процесса. Функциональные роли процесса (filler, approver…)
 // и привязка к объекту — НЕ здесь, а в данных (plans_user_scope), см. SPEC §5.1.
-//
-// BUDGET-роли — гейт раздела «Бюджетирование». Раздел живёт обособленным
-// контуром в своём репозитории и токен не проверяет: пускает nginx подзапросом
-// к GET /api/auth/check?role=ROLE_BUDGET. Имена ролей заданы контуром
-// (ACCESS_ROLE/ADMIN_ROLE в его .env) — поэтому здесь ROLE_BUDGET, а не
-// ROLE_BUDGET_USER, как было бы по образцу COST/PLANS. Переименование ролей —
-// только вместе с ENV_FILE контура и гейтом в nginx.
 //
 // ROLE_USER — техническая, всегда добавляется в выпускаемый набор; задавать
 // её снаружи нельзя (фильтруется в Allowed).
@@ -33,19 +32,18 @@ const (
 	RolePlansAdmin   = "ROLE_PLANS_ADMIN"
 	RolePlansUser    = "ROLE_PLANS_USER"
 	RoleBudgetAdmin  = "ROLE_BUDGET_ADMIN"
-	RoleBudget       = "ROLE_BUDGET"
+	RoleBudgetUser   = "ROLE_BUDGET"
 )
 
 // Allowed — роли, которые админ может присваивать через API.
 // ROLE_USER сюда не входит — она ставится автоматически.
-var Allowed = []string{RoleAdmin, RoleCostAdmin, RoleCostUser, RoleFinanceAdmin, RolePlansAdmin, RolePlansUser,
-	RoleBudgetAdmin, RoleBudget}
+var Allowed = []string{RoleAdmin, RoleCostAdmin, RoleCostUser, RoleFinanceAdmin, RolePlansAdmin, RolePlansUser, RoleBudgetAdmin, RoleBudgetUser}
 
 var hierarchy = map[string][]string{
 	RoleAdmin:       {RoleCostAdmin, RoleFinanceAdmin, RolePlansAdmin, RoleBudgetAdmin},
 	RoleCostAdmin:   {RoleCostUser},
 	RolePlansAdmin:  {RolePlansUser},
-	RoleBudgetAdmin: {RoleBudget},
+	RoleBudgetAdmin: {RoleBudgetUser},
 }
 
 // ExpandRoles разворачивает прямые роли по иерархии и всегда добавляет
@@ -85,10 +83,10 @@ func HasRole(u *User, role string) bool {
 
 // KnownRole — знает ли система такую роль (Allowed + техническая ROLE_USER).
 //
-// Нужна гейту обособленных контуров: опечатка в `?role=` — это ошибка конфига,
-// и отвечать на неё надо 403 («не пущу»), а не 200. Отдавать 4xx важно и по
-// другой причине: nginx пропускает наружу как есть только 401 и 403, а любой
-// иной ответ auth_request превращает в 500 для каждого пользователя раздела.
+// Нужна гейту обособленных контуров: опечатка в `?role=` — ошибка конфига, и
+// отвечать на неё надо 403 («не пущу»), а не 200. Отдавать именно 4xx важно и
+// по второй причине: наружу nginx пропускает как есть только 401 и 403, любой
+// иной ответ auth_request он превращает в 500 для каждого пользователя раздела.
 func KnownRole(role string) bool {
 	if role == RoleUser {
 		return true

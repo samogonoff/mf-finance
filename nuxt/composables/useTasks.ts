@@ -4,7 +4,7 @@
  * submit → review → accept → done). Владелец этапа двигает этап.
  */
 
-import type { MpConditions } from "./useMpCascade";
+import type { MpConditions, MpVatBasis } from "./useMpCascade";
 
 export interface CfoFilter {
   entity_type?: string;
@@ -123,7 +123,18 @@ export interface MpTaskForm {
   year: number;
   month: number;
   currency: string;
+  /**
+   * Ставка НДС для шапки. Осмысленна, только когда она одна на всю форму: у
+   * площадок ставки разные, поэтому расчёт идёт по vat_by_cfo, а vat_mixed
+   * говорит, что одно число в шапке показывать нельзя.
+   */
   vat: number;
+  /** Базис перевода «с НДС → без НДС» по каждой площадке (отношение из плана). */
+  vat_by_cfo?: Record<number, MpVatBasis>;
+  /** Ставки площадок различаются — шапка обязана отдать разрез, а не одно число. */
+  vat_mixed?: boolean;
+  /** Отношение получено из планового слоя, а не из справочника dir_vat. */
+  vat_from_plan?: boolean;
   platforms: MpFormPlatform[];
   lines: MpLine[];
   cells: MpFormCell[];
@@ -133,6 +144,8 @@ export interface MpTaskForm {
    * живой пересчёт идёт из условий площадки, а не из введённых сумм.
    */
   calc_mode: string;
+  /** В PL формы вычитаются общие затраты: на этапах 1.1/1.2 нет, с 1.5 да. */
+  pl_with_common?: boolean;
   /** Карточка процесса этой формы; 0/undefined — старый период без карточки. */
   card_id?: number;
   /**
@@ -140,6 +153,42 @@ export interface MpTaskForm {
    * пересчёта, и чтобы показать долю статьи рядом с суммой.
    */
   conditions?: Record<number, MpConditions>;
+  /**
+   * Подсказки к полям ввода (правки ТЗ 02.09.2026, часть 1): фактический %СПП и
+   * габаритные штрафы WB. В значения полей НЕ подставляются — показываются рядом.
+   */
+  hints?: FieldHint[];
+  /**
+   * Отметка «данные актуальны на …» снимка факта (правка МП §12). Форма читает
+   * снимок, а не OLAP вживую; collected=false означает «снимок ещё не собран», и
+   * это надо сказать словами, а не показать нули.
+   */
+  fact_snapshot?: MpSnapshotMeta;
+}
+
+/** Подсказка к полю ввода: значение источника рядом с полем, без подстановки. */
+export interface FieldHint {
+  kind: string;
+  code_cfo: number;
+  block_type: string;
+  value: number;
+  source: string;
+  note?: string;
+  as_of?: string;
+}
+
+/** Отметка актуальности снимка факта МП. */
+export interface MpSnapshotMeta {
+  year: number;
+  month: number;
+  layer: string;
+  segment: string;
+  rows_total: number;
+  refreshed_at: string;
+  source_note?: string;
+  error?: string;
+  /** false — снимок не собирался: «неизвестно», а не «ноль». */
+  collected: boolean;
 }
 export interface MpSaveRow { code_cfo: number; block_type: string; code_pl: number; amount: number; is_manual: boolean; comment: string }
 
@@ -176,8 +225,9 @@ export const useTasks = () => {
 
   // currency — валюта ОТОБРАЖЕНИЯ (хранение всегда RUB): сервер пересчитывает
   // денежные строки туда и обратно, проценты не трогает.
-  const mpForm = (taskId: number, currency = "RUB"): Promise<MpTaskForm> =>
-    $fetch<MpTaskForm>(`${base}/api/plans/tasks/${taskId}/mp-form`, { params: { currency }, headers: h() });
+  /** scope — разрез карточки (large|small): у крупных и мелких МП свои формы. */
+  const mpForm = (taskId: number, currency = "RUB", scope = ""): Promise<MpTaskForm> =>
+    $fetch<MpTaskForm>(`${base}/api/plans/tasks/${taskId}/mp-form`, { params: { currency, scope }, headers: h() });
   const saveMpForm = (taskId: number, rows: MpSaveRow[], currency = "RUB"): Promise<{ ok: boolean }> =>
     $fetch(`${base}/api/plans/tasks/${taskId}/mp-form`, { method: "PUT", body: { rows, currency }, headers: h() });
 

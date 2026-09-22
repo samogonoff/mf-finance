@@ -22,15 +22,15 @@ const (
 
 // DirColumn — описание колонки справочника.
 type DirColumn struct {
-	Key        string            `json:"key"`                  // ключ в payload_json
-	Label      string            `json:"label"`                // заголовок колонки (рус.)
-	Type       ColType           `json:"type"`                 // тип ячейки
-	Primary    bool              `json:"primary,omitempty"`    // главный идентификатор записи
-	Filterable bool              `json:"filterable,omitempty"` // выпадающий фильтр в тулбаре
-	Search     bool              `json:"search,omitempty"`     // участвует в полнотекстовом поиске
-	Width      string            `json:"width,omitempty"`      // CSS-ширина (опц.)
-	Hint       string            `json:"hint,omitempty"`       // подсказка в карточке записи
-	BadgeTones map[string]string `json:"badge_tones,omitempty"`// значение → тон бейджа (pos/neg/info/warn/muted)
+	Key        string            `json:"key"`                   // ключ в payload_json
+	Label      string            `json:"label"`                 // заголовок колонки (рус.)
+	Type       ColType           `json:"type"`                  // тип ячейки
+	Primary    bool              `json:"primary,omitempty"`     // главный идентификатор записи
+	Filterable bool              `json:"filterable,omitempty"`  // выпадающий фильтр в тулбаре
+	Search     bool              `json:"search,omitempty"`      // участвует в полнотекстовом поиске
+	Width      string            `json:"width,omitempty"`       // CSS-ширина (опц.)
+	Hint       string            `json:"hint,omitempty"`        // подсказка в карточке записи
+	BadgeTones map[string]string `json:"badge_tones,omitempty"` // значение → тон бейджа (pos/neg/info/warn/muted)
 	// Ref — связь «через справочник», а не текстом: при редактировании карточки
 	// поле рендерится селектом/пикером. "user" → UserPicker (пишет имя в key и id
 	// в key+"_user_id"); код справочника (dir_*) → select его значений.
@@ -56,8 +56,8 @@ type DirSchema struct {
 	Name        string      `json:"name"`        // человекочитаемое имя (в UI вместо code)
 	Description string      `json:"description"` // назначение в PL (из ТЗ §7.1)
 	Group       DirGroup    `json:"group"`
-	Icon        string      `json:"icon"`        // lucide-имя
-	Stage       string      `json:"stage"`       // этап(ы) процесса по ТЗ
+	Icon        string      `json:"icon"`  // lucide-имя
+	Stage       string      `json:"stage"` // этап(ы) процесса по ТЗ
 	Columns     []DirColumn `json:"columns"`
 	GroupBy     []string    `json:"group_by,omitempty"` // ключи иерархии для tree-вида (вложенные справочники)
 }
@@ -69,8 +69,8 @@ var dirSchemas = map[string]DirSchema{
 	"dir_cfo": {
 		Code: "dir_cfo", Name: "ЦФО и ЦЗ", Group: GroupManual, Icon: "lucide:building-2",
 		Description: "Центры финансовой ответственности и затрат — разрез PL и матрица прав. Иерархия: страна → группа → ЦФО. Источник: «Справочник ЦФО и ЦЗ».",
-		Stage:   "все",
-		GroupBy: []string{"country", "group_cfo1", "group_cfo2"},
+		Stage:       "все",
+		GroupBy:     []string{"country", "group_cfo1", "group_cfo2"},
 		Columns: []DirColumn{
 			{Key: "code_cfo", Label: "Код ЦФО", Type: ColCode, Primary: true, Search: true, Width: "90px"},
 			{Key: "name_cfo", Label: "Наименование", Type: ColText, Search: true},
@@ -89,7 +89,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_cfo_group": {
 		Code: "dir_cfo_group", Name: "Группы ЦФО", Group: GroupManual, Icon: "lucide:layers",
 		Description: "Под-справочник: группы ЦФО (group_cfo1) — Розница, Производство, Отдел, Маркетплейсы. Стандартизуется централизованно.",
-		Stage: "все",
+		Stage:       "все",
 		Columns: []DirColumn{
 			{Key: "code", Label: "Группа", Type: ColText, Primary: true, Search: true},
 			{Key: "name", Label: "Наименование", Type: ColText, Search: true},
@@ -98,7 +98,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_cfo_subgroup": {
 		Code: "dir_cfo_subgroup", Name: "Подгруппы ЦФО", Group: GroupManual, Icon: "lucide:layers-2",
 		Description: "Под-справочник: подгруппы ЦФО (group_cfo2) — категории магазинов, площадки МП, отделы.",
-		Stage: "все",
+		Stage:       "все",
 		Columns: []DirColumn{
 			{Key: "code", Label: "Подгруппа", Type: ColText, Primary: true, Search: true},
 			{Key: "name", Label: "Наименование", Type: ColText, Search: true},
@@ -107,7 +107,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_cfo_type": {
 		Code: "dir_cfo_type", Name: "Типы ЦФО", Group: GroupManual, Icon: "lucide:shapes",
 		Description: "Под-справочник: тип ЦФО (entity_type) — магазин, производство, отдел.",
-		Stage: "все",
+		Stage:       "все",
 		Columns: []DirColumn{
 			{Key: "code", Label: "Тип", Type: ColBadge, Primary: true, Search: true,
 				BadgeTones: map[string]string{"магазин": "pos", "производство": "info", "отдел": "warn"}},
@@ -117,30 +117,135 @@ var dirSchemas = map[string]DirSchema{
 	"dir_legal_entity": {
 		Code: "dir_legal_entity", Name: "Юридические лица", Group: GroupManual, Icon: "lucide:landmark",
 		Description: "Глобальный справочник ЮЛ (Приложение B) с директором и ТОПом (ссылки на пользователей). Сырые алиасы из xlsx — для маппинга. «(?)» — требует сверки.",
-		Stage: "1.6, 2.4, 3",
+		Stage:       "1.6, 2.4, 3",
 		Columns: []DirColumn{
 			{Key: "name", Label: "Юр. лицо", Type: ColText, Primary: true, Search: true},
+			{Key: "short", Label: "Код", Type: ColCode, Width: "80px", Hint: "F / TDMF / MFKaz / MFUz"},
+			// УНП — то, что реально пишется в приёмник (правка Розница §15):
+			// план идёт на реальное ЮЛ, а не на фиктивный код.
+			{Key: "unp", Label: "УНП", Type: ColCode, Search: true, Width: "130px"},
 			{Key: "country", Label: "Страна", Type: ColCountry, Filterable: true, BadgeTones: countryTones, Ref: "dir_country"},
 			{Key: "director", Label: "Директор", Type: ColText, Search: true, Hint: "согласующий ЮЛ (этап 3)", Ref: "user"},
+			{Key: "historical_only", Label: "Только история", Type: ColBool, Filterable: true,
+				Hint: "фиктивные коды (1 BY, 2 RU, 4 CN, 7 KZ, 8 UZ, 9 TR) — читаем исторические строки, на запись не берём"},
 			{Key: "alias_raw", Label: "Сырые алиасы (xlsx)", Type: ColText},
 			{Key: "uncertain", Label: "Сверить", Type: ColBool, Filterable: true},
+			{Key: "note", Label: "Примечание", Type: ColText},
+		},
+	},
+	"dir_scenario": {
+		Code: "dir_scenario", Name: "Сценарии", Group: GroupManual, Icon: "lucide:git-branch",
+		Description: "Сценарии планирования и факта, как они лежат в приёмниках. Их ВОСЕМЬ (правка ТЗ Розница §23): −1 и 0 — факт, 1/2/3 — бюджеты, 9/10 — ожидаемый факт, 11 — тактика (в этом сценарии работают наши формы). Форма обязана понимать любое значение, которое встретит в приёмнике.",
+		Stage:       "все",
+		Columns: []DirColumn{
+			{Key: "code", Label: "Код", Type: ColNumber, Primary: true, Search: true, Width: "70px"},
+			{Key: "name", Label: "Сценарий", Type: ColText, Search: true},
+			{Key: "kind", Label: "Тип", Type: ColBadge, Filterable: true,
+				BadgeTones: map[string]string{"fact": "muted", "budget": "info", "expected": "warn", "tactic": "pos"}},
+		},
+	},
+	"dir_retail_scope": {
+		Code: "dir_retail_scope", Name: "Состав розницы", Group: GroupManual, Icon: "lucide:filter",
+		Description: "ПРАВИЛО, что считается розницей (правка ТЗ Розница §11, по ALL_view): группа ЦФО «3.Магазины» плюс восемь ЦФО-отделов, минус ЦФО 40 (интернет-магазин) и 722 (техническая запись переезда магазина в Солигорске). Правило живёт строками, поэтому отдел добавляется без релиза. Исключение сильнее включения.",
+		Stage:       "1.1",
+		Columns: []DirColumn{
+			{Key: "kind", Label: "Правило", Type: ColBadge, Primary: true, Filterable: true,
+				BadgeTones: map[string]string{"include_group": "pos", "include_cfo": "info", "exclude_cfo": "neg"}},
+			{Key: "value", Label: "Значение", Type: ColCode, Search: true},
+			{Key: "note", Label: "Почему", Type: ColText, Search: true},
+		},
+	},
+	"dir_mp_spp_hint": {
+		Code: "dir_mp_spp_hint", Name: "Подсказка %СПП", Group: Group1C, Icon: "lucide:percent",
+		Description: "Фактический %СПП площадки за прошлый месяц — ПОДСКАЗКА к полю ввода, а не значение формы (правки ТЗ 02.09.2026, часть 1 и МП §8/§9). Считается взвешенным средним SUM(spp × SALES_RUB)/SUM(SALES_RUB) по MP.dbo.WB_Price_SPP_Analysis и весам MP.dbo.sales (ключ EAN); spp вне 0…100 отбрасывается. Регламент раз в сутки: в истории 112 млн строк.",
+		Stage:       "1.1",
+		Columns: []DirColumn{
+			{Key: "code_cfo", Label: "Код ЦФО", Type: ColCode, Primary: true, Search: true, Width: "90px"},
+			{Key: "spp_pct", Label: "%СПП (факт)", Type: ColNumber, Hint: "доля 0…1"},
+			{Key: "as_of", Label: "Период", Type: ColCode, Filterable: true},
+			{Key: "source", Label: "Источник", Type: ColText},
+			{Key: "note", Label: "Примечание", Type: ColText},
+		},
+	},
+	"dir_mp_penalty_hint": {
+		Code: "dir_mp_penalty_hint", Name: "Подсказка по штрафам", Group: Group1C, Icon: "lucide:gavel",
+		Description: "Габаритные штрафы Wildberries за прошлый месяц из DWH.dbo.wb_dimensions_penalty — ПОДСКАЗКА к полю ввода (правка ТЗ МП §14). Это ЧАСТЬ штрафов, а не итог: общего реестра штрафов в базах нет, поэтому в форме штрафы вводятся руками. Копия в MP не используется — она встала 24.04.2026.",
+		Stage:       "1.1",
+		Columns: []DirColumn{
+			{Key: "code_cfo", Label: "Код ЦФО", Type: ColCode, Primary: true, Search: true, Width: "90px"},
+			{Key: "amount", Label: "Штрафы (факт)", Type: ColMoney},
+			{Key: "as_of", Label: "Период", Type: ColCode, Filterable: true},
+			{Key: "source", Label: "Источник", Type: ColText},
+			{Key: "note", Label: "Примечание", Type: ColText},
 		},
 	},
 	"dir_pl_line": {
 		Code: "dir_pl_line", Name: "Статьи PL", Group: GroupManual, Icon: "lucide:list-tree",
-		Description: "Статьи отчёта о прибылях/убытках (строки шаблонов затрат). Маппинг в расчёты ФОТ, аренды, логистики.",
-		Stage: "1.5, 2.3",
+		Description: "Статьи отчёта о прибылях/убытках (Budgeting.dbo.CodePL, 423 записи). Кроме подписи несут НОРМАТИВНЫЙ НДС по странам, статью ДДС и флаг особого доступа. НДС хранится коэффициентом «1 + ставка» как в источнике: 1,00 = налог по статье не начисляется.",
+		Stage:       "1.5, 2.3",
 		Columns: []DirColumn{
 			{Key: "code_pl", Label: "Код PL", Type: ColNumber, Primary: true, Search: true, Width: "90px"},
 			{Key: "expense_name", Label: "Статья", Type: ColText, Search: true},
 			{Key: "group_pl", Label: "Группа PL", Type: ColBadge, Filterable: true},
 			{Key: "block_type", Label: "Тип блока", Type: ColCode},
+			// Пять колонок НДС. В ТЗ они были описаны как «коэффициенты индексации»
+			// — это оказалось неверно (правка МП §18), индексации в справочнике нет.
+			{Key: "vat_by", Label: "НДС BY", Type: ColNumber, Width: "80px", Hint: "коэффициент 1+ставка; 1,20 = 20 %, 1,00 = не начисляется"},
+			{Key: "vat_ru", Label: "НДС RU", Type: ColNumber, Width: "80px", Hint: "коэффициент 1+ставка; 1,22 = 22 %"},
+			{Key: "vat_kz", Label: "НДС KZ", Type: ColNumber, Width: "80px", Hint: "коэффициент 1+ставка; 1,16 = 16 %"},
+			{Key: "vat_uz", Label: "НДС UZ", Type: ColNumber, Width: "80px", Hint: "коэффициент 1+ставка; 1,12 = 12 %"},
+			{Key: "vat_tr", Label: "НДС TR", Type: ColNumber, Width: "80px", Hint: "в справочнике всегда 1,00 — НДС не применяется"},
+			{Key: "cf_item", Label: "Статья ДДС", Type: ColCode, Filterable: true, Hint: "значения не только числовые: «инвест» — вложения, «-99999» — ВГО-обороты"},
+			{Key: "special_access", Label: "Особый доступ", Type: ColNumber, Width: "90px", Hint: "флаг 0/1, тот же, что выбирается в ALL_view"},
+			// Второй уровень справочника (ответ 36 от 10.09.2026): «код PL →
+			// укрупнённая группа P&L» из ТЗ §12.2. Поле РЕДАКТИРУЕМОЕ и ведётся
+			// НСИ: это решение классификации, а не свойство источника. Пусто —
+			// не ошибка: в своде такой код уходит в «Не распределено» с
+			// подсветкой, публикацию это не блокирует.
+			{Key: "pnl_group", Label: "Группа P&L", Type: ColBadge, Filterable: true,
+				Hint: "укрупнённая подгруппа свода этапа 1.6; пусто — «Не распределено»"},
+			{Key: "note", Label: "Примечание", Type: ColText},
+		},
+	},
+	"dir_pl_group": {
+		Code: "dir_pl_group", Name: "Порядок групп PL", Group: GroupManual, Icon: "lucide:list-ordered",
+		Description: "Порядок групп PL в формах этапа 1.5 (ТЗ §7.3): у розницы четырнадцать групп, у маркетплейсов восемь. Порядок задан ТЗ и НЕ алфавитный — держим его данными, чтобы правка порядка не требовала релиза (ответ 36 от 10.09.2026).",
+		Stage:       "1.5",
+		Columns: []DirColumn{
+			{Key: "form_kind", Label: "Форма", Type: ColBadge, Primary: true, Filterable: true,
+				BadgeTones: map[string]string{"retail": "info", "mp": "warn"}},
+			{Key: "group_pl", Label: "Группа PL", Type: ColText, Search: true},
+			{Key: "sort_order", Label: "Порядок", Type: ColNumber, Width: "90px"},
+		},
+	},
+	"dir_per_diem": {
+		Code: "dir_per_diem", Name: "Суточные", Group: GroupManual, Icon: "lucide:plane",
+		Description: "Суточные по стране для реестра командировок этапа 1.5 (ТЗ §5.2, ответ 38 от 10.09.2026). По эталону 2026: РФ 40, КЗ 50, УЗ 45 долларов США в сутки. Пересчёт в валюту ввода — по справочнику курсов на месяц строки.",
+		Stage:       "1.5",
+		Columns: []DirColumn{
+			{Key: "country", Label: "Страна", Type: ColCountry, Primary: true, Filterable: true, BadgeTones: countryTones},
+			{Key: "amount", Label: "Сутки", Type: ColMoney},
+			{Key: "currency", Label: "Валюта", Type: ColBadge, Width: "90px"},
+			{Key: "from_year", Label: "С года", Type: ColNumber, Width: "90px"},
+			{Key: "note", Label: "Примечание", Type: ColText},
+		},
+	},
+	"dir_flight_norm": {
+		Code: "dir_flight_norm", Name: "Норматив авиаперелёта", Group: GroupManual, Icon: "lucide:plane-takeoff",
+		Description: "Норматив перелёта в ОДНУ сторону из РБ для реестра командировок (ответ 38 от 10.09.2026): РФ 300, КЗ 1000, УЗ Ташкент 1000, УЗ Фергана 1300 бел. руб. Ключ — страна И ГОРОД: у Узбекистана города стоят по-разному.",
+		Stage:       "1.5",
+		Columns: []DirColumn{
+			{Key: "country", Label: "Страна", Type: ColCountry, Primary: true, Filterable: true, BadgeTones: countryTones},
+			{Key: "city", Label: "Город", Type: ColText, Search: true},
+			{Key: "amount", Label: "В одну сторону", Type: ColMoney},
+			{Key: "currency", Label: "Валюта", Type: ColBadge, Width: "90px"},
+			{Key: "note", Label: "Примечание", Type: ColText},
 		},
 	},
 	"dir_marketplace": {
 		Code: "dir_marketplace", Name: "Маркетплейсы", Group: GroupManual, Icon: "lucide:store",
 		Description: "Площадки маркетплейсов (канал Marketplaces, этап 1.1). Сегменты large/small.",
-		Stage: "1.1",
+		Stage:       "1.1",
 		Columns: []DirColumn{
 			{Key: "code_cfo", Label: "Код ЦФО", Type: ColNumber, Primary: true, Search: true, Width: "100px"},
 			{Key: "name_cfo", Label: "Площадка", Type: ColText, Search: true},
@@ -153,17 +258,43 @@ var dirSchemas = map[string]DirSchema{
 	"dir_fx_rate": {
 		Code: "dir_fx_rate", Name: "Курсы валют", Group: GroupManual, Icon: "lucide:coins",
 		Description: "Курсы валют к BYN для пересчёта тактики при своде по ЮЛ. Прод — из Лисы (valuta1).",
-		Stage: "1.6, 3",
+		Stage:       "1.6, 3",
 		Columns: []DirColumn{
 			{Key: "currency", Label: "Валюта", Type: ColBadge, Primary: true, Search: true, Width: "100px",
 				BadgeTones: map[string]string{"USD": "pos", "RUB": "info", "BYN": "muted", "KZT": "warn", "UZS": "muted"}},
 			{Key: "rate_byn", Label: "Курс к BYN", Type: ColMoney},
 		},
 	},
+	"dir_fx_per_usd": {
+		Code: "dir_fx_per_usd", Name: "Валюта за доллар", Group: GroupManual, Icon: "lucide:banknote",
+		Description: "Пара «валюта за доллар» — так курсы заданы в эталоне и так их правит финблок (ответ И-9 от 11.09.2026): тенге 515, сум 13 000 за доллар. Курс к BYN получается делением курса доллара на это число. Держится отдельно от dir_fx_rate: у них разные знаменатели.",
+		Stage:       "1.5",
+		Columns: []DirColumn{
+			{Key: "currency", Label: "Валюта", Type: ColBadge, Primary: true, Search: true, Width: "100px"},
+			{Key: "year", Label: "Год", Type: ColNumber, Width: "90px"},
+			{Key: "per_usd", Label: "За доллар", Type: ColMoney},
+			{Key: "note", Label: "Примечание", Type: ColText},
+		},
+	},
+	"dir_mp_norm": {
+		Code: "dir_mp_norm", Name: "Нормативы удержаний площадок", Group: GroupManual, Icon: "lucide:percent",
+		Description: "Норматив совокупных удержаний площадки с периодом действия (правка 08.09.2026). Покрывает шесть долей: комиссия, агентское вознаграждение, транспортная и складская логистика, штрафы и прочие удержания. Из него ВЫВОДИТСЯ доля агентского как остаток. Задан к выручке по ценам менеджера без НДС; к базе формы приводится делением на (1 − %СПП).",
+		Stage:       "1.1",
+		Columns: []DirColumn{
+			{Key: "code_cfo", Label: "Код ЦФО", Type: ColNumber, Primary: true, Search: true, Width: "100px"},
+			{Key: "name", Label: "Площадка", Type: ColText, Search: true},
+			{Key: "norm", Label: "Норматив, доля", Type: ColMoney},
+			{Key: "from_year", Label: "С года", Type: ColNumber, Width: "90px"},
+			{Key: "from_month", Label: "С месяца", Type: ColNumber, Width: "90px"},
+			{Key: "to_year", Label: "По год", Type: ColNumber, Width: "90px"},
+			{Key: "to_month", Label: "По месяц", Type: ColNumber, Width: "90px"},
+			{Key: "note", Label: "Примечание", Type: ColText},
+		},
+	},
 	"dir_store_to": {
 		Code: "dir_store_to", Name: "Магазины (ТО)", Group: GroupLisa, Icon: "lucide:shopping-bag",
 		Description: "Мастер-справочник магазинов для товарооборота розницы (этап 1.1). Источник: Лиса s_klient.",
-		Stage: "1.1",
+		Stage:       "1.1",
 		Columns: []DirColumn{
 			{Key: "lisa_id", Label: "ID Лисы", Type: ColCode, Primary: true, Width: "90px"},
 			{Key: "store_name", Label: "Магазин", Type: ColText, Search: true},
@@ -177,7 +308,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_lfl": {
 		Code: "dir_lfl", Name: "LFL-группы", Group: GroupLisa, Icon: "lucide:git-compare",
 		Description: "Классификация магазинов по сопоставимости год-к-году (LFL/новые/закрытые). Источник: Лиса abrvtr.",
-		Stage: "1.1",
+		Stage:       "1.1",
 		Columns: []DirColumn{
 			{Key: "year", Label: "Год", Type: ColNumber, Filterable: true, Width: "80px"},
 			{Key: "lisa_id", Label: "ID Лисы", Type: ColCode, Primary: true, Width: "90px"},
@@ -189,7 +320,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_lease": {
 		Code: "dir_lease", Name: "Договоры аренды", Group: Group1C, Icon: "lucide:file-text",
 		Description: "Договоры аренды и условия (площадь, ставка, индексация). Источник: 1С. Вход для расчёта аренды.",
-		Stage: "1.1, 1.5",
+		Stage:       "1.1, 1.5",
 		Columns: []DirColumn{
 			{Key: "contract_no", Label: "Договор", Type: ColCode, Primary: true, Search: true},
 			{Key: "store_name", Label: "Объект", Type: ColText, Search: true},
@@ -202,7 +333,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_payroll_rate": {
 		Code: "dir_payroll_rate", Name: "Ставки ФОТ", Group: Group1C, Icon: "lucide:badge-percent",
 		Description: "Ставки ФОТ, коэффициенты, соцвзносы. Источник: 1С. Вход для расчёта ФОТ производства и розницы.",
-		Stage: "1.1, 2.1",
+		Stage:       "1.1, 2.1",
 		Columns: []DirColumn{
 			{Key: "code_cfo", Label: "Код ЦФО", Type: ColNumber, Primary: true, Search: true, Width: "100px"},
 			{Key: "rate", Label: "Ставка", Type: ColMoney},
@@ -213,7 +344,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_country": {
 		Code: "dir_country", Name: "Страны", Group: GroupLisa, Icon: "lucide:globe",
 		Description: "Единый справочник стран — коды, ISO и сокращения в одном месте. Сведение и маппинг идут через него. Источник: Лиса s_country.",
-		Stage: "все",
+		Stage:       "все",
 		Columns: []DirColumn{
 			{Key: "domain", Label: "Код", Type: ColCountry, Primary: true, Filterable: true, Search: true, Width: "110px", BadgeTones: countryTones},
 			{Key: "abbr_ru", Label: "Сокр.", Type: ColBadge, Width: "80px"},
@@ -226,7 +357,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_lisa_prod_units": {
 		Code: "dir_lisa_prod_units", Name: "Производственные подразделения", Group: GroupLisa, Icon: "lucide:factory",
 		Description: "Производственные подразделения и линии (привязка минут и ФОТ пр-ва). Источник: Лиса. Этап 2.1.",
-		Stage: "2.1",
+		Stage:       "2.1",
 		Columns: []DirColumn{
 			{Key: "unit_code", Label: "Код", Type: ColCode, Primary: true, Search: true},
 			{Key: "unit_name", Label: "Подразделение / линия", Type: ColText, Search: true},
@@ -236,7 +367,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_lisa_norms": {
 		Code: "dir_lisa_norms", Name: "Нормы времени", Group: GroupLisa, Icon: "lucide:timer",
 		Description: "Нормы времени (мин/ед., мин/операция) — база для расчёта ФОТ производства. Источник: Лиса. Этап 2.1.",
-		Stage: "2.1",
+		Stage:       "2.1",
 		Columns: []DirColumn{
 			{Key: "operation", Label: "Операция", Type: ColText, Primary: true, Search: true},
 			{Key: "minutes_per_unit", Label: "Мин/ед.", Type: ColNumber},
@@ -246,7 +377,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_lisa_shipments": {
 		Code: "dir_lisa_shipments", Name: "Объёмы отгрузки", Group: GroupLisa, Icon: "lucide:package",
 		Description: "Объёмы отгрузки по SKU/группам/складам/странам — вход для логистики. Источник: Лиса. Этапы 1.5, 2.3.",
-		Stage: "1.5, 2.3",
+		Stage:       "1.5, 2.3",
 		Columns: []DirColumn{
 			{Key: "sku_group", Label: "Группа / SKU", Type: ColText, Primary: true, Search: true},
 			{Key: "country", Label: "Страна", Type: ColCountry, Filterable: true, BadgeTones: countryTones},
@@ -257,7 +388,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_lisa_routes": {
 		Code: "dir_lisa_routes", Name: "Маршруты доставки", Group: GroupLisa, Icon: "lucide:route",
 		Description: "Маршруты доставки (связка отгрузка → маршрут → тариф). Источник: Лиса. Этапы 1.5, 2.3.",
-		Stage: "1.5, 2.3",
+		Stage:       "1.5, 2.3",
 		Columns: []DirColumn{
 			{Key: "route_code", Label: "Маршрут", Type: ColCode, Primary: true, Search: true},
 			{Key: "route_name", Label: "Наименование", Type: ColText, Search: true},
@@ -267,7 +398,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_lisa_tariffs": {
 		Code: "dir_lisa_tariffs", Name: "Тарифы логистики", Group: GroupLisa, Icon: "lucide:truck",
 		Description: "Тарифы логистики / справочник цен перевозки (за единицу, за рейс, ступени объёма). Источник: Лиса. Этапы 1.5, 2.3.",
-		Stage: "1.5, 2.3",
+		Stage:       "1.5, 2.3",
 		Columns: []DirColumn{
 			{Key: "route_code", Label: "Маршрут", Type: ColCode, Primary: true, Search: true},
 			{Key: "tier", Label: "Ступень", Type: ColBadge},
@@ -277,7 +408,7 @@ var dirSchemas = map[string]DirSchema{
 	"dir_headcount": {
 		Code: "dir_headcount", Name: "Численность", Group: GroupLisa, Icon: "lucide:users",
 		Description: "Численность (FTE) по ЦФО/периодам. Источник: Лиса. Для расчётов ФОТ и отчётов на сотрудника.",
-		Stage: "2",
+		Stage:       "2",
 		Columns: []DirColumn{
 			{Key: "code_cfo", Label: "Код ЦФО", Type: ColNumber, Primary: true, Search: true, Width: "100px"},
 			{Key: "period", Label: "Период", Type: ColCode, Filterable: true},

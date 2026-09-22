@@ -22,7 +22,7 @@ func fmtNum(v *float64) string {
 func (s *TaskStore) MpFormExport(ctx context.Context, taskID int64) ([]byte, error) {
 	// Excel-обмен ведётся в валюте хранения (RUB) — так round-trip export→import
 	// не зависит от того, в какой валюте пользователь смотрел форму (CHECKPOINT B).
-	f, err := s.MpFormData(ctx, taskID, "RUB")
+	f, err := s.MpFormData(ctx, taskID, "RUB", "")
 	if err != nil {
 		return nil, err
 	}

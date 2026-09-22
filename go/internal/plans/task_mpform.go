@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 )
 
@@ -57,7 +58,20 @@ type MpTaskForm struct {
 	Year      int              `json:"year"`
 	Month     int              `json:"month"`
 	Currency  string           `json:"currency"`
-	Vat       float64          `json:"vat"`
+	// Vat — ставка для шапки. Осмысленна, только когда она одна на всю форму:
+	// при разных ставках площадок (VatMixed) шапка обязана показать разрез, а не
+	// одно число — иначе повторится дефект «в шапке 19,60 %, в расчёте 20 %».
+	Vat float64 `json:"vat"`
+	// VatByCfo — базис перевода «с НДС → без НДС» каждой площадки. Клиент считает
+	// каскад по нему же: пока он делил на свою константу 0,20, форма показывала
+	// одно, а сервер считал другое.
+	VatByCfo    map[int]MpVatBasis `json:"vat_by_cfo,omitempty"`
+	VatMixed    bool               `json:"vat_mixed"`
+	VatFromPlan bool               `json:"vat_from_plan"`
+	// VatMissing — площадки, по которым плана нет ни за месяц формы, ни за
+	// предыдущий: суммы посчитаны по аварийной ставке справочника, отправка на
+	// согласование заблокирована (МП-12).
+	VatMissing []int `json:"vat_missing,omitempty"`
 	Platforms []MpFormPlatform `json:"platforms"`
 	Lines     []MpLine         `json:"lines"`
 	Cells     []MpFormCell     `json:"cells"`
@@ -65,11 +79,22 @@ type MpTaskForm struct {
 	// inverse («условия → суммы», ТЗ §3.1). От него зависит, какие строки
 	// доступны на ввод, поэтому клиент обязан его учитывать.
 	CalcMode string `json:"calc_mode"`
+	// PLWithCommon — в PL формы вычитаются общие затраты. На этапах 1.1/1.2 они
+	// не участвуют, начиная с 1.5 — участвуют (правка 08.09.2026 п. 10).
+	PLWithCommon bool `json:"pl_with_common"`
 	// CardID — карточка процесса этой формы (0, если период старый и карточки нет).
 	CardID int64 `json:"card_id,omitempty"`
 	// Conditions — условия площадок, из которых посчитана расходная часть
 	// (в inverse-режиме): %СПП, наценки и доли статей для показа рядом со строками.
 	Conditions map[int]MpConditions `json:"conditions,omitempty"`
+	// Hints — подсказки к полям ввода (правки ТЗ 02.09.2026, часть 1): фактическое
+	// значение источника рядом с полем, БЕЗ подстановки в значение и без
+	// блокировки. Сохранение их не касается.
+	Hints []FieldHint `json:"hints,omitempty"`
+	// FactSnapshot — отметка «данные актуальны на …» (правка МП §12). Форма читает
+	// снимок, а не OLAP вживую, и обязана показывать, когда он собран: иначе
+	// заполняющий не отличит свежий факт от факта месячной давности.
+	FactSnapshot *MpSnapshotMeta `json:"fact_snapshot,omitempty"`
 }
 
 // seedPL — code_pl для подтяжки input-строк из источника (SUMIFS прототипа).
@@ -128,7 +153,7 @@ func factSeed(factIdx map[[2]int]float64, block string, cfo int) (float64, bool)
 		}
 		return a + b, true
 	case BCostPenalties:
-		v, ok := factIdx[[2]int{cfo, mpPenaltyPL}] // штрафы FINDWH (FINDWHACCESSGROUP)
+		v, ok := factIdx[[2]int{cfo, mpPenaltyFactKey}] // штрафы FINDWH (FINDWHACCESSGROUP)
 		return v, ok
 	default:
 		pl, has := seedPL[block]
@@ -140,7 +165,11 @@ func factSeed(factIdx map[[2]int]float64, block string, cfo int) (float64, bool)
 	}
 }
 
-// deriveSPP — начальный %СПП из источника (если есть цены площадки и менеджера).
+// deriveSPP — фактический %СПП, посчитанный из факта (пара 1006/1045 либо
+// 1022/1046). Это ПОДСКАЗКА, а не начальное значение поля: правки ТЗ 02.09.2026
+// (часть 1, МП §8) требуют, чтобы %СПП вводился руками, потому что в форме Excel
+// за ним нет формулы. Подставлять источник нельзя — через одно сохранение
+// подстановка становится неотличимой от решения планировщика.
 func deriveSPP(factIdx map[[2]int]float64, cfo int) float64 {
 	if net, ok := factIdx[[2]int{cfo, 1006}]; ok {
 		if mgr, ok2 := factIdx[[2]int{cfo, 1045}]; ok2 && mgr != 0 {
@@ -157,11 +186,19 @@ func deriveSPP(factIdx map[[2]int]float64, cfo int) float64 {
 
 // MpFormData собирает полную форму МП задания (каскад по спеке) в валюте currency
 // (BYN/RUB/USD; пусто → RUB). Тактика хранится в RUB, пересчёт — только отображение.
-func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency string) (MpTaskForm, error) {
+// scope — разрез КАРТОЧКИ формы (large|small|пусто). Крупные и мелкие МП живут
+// раздельными карточками со своими маршрутами и согласующими, но задание может
+// покрывать обе группы. Без разреза обе карточки открывали одну и ту же форму:
+// на экране это выглядело так, что крупные можно согласовать, а мелкие — только
+// отправить (замечание аналитика 08.09.2026).
+func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scope string) (MpTaskForm, error) {
 	var f MpTaskForm
 	t, year, month, segment, err := s.taskBrief(ctx, taskID)
 	if err != nil {
 		return f, err
+	}
+	if scope == "large" || scope == "small" {
+		segment = scope
 	}
 	f.Task, f.Year, f.Month, f.Segment, f.Currency = t, year, month, segment, normalizeCurrency(currency)
 
@@ -170,6 +207,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	plID := t.PlID
 	mode, card := s.calcModeFor(ctx, plID, segment)
 	f.CalcMode, f.CardID = mode, card.ID
+	f.PLWithCommon = mpPLWithCommon(card)
 	f.Lines = mpFormSpecFor(mode)
 
 	// Условия площадок нужны и для расчёта, и для показа долей в сетке.
@@ -195,10 +233,22 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		leOf[m.CodeCFO] = m.LegalEntity
 	}
 	segmentOf := s.segmentsByCfo(ctx, t.CfoCodes)
+	// Разрез карточки сужает состав площадок: форма «Крупные МП» показывает
+	// только крупные, даже если задание сгенерировано на обе группы.
+	cfoCodes := t.CfoCodes
+	if scope == "large" || scope == "small" {
+		filtered := make([]int, 0, len(cfoCodes))
+		for _, c := range cfoCodes {
+			if segmentOf[c] == scope {
+				filtered = append(filtered, c)
+			}
+		}
+		cfoCodes = filtered
+	}
 	mpNames := s.nameMap(ctx, "dir_marketplace", "code_cfo", "name_cfo")
 	cfoNames := s.nameMap(ctx, "dir_cfo", "code_cfo", "name_cfo")
 	dirLE := s.nameMap(ctx, "dir_marketplace", "code_cfo", "legal_entity")
-	for _, c := range t.CfoCodes {
+	for _, c := range cfoCodes {
 		name := mpNames[c]
 		if name == "" {
 			name = cfoNames[c]
@@ -214,18 +264,32 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 	if segments := distinctSegments(segmentOf); len(segments) > 1 {
 		f.Segment = "all"
 	}
-	// НДС шапки — эффективная ставка первой площадки (для отображения; расчёт
-	// идёт per-площадка, у каждой ставка своя — ТЗ §3.4).
-	if len(f.Platforms) > 0 {
-		f.Vat = s.vatFor(ctx, f.Platforms[0])
-	} else {
-		f.Vat = 0.20
+	// Базис НДС по каждой площадке: отношение плановых сумм, ставка справочника —
+	// фолбэк (mpform_vat.go). Одного числа на всю форму не существует: у площадок
+	// ставки разные, поэтому шапка отдаёт и разрез VatByCfo, и признак VatMixed.
+	segList := distinctSegments(segmentOf)
+	planLayer := mpPlanByBlock(ctx, s.fact, year, month, segList)
+	prevY, prevM := prevMonth(year, month)
+	planPrev := mpPlanByBlock(ctx, s.fact, prevY, prevM, segList)
+	f.VatByCfo = map[int]MpVatBasis{}
+	rateByCfo := map[int]float64{}
+	for _, p := range f.Platforms {
+		b := mpVatBasis(planLayer, planPrev, p.CodeCFO, year, month, s.vatFor(ctx, p))
+		f.VatByCfo[p.CodeCFO] = b
+		rateByCfo[p.CodeCFO] = b.Rate()
+		f.VatFromPlan = f.VatFromPlan || b.FromPlan
+		// Площадки без базы перечисляем поимённо: валидация МП-12 назовёт их в
+		// тексте блокировки, а форма подсветит строку ставки.
+		if b.Missing {
+			f.VatMissing = append(f.VatMissing, p.CodeCFO)
+		}
 	}
+	f.Vat, f.VatMixed = headerVat(rateByCfo)
 
 	// Read-only сценарии из источника, уже в валюте формы: факт, факт прошлого
 	// года, стратегия (FormToLoadPlan), таргет (FormToLoaTaktTarget).
 	allowedCfo := map[int]bool{}
-	for _, c := range t.CfoCodes {
+	for _, c := range cfoCodes {
 		allowedCfo[c] = true
 	}
 	layerSet := s.mpLayersFor(ctx, year, month, segmentOf, allowedCfo, f.Currency)
@@ -243,10 +307,10 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		}
 		return convertAmount(v, "RUB", f.Currency)
 	}
-	if len(t.CfoCodes) > 0 {
+	if len(cfoCodes) > 0 {
 		if rows, e := s.pool.Query(ctx, `
 			SELECT profit_center, block_type, amount, is_manual, amount_strategy
-			FROM pl_metric WHERE pl_id=$1 AND template_code='TPL-MP' AND profit_center = ANY($2)`, t.PlID, append(t.CfoCodes, 0)); e == nil {
+			FROM pl_metric WHERE pl_id=$1 AND template_code='TPL-MP' AND profit_center = ANY($2)`, t.PlID, append(cfoCodes, 0)); e == nil {
 			for rows.Next() {
 				var pc int
 				var bt string
@@ -267,7 +331,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		}
 		if ar, e := s.pool.Query(ctx, `
 			SELECT profit_center, block_type, reason FROM pl_adjustment
-			WHERE pl_id=$1 AND profit_center = ANY($2) ORDER BY adjusted_at`, t.PlID, append(t.CfoCodes, 0)); e == nil {
+			WHERE pl_id=$1 AND profit_center = ANY($2) ORDER BY adjusted_at`, t.PlID, append(cfoCodes, 0)); e == nil {
 			for ar.Next() {
 				var pc int
 				var bt, rs string
@@ -303,7 +367,8 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 		// Слои берутся по сегменту КАЖДОЙ площадки: в объединённой форме
 		// large и small приходят из разных срезов источника.
 		pl := layerSet.forCfo(p.CodeCFO)
-		values := s.platformValues(ctx, mode, p, condByCfo[p.CodeCFO], tacByKey, pl.fact)
+		values := s.platformValues(mode, f.VatByCfo[p.CodeCFO], s.normShareOf(ctx, p.CodeCFO, year, month),
+			condByCfo[p.CodeCFO], tacByKey, pl, p.CodeCFO)
 
 		for _, l := range spec {
 			if l.Kind == KindHeader {
@@ -346,6 +411,28 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 			f.Cells = append(f.Cells, cell)
 		}
 	}
+
+	// Отметка актуальности снимка факта (правка МП §12).
+	if s.factSnap != nil {
+		if meta, err := s.factSnap.Meta(ctx, year, month, SnapLayerFact, segment); err == nil {
+			f.FactSnapshot = &meta
+		} else {
+			log.Printf("plans: отметка снимка факта МП недоступна: %v", err)
+		}
+	}
+
+	// Подсказки к полям ввода (правки ТЗ, часть 1): фактический %СПП и габаритные
+	// штрафы WB. Идут ОТДЕЛЬНО от ячеек — значение поля они не трогают.
+	if s.hints != nil {
+		for _, p := range f.Platforms {
+			if h, ok := s.hints.SppHint(ctx, p.CodeCFO); ok {
+				f.Hints = append(f.Hints, h)
+			}
+			if h, ok := s.hints.PenaltyHint(ctx, p.CodeCFO); ok {
+				f.Hints = append(f.Hints, h)
+			}
+		}
+	}
 	return f, nil
 }
 
@@ -355,24 +442,24 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency strin
 // «суммы → доли». inverse (ТЗ §3.1): вводится только объём продаж, а расходная
 // часть считается из условий площадки; уже сохранённые ручные значения статей
 // передаются как переопределения и автопересчётом не затираются (ТЗ §7.2).
-func (s *TaskStore) platformValues(ctx context.Context, mode string, p MpFormPlatform,
-	cond MpConditions, tactic map[string]float64, factIdx map[[2]int]float64) map[string]float64 {
+func (s *TaskStore) platformValues(mode string, vat MpVatBasis, norm float64,
+	cond MpConditions, tactic map[string]float64, layers mpLayers, cfo int) map[string]float64 {
 
-	inputs := mpPlatformInputs(p.CodeCFO, tactic, factIdx)
+	inputs := mpPlatformInputs(cfo, tactic, layers)
 	if mode != CalcInverse || cond.CodeCFO == 0 {
-		return computeMpPlatform(inputs, s.vatFor(ctx, p))
+		return computeMpPlatform(inputs, vat)
 	}
 	// Ручные переопределения: суммы статей, сохранённые пользователем поверх
 	// расчёта. Продажи и проценты сюда не попадают — они входы каскада.
 	overrides := map[string]float64{}
 	for _, b := range mpCostBlocks {
-		if v, ok := tactic[layerKey(p.CodeCFO, b)]; ok {
+		if v, ok := tactic[layerKey(cfo, b)]; ok {
 			overrides[b] = v
 		}
 	}
 	values, _ := computeMpPlatformInverse(MpInverseInput{
 		SalesManagerGross: inputs[BSalesManagerGross],
-		Conditions:        conditionsToInput(cond, s.vatFor(ctx, p)),
+		Conditions:        conditionsToInputNorm(cond, vat, norm),
 		Overrides:         overrides,
 	})
 	return values
@@ -380,18 +467,50 @@ func (s *TaskStore) platformValues(ctx context.Context, mode string, p MpFormPla
 
 // vatFor — эффективная ставка НДС площадки: из справочника dir_vat, если он
 // подключён, иначе законодательная по стране (ТЗ §3.4 запрещает прошивать её).
+// Это ФОЛБЭК базиса: ведущее правило — отношение плановых сумм (mpform_vat.go).
 func (s *TaskStore) vatFor(ctx context.Context, p MpFormPlatform) float64 {
+	return s.vatRate(ctx, p.Country, p.CodeCFO)
+}
+
+// normShareOf — норматив удержаний площадки на месяц: справочник dir_mp_norm,
+// иначе сид. Норматив зависит от периода, поэтому месяц обязателен.
+func (s *TaskStore) normShareOf(ctx context.Context, cfo, year, month int) float64 {
 	if s.rates != nil {
-		return s.rates.Vat(ctx, p.Country, p.CodeCFO)
+		if v, ok := s.rates.NormShare(ctx, cfo, year, month); ok {
+			return v
+		}
 	}
-	return vatByCountry(p.Country)
+	return mpNormShareOf(cfo, year, month)
+}
+
+// vatRate — та же ставка по паре «страна, ЦФО» (свод площадками не оперирует).
+func (s *TaskStore) vatRate(ctx context.Context, country string, cfo int) float64 {
+	if s.rates != nil {
+		return s.rates.Vat(ctx, country, cfo)
+	}
+	return vatByCountry(country)
 }
 
 // mpPlatformInputs — входы каскада по площадке: сохранённая тактика ?? факт из
 // источника ?? деривация (%СПП). Наценка по умолчанию расчётная. Одна функция на
 // форму ввода и на свод — иначе проверяющий увидит не те числа, что заполняющий.
-func mpPlatformInputs(cfo int, tactic map[string]float64, factIdx map[[2]int]float64) map[string]float64 {
+func mpPlatformInputs(cfo int, tactic map[string]float64, layers mpLayers) map[string]float64 {
 	in := map[string]float64{}
+	factIdx := layers.fact
+	// Себестоимости больше не вводятся (их ведёт наценка), но СОХРАНЁННЫЕ суммы
+	// прежних периодов читать обязаны: там наценки нет, и без этих значений
+	// утверждённая форма пересчиталась бы в нули.
+	for _, b := range []string{BShipments, BCogsTotal} {
+		if v, ok := tactic[layerKey(cfo, b)]; ok {
+			in[b] = v
+		}
+	}
+	// Наценка от общей себестоимости по умолчанию берётся ИЗ ПЛАНА того же месяца
+	// (прототип, строка 65: =BF65), а не вводится с нуля. Сохранённое значение
+	// ниже её перебьёт.
+	if v, ok := planMarkupTotal(layers.strategy, cfo); ok {
+		in[BMarkupTotal] = v
+	}
 	for _, l := range mpFormSpec() {
 		if l.Scope != ScopePlatform || !l.Editable {
 			continue
@@ -402,9 +521,23 @@ func mpPlatformInputs(cfo int, tactic map[string]float64, factIdx map[[2]int]flo
 		}
 		switch l.BlockType {
 		case BSPP:
-			in[BSPP] = deriveSPP(factIdx, cfo)
+			// Поле ввода (правки ТЗ, часть 1 и МП §8): фактическое значение уходит
+			// в подсказку рядом с полем, а не в само поле.
+		case BCostPenalties:
+			// Поле ввода (правка МП §14): общего реестра штрафов нет, а в DWH
+			// лежат только габаритные штрафы Wildberries — это часть, не итог.
 		case BMarkup:
 			// расчётная по умолчанию — не сидируем
+		case BSalesManagerGross:
+			// Тактическая выручка МП в прототипе НЕ вводится: она приходит из
+			// тактики ТО (=VLOOKUP([14]Янв_26!…)). Ближайший аналог в контуре —
+			// слой таргета (FormToLoaTaktTarget), поэтому он старше факта: факт
+			// прошлого месяца планом не является.
+			if v, ok := layers.target[layerKey(cfo, l.BlockType)]; ok && v != 0 {
+				in[l.BlockType] = v
+			} else if v, ok := factSeed(factIdx, l.BlockType, cfo); ok {
+				in[l.BlockType] = v
+			}
 		default:
 			if v, ok := factSeed(factIdx, l.BlockType, cfo); ok {
 				in[l.BlockType] = v

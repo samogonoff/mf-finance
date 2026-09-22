@@ -25,7 +25,7 @@
     <!-- ===== ПРОЦЕСС: календарный таймлайн ===== -->
     <section v-show="tab === 'process'" class="timeline card">
       <div class="tl-scroll">
-        <div class="tl-grid" :style="{ gridTemplateColumns: `var(--tl-track) repeat(${COLS.length}, minmax(150px, 1fr))` }">
+        <div class="tl-grid" :style="{ gridTemplateColumns: `var(--tl-track) repeat(${COLS.length}, minmax(var(--tl-col-min), 1fr))` }">
           <!-- шапка календаря -->
           <div class="tl-corner">Календарь</div>
           <div v-for="c in COLS" :key="c.key" class="tl-colhead">
@@ -49,12 +49,28 @@
                 :class="`s-${st.status}`"
               >
                 <div class="sc-top">
-                  <span class="sc-code">Этап {{ st.stage_code }}</span>
+                  <span class="sc-code">{{ st.route_only ? "Шаг маршрута" : `Этап ${st.stage_code}` }}</span>
                   <span class="badge" :class="statusBadge(st.status)">{{ statusLabel(st.status) }}</span>
                 </div>
                 <div class="sc-name">{{ st.name }}</div>
-                <button type="button" class="sc-tasks" :title="`Открыть задания этапа ${st.stage_code}`" @click="stageModal = st">
-                  <span class="sct-count" :class="{ ok: stageTasks(st.stage_code).length && stageDone(st.stage_code) === stageTasks(st.stage_code).length }">
+                <button
+                  type="button"
+                  class="sc-tasks"
+                  :title="stageIsApproval(st) ? `Что согласуется на этапе ${st.stage_code}` : `Открыть задания этапа ${st.stage_code}`"
+                  @click="stageModal = st"
+                >
+                  <!-- На этапе согласования заданий не бывает: показываем не «0/0
+                       заданий» (это читалось как «ничего не сгенерировано»), а
+                       сколько форм ждёт решения на этом шаге. -->
+                  <span
+                    v-if="stageIsApproval(st) && !stageTasks(st.stage_code).length"
+                    class="sct-count"
+                    :class="{ ok: !cardsOnStep(st.stage_code).length }"
+                  >
+                    <Icon name="lucide:check-check" />
+                    {{ waitingLabel(st.stage_code) }}
+                  </span>
+                  <span v-else class="sct-count" :class="{ ok: stageTasks(st.stage_code).length && stageDone(st.stage_code) === stageTasks(st.stage_code).length }">
                     <Icon name="lucide:list-checks" /> {{ stageDone(st.stage_code) }}/{{ stageTasks(st.stage_code).length }} заданий
                   </span>
                   <span class="sct-people" :title="stageAssignees(st.stage_code).join(', ')">
@@ -65,15 +81,43 @@
                   <span v-if="depHint(st)" class="sc-dep"><Icon name="lucide:lock" /> {{ depHint(st) }}</span>
                   <span v-else-if="st.due_at" class="sc-due"><Icon name="lucide:calendar" /> {{ st.due_at }}</span>
                 </div>
-                <div class="sc-actions">
+                <!-- У шага маршрута нет состояния в БД: двигать его нельзя,
+                     сервер такой переход отклонит. Показываем только, у кого
+                     формы, и ведём в лист согласования. -->
+                <div v-if="st.route_only" class="sc-actions">
                   <button
-                    v-if="!isApproval(st.stage_code)"
+                    class="btn btn-sm btn-ghost"
+                    :title="`Формы, ожидающие шага «${st.name}»`"
+                    @click="stageModal = st"
+                  >
+                    <Icon name="lucide:check-check" />
+                    {{ cardsOnStep(st.stage_code).length ? "К формам на решении" : "Что согласуется" }}
+                  </button>
+                </div>
+                <div v-else class="sc-actions">
+                  <!-- Этапы 1.1–1.4 закрываются САМИ, когда формы проходят
+                       соответствующий шаг: они агрегат состояния карточек, а не
+                       отдельное решение. Кнопку здесь не показываем — сервер её
+                       всё равно отклонит, а человек считал, что двигает процесс
+                       (именно так процесс и «разъезжался» с формами). Вместо
+                       кнопки — переход туда, где решение принимается. -->
+                  <button
+                    v-if="stageDrivenByCards(st)"
+                    class="btn btn-sm btn-ghost"
+                    :title="`Этап ${st.stage_code} закрывается сам, когда формы пройдут этот шаг`"
+                    @click="stageModal = st"
+                  >
+                    <Icon name="lucide:check-check" />
+                    {{ cardsOnStep(st.stage_code).length ? "К формам на решении" : "Что согласуется" }}
+                  </button>
+                  <button
+                    v-else-if="!isApproval(st.stage_code)"
                     class="btn btn-sm btn-primary"
                     :disabled="!!depHint(st) || st.status === 'completed'"
                     @click="doAct(st.stage_code, 'submit')"
                   >Отправить</button>
                   <button
-                    v-if="isApproval(st.stage_code)"
+                    v-else
                     class="btn btn-sm btn-primary"
                     :disabled="!!depHint(st) || st.status === 'completed'"
                     @click="doAct(st.stage_code, 'approve')"
@@ -132,7 +176,10 @@
             <!-- /plans/mp-form — экран МП, а не общий: задание по рознице открывать
                  им нельзя (у розницы своя форма ниже). Без проверки form_code
                  карточка розницы получала вторую ссылку «Форма», ведущую на форму МП. -->
-            <NuxtLink v-if="c.form_code === 'TPL-MP' && formTaskId(c)" :to="`/plans/mp-form/${formTaskId(c)}`" class="fc-link">
+            <!-- Разрез карточки идёт в ссылку: крупные и мелкие МП — разные
+                 карточки с разными согласующими, и открывать они должны разные
+                 формы (замечание аналитика 08.09.2026). -->
+            <NuxtLink v-if="c.form_code === 'TPL-MP' && formTaskId(c)" :to="`/plans/mp-form/${formTaskId(c)}?scope=${c.scope_key}`" class="fc-link">
               <Icon name="lucide:file-input" /> Форма
             </NuxtLink>
             <NuxtLink v-if="c.form_code === 'TPL-MP'" :to="`/plans/mp-conditions/${c.id}`" class="fc-link">
@@ -149,6 +196,11 @@
             </NuxtLink>
             <NuxtLink v-if="c.form_code === 'TPL-TO-RETAIL'" :to="`/plans/retail-summary/${c.id}`" class="fc-link">
               <Icon name="lucide:layout-list" /> Свод
+            </NuxtLink>
+            <!-- Расходы ЦП (этап 1.5): у формы четыре карточки — розница РБ и три
+                 страны МП, — и открывается она по карточке, как у розницы. -->
+            <NuxtLink v-if="c.form_code === 'TPL-CFO-EXP'" :to="`/plans/exp-form/${c.id}`" class="fc-link">
+              <Icon name="lucide:file-input" /> Форма
             </NuxtLink>
             <button type="button" class="fc-link btn-like" @click="openCard = openCard === c.id ? 0 : c.id">
               <Icon name="lucide:check-check" /> Согласование
@@ -187,7 +239,7 @@
           <tr><th>Юридическое лицо</th><th>Канал</th><th class="col-num">Товарооборот</th><th>Валюта</th></tr>
         </thead>
         <tbody>
-          <tr v-if="!svod.length"><td colspan="4" class="empty-cell">Нет данных тактики за период — заполните форму МП.</td></tr>
+          <tr v-if="!svod.length"><td colspan="4" class="empty-cell">Нет данных тактики за период — заполните формы МП и розницы.</td></tr>
           <tr v-for="(s, i) in svod" :key="i">
             <td class="le-cell">{{ s.legal_entity }}</td>
             <td>{{ s.channel }}</td>
@@ -195,8 +247,21 @@
             <td>{{ s.currency }}</td>
           </tr>
         </tbody>
+        <!-- Итог по валютам, а не одной строкой: маркетплейсы ведутся в RUB,
+             розница — в нац. валюте страны, и складывать их без курса нельзя. -->
+        <tfoot v-if="svod.length">
+          <tr v-for="t in svodTotals" :key="t.currency" class="tot-row">
+            <td class="le-cell">Итого</td>
+            <td>{{ t.channels }}</td>
+            <td class="col-num strong">{{ money(t.amount, { currency: "" }) }}</td>
+            <td>{{ t.currency }}</td>
+          </tr>
+        </tfoot>
       </table>
-      <p class="prov-note">Маппинг площадка → ЮЛ провизорный (на уточнении у аналитика).</p>
+      <p class="prov-note">
+        Свод собирает весь комплект: маркетплейсы и розницу по странам. Маппинг площадка → ЮЛ
+        провизорный (на уточнении у аналитика).
+      </p>
     </section>
 
     <!-- ===== Модалка возврата ===== -->
@@ -236,7 +301,38 @@
       @close="stageModal = null"
     >
       <div v-if="stageModal" class="sm-body">
-        <p v-if="!stageTasks(stageModal.stage_code).length" class="sm-empty">
+        <!-- Этап согласования заданий-ввода не имеет: решение принимается по
+             КАРТОЧКАМ ФОРМ (у каждой формы свой лист согласования, ТЗ §2.2).
+             Раньше здесь предлагалось «сгенерировать задания», и человек искал
+             кнопку, которой не существует. -->
+        <div v-if="!stageTasks(stageModal.stage_code).length && stageIsApproval(stageModal)" class="sm-appr">
+          <p class="sm-appr-txt">
+            Это этап согласования — отдельных заданий у него нет. Согласуются
+            <b>карточки форм</b>: у каждой формы свой лист согласования, версия и возврат,
+            поэтому возврат одной формы не останавливает остальные.
+          </p>
+          <p v-if="!cardsOnStep(stageModal.stage_code).length" class="sm-appr-txt muted">
+            На этом шаге сейчас ни одна форма решения не ждёт.
+          </p>
+          <div v-else class="sm-cards">
+            <div v-for="c in cardsOnStep(stageModal.stage_code)" :key="c.id" class="sm-card">
+              <span class="smc-title">{{ c.title }}</span>
+              <span class="badge" :class="cardBadge(c)">{{ cardStatus(c) }}</span>
+              <!-- Лист согласования — панель на этом же экране (CardProcessPanel),
+                   поэтому не ссылка, а раскрытие панели: отдельной страницы
+                   согласования карточки нет. -->
+              <button type="button" class="btn btn-sm btn-primary" @click="openCardFromStage(c.id)">
+                <Icon name="lucide:check-check" /> Согласование
+              </button>
+            </div>
+          </div>
+        </div>
+        <p v-else-if="!stageTasks(stageModal.stage_code).length && stageModal.has_task_templates === false" class="sm-empty">
+          На этот этап не заведены шаблоны заданий — генерация ничего не создаст.
+          Шаблоны настраиваются в
+          <NuxtLink :to="`/plans/admin/task-templates`" class="link">конструкторе заданий</NuxtLink>.
+        </p>
+        <p v-else-if="!stageTasks(stageModal.stage_code).length" class="sm-empty">
           Задания не сгенерированы.
           <NuxtLink :to="`/plans/process/${id}`" class="link">Открыть кокпит</NuxtLink> и нажать «Генерировать задания».
         </p>
@@ -268,6 +364,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { money } from "~/utils/format";
 import PlansModal from "~/components/plans/PlansModal.vue";
 import MpBoard from "~/components/plans/MpBoard.vue";
@@ -275,7 +372,7 @@ import PlanStatusBar from "~/components/plans/PlanStatusBar.vue";
 import CardProcessPanel from "~/components/plans/CardProcessPanel.vue";
 import { usePlans, type StageState, type SvodRow } from "~/composables/usePlans";
 import { useTasks, type Task } from "~/composables/useTasks";
-import { useMpConditions, type PlanCard } from "~/composables/useMpConditions";
+import { useMpConditions, type PlanCard, type RouteStep } from "~/composables/useMpConditions";
 
 definePageMeta({ middleware: "scope-guard" });
 
@@ -301,7 +398,7 @@ const doStrategyImport = async (ev: Event) => {
     const r = await importStrategy(id, f);
     pnlNote.value = `Импортировано стратегии: ${r.imported} строк`;
     boardKey.value++;
-  } catch (e) { error.value = e instanceof Error ? e.message : "Ошибка импорта стратегии"; }
+  } catch (e) { error.value = apiError(e, "Ошибка импорта стратегии"); }
   finally { if (stratInput.value) stratInput.value.value = ""; }
 };
 
@@ -312,6 +409,21 @@ const cardsError = ref("");
 const openCard = ref(0);
 const cardApi = useMpConditions();
 const svod = ref<SvodRow[]>([]);
+// Итоги свода — по валютам: суммы разных валют не складываются, а сколько
+// каналов вошло в каждую, видно сразу.
+const svodTotals = computed(() => {
+  const by = new Map<string, { currency: string; amount: number; set: Set<string> }>();
+  for (const r of svod.value) {
+    const cur = r.currency || "—";
+    const t = by.get(cur) || { currency: cur, amount: 0, set: new Set<string>() };
+    t.amount += r.amount;
+    t.set.add(r.channel);
+    by.set(cur, t);
+  }
+  return [...by.values()]
+    .map((t) => ({ currency: t.currency, amount: t.amount, channels: [...t.set].sort().join(", ") }))
+    .sort((a, b) => a.currency.localeCompare(b.currency));
+});
 const error = ref("");
 const busy = ref(false);
 const tab = ref<"process" | "pnl" | "svod">("process");
@@ -338,7 +450,9 @@ const COLS = [
   { key: "prev25", label: "25-е число", sub: "месяц М−1", codes: ["2.1", "2.2"] },
   { key: "rd2", label: "2-й р.д.", sub: "заполнение", codes: ["1.1"] },
   { key: "rd3", label: "3-й р.д.", sub: "согласование", codes: ["1.2", "1.3", "2.3"] },
-  { key: "rd4", label: "4-й р.д.", sub: "финал/свод", codes: ["1.4", "2.4"] },
+  // «финал/свод» на 4-м р.д. спорил с «утверждением» на 6-м: на таймлайне
+  // получались два финала. 1.4 — утверждение потока продаж, 4 — итоговое.
+  { key: "rd4", label: "4-й р.д.", sub: "утверждение продаж / свод", codes: ["1.4", "2.4"] },
   { key: "rd5", label: "5-й р.д.", sub: "расходы/ЮЛ", codes: ["1.5", "1.6"] },
   { key: "rd6", label: "6-й р.д.", sub: "утверждение", codes: ["3", "4"] }
 ];
@@ -356,10 +470,42 @@ const byCode = computed<Record<string, StageState>>(() =>
 type Col = (typeof COLS)[number];
 type Track = (typeof TRACKS)[number];
 
-const cellStages = (tr: Track, c: Col): StageState[] =>
-  tr.codes
+const cellStages = (tr: Track, c: Col): StageState[] => {
+  const own = tr.codes
     .filter((code) => c.codes.includes(code) && byCode.value[code])
     .map((code) => byCode.value[code]);
+  // Шаги маршрута форм, которых нет среди этапов периода, показываем рядом с
+  // согласованием: иначе на таймлайне не видно, у кого форма.
+  if (tr.key === "sales" && c.key === "rd3") return [...own, ...routeOnlySteps.value];
+  return own;
+};
+
+/** Шаги маршрута, включённые данными и не имеющие своего этапа периода. */
+const routeOnlySteps = computed<StageState[]>(() => {
+  const seen = new Set<string>();
+  const out: StageState[] = [];
+  for (const steps of Object.values(routes.value)) {
+    for (const st of steps) {
+      if (!st.enabled || byCode.value[st.step_code] || seen.has(st.step_code)) continue;
+      seen.add(st.step_code);
+      const waiting = cardsOnStep(st.step_code).length;
+      out.push({
+        stage_code: st.step_code,
+        track: "sales",
+        name: st.step_name,
+        // Статус синтетический: этапа в БД нет, состояние определяют формы.
+        status: waiting ? "in_progress" : "pending",
+        due_at: "",
+        depends_on: [],
+        responsible: st.responsible,
+        is_approval: true,
+        has_task_templates: false,
+        route_only: true
+      });
+    }
+  }
+  return out;
+});
 
 const colDue = (c: Col): string => {
   for (const code of c.codes) {
@@ -370,6 +516,56 @@ const colDue = (c: Col): string => {
 };
 
 const isApproval = (code: string) => APPROVAL.has(code);
+
+/**
+ * Этап согласования: признак приходит с сервера (stageDefs.IsApproval), а
+ * локальный список APPROVAL остаётся фолбэком для старых ответов API.
+ */
+const stageIsApproval = (st: StageState) => st.is_approval ?? APPROVAL.has(st.stage_code);
+
+/**
+ * Карточки форм, ожидающие решения на этом шаге маршрута. Шаг карточки (step_code)
+ * совпадает с кодом этапа: 1.2 — руководитель, 1.3 — директор, 1.4 — финальное
+ * утверждение. Показываем только те, что реально на согласовании: карточка в
+ * черновике решения не ждёт.
+ */
+/**
+ * Этапом управляют КАРТОЧКИ форм: 1.1–1.4 закрываются сами, когда формы проходят
+ * шаг (сервер отклоняет ручное закрытие). Признак считаем по наличию карточек с
+ * таким шагом в маршруте — если карточек периода нет вовсе, этап остаётся
+ * ручным, как этапы производства и сводов.
+ */
+const CARD_STEPS = ["1.1", "1.2", "1.3", "1.4"];
+const stageDrivenByCards = (st: StageState) => CARD_STEPS.includes(st.stage_code) && cards.value.length > 0;
+
+/**
+ * Плашка ожидания: «1 форма ждёт решения», «2 формы», «5 форм». Раньше стояло
+ * «1 форм ждёт решения» — число и слово не согласовывались (замечание аналитика
+ * 08.09.2026).
+ */
+const waitingLabel = (code: string): string => {
+  const n = cardsOnStep(code).length;
+  if (!n) return "формы решения не ждут";
+  const last = n % 10;
+  const tens = n % 100;
+  const word = tens >= 11 && tens <= 14 ? "форм" : last === 1 ? "форма" : last >= 2 && last <= 4 ? "формы" : "форм";
+  const verb = tens >= 11 && tens <= 14 ? "ждут" : last === 1 ? "ждёт" : "ждут";
+  return `${n} ${word} ${verb} решения`;
+};
+
+const cardsOnStep = (code: string) =>
+  cards.value.filter((c) => c.step_code === code && ["on_approval", "returned"].includes(c.status));
+
+/** Из попапа этапа — к листу согласования карточки: закрываем попап и раскрываем панель. */
+const openCardFromStage = (cardID: number) => {
+  stageModal.value = null;
+  openCard.value = cardID;
+  // Панель рендерится ниже таймлайна — без прокрутки человек её не заметит и
+  // решит, что кнопка «не сработала».
+  nextTick(() => {
+    document.querySelector(".cards-block")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+};
 const canReturn = (st: StageState) => st.status !== "pending";
 
 const depHint = (st: StageState): string => {
@@ -385,7 +581,11 @@ const returnTargets = (from: string) => list.value.filter((s) => s.stage_code !=
 // Формы/задания этапа — теперь через движок процесса (task-driven), а не старую
 // segment-форму. Кнопка ведёт в кокпит процесса с заданиями этапа.
 const stageForms = (code: string): Array<{ label: string; to: string }> => {
-  if (code === "1.1") {
+  // Ссылка нужна на КАЖДОМ этапе ввода, а не только на 1.1: задания есть и у 1.5,
+  // 2.1, 2.3, но попасть в них можно было только через общий экран процесса
+  // (найдено 07.09.2026). Признак — наличие заданий у этапа, а не список кодов:
+  // добавление шаблона на новый этап не должно требовать правки фронта.
+  if (!isApproval(code) && stageTasks(code).length) {
     return [{ label: "Задания этапа", to: `/plans/process/${id}` }];
   }
   return [];
@@ -424,23 +624,40 @@ const loadCards = async () => {
   cardsError.value = "";
   try {
     cards.value = await cardApi.cards(id);
+    await loadRoutes();
   } catch (e: unknown) {
     cards.value = [];
-    cardsError.value = e instanceof Error ? e.message : "Карточки форм недоступны";
+    cardsError.value = apiError(e, "Карточки форм недоступны");
   }
+};
+
+// Маршруты форм периода. Нужны таймлайну: в маршруте есть шаги, которых нет
+// среди этапов периода — прежде всего «Финансовый контролёр» (шаг `fin`,
+// включается данными). Пока его не было видно, форма, стоящая на финансисте,
+// выглядела как «этап 1.2 ждёт 1.1», и понять, у кого форма, было нельзя.
+const routes = ref<Record<string, RouteStep[]>>({});
+const loadRoutes = async () => {
+  const codes = [...new Set(cards.value.map((c) => c.form_code))];
+  const loaded = await Promise.all(
+    codes.map((code) => cardApi.formRoute(code).then((steps) => [code, steps] as const).catch(() => [code, []] as const))
+  );
+  routes.value = Object.fromEntries(loaded);
 };
 
 const load = async () => {
   error.value = "";
   try {
     list.value = await stages(id, year.value, month.value);
-    [svod.value, tasks.value] = await Promise.all([
-      mpSvod(year.value, month.value),
-      byInstance(id).catch(() => [])
+    // Карточки грузим ВМЕСТЕ с остальным, а не после: от них зависит вид плиток
+    // этапов (какие закрываются сами), и при загрузке в конце таймлайн на миг
+    // показывал кнопки, которых там быть не должно.
+    await Promise.all([
+      mpSvod(year.value, month.value).then((v) => (svod.value = v)),
+      byInstance(id).catch(() => []).then((v) => (tasks.value = v)),
+      loadCards()
     ]);
-    await loadCards();
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка загрузки";
+    error.value = apiError(e, "Ошибка загрузки");
   }
 };
 
@@ -450,7 +667,7 @@ const doAct = async (code: string, action: string) => {
   try {
     list.value = await stageAction(id, code, { action, year: year.value, month: month.value });
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка перехода";
+    error.value = apiError(e, "Ошибка перехода");
   } finally {
     busy.value = false;
   }
@@ -479,7 +696,7 @@ const submitReturn = async () => {
     await addComment(id, `Возврат ${ret.from} → ${ret.target}: ${ret.reason}`, `stage:${ret.from}`);
     ret.open = false;
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : "Ошибка возврата";
+    error.value = apiError(e, "Ошибка возврата");
   } finally {
     busy.value = false;
   }
@@ -489,6 +706,9 @@ onMounted(load);
 </script>
 
 <style scoped>
+/* Итоговые строки свода: тот же тон, что у шапки таблицы. */
+.tot-row td { background: var(--bg-tonal); font-weight: var(--fw-medium); }
+
 .segmented {
   display: inline-flex;
   gap: 2px;
@@ -526,6 +746,10 @@ onMounted(load);
 .timeline {
   padding: var(--sp-5);
   --tl-track: 150px;
+  /* Минимум колонки этапа. 150px не хватало на кнопку «К формам на решении»:
+     она вылезала за границу карточки. Колонка держит самую длинную кнопку
+     целиком, а лишнюю ширину забирает горизонтальная прокрутка .tl-scroll. */
+  --tl-col-min: 176px;
 }
 .tl-scroll {
   overflow-x: auto;
@@ -588,12 +812,14 @@ onMounted(load);
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
+  min-width: 0;
   background: var(--bg-surface-2);
   border-radius: var(--rd-4, 6px);
   padding: var(--sp-3);
   min-height: 56px;
 }
 .stage-card {
+  min-width: 0;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-left: 3px solid var(--border-strong);
@@ -631,6 +857,10 @@ onMounted(load);
   font-size: var(--fs-sm);
   color: var(--text-strong);
   line-height: var(--lh-tight);
+  /* Длинные названия этапов («Согласование руководителем подразделения»)
+     переносятся, а не выдавливают соседние элементы карточки. */
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .sc-tasks {
   display: flex;
@@ -651,8 +881,13 @@ onMounted(load);
   font-family: var(--font-mono);
   color: var(--text-secondary);
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
+  /* Текст плашки переносится по словам: в узкой колонке таймлайна он налезал
+     на соседние строки карточки. */
+  text-align: left;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .sct-count.ok { color: var(--pos-strong); }
 .sct-people {
@@ -669,6 +904,21 @@ onMounted(load);
 /* попап этапа */
 .sm-body { display: flex; flex-direction: column; gap: var(--sp-3); }
 .sm-empty { color: var(--text-muted); padding: var(--sp-4); text-align: center; }
+/* Этап согласования: объяснение + карточки, ожидающие решения на этом шаге. */
+.sm-appr { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-2) 0; }
+.sm-appr-txt { margin: 0; font-size: var(--fs-sm); color: var(--text-primary); }
+.sm-appr-txt.muted { color: var(--text-muted); }
+.sm-cards { display: flex; flex-direction: column; gap: var(--sp-2); }
+.sm-card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--rd-4);
+  background: var(--bg-surface);
+}
+.smc-title { flex: 1; font-size: var(--fs-sm); color: var(--text-strong); }
 .sm-tasks { display: flex; flex-direction: column; gap: var(--sp-3); max-height: 60vh; overflow-y: auto; }
 .sm-task {
   border: 1px solid var(--border);
@@ -697,6 +947,9 @@ onMounted(load);
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .sc-dep {
   color: var(--warn);
@@ -712,6 +965,23 @@ onMounted(load);
 .sc-actions {
   display: flex;
   gap: var(--sp-3);
+  /* Пара «Согласовать + Вернуть» в узкой колонке не помещалась в строку и
+     выходила за границу карточки — переносим на вторую строку. */
+  flex-wrap: wrap;
+}
+/* Базовая .btn — nowrap и фиксированная высота: длинная подпись не переносится
+   и вылезает наружу. В колонке таймлайна ширина задаётся сеткой, поэтому здесь
+   кнопке разрешено переносить текст и расти в высоту. */
+.sc-actions .btn {
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 28px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  white-space: normal;
+  text-align: left;
+  overflow-wrap: anywhere;
 }
 .sc-forms {
   display: flex;

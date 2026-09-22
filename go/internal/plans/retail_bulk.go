@@ -91,9 +91,10 @@ type RetailBulkRequest struct {
 	IndexBase string `json:"index_base"` // fact_prev_month (дефолт)|fact_prev_year|approved_prev|strategy
 
 	// --- payroll ---
-	// PayrollBase — база для ограничения ФОТ. Дефолт — план продаж текущего
-	// месяца (ответ финблока §12 п.12); остальные варианты — совместимость.
-	PayrollBase string `json:"payroll_base"` // plan_current_month|strategy|fact_prev_year|approved_prev
+	// PayrollBase — база для ограничения ФОТ. Дефолт — СТРАТЕГИЯ того же месяца
+	// (правка 08.09.2026 п. 20); plan_current_month — прежний дефолт (ответ
+	// финблока 27.08.2026), оставлен для утверждённых по нему периодов.
+	PayrollBase string `json:"payroll_base"` // strategy (дефолт)|plan_current_month|fact_prev_year|approved_prev
 
 	// --- rent ---
 	// RentTurnover — считать оборотную часть аренды. По ответу финблока
@@ -177,10 +178,12 @@ func ApplyRetailBulk(req RetailBulkRequest, ctx RetailBulkContext) (RetailBulkRe
 		err = bulkDistribute(&res, req, ctx, rows, months)
 	case BulkSalesIndex:
 		err = bulkSalesIndex(&res, req, ctx, rows, months)
-	case BulkPayroll:
-		err = bulkPayroll(&res, req, ctx, rows, months)
-	case BulkRent:
-		err = bulkRent(&res, req, ctx, rows, months)
+	case BulkPayroll, BulkRent:
+		// Ответ 35 (10.09.2026): расчёт ФОТ от продаж и аренда выполняются на
+		// этапе 1.5. Формулы оставлены в коде — их переиспользует форма 1.5, —
+		// но точка входа из формы продаж закрыта: иначе две формы считали бы
+		// одни статьи и писали их в один приёмник.
+		return res, fmt.Errorf("операция %q переехала на этап 1.5 «Расходы ЦП»", req.Op)
 	default:
 		return res, fmt.Errorf("неизвестная массовая операция %q", req.Op)
 	}
@@ -611,19 +614,25 @@ func retailLastClosedMonths(ctx RetailBulkContext, n int) [][2]int {
 	return out
 }
 
-// payrollLimitBase — «База_для_ограничения» ФОТ. По ответу финблока (§12 п.12)
-// дефолт — план продаж ТЕКУЩЕГО месяца; прежние варианты оставлены для
-// периодов, утверждённых до ответа, и выбираются полем запроса.
+// payrollLimitBase — «База_для_ограничения» ФОТ.
+//
+// Дефолт — СТРАТЕГИЯ того же месяца (правка 08.09.2026 п. 20: «база ограничения —
+// план стратегия того же месяца»). Прежний дефолт «план продаж текущего месяца»
+// (ответ финблока 27.08.2026) остался отдельным вариантом: периоды, утверждённые
+// до правки, считались им, и молча пересчитывать их нельзя.
+//
+// Стратегии по магазину нет — ограничение не применяется вовсе (правка п. 20):
+// ФОТ считается от тактики, а строка помечается «порог не применён».
 func payrollLimitBase(kind string, ctx RetailBulkContext, row RetailRow, month int) (float64, bool) {
 	switch kind {
-	case "", PayrollBasePlanCurrent:
+	case "", IndexBaseStrategy:
+		v, ok := ctx.Series.Strategy[RetailCellKey{row.CodeCFO, ctx.Year, month}]
+		return v, ok
+	case PayrollBasePlanCurrent:
 		if plan := row.valueOf(ctx.Year, month); plan != nil {
 			return *plan, true
 		}
 		return 0, false
-	case IndexBaseStrategy:
-		v, ok := ctx.Series.Strategy[RetailCellKey{row.CodeCFO, ctx.Year, month}]
-		return v, ok
 	case IndexBaseFactPrevYear:
 		return retailFactAt(ctx.Series, row.CodeCFO, ctx.Year-1, month)
 	case IndexBaseApprovedPrev:

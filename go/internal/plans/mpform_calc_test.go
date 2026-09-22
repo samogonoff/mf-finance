@@ -22,7 +22,7 @@ func TestComputeMpPlatform_AnalystExample(t *testing.T) {
 		BShipments:         50,
 		BCogsTotal:         55,
 	}
-	out := computeMpPlatform(in, 0.20)
+	out := computeMpPlatform(in, vatBasisFromRate(0.20))
 
 	approx(t, "менеджер без НДС", out[BSalesManagerNet], 100)
 	approx(t, "площадка с НДС", out[BSalesPlatGross], 102)
@@ -47,17 +47,20 @@ func TestComputeMpPlatform_DirectCostsAndPL(t *testing.T) {
 		BCostAcquiring:     2,
 		BCostPenalties:     3,
 	}
-	out := computeMpPlatform(in, 0.20)
+	out := computeMpPlatform(in, vatBasisFromRate(0.20))
 
 	// Итого прямые = комиссия 15 + 10 + 2 + 3 = 30.
 	approx(t, "прямые затраты", out[BPlatformCosts], 30)
-	// PL = маржа gross 30 − прямые 30 = 0.
-	approx(t, "PL по площадке", out[BPlPlatform], 0)
+	// PL по правке ТЗ МП §21 = площадка без НДС 85 − СС отпускная 50 − статьи 15
+	// (комиссия в PL не вычитается: цена площадки уже за вычетом СПП).
+	approx(t, "PL по площадке", out[BPlPlatform], 20)
+	// PL от себестоимости ОБЩЕЙ = 85 − 55 − 15.
+	approx(t, "PL от себестоимости общей", out[BPlPlatformTotalCost], 15)
 }
 
 // Нулевые знаменатели не роняют расчёт и дают 0.
 func TestComputeMpPlatform_ZeroSafe(t *testing.T) {
-	out := computeMpPlatform(map[string]float64{}, 0.20)
+	out := computeMpPlatform(map[string]float64{}, vatBasisFromRate(0.20))
 	approx(t, "наценка% при 0", out[BMarkup], 0)
 	approx(t, "маржинальность% при 0", out[BRetailMarginPct], 0)
 	approx(t, "PL% при 0", out[BPlPlatformPct], 0)

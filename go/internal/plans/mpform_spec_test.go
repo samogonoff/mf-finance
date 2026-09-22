@@ -80,7 +80,7 @@ func TestCascades_AgreeOnSalesAndCommission(t *testing.T) {
 		BSPP:               cond.SppPct,
 		BShipments:         inv[BShipments],
 		BCogsTotal:         inv[BCogsTotal],
-	}, cond.VatRate)
+	}, vatBasisFromRate(cond.VatRate))
 
 	approxMoney(t, "продажи без НДС", leg[BSalesManagerNet], inv[BSalesManagerNet])
 	approxMoney(t, "цена площадки без НДС", leg[BSalesPlatNet], inv[BSalesPlatNet])

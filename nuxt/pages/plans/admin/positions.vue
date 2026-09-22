@@ -155,6 +155,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import { useJobPositions, type JobPosition } from "~/composables/useJobPositions";
 import { usePlansRights, type Deputy } from "~/composables/usePlansRights";
 import { useDirectories } from "~/composables/useDirectories";
@@ -202,7 +203,7 @@ const byKind = (k: string) => positions.value.filter((p) => p.kind === k);
 const stageDepsFor = (holderId: number | null) => holderId ? deputies.value.filter((d) => d.principal_user_id === holderId && d.stage_code !== "") : [];
 const globalDepName = (holderId: number | null) => holderId ? (deputies.value.find((d) => d.principal_user_id === holderId && d.stage_code === "")?.deputy_name ?? "") : "";
 
-const errMsg = (e: unknown) => (e instanceof Error ? e.message : "Ошибка");
+const errMsg = (e: unknown) => (apiError(e, "Ошибка"));
 const load = async () => {
   try {
     [positions.value, deputies.value] = await Promise.all([api.list(), rights.deputies()]);

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,9 @@ type RetailService struct {
 	scope    ScopeStore
 	audit    AuditSink
 	limits   map[string]float64 // V-02: верхняя граница значения по стране
+	// reconBlocking — запрещать ли отправку при несошедшейся сверке V-05.
+	// По умолчанию false (решение 08.09.2026), включается ENV.
+	reconBlocking bool
 
 	// Кэш срезов факта/стратегии/истории: сетка на 375 магазинов дёргает срезы
 	// на каждый запрос, а источники суточные. Ключ — (страна, год периода).
@@ -67,6 +71,12 @@ func (s *RetailService) WithScope(st ScopeStore) *RetailService { s.scope = st; 
 func (s *RetailService) WithAudit(a AuditSink) *RetailService { s.audit = a; return s }
 
 // WithValueLimits задаёт верхние границы значения ячейки по стране (V-02).
+// WithReconBlocking возвращает запрет отправки при несошедшейся сверке V-05.
+func (s *RetailService) WithReconBlocking(v bool) *RetailService {
+	s.reconBlocking = v
+	return s
+}
+
 func (s *RetailService) WithValueLimits(m map[string]float64) *RetailService {
 	if m != nil {
 		s.limits = m
@@ -99,6 +109,11 @@ func (s *RetailService) access(ctx context.Context, cardID int64, p Principal) (
 		return a, fmt.Errorf("карточка %d — форма %s, а не розница", cardID, c.FormCode)
 	}
 	a.card = c
+	// Право финансиста (переопределение LFL-статуса §3, правка расчётных статей и
+	// массовые операции) — у админа процессов и у того, кому ЯВНО выдан шаг
+	// финансового контролёра в правах-срезах. Раньше это был только админ, и на
+	// включённом шаге «Финансист» его владелец мог согласовать форму, но не мог
+	// сделать то, за что отвечает.
 	a.finance = p.PlansAdmin
 
 	if s.scope != nil {
@@ -112,6 +127,9 @@ func (s *RetailService) access(ctx context.Context, cardID int64, p Principal) (
 	}
 	if !a.filter.AllowsCard(c) {
 		return a, errors.New("карточка вне вашего среза доступа")
+	}
+	if !a.finance && a.filter.HasExplicitStep(StepFinCode) {
+		a.finance = true
 	}
 	if mgrs, err := s.repo.RegManagers(ctx, p.UserID); err != nil {
 		log.Printf("plans retail: соответствие РМ для пользователя %d не прочитано: %v", p.UserID, err)
@@ -293,13 +311,60 @@ func (s *RetailService) Form(ctx context.Context, p Principal, cardID int64, cur
 		StepCode: a.card.StepCode, Params: params, Warnings: blocking, FxRate: 1,
 	}
 	// Слой отображения: пересчёт денежных величин, проценты те же (ТЗ §4).
+	// Курс не один: у тактики он свой — курс предыдущего месяца (см. retailFx).
 	if cur := normalizeDisplayCurrency(currency); cur != "" && cur != a.inst.Currency && s.rates != nil {
-		rate := s.rates.Convert(ctx, 1, a.inst.Currency, cur, a.card.Year, a.card.Month)
-		form.Currency, form.FxRate = cur, rate
-		visible = ConvertRetailRows(visible, rate)
+		fx := s.retailFx(ctx, a.inst.Currency, cur, a.card.Year, a.card.Month)
+		form.Currency, form.FxRate = cur, fx.Tactic
+		form.FxRates = &fx
+		visible = ConvertRetailRows(visible, fx)
 	}
 	form.Rows = visible
+	// Подсказка по аренде: факт предыдущего месяца по тому же ЦФО (правка ТЗ §30
+	// и часть 1). Именно ПОДСКАЗКА, а не подстановка: реестра договоров в базах
+	// нет (поиск по 67 базам, включая Diadoc и Procurement, не дал совпадений),
+	// этап 2 расчёта по договору отменён, и значение вводит финансист.
+	form.Hints = s.rentHints(ctx, a)
 	return form, nil
+}
+
+// rentHints — факт аренды предыдущего месяца по магазинам (справочно).
+// Недоступность источника подсказок не мешает открыть форму: без подсказки поле
+// остаётся полем ввода, и это рабочее состояние, а не ошибка.
+func (s *RetailService) rentHints(ctx context.Context, a retailAccess) []FieldHint {
+	py, pm := retailPrevMonth(a.card.Year, a.card.Month)
+	out := []FieldHint{}
+	// Ответ 35: аренда заводится на этапе 1.5, и подсказка по ней здесь больше
+	// не нужна — поля, к которому она относится, в форме нет.
+	for _, m := range []struct {
+		metric string
+		label  string
+	}{} {
+		prev, err := s.repo.PrevMetric(ctx, a.card.Country, m.metric, py, pm)
+		if err != nil {
+			log.Printf("plans retail: подсказка по аренде (%s) недоступна: %v", m.metric, err)
+			continue
+		}
+		for cfo, v := range prev {
+			if v == 0 {
+				continue
+			}
+			out = append(out, FieldHint{
+				Kind: HintRentPrev, CodeCFO: cfo, BlockType: m.metric, Value: v,
+				Source: fmt.Sprintf("факт %s за %04d-%02d по тому же ЦФО", m.label, py, pm),
+				Note:   "справочно: реестра договоров аренды в базах нет, значение вводится",
+				AsOf:   fmt.Sprintf("%04d-%02d", py, pm),
+			})
+		}
+	}
+	// Порядок стабильный: подсказки идут в ответе рядом со строками, и «прыгающий»
+	// список читается как изменение данных.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CodeCFO != out[j].CodeCFO {
+			return out[i].CodeCFO < out[j].CodeCFO
+		}
+		return out[i].BlockType < out[j].BlockType
+	})
+	return out
 }
 
 // normalizeDisplayCurrency — допустимые валюты отображения (ТЗ §4, §8).
@@ -389,8 +454,14 @@ func (s *RetailService) SaveForm(ctx context.Context, p Principal, cardID int64,
 		if c.Metric == "" {
 			c.Metric = MetricSales
 		}
-		if c.Metric != MetricSales && !a.finance {
-			return RetailForm{}, errors.New("статьи ФОТ и аренды правит финансист, а не заполняющий")
+		if RetailMetricMoved(c.Metric) {
+			// Ответ 35 (10.09.2026): ФОТ и аренда заводятся на этапе 1.5.
+			return RetailForm{}, errors.New("ФОТ и аренда переехали на этап 1.5 «Расходы ЦП» — заводите их там")
+		}
+		if !RetailMetricKnown(c.Metric) {
+			// Неизвестная метрика в tp_value не находится ни отчётом, ни массовой
+			// операцией — отклоняем на входе, а не «сохраним, разберёмся потом».
+			return RetailForm{}, fmt.Errorf("неизвестная метрика %q", c.Metric)
 		}
 		if c.Year == 0 {
 			c.Year = a.card.Year
@@ -629,12 +700,12 @@ func (s *RetailService) Summary(ctx context.Context, p Principal, cardID int64) 
 	in := RetailSummaryInput{
 		CardID: cardID, Country: a.card.Country, NatCurrency: a.inst.Currency,
 		Year: a.card.Year, Month: a.card.Month, PlanMonths: retailPlanMonths(a.card.Month),
-		Rows: visible, Series: ser, FxRates: map[string]float64{},
+		Rows: visible, Series: ser, FxRates: map[string]RetailFxRates{},
 		DirectoryActiveCount: -1,
 	}
 	if s.rates != nil {
 		for _, cur := range []string{"BYN", "USD"} {
-			in.FxRates[cur] = s.rates.Convert(ctx, 1, a.inst.Currency, cur, a.card.Year, a.card.Month)
+			in.FxRates[cur] = s.retailFx(ctx, a.inst.Currency, cur, a.card.Year, a.card.Month)
 		}
 	}
 	// Сверка §7 №2: итог факта из источника за тот же период. Считаем по срезу
@@ -686,12 +757,21 @@ func (s *RetailService) Validate(ctx context.Context, p Principal, cardID int64)
 	if err != nil {
 		return RetailValidationReport{}, err
 	}
-	// V-05: несошедшаяся контрольная сверка — блокирующее замечание, а не просто
-	// красный блок в своде. Иначе форму можно было бы отправить с расхождением.
-	blocking = append(blocking, ReconciliationIssues(sum.Reconciliations)...)
+	// V-05: несошедшаяся контрольная сверка. По умолчанию это ПРЕДУПРЕЖДЕНИЕ
+	// (см. ReconciliationIssues): запрет отправки останавливал работу, пока
+	// расхождение факта ищут в данных. PLANS_RETAIL_RECON_BLOCKING=1 возвращает
+	// прежнее поведение.
+	for _, iss := range ReconciliationIssues(sum.Reconciliations, s.reconBlocking) {
+		if iss.Blocking {
+			blocking = append(blocking, iss)
+		} else {
+			warnings = append(warnings, iss)
+		}
+	}
 	return RetailValidationReport{
 		CardID: cardID, Blocking: blocking, Warnings: warnings,
-		CanSubmit: len(blocking) == 0, Reconciliations: sum.Reconciliations,
+		CanSubmit: len(blocking) == 0 || !s.submitStrict(),
+		Strict:    s.submitStrict(), Reconciliations: sum.Reconciliations,
 	}, nil
 }
 
@@ -703,4 +783,36 @@ func (s *RetailService) rec(ctx context.Context, userID int64, action string, ca
 	_ = s.audit.Record(ctx, AuditEvent{
 		UserID: userID, Action: action, EntityType: "form_card", EntityID: cardID,
 	})
+}
+
+// retailFx — курсы отображения формы розницы по назначению колонки.
+//
+// Ключевая величина — курс ТАКТИКИ: в файле ТО он равен курсу факта ПРЕДЫДУЩЕГО
+// месяца (`Июн_26!V2 = Май_26!W2`, для июня 2026 — 2,7806), а вовсе не плановым
+// 3,2, которые стоят в соседней колонке под подписью «план 26». Кабинет до
+// 07.09.2026 пересчитывал всё справочными 3,2 и 0,0376, и суммы в BYN и USD
+// расходились с файлом, причём незаметно для глаза.
+//
+// Факт пересчитывается курсом своего месяца, стратегия — сценарным «плановым»
+// курсом (пока сценарий не наполнен, справочник отдаёт общую строку — это и есть
+// прежнее поведение; продление таблицы курсов на 2026 — вопрос 27
+// docs/reports/plans/open-questions.md).
+func (s *RetailService) retailFx(ctx context.Context, nat, display string, year, month int) RetailFxRates {
+	conv := func(y, m int, scenario string) float64 {
+		return s.rates.ConvertFor(ctx, 1, nat, display, y, m, scenario)
+	}
+	prevY, prevM := prevMonth(year, month)
+	return RetailFxRates{
+		Tactic:       conv(prevY, prevM, FxScenarioFact),
+		FactCurrent:  conv(year, month, FxScenarioFact),
+		FactPrevYear: conv(year-1, month, FxScenarioFact),
+		Strategy:     conv(year, month, FxScenarioPlan),
+	}
+}
+
+// submitStrict — жёсткий ли режим гейта отправки (ответ 41 от 10.09.2026).
+// Режим живёт в оболочке процесса: гейт и отчёт валидаций обязаны отвечать
+// одинаково, иначе кнопка и плашка над ней разойдутся.
+func (s *RetailService) submitStrict() bool {
+	return s.cards != nil && s.cards.SubmitStrict()
 }

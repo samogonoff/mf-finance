@@ -66,6 +66,10 @@
       </div>
     </div>
 
+    <p v-if="card && softWarning" class="cpp-soft">
+      <Icon name="lucide:triangle-alert" /> {{ softWarning }}
+    </p>
+
     <!-- ===== Действия по статусу ===== -->
     <div v-if="card" class="cpp-actions">
       <button
@@ -120,6 +124,9 @@
           Публикация — {{ pub.mode === "write" ? "запись" : "предпросмотр (ничего не записано)" }}
         </span>
         <span class="badge" :class="pubBadge">{{ pubStatus }}</span>
+        <!-- Песочница обязана быть видна: «опубликовано» в PG и «опубликовано» в
+             Budgeting — разные события, путать их нельзя. -->
+        <span v-if="pub.sandbox" class="badge badge-warn">песочница</span>
         <span v-if="pub.target" class="pub-target">приёмник: {{ pub.target }}</span>
       </div>
       <div class="pub-grid">
@@ -131,6 +138,44 @@
         <div class="pub-cell"><span class="pub-lbl">Расхождение</span><span class="pub-val" :class="pub.diff === 0 ? 'ok' : 'bad'">{{ num(pub.diff, 2) }}</span></div>
       </div>
       <p v-if="pub.error" class="cpp-banner neg">{{ pub.error }}</p>
+
+      <div v-if="pub.sandbox" class="pub-list warn">
+        <!-- В dry-run в песочницу ничего не пишется: сверка идёт с ней же, и путать
+             это с записью нельзя — отсюда разные подписи по режиму. -->
+        <span class="pl-title">
+          <Icon name="lucide:flask-conical" />
+          {{ pub.mode === "write" ? "Записано в песочницу, не в Budgeting" : "Сверка идёт с песочницей, не с Budgeting" }}
+        </span>
+        <span class="pl-hint">
+          Включён PLANS_PUBLISH_SANDBOX=1: приёмник изображает таблица publish_sandbox в БД finance.
+          <template v-if="pub.mode === 'write'">
+            Путь записи прогнан целиком (транзакция, контроль сумм, идемпотентность), но во внешнем
+            контуре плана НЕТ. Карточка при этом переходит в «опубликовано».
+          </template>
+          <template v-else>
+            «Σ в приёмнике» прочитана из песочницы — это проверка функционала, а не состояние Budgeting.
+          </template>
+        </span>
+        <button v-if="isPlansAdmin" class="btn btn-sm btn-ghost" :disabled="busy" @click="loadSandbox">
+          <Icon name="lucide:table-2" /> {{ sbx.rows.length ? "Обновить записанное" : "Показать записанное" }}
+        </button>
+        <table v-if="sbx.rows.length" class="data-table compact sbx-table">
+          <thead>
+            <tr><th>Параметр</th><th>Страна</th><th class="col-num">КодЦФО</th><th class="col-num">КодPL</th><th>Дата</th><th class="col-num">Значение</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(r, i) in sbx.rows" :key="'sb' + i">
+              <td>{{ r.param }}</td>
+              <td>{{ r.country || "—" }}</td>
+              <td class="col-num">{{ r.code_cfo }}</td>
+              <td class="col-num">{{ r.code_pl }}</td>
+              <td class="dt-cell">{{ r.date?.slice(0, 7) }}</td>
+              <td class="col-num">{{ num(r.value, 2) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <span v-if="sbx.loaded && !sbx.rows.length" class="pl-hint">Песочница пуста.</span>
+      </div>
 
       <div v-if="pub.pending?.length" class="pub-list warn">
         <span class="pl-title"><Icon name="lucide:clock" /> Ожидает подтверждения BI ({{ pub.pending.length }})</span>
@@ -151,6 +196,11 @@
       </button>
       <button class="tb" :class="{ active: tab === 'versions' }" @click="tab = 'versions'">
         Версии <span class="tb-n">{{ versions.length }}</span>
+      </button>
+      <!-- Журнал публикаций отвечает на вопрос «опубликовал — и что дальше»:
+           видно, куда ушли строки, сколько записано и сошёлся ли контроль сумм. -->
+      <button class="tb" :class="{ active: tab === 'publog' }" @click="tab = 'publog'">
+        Публикации <span class="tb-n">{{ pubLog.length }}</span>
       </button>
     </div>
 
@@ -198,6 +248,38 @@
         </tbody>
       </table>
       <p v-else class="cpp-empty">Версий нет: снимок пишется при каждом переходе по маршруту.</p>
+    </div>
+
+    <div v-if="card && tab === 'publog'" class="cpp-pane">
+      <table v-if="pubLog.length" class="data-table compact">
+        <thead>
+          <tr>
+            <th>Когда</th><th>Режим</th><th>Приёмник</th><th>Статус</th>
+            <th class="col-num">Строк</th><th class="col-num">Записано</th>
+            <th class="col-num">Расхождение</th><th>Комментарий</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="p in pubLog" :key="p.id">
+            <td class="dt-cell">{{ dt(p.started_at) }}</td>
+            <td>{{ p.mode === "write" ? "запись" : "предпросмотр" }}</td>
+            <td class="tgt-cell">
+              {{ p.target || "—" }}
+              <span v-if="p.sandbox" class="badge badge-warn">песочница</span>
+            </td>
+            <td><span class="badge" :class="pubLogTone(p.status)">{{ pubLogStatus(p.status) }}</span></td>
+            <td class="col-num">{{ num(p.rows_total) }}</td>
+            <td class="col-num">{{ num(p.rows_written) }}</td>
+            <!-- Контроль ТЗ §28.5: расхождение обязано быть нулём. -->
+            <td class="col-num" :class="p.diff === 0 ? 'ok' : 'bad'">{{ num(p.diff, 2) }}</td>
+            <td class="cm-cell">{{ p.error || "—" }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="cpp-empty">
+        Публикаций не было. Предпросмотр можно запустить на любом шаге — он ничего не пишет
+        и показывает, что и куда ушло бы.
+      </p>
     </div>
 
     <!-- ===== Модалка возврата ===== -->
@@ -264,6 +346,7 @@
 </template>
 
 <script setup lang="ts">
+import { apiError } from "~/utils/apiError";
 import PlansModal from "~/components/plans/PlansModal.vue";
 import {
   useMpConditions,
@@ -271,7 +354,9 @@ import {
   type RouteStep,
   type CardApproval,
   type CardVersion,
-  type PublishResult
+  type PublishResult,
+  type PublishLogItem,
+  type SandboxRow
 } from "~/composables/useMpConditions";
 import { num } from "~/utils/format";
 
@@ -282,6 +367,14 @@ const props = withDefaults(
     canSubmit?: boolean;
     /** Чем именно заблокирована отправка — показываем рядом с кнопкой. */
     submitHint?: string;
+    /**
+     * Плашка мягкого режима (ответ аналитика 41 от 10.09.2026): «свод не
+     * сходится» с суммой расхождения. Показывается и заполняющему рядом с
+     * кнопкой отправки, и согласующему на следующем шаге — оба пункта ответа
+     * обязательны, поэтому плашка живёт в общей оболочке процесса, а не в
+     * шаблоне отдельной формы.
+     */
+    softWarning?: string;
   }>(),
   { canSubmit: true, submitHint: "" }
 );
@@ -296,7 +389,14 @@ const route = ref<RouteStep[]>([]);
 const approvals = ref<CardApproval[]>([]);
 const versions = ref<CardVersion[]>([]);
 const pub = ref<PublishResult | null>(null);
-const tab = ref<"approvals" | "versions">("approvals");
+const tab = ref<"approvals" | "versions" | "publog">("approvals");
+const pubLog = ref<PublishLogItem[]>([]);
+
+/** Метки журнала публикаций: «ok/blocked/failed» человеку ничего не говорят. */
+const pubLogStatus = (s: string) =>
+  s === "ok" ? "успешно" : s === "blocked" ? "не выполнено" : "ошибка";
+const pubLogTone = (s: string) =>
+  s === "ok" ? "badge-pos" : s === "blocked" ? "badge-warn" : "badge-neg";
 const loading = ref(true);
 const busy = ref(false);
 const error = ref("");
@@ -304,6 +404,8 @@ const note = ref("");
 const ret = reactive({ open: false, target: "", comment: "" });
 const reopen = reactive({ open: false, comment: "" });
 const ver = reactive({ open: false, no: 0, text: "" });
+// Содержимое песочницы приёмника — доказательство записи (а не «что собирались отправить»).
+const sbx = reactive({ rows: [] as SandboxRow[], loaded: false });
 
 // Порядок шагов — только включённые: выключенный «Финансист» не должен занимать
 // место в цепочке и мешать выбору шага возврата (ТЗ §2.1 — маршрут это данные).
@@ -404,13 +506,6 @@ const dt = (s?: string) => {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
 };
 
-const errText = (e: unknown, fallback: string): string => {
-  if (typeof e === "object" && e && "data" in e) {
-    const d = (e as { data?: { error?: string } }).data;
-    if (d?.error) return d.error;
-  }
-  return e instanceof Error ? e.message : fallback;
-};
 
 const load = async () => {
   loading.value = true;
@@ -421,8 +516,16 @@ const load = async () => {
     route.value = v.route || [];
     approvals.value = v.approvals || [];
     versions.value = v.versions || [];
+    // Журнал публикаций — часть состояния карточки, а не отдельный экран:
+    // «опубликовал и что дальше» должно быть видно там же, где кнопка публикации.
+    // Его недоступность не должна ломать загрузку карточки.
+    try {
+      pubLog.value = await api.publishLog(props.cardId);
+    } catch {
+      pubLog.value = [];
+    }
   } catch (e: unknown) {
-    error.value = errText(e, "Не удалось загрузить карточку процесса");
+    error.value = apiError(e, "Не удалось загрузить карточку процесса");
   } finally {
     loading.value = false;
   }
@@ -446,7 +549,7 @@ const act = async (action: string, target = "", comment = "") => {
     note.value = ACTION_NOTE[action] || "Состояние карточки обновлено.";
     await load();
   } catch (e: unknown) {
-    error.value = errText(e, "Переход не выполнен");
+    error.value = apiError(e, "Переход не выполнен");
   } finally {
     busy.value = false;
   }
@@ -479,7 +582,20 @@ const doPublish = async (mode: "dry_run" | "write") => {
     pub.value = await api.publish(props.cardId, mode);
     if (mode === "write") await load();
   } catch (e: unknown) {
-    error.value = errText(e, "Публикация не выполнена");
+    error.value = apiError(e, "Публикация не выполнена");
+  } finally {
+    busy.value = false;
+  }
+};
+
+const loadSandbox = async () => {
+  busy.value = true;
+  error.value = "";
+  try {
+    sbx.rows = await api.publishSandbox(pub.value?.target || "", 50);
+    sbx.loaded = true;
+  } catch (e: unknown) {
+    error.value = apiError(e, "Песочница приёмника недоступна");
   } finally {
     busy.value = false;
   }
@@ -493,7 +609,7 @@ const openVersion = async (no: number) => {
     ver.text = JSON.stringify(payload, null, 2);
     ver.open = true;
   } catch (e: unknown) {
-    error.value = errText(e, "Снимок версии недоступен");
+    error.value = apiError(e, "Снимок версии недоступен");
   } finally {
     busy.value = false;
   }
@@ -561,6 +677,17 @@ defineExpose({ reload: load });
 .cpp-actions { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
 .cpp-sep { flex: 1; }
 .cpp-hint { font-size: var(--fs-2xs); color: var(--warn); }
+.cpp-soft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--rd-4);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--fs-sm);
+}
 
 .cpp-pub {
   border: 1px solid var(--border);
@@ -585,6 +712,9 @@ defineExpose({ reload: load });
 .pl-title { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
 .pl-hint { font-size: var(--fs-2xs); opacity: 0.85; }
 .pub-list ul { margin: var(--sp-2) 0 0; padding-left: var(--sp-6); font-size: var(--fs-2xs); font-family: var(--font-mono); }
+/* Срез песочницы — служебный, поэтому компактный и с собственным отступом. */
+.pub-list .btn { align-self: flex-start; margin-top: var(--sp-2); }
+.sbx-table { margin-top: var(--sp-2); background: var(--bg-surface); color: var(--text-primary); }
 
 .cpp-tabs { display: flex; gap: var(--sp-2); border-bottom: 1px solid var(--border); }
 .tb {
@@ -601,6 +731,9 @@ defineExpose({ reload: load });
 .cpp-pane { overflow-x: auto; }
 .cpp-empty { font-size: var(--fs-sm); color: var(--text-muted); padding: var(--sp-4); margin: 0; }
 .cm-cell { max-width: 320px; font-size: var(--fs-sm); }
+/* Журнал публикаций: имя приёмника длинное, поэтому моно и с бейджем песочницы. */
+.tgt-cell { font-family: var(--font-mono); font-size: var(--fs-2xs); white-space: nowrap; }
+.tgt-cell .badge { margin-left: 4px; }
 .dt-cell { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-secondary); white-space: nowrap; }
 .revoked td { text-decoration: line-through; color: var(--text-muted); }
 .rv-note { display: block; font-size: var(--fs-2xs); color: var(--neg); text-decoration: none; }

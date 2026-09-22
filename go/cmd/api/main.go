@@ -235,7 +235,19 @@ func main() {
 	// Тактические планы (VS0 каркас + VS1 справочники + VS2 факт МП).
 	// docs/reports/plans/SPEC.md. Факт: PLANS_MOCK=1 → фикстуры; иначе online
 	// FinDWH (переиспользуем mssqlDB ВГО-отчёта; при nil — fallback на mock).
-	plansFact := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactTable, cfg.PlansMpPlanTable, cfg.PlansMpTaktTable, cfg.PlansMpPenaltyView)
+	// Факт МП: форма читает СНИМОК, а не OLAP вживую (правка ТЗ 02.09.2026 МП §12).
+	// Причина — больше двухсот процедур DWH/FinDWH/MP перезаливают таблицы через
+	// TRUNCATE, и в динамике суммы плавают: согласующий увидел бы не то, что
+	// заполняющий. Снимок питается регламентом (раз в сутки) и ручкой админа.
+	// PLANS_FACT_SNAPSHOT=0 — аварийный откат на прямое чтение источника.
+	plansFactOrigin := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactTable, cfg.PlansMpPlanTable, cfg.PlansMpTaktTable, cfg.PlansMpPenaltyView)
+	plansFactSnap := plans.NewMpFactSnapshot(pool, plansFactOrigin)
+	plansFact := plansFactOrigin
+	if cfg.PlansFactSnapshot {
+		plansFact = plans.NewSnapshotFactSource(plansFactSnap)
+		plans.NewSnapshotRefresher(plansFactSnap, []string{"large", "small"},
+			time.Duration(cfg.PlansFactSnapshotInterval)*time.Second).Start(context.Background())
+	}
 	plansScope := plans.NewPgScopeStore(pool)
 	plansStore := plans.NewPgStore(pool)
 	plansCalendar := plans.NewCalendarStore(pool)
@@ -273,7 +285,6 @@ func main() {
 		StoreTable:       cfg.PlansRetailStoreTable,
 		StoreGroup:       cfg.PlansRetailStoreGroup,
 		FactTable:        cfg.PlansRetailFactTable,
-		FactColumns:      cfg.PlansRetailFactColumns,
 		StrategyTable:    cfg.PlansRetailStrategyTable,
 		StrategyGroup:    cfg.PlansRetailStrategyGroup,
 		PlanHistTable:    cfg.PlansRetailPlanHistTable,
@@ -282,8 +293,23 @@ func main() {
 	// Справочник магазинов розницы синхронизируется общим движком (версионирование
 	// строк, раз в сутки + кнопка) — ТЗ Розница §11. Провайдер регистрируется ДО
 	// Start: после старта фоновой синхронизации карту провайдеров не меняем.
+	plansMpHints := plans.MpHintTables{
+		SppAnalysisTable: cfg.PlansMpSppTable,
+		SalesTable:       cfg.PlansMpSalesTable,
+		PenaltyTable:     cfg.PlansMpPenaltyTable,
+	}
+	// Справочник статей PL синхронизируется из Budgeting.dbo.CodePL: кроме подписей
+	// он несёт нормативный НДС по странам (правки ТЗ 02.09.2026, часть 5).
+	// Без MSSQL провайдер вернёт ошибку синхронизации, а справочник останется на
+	// сиде — форма от этого не падает.
 	plansProviders := append(plans.BuildProviders(cfg.LisaMock, lisa),
-		plans.NewRetailStoreProvider(plansRetailSource))
+		plans.NewRetailStoreProvider(plansRetailSource).WithScopeSource(plansDir),
+		plans.NewPLLineProvider(mssqlDB, plans.PLLineTables{CodePLTable: cfg.PlansCodePLTable}),
+		// Подсказки к полям ввода МП (%СПП и штрафы): считаются регламентом раз в
+		// сутки тем же движком синхронизации — история цен слишком велика, чтобы
+		// считать подсказку в момент открытия формы (правки ТЗ МП §9/§14).
+		plans.NewSppHintProvider(mssqlDB, plansMpHints),
+		plans.NewPenaltyHintProvider(mssqlDB, plansMpHints))
 	plansSyncer := plans.NewSyncer(pool, plansProviders, plansCache)
 	plansPositions := plans.NewPositionStore(pool)
 	plansUsers := plans.NewUsersStore(pool)
@@ -294,8 +320,13 @@ func main() {
 	plansH.SetJobPositions(plans.NewJobPositionStore(pool))
 	// Уведомления участникам заданий идут в общий поток кабинета (колокольчик +
 	// опциональное дублирование в B24) — тот же notifSvc, что у баг-трекера.
-	plansTasks := plans.NewTaskStore(pool, plansFact).WithNotifier(notifSvc)
+	plansTasks := plans.NewTaskStore(pool, plansFact).WithNotifier(notifSvc).
+		// Подсказки показываются РЯДОМ с полями ввода и в значения не попадают
+		// (правки ТЗ 02.09.2026, часть 1).
+		WithHints(plans.NewHintSource(plansDir)).
+		WithFactSnapshot(plansFactSnap)
 	plansH.SetTaskStore(plansTasks)
+	plansH.SetFactSnapshot(plansFactSnap)
 	// Фоновая синхронизация + прогрев кэша (DIR-03). Интервал из PLANS_SYNC_INTERVAL.
 	plansSyncer.Start(context.Background(), time.Duration(cfg.PlansSyncInterval)*time.Second)
 
@@ -305,18 +336,53 @@ func main() {
 	plansRates := plans.NewRateBook(plansDir)
 	// Публикация: пишем только в таблицы из белого списка PLANS_PUBLISH_TARGETS и
 	// только когда PLANS_PUBLISH_ENABLED=1 (до ответов BI по §12 — лишь dry-run).
+	// Приоритет — реальный приёмник; PLANS_PUBLISH_SANDBOX=1 подставляет вместо него
+	// PG-песочницу (publish_sandbox), чтобы путь записи можно было прогнать без
+	// Budgeting. В проде обе переменные вместе не задаются: песочница — dev/тест.
 	var plansPublisher plans.Publisher = plans.NewNopPublisher()
-	if cfg.PlansPublishEnabled && mssqlDB != nil {
+	switch {
+	case cfg.PlansPublishEnabled && mssqlDB != nil:
 		plansPublisher = plans.NewMssqlPublisher(mssqlDB, cfg.PlansPublishTargets)
+	case cfg.PlansPublishSandbox:
+		log.Printf("plans: публикация идёт в ПЕСОЧНИЦУ publish_sandbox (PLANS_PUBLISH_SANDBOX=1) — в Budgeting записи не будет")
+		plansPublisher = plans.NewSandboxPublisher(pool, cfg.PlansPublishTargets)
 	}
 	plansCards := plans.NewCardService(plans.NewCardStore(pool)).
 		WithPublisher(plansPublisher, plans.NewPublishStore(pool)).
 		WithOwners(plans.NewStageOwnerResolver(plansTasks)).
+		// План пишется на РЕАЛЬНОЕ ЮЛ: колонка «Компания» приёмника тактики
+		// заполняется УНП из справочника (правки ТЗ 02.09.2026 §15/§16).
+		WithLegalEntities(plans.NewLegalEntityResolver(plansDir)).
+		// Уведомления по карточкам: согласующий узнаёт, что форма ждёт его
+		// решения. Тот же канал, что у заданий (колокольчик + Bitrix).
+		WithNotifier(notifSvc).
+		// Этапы таймлайна считаются по карточкам: «этап 1.2 готово» при формах в
+		// черновиках — то, из-за чего процесс выглядел рассинхронизированным.
+		WithStages(plansStore).
+		// Задание «заполни форму» закрывается отправкой формы, а не отдельной
+		// кнопкой: иначе задание и форма живут своей жизнью.
+		WithFillTasks(plansTasks).
 		WithAudit(plansAudit)
-	plansCards.RegisterForm(plans.TemplateMP, plans.NewMpCardProvider(plansStore, plansRates), plans.NewMpCardProvider(plansStore, plansRates))
+	// Этапы знают про карточки: закрыть этап 1.х руками, пока формы не прошли
+	// шаг, нельзя — решение принимается в карточке формы.
+	plansSvc.WithCards(plansCards)
+	// Карточки форм заводятся вместе с периодом: до этого процесс выглядел
+	// незапущенным (этапы и задания есть, а формы «не созданы»).
+	plansH.SetCards(plansCards)
+	// Реестр условий площадки нужен и провайдеру карточки (общие затраты идут в
+	// приёмник под ЦФО 250), и сервису формы — заводим до обоих.
+	plansMpCond := plans.NewMpConditionsStore(pool)
+	mpCardProvider := plans.NewMpCardProvider(plansStore, plansRates).
+		WithFactSource(plansFact).WithCommonCosts(plansMpCond)
+	plansCards.RegisterForm(plans.TemplateMP, mpCardProvider, mpCardProvider)
 
 	// Форма «Розница» (TPL-TO-RETAIL): карточка + сервис сетки/расчёта/валидаций.
 	plansRetailRepo := plans.NewRetailRepo(pool)
+	// Свод по ЮЛ показывает весь комплект: маркетплейсы из pl_metric, розницу —
+	// из её таблиц (замечание владельца процесса 09.09.2026).
+	if src, ok := plansRetailRepo.(plans.RetailSvodSource); ok {
+		plansSvc.WithRetailSvod(src)
+	}
 	plansRetailProvider := plans.NewRetailCardProvider(plansRetailRepo, plansRates)
 	plansCards.RegisterForm(plans.TemplateRetail, plansRetailProvider, plansRetailProvider)
 	plansRetail := plans.NewRetailService(plansRetailRepo, plansCards, plansRetailSource).
@@ -324,8 +390,43 @@ func main() {
 		WithCalendar(plansCalendar).
 		WithScope(plansScope).
 		WithAudit(plansAudit).
-		WithValueLimits(cfg.PlansRetailValueLimits)
+		WithValueLimits(cfg.PlansRetailValueLimits).
+		WithReconBlocking(cfg.PlansRetailReconBlocking)
+	// Гейт отправки: карточка не уходит на согласование, если форма не проходит
+	// блокирующие проверки. До этого проверки жили только в интерфейсе, и форму
+	// можно было отправить мимо них — согласующий обязан был вернуть её, и
+	// процесс делал лишний круг.
+	// Режим гейта (ответ 41 от 10.09.2026): проверки считаются всегда, блокировка
+	// переключаемая. Дефолт — мягкий: на стенде форма не должна вставать из-за
+	// расхождения, о котором согласующий и так увидит предупреждение.
+	plansCards.WithSubmitStrict(cfg.PlansSubmitStrict)
+	plansCards.WithSubmitGate(plans.TemplateRetail, plans.NewRetailSubmitGate(plansRetail))
 	plansRetailH := plans.NewRetailHandler(plansRetail, plansPrincipal)
+
+	// Форма «Расходы ЦП» (TPL-CFO-EXP, этап 1.5). Пока это сетка ввода и её
+	// источник: реестры, сверки E-01…E-08 и публикация — следующие фазы плана
+	// docs/reports/plans/stage-1.5-plan.md, публикация до ответов по В-1/В-2
+	// намеренно выключена в маршруте (миграция 0051).
+	plansExpSource := plans.NewExpSource(cfg.PlansMock, mssqlDB, plans.ExpTables{
+		CostsProc:  cfg.PlansExpCostsProc,
+		CfoTable:   cfg.PlansExpCfoTable,
+		SalesTable: cfg.PlansRetailStrategyTable,
+	})
+	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource).
+		WithRegistries(plans.NewExpRegRepo(pool)).
+		WithTravelNorms(plans.NewExpTravelNorms(pool, plansRates)).
+		WithSalesPlan(plansExpSource)
+	// Публикация формы 1.5 (ТЗ §10). Ответы 34 и 11 перенесли сюда публикацию
+	// общих затрат МП и статей 51/52/54 под ЦФО 250 — из формы продаж они убраны
+	// в этом же релизе, иначе приёмник получил бы двойные затраты.
+	plansExpProvider := plans.NewExpCardProvider(plans.NewExpRepo(pool), plans.NewExpRegRepo(pool)).
+		WithCommonCosts(plansMpCond)
+	plansCards.RegisterForm(plans.TemplateExp, plansExpProvider, plansExpProvider)
+
+	// Гейт отправки формы 1.5: считает валидации §9 и контроли §8. Блокирует он
+	// или только предупреждает — решает PLANS_SUBMIT_STRICT (ответ 41).
+	plansCards.WithSubmitGate(plans.TemplateExp, plans.NewExpSubmitGate(plansExp))
+	plansExpH := plans.NewExpHandler(plansExp, plansPrincipal)
 
 	plansCardsH := plans.NewCardHandler(plansCards, plansScope, plansPrincipal).
 		WithPresets(plans.NewPresetStore(pool))
@@ -333,7 +434,6 @@ func main() {
 	// Форма МП по скорректированному ТЗ: реестр условий площадки + инверсия
 	// расчёта. TaskStore получает контекст расчёта, чтобы сетка формы считалась
 	// тем же направлением, что указано в карточке (calc_mode).
-	plansMpCond := plans.NewMpConditionsStore(pool)
 	plansMpCondSvc := plans.NewMpConditionsService(plansMpCond, plansStore, plans.NewCardStore(pool),
 		plansRates, plansFact, plansScope).WithAudit(plansAudit)
 	plansMpCondH := plans.NewMpConditionsHandler(plansMpCondSvc, plansPrincipal)
@@ -366,6 +466,8 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/cards/{cardId}/calc-mode", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.CardCalcMode))
 	mux.HandleFunc("POST /api/plans/cards/{cardId}/publish", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.CardPublish))
 	mux.HandleFunc("GET /api/plans/cards/{cardId}/publish-log", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.CardPublishLog))
+	// Содержимое PG-песочницы приёмника (PLANS_PUBLISH_SANDBOX=1) — проверка записи.
+	mux.HandleFunc("GET /api/plans/publish-sandbox", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.PublishSandbox))
 	mux.HandleFunc("GET /api/plans/forms/{formCode}/route", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.FormRoute))
 	mux.HandleFunc("PUT /api/plans/forms/{formCode}/route", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.FormRouteSave))
 	mux.HandleFunc("GET /api/plans/forms/{formCode}/publish-mapping", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PublishMappings))
@@ -384,6 +486,22 @@ func main() {
 	// Форма «Розница» (ТЗ Розница §12). Чтение — RolePlansUser (ABAC/РМ §9
 	// фильтрует магазины внутри сервиса), параметры периода и LFL-переопределение
 	// требуют финансиста и проверяются в сервисе, а не ролью на маршруте.
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormGet))
+	mux.HandleFunc("PUT /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormSave))
+	mux.HandleFunc("POST /api/plans/exp/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.BulkApply))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/totals", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.TotalsGet))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.Export))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/import-template", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ImportTemplate))
+	mux.HandleFunc("POST /api/plans/exp/{cardId}/import", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.Import))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/params", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ParamsGet))
+	mux.HandleFunc("PUT /api/plans/exp/{cardId}/params", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansExpH.ParamsSave))
+	mux.HandleFunc("POST /api/plans/exp/{cardId}/calc", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.CalcApply))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/summary", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.SummaryGet))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/validate", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ValidateGet))
+	mux.HandleFunc("GET /api/plans/exp/{cardId}/registry/{kind}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryGet))
+	mux.HandleFunc("PUT /api/plans/exp/{cardId}/registry/{kind}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistrySave))
+	mux.HandleFunc("POST /api/plans/exp/{cardId}/registry/{kind}/{rowId}/copy", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryCopy))
+	mux.HandleFunc("DELETE /api/plans/exp/{cardId}/registry/{kind}/{rowId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryDelete))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormGet))
 	mux.HandleFunc("PUT /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormSave))
 	mux.HandleFunc("POST /api/plans/retail/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.BulkApply))
@@ -416,6 +534,8 @@ func main() {
 	mux.HandleFunc("POST /api/plans/instances/{id}/strategy/import", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.StrategyImport))
 	mux.HandleFunc("GET /api/plans/tasks/{taskId}/data", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.TaskDataView))
 	mux.HandleFunc("PUT /api/plans/tasks/{taskId}/assignee", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.TaskAssign))
+	// Ручной прогон регламента снимка факта МП (правка ТЗ МП §12) — только админ.
+	mux.HandleFunc("POST /api/plans/admin/mp-fact-snapshot", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansH.MpFactSnapshotRefresh))
 	mux.HandleFunc("GET /api/plans/tasks/{taskId}/mp-form", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormGet))
 	mux.HandleFunc("PUT /api/plans/tasks/{taskId}/mp-form", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormSave))
 	mux.HandleFunc("GET /api/plans/tasks/{taskId}/mp-form/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.MpTaskFormExport))

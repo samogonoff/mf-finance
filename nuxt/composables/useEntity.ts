@@ -58,7 +58,10 @@ export type Selection =
   | { kind: "country"; code: Country["code"] }       // все юр.лица страны
   | { kind: "entity"; id: string };                  // одно юр.лицо
 
-const DEFAULT_SELECTION: Selection = { kind: "entity", id: "ru-1" };
+// Дефолт — вся группа: переключателя юрлица в шапке больше нет (его место занял
+// переключатель разделов), поэтому стартовый срез должен быть самым широким,
+// а не одним юрлицом, которое пользователь не смог бы сменить.
+const DEFAULT_SELECTION: Selection = { kind: "all" };
 
 function parse(raw: string | null | undefined): Selection {
   if (!raw) return DEFAULT_SELECTION;
@@ -80,7 +83,10 @@ function stringify(s: Selection): string {
 }
 
 export const useEntity = () => {
-  const cookie = useCookie<string>("fin.entity", {
+  // Ключ версионирован: у тех, кто уже заходил, в старой cookie "fin.entity"
+  // лежит конкретное юрлицо, а сменить его теперь негде — переключателя в
+  // шапке нет. Новый ключ гарантирует, что все стартуют со «всей группы».
+  const cookie = useCookie<string>("fin.entity.v2", {
     default: () => stringify(DEFAULT_SELECTION),
     sameSite: "lax",
     path: "/",

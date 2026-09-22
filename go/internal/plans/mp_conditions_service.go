@@ -247,7 +247,20 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 	for _, c := range conds {
 		condByCfo[c.CodeCFO] = c
 	}
+	// Базис НДС — тот же, что в форме: отношение плановых сумм площадки, ставка
+	// справочника фолбэком. Иначе предпросмотр пересчёта показывал бы суммы,
+	// которых форма не даёт.
+	planSegments := make([]string, 0, 2)
+	for _, mp := range platformsInfo {
+		planSegments = append(planSegments, mp.Segment)
+	}
+	planLayer := mpPlanByBlock(ctx, s.fact, card.Year, card.Month, planSegments)
+	prevPY, prevPM := prevMonth(card.Year, card.Month)
+	planPrevLayer := mpPlanByBlock(ctx, s.fact, prevPY, prevPM, planSegments)
+
 	values := map[int]map[string]float64{}
+	basisByCfo := map[int]MpVatBasis{}
+	normByCfo := map[int]float64{}
 	for _, mp := range platformsInfo {
 		cond, ok := condByCfo[mp.CodeCFO]
 		if !ok {
@@ -257,9 +270,20 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 		if s.rates != nil {
 			vat = s.rates.Vat(ctx, mp.Country, mp.CodeCFO)
 		}
+		basis := mpVatBasis(planLayer, planPrevLayer, mp.CodeCFO, card.Year, card.Month, vat)
+		basisByCfo[mp.CodeCFO] = basis
+		// Норматив удержаний — из справочника с периодом действия; сид остаётся
+		// фолбэком (mpNormShareOf).
+		norm := mpNormShareOf(mp.CodeCFO, card.Year, card.Month)
+		if s.rates != nil {
+			if v, ok := s.rates.NormShare(ctx, mp.CodeCFO, card.Year, card.Month); ok {
+				norm = v
+			}
+		}
+		normByCfo[mp.CodeCFO] = norm
 		out, log := computeMpPlatformInverse(MpInverseInput{
 			SalesManagerGross: sales[mp.CodeCFO],
-			Conditions:        conditionsToInput(cond, vat),
+			Conditions:        conditionsToInputNorm(cond, basis, norm),
 			Overrides:         overrides[mp.CodeCFO],
 		})
 		values[mp.CodeCFO] = out
@@ -282,10 +306,10 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 
 	res := MpRecalcResult{
 		Period: PeriodRef{Year: card.Year, Month: card.Month}, CalcMode: CalcInverse,
-		Platforms: values, Totals: computeMpFormTotals(values, commonSum),
+		Platforms: values, Totals: computeMpFormTotalsMode(values, commonSum, mpPLWithCommon(card)),
 		CommonCost: commonSum, Preview: preview,
 	}
-	res.Issues = s.validate(ctx, card, platformsInfo, condByCfo, values)
+	res.Issues = s.validate(ctx, card, platformsInfo, condByCfo, values, basisByCfo, normByCfo)
 	res.Blocking = HasBlocking(res.Issues)
 
 	if !preview {
@@ -300,11 +324,12 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 // validate — полный набор проверок формы: подтягивает владельцев расчёта,
 // наименования статей справочника, факт прошлого месяца и штрафы.
 func (s *MpConditionsService) validate(ctx context.Context, card Card, platforms []MarketplaceRow,
-	conds map[int]MpConditions, values map[int]map[string]float64) []MpIssue {
+	conds map[int]MpConditions, values map[int]map[string]float64,
+	vat map[int]MpVatBasis, norms map[int]float64) []MpIssue {
 
 	in := MpValidationInput{
 		Year: card.Year, Month: card.Month, Platforms: platforms,
-		Conditions: conds, Values: values,
+		Conditions: conds, Values: values, VatBasis: vat, Norms: norms,
 		CalcOwner: map[[2]int]string{}, PLNames: plLineNames(),
 		Thresholds: DefaultMpThresholds(),
 	}
@@ -339,7 +364,7 @@ func (s *MpConditionsService) validate(ctx context.Context, card Card, platforms
 				if b, ok := blocks[r.CodePL]; ok {
 					in.FactPrev[r.CodeCFO][b] += r.Amount
 				}
-				if r.CodePL == mpPenaltyPL || r.CodePL == 66 {
+				if r.CodePL == mpPenaltyFactKey || r.CodePL == 66 {
 					in.PenaltiesFact[r.CodeCFO] += r.Amount
 				}
 			}
@@ -393,7 +418,47 @@ func (s *MpConditionsService) CommonCosts(ctx context.Context, cardID int64) ([]
 		return nil, nil, err
 	}
 	rows, err := s.store.CommonCosts(ctx, card.PlID, card.ScopeKey, card.Year, card.Month)
-	return rows, MpCommonCostSpec(), err
+	if err != nil {
+		return rows, MpCommonCostSpec(), err
+	}
+	return s.withPlanCommonCosts(ctx, card, rows), MpCommonCostSpec(), nil
+}
+
+// withPlanCommonCosts — статьи, которых нет во вводе, добираются ИЗ ПЛАНА того же
+// месяца. В прототипе общие затраты тактики не пересчитываются и не вводятся:
+// колонка тактики ссылается на план один в один (=BF202). Введённое значение
+// плану не уступает — оно остаётся переопределением.
+func (s *MpConditionsService) withPlanCommonCosts(ctx context.Context, card Card, rows []MpCommonCost) []MpCommonCost {
+	if s.fact == nil {
+		return rows
+	}
+	planRows, err := s.fact.MpStrategy(ctx, card.Year, card.Month, card.ScopeKey)
+	if err != nil || len(planRows) == 0 {
+		return rows
+	}
+	byPL := map[int]float64{}
+	for _, r := range planRows {
+		byPL[r.CodePL] += r.Amount
+	}
+	has := map[int]bool{}
+	for _, r := range rows {
+		has[r.CodePL] = true
+	}
+	for _, g := range MpCommonCostSpec() {
+		for _, l := range g.Lines {
+			amount, ok := byPL[l.CodePL]
+			if has[l.CodePL] || !ok || amount == 0 {
+				continue
+			}
+			rows = append(rows, MpCommonCost{
+				Segment: card.ScopeKey, CodePL: l.CodePL, Name: l.Name, Group: g.Group,
+				Year: card.Year, Month: card.Month,
+				Currency: firstNonEmpty(card.Currency, "RUB"),
+				Amount:   amount, Source: "plan",
+			})
+		}
+	}
+	return rows
 }
 
 // SaveCommonCosts — сохранить общие затраты (ввод по статьям).

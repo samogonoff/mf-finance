@@ -511,16 +511,32 @@ def cache_status() -> dict:
 # ── Mock details ──────────────────────────────────────────────────────────────
 
 
-def details(model: str) -> dict:
-    """Мок для details: возвращает 2 детальные строки."""
+def details(key: str, scope: str = "model") -> dict:
+    """Мок для details: возвращает 2 детальные строки.
+
+    `scope="model"` — обе строки одной модели с разными артикулами;
+    `scope="articul"` — обе строки одного артикула с разными моделями;
+    `scope="construction"` — разные и модели, и артикулы (режимы ЧНИ).
+    """
+    if scope == "articul":
+        model, model2 = f"{key}-M1", f"{key}-M2"
+        articul = articul2 = key
+    elif scope == "construction":
+        model, model2 = f"{key}-1001", f"{key}-1002"
+        articul, articul2 = "ART-20001", "ART-20002"
+    else:
+        model = model2 = key
+        articul, articul2 = "ART-20001", "ART-20002"
     rows = [
         {
             "Модель": model,
-            "Артикул": f"ART-20001",
+            "Артикул": articul,
             "Наименование модели": f"{model} · образец",
             "Номер задания производства": f"JOB-{hash(model) % 10000:04d}",
             "дата расчета": "2026-04-15T00:00:00",
             "Дата выпуска": "2026-04-10T00:00:00",
+            "Страна пр-ва": "Беларусь",
+            "Пошив, минуты": 14.5,
             "Признак калькуляции": "ПКПСС",
             "Розничная цена, руб.": 2035.00,
             "Оптовая цена, руб.": 1850.00,
@@ -536,12 +552,14 @@ def details(model: str) -> dict:
             "Маржинальность, %": 44.43,
         },
         {
-            "Модель": model,
-            "Артикул": f"ART-20002",
-            "Наименование модели": f"{model} · вариант 2",
-            "Номер задания производства": f"JOB-{hash(model + 'v2') % 10000:04d}",
+            "Модель": model2,
+            "Артикул": articul2,
+            "Наименование модели": f"{model2} · вариант 2",
+            "Номер задания производства": f"JOB-{hash(model2 + 'v2') % 10000:04d}",
             "дата расчета": "2026-04-10T00:00:00",
             "Дата выпуска": "2026-04-05T00:00:00",
+            "Страна пр-ва": "Узбекистан",
+            "Пошив, минуты": 16.2,
             "Признак калькуляции": "КПСС",
             "Розничная цена, руб.": 2420.00,
             "Оптовая цена, руб.": 2200.00,
@@ -608,7 +626,7 @@ def get_raw_cache_rows(model, articul, calc_sign, plan_id, date) -> dict:
     ]
     for r in filtered:
         r["change_type"] = "original"
-    return {"version_id": None, "rows": filtered}
+    return {"version_id": None, "snapshot_id": None, "snapshots": [], "rows": filtered}
 
 
 def list_versions(model, articul, calc_sign, plan_id, date) -> list[dict]:
@@ -871,4 +889,203 @@ def margin_dashboard() -> dict:
             "matrix_can_drill": True,
             "matrix_levels": [{"key": k, "label": v} for k, v in margin.MATRIX_LEVELS],
         },
+    }
+
+
+# ── Мультипаки ────────────────────────────────────────────────────────────────
+#
+# Состав отдаётся статикой: в mock-режиме нет ни кэша калькуляций, ни таблиц
+# состава, а редактор расчёта должен открываться и блок состава показывать.
+# Сборка возвращает готовые суммы, но строк не генерирует — генерация опирается
+# на строку-шаблон из cost_data_all, которой в моке нет.
+
+_MULTIPACK_ITEMS = [
+    {
+        "src_model": "430A-2848", "src_articul": "B2-124430A",
+        "src_calc_sign": "ПКПСС", "src_plan_id": "0",
+        "pinned_calc_sign": False, "pinned_plan_id": False,
+        "qty": 2.0, "position": 0, "found": True,
+        "model_name": "НОСКИ ДЕТСКИЕ", "level01": "Носки&Колготки",
+        "calc_date": "2026-09-01", "fx_rate": 3.05, "task": "",
+        "tasks_total": 1, "src_rows": 23,
+        "buckets": {
+            "Основные материалы": {"rub": 0.62, "usd": 0.20},
+            "Вспомогательные материалы": {"rub": 0.11, "usd": 0.04},
+            "Пошив": {"rub": 0.0, "usd": 0.0},
+            "Раскрой": {"rub": 0.0, "usd": 0.0},
+            "Вязание": {"rub": 0.24, "usd": 0.08},
+            "Декоры": {"rub": 0.03, "usd": 0.01},
+        },
+        "unit_rub": 1.0, "unit_usd": 0.33,
+        "sum_rub": 2.0, "sum_usd": 0.66,
+    },
+    {
+        "src_model": "430A-2930", "src_articul": "B2-125430A",
+        "src_calc_sign": "ПКПСС", "src_plan_id": "0",
+        "pinned_calc_sign": False, "pinned_plan_id": False,
+        "qty": 1.0, "position": 1, "found": True,
+        "model_name": "НОСКИ ДЕТСКИЕ", "level01": "Носки&Колготки",
+        "calc_date": "2026-09-01", "fx_rate": 3.05, "task": "",
+        "tasks_total": 1, "src_rows": 23,
+        "buckets": {
+            "Основные материалы": {"rub": 0.70, "usd": 0.23},
+            "Вспомогательные материалы": {"rub": 0.12, "usd": 0.04},
+            "Пошив": {"rub": 0.0, "usd": 0.0},
+            "Раскрой": {"rub": 0.0, "usd": 0.0},
+            "Вязание": {"rub": 0.26, "usd": 0.09},
+            "Декоры": {"rub": 0.02, "usd": 0.01},
+        },
+        "unit_rub": 1.1, "unit_usd": 0.37,
+        "sum_rub": 1.1, "sum_usd": 0.37,
+    },
+]
+
+
+def multipack_state(model: str, articul: str) -> dict[str, Any]:
+    return {
+        "is_pack": True,
+        "pack_id": 1,
+        "model": (model or "").strip(),
+        "articul": (articul or "").strip(),
+        "pack_size": 3.0,
+        "note": "мок-состав",
+        "created_by": "mock@local",
+        "updated_by": None,
+        "updated_at": None,
+        "items": _MULTIPACK_ITEMS,
+        "qty_total": 3.0,
+        "items_rub": 3.1,
+        "items_usd": 1.03,
+        "last_build": None,
+        "stale": [],
+        "warnings": [],
+        "mock": True,
+    }
+
+
+def multipack_build(model: str, articul: str) -> dict[str, Any]:
+    state = multipack_state(model, articul)
+    return {
+        "rows": [],
+        "items_rub": 3.1, "items_usd": 1.03,
+        "packaging_rub": 0.0, "packaging_usd": 0.0,
+        "total_rub": 3.1, "total_usd": 1.03,
+        "generated": 0, "kept": 0,
+        "state": state,
+        "mock": True,
+    }
+
+
+def multipack_candidates(query: str = "") -> list[dict[str, Any]]:
+    rows = [
+        {
+            "model": it["src_model"], "articul": it["src_articul"],
+            "calc_sign": it["src_calc_sign"], "plan_id": it["src_plan_id"],
+            "model_name": it["model_name"], "level01": it["level01"],
+            "calc_date": it["calc_date"], "task": it["task"],
+            "tasks_total": it["tasks_total"], "unit_rub": it["unit_rub"],
+        }
+        for it in _MULTIPACK_ITEMS
+    ]
+    q = (query or "").strip().lower()
+    if not q:
+        return rows
+    return [r for r in rows if q in r["model"].lower() or q in r["articul"].lower()
+            or q in (r["model_name"] or "").lower()]
+
+
+# ── Mock справочника моделей (S_MODELI) ──────────────────────────────────────
+
+_MOCK_CATALOG_FOLDERS = [
+    {"folder_id": 6, "path": "Женщинам\\Нижнее белье женщина\\Трусы женщина",
+     "levels": ["Женщинам", "Нижнее белье женщина", "Трусы женщина"],
+     "brand_manager": "КОЦУР С.А."},
+    {"folder_id": 21, "path": "Носки&Колготки\\Носки мужские\\Классические мужские",
+     "levels": ["Носки&Колготки", "Носки мужские", "Классические мужские"],
+     "brand_manager": "ДАНЧУК Е.Ю."},
+]
+
+_MOCK_CATALOG_ROWS = [
+    {
+        "MODEL": "107K-1916", "ART": "25107K", "NAIM": "НОСКИ МУЖСКИЕ",
+        "BRAND_FIO": "ДАНЧУК Е.Ю.",
+        "FULL_PATH": "Носки&Колготки\\Носки мужские\\Классические мужские",
+        "STATUS": "COLLECTION", "BRAND": "Mark Formelle", "COUNTRY": "Беларусь",
+        "KEDIZM": "пара", "SOSTAV": "80% хлопок; 18% полиамид; 2% эластан",
+        "NVID": "классические", "NASSORTIMENT": "14.31.10.300", "NSYRIE": "хлопок",
+        "NGRUPPA": None, "KTNVED": "6115 95 000 0", "KOD_IKPU": "06115950000",
+        "PRICE_ROZN": 6.9, "PRICE_OPT": 4.14, "PRICE_MOPT": 4.02,
+        "PLAN_PRICE": 1.87, "NDS": 20.0, "RU_NDS": 20.0,
+        "NORMA": 0.041, "NORMA_KROY": 0.0, "NORMA_POSHIV": 3.2,
+        "MASSA_ED": 0.062, "IN_BOX": 200, "PURCHASED": 0, "PR_ARH": 0,
+        "ITEM_ID": 140233, "PARENT_ID": 21,
+    },
+    {
+        "MODEL": "1007-2C", "ART": "1007-2C", "NAIM": "ТРУСЫ ЖЕНСКИЕ",
+        "BRAND_FIO": "КОЦУР С.А.",
+        "FULL_PATH": "Женщинам\\Нижнее белье женщина\\Трусы женщина",
+        "STATUS": "BASIC", "BRAND": "Mark Formelle", "COUNTRY": "Беларусь",
+        "KEDIZM": "шт", "SOSTAV": "95% хлопок; 5% эластан",
+        "NVID": "шорты", "NASSORTIMENT": "14.14.24.000", "NSYRIE": "хлопок",
+        "NGRUPPA": None, "KTNVED": "6108 21 000 0", "KOD_IKPU": "06108210000",
+        "PRICE_ROZN": 12.5, "PRICE_OPT": 7.5, "PRICE_MOPT": 7.2,
+        "PLAN_PRICE": 3.4, "NDS": 20.0, "RU_NDS": 20.0,
+        "NORMA": 0.118, "NORMA_KROY": 1.4, "NORMA_POSHIV": 5.6,
+        "MASSA_ED": 0.048, "IN_BOX": 100, "PURCHASED": 0, "PR_ARH": 0,
+        "ITEM_ID": 139001, "PARENT_ID": 6,
+    },
+]
+
+# Колонки «полного» режима, которых нет в основном наборе — чтобы кнопка
+# «показать все» в моке тоже что-то меняла.
+_MOCK_CATALOG_EXTRA = {
+    "MASSA_NET": 0.06, "KOMPLEKT": 1, "NO_RAZMER": 0, "SERTIFIKAT": "ТР ТС 017/2011",
+    "GOST1": "ГОСТ 31408-2009", "GOST2": None, "PACK_L": 120, "PACK_W": 80, "PACK_H": 20,
+    "IS_BAN": None, "DATEVRKV": "2026-02-11T09:14:22", "USERVRKV": "Лисица И.И.",
+    "DATEKRKV": "2026-08-30T16:02:41", "USERKRKV": "Лисица И.И.",
+    "PROPER_NAIM1": "с длинным рукавом", "PROPER_NAIM2": None, "PROPER_NAIM3": None,
+}
+
+
+def models_catalog_folders() -> dict:
+    return {"folders": _MOCK_CATALOG_FOLDERS}
+
+
+def models_catalog(payload: dict, limit: int, offset: int, all_columns: bool) -> dict:
+    """Мок справочника: те же фильтры, что на сервере, но по двум строкам."""
+    from app.db import MODELI_COLUMN_LABELS, MODELI_MAIN_COLUMNS
+
+    rows = [dict(r) for r in _MOCK_CATALOG_ROWS]
+    if all_columns:
+        for r in rows:
+            r.update(_MOCK_CATALOG_EXTRA)
+
+    for field, column in (("model", "MODEL"), ("articul", "ART"), ("naim", "NAIM")):
+        needle = (payload.get(field) or "").strip().lower()
+        if needle:
+            rows = [r for r in rows if needle in str(r.get(column) or "").lower()]
+
+    bm = [v.strip() for v in (payload.get("brand_manager") or []) if v]
+    if bm:
+        rows = [r for r in rows if r.get("BRAND_FIO") in bm]
+    for i in range(1, 6):
+        vals = [v.strip() for v in (payload.get("level%02d" % i) or []) if v]
+        if vals:
+            rows = [
+                r for r in rows
+                if (str(r.get("FULL_PATH") or "").split(chr(92)) + ["", "", "", "", ""])[i - 1] in vals
+            ]
+
+    keys = list(MODELI_MAIN_COLUMNS)
+    if all_columns:
+        keys += [k for k in _MOCK_CATALOG_EXTRA if k not in keys]
+
+    page = rows[offset:offset + limit]
+    return {
+        "data": [{k: r.get(k) for k in keys} for r in page],
+        "total": len(rows),
+        "count": len(page),
+        "limit": limit,
+        "offset": offset,
+        "columns": [{"key": k, "label": MODELI_COLUMN_LABELS.get(k, k)} for k in keys],
     }

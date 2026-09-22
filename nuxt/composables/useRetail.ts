@@ -116,7 +116,43 @@ export interface RetailForm {
   rows: RetailRow[];
   params: RetailParam[];
   warnings?: ValidationIssue[];
+  /** Курс тактики — им пересчитаны вводимые ячейки (см. fx_rates). */
   fx_rate: number;
+  /**
+   * Курсы отображения ПО НАЗНАЧЕНИЮ колонки. Одного курса не существует: в файле
+   * ТО тактика пересчитывается курсом факта предыдущего месяца, факт — курсом
+   * своего месяца, стратегия — плановым.
+   */
+  fx_rates?: RetailFxRates;
+  /** Подсказки к полям ввода: для аренды — факт предыдущего месяца, справочно. */
+  hints?: FieldHint[];
+}
+
+/** Курсы отображения по назначению колонки (зеркало plans.RetailFxRates). */
+export interface RetailFxRates {
+  /** Тактика, план периода, ожидание года — курс факта ПРЕДЫДУЩЕГО месяца. */
+  tactic: number;
+  /** Факт текущего года и производные от него. */
+  fact_current: number;
+  /** Факт того же месяца прошлого года. */
+  fact_prev_year: number;
+  /** Стратегия — плановый курс. */
+  strategy: number;
+}
+
+/**
+ * Подсказка к полю ввода (правки ТЗ 02.09.2026, часть 1). Значение НЕ
+ * подставляется в поле — показывается рядом с ним вместе с происхождением и
+ * периодом, чтобы решение осталось за человеком.
+ */
+export interface FieldHint {
+  kind: string;
+  code_cfo: number;
+  block_type: string;
+  value: number;
+  source: string;
+  note?: string;
+  as_of?: string;
 }
 
 export interface RetailCellWrite {
@@ -214,6 +250,12 @@ export interface RetailValidationReport {
   blocking: ValidationIssue[];
   warnings: ValidationIssue[];
   can_submit: boolean;
+  /**
+   * Жёсткий ли режим гейта (ответ 41 от 10.09.2026). В мягком режиме
+   * can_submit остаётся true при непустом blocking: замечания показываются,
+   * но отправку не держат — и подписи обязаны это различать.
+   */
+  strict: boolean;
   reconciliations: RetailReconciliation[];
 }
 

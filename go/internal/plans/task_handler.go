@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // HTTP-ручки движка заданий процесса. Чтение — ROLE_PLANS_USER; генерация/назначение
@@ -58,17 +60,85 @@ func (h *Handler) TaskDataView(w http.ResponseWriter, r *http.Request) {
 }
 
 // MpTaskFormGet — GET /api/plans/tasks/{taskId}/mp-form. Структура формы МП задания.
+//
+// Чтение формы разрешено согласующему (он обязан видеть цифры), но не любому
+// пользователю: до этого форму мог открыть кто угодно с ROLE_PLANS_USER, зная
+// номер задания, — то есть в обход ABAC-срезов, ради которых РМ и не видит чужие
+// площадки. Проверяем, что хотя бы один ЦФО задания попадает в срез.
 func (h *Handler) MpTaskFormGet(w http.ResponseWriter, r *http.Request) {
 	if h.tasks == nil {
 		writeErr(w, http.StatusServiceUnavailable, "движок недоступен")
 		return
 	}
-	f, err := h.tasks.MpFormData(r.Context(), parseInt64(r.PathValue("taskId")), r.URL.Query().Get("currency"))
+	taskID := parseInt64(r.PathValue("taskId"))
+	f, err := h.tasks.MpFormData(r.Context(), taskID, r.URL.Query().Get("currency"), r.URL.Query().Get("scope"))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if !h.mpFormAllowed(r, f) {
+		writeErr(w, http.StatusForbidden, "задание вне вашего среза доступа")
+		return
+	}
 	writeJSON(w, http.StatusOK, f)
+}
+
+// mpFormAllowed — доступ к форме задания МП по ABAC-срезу.
+//
+// Срез недоступен (хранилище не подключено) → не запрещаем: иначе форма
+// перестала бы открываться там, где права ещё не настроены, а это регресс, а не
+// защита. Пустая форма без площадок тоже проходит: скрывать нечего.
+func (h *Handler) mpFormAllowed(r *http.Request, f MpTaskForm) bool {
+	p, _ := h.principal(r)
+	if p.PlansAdmin || h.form == nil || len(f.Platforms) == 0 {
+		return true
+	}
+	allowed, err := h.form.AllowedCFOs(r.Context(), p)
+	if err != nil {
+		log.Printf("plans: срез доступа для формы МП не прочитан: %v", err)
+		return true
+	}
+	if allowed == nil {
+		return true // ограничений по ЦФО нет
+	}
+	for _, pl := range f.Platforms {
+		if allowed[pl.CodeCFO] {
+			return true
+		}
+	}
+	return false
+}
+
+// MpFactSnapshotRefresh — POST /api/plans/admin/mp-fact-snapshot?year=&month=&segment=.
+// Ручной прогон регламента снимка факта (правка ТЗ МП §12): обычно снимок питается
+// раз в сутки, но после переливки источника его нужно уметь обновить сразу.
+func (h *Handler) MpFactSnapshotRefresh(w http.ResponseWriter, r *http.Request) {
+	if h.factSnap == nil {
+		writeErr(w, http.StatusServiceUnavailable, "снимок факта МП не подключён (PLANS_FACT_SNAPSHOT=0)")
+		return
+	}
+	q := r.URL.Query()
+	year, _ := atoiPositive(q.Get("year"))
+	month, _ := atoiPositive(q.Get("month"))
+	if year == 0 || month == 0 {
+		// По умолчанию — прошлый месяц: именно с ним работает форма (МП §12).
+		year, month = hintPrevMonth(time.Now())
+	}
+	segment := q.Get("segment")
+	segments := []string{segment}
+	if segment == "" {
+		segments = []string{"large", "small"}
+	}
+	var out []MpSnapshotMeta
+	for _, seg := range segments {
+		metas, err := h.factSnap.Refresh(r.Context(), year, month, seg)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		out = append(out, metas...)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // MpTaskFormExport — GET /api/plans/tasks/{taskId}/mp-form/export. .xlsx формы (TPL-06).
@@ -78,6 +148,12 @@ func (h *Handler) MpTaskFormExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID := parseInt64(r.PathValue("taskId"))
+	// Экспорт — те же данные, что и чтение формы, только файлом: срез проверяем
+	// так же, иначе ABAC обходится выгрузкой.
+	if f, err := h.tasks.MpFormData(r.Context(), taskID, "", r.URL.Query().Get("scope")); err == nil && !h.mpFormAllowed(r, f) {
+		writeErr(w, http.StatusForbidden, "задание вне вашего среза доступа")
+		return
+	}
 	data, err := h.tasks.MpFormExport(r.Context(), taskID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

@@ -506,23 +506,33 @@ func blockToPL() map[string]int {
 			out[l.BlockType] = l.CodePL
 		}
 	}
-	out[BCostPenalties] = mpPenaltyPL
+	out[BCostPenalties] = mpPenaltyFactKey
 	return out
 }
 
-// conditionsToInput — условия площадки → вход каскада. Ставка НДС: из условий,
-// иначе из справочника (ТЗ §3.4 — прошивать нельзя).
-func conditionsToInput(c MpConditions, vat float64) MpConditionsInput {
-	rate := vat
+// conditionsToInput — условия площадки → вход каскада.
+//
+// Перевод «с НДС → без НДС»: ставка, ЗАДАННАЯ РУКАМИ в условиях площадки, старше
+// всего — это решение заполняющего. Если её нет, работает отношение плановых сумм
+// (mpform_vat.go), и только за ним — ставка справочника, которую basis принёс
+// фолбэком. Прошивать ставку в код нельзя (ТЗ §3.4).
+func conditionsToInput(c MpConditions, vat MpVatBasis) MpConditionsInput {
+	return conditionsToInputNorm(c, vat, mpNormShareOf(c.CodeCFO, c.Year, c.Month))
+}
+
+// conditionsToInputNorm — то же с явным нормативом площадки (для тестов и мест,
+// где норматив приходит из справочника, а не из сида).
+func conditionsToInputNorm(c MpConditions, vat MpVatBasis, norm float64) MpConditionsInput {
+	rate, ratio := vat.Rate(), vat.Ratio
 	if c.VatRate != nil {
-		rate = *c.VatRate
+		rate, ratio = *c.VatRate, 1+*c.VatRate
 	}
 	shares := make(map[string]float64, len(c.Shares))
 	for k, v := range c.Shares {
 		shares[k] = v
 	}
 	return MpConditionsInput{
-		CodeCFO: c.CodeCFO, VatRate: rate, SppPct: c.SppPct,
+		CodeCFO: c.CodeCFO, VatRate: rate, VatRatio: ratio, NormShare: norm, SppPct: c.SppPct,
 		MarkupPct: c.MarkupPct, MarkupTotalPct: c.MarkupTotalPct, Shares: shares,
 	}
 }
@@ -597,4 +607,15 @@ func mustJSON(v map[string]any) []byte {
 		return []byte(`{}`)
 	}
 	return raw
+}
+
+// mpNormShareOf — норматив удержаний площадки на месяц из СИДА (фолбэк). Норматив
+// зависит от периода: у Wildberries 43 % действовали январь–февраль 2026, с марта
+// 42,8 %. Живой справочник читает RateBook.NormShare — сюда попадаем, когда его
+// нет (тесты, расчёт без справочника).
+func mpNormShareOf(cfo, year, month int) float64 {
+	if v, ok := pickNorm(MpNormSeed(), cfo, year, month); ok {
+		return v
+	}
+	return 0
 }

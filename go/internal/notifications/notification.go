@@ -18,6 +18,7 @@ const (
 	ObjBugReportNew = "bug_report_new"
 	ObjCostPriceSet = "cost_price_set"
 	ObjPlanTask     = "plan_task" // задание модуля «Тактические планы»
+	ObjPlanCard     = "plan_card" // карточка формы (согласование/возврат/публикация)
 )
 
 // Notification — строка из таблицы notifications (см. миграции 0003, 0005).

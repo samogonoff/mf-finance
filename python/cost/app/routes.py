@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import re
 import sys
 import traceback
 import json
@@ -11,8 +13,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app import commercial, margin, mocks
-from app.db import (aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, acquire, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
+from app import articul_replace, commercial, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
+from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
+from app.logship import log
+from app.db import get_source_change_flags
 from app.middleware import require_perm
 from app.notify import notify_admins
 from app.permissions import COST_PERMISSIONS
@@ -26,6 +30,7 @@ from app.roles import (
     remove_user_role,
     update_role,
 )
+from app import obsolete
 
 router = APIRouter()
 
@@ -405,6 +410,28 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
             where_parts.append(f'TRIM("{col}") IN ({placeholders})')
             params.extend(values)
 
+    # ── Только закупная готовая продукция ──────────────────────────────────
+    # Галочка «🛒 Только закупная» была клиентской: сервер считал и отдавал весь
+    # период (замер 04.09.2026: 13 723 строки, 35,9 МБ, 6–9 с), а нужны из него
+    # были 123 строки. Теперь условие уходит в WHERE, и выигрыш не в том, что
+    # фильтр применён пораньше: закупные калькуляции живут ТОЛЬКО в
+    # cost_manual_calc, поэтому предикат по manual_source_sign отсекает всю
+    # ветку миллионного кэша в UNION ALL вьюхи cost_data_all. План сводится к
+    # Seq Scan по сотне строк (EXPLAIN: cost=15.80 против 212 598 на полном
+    # периоде), агрегат — с 815 мс до единиц миллисекунд. Вслед за ним сжимается
+    # и вся цепочка ниже: ключей для Gpartner и FinSandBox остаётся сотня вместо
+    # тысяч, а это самые дорогие обращения запроса.
+    #
+    # Признак берём по источнику строки, а не по наличию записи в
+    # cost_purchase_cost: EXISTS не позволяет планировщику убрать ветку кэша, а
+    # соответствие и так точное — обе таблицы наполняет одна транзакция
+    # (purchase.run_import и purchase.apply_invoice).
+    if payload.get("purchased_only"):
+        where_parts.append(
+            f"cd.manual_source_sign IN (${len(params) + 1}, ${len(params) + 2})"
+        )
+        params.extend([purchase.PORTAL_SOURCE_SIGN, purchase.INVOICE_SOURCE_SIGN])
+
     where = " AND ".join(where_parts) if where_parts else "TRUE"
     join = (
         'LEFT JOIN cost_calc_approvals ca'
@@ -478,6 +505,80 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     for row in data:
         row["sum_Себестоимость, руб."] = _sum_components(row, SEBEST_COMPONENTS_RUB)
         row["sum_Себестоимость, USD."] = _sum_components(row, SEBEST_COMPONENTS_USD)
+
+    # Пометка мультипака: (модель, артикул) заведён в cost_multipack. Нужна
+    # таблице для значка и «своего» блока в редакторе, а дашбордам — чтобы
+    # исключить паки из агрегатов: их себестоимость складывается из одиночек,
+    # которые в агрегате уже посчитаны, и суммирование двоило бы её.
+    try:
+        pack_keys = [
+            ((r.get("Модель") or "").strip(), (r.get("Артикул") or "").strip())
+            for r in data
+        ]
+        packs = await multipack.pack_flags(pack_keys)
+        for row in data:
+            key = ((row.get("Модель") or "").strip(), (row.get("Артикул") or "").strip())
+            row["is_multipack"] = key in packs
+    except Exception as exc:
+        # Пометка — украшение таблицы: её отсутствие не повод не отдать данные.
+        log(logging.WARNING, "не удалось отметить мультипаки", error=str(exc))
+        for row in data:
+            row["is_multipack"] = False
+
+    # Отметка «нужна замена артикула» (пожелание № 4): ключ — как у статуса ПЭО,
+    # с заданием. Без отметки строка получает replace_needed=False, чтобы фронт
+    # не отличал «нет записи» от «снято».
+    try:
+        replace_keys = [
+            articul_replace.make_key(
+                r.get("Модель"), r.get("Артикул"), r.get("Признак калькуляции"),
+                r.get("PLAN_ID"), r.get("Номер задания производства"),
+            )
+            for r in data
+        ]
+        articul_replace.apply_flags(data, await articul_replace.flags_for(replace_keys))
+    except Exception as exc:
+        log(logging.WARNING, "не удалось наложить отметки о замене артикула", error=str(exc))
+        for row in data:
+            row["replace_needed"] = False
+
+    # Статус «Неактуальная модель/артикул» (09.09.2026): ключ — модель + артикул,
+    # один статус на все калькуляции изделия. Накладывается до фильтра по
+    # статусу ниже, чтобы значение 'obsolete' в фильтре было чем отбирать.
+    try:
+        obs_keys = [obsolete.make_key(r.get("Модель"), r.get("Артикул")) for r in data]
+        obsolete.apply_flags(data, await obsolete.flags_for(obs_keys))
+    except Exception as exc:
+        log(logging.WARNING, "не удалось наложить статус неактуальности", error=str(exc))
+        for row in data:
+            row.update(obsolete.EMPTY)
+
+    # Карточки согласования по постановлению 713 (пожелание № 8): ключ —
+    # модель + артикул, одна карточка на все планы и этапы пары. Без карточки
+    # строка получает reg713_required=False и пустые поля.
+    try:
+        reg_keys = [reg713.make_key(r.get("Модель"), r.get("Артикул")) for r in data]
+        reg713.apply_cards(data, await reg713.cards_for(reg_keys))
+    except Exception as exc:
+        log(logging.WARNING, "не удалось наложить карточки 713", error=str(exc))
+        for row in data:
+            row.update(reg713.REG713_EMPTY)
+
+    # Закупная готовая продукция (пожелания № 6/7): источник и итог раскладки
+    # себестоимости по ключу с заданием. Фронт по purchase_source рисует 🛒
+    # вместо значка копии и открывает детализацию (цена, логистика, таможня,
+    # сертификация).
+    try:
+        p_keys = [
+            purchase.make_key(r.get("Модель"), r.get("Артикул"), r.get("Признак калькуляции"),
+                              r.get("PLAN_ID"), r.get("Номер задания производства"))
+            for r in data
+        ]
+        purchase.apply_flags(data, await purchase.flags_for(p_keys))
+    except Exception as exc:
+        log(logging.WARNING, "не удалось наложить признак закупной продукции", error=str(exc))
+        for row in data:
+            row["purchase_source"] = None
 
     # Inject margin targets per level1
     try:
@@ -681,8 +782,10 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                     if len(candidates) == 1:
                         row["planned_retail"] = candidates[0]
                     elif len(candidates) > 1:
-                        level1 = str(row.get("Level 01", "") or "").strip()
-                        mult = 1.3 if level1 in ("Девочкам", "Мальчикам") else 1.4
+                        # Та же целевая наценка, что у закупной и на фронте.
+                        # До 11.09.2026 здесь был свой список из двух групп, и
+                        # «Ясли» получали 1,4 вместо 1,3.
+                        mult = 1 + purchase.target_markup(row.get("Level 01")) / 100
                         target = price_mopt * mult * (1 + (nnds or 0) / 100)
                         row["planned_retail"] = min(candidates, key=lambda c: abs(c - target))
 
@@ -1048,6 +1151,37 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     except Exception:
         pass  # lock state is advisory — don't break the page
 
+    # ── Признак «источник изменился» (миграция 0057) ────────────────────────
+    # Активная версия сделана от снимка источника старее последнего: после
+    # создания версии CostHistory дополнил или пересчитал калькуляцию, а версия
+    # по-прежнему заменяет собой строки источника в кэше. Экономист должен сам
+    # посмотреть новый снимок в редакторе и сделать от него версию. Ключей с
+    # версиями мало, поэтому флаги берутся одним запросом и матчатся здесь.
+    try:
+        src_flags = await get_source_change_flags()
+        if src_flags:
+            # Легаси-версии с пустым заданием (до миграции 0032) относятся ко
+            # всем заданиям ключа.
+            src_any_task = {k[:4]: v for k, v in src_flags.items() if k[4] == ""}
+            for row in data:
+                m = str(row.get("Модель", "") or "").strip()
+                a = str(row.get("Артикул", "") or "").strip()
+                cs = str(row.get("Признак калькуляции", "") or "").strip()
+                pi = str(row.get("PLAN_ID", "") or "").strip()
+                tn = str(row.get("Номер задания производства", "") or "").strip()
+                flag = src_flags.get((m, a, cs, pi, tn)) or src_any_task.get((m, a, cs, pi))
+                if flag:
+                    row["_source_changed"] = True
+                    row["_source_latest_no"] = flag["latest_no"]
+                    row["_source_latest_at"] = flag["latest_at"]
+                    row["_source_base_no"] = flag["base_no"]
+                    row["_source_base_at"] = flag["base_at"]
+                    row["_source_active_version"] = flag["active_version"]
+    except Exception as exc:
+        # Признак справочный — таблицу из-за него не роняем, но молчать нельзя:
+        # иначе пропавший значок не отличить от «источник не менялся».
+        log(logging.WARNING, "не удалось вычислить признак «источник изменился»", error=str(exc))
+
     # ── Фильтр по отсутствию отпускной цены ────────────────────────────────
     # Считаем по ИТОГОВОМУ значению, то есть после наложения цен из
     # cost_price_pending и CostHistory_Changes: в самом кэше отпускной цены нет
@@ -1070,6 +1204,10 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     if peo_filter and peo_filter != "all":
         if peo_filter == "none":
             data = [r for r in data if r.get("peo_status") is None]
+        elif peo_filter == "obsolete":
+            # Неактуальные изделия — состояние модели/артикула, не этап
+            # согласования; в остальных значениях фильтра они не отсекаются.
+            data = [r for r in data if r.get("obsolete")]
         else:
             data = [r for r in data if r.get("peo_status") == peo_filter]
 
@@ -1087,19 +1225,59 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
 # ── Details по модели ────────────────────────────────────────────────────────
 
 
+# Конструкция ЧНИ — часть модели до первого дефиса («107K-1916» → «107K»).
+# Правило заказчика от 09.09.2026; см. докстринг get_details.
+_CONSTRUCTION_EXPR = """split_part(TRIM("Модель"), '-', 1)"""
+
+
 @router.post("/details")
 async def get_details(payload: dict) -> dict:
-    """Детализация по модели с GROUP BY и опциональными фильтрами."""
-    model = (payload.get("model") or "").strip()
-    if not model:
-        raise HTTPException(400, "model required")
+    """Детализация с GROUP BY и опциональными фильтрами; ключ задаёт `scope`.
+
+    · `model` (по умолчанию) — все артикулы одной модели, историческое поведение;
+    · `articul` — все модели одного артикула;
+    · `construction` — все модели одной конструкции.
+
+    Последние два режима нужны ЧНИ («Носки&Колготки», Orodoro), где иерархия
+    номенклатуры устроена иначе, чем в остальных группах:
+
+    · артикул — общая вязка, модель — её цветовой/размерный вариант, поэтому на
+      один артикул приходится до 30 моделей (проверено на кэше 01.09.2026:
+      479 артикулов из 1430 в «Носки&Колготки» многомодельные);
+    · конструкция — часть модели до первого дефиса (в «107K-1916» это «107K»),
+      то есть мужской, женский или детский носок определённого кроя. Правило
+      заказчика от 09.09.2026. Конструкция объединяет и модели, и артикулы: в
+      «Носки&Колготки» 1341 модель складывается в 306 конструкций, у крупнейшей
+      («700K») 99 моделей и 90 артикулов.
+
+    В остальных группах номенклатуры связь модель↔артикул 1:1, а в модели часто
+    нет дефиса вовсе — тогда режимы вернут одну модель, и это не ошибка.
+    """
+    scope = (payload.get("scope") or "model").strip()
+    if scope not in ("model", "articul", "construction"):
+        raise HTTPException(400, "scope must be 'model', 'articul' or 'construction'")
+
+    key_value = (payload.get({
+        "articul": "articul",
+        "construction": "construction",
+    }.get(scope, "model")) or "").strip()
+    if not key_value:
+        raise HTTPException(400, f"{scope} required")
 
     if _is_mock():
-        return mocks.details(model)
+        return mocks.details(key_value, scope)
+
+    # Условие ключа. Конструкция — не колонка, а вычисляемый префикс модели,
+    # поэтому сравнение идёт по split_part; индекса на выражении нет, но по
+    # мерке кэша это ~76 мс на 1 млн строк (замер 09.09.2026).
+    key_expr = {
+        "articul": """TRIM("Артикул")""",
+        "construction": _CONSTRUCTION_EXPR,
+    }.get(scope, """TRIM("Модель")""")
 
     params: list[Any] = []
-    where_parts: list[str] = [f'TRIM("Модель") = ${len(params) + 1}']
-    params.append(model)
+    where_parts: list[str] = [f"{key_expr} = ${len(params) + 1}"]
+    params.append(key_value)
 
     date_from = (payload.get("date_from") or "").strip()
     date_to = (payload.get("date_to") or "").strip()
@@ -1117,11 +1295,22 @@ async def get_details(payload: dict) -> dict:
         params.extend(calc_sign)
 
     where = " AND ".join(where_parts)
+    # Сортировка следует за режимом: вторым ключом идут те поля, которые в
+    # этом режиме меняются. У конструкции меняются оба.
+    order_tail = {
+        "articul": """TRIM("Модель")""",
+        "construction": """TRIM("Модель"), TRIM("Артикул")""",
+    }.get(scope, """TRIM("Артикул")""")
 
     query = f"""
         SELECT
             "дата расчета",
             MAX("дата производства") AS "Дата выпуска",
+            -- Пожелание № 16: страна производства и минуты пошива. Страна у
+            -- строк одной калькуляции одна, MAX лишь снимает её с GROUP BY;
+            -- минуты усредняем так же, как в главной таблице (avg_Пошив, минуты).
+            MAX(TRIM("Страна пр-ва")) AS "Страна пр-ва",
+            COALESCE(AVG("Пошив, минуты"), 0) AS "Пошив, минуты",
             "Признак калькуляции",
             TRIM("Модель") AS "Модель",
             TRIM("Артикул") AS "Артикул",
@@ -1144,7 +1333,7 @@ async def get_details(payload: dict) -> dict:
             TRIM("Артикул"),
             TRIM("Наименование модели"),
             TRIM("Номер задания производства")
-        ORDER BY "дата расчета" DESC, TRIM("Артикул")
+        ORDER BY "дата расчета" DESC, {order_tail}
     """
 
     async with pool().acquire() as conn:
@@ -1581,14 +1770,33 @@ async def save_price_changes(payload: dict, user_email: str | None = Depends(_re
     return {"success": True, "pending_id": pending_id}
 
 
+def _parse_calc_date(raw):
+    """Дата расчёта из payload фронта — в любом виде, в каком её отдал JSON.
+
+    Раньше строка резалась по двум шаблонам: "T00:00:00Z" и "T00:00:00". Дата со
+    смещением («2026-08-21T00:00:00+00:00») превращалась в «2026-08-21+00:00»,
+    date.fromisoformat падал с ValueError, и весь пакет сохранения уходил в 500 —
+    а страница на ошибке стирала введённые цены.
+    """
+    if not isinstance(raw, str) or not raw:
+        return raw
+    v = raw.strip()
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(v).date()
+    except ValueError:
+        pass
+    try:
+        return date.fromisoformat(v[:10])
+    except ValueError as exc:
+        raise ValueError(f"не разобрать дату расчёта: {raw!r}") from exc
+
+
 def _row_data_from_payload(c: dict) -> dict:
     """Build full row snapshot dict from a change payload (for upsert into pending)."""
     calc_sign = c.get("calc_sign") or c.get("Признак калькуляции")
-    raw_date = c.get("date")
-    if isinstance(raw_date, str) and raw_date:
-        parsed_date = date.fromisoformat(raw_date.replace("T00:00:00Z", "").replace("T00:00:00", ""))
-    else:
-        parsed_date = raw_date
+    parsed_date = _parse_calc_date(c.get("date"))
     return {
         "Бренд-менеджер": c.get("brand_manager"),
         "Модель": c.get("model"),
@@ -1651,14 +1859,47 @@ async def save_batch_changes(payload: dict, user_email: str | None = Depends(_re
             details = "; ".join(f"«{l['model']} / {l['articul']}»: {l['reason']}" for l in locked)
             raise HTTPException(403, f"Некоторые строки заблокированы: {details}")
 
-    row_data_list = [_row_data_from_payload(c) for c in filtered]
+    # Построчно и с перехватом: раньше одна строка с неожиданным значением
+    # (дата в непривычном формате, число не того типа) роняла ВЕСЬ пакет с 500,
+    # а страница на ошибке стирала введённое — люди вводили цены заново.
+    # Теперь сохраняется всё, что сохранимо, а по остальному возвращается
+    # причина, и эти строки остаются на экране изменёнными.
+    saved_ids: list[int] = []
+    failed: list[dict] = []
+    for c in filtered:
+        try:
+            row_data = _row_data_from_payload(c)
+            ids = await upsert_pending_changes_batch([row_data], username)
+            saved_ids.extend(ids)
+        except Exception as exc:  # noqa: BLE001 — причину возвращаем пользователю
+            failed.append({
+                "model": c.get("model"),
+                "articul": c.get("articul"),
+                "plan_id": c.get("plan_id"),
+                "calc_sign": c.get("calc_sign") or c.get("Признак калькуляции"),
+                "reason": f"{type(exc).__name__}: {exc}"[:300],
+            })
+            print(
+                f"[cost] save-batch: строка {c.get('model')} / {c.get('articul')} "
+                f"не сохранена: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
+    result = {
+        "success": not failed,
+        "count": len(saved_ids),
+        "pending_ids": saved_ids,
+        "failed": failed,
+    }
     if _is_mock():
-        pending_ids = await upsert_pending_changes_batch(row_data_list, username)
-        return {"success": True, "count": len(pending_ids), "mock": True, "pending_ids": pending_ids}
-
-    pending_ids = await upsert_pending_changes_batch(row_data_list, username)
-    return {"success": True, "count": len(pending_ids), "pending_ids": pending_ids}
+        result["mock"] = True
+    if failed:
+        result["error"] = (
+            f"Сохранено строк: {len(saved_ids)}. Не сохранено: {len(failed)} — "
+            + "; ".join(f"{f['model']} / {f['articul']}: {f['reason']}" for f in failed[:3])
+            + (" …" if len(failed) > 3 else "")
+        )
+    return result
 
 
 # ── Price approval workflow ────────────────────────────────────────────────────
@@ -1701,14 +1942,56 @@ async def pending_filter_options(request: Request) -> dict:
     return await get_pending_filter_options(selected)
 
 
+# Длина поля [prices].[USERVRKV] в Лисе — char(15). Процедура кладёт туда
+# author_name из JSON и ЕГО ЖЕ подставляет в PRIM ('PLAN_ID: … AUTHOR: …'),
+# поэтому предел задаёт узкое поле, хотя PRIM объявлен char(100). Проверено на
+# живой базе 08.09.2026: INFORMATION_SCHEMA даёт USERVRKV char(15), PRIM char(100).
+_USERVRKV_MAX = 15
+
+# Метка прейскуранта себестоимости закупной продукции. Ставится перед фамилией
+# бренд-менеджера, чтобы два прейскуранта одной пачки (себестоимость и отпускные
+# цены) различались в списке Лисы, а не только по номеру.
+_COST_AUTHOR_PREFIX = "с/с "
+
+
+def _fit_author(name: str, prefix: str = "") -> str:
+    """Автор для JSON процедуры: prefix + фамилия, усечённые под char(15).
+
+    Обрезаем справа: фамилия информативнее инициалов, а метка «с/с» —
+    информативнее фамилии, поэтому префикс сохраняется целиком. Сейчас все
+    одиннадцать бренд-менеджеров укладываются в 15 символов сами (максимум ровно
+    15 — «МАСЛЕННИКОВА А.», «ТАТАРИЦКИЙ В.П.»), с префиксом усечение начинается
+    с 12 символов фамилии. Функция нужна на будущее: длинная фамилия должна
+    аккуратно усечься, а не уехать в обрезку драйвером или в ошибку вставки.
+    """
+    name = (name or "").strip()
+    if prefix:
+        room = _USERVRKV_MAX - len(prefix)
+        out = (prefix + name[:room]) if room > 0 else prefix[:_USERVRKV_MAX]
+    else:
+        out = name[:_USERVRKV_MAX]
+    # rstrip: обрезка может оставить хвостовой пробел («с/с ТАТАРИЦКИЙ »), и он
+    # попадёт в PRIM между фамилией и концом строки.
+    return out.rstrip()
+
+
 def _run_proc_safe(json_str: str) -> None:
-    # Wrapper with exception logging — ensure_future swallows thread errors
+    """Вызов процедуры прейскуранта. Исключения не пускаем наружу: ensure_future
+    их проглотит, а сохранение цен к этому моменту уже состоялось.
+
+    Пишем через log(), а не print(): print остаётся только в stdout контейнера и
+    в ELK не попадает, а результат процедуры (сколько документов ушло, что она
+    вернула в @JSON_OUT) — единственный способ понять на проде, доехал ли
+    прейскурант до Лисы.
+    """
     try:
-        print(f"[cost] _run_proc_safe: {len(json_str)} bytes", flush=True)
-        print(f"[cost] _run_proc_safe PAYLOAD:\n{json_str}", flush=True)
+        log(logging.INFO, "прейскурант: вызов процедуры", bytes=len(json_str))
+        log(logging.DEBUG, "прейскурант: payload", payload=json_str)
         call_calc_sign_procedure(json_str)
     except Exception as exc:
         import traceback
+        log(logging.ERROR, "прейскурант: вызов процедуры не выполнен",
+            error=str(exc), trace=traceback.format_exc())
         print(f"[cost] _run_proc_safe FAILED: {exc}", flush=True)
         traceback.print_exc()
         sys.stdout.flush()
@@ -1735,6 +2018,15 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
     # Фронт шлёт в proc_payload только name-поля, а ITEM_ID уровня берём на бэке из
     # справочника s_price_level — для поля price_level_id в JSON процедуры.
     level_name_by_row: dict[tuple[str, str, str, str], str] = {}
+    # Тот же ключ → бренд-менеджер строки. Он уходит в автора прейскуранта
+    # (просьба пользователей 08.09.2026): раньше туда попадал обрезанный email
+    # нажавшего кнопку («mariy.zuravskay» в Лисе 31.07) или вовсе «system» со
+    # страницы согласования. Заодно бренд-менеджер входит в ключ группировки
+    # документов — см. ниже, почему.
+    bm_by_row: dict[tuple[str, str, str, str], str] = {}
+    # Тот же ключ → полное задание строки. Нужно, чтобы спросить cost_purchase_cost:
+    # закупная продукция ключуется там вместе с заданием.
+    task_by_row: dict[tuple[str, str, str, str], str] = {}
 
     # One-step flow: pressing «Установить цены» is itself the PEO approval action.
     # Mark every pending row as approved in cost_calc_approvals BEFORE the DWH write.
@@ -1742,7 +2034,7 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
     if not _is_mock():
         async with pool().acquire() as conn:
             pending_rows = await conn.fetch(
-                "SELECT \"Модель\", \"Артикул\", \"Признак калькуляции\", \"PLAN_ID\", \"Номер задания производства\", \"Уровень цен\" FROM cost_price_pending WHERE id = ANY($1::bigint[])",
+                "SELECT \"Модель\", \"Артикул\", \"Признак калькуляции\", \"PLAN_ID\", \"Номер задания производства\", \"Уровень цен\", \"Бренд-менеджер\" FROM cost_price_pending WHERE id = ANY($1::bigint[])",
                 ids,
             )
         for pr in pending_rows:
@@ -1751,12 +2043,19 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
                 pr["Модель"], pr["Артикул"], pr["Признак калькуляции"], pr["PLAN_ID"],
                 "approved", reviewed_by, task_number=tn,
             )
-            level_name_by_row[(
+            row_key = (
                 str(pr.get("Модель", "") or "").strip(),
                 str(pr.get("Артикул", "") or "").strip(),
                 str(pr.get("Признак калькуляции", "") or "").strip(),
                 str(pr.get("PLAN_ID", "") or "").strip(),
-            )] = str(pr.get("Уровень цен", "") or "").strip()
+            )
+            level_name_by_row[row_key] = str(pr.get("Уровень цен", "") or "").strip()
+            task_by_row[row_key] = tn
+            bm = str(pr.get("Бренд-менеджер", "") or "").strip()
+            # В кэше у части строк бренд-менеджер пуст или стоит «-». Пустого
+            # автора процедуре отдавать нельзя (PRIM превратится в «AUTHOR: »),
+            # поэтому падаем на того, кто нажал кнопку, — как было до этой правки.
+            bm_by_row[row_key] = bm if bm and bm != "-" else reviewed_by
 
     count = await apply_pending_changes(ids, reviewed_by)
     result = {"success": True, "applied": count}
@@ -1802,17 +2101,65 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
     if proc_payload:
         import json as _json
 
-        # Группировка:
-        #   КПСС   — по (calc_sign, plan_id): отдельный прейскурант на план
-        #   ПФКСС  — только по calc_sign: все строки в один прейскурант
-        groups: dict[tuple[str, str], list[dict]] = {}
+        # Какие из строк — закупная готовая продукция. Признак не в калькуляции
+        # (у неё обычные КПСС/ПФКСС), а в наличии раскладки cost_purchase_cost,
+        # поэтому спрашиваем её пакетно по ключу С ЗАДАНИЕМ.
+        purchase_by_row: dict[tuple[str, str, str, str], dict] = {}
+        if not _is_mock():
+            try:
+                pkeys = []
+                for it in proc_payload:
+                    rk = (
+                        str(it.get("model", "") or "").strip(),
+                        str(it.get("articul", "") or "").strip(),
+                        str(it.get("calc_sign", "") or "").strip(),
+                        str(it.get("plan_id", "") or "").strip(),
+                    )
+                    pkeys.append((rk, purchase.make_key(rk[0], rk[1], rk[2], rk[3], task_by_row.get(rk, ""))))
+                flags = await purchase.flags_for([pk for _, pk in pkeys])
+                for rk, pk in pkeys:
+                    f = flags.get(pk)
+                    if f:
+                        purchase_by_row[rk] = f
+            except Exception:
+                # Без раскладки закупная поедет одним документом, как раньше:
+                # цены в Лису уйдут, отдельного прейскуранта себестоимости не будет.
+                log(logging.WARNING, "прейскурант: раскладка закупной не прочитана",
+                    error=traceback.format_exc(limit=3))
+
+        # Группировка. Ключ — (признак, план, бренд-менеджер, вид документа):
+        #   КПСС   — отдельный прейскурант на план
+        #   ПФКСС  — план в ключ не входит, строки собираются вместе
+        #   бренд-менеджер — в ключе, потому что он уходит АВТОРОМ прейскуранта:
+        #     ПЭО отправляет пачкой ассортимент разных менеджеров, и без этого
+        #     автором всей пачки становился бы один из них (брали первую строку).
+        #   вид документа:
+        #     ''         — обычная строка, тип цены по признаку калькуляции;
+        #     'purchase' — закупная, документ ОТПУСКНЫХ ЦЕН, тип цены 1;
+        #     'cost'     — закупная, документ СЕБЕСТОИМОСТИ, тип цены 1.
+        #   Для закупной строки создаётся ДВА документа (решение заказчика
+        #   08.09.2026). Закупная не смешивается с обычной в одном документе даже
+        #   при совпадении признака, плана и менеджера: у неё тип цены 1, а у
+        #   обычной КПСС — 3, и тип задаётся на документ, а не на строку.
+        groups: dict[tuple[str, str, str, str], list[dict]] = {}
         for item in proc_payload:
             cs = (item.get("calc_sign") or "").strip()
-            if cs == "КПСС":
-                pi = (item.get("plan_id") or "").strip()
-                groups.setdefault((cs, pi), []).append(item)
-            elif cs == "ПФКСС":
-                groups.setdefault((cs, ""), []).append(item)
+            if cs not in ("КПСС", "ПФКСС"):
+                continue
+            pi = (item.get("plan_id") or "").strip()
+            row_key = (
+                str(item.get("model", "") or "").strip(),
+                str(item.get("articul", "") or "").strip(),
+                cs,
+                pi,
+            )
+            bm = bm_by_row.get(row_key, "") or (item.get("author_name") or "system")
+            plan_key = pi if cs == "КПСС" else ""
+            if row_key in purchase_by_row:
+                groups.setdefault((cs, plan_key, bm, "cost"), []).append(item)
+                groups.setdefault((cs, plan_key, bm, "purchase"), []).append(item)
+            else:
+                groups.setdefault((cs, plan_key, bm, ""), []).append(item)
 
         # Построить вложенный JSON: один документ на группу с prices1[]
         calc_sign_price_type = {"КПСС": 3, "ПФКСС": 1}
@@ -1831,28 +2178,59 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
                 price_level_id_by_name = {}
 
         docs = []
-        for (cs, pi), items in groups.items():
-            price_type = calc_sign_price_type.get(cs, items[0].get("price_type", 0))
-            author_name = (items[0].get("author_name", "system") or "system")[:15]
+        # Сначала документы себестоимости, потом цены: порядок задан заказчиком,
+        # и он же определяет порядок номеров прейскурантов в Лисе.
+        for (cs, pi, bm, kind), items in sorted(
+            groups.items(), key=lambda kv: (0 if kv[0][3] == "cost" else 1, kv[0][0], kv[0][1], kv[0][2])
+        ):
+            is_cost_doc = kind == "cost"
+            # У закупной ОБА документа с типом цены 1 (решение заказчика
+            # 08.09.2026) — и себестоимость, и отпускные цены. При типе 3
+            # процедура полезла бы обновлять s_modeli.PLAN_PRICE, а карточку
+            # модели трогать не нужно: у закупной плановая цена ведётся не
+            # отсюда. У обычных строк тип по-прежнему от признака калькуляции.
+            price_type = 1 if kind in ("cost", "purchase") else calc_sign_price_type.get(
+                cs, items[0].get("price_type", 0)
+            )
+            author_name = _fit_author(bm, _COST_AUTHOR_PREFIX if is_cost_doc else "")
 
             prices1 = []
             for it in items:
+                row_key = (
+                    str(it.get("model", "") or "").strip(),
+                    str(it.get("articul", "") or "").strip(),
+                    cs,
+                    str(it.get("plan_id", "") or "").strip(),
+                )
                 # price_level_id есть только у ПФКСС: имя уровня из строки
                 # согласования → ITEM_ID справочника; не нашли — 0.
+                # В документе себестоимости уровень НЕ передаём: процедура пишет
+                # s_modeli.PRICE_LEVEL_ID из любой строки с price_type=1, и уровень
+                # должен приехать документом цен, а не этим. Ноль отсекается её
+                # условием PRICE_LEVEL_ID > 0.
                 price_level_id = 0
-                if cs == "ПФКСС":
-                    row_key = (
-                        str(it.get("model", "") or "").strip(),
-                        str(it.get("articul", "") or "").strip(),
-                        cs,
-                        str(it.get("plan_id", "") or "").strip(),
-                    )
+                if cs == "ПФКСС" and not is_cost_doc:
                     price_level_id = price_level_id_by_name.get(level_name_by_row.get(row_key, ""), 0)
+
+                if is_cost_doc:
+                    # Себестоимость закупной — полная из прихода (total_byn):
+                    # цена поставщика плюс накладные, пошлина и сертификация.
+                    cena = purchase_by_row.get(row_key, {}).get("purchase_total_byn") or 0
+                else:
+                    cena = it.get("wholesale_rub", 0)
+
                 prices1.append({
                     "model": it.get("model", ""),
                     "articul": it.get("articul", ""),
-                    "wholesale_rub": it.get("wholesale_rub", 0),
-                    "plan_price": it.get("cost_rub") or it.get("Себестоимость, руб.", 0),
+                    "wholesale_rub": cena,
+                    # plan_price = 0 у закупной в ОБОИХ документах: себестоимость
+                    # теперь едет отдельным прейскурантом, а поле plan_price
+                    # процедура применяет только при price_type=3. При этом сбор
+                    # отчёта PLAN_PRICE_DETAILS в ней сделан БЕЗ проверки типа, и
+                    # ненулевое значение засоряло бы ответ моделями, у которых
+                    # ничего не обновилось.
+                    "plan_price": 0 if row_key in purchase_by_row
+                                  else (it.get("cost_rub") or it.get("Себестоимость, руб.", 0)),
                     "price_level_id": price_level_id,
                 })
 
@@ -1865,8 +2243,16 @@ async def apply_changes(payload: dict, _: str = Depends(_require_perm("cost:appr
             })
 
         json_str = _json.dumps(docs, ensure_ascii=False, default=str)
+        log(logging.INFO, "прейскурант: документы собраны",
+            docs=len(docs),
+            cost_docs=sum(1 for d in docs if d["author_name"].startswith(_COST_AUTHOR_PREFIX)),
+            rows=sum(len(d["prices1"]) for d in docs),
+            authors=sorted({d["author_name"] for d in docs}))
 
-        # Один вызов процедуры на все документы (в threadpool, т.к. pyodbc)
+        # Один вызов процедуры на все документы (в threadpool, т.к. pyodbc).
+        # Два документа закупной уходят вместе, а не двумя EXEC: процедура и так
+        # итерирует по массиву курсором и создаёт по прейскуранту на документ, а
+        # один вызов не оставляет состояния «себестоимость записалась, цены нет».
         asyncio.ensure_future(
             asyncio.get_event_loop().run_in_executor(
                 None, _run_proc_safe, json_str
@@ -1920,11 +2306,14 @@ async def raw_data_endpoint(request: Request, _: str = Depends(_require_perm("co
     plan_id = request.query_params.get("plan_id") or None
     date_str = request.query_params.get("date")
     task_number = request.query_params.get("task_number") or None
+    # Конкретный снимок источника (миграция 0057); без него — последний.
+    snapshot_raw = request.query_params.get("snapshot_id") or None
+    snapshot_id = int(snapshot_raw) if snapshot_raw and snapshot_raw.isdigit() else None
     if not model or not articul:
         raise HTTPException(400, "model and articul are required")
     if _is_mock():
         return mocks.get_raw_cache_rows(model, articul, calc_sign, plan_id, date_str)
-    return await get_raw_cache_rows(model, articul, calc_sign, plan_id, date_str, task_number)
+    return await get_raw_cache_rows(model, articul, calc_sign, plan_id, date_str, task_number, snapshot_id)
 
 
 @router.get("/versions")
@@ -1963,6 +2352,8 @@ async def create_version_endpoint(payload: dict, user_email: str = Depends(_requ
     rows = payload.get("rows", [])
     status = payload.get("status", "draft")
     task_number = payload.get("task_number") or None
+    # Основание версии — снимок источника, открытый в редакторе (миграция 0057).
+    source_version_id = payload.get("source_version_id") or None
     if not model or not articul:
         raise HTTPException(400, "model and articul are required")
     if status not in ("draft", "pending"):
@@ -1971,7 +2362,24 @@ async def create_version_endpoint(payload: dict, user_email: str = Depends(_requ
         await _check_calc_locks(user_email, model, articul, calc_sign, plan_id, date_str, task_number)
     if _is_mock():
         return mocks.create_version(model, articul, calc_sign, plan_id, date_str, username, rows, status)
-    return await create_version(model, articul, calc_sign, plan_id, date_str, username, rows, status, task_number)
+    result = await create_version(
+        model, articul, calc_sign, plan_id, date_str, username, rows, status, task_number,
+        source_version_id=source_version_id,
+    )
+    # Мультипак: связываем версию с последней сборкой, чтобы журнал отвечал «из
+    # чего сложилась эта версия». Для обычной калькуляции — no-op.
+    try:
+        await multipack.attach_version(
+            model=model, articul=articul, calc_sign=calc_sign or "",
+            plan_id=plan_id or "", task_number=task_number or "",
+            version_id=result["version_id"],
+        )
+    except Exception as exc:
+        # Ссылка в журнале — аудит, а не сохранение расчёта: версия уже создана
+        # и применена, откатывать её из-за этого нельзя.
+        log(logging.WARNING, "не удалось связать версию со сборкой мультипака",
+            model=model, articul=articul, error=str(exc))
+    return result
 
 
 @router.post("/save-calculation-draft")
@@ -2685,6 +3093,162 @@ async def remove_calc_sign_copy(
     return {"success": True, **result}
 
 
+@router.get("/multipack")
+async def multipack_state(request: Request, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Состав мультипака и актуальная себестоимость его одиночек.
+
+    Отдаётся и для обычной калькуляции (`is_pack=false`) — редактор по этому
+    ответу решает, показывать блок состава или предложить «сделать мультипаком».
+    Право просмотровое: состав видят все, кто видит расчёт.
+    """
+    model = request.query_params.get("model") or ""
+    articul = request.query_params.get("articul") or ""
+    if not model.strip() or not articul.strip():
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return mocks.multipack_state(model, articul)
+    return await multipack.get_state(
+        model, articul,
+        request.query_params.get("calc_sign") or "",
+        request.query_params.get("plan_id") or "",
+        request.query_params.get("task_number") or "",
+    )
+
+
+@router.put("/multipack")
+async def multipack_save(
+    payload: dict, user_email: str = Depends(_require_perm("cost:multipack"))
+) -> dict:
+    """Создать или переписать состав мультипака.
+
+    Тело: model, articul, pack_size (необязательно), note, items[] —
+    {src_model, src_articul, qty, src_calc_sign?, src_plan_id?}. Пустые
+    src_calc_sign/src_plan_id означают «брать одиночку того же этапа и плана,
+    что у пака», и состав тогда работает на всех этапах без правки.
+    """
+    if _is_mock():
+        return {"success": True, "mock": True}
+    try:
+        result = await multipack.save_pack(
+            model=str(payload.get("model") or ""),
+            articul=str(payload.get("articul") or ""),
+            items=payload.get("items") or [],
+            pack_size=payload.get("pack_size"),
+            note=str(payload.get("note") or ""),
+            username=user_email or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"success": True, **result}
+
+
+@router.delete("/multipack")
+async def multipack_delete(
+    request: Request, user_email: str = Depends(_require_perm("cost:multipack"))
+) -> dict:
+    """Распустить мультипак (убрать состав и журнал сборок).
+
+    Строки расчёта при этом остаются в версии калькуляции: обнулять уже
+    согласованную себестоимость молча нельзя. Убираются они следующим
+    сохранением версии из редактора.
+    """
+    model = request.query_params.get("model") or ""
+    articul = request.query_params.get("articul") or ""
+    if not model.strip() or not articul.strip():
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return {"success": True, "mock": True}
+    try:
+        result = await multipack.delete_pack(model, articul, user_email or "")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"success": True, **result}
+
+
+@router.post("/multipack/build")
+async def multipack_build(
+    payload: dict, user_email: str = Depends(_require_perm("cost:multipack"))
+) -> dict:
+    """Собрать/пересобрать строки расчёта мультипака.
+
+    Версию НЕ создаёт и в кэш не пишет: строки возвращаются в редактор, человек
+    их видит и сохраняет обычным путём (черновик или отправка на утверждение).
+    Иначе сборка обходила бы согласование ПЭО.
+
+    `rows` — текущие строки редактора: всё, что не помечено маркером состава
+    (упаковка), переносится в результат как есть.
+    """
+    model = str(payload.get("model") or "")
+    articul = str(payload.get("articul") or "")
+    if not model.strip() or not articul.strip():
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return mocks.multipack_build(model, articul)
+    try:
+        return await multipack.build(
+            model=model,
+            articul=articul,
+            calc_sign=str(payload.get("calc_sign") or ""),
+            plan_id=str(payload.get("plan_id") or ""),
+            task_number=str(payload.get("task_number") or ""),
+            rows=payload.get("rows") or [],
+            username=user_email or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/multipack/candidates")
+async def multipack_candidates(
+    request: Request, _: str = Depends(_require_perm("cost:multipack"))
+) -> dict:
+    """Калькуляции-одиночки для добавления в состав.
+
+    Параметры: q (модель/артикул/наименование), calc_sign, level01,
+    brand_manager, exclude_model/exclude_articul (сам пак), limit (≤200).
+    Ответ: {data, truncated, limit}.
+    """
+    if _is_mock():
+        data = mocks.multipack_candidates(request.query_params.get("q") or "")
+        return {"data": data, "truncated": False, "limit": 50}
+    return await multipack.search_candidates(
+        query=request.query_params.get("q") or "",
+        calc_sign=request.query_params.get("calc_sign") or "",
+        plan_id=request.query_params.get("plan_id") or "",
+        level01=request.query_params.get("level01") or "",
+        brand_manager=request.query_params.get("brand_manager") or "",
+        exclude_model=request.query_params.get("exclude_model") or "",
+        exclude_articul=request.query_params.get("exclude_articul") or "",
+        limit=int(request.query_params.get("limit") or 50),
+    )
+
+
+@router.get("/multipack/list")
+async def multipack_list(_: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Журнал мультипаков: состав, последняя сборка, кто и когда."""
+    if _is_mock():
+        return {"data": [], "mock": True}
+    return {"data": await multipack.list_packs()}
+
+
+@router.get("/multipack/usage")
+async def multipack_usage(
+    request: Request, _: str = Depends(_require_perm("cost:view"))
+) -> dict:
+    """В какие мультипаки входит эта одиночка.
+
+    Нужно при правке её калькуляции: себестоимость паков сама не изменится
+    (пересборка ручная), и человек должен знать, что паки поедут.
+    """
+    model = request.query_params.get("model") or ""
+    articul = request.query_params.get("articul") or ""
+    if not model.strip() or not articul.strip():
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        return {"data": []}
+    return {"data": await multipack.packs_using(model, articul)}
+
+
 @router.get("/plan-materials")
 async def plan_materials_endpoint(request: Request, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:
     """Материалы плана, агрегированные по ключу из пяти полей источника.
@@ -2749,7 +3313,7 @@ async def save_plan_price_set_endpoint(
     if _is_mock():
         return {"success": True, "set_id": 0, "mock": True}
     try:
-        set_id = await save_plan_price_set(
+        saved = await save_plan_price_set(
             plan_id,
             payload.get("title") or "",
             rate,
@@ -2760,7 +3324,7 @@ async def save_plan_price_set_endpoint(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"success": True, "set_id": set_id}
+    return {"success": True, **saved}
 
 
 @router.post("/plan-price-sets/{set_id}/apply")
@@ -2808,3 +3372,764 @@ async def delete_plan_price_set_endpoint(
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"success": True}
+
+
+# ── Разбор блоков графиков языковой моделью («Разбор ИИ») ───────────────────
+# Блок ставится под логической секцией страницы и получает те же серии, что
+# нарисованы на её карточках. Арифметику считает app/insights.py, модель только
+# интерпретирует посчитанное — см. докстринг модуля.
+
+
+@router.get("/insights/status")
+async def insights_status() -> dict:
+    """Настроен ли разбор. Фронт по этому ответу решает, показывать ли блок.
+
+    Без ключа модели кнопку рисовать незачем — она бы только раздражала.
+    """
+    return {"enabled": insights.llm_enabled(), "model": insights._model()}
+
+
+@router.post("/insights/block")
+async def analyze_block(
+    payload: dict, email: str = Depends(_require_perm("cost:insights"))
+) -> dict:
+    """Разбор одного блока графиков.
+
+    Серии приходят с фронта: их уже посчитал и отдал этому же пользователю
+    бэкенд (`/margin`, `/commercial`), права на данные проверены там. Поэтому
+    здесь проверяется только право на сам разбор и РАЗМЕР входа — чтобы под
+    видом графика не прислали сырую выгрузку и не улетел гигантский промпт.
+    """
+    block = str(payload.get("block") or "").strip()
+    block_title = str(payload.get("block_title") or "").strip()
+    if not block:
+        raise HTTPException(400, "Не указан ключ блока (block)")
+
+    try:
+        charts = insights.validate_charts(payload.get("charts"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    context = payload.get("context") or {}
+    if not isinstance(context, dict):
+        raise HTTPException(400, "context должен быть объектом")
+
+    # В mock-режиме пользователя в заголовке может не быть: права отключены,
+    # а журнал не должен падать на NOT NULL.
+    who = email if isinstance(email, str) and email else "mock"
+
+    req_hash = insights.request_hash(block, block_title, context, charts)
+
+    if not payload.get("force"):
+        cached = await insights.cached_run(req_hash)
+        if cached is not None:
+            log(logging.INFO, "insights: отдан кэш", block=block, user=who,
+                cached_at=cached.get("cached_at"))
+            return {"block": block, **cached}
+
+    result = await insights.analyze(block, block_title, charts, context)
+    await insights.record_run(req_hash, block, block_title, who, context, result)
+
+    usage = result.get("usage") or {}
+    log(logging.INFO, "insights: разбор блока", block=block, user=who,
+        model=result.get("model"), degraded=result.get("degraded"),
+        elapsed_ms=result.get("elapsed_ms"),
+        prompt_tokens=usage.get("prompt_tokens"),
+        completion_tokens=usage.get("completion_tokens"),
+        cost=usage.get("cost"))
+
+    return {"cached": False, **result}
+
+
+# Ссылки на фоновые исследования. asyncio держит задачи слабой ссылкой — без
+# этого множества сборщик мусора может убить агента на середине работы (тот же
+# приём, что у _refresh_task выше).
+_ask_tasks: set[asyncio.Task] = set()
+
+# thread_id приходит от клиента и уходит в SQL как ::uuid — формат
+# проверяем до запроса, чтобы не ловить InvalidTextRepresentation
+# как 500 на кривом значении.
+_UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
+
+
+async def _run_investigation(job_id: str, question: str, context: dict,
+                             history: list[dict] | None = None) -> None:
+    """Фоновое исследование: считает и дописывает результат в свою задачу."""
+
+    async def progress(step: int, tool: str, sql_calls: int) -> None:
+        await insight_agent.update_progress(job_id, step, tool, sql_calls)
+
+    try:
+        result = await insight_agent.investigate(question, context,
+                                                 on_progress=progress,
+                                                 history=history)
+    except Exception as exc:
+        # Любое необработанное исключение обязано закрыть задачу: иначе она
+        # останется running до уборки, а пользователь будет ждать вечно.
+        log(logging.ERROR, "insights.ask: исследование упало", job_id=job_id,
+            error=f"{type(exc).__name__}: {str(exc)[:300]}")
+        await insight_agent.finish_job(job_id, {
+            "degraded": True,
+            "error": f"внутренняя ошибка: {type(exc).__name__}",
+            "trace": [], "steps": 0, "sql_calls": 0,
+        })
+        return
+
+    await insight_agent.finish_job(job_id, result)
+
+    usage = result.get("usage") or {}
+    log(logging.INFO, "insights.ask: исследование", job_id=job_id,
+        model=result.get("model"), degraded=result.get("degraded"),
+        steps=result.get("steps"), sql_calls=result.get("sql_calls"),
+        elapsed_ms=result.get("elapsed_ms"),
+        tools=",".join(t.get("tool", "") for t in (result.get("trace") or [])),
+        prompt_tokens=usage.get("prompt_tokens"),
+        completion_tokens=usage.get("completion_tokens"),
+        cost=usage.get("cost"))
+
+
+@router.post("/insights/ask")
+async def ask_insight(
+    payload: dict, email: str = Depends(_require_perm("cost:insights"))
+) -> dict:
+    """Запустить углублённое исследование. Отдаёт job_id, а не результат.
+
+    Исследование идёт 20–120 секунд, и держать на нём HTTP-запрос нельзя: у
+    `location /api/cost/` в nginx дефолтный минутный proxy_read_timeout, и
+    запрос на 84 секунды бэкенд досчитывал, а клиент получал 504 (02.09.2026).
+    Поэтому здесь только старт, а результат забирается через
+    `GET /insights/ask/{job_id}`.
+    """
+    question = str(payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(400, "Не задан вопрос")
+    if len(question) > 2000:
+        raise HTTPException(400, "Вопрос длиннее 2000 символов")
+
+    context = payload.get("context") or {}
+    if not isinstance(context, dict):
+        raise HTTPException(400, "context должен быть объектом")
+
+    if not insights.llm_enabled():
+        raise HTTPException(503, "Исследование не настроено (COST_LLM_*)")
+
+    # Ветка диалога. Пусто — начинается новый разговор; иначе вопрос считается
+    # уточняющим, и агент получит сводку прошлых раундов.
+    thread_id = str(payload.get("thread_id") or "").strip() or None
+    if thread_id and not _UUID_RE.match(thread_id):
+        raise HTTPException(400, "Некорректный thread_id")
+
+    who = email if isinstance(email, str) and email else "mock"
+    req_hash = await insight_agent.request_hash(question, context, thread_id)
+
+    # Кэш отдаём сразу готовым результатом — опрашивать нечего.
+    if not payload.get("force"):
+        cached = await insight_agent.cached_answer(req_hash)
+        if cached is not None:
+            log(logging.INFO, "insights.ask: отдан кэш", user=who,
+                thread_id=thread_id, cached_at=cached.get("cached_at"))
+            return {"status": "done", "question": question,
+                    "thread_id": thread_id, **cached}
+
+    # Брошенные задачи (умер процесс на середине) не должны занимать слоты.
+    await insight_agent.reap_stale_jobs()
+    if await insight_agent.running_jobs() >= insight_agent.MAX_RUNNING_JOBS:
+        raise HTTPException(429, "Одновременно выполняется слишком много "
+                                 "исследований, попробуйте через минуту")
+
+    history = await insight_agent.thread_history(thread_id) if thread_id else []
+    seq = await insight_agent.next_seq(thread_id) if thread_id else 1
+
+    job_id, thread_id = await insight_agent.create_job(
+        req_hash, who, question, context, thread_id=thread_id, seq=seq)
+    task = asyncio.ensure_future(
+        _run_investigation(job_id, question, context, history))
+    _ask_tasks.add(task)
+    task.add_done_callback(_ask_tasks.discard)
+
+    log(logging.INFO, "insights.ask: запуск", job_id=job_id, user=who,
+        thread_id=thread_id, seq=seq, history_rounds=len(history),
+        model=insights._model())
+    return {"status": "running", "job_id": job_id, "thread_id": thread_id,
+            "seq": seq, "question": question}
+
+
+@router.get("/insights/ask/{job_id}")
+async def ask_insight_status(
+    job_id: str, _: str = Depends(_require_perm("cost:insights"))
+) -> dict:
+    """Состояние исследования: running с прогрессом либо готовый результат."""
+    job = await insight_agent.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Исследование не найдено")
+    return job
+
+
+# ── Админка подключения к языковой модели ───────────────────────────────────
+# Настройки живут в cost_llm_settings (миграция 0051) и перекрывают COST_LLM_*
+# из окружения. Смысл: на проде .env приходит из CI-переменной через docker
+# config, и смена модели там стоила бы полного деплоя стека — а провайдеры
+# нестабильны настолько, что переключаться приходится по ходу дня.
+
+
+@router.get("/admin/llm")
+async def llm_settings_get(_: str = Depends(_require_perm("cost:llm_admin"))) -> dict:
+    """Текущее подключение. Ключ — только маской, плюс видно, что откуда взято."""
+    await llm_settings.refresh(force=True)
+    return llm_settings.public_view()
+
+
+@router.put("/admin/llm")
+async def llm_settings_put(
+    payload: dict, email: str = Depends(_require_perm("cost:llm_admin"))
+) -> dict:
+    """Сохранить подключение.
+
+    Пустой `api_key` означает «оставить прежний»: интерфейс получает только
+    маску и вернуть настоящий ключ не может.
+    """
+    who = email if isinstance(email, str) and email else "mock"
+    try:
+        return await llm_settings.save(payload, who)
+    except ValueError as e:
+        # Текст валидации уходит прямо в интерфейс — он написан для человека.
+        raise HTTPException(400, str(e))
+
+
+@router.post("/admin/llm/test")
+async def llm_settings_test(
+    payload: dict, _: str = Depends(_require_perm("cost:llm_admin"))
+) -> dict:
+    """Пробный вызов модели: работает ли подключение и сколько занимает.
+
+    Проверяем ДО того, как настройку увидят пользователи: иначе неработающая
+    модель обнаруживается на живых вопросах.
+    """
+    import time as _time
+
+    await llm_settings.refresh(force=True)
+    if not insights.llm_enabled():
+        raise HTTPException(400, "Подключение выключено или не задан ключ")
+
+    started = _time.monotonic()
+    body = {
+        "model": insights._model(),
+        "messages": [{"role": "user",
+                      "content": "Ответь одним словом по-русски: работает"}],
+        "max_tokens": 50,
+    }
+    effort = insights.reasoning_effort()
+    if effort:
+        body["reasoning_effort"] = effort
+
+    try:
+        resp = await insights.post_chat(body, timeout=min(insights._timeout(), 60))
+    except insights.InsightError as e:
+        return {"ok": False, "error": str(e),
+                "elapsed_ms": int((_time.monotonic() - started) * 1000)}
+
+    elapsed = int((_time.monotonic() - started) * 1000)
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = str((resp.json().get("error") or {}).get("message") or "")[:200]
+        except Exception:
+            detail = resp.text[:200]
+        return {"ok": False, "status": resp.status_code, "error": detail,
+                "elapsed_ms": elapsed}
+
+    data = resp.json()
+    message = (data.get("choices") or [{}])[0].get("message") or {}
+    usage = data.get("usage") or {}
+    return {
+        "ok": True,
+        "model": insights._model(),
+        "elapsed_ms": elapsed,
+        "answer": (message.get("content") or "")[:200],
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "cost": data.get("cost"),
+    }
+
+
+@router.get("/admin/llm/models")
+async def llm_settings_models(_: str = Depends(_require_perm("cost:llm_admin"))) -> dict:
+    """Список моделей у провайдера — чтобы имя не вбивали руками.
+
+    Опечатка в имени модели выясняется только на первом вопросе пользователя, а
+    у провайдеров десятки моделей (у opencode zen — 63).
+    """
+    import httpx
+
+    await llm_settings.refresh(force=True)
+    key = insights._api_key()
+    if not key:
+        raise HTTPException(400, "Не задан ключ провайдера")
+
+    url = f"{insights._api_base()}/models"
+    try:
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {key}"})
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": f"{type(e).__name__}", "models": []}
+
+    if resp.status_code != 200:
+        return {"ok": False, "status": resp.status_code,
+                "error": resp.text[:200], "models": []}
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        return {"ok": False, "error": "провайдер вернул не JSON", "models": []}
+
+    items = payload.get("data") if isinstance(payload, dict) else payload
+    names = sorted({str(m.get("id") if isinstance(m, dict) else m)
+                    for m in (items or []) if m})
+    return {"ok": True, "models": names}
+
+
+@router.get("/admin/llm/usage")
+async def llm_settings_usage(
+    days: int = 7, _: str = Depends(_require_perm("cost:llm_admin"))
+) -> dict:
+    """Сколько стоил разбор за период — из журналов, а не из догадок.
+
+    Стоимость провайдер отдаёт строкой, поэтому суммируем приведением к
+    numeric: у разных провайдеров разная точность, и хранится она как есть.
+    """
+    days = max(1, min(int(days or 7), 90))
+    async with acquire() as conn:
+        blocks = await conn.fetchrow(
+            "SELECT count(*) AS runs,"
+            "       count(*) FILTER (WHERE degraded) AS failed,"
+            "       coalesce(sum(nullif(cost, '')::numeric), 0) AS cost,"
+            "       coalesce(sum(prompt_tokens), 0) AS prompt_tokens,"
+            "       coalesce(sum(completion_tokens), 0) AS completion_tokens "
+            "FROM cost_insight_runs "
+            f"WHERE created_at > now() - interval '{days} days'")
+        asks = await conn.fetchrow(
+            "SELECT count(*) AS runs,"
+            "       count(*) FILTER (WHERE degraded) AS failed,"
+            "       coalesce(sum((SELECT coalesce(sum(nullif(part, '')::numeric), 0)"
+            "                     FROM unnest(string_to_array(cost, ';')) AS part)), 0)"
+            "         AS cost,"
+            "       coalesce(sum(prompt_tokens), 0) AS prompt_tokens,"
+            "       coalesce(sum(completion_tokens), 0) AS completion_tokens,"
+            "       coalesce(round(avg(elapsed_ms)), 0) AS avg_ms "
+            "FROM cost_insight_questions "
+            f"WHERE created_at > now() - interval '{days} days'")
+
+    def num(value: Any) -> float:
+        return float(value or 0)
+
+    return {
+        "days": days,
+        "blocks": {"runs": blocks["runs"], "failed": blocks["failed"],
+                   "cost": round(num(blocks["cost"]), 5),
+                   "prompt_tokens": blocks["prompt_tokens"],
+                   "completion_tokens": blocks["completion_tokens"]},
+        "asks": {"runs": asks["runs"], "failed": asks["failed"],
+                 "cost": round(num(asks["cost"]), 5),
+                 "prompt_tokens": asks["prompt_tokens"],
+                 "completion_tokens": asks["completion_tokens"],
+                 "avg_ms": int(num(asks["avg_ms"]))},
+        "cost_total": round(num(blocks["cost"]) + num(asks["cost"]), 5),
+    }
+
+
+# ── Отметка «нужна замена артикула» и рассылка (пожелание № 4) ────────────────
+
+@router.get("/articul-replace/recipients")
+async def articul_replace_recipients(_: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Кому уйдёт сообщение: адресаты по сегментам (ЧНИ / остальное) и настроен ли Битрикс.
+
+    Фронт показывает это в подсказке к галочке, чтобы экономист видел, кого он
+    оповещает и уйдёт ли сообщение вообще.
+    """
+    people = await articul_replace.recipients()
+    return {
+        "recipients": people,
+        "bitrix_enabled": articul_replace.bitrix_enabled(),
+        "chni_level01": list(articul_replace.CHNI_LEVEL01),
+    }
+
+
+@router.post("/articul-replace")
+async def articul_replace_set(
+    payload: dict,
+    user: str | None = Depends(_require_perm("cost:articul_replace")),
+) -> dict:
+    """Поставить или снять отметку «нужна замена артикула» по строке таблицы.
+
+    Body: { model, articul, calc_sign?, plan_id?, task_number?, needed: bool,
+            comment?, context?: { model_name, level01, country, brand_manager } }
+
+    При needed=true сообщение в Битрикс уходит адресатам сегмента, выбранного
+    по context.level01 (ЧНИ — носки и Orodoro, иначе — остальное). Итог
+    возвращается в ответе (`notify`) и сохраняется в журнале; сбой доставки
+    отметку не откатывает.
+    """
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model и articul обязательны")
+    needed = payload.get("needed")
+    if not isinstance(needed, bool):
+        raise HTTPException(400, "needed должен быть true или false")
+
+    key = articul_replace.make_key(
+        model, articul, payload.get("calc_sign"), payload.get("plan_id"), payload.get("task_number"),
+    )
+    context = payload.get("context") or {}
+    if not isinstance(context, dict):
+        raise HTTPException(400, "context должен быть объектом")
+    set_by = (user or payload.get("user") or "system").strip() or "system"
+    comment = str(payload.get("comment") or "").strip()[:1000]
+
+    # Снять уже стоящую отметку может только администратор (заказчик,
+    # 09.09.2026: калькулятор, ПЭО и БМ снимали галочку после отправки).
+    # Отметка — сообщение операторам; отозвать его молча нельзя. Повторная
+    # установка (needed=true поверх true) остаётся всем с правом: так
+    # повторяют рассылку, если она не дошла.
+    if not needed and user is not None:
+        current = (await articul_replace.flags_for([key])).get(key)
+        if current and current.get("replace_needed"):
+            perms = await get_user_permissions(user)
+            if "cost:admin" not in perms:
+                raise HTTPException(
+                    403, "Снять отметку «нужна замена артикула» может только администратор",
+                )
+
+    return await articul_replace.set_flag(
+        key, needed=needed, comment=comment, set_by=set_by, context=context,
+    )
+
+
+# ── Статус «Неактуальная модель/артикул» ──────────────────────────────────────
+
+@router.post("/obsolete")
+async def obsolete_set(
+    payload: dict,
+    user: str | None = Depends(_require_perm("cost:obsolete")),
+) -> dict:
+    """Поставить или снять статус «Неактуальная модель/артикул».
+
+    Body: { model, articul, obsolete: bool, comment? }
+
+    Ключ — модель + артикул: статус ложится на все калькуляции изделия. Право
+    `cost:obsolete` — у калькулятора, ПЭО и Full Admin (миграция 0056). Ответ —
+    поля `obsolete_*`, как в строках /aggregated; фронт накладывает их на все
+    строки той же пары.
+    """
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model и articul обязательны")
+    flag = payload.get("obsolete")
+    if not isinstance(flag, bool):
+        raise HTTPException(400, "obsolete должен быть true или false")
+    set_by = (user or payload.get("user") or "system").strip() or "system"
+    comment = str(payload.get("comment") or "").strip()[:1000]
+    return await obsolete.set_flag(
+        obsolete.make_key(model, articul), obsolete=flag, comment=comment, set_by=set_by,
+    )
+
+
+# ── Согласование цен по постановлению 713 (пожелание № 8) ─────────────────────
+
+def _reg713_key_from(payload: dict) -> "reg713.Reg713Key":
+    model = (payload.get("model") or "").strip()
+    articul = (payload.get("articul") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model и articul обязательны")
+    return reg713.make_key(model, articul)
+
+
+@router.get("/reg713/articuls")
+async def reg713_search_articuls(q: str = "", limit: int = 30,
+                                 _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Поиск артикула-аналога в Gpartner S_MODELI: по артикулу, модели, наименованию.
+
+    От двух символов. Архивные записи помечены `archived`, идут в конце.
+    """
+    if _is_mock():
+        ql = (q or "").strip().lower()
+        items = [
+            {"model": "117924", "articul": "26-49773П-0", "name": "ФУТБОЛКА ДЛЯ ДЕВОЧЕК", "archived": False,
+             "price_mopt": 10.25, "price_rozn": None, "item_id": 1},
+            {"model": "532524-1", "articul": "26-46898ПП-0", "name": "БРЮКИ ЖЕНСКИЕ", "archived": False,
+             "price_mopt": 26.78, "price_rozn": None, "item_id": 2},
+            {"model": "123389", "articul": "26-46876П-7-2С", "name": "НОСКИ ДЕТСКИЕ", "archived": True,
+             "price_mopt": None, "price_rozn": None, "item_id": 3},
+        ]
+        return {"items": [i for i in items if ql in (i["articul"] + i["model"] + i["name"]).lower()]}
+    return {"items": await reg713.search_articuls(q, limit)}
+
+
+@router.get("/reg713/analog-prices")
+async def reg713_analog_prices(model: str, articul: str,
+                               _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Розница и опт аналога по правилам главной таблицы: последняя калькуляция
+    → утверждённая цена в DWH → плановая из S_MODELI. В ответе `source`
+    говорит, откуда взяты цифры (calc | dwh | gpartner | null)."""
+    if _is_mock():
+        return {"model": model, "articul": articul, "name": "МОК", "retail": 19.9, "wholesale": 12.5,
+                "source": "calc", "calc_sign": "КПСС", "plan_id": "1", "calc_date": None}
+    return await reg713.analog_prices(model, articul)
+
+
+@router.get("/reg713/list")
+async def reg713_list(all: int = 0, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Отчёт «Согласование 713»: все изделия, отмеченные «требуется согласование»
+    (`all=1` — включая снятые), с наименованием и ценами по правилам главной
+    таблицы, аналогом и его снимком цен, видом, решением исполкома и датами.
+    Фильтры, сортировка и Excel — на клиенте: карточек сотни, не миллионы.
+    """
+    if _is_mock():
+        return {"items": []}
+    return {"items": await reg713.list_cards(include_unmarked=bool(all))}
+
+
+@router.get("/reg713/card")
+async def reg713_get_card(model: str, articul: str,
+                          _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Карточка согласования и её история (кто, когда, что менял)."""
+    key = reg713.make_key(model, articul)
+    if _is_mock():
+        return {"card": None, "history": []}
+    return {"card": await reg713.get_card(key), "history": await reg713.history(key)}
+
+
+@router.post("/reg713/card")
+async def reg713_save_card(payload: dict, user: str | None = Depends(_require_perm("cost:reg713"))) -> dict:
+    """Сохранить карточку согласования по 713.
+
+    Body: { model, articul,
+            required?: bool, kind?: 'price_increase'|'novelty'|null,
+            analog_model?, analog_articul?, analog_name?,
+            analog_retail?, analog_wholesale?, analog_price_source?,
+            decision?: 'approved'|'rejected'|null, decision_doc?, comment? }
+    Передаются только меняемые поля; каждое сохранение пишется в журнал.
+    """
+    key = _reg713_key_from(payload)
+    fields = {k: v for k, v in payload.items() if k in reg713.EDITABLE}
+    set_by = (user or payload.get("user") or "system").strip() or "system"
+    if _is_mock():
+        return {"card": {"model": key[0], "articul": key[1], **fields}}
+    try:
+        card = await reg713.save_card(key, fields, set_by)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"card": card}
+
+
+# ── Закупная готовая продукция (пожелания № 6/7) ─────────────────────────────
+
+# Право на изменение закупной: импорт из портала, инвойс и его применение.
+# Калькулятор входит намеренно (просьба заказчика 07.09.2026) — импорт создаёт
+# КАЛЬКУЛЯЦИИ КПСС, а это его работа, а не согласование. Набор прав тот же, что у
+# остальных мутаций закупной ниже: cost:edit_materials есть у ролей
+# «Калькулятор», «ПЭО» и «Full Admin», и кнопка не появляется у бренд-менеджера
+# и «Просмотра», которым импортировать нечего.
+_PURCHASE_EDIT = _require_any_perm("cost:edit_materials", "cost:approve", "cost:admin")
+
+
+@router.post("/purchase/import")
+async def purchase_import(payload: dict | None = None,
+                          user: str | None = Depends(_PURCHASE_EDIT)) -> dict:
+    """Импорт КПСС закупной продукции из портала БМ (mfportal, OLAP).
+
+    Body: { dry_run?: bool } — dry_run только считает, что было бы записано.
+    Создаёт/обновляет калькуляции в cost_manual_calc (source_calc_sign='ПОРТАЛ')
+    и раскладку в cost_purchase_cost. Идемпотентен по ключу с заданием.
+    """
+    if _is_mock():
+        return {"dry_run": bool((payload or {}).get("dry_run")), "plans": 0, "items": 0, "created": 0,
+                "updated": 0, "skipped": 0, "skipped_reasons": {}, "mock": True}
+    dry = bool((payload or {}).get("dry_run"))
+    try:
+        return await purchase.run_import((user or "system").strip() or "system", dry_run=dry)
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+
+
+@router.get("/purchase/import/runs")
+async def purchase_import_runs(limit: int = 10, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Журнал запусков импорта: когда, кто, сколько создано/обновлено/пропущено."""
+    if _is_mock():
+        return {"runs": []}
+    return {"runs": await purchase.last_runs(max(1, min(limit, 50)))}
+
+
+@router.get("/purchase/detail")
+async def purchase_detail(model: str, articul: str, calc_sign: str = "", plan_id: str = "", task_number: str = "",
+                          _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Раскладка себестоимости закупной калькуляции (цена, курс, логистика,
+    таможня, сертификация) и, для ПФКСС, плановая раскладка КПСС рядом."""
+    if _is_mock():
+        return {"current": None, "plan": None}
+    res = await purchase.detail(purchase.make_key(model, articul, calc_sign, plan_id, task_number))
+    if res is None:
+        raise HTTPException(404, "раскладка себестоимости по этой калькуляции не найдена")
+    return res
+
+
+# ── ПФКСС закупной продукции по приходу (пожелание № 7, этап 2) ──────────────
+# Право на изменение — общее для всей закупной, объявлено выше (_PURCHASE_EDIT).
+
+
+@router.get("/purchase/rates")
+async def purchase_rates(date: str = "", _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Курсы НБ РБ к бел. рублю на дату: USD, EUR, RUB, KZT, UZS, CNY (BYN = 1).
+
+    Источник — `[DWH].[dim].[valuta1].KURS_BANK` (не `KURS`: тот внутренний курс
+    компании). Если на дату записи нет, берётся ближайшая предыдущая — она
+    видна в `as_of` по каждой валюте.
+    """
+    if _is_mock():
+        return {"date": date, "source": "nbrb", "as_of": {},
+                "rates": {"BYN": 1, "USD": 3.0687, "EUR": 3.5507, "RUB": 0.035546,
+                          "KZT": 0.0067319, "UZS": 0.00025744, "CNY": 0.45871}}
+    try:
+        return await purchase.rates_for_date(date or None)
+    except Exception as exc:  # noqa: BLE001 — DWH за VPN
+        raise HTTPException(502, f"курсы НБ РБ недоступны: {exc}")
+
+
+@router.get("/purchase/currencies")
+async def purchase_currencies(_: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Валюты, доступные для прихода и статей накладных."""
+    return {"items": [{"code": c, "name": v["name"]} for c, v in purchase.CURRENCIES.items()]}
+
+
+@router.post("/purchase/invoice/preview")
+async def purchase_invoice_preview(payload: dict, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Распределить накладные по строкам без сохранения: шапка + строки → строки
+    с раскладкой на единицу и итоги сверки. Та же функция, что при применении."""
+    try:
+        return purchase.distribute(payload, payload.get("lines") or [])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/purchase/hs-codes")
+async def purchase_hs_codes(payload: dict, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Коды ТН ВЭД по парам модель+артикул из справочника S_MODELI (KTNVED).
+
+    Body: { pairs: [{model, articul}] } → { codes: {"модель|артикул": "6203 43 900 0"} }.
+    Пары без кода в ответ не попадают — поле остаётся для ручного ввода.
+    """
+    pairs = [(p.get("model"), p.get("articul")) for p in (payload.get("pairs") or []) if isinstance(p, dict)]
+    if _is_mock():
+        return {"codes": {f"{m}|{a}": "6203 43 900 0" for m, a in pairs}}
+    try:
+        return {"codes": await purchase.hs_codes_for_pairs(pairs)}
+    except Exception as exc:  # noqa: BLE001 — справочник за VPN
+        raise HTTPException(502, f"справочник S_MODELI недоступен: {exc}")
+
+
+@router.get("/purchase/invoices")
+async def purchase_invoices(limit: int = 50, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    if _is_mock():
+        return {"items": []}
+    return {"items": await purchase.list_invoices(max(1, min(limit, 200)))}
+
+
+@router.get("/purchase/invoice/{inv_id}")
+async def purchase_invoice_get(inv_id: int, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    inv = await purchase.get_invoice(inv_id)
+    if not inv:
+        raise HTTPException(404, "инвойс не найден")
+    return inv
+
+
+@router.post("/purchase/invoice")
+async def purchase_invoice_save(payload: dict, user: str | None = Depends(_PURCHASE_EDIT)) -> dict:
+    """Создать или обновить черновик инвойса (id в теле — обновление).
+
+    Body: { id?, number, invoice_date?, contract?, supplier?, comment?, currency,
+            cur_to_usd, usd_to_rub?, usd_to_byn, rate_date?,
+            customs_fee_rub, transport_rub, transport_usd, cert_rub, svh_rub,
+            duty_rub: {"<код ТН ВЭД>": сумма_руб},
+            lines: [{ model, articul, plan_id?, task_number?, name?, color?, hs_code?, qty, unit_price_cur }] }
+    """
+    try:
+        return await purchase.save_invoice(payload, (user or "system").strip() or "system")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/purchase/invoice/{inv_id}/apply")
+async def purchase_invoice_apply(inv_id: int, user: str | None = Depends(_PURCHASE_EDIT)) -> dict:
+    """Применить инвойс: создать калькуляции ПФКСС и записи раскладки."""
+    try:
+        return await purchase.apply_invoice(inv_id, (user or "system").strip() or "system")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.delete("/purchase/invoice/{inv_id}")
+async def purchase_invoice_delete(inv_id: int, _: str | None = Depends(_PURCHASE_EDIT)) -> dict:
+    try:
+        await purchase.delete_invoice(inv_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True}
+
+
+# ── Справочник моделей (Gpartner S_MODELI) ───────────────────────────────────
+#
+# Окно «Справочник моделей» на странице раздела: пользователь заходит посмотреть,
+# что завела Лиса по модели — состав, ТН ВЭД, нормы, плановые цены, габариты.
+# Только чтение, никаких правок: источник ведёт Лиса.
+
+_CATALOG_PAGE_MAX = 500
+
+
+@router.get("/models-catalog/folders")
+async def models_catalog_folders(_: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Папки номенклатуры для фильтров окна: бренд-менеджер и уровни Level 01-05.
+
+    Отдаём весь список папок (571 запись) один раз, а каскад фильтров считает
+    клиент: данных мало, зато выбор в фильтрах отзывается без похода в Лису — в
+    отличие от главной страницы, где каскад уровней уточняется запросом к DWH.
+    """
+    if _is_mock():
+        return mocks.models_catalog_folders()
+    try:
+        folders = await asyncio.get_event_loop().run_in_executor(None, fetch_modeli_folders)
+    except Exception as exc:  # noqa: BLE001 — источник за VPN
+        raise HTTPException(502, f"справочник моделей недоступен: {exc}")
+    return {"folders": folders}
+
+
+@router.post("/models-catalog")
+async def models_catalog(payload: dict, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Страница справочника моделей с фильтрами.
+
+    Body: { model?, articul?, naim?, brand_manager?: [], level01?..level05?: [],
+            limit?, offset?, all_columns?, all_versions? }
+
+    model/articul/naim ищутся подстрокой, остальные — списком значений.
+    `all_columns` добавляет к основным колонкам остальные поля представления.
+    `all_versions` показывает все версии пары модель+артикул, а не только
+    последнюю (по умолчанию последняя — как в остальном разделе).
+    Пагинация серверная: в справочнике 132 тыс. строк.
+    """
+    limit = max(1, min(int(payload.get("limit") or 100), _CATALOG_PAGE_MAX))
+    offset = max(0, int(payload.get("offset") or 0))
+    all_columns = bool(payload.get("all_columns"))
+    only_latest = not payload.get("all_versions")
+
+    if _is_mock():
+        return mocks.models_catalog(payload, limit, offset, all_columns)
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, fetch_models_catalog, payload, limit, offset, all_columns, only_latest
+        )
+    except Exception as exc:  # noqa: BLE001 — источник за VPN
+        raise HTTPException(502, f"справочник моделей недоступен: {exc}")
+
+    result.update({"limit": limit, "offset": offset, "count": len(result.get("data") or [])})
+    return result
