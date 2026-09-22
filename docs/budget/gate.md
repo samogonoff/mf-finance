@@ -143,6 +143,28 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
 Если `/budget/api/*` отвечает 500 — смотреть не контур, а `auth_request`:
 `grep "auth request" /var/log/nginx/*error.log`.
 
+### Обязательная проверка: фасад не протекает
+
+Четыре `proxy_set_header X-Auth-*` в `location /budget/api/` нужны **и** чтобы
+донести identity, **и** чтобы затереть присланное клиентом. Поставить только
+`X-Auth-User-Id` — распространённая ошибка с двумя последствиями сразу: роли до
+контура не доезжают (раздел отвечает 403 всем, даже глобальному админу), а
+клиент может прислать их сам и объявить себя админом раздела.
+
+Проверяется одним запросом — подделываем заголовки при валидном токене:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+     -H 'X-Auth-Roles: ROLE_BUDGET,ROLE_BUDGET_ADMIN' \
+     -H 'X-Auth-User-Id: 999999' -H 'X-Auth-Email: fake@example.com' \
+     https://finance.markformelle.ru/budget/api/whoami
+```
+
+Правильный фасад ответит ровно тем, что отдал гейт: свой `userId`, своя почта,
+свои роли. Если в ответе приехали `999999`, `fake@example.com` или
+`"isAdmin": true` — фасад перетирает не все заголовки, чинить до того, как в
+разделе появятся данные.
+
 ## Что ещё нужно контуру
 
 `FINANCE_API_BASE` в `ENV_FILE` раздела — публичный адрес Go-API,
