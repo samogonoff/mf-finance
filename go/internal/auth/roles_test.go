@@ -26,7 +26,7 @@ func TestExpandRoles_AdminExpandsFullTree(t *testing.T) {
 	got := ExpandRoles([]string{RoleAdmin})
 	want := []string{
 		RoleAdmin, RoleCostAdmin, RoleCostUser, RoleFinanceAdmin,
-		RolePlansAdmin, RolePlansUser, RoleUser,
+		RolePlansAdmin, RolePlansUser, RoleBudgetAdmin, RoleBudget, RoleUser,
 	}
 	sort.Strings(want)
 
@@ -176,6 +176,57 @@ func TestFilterAllowed_EmptyInputEmptyOutput(t *testing.T) {
 	got := FilterAllowed(nil)
 	if len(got) != 0 {
 		t.Errorf("FilterAllowed(nil) must be empty, got %v", got)
+	}
+}
+
+func TestExpandRoles_BudgetAdminExpandsToBudget(t *testing.T) {
+	got := ExpandRoles([]string{RoleBudgetAdmin})
+	want := []string{RoleBudget, RoleBudgetAdmin, RoleUser}
+	sort.Strings(want)
+
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ROLE_BUDGET_ADMIN should expand to ROLE_BUDGET + ROLE_USER\n want %v\n  got %v", want, got)
+	}
+}
+
+func TestExpandRoles_BudgetUserStandalone(t *testing.T) {
+	got := ExpandRoles([]string{RoleBudget})
+	if contains(got, RoleBudgetAdmin) {
+		t.Errorf("ROLE_BUDGET must NOT expand upward to ROLE_BUDGET_ADMIN, got %v", got)
+	}
+}
+
+func TestHasRole_AdminGetsBudgetAccess(t *testing.T) {
+	// Гейт раздела спрашивает ровно ROLE_BUDGET — глобальный админ обязан
+	// проходить его по иерархии, иначе раздел закроется от админов кабинета.
+	admin := &User{Roles: []string{RoleAdmin}}
+	if !HasRole(admin, RoleBudget) {
+		t.Errorf("ROLE_ADMIN must have ROLE_BUDGET (via hierarchy)")
+	}
+
+	budget := &User{Roles: []string{RoleBudget}}
+	if HasRole(budget, RoleBudgetAdmin) {
+		t.Errorf("ROLE_BUDGET must NOT have ROLE_BUDGET_ADMIN")
+	}
+}
+
+func TestFilterAllowed_KeepsBudgetRoles(t *testing.T) {
+	got := FilterAllowed([]string{RoleBudgetAdmin, RoleBudget})
+	if !contains(got, RoleBudgetAdmin) || !contains(got, RoleBudget) {
+		t.Errorf("FilterAllowed must keep budget roles, got %v", got)
+	}
+}
+
+func TestKnownRole(t *testing.T) {
+	for _, r := range append([]string{RoleUser}, Allowed...) {
+		if !KnownRole(r) {
+			t.Errorf("KnownRole(%q) must be true", r)
+		}
+	}
+	for _, r := range []string{"", "ROLE_BUDGE", "role_budget", "ROLE_BOGUS"} {
+		if KnownRole(r) {
+			t.Errorf("KnownRole(%q) must be false", r)
+		}
 	}
 }
 

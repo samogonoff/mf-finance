@@ -69,6 +69,8 @@ func main() {
 
 	// Authenticated
 	mux.HandleFunc("GET /api/auth/me", auth.RequireBearer(authSvc, authH.Me))
+	// Гейт обособленных контуров: зовёт nginx (auth_request), не браузер.
+	mux.HandleFunc("GET /api/auth/check", auth.RequireBearer(authSvc, authH.Check))
 	mux.HandleFunc("POST /api/auth/logout", auth.RequireBearer(authSvc, authH.Logout))
 
 	// Admin — управление пользователями (ROLE_ADMIN).

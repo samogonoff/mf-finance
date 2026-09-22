@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -138,6 +140,62 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toDTO(u))
+}
+
+// SetIdentityHeaders кладёт identity пользователя в заголовки ответа — в том
+// виде, в каком её ждут обособленные контуры (раздел «Бюджетирование» и далее).
+//
+// Имя и почта кодируются: в значении HTTP-заголовка допустим только ASCII, а
+// имена у нас кириллические. Берём PathEscape, а не QueryEscape: последний
+// кодирует пробел как «+», и получатель (urllib.parse.unquote на стороне
+// контура) показал бы «Иван+Иванов». PathEscape даёт %20.
+//
+// Роли отдаём УЖЕ развёрнутыми по иерархии: контуру остаётся проверка вхождения
+// в список, знать про иерархию ему не нужно.
+func SetIdentityHeaders(h http.Header, u *User) {
+	if u == nil {
+		return
+	}
+	h.Set("X-Auth-User-Id", strconv.FormatInt(u.ID, 10))
+	h.Set("X-Auth-Email", url.PathEscape(u.Email))
+	h.Set("X-Auth-Name", url.PathEscape(u.DisplayName()))
+	h.Set("X-Auth-Roles", strings.Join(ExpandRoles(u.Roles), ","))
+}
+
+// Check — GET /api/auth/check?role=ROLE_X. Единственный потребитель — nginx
+// (auth_request) перед проксированием в обособленный контур: контур токен не
+// проверяет и прав не раздаёт, он доверяет заголовкам X-Auth-*, которые nginx
+// берёт из ответа этой ручки (auth_request_set) и ставит запросу сам, поверх
+// любых присланных клиентом.
+//
+// Контракт:
+//   200 + X-Auth-User-Id/Email/Name/Roles — пускаем;
+//   401 — токена нет или он не жив (ставит RequireBearer);
+//   403 — роли не хватает либо роль неизвестна.
+//
+// Ответы вне 401/403 nginx превращает в 500 для пользователя, поэтому никаких
+// других кодов ручка не отдаёт. Тело ответа nginx отбрасывает — оно здесь
+// только чтобы ручку было удобно проверять curl'ом.
+//
+// role пустой = проверяем лишь то, что сессия жива.
+func (h *Handler) Check(w http.ResponseWriter, r *http.Request) {
+	u := userFromCtx(r.Context())
+	if u == nil {
+		writeErr(w, http.StatusUnauthorized, "no session")
+		return
+	}
+	if role := strings.TrimSpace(r.URL.Query().Get("role")); role != "" {
+		if !KnownRole(role) {
+			writeErr(w, http.StatusForbidden, "unknown role")
+			return
+		}
+		if !HasRole(u, role) {
+			writeErr(w, http.StatusForbidden, "forbidden")
+			return
+		}
+	}
+	SetIdentityHeaders(w.Header(), u)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
