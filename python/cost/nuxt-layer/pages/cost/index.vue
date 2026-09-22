@@ -1154,6 +1154,11 @@
         <div class="modal-header">
           <h2>Исходные строки</h2>
           <div class="modal-header-actions">
+            <button class="btn btn-ghost btn-sm" :disabled="!rawRowsData.length"
+                    title="Выгрузить исходные строки с детализацией себестоимости"
+                    @click="exportRawRowsToExcel">
+              <Icon name="lucide:download" /> Экспорт в Excel
+            </button>
             <button class="modal-close" @click="showRawRowsModal = false">×</button>
           </div>
         </div>
@@ -4437,7 +4442,11 @@ const catalogLimit = ref(100);
 const catalogLoading = ref(false);
 const catalogError = ref('');
 const catalogAllColumns = ref(false);
-const catalogAllVersions = ref(false);
+// По умолчанию — ВСЕ строки, как в таблице Лисы (решение заказчика 22.09.2026).
+// Схлопывание до последней версии пары модель+артикул пряталo строки: по
+// артикулу 26029K в Лисе девять записей, в окне было три. Галка осталась —
+// снять её можно, когда дубли версий мешают.
+const catalogAllVersions = ref(true);
 
 const CATALOG_LEVELS = [
   { index: 1, key: 'level01', label: 'Level 01' },
@@ -8204,6 +8213,33 @@ const headers = [
   "Себест. (руб)", "Себест. ($)",
   "Рентабельность (руб)", "Рентабельность (%)", "Маржа (%)", "Откл. маржи (%)",
 ];
+
+/** Выгрузка окна «Исходные строки» (просьба заказчика 22.09.2026): те же
+ *  колонки, подписи и форматирование, что на экране, включая детализацию
+ *  себестоимости по статьям. Формат тот же, что у главной выгрузки: HTML-таблица
+ *  под `application/vnd.ms-excel`, настоящий .xlsx в разделе не собирается. */
+const exportRawRowsToExcel = () => {
+  const rows = rawRowsData.value;
+  if (!rows.length) return;
+  const esc = (v: any) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  let html = '<table border="1"><tr>';
+  rawRowsColumns.value.forEach((col: string) => (html += `<th>${esc(rawRowsColumnLabel(col))}</th>`));
+  html += '</tr>';
+  for (const r of rows) {
+    html += '<tr>';
+    rawRowsColumns.value.forEach((col: string) => (html += `<td>${esc(formatRawRowsCell(r[col], col))}</td>`));
+    html += '</tr>';
+  }
+  html += '</table>';
+  const tag = Object.values(rawRowsFilterSummary.value || {}).join('_').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 60);
+  const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Исходные_строки_${tag || 'выборка'}_${new Date().toISOString().slice(0, 10)}.xls`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
 
 const exportToExcel = () => {
   // Выгружаем ровно то, что видит пользователь в таблице, а не всю загруженную

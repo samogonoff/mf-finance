@@ -4928,7 +4928,10 @@ MODELI_MAIN_COLUMNS: list[str] = [
     "MODEL", "ART", "NAIM", "BRAND_FIO", "FULL_PATH", "STATUS", "BRAND", "COUNTRY",
     "KEDIZM", "SOSTAV", "NVID", "NASSORTIMENT", "NSYRIE", "NGRUPPA",
     "KTNVED", "KOD_IKPU",
-    "PRICE_ROZN", "PRICE_OPT", "PRICE_MOPT", "PLAN_PRICE", "NDS", "RU_NDS",
+    # PRICE_UCH — учётная цена. В основных колонках её не было, и пользователь
+    # видел рядом с моделью нулевую «Опт», хотя в Лисе у строки стоит учётная
+    # (замечание заказчика 22.09.2026 по артикулу 26029K: учётная 5,65, опт 0).
+    "PRICE_ROZN", "PRICE_UCH", "PRICE_OPT", "PRICE_MOPT", "PLAN_PRICE", "NDS", "RU_NDS",
     "NORMA", "NORMA_KROY", "NORMA_POSHIV", "MASSA_ED", "IN_BOX",
     "PURCHASED", "PR_ARH", "ITEM_ID",
 ]
