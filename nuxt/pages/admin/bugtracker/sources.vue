@@ -4,7 +4,7 @@
       <div>
         <h1 class="page-title">Источники проблем</h1>
         <p class="page-subtitle">
-          Заполняются при выставлении статуса «Решён» —
+          Причина, которой закрывается баг: обязательна для статуса «Решён» —
           <NuxtLink to="/admin/bugtracker" class="link-muted">← к репортам</NuxtLink>
         </p>
       </div>
@@ -114,7 +114,7 @@ onMounted(reload);
 .input, .input-inline {
   padding: 6px 10px;
   border: 1px solid var(--border); border-radius: var(--rd-3);
-  background: var(--bg-base); color: var(--text-strong); font: inherit;
+  background: var(--bg-app); color: var(--text-strong); font: inherit;
 }
 .input-inline { width: 100%; border-color: transparent; }
 .input-inline:focus, .input-inline:hover { border-color: var(--border); }

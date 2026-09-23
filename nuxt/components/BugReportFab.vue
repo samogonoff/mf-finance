@@ -1,17 +1,20 @@
 <template>
-  <div v-if="visible">
+  <div v-if="visible" data-html2canvas-ignore>
     <button
       class="bug-fab"
       type="button"
       title="Сообщить о проблеме"
+      :disabled="capturing"
       @click="open"
     >
-      <Icon name="lucide:bug" />
+      <Icon v-if="capturing" name="lucide:loader-2" class="spin" />
+      <Icon v-else name="lucide:bug" />
     </button>
 
     <Teleport to="body">
-      <div v-if="drawerOpen" class="bug-overlay" @click="close" />
-      <aside v-if="drawerOpen" class="bug-drawer" role="dialog" aria-label="Сообщить о проблеме">
+      <div v-if="drawerOpen" class="bug-overlay" data-html2canvas-ignore @click="close" />
+      <aside v-if="drawerOpen" class="bug-drawer" data-html2canvas-ignore role="dialog"
+             aria-label="Сообщить о проблеме" @paste="onPaste">
         <header class="bug-head">
           <h2>Сообщить о проблеме</h2>
           <button class="btn btn-ghost btn-sm" @click="close" aria-label="Закрыть">
@@ -38,35 +41,34 @@
 
           <label class="field">
             <span class="field-label">Описание</span>
-            <textarea v-model="description" class="textarea" rows="3"
-                      placeholder="Что произошло, что ожидалось" />
+            <textarea v-model="description" class="textarea" rows="3" maxlength="5000"
+                      placeholder="Что произошло, что вы делали, что ожидали" />
           </label>
 
           <label class="field">
             <span class="field-label">Шаги воспроизведения</span>
-            <textarea v-model="steps" class="textarea" rows="3"
+            <textarea v-model="steps" class="textarea" rows="3" maxlength="2000"
                       placeholder="1. … 2. … 3. …" />
           </label>
 
           <div class="field">
             <div class="field-label-row">
               <span class="field-label">Скриншоты <span class="hint">(до 8 шт. × 5MB)</span></span>
-              <button class="btn btn-ghost btn-sm" type="button" :disabled="busy" @click="grabScreenshot">
-                <Icon name="lucide:camera" /> Снять текущую страницу
-              </button>
             </div>
             <div
               class="dropzone"
+              :class="{ 'is-drag': isDrag }"
               @click="filePick?.click()"
-              @dragover.prevent
+              @dragover.prevent="isDrag = true"
+              @dragleave.prevent="isDrag = false"
               @drop.prevent="onDrop"
-              @paste="onPaste"
               tabindex="0"
             >
-              <span v-if="!shots.length">Перетащите файлы или вставьте из буфера (Ctrl+V)</span>
+              <span v-if="!shots.length">Перетащите файлы, вставьте из буфера (Ctrl+V) или нажмите для выбора</span>
               <div v-else class="shots-grid">
                 <div v-for="(s, i) in shots" :key="i" class="shot">
                   <img :src="s.preview" alt="" />
+                  <span v-if="s.auto" class="shot-auto" title="Снимок страницы в момент открытия формы">авто</span>
                   <button class="shot-x" type="button" @click.stop="removeShot(i)" title="Удалить">
                     <Icon name="lucide:x" />
                   </button>
@@ -77,6 +79,19 @@
             </div>
           </div>
 
+          <details class="bug-meta">
+            <summary>Что отправится вместе с репортом</summary>
+            <ul>
+              <li>Страница: <code>{{ currentUrl }}</code></li>
+              <li>Раздел: <code>{{ section }}</code></li>
+              <li>Логи консоли (warn/error): <code>{{ stats.console }}</code></li>
+              <li>Запросы к API (всего / с ошибкой): <code>{{ stats.network }} / {{ stats.networkErrors }}</code></li>
+              <li>JS-ошибки: <code>{{ stats.js }}</code></li>
+              <li>Автоснимок страницы: <code>{{ hasAutoShot ? "да" : "нет" }}</code></li>
+              <li>Браузер, экран, часовой пояс</li>
+            </ul>
+          </details>
+
           <div v-if="error" class="error">{{ error }}</div>
           <div v-if="message" class="success">{{ message }}</div>
         </div>
@@ -86,7 +101,7 @@
           <button class="btn btn-primary" :disabled="busy || !title.trim()" @click="submit">
             <Icon v-if="!busy" name="lucide:send" />
             <Icon v-else name="lucide:loader-2" class="spin" />
-            Отправить
+            {{ busy ? "Отправляем…" : "Отправить" }}
           </button>
         </footer>
       </aside>
@@ -96,7 +111,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from "vue";
-import { useBugReport } from "~/composables/useBugReport";
+import { useBugReport, detectSection } from "~/composables/useBugReport";
 
 const route = useRoute();
 const { user } = useAuth();
@@ -110,21 +125,31 @@ const visible = computed(() => {
   return true;
 });
 
+type Shot = { blob: Blob; preview: string; auto: boolean };
+
 const drawerOpen = ref(false);
 const type = ref("bug");
 const title = ref("");
 const description = ref("");
 const steps = ref("");
-const shots = ref<{ blob: Blob; preview: string }[]>([]);
+const shots = ref<Shot[]>([]);
 const busy = ref(false);
+const capturing = ref(false);
+const isDrag = ref(false);
 const error = ref<string | null>(null);
 const message = ref<string | null>(null);
+const stats = ref({ console: 0, network: 0, networkErrors: 0, js: 0 });
 
 const filePick = ref<HTMLInputElement | null>(null);
 
 const reportApi = useBugReport();
 
+const section = computed(() => detectSection(route.path));
+const currentUrl = ref("");
+const hasAutoShot = computed(() => shots.value.some((s) => s.auto));
+
 const reset = () => {
+  type.value = "bug";
   title.value = "";
   description.value = "";
   steps.value = "";
@@ -134,8 +159,20 @@ const reset = () => {
   message.value = null;
 };
 
-const open = () => {
+// Снимок делаем ДО открытия формы: иначе html2canvas снимет drawer и
+// затемнение, и в репорт уйдёт «не та» страница.
+const open = async () => {
+  if (capturing.value || drawerOpen.value) return;
   reset();
+  capturing.value = true;
+  try {
+    const blob = await reportApi.captureScreenshot();
+    if (blob) shots.value.push({ blob, preview: URL.createObjectURL(blob), auto: true });
+  } finally {
+    capturing.value = false;
+  }
+  currentUrl.value = window.location.href;
+  stats.value = reportApi.capturedStats();
   drawerOpen.value = true;
 };
 const close = () => {
@@ -155,7 +192,7 @@ const addBlob = (blob: Blob) => {
     error.value = "Поддерживаются только PNG, JPEG, WebP, GIF";
     return;
   }
-  shots.value.push({ blob, preview: URL.createObjectURL(blob) });
+  shots.value.push({ blob, preview: URL.createObjectURL(blob), auto: false });
 };
 
 const onPick = (e: Event) => {
@@ -165,6 +202,7 @@ const onPick = (e: Event) => {
   target.value = "";
 };
 const onDrop = (e: DragEvent) => {
+  isDrag.value = false;
   const items = e.dataTransfer?.files;
   if (!items) return;
   Array.from(items).forEach((f) => addBlob(f));
@@ -182,21 +220,6 @@ const onPaste = (e: ClipboardEvent) => {
 const removeShot = (i: number) => {
   URL.revokeObjectURL(shots.value[i].preview);
   shots.value.splice(i, 1);
-};
-
-const grabScreenshot = async () => {
-  error.value = null;
-  busy.value = true;
-  try {
-    const blob = await reportApi.captureScreenshot();
-    if (!blob) {
-      error.value = "Не удалось снять скриншот (нет html2canvas?)";
-      return;
-    }
-    addBlob(blob);
-  } finally {
-    busy.value = false;
-  }
 };
 
 const submit = async () => {
@@ -283,12 +306,12 @@ const submit = async () => {
 }
 .field-label-row { display: flex; align-items: center; justify-content: space-between; }
 .req { color: var(--neg-strong); margin-left: 2px; }
-.hint { color: var(--text-muted); text-transform: none; letter-spacing: 0; font-weight: var(--fw-normal); }
+.hint { color: var(--text-muted); text-transform: none; letter-spacing: 0; font-weight: var(--fw-regular); }
 .input, .select, .textarea {
   width: 100%; padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: var(--rd-3);
-  background: var(--bg-base);
+  background: var(--bg-app);
   color: var(--text-strong);
   font: inherit;
 }
@@ -303,6 +326,7 @@ const submit = async () => {
   cursor: pointer;
   min-height: 72px;
 }
+.dropzone.is-drag { border-color: var(--accent); color: var(--accent); }
 .file-hidden { display: none; }
 .shots-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-3); }
 .shot {
@@ -311,7 +335,7 @@ const submit = async () => {
   border-radius: var(--rd-3);
   overflow: hidden;
   aspect-ratio: 1;
-  background: var(--bg-subtle);
+  background: var(--bg-surface-2);
 }
 .shot img { width: 100%; height: 100%; object-fit: cover; }
 .shot-x {
@@ -326,6 +350,16 @@ const submit = async () => {
   cursor: pointer;
 }
 
+.shot-auto {
+  position: absolute; left: 2px; bottom: 2px;
+  font-size: var(--fs-2xs); padding: 0 4px;
+  border-radius: var(--rd-2);
+  background: var(--accent); color: var(--accent-fg);
+}
+.bug-meta { margin-bottom: var(--sp-4); font-size: var(--fs-sm); color: var(--text-secondary); }
+.bug-meta summary { cursor: pointer; color: var(--text-muted); }
+.bug-meta ul { margin: var(--sp-2) 0 0; padding-left: var(--sp-5); }
+.bug-meta code { font-family: var(--font-mono); font-size: var(--fs-xs); word-break: break-all; }
 .error { color: var(--neg-strong); background: var(--neg-soft); padding: 6px 10px; border-radius: var(--rd-3); font-size: var(--fs-sm); }
 .success { color: var(--pos-strong); background: var(--pos-soft); padding: 6px 10px; border-radius: var(--rd-3); font-size: var(--fs-sm); }
 .spin { animation: spin 1s linear infinite; }
