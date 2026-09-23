@@ -24,6 +24,9 @@ func withCORS(next http.Handler, origins []string) http.Handler {
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
 				w.Header().Set("Access-Control-Max-Age", "600")
+				// Фронт на другом origin: без Expose браузер прячет X-Request-Id, а его
+				// баг-трекер кладёт в сетевой лог репорта — по нему запрос ищется в ELK.
+				w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
 			}
 		}
 		if r.Method == http.MethodOptions {

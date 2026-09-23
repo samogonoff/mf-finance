@@ -110,6 +110,17 @@ func main() {
 	mux.HandleFunc("GET /api/bugtracker/sources", auth.RequireRole(authSvc, auth.RoleAdmin, bugH.SourcesList))
 	mux.HandleFunc("POST /api/bugtracker/sources", auth.RequireRole(authSvc, auth.RoleAdmin, bugH.SourcesCreate))
 	mux.HandleFunc("PATCH /api/bugtracker/sources/{id}", auth.RequireRole(authSvc, auth.RoleAdmin, bugH.SourcesPatch))
+	// Сервисный API разбора багов автоматизацией (Orca/Hermes) — за X-Internal-Token.
+	mux.HandleFunc("GET /internal/bugtracker/queue", internalH.RequireToken(bugH.InternalQueue))
+	mux.HandleFunc("GET /internal/bugtracker/sources", internalH.RequireToken(bugH.InternalSources))
+	mux.HandleFunc("GET /internal/bugtracker/pending-mr", internalH.RequireToken(bugH.InternalPendingMR))
+	mux.HandleFunc("GET /internal/bugtracker/by-mr/{iid}", internalH.RequireToken(bugH.InternalByMR))
+	mux.HandleFunc("POST /internal/bugtracker/report", internalH.RequireToken(bugH.InternalCreate))
+	mux.HandleFunc("GET /internal/bugtracker/report/{id}", internalH.RequireToken(bugH.InternalGet))
+	mux.HandleFunc("POST /internal/bugtracker/report/{id}/claim", internalH.RequireToken(bugH.InternalClaim))
+	mux.HandleFunc("POST /internal/bugtracker/report/{id}/mr", internalH.RequireToken(bugH.InternalMR))
+	mux.HandleFunc("POST /internal/bugtracker/report/{id}/release", internalH.RequireToken(bugH.InternalRelease))
+	mux.HandleFunc("POST /internal/bugtracker/report/{id}/resolve", internalH.RequireToken(bugH.InternalResolve))
 	// Скриншоты — открытая раздача (только по UUID-имени).
 	mux.HandleFunc("GET /uploads/bugtracker/", bugH.ServeUpload)
 

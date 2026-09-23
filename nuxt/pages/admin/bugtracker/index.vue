@@ -6,12 +6,12 @@
         <p class="page-subtitle">
           <span>{{ total }} репортов</span>
           <span class="ctx-sep">·</span>
-          <NuxtLink to="/admin/bugtracker/sources" class="link-muted">источники</NuxtLink>
+          <NuxtLink to="/admin/bugtracker/sources" class="link-muted">источники проблем</NuxtLink>
         </p>
       </div>
     </header>
 
-    <!-- Метрики -->
+    <!-- Метрики (за выбранный период) -->
     <section class="metrics-strip" v-if="metrics">
       <div class="metric">
         <div class="metric-label">Всего</div>
@@ -36,26 +36,41 @@
       </div>
     </section>
 
+    <details v-if="metrics?.top_urls?.length" class="top-urls">
+      <summary>Страницы с наибольшим числом жалоб</summary>
+      <ol>
+        <li v-for="u in metrics.top_urls" :key="u.url">
+          <a :href="u.url" target="_blank" rel="noopener" class="url" :title="u.url">{{ u.url }}</a>
+          <span class="cnt">{{ u.count }}</span>
+        </li>
+      </ol>
+    </details>
+
     <div class="filters-bar">
       <div class="search">
         <Icon name="lucide:search" class="search-icon" />
-        <input v-model="filter.search" placeholder="Поиск по заголовку/описанию…" @keyup.enter="reload" />
+        <input v-model="filter.search" placeholder="Поиск по заголовку, описанию, URL…" @keyup.enter="applyFilters" />
       </div>
-      <select v-model="filter.section" class="select" style="width: 160px" @change="reload">
+      <select v-model="filter.section" class="select" style="width: 160px" @change="applyFilters">
         <option value="">Все разделы</option>
-        <option v-for="s in SECTIONS" :key="s" :value="s">{{ s }}</option>
+        <option v-for="(label, key) in BT_SECTION_LABELS" :key="key" :value="key">{{ label }}</option>
       </select>
-      <select v-model="filter.status" class="select" style="width: 160px" @change="reload">
+      <select v-model="filter.status" class="select" style="width: 150px" @change="applyFilters">
         <option value="">Все статусы</option>
-        <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
+        <option v-for="(label, key) in BT_STATUS_LABELS" :key="key" :value="key">{{ label }}</option>
       </select>
-      <select v-model="filter.type" class="select" style="width: 140px" @change="reload">
+      <select v-model="filter.type" class="select" style="width: 170px" @change="applyFilters">
         <option value="">Все типы</option>
-        <option v-for="t in TYPES" :key="t" :value="t">{{ t }}</option>
+        <option v-for="(label, key) in BT_TYPE_LABELS" :key="key" :value="key">{{ label }}</option>
       </select>
-      <button class="btn btn-ghost" @click="reload">
+      <span class="filter-label">с</span>
+      <input v-model="filter.date_from" type="date" class="select date" @change="applyFilters" />
+      <span class="filter-label">по</span>
+      <input v-model="filter.date_to" type="date" class="select date" @change="applyFilters" />
+      <button class="btn btn-ghost" @click="applyFilters">
         <Icon name="lucide:refresh-cw" /> Обновить
       </button>
+      <button class="btn btn-ghost" @click="resetFilters">Сбросить</button>
     </div>
 
     <div v-if="error" class="error-banner">{{ error }}</div>
@@ -65,37 +80,47 @@
         <thead>
           <tr>
             <th class="col-w-16">ID</th>
+            <th class="col-num">Создан</th>
             <th>Раздел</th>
             <th>Тип</th>
-            <th>Заголовок</th>
             <th>Статус</th>
-            <th>Скриншоты</th>
-            <th class="col-num">Создан</th>
-            <th></th>
+            <th>Автор</th>
+            <th class="col-desc">Заголовок</th>
+            <th>Скрины</th>
+            <th>MR</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="b in reports" :key="b.id" @click="openCard(b)" class="row-click">
+          <tr v-for="b in reports" :key="b.id" @click="openCard(b.id)" class="row-click">
             <td class="num">{{ b.id }}</td>
-            <td>{{ b.section }}</td>
-            <td>{{ b.type }}</td>
-            <td class="cell-title">{{ b.title }}</td>
+            <td class="num">{{ formatDate(b.created_at) }}</td>
+            <td>{{ btLabel(BT_SECTION_LABELS, b.section) }}</td>
+            <td>{{ btLabel(BT_TYPE_LABELS, b.type) }}</td>
             <td>
-              <span class="badge" :class="statusBadge(b.status)">{{ statusLabel(b.status) }}</span>
+              <span class="badge" :class="btStatusBadge(b.status)">{{ btLabel(BT_STATUS_LABELS, b.status) }}</span>
+              <div v-if="b.claimed_by" class="cell-sub" :title="`Взят в работу: ${b.claimed_by}`">
+                <Icon name="lucide:bot" /> {{ b.claimed_by }}
+              </div>
             </td>
             <td>
-              <span v-if="b.screenshots.length">{{ b.screenshots.length }} 📎</span>
+              <span v-if="b.user">{{ b.user.name || b.user.email }}</span>
+              <span v-else class="text-muted">автоматика</span>
+            </td>
+            <td class="cell-title col-desc">
+              {{ b.title }}
+              <div v-if="b.url" class="cell-sub" :title="b.url">{{ b.url }}</div>
+            </td>
+            <td>
+              <span v-if="b.screenshots.length"><Icon name="lucide:image" /> {{ b.screenshots.length }}</span>
               <span v-else class="text-muted">—</span>
             </td>
-            <td class="num">{{ formatDate(b.created_at) }}</td>
             <td>
-              <button class="btn btn-sm btn-ghost" @click.stop="del(b)">
-                <Icon name="lucide:trash" />
-              </button>
+              <a v-if="b.mr_url" :href="b.mr_url" target="_blank" rel="noopener" class="mr-link" @click.stop>!{{ b.mr_iid }}</a>
+              <span v-else class="text-muted">—</span>
             </td>
           </tr>
           <tr v-if="!reports.length && !loading">
-            <td colspan="8" class="cell-empty">Репортов нет</td>
+            <td colspan="9" class="cell-empty">Репортов нет</td>
           </tr>
         </tbody>
       </table>
@@ -103,7 +128,7 @@
 
     <div class="pagination">
       <span class="pagination-info">
-        {{ offset + 1 }}–{{ Math.min(offset + reports.length, total) }} из {{ total }}
+        {{ total ? offset + 1 : 0 }}–{{ Math.min(offset + reports.length, total) }} из {{ total }}
       </span>
       <div class="pagination-controls">
         <button class="btn btn-sm btn-ghost" :disabled="offset === 0" @click="prev">
@@ -115,84 +140,30 @@
       </div>
     </div>
 
-    <!-- Карточка репорта -->
-    <Teleport to="body">
-      <div v-if="card" class="card-overlay" @click="card = null" />
-      <aside v-if="card" class="card-drawer">
-        <header class="card-head">
-          <h2>Репорт #{{ card.id }}</h2>
-          <button class="btn btn-ghost btn-sm" @click="card = null"><Icon name="lucide:x" /></button>
-        </header>
-        <div class="card-body">
-          <h3>{{ card.title }}</h3>
-          <p v-if="card.description" class="card-desc">{{ card.description }}</p>
-
-          <div class="field">
-            <span class="field-label">Статус</span>
-            <select v-model="card.status" class="select" @change="savePatch({ status: card.status })">
-              <option v-for="s in STATUSES" :key="s" :value="s">{{ statusLabel(s) }}</option>
-            </select>
-          </div>
-
-          <div v-if="card.status === 'resolved'" class="field">
-            <span class="field-label">Источник причины</span>
-            <select :value="card.source_id ?? ''" class="select"
-                    @change="onSourceChange(($event.target as HTMLSelectElement).value)">
-              <option value="">—</option>
-              <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <span class="field-label">ID задачи в Битрикс24</span>
-            <input v-model="b24Edit" class="input" placeholder="например, 12345"
-                   @blur="savePatch({ b24_task_id: b24Edit || null })" />
-          </div>
-
-          <div class="field">
-            <span class="field-label">Комментарий админа</span>
-            <textarea v-model="commentEdit" class="textarea" rows="3"
-                      @blur="savePatch({ admin_comment: commentEdit })" />
-          </div>
-
-          <div v-if="card.screenshots.length" class="field">
-            <span class="field-label">Скриншоты</span>
-            <div class="shots-grid">
-              <a v-for="(name, i) in card.screenshots" :key="i"
-                 :href="`${uploadsBase}/uploads/bugtracker/${card.id}/${name}`"
-                 target="_blank" rel="noopener">
-                <img :src="`${uploadsBase}/uploads/bugtracker/${card.id}/${name}`" alt="" />
-              </a>
-            </div>
-          </div>
-
-          <details class="tech">
-            <summary>Технический контекст</summary>
-            <pre>{{ JSON.stringify(card.tech_context, null, 2) }}</pre>
-            <summary>Route</summary>
-            <pre>{{ JSON.stringify(card.route, null, 2) }}</pre>
-            <summary>Console / Network / JS errors</summary>
-            <pre>{{ JSON.stringify({ console: card.console_logs, net: card.network_errors, js: card.js_errors }, null, 2) }}</pre>
-          </details>
-        </div>
-      </aside>
-    </Teleport>
+    <BugReportCard
+      v-if="card"
+      :report="card"
+      :sources="sources"
+      @close="closeCard"
+      @updated="onUpdated"
+      @deleted="onDeleted"
+      @sources-changed="loadSources"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from "vue";
-import { useBugTrackerAdmin, type BugReport, type BugMetrics, type BugSource } from "~/composables/useBugTrackerAdmin";
+import { ref, onMounted } from "vue";
+import {
+  useBugTrackerAdmin, BT_STATUS_LABELS, BT_TYPE_LABELS, BT_SECTION_LABELS, btStatusBadge, btLabel,
+  type BugReport, type BugMetrics, type BugSource
+} from "~/composables/useBugTrackerAdmin";
 
 definePageMeta({ middleware: "scope-guard" });
 
 const api = useBugTrackerAdmin();
-const config = useRuntimeConfig();
-const uploadsBase = config.public.apiBase;
-
-const STATUSES = ["new", "in_progress", "resolved", "duplicate", "rejected"];
-const TYPES = ["bug", "data", "ui", "performance", "other"];
-const SECTIONS = ["finance", "cost", "operations", "reports", "counterparties", "analytics", "account", "admin", "other"];
+const route = useRoute();
+const router = useRouter();
 
 const reports = ref<BugReport[]>([]);
 const total = ref(0);
@@ -203,28 +174,31 @@ const sources = ref<BugSource[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const card = ref<BugReport | null>(null);
-const b24Edit = ref("");
-const commentEdit = ref("");
 
-const filter = ref<{ search: string; section: string; status: string; type: string }>({
-  search: "", section: "", status: "", type: ""
-});
+const emptyFilter = () => ({ search: "", section: "", status: "", type: "", date_from: "", date_to: "" });
+const filter = ref(emptyFilter());
 
 const reload = async () => {
   loading.value = true;
   error.value = null;
+  const f = filter.value;
   try {
-    const r = await api.list({
-      search: filter.value.search || undefined,
-      section: filter.value.section || undefined,
-      status: filter.value.status || undefined,
-      type: filter.value.type || undefined,
-      limit: limit.value,
-      offset: offset.value
-    });
+    const [r, m] = await Promise.all([
+      api.list({
+        search: f.search || undefined,
+        section: f.section || undefined,
+        status: f.status || undefined,
+        type: f.type || undefined,
+        date_from: f.date_from || undefined,
+        date_to: f.date_to || undefined,
+        limit: limit.value,
+        offset: offset.value
+      }),
+      api.metrics({ date_from: f.date_from || undefined, date_to: f.date_to || undefined })
+    ]);
     reports.value = r.data;
     total.value = r.total;
-    metrics.value = await api.metrics();
+    metrics.value = m;
   } catch (e: any) {
     error.value = e?.data?.error || e?.message || "Ошибка загрузки";
   } finally {
@@ -232,54 +206,45 @@ const reload = async () => {
   }
 };
 
+const applyFilters = () => { offset.value = 0; reload(); };
+const resetFilters = () => { filter.value = emptyFilter(); applyFilters(); };
 const prev = () => { offset.value = Math.max(0, offset.value - limit.value); reload(); };
 const next = () => { offset.value += limit.value; reload(); };
 
-const openCard = async (b: BugReport) => {
-  card.value = await api.get(b.id);
-  b24Edit.value = card.value?.b24_task_id ?? "";
-  commentEdit.value = card.value?.admin_comment ?? "";
-  if (!sources.value.length) sources.value = await api.sources();
+const loadSources = async () => {
+  try {
+    sources.value = await api.sources();
+  } catch { /* справочник не критичен для просмотра */ }
 };
 
-const savePatch = async (body: Partial<BugReport>) => {
-  if (!card.value) return;
+// ?id=N — ссылка из уведомления о новом репорте / готовом MR открывает карточку.
+const openCard = async (id: number) => {
   try {
-    const updated = await api.patch(card.value.id, body as any);
-    Object.assign(card.value, updated);
-    // обновим в списке тоже.
-    const idx = reports.value.findIndex((r) => r.id === card.value!.id);
-    if (idx >= 0) reports.value[idx] = updated;
+    card.value = await api.get(id);
+    if (Number(route.query.id) !== id) router.replace({ query: { ...route.query, id: String(id) } });
   } catch (e: any) {
-    error.value = e?.data?.error || e?.message || "Ошибка сохранения";
+    error.value = e?.data?.error || e?.message || `Не удалось открыть репорт #${id}`;
   }
 };
-
-const onSourceChange = (v: string) => {
-  const id = v ? Number(v) : null;
-  savePatch({ source_id: id as any });
+const closeCard = () => {
+  card.value = null;
+  const { id: _omit, ...rest } = route.query;
+  router.replace({ query: rest });
 };
 
-const del = async (b: BugReport) => {
-  if (!confirm(`Удалить репорт #${b.id}?`)) return;
-  try {
-    await api.remove(b.id);
-    reports.value = reports.value.filter((r) => r.id !== b.id);
-    total.value = Math.max(0, total.value - 1);
-  } catch (e: any) {
-    error.value = e?.data?.error || e?.message || "Ошибка удаления";
-  }
+const onUpdated = (updated: BugReport) => {
+  card.value = updated;
+  const idx = reports.value.findIndex((r) => r.id === updated.id);
+  if (idx >= 0) reports.value[idx] = updated;
+  api.metrics({ date_from: filter.value.date_from || undefined, date_to: filter.value.date_to || undefined })
+    .then((m) => { metrics.value = m; }).catch(() => {});
 };
 
-const statusLabel = (s: string) => ({
-  new: "Новый", in_progress: "В работе", resolved: "Решён",
-  duplicate: "Дубликат", rejected: "Отклонён"
-} as Record<string, string>)[s] ?? s;
-
-const statusBadge = (s: string) => ({
-  new: "badge-info", in_progress: "badge-warn", resolved: "badge-pos",
-  duplicate: "badge-info", rejected: "badge-info"
-} as Record<string, string>)[s] ?? "badge-info";
+const onDeleted = (id: number) => {
+  closeCard();
+  reports.value = reports.value.filter((r) => r.id !== id);
+  total.value = Math.max(0, total.value - 1);
+};
 
 const formatDate = (iso: string) => {
   const d = new Date(iso);
@@ -292,9 +257,12 @@ const formatMttr = (s: number) => {
   return `${(s / 86400).toFixed(1)} д`;
 };
 
-watch(() => filter.value.search, () => { offset.value = 0; });
-
-onMounted(reload);
+onMounted(() => {
+  reload();
+  loadSources();
+  const id = Number(route.query.id);
+  if (id > 0) openCard(id);
+});
 </script>
 
 <style scoped>
@@ -326,7 +294,7 @@ onMounted(reload);
 .filters-bar .search { max-width: 320px; flex: 1 1 280px; }
 
 .row-click { cursor: pointer; }
-.row-click:hover { background: var(--bg-hover); }
+.row-click:hover { background: var(--bg-surface-2); }
 .cell-title { max-width: 460px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cell-empty { text-align: center; color: var(--text-muted); padding: var(--sp-6); }
 .text-muted { color: var(--text-muted); }
@@ -346,43 +314,15 @@ onMounted(reload);
 .pagination-controls { display: flex; gap: var(--sp-3); margin-left: auto; }
 .pagination-info { color: var(--text-muted); }
 
-.card-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.32); z-index: 1100; }
-.card-drawer {
-  position: fixed; top: 0; right: 0; bottom: 0;
-  width: 560px; max-width: 100vw;
-  background: var(--bg-surface);
-  border-left: 1px solid var(--border);
-  z-index: 1101;
-  display: flex; flex-direction: column;
-  overflow: hidden;
-}
-.card-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: var(--sp-4) var(--sp-5);
-  border-bottom: 1px solid var(--border);
-}
-.card-head h2 { margin: 0; font-size: var(--fs-md); }
-.card-body { padding: var(--sp-5); overflow-y: auto; }
-.card-desc { color: var(--text-secondary); white-space: pre-wrap; margin: 0 0 var(--sp-4); }
-
-.field { display: block; margin-bottom: var(--sp-4); }
-.field-label {
-  display: block; font-size: var(--fs-xs); font-weight: var(--fw-semibold);
-  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
-  margin-bottom: 4px;
-}
-.input, .select, .textarea {
-  width: 100%; padding: 6px 10px;
-  border: 1px solid var(--border); border-radius: var(--rd-3);
-  background: var(--bg-base); color: var(--text-strong); font: inherit;
-}
-.textarea { resize: vertical; }
-
-.shots-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-3); }
-.shots-grid a { display: block; border: 1px solid var(--border); border-radius: var(--rd-3); overflow: hidden; }
-.shots-grid img { width: 100%; height: auto; display: block; }
-
-.tech { margin-top: var(--sp-5); }
-.tech summary { cursor: pointer; font-weight: var(--fw-semibold); margin-top: var(--sp-3); }
-.tech pre { font-size: var(--fs-xs); background: var(--bg-subtle); padding: var(--sp-3); border-radius: var(--rd-3); overflow-x: auto; }
+.col-desc { max-width: 420px; }
+.cell-sub { color: var(--text-muted); font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.filters-bar .date { width: 150px; }
+.filter-label { font-size: var(--fs-xs); color: var(--text-muted); }
+.mr-link { font-family: var(--font-mono); font-size: var(--fs-xs); }
+.top-urls { margin-bottom: var(--sp-6); font-size: var(--fs-sm); }
+.top-urls summary { cursor: pointer; color: var(--text-secondary); }
+.top-urls ol { margin: var(--sp-3) 0 0; padding-left: var(--sp-6); }
+.top-urls li { display: flex; gap: var(--sp-3); padding: 2px 0; }
+.top-urls .url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top-urls .cnt { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-muted); }
 </style>

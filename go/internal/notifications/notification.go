@@ -16,6 +16,7 @@ const (
 const (
 	ObjWelcome      = "welcome"
 	ObjBugReportNew = "bug_report_new"
+	ObjBugReportMR  = "bug_report_mr" // автоматика подготовила MR по багу
 	ObjCostPriceSet = "cost_price_set"
 	ObjPlanTask     = "plan_task" // задание модуля «Тактические планы»
 	ObjPlanCard     = "plan_card" // карточка формы (согласование/возврат/публикация)

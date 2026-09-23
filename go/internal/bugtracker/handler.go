@@ -2,6 +2,8 @@ package bugtracker
 
 import (
 	"encoding/json"
+	"errors"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
@@ -30,6 +32,53 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeSvcErr — ошибки Service → HTTP-коды; неизвестные — 500 с логом.
+func writeSvcErr(w http.ResponseWriter, err error) {
+	var ve *ValidationError
+	var ce *ConflictError
+	switch {
+	case errors.As(err, &ve):
+		writeErr(w, http.StatusBadRequest, ve.Msg)
+	case errors.As(err, &ce):
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": ce.Error(), "status": ce.Status, "claimed_by": ce.ClaimedBy,
+		})
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrSourceNotFound):
+		writeErr(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrDuplicateName):
+		writeErr(w, http.StatusConflict, err.Error())
+	default:
+		log.Printf("bugtracker: %v", err)
+		writeErr(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+func pathID(r *http.Request, name string) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue(name), 10, 64)
+	return id, err == nil && id > 0
+}
+
+// parseDateRange — date_from/date_to: RFC3339 или YYYY-MM-DD (date_to тогда
+// включительно — граница сдвигается на конец дня).
+func parseDateRange(q interface{ Get(string) string }) (from, to *time.Time) {
+	if v := q.Get("date_from"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			from = &t
+		} else if t, err := time.Parse("2006-01-02", v); err == nil {
+			from = &t
+		}
+	}
+	if v := q.Get("date_to"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			to = &t
+		} else if t, err := time.Parse("2006-01-02", v); err == nil {
+			end := t.Add(24 * time.Hour)
+			to = &end
+		}
+	}
+	return from, to
 }
 
 // CreateReport — POST /api/bugtracker/report (multipart: payload + screenshots[])
@@ -63,6 +112,12 @@ func (h *Handler) CreateReport(w http.ResponseWriter, r *http.Request) {
 
 	rep, dup, err := h.svc.Create(r.Context(), userID, in, files)
 	if err != nil {
+		var ve *ValidationError
+		if errors.As(err, &ve) {
+			writeErr(w, http.StatusBadRequest, ve.Msg)
+			return
+		}
+		// Ошибки сохранения скриншотов (тип/размер) тоже клиентские.
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -94,21 +149,7 @@ func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
 			f.UserID = n
 		}
 	}
-	if v := q.Get("date_from"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			f.DateFrom = &t
-		} else if t, err := time.Parse("2006-01-02", v); err == nil {
-			f.DateFrom = &t
-		}
-	}
-	if v := q.Get("date_to"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			f.DateTo = &t
-		} else if t, err := time.Parse("2006-01-02", v); err == nil {
-			end := t.Add(24 * time.Hour)
-			f.DateTo = &end
-		}
-	}
+	f.DateFrom, f.DateTo = parseDateRange(q)
 	if v := q.Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			f.Limit = n
@@ -129,14 +170,14 @@ func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
 
 // AdminGet — GET /api/bugtracker/report/{id}
 func (h *Handler) AdminGet(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
+	id, ok := pathID(r, "id")
+	if !ok {
 		writeErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	rep, err := h.repo.Get(r.Context(), id)
+	rep, err := h.svc.Get(r.Context(), id)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "not found")
+		writeSvcErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rep)
@@ -154,15 +195,11 @@ func (h *Handler) AdminPatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if in.Status != nil && !IsValidStatus(*in.Status) {
-		writeErr(w, http.StatusBadRequest, "invalid status")
+	rep, err := h.svc.Patch(r.Context(), id, in)
+	if err != nil {
+		writeSvcErr(w, err)
 		return
 	}
-	if err := h.repo.Patch(r.Context(), id, in); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	rep, _ := h.repo.Get(r.Context(), id)
 	writeJSON(w, http.StatusOK, rep)
 }
 
@@ -180,9 +217,10 @@ func (h *Handler) AdminDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// AdminMetrics — GET /api/bugtracker/metrics
+// AdminMetrics — GET /api/bugtracker/metrics?date_from=&date_to=
 func (h *Handler) AdminMetrics(w http.ResponseWriter, r *http.Request) {
-	m, err := h.repo.Metrics(r.Context())
+	from, to := parseDateRange(r.URL.Query())
+	m, err := h.repo.Metrics(r.Context(), from, to)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -214,7 +252,7 @@ func (h *Handler) SourcesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s, err := h.repo.CreateSource(r.Context(), strings.TrimSpace(body.Name))
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeSvcErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, s)
@@ -235,8 +273,16 @@ func (h *Handler) SourcesPatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	if body.Name != nil {
+		name := strings.TrimSpace(*body.Name)
+		if name == "" {
+			writeErr(w, http.StatusBadRequest, "name пустое")
+			return
+		}
+		body.Name = &name
+	}
 	if err := h.repo.PatchSource(r.Context(), id, body.Name, body.IsActive); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeSvcErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
