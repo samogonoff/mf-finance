@@ -1698,6 +1698,23 @@ async def _check_save_locks(
     return locked_rows
 
 
+def _has_retail_price(change: dict) -> bool:
+    """Есть ли в правке розничная цена — то есть не прочерк.
+
+    В таблице ячейка розничной цены это выпадающий список, и 0, NULL, пустая
+    строка выглядят одинаково: пункт «—». Поэтому критерий один — приводимое к
+    числу значение строго больше нуля. Принимаем оба имени поля: фронт шлёт
+    `retail_rub`, внутренние вызовы — колонку кэша.
+    """
+    value = change.get("retail_rub")
+    if value is None:
+        value = change.get("Розничная цена по уровню, руб.")
+    try:
+        return value is not None and float(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 @router.post("/save-changes")
 async def save_price_changes(payload: dict, user_email: str | None = Depends(_require_perm("cost:edit_price"))) -> dict:
     username = (payload.get("author_name") or "").strip() or user_email or "system"
@@ -1705,6 +1722,16 @@ async def save_price_changes(payload: dict, user_email: str | None = Depends(_re
     calc_sign = payload.get("calc_sign") or payload.get("Признак калькуляции")
     if calc_sign == "ФКСС":
         raise HTTPException(400, "Уровень цен запрещен для редактирования для признака калькуляции 'ФКСС'")
+
+    # Прочерк в розничной цене — не заявка (просьба заказчика 18.09.2026):
+    # согласовывать ПЭО нечего, а запись заблокировала бы строку и перекрыла
+    # нулём реальную цену. Симметрично фильтру в /save-batch.
+    if not _has_retail_price(payload):
+        raise HTTPException(
+            400,
+            "Не задана розничная цена: строка с прочерком на согласование не отправляется "
+            "и остаётся доступной для редактирования",
+        )
 
     # Lock check (skip in mock mode where user_email is None)
     if user_email:
@@ -1845,12 +1872,52 @@ async def save_batch_changes(payload: dict, user_email: str | None = Depends(_re
     username = (payload.get("author_name") or "").strip() or user_email or "system"
     changes = payload.get("changes") or []
 
-    filtered = [
+    not_fkss = [
         c for c in changes
         if (c.get("calc_sign") or c.get("Признак калькуляции")) != "ФКСС"
     ]
+    # Строки без розничной цены (в таблице — прочерк) заявкой не становятся
+    # (просьба заказчика 18.09.2026). Заявка с нулевой ценой вредна: она
+    # блокирует строку бренд-менеджеру, показывается ПЭО как готовая к
+    # утверждению, перекрывает нулём реальную цену в выдаче, а через
+    # ON CONFLICT DO UPDATE ещё и затирает прежнюю заявку вместе с отметкой
+    # рассмотрения. Фронт такие строки не отправляет; здесь — второй рубеж на
+    # случай устаревшей вкладки или прямого вызова API.
+    filtered = [c for c in not_fkss if _has_retail_price(c)]
+    # Отсеянные возвращаем в `failed`, а не молча. Клиент снимает пометку
+    # «изменена» со всего, что отправил и чего нет в failed, — промолчи мы, и
+    # введённые пользователем цены РФ/КЗ/УЗ с комментарием исчезли бы с экрана
+    # как сохранённые, хотя заявки по ним нет.
+    NO_PRICE_REASON = (
+        "Не задана розничная цена — заявка не создаётся, "
+        "строка остаётся доступной для редактирования"
+    )
+    failed: list[dict] = [
+        {
+            "model": c.get("model"),
+            "articul": c.get("articul"),
+            "plan_id": c.get("plan_id"),
+            "calc_sign": c.get("calc_sign") or c.get("Признак калькуляции"),
+            "reason": NO_PRICE_REASON,
+        }
+        for c in not_fkss if not _has_retail_price(c)
+    ]
+    skipped_no_price = len(failed)
     if not filtered:
-        return {"success": False, "error": "Нет изменений для сохранения после фильтрации ФКСС", "count": 0}
+        reasons = []
+        if len(changes) - len(not_fkss):
+            reasons.append("ФКСС")
+        if skipped_no_price:
+            reasons.append("без розничной цены")
+        return {
+            "success": False,
+            "error": "Нет изменений для сохранения"
+                     + (f" — отсеяны строки: {', '.join(reasons)}" if reasons else ""),
+            "count": 0,
+            "pending_ids": [],
+            "failed": failed,
+            "skipped_no_price": skipped_no_price,
+        }
 
     # Lock check (skip in mock mode where user_email is None)
     if user_email:
@@ -1865,7 +1932,7 @@ async def save_batch_changes(payload: dict, user_email: str | None = Depends(_re
     # Теперь сохраняется всё, что сохранимо, а по остальному возвращается
     # причина, и эти строки остаются на экране изменёнными.
     saved_ids: list[int] = []
-    failed: list[dict] = []
+    # `failed` уже содержит отсеянные строки без розничной цены — дописываем к ним.
     for c in filtered:
         try:
             row_data = _row_data_from_payload(c)
@@ -1890,6 +1957,7 @@ async def save_batch_changes(payload: dict, user_email: str | None = Depends(_re
         "count": len(saved_ids),
         "pending_ids": saved_ids,
         "failed": failed,
+        "skipped_no_price": skipped_no_price,
     }
     if _is_mock():
         result["mock"] = True
