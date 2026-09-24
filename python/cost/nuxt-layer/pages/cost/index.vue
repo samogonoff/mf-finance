@@ -18,6 +18,11 @@
         <NuxtLink to="/cost/margin" class="btn btn-ghost btn-sm">
           <Icon name="lucide:trending-up" /> Маржа выпуска
         </NuxtLink>
+        <!-- Ценообразование группы (23.09.2026): право отдельное и пока только у
+             Full Admin, поэтому ссылка видна не всем. -->
+        <NuxtLink v-if="can('cost:group_pricing')" to="/cost/group-pricing" class="btn btn-ghost btn-sm">
+          <Icon name="lucide:network" /> Ценообразование группы
+        </NuxtLink>
       </div>
     </header>
 
