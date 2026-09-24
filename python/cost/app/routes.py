@@ -31,6 +31,7 @@ from app.roles import (
     update_role,
 )
 from app import obsolete
+from app import group_pricing
 
 router = APIRouter()
 
@@ -4201,3 +4202,112 @@ async def models_catalog(payload: dict, _: str = Depends(_require_perm("cost:vie
 
     result.update({"limit": limit, "offset": offset, "count": len(result.get("data") or [])})
     return result
+
+
+# ── Ценообразование группы ────────────────────────────────────────────────────
+#
+# Постановка заказчика 23.09.2026: компании группы, цепочки поставки с наценками/
+# скидками по звеньям и финрез по ассортименту главной таблицы. Вся логика — в
+# app/group_pricing.py, здесь только разбор запроса и ответ. Право одно на всё
+# (`cost:group_pricing`, миграция 0059 выдаёт его только Full Admin). В
+# mock-режиме зависимость возвращает None — автором мутации становится
+# cost-dev@local, справочник и цепочки живут в postgres как обычно, курсы —
+# фиксированные как в /purchase/rates (group_pricing.MOCK_RATES).
+#
+# Порядок регистрации важен: `/group/chains/overlaps` объявлен ДО
+# `/group/chains/{chain_id}`, иначе FastAPI примет «overlaps» за id и вернёт 422.
+
+def _group_user(user: str | None) -> str:
+    return (user or "").strip() or "cost-dev@local"
+
+
+@router.get("/group/companies")
+async def group_companies(_: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    """Справочник компаний группы — все, включая неактивные (сортировка sort_order, name)."""
+    return {"items": await group_pricing.list_companies()}
+
+
+@router.post("/group/companies")
+async def group_company_create(payload: dict, user: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    """Body: { name, country?, currency?, comment?, is_active?, sort_order? }. Дубль имени — 409."""
+    return {"item": await group_pricing.create_company(payload, set_by=_group_user(user))}
+
+
+@router.put("/group/companies/{company_id}")
+async def group_company_update(company_id: int, payload: dict,
+                               user: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    """Частичное обновление тех же полей, что в POST."""
+    return {"item": await group_pricing.update_company(company_id, payload, set_by=_group_user(user))}
+
+
+@router.delete("/group/companies/{company_id}")
+async def group_company_delete(company_id: int, user: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    """Удалить компанию; если она стоит в звеньях цепочек — 409 со списком цепочек."""
+    await group_pricing.delete_company(company_id, set_by=_group_user(user))
+    return {"deleted": True}
+
+
+@router.get("/group/chains/overlaps")
+async def group_chain_overlaps(_: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    """Попарные пересечения ассортимента (пар модель+артикул) активных цепочек — для подсветки."""
+    return {"items": await group_pricing.chain_overlaps()}
+
+
+@router.get("/group/chains")
+async def group_chains(_: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    """Все цепочки со звеньями: активные первыми, затем по имени."""
+    return {"items": await group_pricing.list_chains()}
+
+
+@router.get("/group/chains/{chain_id}")
+async def group_chain_get(chain_id: int, _: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    return {"item": await group_pricing.require_chain(chain_id)}
+
+
+@router.post("/group/chains")
+async def group_chain_create(payload: dict, user: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    """Body: { name, mode, weight?, scope, rate_date?, status?, comment?,
+    links: [{company_id, adjust_pct, currency?}] }. seq — порядок в массиве, eff_pct считает сервер."""
+    return {"item": await group_pricing.save_chain(payload, set_by=_group_user(user))}
+
+
+@router.put("/group/chains/{chain_id}")
+async def group_chain_update(chain_id: int, payload: dict,
+                             user: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    """То же тело, что в POST; звенья заменяются целиком."""
+    return {"item": await group_pricing.save_chain(payload, set_by=_group_user(user), chain_id=chain_id)}
+
+
+@router.delete("/group/chains/{chain_id}")
+async def group_chain_delete(chain_id: int, user: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    await group_pricing.delete_chain(chain_id, set_by=_group_user(user))
+    return {"deleted": True}
+
+
+@router.get("/group/chains/{chain_id}/result")
+async def group_chain_result(chain_id: int, request: Request,
+                             _: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    """Финрез цепочки. Query: `path` (повторяется — путь проваливания),
+    `rate_date=YYYY-MM-DD` (перекрывает дату курса цепочки), `summary=1` (без матрицы)."""
+    qp = request.query_params
+    chain = await group_pricing.require_chain(chain_id)
+    return await group_pricing.chain_result(
+        chain, path=qp.getlist("path"), rate_date=qp.get("rate_date") or None,
+        summary=(qp.get("summary") or "").strip().lower() in ("1", "true", "yes"),
+    )
+
+
+@router.post("/group/simulate")
+async def group_simulate(payload: dict, _: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    """Предпросмотр из редактора без сохранения. Body: { chain: {mode, weight, scope, rate_date?,
+    links: [...]}, path?: [...], summary?: bool }."""
+    path = payload.get("path") or []
+    if not isinstance(path, list):
+        raise HTTPException(400, "path должен быть списком значений пути")
+    return await group_pricing.simulate(payload.get("chain"), path=path, summary=bool(payload.get("summary")))
+
+
+@router.post("/group/scope/count")
+async def group_scope_count(payload: dict, _: str | None = Depends(_require_perm("cost:group_pricing"))) -> dict:
+    """Размер ассортимента по scope без наложения цен: { rows, pairs, models }."""
+    return await group_pricing.scope_count(payload.get("scope"))
