@@ -44,7 +44,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from app.db import _mssql_connect, acquire, get_dwh_conn, get_gpartner_conn
+from app.db import _mssql_connect, acquire, fetch_modeli_folders, get_dwh_conn, get_gpartner_conn
 from app.logship import log
 
 PORTAL_SOURCE_SIGN = "ПОРТАЛ"          # source_calc_sign у импортированных строк
@@ -53,6 +53,7 @@ PORTAL_ROW_SIGN = "закупка готовой"    # «Материал/опе
 IMPORT_CALC_SIGN = "КПСС"
 
 PurchaseKey = tuple[str, str, str, str, str]   # model, articul, calc_sign, plan_id, task
+Pair = tuple[str, str]                          # model, articul
 
 
 def _s(v: Any) -> str:
@@ -742,6 +743,91 @@ async def vat_for_pairs(pairs: list[Pair]) -> dict[Pair, float | None]:
     return await loop.run_in_executor(None, _vat_sync, uniq)
 
 
+# ── Бренд-менеджер, уровни и страна из справочника ───────────────────────────
+#
+# Строка ПФКСС по приходу берёт эти поля у КПСС той же калькуляции. Когда КПСС
+# нет (план не из портала), до 28.09.2026 они оставались пустыми: план 8910,
+# модель 121956 пришла в таблицу без бренд-менеджера, уровней и страны, и БМ не
+# находил свою модель, отфильтровав таблицу по своей фамилии. В справочнике всё
+# это есть: бренд-менеджер висит на папке номенклатуры (www_folders.BRAND_FIO по
+# PARENT_ID, как в окне «Справочник моделей»), уровни — сегменты пути, страна —
+# S_MODELI.COUNTRY. Написание то же, что в CostHistory: в выборке строк с
+# 01.08.2026 бренд-менеджер папки совпал с источником в 3690 случаях из 3699
+# (сверка 28.09.2026). Семьи и сезона в справочнике нет — они остаются пустыми.
+
+CATALOG_FIELDS: tuple[str, ...] = (
+    "Бренд-менеджер", "Level 01", "Level 02", "Level 03", "Level 04", "Level 05", "Страна пр-ва",
+)
+
+
+def _blank(v: Any) -> bool:
+    """Пусто или «-» — так источник помечает отсутствующее значение."""
+    return _s(v) in ("", "-")
+
+
+def _catalog_sync(pairs: list[Pair]) -> dict[Pair, dict[str, str | None]]:
+    """Поля CATALOG_FIELDS по парам модель+артикул, последняя версия по ITEM_ID.
+    Артикула нет в справочнике (строку прихода завели руками) — берём последнюю
+    версию модели: папка, а с ней бренд-менеджер и уровни, у артикулов модели
+    общая. Модели нет вовсе — пары нет в ответе."""
+    if not pairs:
+        return {}
+    brand_by_folder = {f["folder_id"]: f["brand_manager"] for f in fetch_modeli_folders()}
+    models = sorted({m for m, _ in pairs})
+    conn = get_gpartner_conn()
+    cur = conn.cursor()
+    try:
+        by_pair: dict[Pair, dict[str, str | None]] = {}
+        by_model: dict[str, dict[str, str | None]] = {}
+        for i in range(0, len(models), 400):
+            batch = models[i:i + 400]
+            # MODEL без RTRIM: char-колонку MSSQL сравнивает без хвостовых
+            # пробелов, а условие на голой колонке не прячет её от индекса.
+            cur.execute(
+                "SELECT RTRIM(MODEL), RTRIM(ART), PARENT_ID, RTRIM(FULL_PATH), RTRIM(COUNTRY)"
+                "  FROM [dbo].[S_MODELI]"
+                " WHERE ISFOLDER = 0 AND MODEL IN (%s)"
+                " ORDER BY ITEM_ID DESC" % ",".join("?" * len(batch)),
+                batch,
+            )
+            for model, art, parent_id, path, country in cur.fetchall():
+                segs = [s.strip() for s in _s(path).split("\\") if s.strip()][:5]
+                fields: dict[str, str | None] = {
+                    "Бренд-менеджер": (brand_by_folder.get(int(parent_id)) if parent_id is not None else None) or None,
+                    "Страна пр-ва": _s(country) or None,
+                }
+                for n in range(1, 6):
+                    fields[f"Level 0{n}"] = segs[n - 1] if len(segs) >= n else None
+                # Строки идут от свежей версии к старой — оставляем первую.
+                by_pair.setdefault((_s(model), _s(art)), fields)
+                by_model.setdefault(_s(model), fields)
+        out: dict[Pair, dict[str, str | None]] = {}
+        for pair in pairs:
+            found = by_pair.get(pair) or by_model.get(pair[0])
+            if found:
+                out[pair] = found
+        return out
+    finally:
+        conn.close()
+
+
+async def catalog_for_pairs(pairs: list[Pair]) -> dict[Pair, dict[str, str | None]]:
+    """{(модель, артикул): поля справочника} — для строк ПФКСС по приходу."""
+    uniq = list({(_s(m), _s(a)) for m, a in pairs if _s(m)})
+    if not uniq:
+        return {}
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _catalog_sync, uniq)
+
+
+def fill_from_catalog(row: dict[str, Any], fields: dict[str, str | None] | None) -> None:
+    """Дописать в строку пустые поля из справочника. Заполненные не трогаем:
+    у строки с КПСС-основой они те же, что у плана."""
+    for col, val in (fields or {}).items():
+        if val and _blank(row.get(col)):
+            row[col] = val
+
+
 # ── Курсы НБ РБ к бел. рублю (DWH.dim.valuta / valuta1) ─────────────────────
 #
 # Решение заказчика 04.09.2026: все затраты и цены поставщика приводим к
@@ -1158,6 +1244,15 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
         log(logging.WARNING, "ПФКСС по приходу: ставка НДС из S_MODELI недоступна",
             invoice_id=inv_id, error=str(exc)[:300])
         vat_by_pair = {}
+    # Бренд-менеджер, уровни и страна — для строк без КПСС-основы (см.
+    # CATALOG_FIELDS). Справочник недоступен — приход всё равно применяем, поля
+    # дописывает scripts/backfill_invoice_catalog_fields.py.
+    try:
+        catalog = await catalog_for_pairs([(ln["model"], ln["articul"]) for ln in calc["lines"]])
+    except Exception as exc:  # noqa: BLE001 — Gpartner за VPN
+        log(logging.WARNING, "ПФКСС по приходу: справочник моделей недоступен",
+            invoice_id=inv_id, error=str(exc)[:300])
+        catalog = {}
     # Справочник уровней — чтобы подобрать уровень заново, а не унаследовать его
     # от строки КПСС (см. ниже, у строки «Уровень цен»).
     try:
@@ -1209,6 +1304,8 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
                     row["Наименование модели"] = ln["name"]
                 if ln.get("color"):
                     row["color"] = ln["color"]
+                # До подбора уровня цен: целевая наценка зависит от Level 01.
+                fill_from_catalog(row, catalog.get((_s(ln["model"]), _s(ln["articul"]))))
                 vat = vat_by_pair.get((_s(ln["model"]), _s(ln["articul"])))
                 if vat is not None:
                     row["Ставка НДС"] = vat
