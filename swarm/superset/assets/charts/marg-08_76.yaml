@@ -1,43 +1,98 @@
 slice_name: "marg-08 \xB7 \u0414\u0438\u043D\u0430\u043C\u0438\u043A\u0430 \u043C\u0430\
   \u0440\u0436\u0438 \u0432\u044B\u043F\u0443\u0441\u043A\u0430"
-description: null
+description: "\u0421\u0442\u043E\u043B\u0431\u0446\u044B \u2014 \u043C\u0430\u0440\
+  \u0436\u0430 \u0442\u0435\u043A\u0443\u0449\u0435\u0433\u043E \u0433\u043E\u0434\
+  \u0430 \u0438 \u0442\u043E\u0433\u043E \u0436\u0435 \u043C\u0435\u0441\u044F\u0446\
+  \u0430 \u043F\u0440\u043E\u0448\u043B\u043E\u0433\u043E \u0433\u043E\u0434\u0430\
+  , \u043B\u0438\u043D\u0438\u044F \u2014 \u0442\u0435\u043C\u043F \u0440\u043E\u0441\
+  \u0442\u0430 \u043A \u043F\u0440\u043E\u0448\u043B\u043E\u043C\u0443 \u0433\u043E\
+  \u0434\u0443. \u0424\u0438\u043B\u044C\u0442\u0440 \xAB\u041C\u0435\u0441\u044F\u0446\
+  \xBB \u043D\u0430 \u0433\u0440\u0430\u0444\u0438\u043A \u043D\u0435 \u0432\u043B\
+  \u0438\u044F\u0435\u0442, \u0442\u043E\u043B\u044C\u043A\u043E \xAB\u0413\u043E\u0434\
+  \xBB."
 certified_by: null
 certification_details: null
 viz_type: mixed_timeseries
 params:
   datasource: 14__table
   viz_type: mixed_timeseries
-  x_axis: prod_month
-  time_grain_sqla: P1M
+  x_axis: prod_month_axis
+  time_grain_sqla: null
   metrics:
-  - margin_cur
-  - margin_py
+  - expressionType: SQL
+    sqlExpression: '{{ metric(''margin_cur'', 14) }}'
+    label: "\u041C\u0430\u0440\u0436\u0430"
+    hasCustomLabel: true
+    optionName: metric_mp4_margin
+    aggregate: null
+    column: null
+    datasourceWarning: false
+  - expressionType: SQL
+    sqlExpression: '{{ metric(''margin_py'', 14) }}'
+    label: "\u041C\u0430\u0440\u0436\u0430 \u043F\u0440\u043E\u0448\u043B\u043E\u0433\
+      \u043E \u0433\u043E\u0434\u0430"
+    hasCustomLabel: true
+    optionName: metric_mp4_margin_py
+    aggregate: null
+    column: null
+    datasourceWarning: false
   groupby: []
-  adhoc_filters: []
+  adhoc_filters:
+  - expressionType: SQL
+    clause: HAVING
+    sqlExpression: count(*) FILTER (WHERE k = 'cur') > 0
+    subject: null
+    operator: null
+    comparator: null
+    isExtra: false
+    isNew: false
+    filterOptionName: filter_mp4_has_cur
   row_limit: 1000
   metrics_b:
-  - growth_py_pct
+  - expressionType: SQL
+    sqlExpression: '{{ metric(''growth_py_pct'', 14) }}'
+    label: "\u0422\u0435\u043C\u043F \u0440\u043E\u0441\u0442\u0430 \u043A \u043F\u0440\
+      \u043E\u0448\u043B\u043E\u043C\u0443 \u0433\u043E\u0434\u0443, %"
+    hasCustomLabel: true
+    optionName: metric_mp4_growth_py
+    aggregate: null
+    column: null
+    datasourceWarning: false
   groupby_b: []
-  adhoc_filters_b: []
+  adhoc_filters_b:
+  - expressionType: SQL
+    clause: HAVING
+    sqlExpression: count(*) FILTER (WHERE k = 'cur') > 0
+    subject: null
+    operator: null
+    comparator: null
+    isExtra: false
+    isNew: false
+    filterOptionName: filter_mp4_has_cur
   row_limit_b: 1000
   seriesType: bar
   seriesTypeB: line
   yAxisIndex: 0
   yAxisIndexB: 1
   y_axis_format: ',.0f'
-  y_axis_format_secondary: +,.1f
+  y_axis_format_secondary: ',.1~f'
   y_axis_title: ''
   y_axis_title_secondary: '%'
-  x_axis_time_format: '%m.%Y'
   show_legend: true
   legend_orientation: bottom
   markerEnabledB: true
   markerSizeB: 5
   rich_tooltip: true
-  truncateYAxis: true
+  truncateYAxis: false
   truncate_metric: true
   color_scheme: supersetColors
   extra_form_data: {}
+  legendType: plain
+  echart_options: '{legend: {type: ''plain'', left: 4, width: 212, itemWidth: 10,
+    itemHeight: 10, itemGap: 8, textStyle: {fontSize: 11}}, grid: {bottom: 52, top:
+    44}, xAxis: {axisLabel: {interval: 0}}}'
+  xAxisLabelInterval: 0
+  xAxisLabelRotation: 45
 query_context: null
 cache_timeout: null
 uuid: 2a603148-bf9f-4c29-9230-ac5a44576651

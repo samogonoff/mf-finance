@@ -1,0 +1,683 @@
+table_name: mf_cost_margin_head
+main_dttm_col: null
+currency_code_column: null
+description: null
+default_endpoint: null
+offset: 0
+cache_timeout: 300
+catalog: cost
+schema: public
+sql: "-- \u0428\u0430\u043F\u043A\u0430 \u0434\u0430\u0448\u0431\u043E\u0440\u0434\
+  \u0430 \xAB\u041C\u0430\u0440\u0436\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430\
+  \xBB (\u0447\u0430\u0440\u0442 marg-31): \u0441\u0432\u0435\u0436\u0435\u0441\u0442\
+  \u044C \u043A\u044D\u0448\u0430, \u043F\u043E\u043B\u043D\u043E\u0442\u0430 \u0440\
+  \u0430\u0441\u0447\u0451\u0442\u0430,\n-- \u043F\u0435\u0440\u0438\u043E\u0434 \u0438\
+  \ \u0431\u0430\u0437\u0430 \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\
+  \u043E\u0441\u0442\u0438 \u2014 \u043F\u043E\u0434\u0437\u0430\u0433\u043E\u043B\
+  \u043E\u0432\u043E\u043A \u0438 \u0441\u0442\u0440\u043E\u043A\u0430 \u0431\u0430\
+  \u0437\u044B \u0444\u0440\u043E\u043D\u0442\u0430 /cost/margin\n-- (margin.vue:6-67,\
+  \ \u0437\u043D\u0430\u043C\u0435\u043D\u0430\u0442\u0435\u043B\u044C calc_total\
+  \ \u2014 margin.py:600-616).\n--\n-- \u041E\u0442\u0434\u0435\u043B\u044C\u043D\u0430\
+  \u044F \u0432\u0438\u0442\u0440\u0438\u043D\u0430, \u0430 \u043D\u0435 \u0432\u0435\
+  \u0442\u043A\u0430 \u0432 mf_cost_margin: \u0437\u043D\u0430\u043C\u0435\u043D\u0430\
+  \u0442\u0435\u043B\u044E \xAB\u0438\u0437 N \u043A\u0430\u043B\u044C\u043A\u0443\
+  \u043B\u044F\u0446\u0438\u0439\xBB\n-- \u043D\u0443\u0436\u043D\u044B \u0412\u0421\
+  \u0415 \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0438 \u0424\
+  \u041A\u0421\u0421 \u043F\u0435\u0440\u0438\u043E\u0434\u0430, \u0432 \u0442\u043E\
+  \u043C \u0447\u0438\u0441\u043B\u0435 \u0431\u0435\u0437 \u0446\u0435\u043D\u044B\
+  , \u0441 \u0432\u044B\u0431\u0440\u043E\u0441\u0430\u043C\u0438 \u0438\n-- \u043F\
+  \u043E\u043B\u0443\u0444\u0430\u0431\u0440\u0438\u043A\u0430\u0442\u044B \u2014\
+  \ \u0432 \u0432\u0438\u0442\u0440\u0438\u043D\u0435 \u043C\u0430\u0440\u0436\u0438\
+  \ \u0438\u0445 \u043D\u0435\u0442, \u0430 \u0434\u043E\u0431\u0430\u0432\u0438\u0442\
+  \u044C \u0438\u0445 \u0442\u0443\u0434\u0430 \u0437\u043D\u0430\u0447\u0438\u0442\
+  \ \u0437\u0430\u0441\u043E\u0440\u0438\u0442\u044C\n-- \u0435\u0451 \u0440\u0430\
+  \u0437\u0440\u0435\u0437\u044B. \u0418\u043C\u0435\u043D\u0430 \u043A\u043E\u043B\
+  \u043E\u043D\u043E\u043A \u0438\u0437\u043C\u0435\u0440\u0435\u043D\u0438\u0439\
+  \ \u0441\u043E\u0432\u043F\u0430\u0434\u0430\u044E\u0442 \u0441 mf_cost_margin,\
+  \ \u043F\u043E\u044D\u0442\u043E\u043C\u0443\n-- \u0444\u0438\u043B\u044C\u0442\u0440\
+  \u044B \u0434\u0430\u0448\u0431\u043E\u0440\u0434\u0430 (\u0433\u043E\u0434, \u043C\
+  \u0435\u0441\u044F\u0446, \u043F\u043B\u0430\u043D, \u0411\u041C, Level 01\u2013\
+  03, \u0442\u043E\u0432\u0430\u0440, \u0441\u0442\u0440\u0430\u043D\u0430, \u0441\
+  \u0435\u0437\u043E\u043D)\n-- \u0438 \u043A\u0440\u043E\u0441\u0441-\u0444\u0438\
+  \u043B\u044C\u0442\u0440\u044B \u043F\u043E \u0411\u041C / Level 01 \u0434\u0435\
+  \u0439\u0441\u0442\u0432\u0443\u044E\u0442 \u0438 \u043D\u0430 \u0448\u0430\u043F\
+  \u043A\u0443. \u041A\u043E\u043B\u043E\u043D\u043A\u0438 currency_pick\n-- \u043D\
+  \u0435\u0442: \u0432\u0430\u043B\u044E\u0442\u0430 \u0448\u0430\u043F\u043A\u0443\
+  \ \u043D\u0435 \u043C\u0435\u043D\u044F\u0435\u0442.\n--\n-- \u0417\u043D\u0430\u0447\
+  \u0435\u043D\u0438\u044F \u0444\u0438\u043B\u044C\u0442\u0440\u043E\u0432 \u043F\
+  \u0440\u0438\u0445\u043E\u0434\u044F\u0442 \u0447\u0435\u0440\u0435\u0437 filter_values()\
+  \ \u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C\u0441\
+  \u043A\u0438\u043C\u0438 \u0441\u0442\u0440\u043E\u043A\u0430\u043C\u0438,\n-- \u043F\
+  \u043E\u044D\u0442\u043E\u043C\u0443 \u0432 SQL \u043F\u043E\u043F\u0430\u0434\u0430\
+  \u044E\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0437\u043D\u0430\u0447\u0435\
+  \u043D\u0438\u044F \u0438\u0437 \u0431\u0435\u043B\u044B\u0445 \u0441\u043F\u0438\
+  \u0441\u043A\u043E\u0432 (\u0433\u043E\u0434\u044B, 12 \u043C\u0435\u0441\u044F\u0446\
+  \u0435\u0432,\n-- \u0434\u0432\u0435 \u0431\u0430\u0437\u044B) \u2014 \u043A\u0430\
+  \u043A \u0443 currency_pick \u0432 mf_cost_margin.\n{% set rawb = filter_values('basis_pick')\
+  \ %}\n{% set basis = rawb[0] if rawb and rawb[0] in ['\u0424\u0430\u043A\u0442',\
+  \ '\u041D\u043E\u0440\u043C\u0430\u0442\u0438\u0432'] else '\u0424\u0430\u043A\u0442\
+  ' %}\n{% set months12 = ['\u044F\u043D\u0432\u0430\u0440\u044C', '\u0444\u0435\u0432\
+  \u0440\u0430\u043B\u044C', '\u043C\u0430\u0440\u0442', '\u0430\u043F\u0440\u0435\
+  \u043B\u044C', '\u043C\u0430\u0439', '\u0438\u044E\u043D\u044C', '\u0438\u044E\u043B\
+  \u044C', '\u0430\u0432\u0433\u0443\u0441\u0442', '\u0441\u0435\u043D\u0442\u044F\
+  \u0431\u0440\u044C', '\u043E\u043A\u0442\u044F\u0431\u0440\u044C', '\u043D\u043E\
+  \u044F\u0431\u0440\u044C', '\u0434\u0435\u043A\u0430\u0431\u0440\u044C'] %}\n{%\
+  \ set years_ok = ['2020', '2021', '2022', '2023', '2024', '2025', '2026', '2027',\
+  \ '2028', '2029', '2030', '2031', '2032', '2033', '2034', '2035'] %}\n{% set yrs\
+  \ = filter_values('prod_year') | select('in', years_ok) | list %}\n{% set mns =\
+  \ filter_values('prod_month_label') | select('in', months12) | list %}\n{% if not\
+  \ yrs and not mns %}\n{% set period = '\u0432\u0441\u0435 \u0433\u043E\u0434\u044B\
+  ' %}\n{% else %}\n{% set y = yrs | join(', ') if yrs else '\u0432\u0441\u0435 \u0433\
+  \u043E\u0434\u044B' %}\n{% set period = (mns | join(', ')) ~ ' ' ~ y if mns else\
+  \ y ~ ', \u0432\u0441\u0435 \u043C\u0435\u0441\u044F\u0446\u044B' %}\n{% endif %}\n\
+  -- MP4: \u043A\u0440\u043E\u0441\u0441-\u0444\u0438\u043B\u044C\u0442\u0440 \xAB\
+  \u043A\u043B\u0438\u043A \u043F\u043E \u043C\u0435\u0441\u044F\u0446\u0443\xBB \u0441\
+  \ \u0433\u0440\u0430\u0444\u0438\u043A\u043E\u0432 \u0434\u0438\u043D\u0430\u043C\
+  \u0438\u043A\u0438 (\u0447\u0430\u0440\u0442\u044B 77, 83, 91) \u043F\u0440\u0438\
+  \u0445\u043E\u0434\u0438\u0442 \u043F\u043E \u043A\u043E\u043B\u043E\u043D\u043A\
+  \u0435\n-- prod_month_axis \u2014 \u0442\u0430 \u0436\u0435 \u043F\u043E\u0434\u043F\
+  \u0438\u0441\u044C, \u0447\u0442\u043E \u0432 mf_cost_margin (\xAB\u044F\u043D\u0432\
+  \xBB \u043F\u0440\u0438 \u043E\u0434\u043D\u043E\u043C \u0433\u043E\u0434\u0435\
+  \ \u0432 \u0444\u0438\u043B\u044C\u0442\u0440\u0435, \u0438\u043D\u0430\u0447\u0435\
+  \n-- \xAB\u044F\u043D\u0432 2026\xBB, \u0432\u043F\u0435\u0440\u0435\u0434\u0438\
+  \ \u043D\u0435\u0432\u0438\u0434\u0438\u043C\u044B\u0435 U+200B). \u041F\u0435\u0440\
+  \u0438\u043E\u0434 \u0432 \u0448\u0430\u043F\u043A\u0435 \u2014 \u043A\u0430\u043A\
+  \ \u0443 \u0444\u0440\u043E\u043D\u0442\u0430 \u043F\u043E\u0441\u043B\u0435 \u043A\
+  \u043B\u0438\u043A\u0430: \xAB\u044F\u043D\u0432\u0430\u0440\u044C 2026\xBB.\n--\
+  \ \u0412 SQL \u043F\u043E\u043F\u0430\u0434\u0430\u044E\u0442 \u0442\u043E\u043B\
+  \u044C\u043A\u043E \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u044F \u0438\u0437\
+  \ \u0431\u0435\u043B\u044B\u0445 \u0441\u043F\u0438\u0441\u043A\u043E\u0432 (12\
+  \ \u043C\u0435\u0441\u044F\u0446\u0435\u0432, \u0433\u043E\u0434\u044B years_ok).\n\
+  {% set one_year = (filter_values('prod_year') | length) == 1 %}\n{% macro month_axis(mx)\
+  \ -%}\n(repeat(chr(8203), greatest((extract(year FROM {{ mx }})::int - 2020) * 12\
+  \ + extract(month FROM {{ mx }})::int, 0)) || (ARRAY['\u044F\u043D\u0432','\u0444\
+  \u0435\u0432','\u043C\u0430\u0440','\u0430\u043F\u0440','\u043C\u0430\u0439','\u0438\
+  \u044E\u043D','\u0438\u044E\u043B','\u0430\u0432\u0433','\u0441\u0435\u043D','\u043E\
+  \u043A\u0442','\u043D\u043E\u044F','\u0434\u0435\u043A'])[extract(month FROM {{\
+  \ mx }})::int]{% if not one_year %} || ' ' || to_char({{ mx }}, 'YYYY'){% endif\
+  \ %})\n{%- endmacro %}\n{% set shorts = {'\u044F\u043D\u0432': '\u044F\u043D\u0432\
+  \u0430\u0440\u044C', '\u0444\u0435\u0432': '\u0444\u0435\u0432\u0440\u0430\u043B\
+  \u044C', '\u043C\u0430\u0440': '\u043C\u0430\u0440\u0442', '\u0430\u043F\u0440':\
+  \ '\u0430\u043F\u0440\u0435\u043B\u044C', '\u043C\u0430\u0439': '\u043C\u0430\u0439\
+  ', '\u0438\u044E\u043D': '\u0438\u044E\u043D\u044C', '\u0438\u044E\u043B': '\u0438\
+  \u044E\u043B\u044C', '\u0430\u0432\u0433': '\u0430\u0432\u0433\u0443\u0441\u0442\
+  ', '\u0441\u0435\u043D': '\u0441\u0435\u043D\u0442\u044F\u0431\u0440\u044C', '\u043E\
+  \u043A\u0442': '\u043E\u043A\u0442\u044F\u0431\u0440\u044C', '\u043D\u043E\u044F\
+  ': '\u043D\u043E\u044F\u0431\u0440\u044C', '\u0434\u0435\u043A': '\u0434\u0435\u043A\
+  \u0430\u0431\u0440\u044C'} %}\n{% set mx = filter_values('prod_month_axis') %}\n\
+  {% if mx %}\n{% set parts = (mx[0] | string | replace('\\u200b', '')).split(' ')\
+  \ %}\n{% if parts[0] in shorts %}\n{% set yy = parts[1] if (parts | length) > 1\
+  \ and parts[1] in years_ok else (yrs | join(', ') if yrs else '\u0432\u0441\u0435\
+  \ \u0433\u043E\u0434\u044B') %}\n{% set period = shorts[parts[0]] ~ ' ' ~ yy %}\n\
+  {% endif %}\n{% endif %}\n-- \u041A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\
+  \u0438\u044F \xAB\u0432 \u0440\u0430\u0441\u0447\u0451\u0442\u0435\xBB \u2014 \u0442\
+  \u0435 \u0436\u0435 \u0443\u0441\u043B\u043E\u0432\u0438\u044F, \u0447\u0442\u043E\
+  \ \u0443 \u0432\u0438\u0442\u0440\u0438\u043D\u044B \u043C\u0430\u0440\u0436\u0438\
+  \ \u0438 \u0443 \u0444\u0440\u043E\u043D\u0442\u0430\n-- (_MARGIN_BASE: BASE_CONDITIONS\
+  \ + \u0424\u041A\u0421\u0421 + \u043E\u0431\u044A\u0451\u043C + \u0434\u0430\u0442\
+  \u0430 \u043F\u0440\u043E\u0438\u0437\u0432\u043E\u0434\u0441\u0442\u0432\u0430\
+  ).\n{% set in_calc = \"(c.cost_byn > 0 AND c.cost_byn < 1000 AND c.wholesale_price_byn\
+  \ > 0 AND c.level01 IS DISTINCT FROM '\u041F\u043E\u043B\u0443\u0444\u0430\u0431\
+  \u0440\u0438\u043A\u0430\u0442\u044B' AND coalesce((c.model, c.articul) NOT IN (SELECT\
+  \ model, articul FROM cost_multipack), TRUE) AND c.volume_pcs > 0)\" %}\n-- \u0413\
+  \u043E\u0434\u043D\u043E\u0441\u0442\u044C \u0444\u0430\u043A\u0442\u0430 \u2014\
+  \ \u043A\u0430\u043A \u0432 mf_cost_margin (app/margin.py, _FACT_OK).\n{% set fact_ok\
+  \ = \"(c.cost_fact_byn IS NOT NULL AND NOT (coalesce(c.sewing_byn, 0) > 0 AND coalesce(c.sewing_fact_byn,\
+  \ 0) = 0) AND NOT (coalesce(c.cutting_byn, 0) > 0 AND coalesce(c.cutting_fact_byn,\
+  \ 0) = 0))\" %}\nSELECT\n  '{{ basis }}'::text AS basis_pick,   -- dummy-\u043A\u043E\
+  \u043B\u043E\u043D\u043A\u0430 \u0444\u0438\u043B\u044C\u0442\u0440\u0430 \xAB\u0411\
+  \u0430\u0437\u0430 \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\
+  \u0442\u0438\xBB\n  '{{ '\u0444\u0430\u043A\u0442\u0438\u0447\u0435\u0441\u043A\u043E\
+  \u0439 \u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438 \u043C\u0438\u043D\
+  \u0443\u0442\u044B' if basis == '\u0424\u0430\u043A\u0442' else '\u043D\u043E\u0440\
+  \u043C\u0430\u0442\u0438\u0432\u043D\u043E\u0439 \u0441\u0442\u043E\u0438\u043C\u043E\
+  \u0441\u0442\u0438 \u043C\u0438\u043D\u0443\u0442\u044B' }}'::text AS basis_label,\n\
+  \  '{{ period }}'::text AS period_label,\n  to_char(c.production_date, 'YYYY') AS\
+  \ prod_year,\n  (ARRAY['\u044F\u043D\u0432\u0430\u0440\u044C','\u0444\u0435\u0432\
+  \u0440\u0430\u043B\u044C','\u043C\u0430\u0440\u0442','\u0430\u043F\u0440\u0435\u043B\
+  \u044C','\u043C\u0430\u0439','\u0438\u044E\u043D\u044C','\u0438\u044E\u043B\u044C\
+  ','\u0430\u0432\u0433\u0443\u0441\u0442','\u0441\u0435\u043D\u0442\u044F\u0431\u0440\
+  \u044C','\u043E\u043A\u0442\u044F\u0431\u0440\u044C','\u043D\u043E\u044F\u0431\u0440\
+  \u044C','\u0434\u0435\u043A\u0430\u0431\u0440\u044C'])[extract(month FROM c.production_date)::int]\
+  \ AS prod_month_label,\n  to_char(c.production_date, 'MM') || ' \xB7 ' || (ARRAY['\u044F\
+  \u043D\u0432\u0430\u0440\u044C','\u0444\u0435\u0432\u0440\u0430\u043B\u044C','\u043C\
+  \u0430\u0440\u0442','\u0430\u043F\u0440\u0435\u043B\u044C','\u043C\u0430\u0439','\u0438\
+  \u044E\u043D\u044C','\u0438\u044E\u043B\u044C','\u0430\u0432\u0433\u0443\u0441\u0442\
+  ','\u0441\u0435\u043D\u0442\u044F\u0431\u0440\u044C','\u043E\u043A\u0442\u044F\u0431\
+  \u0440\u044C','\u043D\u043E\u044F\u0431\u0440\u044C','\u0434\u0435\u043A\u0430\u0431\
+  \u0440\u044C'])[extract(month FROM c.production_date)::int] AS prod_month_name,\n\
+  \  {{ month_axis('c.production_date') }} AS prod_month_axis,\n  c.plan_id, c.brand_manager,\
+  \ c.level01, c.level02, c.level03, c.model_name, c.model, c.articul, c.country,\
+  \ c.season,\n  CASE WHEN {{ in_calc }} THEN 1 ELSE 0 END                       \
+  \        AS in_calc,\n  CASE WHEN {{ in_calc }} THEN c.model END               \
+  \                 AS model_in_calc,\n  CASE WHEN {{ in_calc }} THEN c.volume_pcs\
+  \ END                           AS vol,\n  CASE WHEN {{ in_calc }} AND {{ fact_ok\
+  \ }} THEN c.volume_pcs END         AS vol_f,\n  -- \u0412\u0440\u0435\u043C\u044F\
+  \ \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u043A\u044D\u0448\
+  \u0430 \u2014 \u043F\u043E \u041C\u0438\u043D\u0441\u043A\u0443, \u043A\u0430\u043A\
+  \ \u0435\u0433\u043E \u043F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0435\u0442\
+  \ \u0444\u0440\u043E\u043D\u0442 (ru-RU, short).\n  (SELECT to_char(s.refreshed_at\
+  \ AT TIME ZONE 'Europe/Minsk', 'DD.MM.YYYY, HH24:MI')\n     FROM cost_cache_status\
+  \ s WHERE s.id = 1)                             AS cache_txt\nFROM cost_calc_mv\
+  \ c\nWHERE c.calc_sign = '\u0424\u041A\u0421\u0421' AND c.production_date IS NOT\
+  \ NULL"
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+folders: null
+uuid: f2c2932d-ab74-4d6f-8627-c9f1758a68c7
+metrics:
+- metric_name: period_txt
+  verbose_name: null
+  metric_type: null
+  expression: "{% set months12 = ['\u044F\u043D\u0432\u0430\u0440\u044C', '\u0444\u0435\
+    \u0432\u0440\u0430\u043B\u044C', '\u043C\u0430\u0440\u0442', '\u0430\u043F\u0440\
+    \u0435\u043B\u044C', '\u043C\u0430\u0439', '\u0438\u044E\u043D\u044C', '\u0438\
+    \u044E\u043B\u044C', '\u0430\u0432\u0433\u0443\u0441\u0442', '\u0441\u0435\u043D\
+    \u0442\u044F\u0431\u0440\u044C', '\u043E\u043A\u0442\u044F\u0431\u0440\u044C',\
+    \ '\u043D\u043E\u044F\u0431\u0440\u044C', '\u0434\u0435\u043A\u0430\u0431\u0440\
+    \u044C'] %}{% set years_ok = ['2020', '2021', '2022', '2023', '2024', '2025',\
+    \ '2026', '2027', '2028', '2029', '2030', '2031', '2032', '2033', '2034', '2035']\
+    \ %}{% set yrs = filter_values('prod_year') | select('in', years_ok) | list %}{%\
+    \ set mns = filter_values('prod_month_label') | select('in', months12) | list\
+    \ %}{% if not yrs and not mns %}{% set period = '\u0432\u0441\u0435 \u0433\u043E\
+    \u0434\u044B' %}{% else %}{% set y = yrs | join(', ') if yrs else '\u0432\u0441\
+    \u0435 \u0433\u043E\u0434\u044B' %}{% set period = (mns | join(', ')) ~ ' ' ~\
+    \ y if mns else y ~ ', \u0432\u0441\u0435 \u043C\u0435\u0441\u044F\u0446\u044B\
+    ' %}{% endif %}{% set shorts = {'\u044F\u043D\u0432': '\u044F\u043D\u0432\u0430\
+    \u0440\u044C', '\u0444\u0435\u0432': '\u0444\u0435\u0432\u0440\u0430\u043B\u044C\
+    ', '\u043C\u0430\u0440': '\u043C\u0430\u0440\u0442', '\u0430\u043F\u0440': '\u0430\
+    \u043F\u0440\u0435\u043B\u044C', '\u043C\u0430\u0439': '\u043C\u0430\u0439', '\u0438\
+    \u044E\u043D': '\u0438\u044E\u043D\u044C', '\u0438\u044E\u043B': '\u0438\u044E\
+    \u043B\u044C', '\u0430\u0432\u0433': '\u0430\u0432\u0433\u0443\u0441\u0442', '\u0441\
+    \u0435\u043D': '\u0441\u0435\u043D\u0442\u044F\u0431\u0440\u044C', '\u043E\u043A\
+    \u0442': '\u043E\u043A\u0442\u044F\u0431\u0440\u044C', '\u043D\u043E\u044F': '\u043D\
+    \u043E\u044F\u0431\u0440\u044C', '\u0434\u0435\u043A': '\u0434\u0435\u043A\u0430\
+    \u0431\u0440\u044C'} %}{% set mx = filter_values('prod_month_axis') %}{% if mx\
+    \ %}{% set parts = (mx[0] | string | replace('\u200B', '')).split(' ') %}{% if\
+    \ parts[0] in shorts %}{% set yy = parts[1] if (parts | length) > 1 and parts[1]\
+    \ in years_ok else (yrs | join(', ') if yrs else '\u0432\u0441\u0435 \u0433\u043E\
+    \u0434\u044B') %}{% set period = shorts[parts[0]] ~ ' ' ~ yy %}{% endif %}{% endif\
+    \ %}'{{ period }}'::text"
+  description: "MRV: \u043F\u0435\u0440\u0438\u043E\u0434 \u0448\u0430\u043F\u043A\
+    \u0438 \u2014 \u0442\u043E\u0442 \u0436\u0435 \u0440\u0430\u0441\u0447\u0451\u0442\
+    , \u0447\u0442\u043E period_label \u0432 SQL \u0432\u0438\u0442\u0440\u0438\u043D\
+    \u044B (\u0444\u0438\u043B\u044C\u0442\u0440\u044B \xAB\u0413\u043E\u0434\xBB\
+    , \xAB\u041C\u0435\u0441\u044F\u0446\xBB \u0438 \u043A\u0440\u043E\u0441\u0441\
+    -\u0444\u0438\u043B\u044C\u0442\u0440 \u043F\u043E \u043C\u0435\u0441\u044F\u0446\
+    \u0443, \u0442\u043E\u043B\u044C\u043A\u043E \u0437\u043D\u0430\u0447\u0435\u043D\
+    \u0438\u044F \u0438\u0437 \u0431\u0435\u043B\u044B\u0445 \u0441\u043F\u0438\u0441\
+    \u043A\u043E\u0432), \u043B\u0438\u0442\u0435\u0440\u0430\u043B\u043E\u043C: \u043F\
+    \u0440\u0438 \u043F\u0443\u0441\u0442\u043E\u0439 \u0432\u044B\u0431\u043E\u0440\
+    \u043A\u0435 \u043F\u0435\u0440\u0438\u043E\u0434 \u043D\u0435 \u043F\u0440\u043E\
+    \u043F\u0430\u0434\u0430\u0435\u0442 (periodLabel \u0444\u0440\u043E\u043D\u0442\
+    \u0430)."
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: basis_txt
+  verbose_name: null
+  metric_type: null
+  expression: "{% set rawb = filter_values('basis_pick') %}{% set basis = rawb[0]\
+    \ if rawb and rawb[0] in ['\u0424\u0430\u043A\u0442', '\u041D\u043E\u0440\u043C\
+    \u0430\u0442\u0438\u0432'] else '\u0424\u0430\u043A\u0442' %}'{{ '\u0444\u0430\
+    \u043A\u0442\u0438\u0447\u0435\u0441\u043A\u043E\u0439 \u0441\u0442\u043E\u0438\
+    \u043C\u043E\u0441\u0442\u0438 \u043C\u0438\u043D\u0443\u0442\u044B' if basis\
+    \ == '\u0424\u0430\u043A\u0442' else '\u043D\u043E\u0440\u043C\u0430\u0442\u0438\
+    \u0432\u043D\u043E\u0439 \u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438\
+    \ \u043C\u0438\u043D\u0443\u0442\u044B' }}'::text"
+  description: "MRV: \u043F\u043E\u0434\u043F\u0438\u0441\u044C \u0431\u0430\u0437\
+    \u044B \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\
+    \u0438 \u043B\u0438\u0442\u0435\u0440\u0430\u043B\u043E\u043C \u0438\u0437 \u0444\
+    \u0438\u043B\u044C\u0442\u0440\u0430 \xAB\u0411\u0430\u0437\u0430 \u0441\u0435\
+    \u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438\xBB (\u0431\
+    \u0435\u043B\u044B\u0439 \u0441\u043F\u0438\u0441\u043E\u043A), \u043E\u0442 \u0441\
+    \u0442\u0440\u043E\u043A \u043D\u0435 \u0437\u0430\u0432\u0438\u0441\u0438\u0442\
+    \ \u2014 \u043A\u0430\u043A cost_basis_label \u0444\u0440\u043E\u043D\u0442\u0430\
+    ."
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: cache_at_txt
+  verbose_name: null
+  metric_type: null
+  expression: (SELECT to_char(s.refreshed_at AT TIME ZONE 'Europe/Minsk', 'DD.MM.YYYY,
+    HH24:MI') FROM cost_cache_status s WHERE s.id = 1)
+  description: "MRV: \u0432\u0440\u0435\u043C\u044F \u043E\u0431\u043D\u043E\u0432\
+    \u043B\u0435\u043D\u0438\u044F \u043A\u044D\u0448\u0430 (\u043F\u043E \u041C\u0438\
+    \u043D\u0441\u043A\u0443) \u2014 \u0441\u043A\u0430\u043B\u044F\u0440\u043D\u044B\
+    \u0439 \u043F\u043E\u0434\u0437\u0430\u043F\u0440\u043E\u0441, \u043E\u0442 \u0441\
+    \u0442\u0440\u043E\u043A \u0432\u044B\u0431\u043E\u0440\u043A\u0438 \u043D\u0435\
+    \ \u0437\u0430\u0432\u0438\u0441\u0438\u0442: \u043F\u0440\u0438 \u043F\u0443\u0441\
+    \u0442\u043E\u0439 \u0432\u044B\u0431\u043E\u0440\u043A\u0435 \u0448\u0430\u043F\
+    \u043A\u0430 \u0432\u0441\u0451 \u0440\u0430\u0432\u043D\u043E \u043F\u0438\u0448\
+    \u0435\u0442 \xAB\u0414\u0430\u043D\u043D\u044B\u0435 \u043D\u0430 \u2026\xBB\
+    , \u043A\u0430\u043A meta.cache_refreshed_at \u0444\u0440\u043E\u043D\u0442\u0430\
+    ."
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: basis_key
+  verbose_name: null
+  metric_type: null
+  expression: "{% set rawb = filter_values('basis_pick') %}{% set basis = rawb[0]\
+    \ if rawb and rawb[0] in ['\u0424\u0430\u043A\u0442', '\u041D\u043E\u0440\u043C\
+    \u0430\u0442\u0438\u0432'] else '\u0424\u0430\u043A\u0442' %}'{{ basis }}'::text"
+  description: "MRV: \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u0430\u044F \u0431\
+    \u0430\u0437\u0430 (\u0424\u0430\u043A\u0442 / \u041D\u043E\u0440\u043C\u0430\u0442\
+    \u0438\u0432) \u043B\u0438\u0442\u0435\u0440\u0430\u043B\u043E\u043C \u0438\u0437\
+    \ \u0444\u0438\u043B\u044C\u0442\u0440\u0430, \u043E\u0442 \u0441\u0442\u0440\u043E\
+    \u043A \u043D\u0435 \u0437\u0430\u0432\u0438\u0441\u0438\u0442."
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: calc_cov_pct
+  verbose_name: null
+  metric_type: null
+  expression: (CASE WHEN count(*) > 0 THEN round(100.0 * coalesce(sum(in_calc), 0)
+    / count(*)) ELSE 0 END)
+  description: "\u041F\u043E\u043B\u043D\u043E\u0442\u0430 \u0440\u0430\u0441\u0447\
+    \u0451\u0442\u0430, % \u2014 Math.round(100 * calc_count / calc_total), 0 \u043F\
+    \u0440\u0438 \u043F\u0443\u0441\u0442\u043E\u043C \u0437\u043D\u0430\u043C\u0435\
+    \u043D\u0430\u0442\u0435\u043B\u0435"
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: fact_cov_txt0
+  verbose_name: null
+  metric_type: null
+  expression: "coalesce((translate(to_char(((100.0 * coalesce(sum(vol_f), 0) / nullif(sum(vol),\
+    \ 0)))::numeric, 'FM999,999,999,999,990'), ',.', '\_,') || '%'), '\u2014')"
+  description: "fmtPct(fact_coverage_pct, 0); \xAB\u2014\xBB \u0431\u0435\u0437 \u0432\
+    \u044B\u043F\u0443\u0441\u043A\u0430"
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: fact_cov_pct
+  verbose_name: null
+  metric_type: null
+  expression: (100.0 * coalesce(sum(vol_f), 0) / nullif(sum(vol), 0))
+  description: "\u0424\u0430\u043A\u0442 \u0433\u043E\u0434\u0435\u043D, % \u0432\u044B\
+    \u043F\u0443\u0441\u043A\u0430 (\u043A\u0430\u043A tiles.fact_coverage_pct)"
+  d3format: ',.1f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: calc_count_txt
+  verbose_name: null
+  metric_type: null
+  expression: "coalesce(translate(to_char((coalesce(sum(in_calc), 0))::numeric, 'FM999,999,999,999,990'),\
+    \ ',.', '\_,'), '\u2014')"
+  description: "ru-RU, NBSP \u043C\u0435\u0436\u0434\u0443 \u0440\u0430\u0437\u0440\
+    \u044F\u0434\u0430\u043C\u0438"
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: model_count_txt
+  verbose_name: null
+  metric_type: null
+  expression: "coalesce(translate(to_char((count(DISTINCT model_in_calc))::numeric,\
+    \ 'FM999,999,999,999,990'), ',.', '\_,'), '\u2014')"
+  description: "ru-RU, NBSP \u043C\u0435\u0436\u0434\u0443 \u0440\u0430\u0437\u0440\
+    \u044F\u0434\u0430\u043C\u0438"
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: calc_total_txt
+  verbose_name: null
+  metric_type: null
+  expression: "coalesce(translate(to_char((count(*))::numeric, 'FM999,999,999,999,990'),\
+    \ ',.', '\_,'), '\u2014')"
+  description: "ru-RU, NBSP \u043C\u0435\u0436\u0434\u0443 \u0440\u0430\u0437\u0440\
+    \u044F\u0434\u0430\u043C\u0438"
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: calc_count
+  verbose_name: null
+  metric_type: null
+  expression: coalesce(sum(in_calc), 0)
+  description: "\u041A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\u0446\u0438\u0439\
+    \ \u0432 \u0440\u0430\u0441\u0447\u0451\u0442\u0435 (\u043A\u0430\u043A tiles.calc_count\
+    \ \u0444\u0440\u043E\u043D\u0442\u0430)"
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: calc_total
+  verbose_name: null
+  metric_type: null
+  expression: count(*)
+  description: "\u0412\u0441\u0435 \u043A\u0430\u043B\u044C\u043A\u0443\u043B\u044F\
+    \u0446\u0438\u0438 \u0424\u041A\u0421\u0421 \u043F\u0435\u0440\u0438\u043E\u0434\
+    \u0430 (meta.calc_total \u0444\u0440\u043E\u043D\u0442\u0430)"
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: model_count_head
+  verbose_name: null
+  metric_type: null
+  expression: count(DISTINCT model_in_calc)
+  description: "\u041C\u043E\u0434\u0435\u043B\u0435\u0439 \u0432 \u0440\u0430\u0441\
+    \u0447\u0451\u0442\u0435"
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: count
+  verbose_name: COUNT(*)
+  metric_type: count
+  expression: COUNT(*)
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+columns:
+- column_name: prod_month_axis
+  verbose_name: "\u041C\u0435\u0441\u044F\u0446"
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: "MP4: \u0442\u0430 \u0436\u0435 \u043F\u043E\u0434\u043F\u0438\u0441\
+    \u044C \u043C\u0435\u0441\u044F\u0446\u0430, \u0447\u0442\u043E \u0432 mf_cost_margin\
+    \ \u2014 \u0447\u0442\u043E\u0431\u044B \u043A\u0440\u043E\u0441\u0441-\u0444\u0438\
+    \u043B\u044C\u0442\u0440 \xAB\u043A\u043B\u0438\u043A \u043F\u043E \u043C\u0435\
+    \u0441\u044F\u0446\u0443\xBB \u0434\u0435\u0439\u0441\u0442\u0432\u043E\u0432\u0430\
+    \u043B \u043D\u0430 \u0448\u0430\u043F\u043A\u0443"
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: level01
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: level02
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: level03
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: vol_f
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: vol
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: DECIMAL
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: in_calc
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: INTEGER
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: prod_month_label
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: model_in_calc
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: prod_month_name
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: brand_manager
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: basis_label
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: basis_pick
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: period_label
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: cache_txt
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: model_name
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: prod_year
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: plan_id
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: articul
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: season
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: country
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: model
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: ''
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+version: 1.0.0
+database_uuid: 9f1d4a10-0003-4c00-8b00-000000000003

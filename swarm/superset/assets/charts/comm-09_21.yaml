@@ -12,13 +12,11 @@ certified_by: null
 certification_details: null
 viz_type: pie
 params:
-  datasource: 6__table
   viz_type: pie
   groupby:
   - model_name
-  metric: measure_sum
-  color_scheme: supersetColors
-  show_labels: true
+  metric: "\u0412\u044B\u043F\u0443\u0441\u043A"
+  show_labels: false
   show_legend: true
   label_type: key_value_percent
   number_format: ',.0f'
@@ -27,8 +25,13 @@ params:
   donut: true
   show_total: false
   labels_outside: true
-  outerRadius: 70
-  innerRadius: 30
+  outerRadius: 80
+  innerRadius: 44
+  date_format: smart_date
+  legendOrientation: right
+  legendType: scroll
+  datasource: 6__table
+  legendMargin: 235
 query_context: null
 cache_timeout: null
 uuid: 8389ffad-835f-4c02-84b0-36d7398e180c

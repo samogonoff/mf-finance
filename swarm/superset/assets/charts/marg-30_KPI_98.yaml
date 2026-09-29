@@ -1,0 +1,137 @@
+slice_name: "marg-30 \xB7 \u041F\u043B\u0438\u0442\u043A\u0438 KPI"
+description: null
+certified_by: null
+certification_details: null
+viz_type: handlebars
+params:
+  viz_type: handlebars
+  handlebars_template: "{{#with data.[0]}}<div id=\"mp2-kpi\"><div><b>\u041C\u0430\
+    \u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\u044C \u0432\
+    \u044B\u043F\u0443\u0441\u043A\u0430, %</b>{{#if (eq margin_pct_cur_txt '\u2014\
+    ')}}<em>\u2014</em>{{else}}<strong>{{margin_pct_cur_txt}}</strong>{{/if}}<span>{{target_note_txt}}</span><table><tr><td>\u043D\
+    \u043E\u0440\u043C\u0430</td><td>{{target_pct_txt}}</td><td>{{#if margin_pct_dev_target_txt}}{{#if\
+    \ (gt margin_pct_dev_target_pp 0)}}<ins>{{margin_pct_dev_target_txt}}</ins>{{else\
+    \ if (lt margin_pct_dev_target_pp 0)}}<del>{{margin_pct_dev_target_txt}}</del>{{else}}<span>{{margin_pct_dev_target_txt}}</span>{{/if}}{{/if}}</td></tr><tr><td>\u043F\
+    \u0440\u0435\u0434. \u043C\u0435\u0441\u044F\u0446</td><td>{{margin_pct_pm_txt}}</td><td>{{#if\
+    \ margin_pct_dev_pm_txt}}{{#if (gt margin_pct_dev_pm_pp 0)}}<ins>{{margin_pct_dev_pm_txt}}</ins>{{else\
+    \ if (lt margin_pct_dev_pm_pp 0)}}<del>{{margin_pct_dev_pm_txt}}</del>{{else}}<span>{{margin_pct_dev_pm_txt}}</span>{{/if}}{{/if}}</td></tr><tr><td>\u043F\
+    \u0440\u0435\u0434. \u0433\u043E\u0434</td><td>{{margin_pct_py_txt}}</td><td>{{#if\
+    \ margin_pct_dev_py_txt}}{{#if (gt margin_pct_dev_py_pp 0)}}<ins>{{margin_pct_dev_py_txt}}</ins>{{else\
+    \ if (lt margin_pct_dev_py_pp 0)}}<del>{{margin_pct_dev_py_txt}}</del>{{else}}<span>{{margin_pct_dev_py_txt}}</span>{{/if}}{{/if}}</td></tr></table></div><div><b>\u041C\
+    \u0430\u0440\u0436\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430, {{cur}}</b>{{#if\
+    \ (eq margin_cur_txt '\u2014')}}<em>\u2014</em>{{else}}<strong>{{margin_cur_txt}}</strong>{{/if}}{{#if\
+    \ margin_cur_full_txt}}<span>{{margin_cur_full_txt}} \xB7 \u0432\u044B\u043F\u0443\
+    \u0441\u043A \u0432 \u043E\u0442\u043F\u0443\u0441\u043A\u043D\u044B\u0445 \u0446\
+    \u0435\u043D\u0430\u0445 \u2212 \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\
+    \u043C\u043E\u0441\u0442\u044C</span>{{/if}}<table><tr><td>\u043F\u0440\u0435\u0434\
+    . \u043C\u0435\u0441\u044F\u0446</td><td>{{margin_pm_txt}}</td><td>{{#if growth_pm_txt}}{{#if\
+    \ (gt growth_pm_pct 0)}}<ins>{{growth_pm_txt}}</ins>{{else if (lt growth_pm_pct\
+    \ 0)}}<del>{{growth_pm_txt}}</del>{{else}}<span>{{growth_pm_txt}}</span>{{/if}}{{/if}}</td></tr><tr><td>\u043F\
+    \u0440\u0435\u0434. \u0433\u043E\u0434</td><td>{{margin_py_txt}}</td><td>{{#if\
+    \ growth_py_txt}}{{#if (gt growth_py_pct 0)}}<ins>{{growth_py_txt}}</ins>{{else\
+    \ if (lt growth_py_pct 0)}}<del>{{growth_py_txt}}</del>{{else}}<span>{{growth_py_txt}}</span>{{/if}}{{/if}}</td></tr></table></div><div><b>\u0420\
+    \u0435\u043D\u0442\u0430\u0431\u0435\u043B\u044C\u043D\u043E\u0441\u0442\u044C\
+    \ \u0432\u044B\u043F\u0443\u0441\u043A\u0430, %</b>{{#if (eq profit_pct_cur_txt\
+    \ '\u2014')}}<em>\u2014</em>{{else}}<strong>{{profit_pct_cur_txt}}</strong>{{/if}}<span>\u043C\
+    \u0430\u0440\u0436\u0430 / \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\
+    \u043E\u0441\u0442\u044C \u0432\u044B\u043F\u0443\u0441\u043A\u0430</span><table><tr><td>\u043F\
+    \u0440\u0435\u0434. \u043C\u0435\u0441\u044F\u0446</td><td>{{profit_pct_pm_txt}}</td><td>{{#if\
+    \ profit_pct_dev_pm_txt}}{{#if (gt profit_pct_dev_pm_pp 0)}}<ins>{{profit_pct_dev_pm_txt}}</ins>{{else\
+    \ if (lt profit_pct_dev_pm_pp 0)}}<del>{{profit_pct_dev_pm_txt}}</del>{{else}}<span>{{profit_pct_dev_pm_txt}}</span>{{/if}}{{/if}}</td></tr><tr><td>\u043F\
+    \u0440\u0435\u0434. \u0433\u043E\u0434</td><td>{{profit_pct_py_txt}}</td><td>{{#if\
+    \ profit_pct_dev_py_txt}}{{#if (gt profit_pct_dev_py_pp 0)}}<ins>{{profit_pct_dev_py_txt}}</ins>{{else\
+    \ if (lt profit_pct_dev_py_pp 0)}}<del>{{profit_pct_dev_py_txt}}</del>{{else}}<span>{{profit_pct_dev_py_txt}}</span>{{/if}}{{/if}}</td></tr></table></div><div><b>\u0412\
+    \u044B\u043F\u0443\u0441\u043A, \u0448\u0442</b>{{#if (eq vol_cur_txt '\u2014\
+    ')}}<em>\u2014</em>{{else}}<strong>{{vol_cur_txt}}</strong>{{/if}}<span>\u0441\
+    \u0443\u043C\u043C\u0430 \u0442\u0438\u0440\u0430\u0436\u0435\u0439 \xB7 \u0424\
+    \u041A\u0421\u0421</span><table><tr><td>\u043F\u0440\u0435\u0434. \u043C\u0435\
+    \u0441\u044F\u0446</td><td>{{vol_pm_txt}}</td><td>{{#if vol_dev_pm_txt}}{{#if\
+    \ (gt vol_dev_pm_pct 0)}}<ins>{{vol_dev_pm_txt}}</ins>{{else if (lt vol_dev_pm_pct\
+    \ 0)}}<del>{{vol_dev_pm_txt}}</del>{{else}}<span>{{vol_dev_pm_txt}}</span>{{/if}}{{/if}}</td></tr><tr><td>\u043F\
+    \u0440\u0435\u0434. \u0433\u043E\u0434</td><td>{{vol_py_txt}}</td><td>{{#if vol_dev_py_txt}}{{#if\
+    \ (gt vol_dev_py_pct 0)}}<ins>{{vol_dev_py_txt}}</ins>{{else if (lt vol_dev_py_pct\
+    \ 0)}}<del>{{vol_dev_py_txt}}</del>{{else}}<span>{{vol_dev_py_txt}}</span>{{/if}}{{/if}}</td></tr></table></div><div><b>\u0421\
+    \u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C \u0448\
+    \u0442\u0443\u043A\u0438, {{cur}}</b>{{#if (eq unit_cost_cur_txt '\u2014')}}<em>\u2014\
+    </em>{{else}}<strong>{{unit_cost_cur_txt}}</strong>{{/if}}<span>\u0441\u0435\u0431\
+    \u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u044C \u0432\u044B\u043F\
+    \u0443\u0441\u043A\u0430 / \u0448\u0442\u0443\u043A\u0438</span><table><tr><td>\u043F\
+    \u0440\u0435\u0434. \u043C\u0435\u0441\u044F\u0446</td><td>{{unit_cost_pm_txt}}</td><td>{{#if\
+    \ unit_cost_dev_pm_txt}}{{#if (gt unit_cost_dev_pm_pct 0)}}<del>{{unit_cost_dev_pm_txt}}</del>{{else\
+    \ if (lt unit_cost_dev_pm_pct 0)}}<ins>{{unit_cost_dev_pm_txt}}</ins>{{else}}<span>{{unit_cost_dev_pm_txt}}</span>{{/if}}{{/if}}</td></tr><tr><td>\u043F\
+    \u0440\u0435\u0434. \u0433\u043E\u0434</td><td>{{unit_cost_py_txt}}</td><td>{{#if\
+    \ unit_cost_dev_py_txt}}{{#if (gt unit_cost_dev_py_pct 0)}}<del>{{unit_cost_dev_py_txt}}</del>{{else\
+    \ if (lt unit_cost_dev_py_pct 0)}}<ins>{{unit_cost_dev_py_txt}}</ins>{{else}}<span>{{unit_cost_dev_py_txt}}</span>{{/if}}{{/if}}</td></tr></table></div><div><b>\u0421\
+    \u044B\u0440\u044C\u0451 \u043D\u0430 \u0448\u0442\u0443\u043A\u0443, {{cur}}</b>{{#if\
+    \ (eq unit_raw_cur_txt '\u2014')}}<em>\u2014</em>{{else}}<strong>{{unit_raw_cur_txt}}</strong>{{/if}}<span>\u043E\
+    \u0441\u043D\u043E\u0432\u043D\u044B\u0435 + \u0432\u0441\u043F\u043E\u043C\u043E\
+    \u0433\u0430\u0442\u0435\u043B\u044C\u043D\u044B\u0435 \u043C\u0430\u0442\u0435\
+    \u0440\u0438\u0430\u043B\u044B / \u0448\u0442\u0443\u043A\u0438</span><table><tr><td>\u043F\
+    \u0440\u0435\u0434. \u0433\u043E\u0434</td><td>{{unit_raw_py_txt}}</td><td>{{#if\
+    \ unit_raw_dev_py_txt}}{{#if (gt unit_raw_dev_py_pct 0)}}<del>{{unit_raw_dev_py_txt}}</del>{{else\
+    \ if (lt unit_raw_dev_py_pct 0)}}<ins>{{unit_raw_dev_py_txt}}</ins>{{else}}<span>{{unit_raw_dev_py_txt}}</span>{{/if}}{{/if}}</td></tr><tr><td>\u043C\
+    \u0438\u043D\u0443\u0442 \u043F\u043E\u0448\u0438\u0432\u0430 \u043D\u0430 \u0448\
+    \u0442\u0443\u043A\u0443</td><td>{{min_per_unit_txt}}</td><td></td></tr></table></div></div>{{/with}}"
+  row_limit: 1
+  order_desc: true
+  query_mode: aggregate
+  metrics:
+  - margin_pct_cur_txt
+  - target_note_txt
+  - target_pct_txt
+  - margin_pct_dev_target_txt
+  - margin_pct_dev_target_pp
+  - margin_pct_pm_txt
+  - margin_pct_dev_pm_txt
+  - margin_pct_dev_pm_pp
+  - margin_pct_py_txt
+  - margin_pct_dev_py_txt
+  - margin_pct_dev_py_pp
+  - margin_cur_txt
+  - margin_cur_full_txt
+  - margin_pm_txt
+  - growth_pm_txt
+  - growth_pm_pct
+  - margin_py_txt
+  - growth_py_txt
+  - growth_py_pct
+  - profit_pct_cur_txt
+  - profit_pct_pm_txt
+  - profit_pct_dev_pm_txt
+  - profit_pct_dev_pm_pp
+  - profit_pct_py_txt
+  - profit_pct_dev_py_txt
+  - profit_pct_dev_py_pp
+  - vol_cur_txt
+  - vol_pm_txt
+  - vol_dev_pm_txt
+  - vol_dev_pm_pct
+  - vol_py_txt
+  - vol_dev_py_txt
+  - vol_dev_py_pct
+  - unit_cost_cur_txt
+  - unit_cost_pm_txt
+  - unit_cost_dev_pm_txt
+  - unit_cost_dev_pm_pct
+  - unit_cost_py_txt
+  - unit_cost_dev_py_txt
+  - unit_cost_dev_py_pct
+  - unit_raw_cur_txt
+  - unit_raw_py_txt
+  - unit_raw_dev_py_txt
+  - unit_raw_dev_py_pct
+  - min_per_unit_txt
+  - expressionType: SQL
+    sqlExpression: '{% set raw = filter_values(''currency_pick'') %}''{{ raw[0] if
+      raw and raw[0] in [''BYN'', ''USD''] else ''BYN'' }}'''
+    label: cur
+    hasCustomLabel: true
+    optionName: metric_currency_pick
+    aggregate: null
+    column: null
+    datasourceWarning: false
+query_context: null
+cache_timeout: null
+uuid: 1ebb1307-a7c1-49a6-860d-0ea0bd8371c3
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2

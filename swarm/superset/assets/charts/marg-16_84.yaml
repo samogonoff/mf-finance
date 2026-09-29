@@ -9,30 +9,113 @@ params:
   viz_type: table
   query_mode: aggregate
   groupby:
-  - level01
+  - matrix_row
   metrics:
   - vol_cur
   - unit_cost_cur
   - unit_cost_py
-  - unit_cost_dev_py_pct
+  - expressionType: SQL
+    sqlExpression: ({{ metric('unit_cost_dev_py_pct', 14) }}) / 100.0
+    label: unit_cost_dev_py_pct_f
+    hasCustomLabel: true
+    optionName: metric_mp5_unit_cost_dev_py_pct_f
+    aggregate: null
+    column: null
+    datasourceWarning: false
   - unit_raw_cur
   - unit_raw_py
-  - unit_raw_dev_py_pct
+  - expressionType: SQL
+    sqlExpression: ({{ metric('unit_raw_dev_py_pct', 14) }}) / 100.0
+    label: unit_raw_dev_py_pct_f
+    hasCustomLabel: true
+    optionName: metric_mp5_unit_raw_dev_py_pct_f
+    aggregate: null
+    column: null
+    datasourceWarning: false
+  - unit_ops_cur
   - min_per_unit_cur
   all_columns: []
   percent_metrics: []
   order_by_cols: []
-  timeseries_limit_metric: vol_cur
+  timeseries_limit_metric: margin_sort
   order_desc: true
-  row_limit: 500
+  row_limit: 300
   server_page_length: 25
   show_cell_bars: false
-  color_pn: true
+  color_pn: false
   table_timestamp_format: smart_date
-  conditional_formatting: []
-  column_config: {}
-  adhoc_filters: []
+  conditional_formatting:
+  - column: unit_cost_dev_py_pct_f
+    operator: '>'
+    targetValue: 0
+    colorScheme: '#b42318'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+  - column: unit_cost_dev_py_pct_f
+    operator: <
+    targetValue: 0
+    colorScheme: '#0a7f3f'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+  - column: unit_raw_dev_py_pct_f
+    operator: '>'
+    targetValue: 0
+    colorScheme: '#b42318'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+  - column: unit_raw_dev_py_pct_f
+    operator: <
+    targetValue: 0
+    colorScheme: '#0a7f3f'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+  column_config:
+    matrix_row:
+      customColumnName: "\u0421\u0442\u0440\u043E\u043A\u0430 \u043C\u0430\u0442\u0440\
+        \u0438\u0446\u044B"
+    vol_cur:
+      customColumnName: "\u0412\u044B\u043F\u0443\u0441\u043A, \u0448\u0442"
+      d3NumberFormat: ',.0f'
+    unit_cost_cur:
+      customColumnName: "\u0421/\u0441 \u0448\u0442"
+      d3NumberFormat: ',.2f'
+    unit_cost_py:
+      customColumnName: "\u0421/\u0441 \u0448\u0442 \u043F\u0440\u0435\u0434. \u0433\
+        \u043E\u0434"
+      d3NumberFormat: ',.2f'
+    unit_raw_cur:
+      customColumnName: "\u0421\u044B\u0440\u044C\u0451/\u0448\u0442"
+      d3NumberFormat: ',.2f'
+    unit_raw_py:
+      customColumnName: "\u0421\u044B\u0440\u044C\u0451/\u0448\u0442 \u043F\u0440\u0435\
+        \u0434. \u0433\u043E\u0434"
+      d3NumberFormat: ',.2f'
+    unit_ops_cur:
+      customColumnName: "\u041E\u043F\u0435\u0440\u0430\u0446\u0438\u0438/\u0448\u0442"
+      d3NumberFormat: ',.2f'
+    min_per_unit_cur:
+      customColumnName: "\u041C\u0438\u043D. \u043F\u043E\u0448\u0438\u0432\u0430\
+        /\u0448\u0442"
+      d3NumberFormat: ',.2f'
+    unit_cost_dev_py_pct_f:
+      customColumnName: "\u0394, %"
+      d3NumberFormat: +,.1%
+    unit_raw_dev_py_pct_f:
+      customColumnName: "\u0394, %"
+      d3NumberFormat: +,.1%
+  adhoc_filters:
+  - expressionType: SQL
+    clause: HAVING
+    sqlExpression: count(*) FILTER (WHERE k = 'cur') > 0
+    subject: null
+    operator: null
+    comparator: null
+    isExtra: false
+    isNew: false
+    filterOptionName: filter_mp5_has_cur
   extra_form_data: {}
+  page_length: 0
+  server_pagination: false
 query_context: null
 cache_timeout: null
 uuid: bef363ab-df44-4a7e-b9e6-bcd8c4ea3514

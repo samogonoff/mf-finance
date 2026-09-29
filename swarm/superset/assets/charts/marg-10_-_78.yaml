@@ -1,6 +1,13 @@
 slice_name: "marg-10 \xB7 \u041C\u0430\u0440\u0436\u0430 \u043F\u043E \u0431\u0440\
   \u0435\u043D\u0434-\u043C\u0435\u043D\u0435\u0434\u0436\u0435\u0440\u0430\u043C"
-description: null
+description: "\u0422\u0435\u043A\u0443\u0449\u0438\u0439 \u043F\u0435\u0440\u0438\u043E\
+  \u0434 \u043F\u0440\u043E\u0442\u0438\u0432 \u043F\u0440\u043E\u0448\u043B\u043E\
+  \u0433\u043E \u0433\u043E\u0434\u0430. \u041F\u0443\u0441\u0442\u043E\u0439 \u0441\
+  \u0442\u043E\u043B\u0431\u0435\u0446 \u043F\u0440\u043E\u0448\u043B\u043E\u0433\u043E\
+  \ \u0433\u043E\u0434\u0430 \u2014 \u0432\u044B\u043F\u0443\u0441\u043A\u0430 \u0442\
+  \u043E\u0433\u0434\u0430 \u043D\u0435 \u0431\u044B\u043B\u043E. *\u043A\u043B\u0438\
+  \u043A \u043F\u043E \u0441\u0442\u043E\u043B\u0431\u0446\u0443 \u2014 \u0444\u0438\
+  \u043B\u044C\u0442\u0440*"
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_bar
@@ -8,13 +15,27 @@ params:
   datasource: 14__table
   viz_type: echarts_timeseries_bar
   metrics:
-  - margin_cur
-  - margin_py
+  - expressionType: SQL
+    sqlExpression: '{{ metric(''margin_cur'', 14) }}'
+    label: "\u041C\u0430\u0440\u0436\u0430"
+    hasCustomLabel: true
+    optionName: metric_mp4_margin
+    aggregate: null
+    column: null
+    datasourceWarning: false
+  - expressionType: SQL
+    sqlExpression: '{{ metric(''margin_py'', 14) }}'
+    label: "\u041F\u0440\u043E\u0448\u043B\u044B\u0439 \u0433\u043E\u0434"
+    hasCustomLabel: true
+    optionName: metric_mp4_margin_py
+    aggregate: null
+    column: null
+    datasourceWarning: false
   groupby: []
   x_axis: brand_manager
   time_grain_sqla: null
   granularity_sqla: null
-  x_axis_sort: margin_cur
+  x_axis_sort: margin_sort_key
   x_axis_sort_asc: false
   order_desc: true
   x_axis_sort_series_type: name
@@ -26,10 +47,33 @@ params:
   legend_orientation: bottom
   show_legend: true
   rich_tooltip: true
-  truncateYAxis: true
+  truncateYAxis: false
   color_scheme: supersetColors
-  adhoc_filters: []
+  adhoc_filters:
+  - expressionType: SQL
+    clause: HAVING
+    sqlExpression: count(*) FILTER (WHERE k IN ('cur', 'py')) > 0
+    subject: null
+    operator: null
+    comparator: null
+    isExtra: false
+    isNew: false
+    filterOptionName: filter_mp4_has_cur_py
   extra_form_data: {}
+  timeseries_limit_metric:
+    expressionType: SQL
+    sqlExpression: '{{ metric(''margin_sort'', 14) }}'
+    label: margin_sort_key
+    hasCustomLabel: true
+    optionName: metric_mp4_margin_sort_key
+    aggregate: null
+    column: null
+    datasourceWarning: false
+  xAxisLabelRotation: 45
+  legendType: plain
+  echart_options: '{legend: {type: ''plain'', left: 4, width: 272, itemWidth: 10,
+    itemHeight: 10, itemGap: 8, textStyle: {fontSize: 11}}, grid: {bottom: 34}}'
+  xAxisLabelInterval: 0
 query_context: null
 cache_timeout: null
 uuid: 53d172cf-46c7-4d1a-b1a8-0e157dae3236

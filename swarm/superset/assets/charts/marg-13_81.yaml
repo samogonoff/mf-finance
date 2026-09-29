@@ -1,6 +1,12 @@
 slice_name: "marg-13 \xB7 \u041C\u0430\u0442\u0440\u0438\u0446\u0430 \u043C\u0430\u0440\
   \u0436\u0438"
-description: null
+description: "\xAB\u041D\u0438\u0436\u0435 \u043D\u043E\u0440\u043C\u044B\xBB \u2014\
+  \ \u043C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\u043E\u0441\u0442\
+  \u044C \u0441\u0442\u0440\u043E\u043A\u0438 \u043C\u0435\u043D\u044C\u0448\u0435\
+  \ \u043D\u043E\u0440\u043C\u044B \u0435\u0451 Level 01: \u043F\u043E\u0434\u043F\
+  \u0438\u0441\u044C \u0441\u0442\u0440\u043E\u043A\u0438 \u0438 \u043D\u043E\u0440\
+  \u043C\u0430 \u043A\u0440\u0430\u0441\u043D\u044B\u043C; \u0431\u0435\u0437 \u043D\
+  \u043E\u0440\u043C\u044B \u2014 \u043F\u0440\u043E\u0447\u0435\u0440\u043A."
 certified_by: null
 certification_details: null
 viz_type: table
@@ -9,7 +15,7 @@ params:
   viz_type: table
   query_mode: aggregate
   groupby:
-  - level01
+  - matrix_row
   metrics:
   - vol_cur
   - unit_cost_cur
@@ -17,29 +23,127 @@ params:
   - rev_cur
   - margin_cur
   - margin_py
-  - margin_pct_cur
+  - expressionType: SQL
+    sqlExpression: ({{ metric('margin_pct_cur', 14) }}) / 100.0
+    label: margin_pct_cur_f
+    hasCustomLabel: true
+    optionName: metric_mp5_margin_pct_cur_f
+    aggregate: null
+    column: null
+    datasourceWarning: false
   - margin_pct_dev_pm_pp
   - margin_pct_dev_py_pp
-  - target_pct
+  - expressionType: SQL
+    sqlExpression: ({{ metric('target_pct', 14) }}) / 100.0
+    label: target_pct_f
+    hasCustomLabel: true
+    optionName: metric_mp5_target_pct_f
+    aggregate: null
+    column: null
+    datasourceWarning: false
   - margin_pct_dev_target_pp
   all_columns: []
   percent_metrics: []
   order_by_cols: []
-  timeseries_limit_metric: margin_cur
+  timeseries_limit_metric: margin_sort
   order_desc: true
-  row_limit: 500
+  row_limit: 300
   server_page_length: 25
   show_cell_bars: false
-  color_pn: true
+  color_pn: false
   table_timestamp_format: smart_date
   conditional_formatting:
-  - colorScheme: '#EFA1AA'
-    column: margin_pct_dev_target_pp
+  - column: margin_pct_dev_pm_pp
+    operator: '>'
+    targetValue: 0
+    colorScheme: '#0a7f3f'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+  - column: margin_pct_dev_pm_pp
     operator: <
     targetValue: 0
-  column_config: {}
-  adhoc_filters: []
+    colorScheme: '#b42318'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+  - column: margin_pct_dev_py_pp
+    operator: '>'
+    targetValue: 0
+    colorScheme: '#0a7f3f'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+  - column: margin_pct_dev_py_pp
+    operator: <
+    targetValue: 0
+    colorScheme: '#b42318'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+  - column: margin_pct_dev_target_pp
+    operator: <
+    targetValue: 0
+    colorScheme: '#b42318'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+    columnFormatting: matrix_row
+  - column: margin_pct_dev_target_pp
+    operator: <
+    targetValue: 0
+    colorScheme: '#b42318'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+    columnFormatting: target_pct_f
+  column_config:
+    matrix_row:
+      customColumnName: "\u0421\u0442\u0440\u043E\u043A\u0430 \u043C\u0430\u0442\u0440\
+        \u0438\u0446\u044B"
+    vol_cur:
+      customColumnName: "\u0412\u044B\u043F\u0443\u0441\u043A, \u0448\u0442"
+      d3NumberFormat: ',.0f'
+    unit_cost_cur:
+      customColumnName: "\u0421/\u0441 \u0448\u0442"
+      d3NumberFormat: ',.2f'
+    cost_cur:
+      customColumnName: "\u0421/\u0441 \u0432\u044B\u043F\u0443\u0441\u043A\u0430"
+      d3NumberFormat: ',.0f'
+    rev_cur:
+      customColumnName: "\u0412\u044B\u043F\u0443\u0441\u043A \u0432 \u0446\u0435\u043D\
+        \u0430\u0445"
+      d3NumberFormat: ',.0f'
+    margin_cur:
+      customColumnName: "\u041C\u0430\u0440\u0436\u0430"
+      d3NumberFormat: ',.0f'
+    margin_py:
+      customColumnName: "\u041C\u0430\u0440\u0436\u0430 \u043F\u0440\u0435\u0434.\
+        \ \u0433\u043E\u0434"
+      d3NumberFormat: ',.0f'
+    margin_pct_dev_pm_pp:
+      customColumnName: "\u0394 \u043A \u043F\u0440\u0435\u0434. \u043C\u0435\u0441\
+        , \u043F\u043F"
+      d3NumberFormat: +,.1f
+    margin_pct_dev_py_pp:
+      customColumnName: "\u0394 \u043A \u043F\u0440\u0435\u0434. \u0433\u043E\u0434\
+        \u0443, \u043F\u043F"
+      d3NumberFormat: +,.1f
+    margin_pct_dev_target_pp:
+      visible: false
+    margin_pct_cur_f:
+      customColumnName: "\u041C\u0430\u0440\u0436\u0438\u043D., %"
+      d3NumberFormat: ',.1%'
+    target_pct_f:
+      customColumnName: "\u041D\u043E\u0440\u043C\u0430, %"
+      d3NumberFormat: ',.0%'
+  adhoc_filters:
+  - expressionType: SQL
+    clause: HAVING
+    sqlExpression: count(*) FILTER (WHERE k = 'cur') > 0
+    subject: null
+    operator: null
+    comparator: null
+    isExtra: false
+    isNew: false
+    filterOptionName: filter_mp5_has_cur
   extra_form_data: {}
+  page_length: 0
+  server_pagination: false
 query_context: null
 cache_timeout: null
 uuid: caa02d92-c8ca-45b9-9189-0801b9c4cc4c

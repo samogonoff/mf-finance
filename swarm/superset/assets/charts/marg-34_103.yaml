@@ -1,0 +1,49 @@
+slice_name: "marg-34 \xB7 \u0417\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A \u043C\
+  \u0430\u0442\u0440\u0438\u0446\u044B"
+description: null
+certified_by: null
+certification_details: null
+viz_type: handlebars
+params:
+  viz_type: handlebars
+  handlebars_template: "{{#with data.[0]}}<div id=\"mp5-mhead\"><h4>\u041C\u0430\u0442\
+    \u0440\u0438\u0446\u0430 \xB7 {{#if level_pick_txt}}{{level_pick_txt}}{{else}}Level\
+    \ 01{{/if}}</h4><p>\u0423\u0440\u043E\u0432\u0435\u043D\u044C \u0441\u0442\u0440\
+    \u043E\u043A \u2014 \u0444\u0438\u043B\u044C\u0442\u0440 \xAB\u0423\u0440\u043E\
+    \u0432\u0435\u043D\u044C \u043C\u0430\u0442\u0440\u0438\u0446\u044B\xBB, \u043F\
+    \u0443\u0442\u044C \u043F\u0440\u043E\u0432\u0430\u043B\u0438\u0432\u0430\u043D\
+    \u0438\u044F \u2014 \u0444\u0438\u043B\u044C\u0442\u0440\u044B Level 01 \u2026\
+    \ Level 05 (\u0434\u0435\u0439\u0441\u0442\u0432\u0443\u044E\u0442 \u0442\u043E\
+    \u043B\u044C\u043A\u043E \u043D\u0430 \u043C\u0430\u0442\u0440\u0438\u0446\u0443\
+    \ \u0438 \u0432\u043E\u0434\u043E\u043F\u0430\u0434\u044B). \u041A\u043B\u0438\
+    \u043A \u043F\u043E \u0441\u0442\u0440\u043E\u043A\u0435 \u2014 \u0444\u0438\u043B\
+    \u044C\u0442\u0440 \u0434\u043B\u044F \u043E\u0441\u0442\u0430\u043B\u044C\u043D\
+    \u044B\u0445 \u0432\u043A\u043B\u0430\u0434\u043E\u043A \u0438 \u0432\u043E\u0434\
+    \u043E\u043F\u0430\u0434\u043E\u0432. \u0421\u0442\u0440\u043E\u043A\u0438 \u043E\
+    \u0442\u0441\u043E\u0440\u0442\u0438\u0440\u043E\u0432\u0430\u043D\u044B \u043F\
+    \u043E \u043C\u0430\u0440\u0436\u0435 \u0442\u0435\u043A\u0443\u0449\u0435\u0433\
+    \u043E \u043F\u0435\u0440\u0438\u043E\u0434\u0430{{#if cur}}, \u0441\u0443\u043C\
+    \u043C\u044B \u2014 \u0432 {{cur}}{{/if}}.{{#if (gt matrix_row_total 300)}} <del>\u041F\
+    \u043E\u043A\u0430\u0437\u0430\u043D\u044B \u043F\u0435\u0440\u0432\u044B\u0435\
+    \ 300 \u0441\u0442\u0440\u043E\u043A \u2014 \u0441\u0443\u0437\u044C\u0442\u0435\
+    \ \u0444\u0438\u043B\u044C\u0442\u0440\u044B.</del>{{/if}}</p></div>{{/with}}"
+  row_limit: 1
+  order_desc: true
+  query_mode: aggregate
+  metrics:
+  - level_pick_txt
+  - matrix_row_total
+  - expressionType: SQL
+    sqlExpression: '{% set raw = filter_values(''currency_pick'') %}''{{ raw[0] if
+      raw and raw[0] in [''BYN'', ''USD''] else ''BYN'' }}'''
+    label: cur
+    hasCustomLabel: true
+    optionName: metric_currency_pick
+    aggregate: null
+    column: null
+    datasourceWarning: false
+query_context: null
+cache_timeout: null
+uuid: 4f8f4149-2823-4e74-b32e-5611d0e32fe6
+version: 1.0.0
+dataset_uuid: 5f8d39fb-957e-4b5d-8b00-60a66a6f37c2
