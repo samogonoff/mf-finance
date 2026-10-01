@@ -737,13 +737,14 @@
               <td v-if="ck === 'avg_retail_rub' && isVisible('avg_retail_rub')">
                 <select
                   class="price-select"
-                  :value="Number(row['avg_Розничная цена по уровню, руб.']) || ''"
+                  :class="{ 'price-select--no-wholesale': isRetailWithoutWholesale(row) }"
+                  :value="isRetailWithoutWholesale(row) ? '' : (Number(row['avg_Розничная цена по уровню, руб.']) || '')"
                   :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
-                  :title="isFkssRow(row) ? FKSS_HINT : ''"
+                  :title="isFkssRow(row) ? FKSS_HINT : (isRetailWithoutWholesale(row) ? RETAIL_NO_WHOLESALE_HINT : '')"
                   @click.stop
                   @change="onRetailPriceSelect(row, ($event.target as HTMLSelectElement).value)"
                 >
-                  <option value="">—</option>
+                  <option value="">{{ isRetailWithoutWholesale(row) ? `— (${fmt(row['avg_Розничная цена по уровню, руб.'])})` : '—' }}</option>
                   <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp">{{ fmt(rp) }}</option>
                 </select>
               </td>
@@ -5533,9 +5534,26 @@ const UNSAVED_ROW_HINT =
  *
  * Критерий ровно тот же, по которому селект розничной цены показывает «—»:
  * `Number(...) || ''` схлопывает 0, null, '' и NaN в пустой пункт. Поэтому
- * `!Number(...)` — это буквально «пользователь видит прочерк», а не догадка. */
+ * `!Number(...)` — это буквально «пользователь видит прочерк», а не догадка.
+ * Исключение — розница без отпускной (`isRetailWithoutWholesale`): там прочерк
+ * с ценой в скобках, а цена в строке есть. */
 const hasRetailPrice = (row: any): boolean =>
   !!Number(row?.['avg_Розничная цена по уровню, руб.']);
+
+/** Розница есть, а отпускной нет — цена выбрана наполовину.
+ *
+ * Так источник отдаёт калькуляции новой версии артикула (B3-26731PA →
+ * B3-26731PA-1, у Данчук 30.09.2026): розница и уровень цен заполнены,
+ * «Отпускная цена по уровню» пустая. Селект розничной цены у такой строки
+ * показывает прочерк с подсказкой, а не саму цену: бренд-менеджер выбирал
+ * в списке то же значение, что уже стояло, браузер на повторный выбор
+ * `change` не шлёт — и автоподбор наценки, опт, маржа и пометка «изменена»
+ * не срабатывали (задача Б24 660879). Через прочерк выбор цены всегда
+ * становится изменением. */
+const isRetailWithoutWholesale = (row: any): boolean =>
+  hasRetailPrice(row) && !Number(row?.['avg_Отпускная цена по уровню, руб']);
+const RETAIL_NO_WHOLESALE_HINT =
+  'В источнике розница без отпускной цены: выберите розницу из списка — наценка и опт подберутся сами';
 
 /** Правки, которые есть смысл отправлять на сервер (просьба заказчика 18.09.2026).
  *
@@ -9577,6 +9595,8 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   width: 100%;
   color: var(--text-strong);
 }
+.data-table .price-select--no-wholesale { color: var(--text-muted); font-style: italic; }
+.data-table .price-select--no-wholesale option { color: var(--text-strong); font-style: normal; }
 .data-table .price-input {
   width: 100%;
   min-width: 80px;
