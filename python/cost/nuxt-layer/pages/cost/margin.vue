@@ -360,6 +360,9 @@
                       :charts="insightChartsDeviations"
                       :context="insightContextDeviations" />
 
+    <!-- Материалы ФКСС против ПФКСС — задача Б24 661229 (Пушкарчук Н.Н., 01.10.2026). -->
+    <CostMaterialCompare :filters="selected" :filter-config="filterConfig" :loading="loading" />
+
     <h2 class="section-title">Динамика себестоимости</h2>
     <section class="charts">
       <article class="card">

@@ -19,6 +19,7 @@ import asyncio
 import datetime
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -551,6 +552,23 @@ _CACHE_NON_TEXT: set[str] = {
     "цена материала, руб.", "цена материала, USD.",
     "cost_factor_rub", "cost_factor_usd",
 }
+
+# Числовые колонки без масштаба (миграция 0061): Postgres их не округляет.
+_CACHE_UNSCALED: frozenset[str] = frozenset({"цена материала, руб.", "цена материала, USD."})
+
+
+def _num_param(col: str, val: Any) -> Any:
+    """Значение numeric-колонки из JSON-строки версии.
+
+    В колонку без масштаба float уходит Decimal по кратчайшей записи (repr):
+    asyncpg пишет float точным двоичным разложением, и 0.0005461077848 ложилось
+    бы как 0.000546107784800000045991… — шестьдесят знаков в базе и в поле ввода
+    редактора. Колонки с масштабом не трогаем: там Postgres округляет сам, и
+    подмена записи поменяла бы округление «половинок» (2,675 → 2,68 вместо 2,67).
+    """
+    if col in _CACHE_UNSCALED and isinstance(val, float) and math.isfinite(val):
+        return Decimal(repr(val))
+    return val
 
 # Маппинг коротких имён PG → полные имена MSSQL для колонок,
 # чьи оригинальные имена превышают лимит PG в 63 байта (NAMEDATALEN).
@@ -2063,7 +2081,7 @@ async def checkout_calculation(model, articul, calc_sign, plan_id, raw_date, use
             vrow = dict(r)
             _normalize_row_type(vrow)
             _recalc_cost_buckets(vrow)
-            insert_values = [vrow.get(c) for c in CACHE_COLUMNS]
+            insert_values = [_num_param(c, vrow.get(c)) for c in CACHE_COLUMNS]
             await conn.execute(
                 f"""INSERT INTO cost_calc_version_rows
                     (version_id, {col_list}, sort_order, change_type)
@@ -2174,6 +2192,15 @@ def _recalc_cost_buckets(row: dict) -> None:
         except (ValueError, TypeError):
             return None
         factor = row.get(factor_key)
+        if factor is None and factor_key == "cost_factor_usd":
+            # USD-цены в кэше нет (колонка источника «цена материала, USD» без
+            # точки не попадает в «…, USD.»), поэтому пуст и USD-коэффициент.
+            # Редактор выводит USD-цену как рублёвую / курс — по соглашению
+            # источника, — и коэффициент у неё тот же, что у рублёвой. С единицей
+            # USD-сумма строки в сумах сохранялась как 1,58 вместо 0,0004
+            # (01.10.2026). Реальная USD-цена всегда идёт со своим коэффициентом
+            # (_compute_cost_factors), так что подмена её не задевает.
+            factor = row.get("cost_factor_rub")
         if factor is not None:
             try:
                 value *= float(factor)
@@ -2309,7 +2336,7 @@ async def save_version_draft(version_id, rows) -> None:
                             else:
                                 values.append(val if val is not None else None)
                         else:
-                            values.append(val)
+                            values.append(_num_param(col, val))
                     else:
                         values.append(str(val) if val is not None else None)
                 sort_order = row.get("sort_order", 0)
@@ -2770,7 +2797,15 @@ async def _source_fingerprint(conn, model, articul, calc_sign, plan_id, task, da
     и при проверке в refresh, без округлений на стороне Python.
     """
     parts = ", ".join(
-        f'coalesce(trim("{c}"::text), \'\')' for c in _FINGERPRINT_COLUMNS
+        # Цена материала — по четыре знака, как хранилась до 0061: с тех пор
+        # колонки без масштаба, и выведенная набором цен USD-цена ложится с
+        # двадцатью знаками. Без округления отпечаток всех ключей с набором
+        # цен разошёлся бы со снимками, сделанными до 0061, — ложный снимок и 🔄
+        # на первом же обновлении. Текст старых значений (масштаб 4) round не
+        # меняет: 0.0600 остаётся 0.0600.
+        (f'coalesce(round("{c}", 4)::text, \'\')' if c in _CACHE_UNSCALED
+         else f'coalesce(trim("{c}"::text), \'\')')
+        for c in _FINGERPRINT_COLUMNS
     )
     task_filter = "" if task == "" else ' AND trim("Номер задания производства") = $6'
     params = [model, articul, calc_sign, plan_id, date]
@@ -2818,7 +2853,7 @@ async def _insert_snapshot_rows(conn, snapshot_id, model, articul, calc_sign, pl
         vrow = dict(r)
         _normalize_row_type(vrow)
         _recalc_cost_buckets(vrow)
-        insert_values = [vrow.get(c) for c in CACHE_COLUMNS]
+        insert_values = [_num_param(c, vrow.get(c)) for c in CACHE_COLUMNS]
         await conn.execute(
             f"""INSERT INTO cost_calc_version_rows
                 (version_id, {col_list}, sort_order, change_type)
@@ -3108,7 +3143,7 @@ async def create_version(model, articul, calc_sign, plan_id, raw_date, username,
                             else:
                                 values.append(val if val is not None else None)
                         else:
-                            values.append(val)
+                            values.append(_num_param(col, val))
                     else:
                         values.append(str(val) if val is not None else None)
                 sort_order = row.get("sort_order", 0)
@@ -3989,6 +4024,12 @@ async def get_prev_stage_prices(
                 SELECT {key_cols},
                        round(avg("цена материала, руб."), 4) AS price_rub,
                        round(avg("цена материала, USD."), 4) AS price_usd,
+                       -- Цена в рублях с коэффициентом источника (= сумма / норма).
+                       -- Колонка цены бывает в валюте закупки: у ФКСС Узбекистана
+                       -- в сумах, у ФКСС России в рос. рублях, — и сравнение
+                       -- голых цен этапов давало отклонения в тысячи раз.
+                       -- Шесть знаков: у ниток цена за единицу нормы — 0,0005.
+                       round(avg("цена материала, руб." * COALESCE(cost_factor_rub, 1)), 6) AS price_rub_eff,
                        count(*) AS rows_count,
                        count(DISTINCT "цена материала, руб.") AS distinct_prices,
                        max("дата расчета")::text AS last_date
@@ -4013,6 +4054,7 @@ async def get_prev_stage_prices(
                         "Наименование": r["k0"], "артикул материала": r["k1"],
                         "свойство1": r["k2"], "свойство2": r["k3"], "свойство3": r["k4"],
                         "price_rub": r["price_rub"], "price_usd": r["price_usd"],
+                        "price_rub_eff": r["price_rub_eff"],
                         "rows_count": r["rows_count"], "distinct_prices": r["distinct_prices"],
                         "last_date": r["last_date"],
                     }
@@ -4360,7 +4402,9 @@ async def _apply_plan_price_set_to_cache(conn, set_id: int) -> int:
         f"""
         UPDATE cost_data_cache c SET
             "цена материала, руб." = COALESCE(r.price_rub, c."цена материала, руб."),
-            "цена материала, USD." = COALESCE({eff_usd}, c."цена материала, USD."),
+            -- Выведенная USD-цена — по четыре знака, как до 0061 (тогда её
+            -- округлял тип колонки); статьи ниже считаются от неокруглённой.
+            "цена материала, USD." = COALESCE(round({eff_usd}, 4), c."цена материала, USD."),
             "Основные материалы, руб." = CASE
                 WHEN c."Материал/операция/декор(призн)" IN ({osn}) AND r.price_rub IS NOT NULL
                 THEN c."Норма" * r.price_rub * COALESCE(c.cost_factor_rub, 1)

@@ -1935,7 +1935,7 @@
                   <th v-for="sp in stagePrices" :key="'h-' + sp.stage" class="col-num stage-col"
                       :title="stageColHint(sp)">Цена {{ sp.stage }}, руб.</th>
                   <th class="col-num">Норма</th>
-                  <th class="col-num">Цена, руб.</th>
+                  <th class="col-num" title="Цена в валюте строки: у части материалов ФКСС она в валюте закупки (узб. сумы, рос. рубли). Сумма считается в рублях по курсу.">Цена</th>
                   <th class="col-num">Цена, USD</th>
                   <th class="col-num">Курс</th>
                   <th class="col-num">Сумма, руб.</th>
@@ -1980,7 +1980,7 @@
                   </td>
                   <td v-for="sp in stagePrices" :key="'c-' + sp.stage" class="col-num num stage-col">
                     <template v-if="stagePriceOf(sp, vr) !== null">
-                      {{ fmtPrice4(stagePriceOf(sp, vr)) }}
+                      {{ fmtPriceFine(stagePriceOf(sp, vr)) }}
                       <span v-if="stagePriceDelta(sp, vr) !== null" class="stage-delta"
                             :class="stagePriceDelta(sp, vr)! >= 0 ? 'delta-pos' : 'delta-neg'"
                             :title="'Отличие текущей цены от ' + sp.stage">
@@ -1992,9 +1992,14 @@
                   <!-- У декоров нормы и цены материала в источнике нет: их стоимость
                        задаётся суммой в колонках «Сумма» ниже. Поля скрыты намеренно —
                        если их заполнить, произведение затрёт сумму декора. -->
-                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted" title="У декора нет нормы — стоимость задаётся суммой">—</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else :title="isMultipackRow(vr) ? 'Количество штук в паке — меняется в составе' : ''">{{ fmtNorm(vr['Норма']) }}</span></td>
-                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['цена материала, руб.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else :title="isMultipackRow(vr) ? 'Себестоимость статьи у одиночки за штуку' : ''">{{ fmtPrice4(vr['цена материала, руб.']) }}</span></td>
-                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['цена материала, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ fmtPrice4(vr['цена материала, USD.']) }}</span></td>
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted" title="У декора нет нормы — стоимость задаётся суммой">—</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" :disabled="needsCurrency(vr)" :title="needsCurrency(vr) ? 'Сначала выберите валюту цены: без неё цена посчиталась бы как рублёвая' : ''" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else :title="isMultipackRow(vr) ? 'Количество штук в паке — меняется в составе' : ''">{{ fmtNorm(vr['Норма']) }}</span></td>
+                  <td class="col-num price-cell"><span v-if="isDecorRow(vr)" class="muted">—</span><template v-else><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['цена материала, руб.']" type="number" step="any" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else :title="isMultipackRow(vr) ? 'Себестоимость статьи у одиночки за штуку' : ''">{{ fmtPriceFine(vr['цена материала, руб.']) }}</span><!--
+                    Валюта цены — только у материалов: у операций цена — ставка минуты в рублях.
+                    Сумма в рублях = норма × цена × коэффициент строки (см. versionRowSum). -->
+                    <template v-if="isPriceCurrencyRow(vr)"><select v-if="editingVersion.isEditing" class="editor-select cur-select" :value="rowPriceCurrency(vr) || ''" :disabled="!editorRates" :title="editorRates ? currencyHint(vr) : 'Курсы НБ РБ на дату расчёта недоступны — валюту сменить нельзя'" @change="onVersionCurrencyChange(vr, $event)"><option v-if="!rowPriceCurrency(vr)" value="">?</option><option v-for="c in PRICE_CURRENCIES" :key="c" :value="c">{{ c }}</option></select><span v-else class="cur-tag" :class="{ 'cur-foreign': rowPriceCurrency(vr) !== 'BYN' }" :title="currencyHint(vr)">{{ rowPriceCurrency(vr) || '?' }}</span><span v-if="factorNote(vr)" class="factor-note" :title="currencyHint(vr)">{{ factorNote(vr) }}</span></template></template></td>
+                  <!-- У строки в валюте закупки или с заметным коэффициентом USD-цена
+                       расчётная (из рублёвой суммы) — см. usdPriceEditable. -->
+                  <td class="col-num"><span v-if="isDecorRow(vr)" class="muted">—</span><span v-else-if="isForeignPriceRow(vr)" class="muted" title="Расчётная: сумма в рублях / норма / курс USD. Цена строки — в валюте закупки или с коэффициентом источника, правится в колонке «Цена».">{{ fmtPriceFine(foreignUsdPrice(vr)) }}</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['цена материала, USD.']" type="number" step="any" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, USD.')" /><span v-else>{{ fmtPriceFine(vr['цена материала, USD.']) }}</span></td>
                   <td class="col-num"><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Курс на дату расчета']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Курс на дату расчета')" /><span v-else>{{ vr['Курс на дату расчета'] }}</span></td>
                   <!-- Для декора сумма редактируется напрямую, для материала считается. -->
                   <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Декоры, руб.']" type="number" step="0.0001" class="editor-input col-num" title="Стоимость декора — задаётся суммой" @input="onVersionRowEdit(vr, $event, 'Декоры, руб.')" /><span v-else>{{ fmtPrice4(isMultipackRow(vr) && isDecorRow(vr) ? vr['Декоры, руб.'] : versionRowSum(vr, 'руб.')) }}</span></td>
@@ -2026,7 +2031,7 @@
                       <td>{{ r['Наименование'] || '—' }}</td>
                       <td>{{ r['артикул материала'] || '—' }}</td>
                       <td class="muted">{{ [r['свойство1'], r['свойство2'], r['свойство3']].filter(Boolean).join(' / ') || '—' }}</td>
-                      <td class="col-num num">{{ r.price_rub !== null ? fmtPrice4(r.price_rub) : '—' }}</td>
+                      <td class="col-num num">{{ stageRowPrice(r) !== null ? fmtPriceFine(stageRowPrice(r)) : '—' }}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -6220,18 +6225,29 @@ const stageColHint = (sp: StagePrices): string => {
   // Берём цену из кэша, то есть фактическую цену расчёта: применённый набор цен
   // по плану и активная версия (pending/approved) в неё уже наложены, черновики
   // версий — нет. Это то же значение, что показывает главная таблица.
-  return `Цена материала на этапе ${sp.stage} (${scope}) — как в расчёте, `
+  return `Цена материала на этапе ${sp.stage} (${scope}) в рублях — сумма строки / норма, `
     + 'с учётом применённого набора цен и активной версии; '
     + '«—» — на том этапе такого материала не было';
 };
 
-const stagePriceOf = (sp: StagePrices, vr: any): number | null => {
-  const hit = sp.byKey.get(stageMatKey(vr));
-  const v = hit ? Number(hit.price_rub) : NaN;
+/** Цена строки прошлого этапа в рублях: сумма / норма (с коэффициентом
+ * источника). Голая цена бывает в валюте закупки — у ФКСС Узбекистана в сумах, —
+ * и сравнение с ней давало «+437 400 %». price_rub — запас на ответ старого
+ * сервера без price_rub_eff. */
+const stageRowPrice = (r: any): number | null => {
+  const raw = r?.price_rub_eff ?? r?.price_rub;
+  const v = raw === null || raw === undefined ? NaN : Number(raw);
   return Number.isFinite(v) ? v : null;
 };
 
-/** Насколько текущая цена отличается от цены этапа, в процентах.
+const stagePriceOf = (sp: StagePrices, vr: any): number | null => {
+  const hit = sp.byKey.get(stageMatKey(vr));
+  return hit ? stageRowPrice(hit) : null;
+};
+
+/** Насколько текущая цена отличается от цены этапа, в процентах. Обе — в
+ * рублях за единицу нормы: текущая — цена × коэффициент строки, как её посчитает
+ * сервер (versionRowFactor).
  *
  * Пустая текущая цена — это «цены нет», а не ноль: иначе строка без цены
  * показывала бы −100 % к прошлому этапу. */
@@ -6239,7 +6255,10 @@ const stagePriceDelta = (sp: StagePrices, vr: any): number | null => {
   const prev = stagePriceOf(sp, vr);
   const raw = vr['цена материала, руб.'];
   if (raw === null || raw === undefined || raw === '') return null;
-  const cur = Number(raw);
+  // Валюта цены неизвестна — в рубли не перевести, сравнение было бы «сумы
+  // против рублей» (+561 950 %).
+  if (isPriceCurrencyRow(vr) && rowPriceCurrency(vr) === null) return null;
+  const cur = Number(raw) * versionRowFactor(vr, 'руб.');
   if (prev === null || !Number.isFinite(cur) || prev === 0) return null;
   const delta = ((cur - prev) / prev) * 100;
   return Math.abs(delta) < 0.05 ? null : delta;
@@ -6351,6 +6370,9 @@ const openVersionEditor = async (row: any) => {
     // Состав мультипака — тем же принципом: блок появляется по готовности и не
     // задерживает открытие расчёта.
     void loadMultipackState();
+    // Курсы на дату расчёта — для валюты цены строк. Тоже без await: без них
+    // суммы всё равно верные (коэффициент строки), не определится только валюта.
+    void ensureEditorRates();
   } catch (e: any) {
     console.error('[cost] load version editor failed', e);
     lastError.value = e?.data?.detail || e?.message || String(e);
@@ -6403,6 +6425,7 @@ const selectRawData = async (snapshotId: number | null = null) => {
     ev.snapshots = rawResp.snapshots || [];
     ev.selectedSnapshotId = rawResp.snapshot_id ?? null;
     ev.rows = (rawResp.rows || []).map((rr: any) => normalizeVersionRow(rr));
+    void ensureEditorRates();
   } catch (e: any) {
     console.error('[cost] load raw data failed', e);
     lastError.value = e?.data?.detail || e?.message || String(e);
@@ -6425,6 +6448,7 @@ const selectVersion = async (versionId: number) => {
       { headers: fetchHeaders.value }
     );
     ev.rows = (data.rows || []).map((rr: any) => normalizeVersionRow(rr));
+    void ensureEditorRates();
   } catch (e: any) {
     console.error('[cost] load version rows failed', e);
     lastError.value = e?.data?.detail || e?.message || String(e);
@@ -6600,6 +6624,8 @@ const closeVersionEditor = () => {
   editingVersion.value = null;
   editingTypeCell.value = -1;
   stagePrices.value = [];
+  editorRates.value = null;
+  editorRatesDate.value = '';
   multipackState.value = null;
   mpItems.value = [];
   mpDirty.value = false;
@@ -6654,6 +6680,16 @@ const addVersionRow = () => {
     // (_recalc_cost_buckets в app/db.py).
     template['cost_factor_rub'] = null;
     template['cost_factor_usd'] = null;
+    // Служебные поля смены валюты (onVersionCurrencyChange) — той же природы:
+    // унаследованный _cur0/_f0 вернул бы новой строке коэффициент чужой.
+    delete template._cur;
+    delete template._cur0;
+    delete template._f0;
+    delete template._fu0;
+    delete template._p0;
+    delete template._pu0;
+    delete template._pConv;
+    delete template._curUnknown;
   }
   template.change_type = 'added';
   template._selected = false;
@@ -6674,6 +6710,9 @@ const onVersionRowEdit = (row: any, event: Event, field: string) => {
       || field === 'Курс на дату расчета' || field === 'Декоры, руб.' || field === 'Декоры, USD.') {
     val = target.value === '' ? null : parseFloat(target.value);
   }
+  // Цена строки в долларах (коэффициент = курс строки): узнаём ДО смены курса —
+  // после неё коэффициент с новым курсом уже не совпадёт.
+  const wasUsd = field === 'Курс на дату расчета' && isPriceCurrencyRow(row) && rowPriceCurrency(row) === 'USD';
   row[field] = val;
 
   // Сумма декора: пересчитываем парную валюту по курсу строки, как это делают
@@ -6694,75 +6733,369 @@ const onVersionRowEdit = (row: any, event: Event, field: string) => {
   // Auto-convert RUB ↔ USD via exchange rate
   const rate = Number(row['Курс на дату расчета'] || 0);
   if (rate > 0) {
+    // Пустое поле — «цены нет» в обеих валютах (null), а не 0: сервер пустую цену
+    // не пересчитывает, а ноль обнуляет статью — с 0 в паре рубли оставались бы
+    // прежними, а доллары обнулялись.
     if (field === 'цена материала, USD.') {
-      // USD changed → recalc RUB
-      const usd = Number(val || 0);
-      row['цена материала, руб.'] = usd * rate;
+      row['цена материала, руб.'] = val === null ? null : Number(val) * rate;
     } else if (field === 'цена материала, руб.') {
-      // RUB changed → recalc USD
-      const rub = Number(val || 0);
-      row['цена материала, USD.'] = rub / rate;
+      row['цена материала, USD.'] = val === null ? null : Number(val) / rate;
     } else if (field === 'Курс на дату расчета') {
-      // Rate changed → recalc RUB from USD (if USD set), or USD from RUB (if RUB set)
       const usd = Number(row['цена материала, USD.'] || 0);
       const rub = Number(row['цена материала, руб.'] || 0);
-      if (usd > 0) {
+      if (isPriceCurrencyRow(row)) {
+        // У материала первична цена строки — в рублях или в валюте закупки: курс
+        // доллара её не меняет, пересчитывается только USD-цена. Раньше у рублёвой
+        // строки цена пересчитывалась из USD (и менялась себестоимость), а у
+        // соседней с коэффициентом ≠ 1 — нет: решал невидимый порог.
+        if (rub > 0) row['цена материала, USD.'] = rub / rate;
+        // Цена в долларах: коэффициент — курс строки, он и меняется; сумма в
+        // рублях пересчитывается по новому курсу, как у долларовой цены и должно быть.
+        if (wasUsd) {
+          row.cost_factor_rub = rate;
+          row.cost_factor_usd = rate;
+        }
+      } else if (usd > 0) {
+        // Rate changed → recalc RUB from USD (if USD set), or USD from RUB (if RUB set)
         row['цена материала, руб.'] = usd * rate;
       } else if (rub > 0) {
         row['цена материала, USD.'] = rub / rate;
       }
     }
   }
-  // Материал/операция/декор(призн) → денежный бакет (зеркалит _recalc_cost_buckets в db.py)
-  // Зеркалит _BUCKET_BY_MAT_TYPE в db.py: канонические значения дропдауна плюс
-  // легаси-коды источника, которые могут остаться в строке несмигрированной
-  // версии. Без легаси-кодов сумма по строке не пересчитывалась на живом вводе.
-  const BUCKET_BY_MAT_TYPE: Record<string, string> = {
-    'Материал основной': 'Основные материалы',
-    'Материал вспомогательный': 'Вспомогательные материалы',
-    'Декор': 'Декоры',
-    'Пошив': 'Пошив',
-    'Раскрой': 'Раскрой',
-    'Вязание': 'Вязание',
-    'Всп': 'Вспомогательные материалы',
-    'Осн': 'Основные материалы',
-    'себестоимость лиса всп': 'Вспомогательные материалы',
-    'себестоимость лиса осн': 'Основные материалы',
-    'декор': 'Декоры',
-    'материал': 'Основные материалы',
-    'шт': 'Декоры',
-    'Декоры лиса': 'Декоры',
-    'пошив': 'Пошив',
-  };
-  const MANAGED_BUCKETS = ['Основные материалы', 'Вспомогательные материалы', 'Декоры', 'Пошив', 'Раскрой', 'Вязание'];
   // When type field changes, zero out ALL managed buckets first
   if (field === 'Материал/операция/декор(призн)') {
-    for (const b of MANAGED_BUCKETS) {
+    for (const b of VERSION_MANAGED_BUCKETS) {
       row[`${b}, руб.`] = 0;
       row[`${b}, USD.`] = 0;
     }
   }
   // Recalculate cost bucket based on material/operation type
   if (field === 'Норма' || field === 'цена материала, руб.' || field === 'цена материала, USD.' || field === 'Курс на дату расчета' || field === 'Материал/операция/декор(призн)') {
-    const norm = row['Норма'] || 0;
-    const priceRub = row['цена материала, руб.'] || 0;
-    const priceUsd = row['цена материала, USD.'] || 0;
-    const sumRub = norm * priceRub;
-    const sumUsd = norm * priceUsd;
-    const matType = row['Материал/операция/декор(призн)'] || '';
-    const target = BUCKET_BY_MAT_TYPE[matType];
-    if (target) {
-      for (const b of MANAGED_BUCKETS) {
-        if (b !== target) {
-          row[`${b}, руб.`] = 0;
-          row[`${b}, USD.`] = 0;
-        }
-      }
-      row[`${target}, руб.`] = sumRub;
-      row[`${target}, USD.`] = sumUsd;
-    }
+    recalcVersionRowBuckets(row);
   }
 };
+
+// ── Сумма строки и валюта цены ───────────────────────────────────────────────
+// Сумма строки в редакторе обязана совпадать с тем, что запишет сервер
+// (_recalc_cost_buckets в app/db.py): Норма × цена × КОЭФФИЦИЕНТ ИСТОЧНИКА
+// (cost_factor_rub/usd, миграция 0031). До 01.10.2026 редактор считал голое
+// «Норма × цена», и у ФКСС Узбекистана, где цена в сумах, показывал пакет за
+// 238,98 вместо 0,0615 руб. — пользователи решили, что в себестоимость идут сумы
+// (чат «Тестирование ценообразования на WEB», задача Б24 661229).
+//
+// Коэффициент — это прежде всего валюта цены: у ФКСС Узбекистана он равен
+// курсу сума к рублю (101 тыс. строк), у ФКСС России — курсу рос. рубля (16 тыс.),
+// с поправкой ±6% (Лиса пересчитывает по курсу на дату закупки, а не расчёта).
+// Но не только: у белорусских ФКСС тысячи строк с коэффициентом 0,1–10 и 0 —
+// внутренние причины Лисы, к валюте отношения не имеющие (проверено 01.10.2026).
+// Поэтому валюта определяется так (rowPriceCurrency):
+//   * точное совпадение с курсом на дату расчёта — валюта, выбранная руками
+//     (при выборе коэффициент ставится ровно в курс);
+//   * сумы и рос. рубли — с допуском ±30%: только они реально встречаются в
+//     источнике, и их курсы далеко от диапазона внутренних коэффициентов;
+//   * остальное — BYN, а необычный коэффициент показывается рядом (×0,35).
+// USD/EUR/CNY по коэффициенту не угадываются: их курсы (3,0 / 3,4 / 0,45)
+// лежат внутри того же диапазона, и юанем «оказались» бы 6 тыс. строк носков.
+//
+// Смена валюты меняет только коэффициент (onVersionCurrencyChange): сервер,
+// версии и наложение на кэш работают как раньше — сумма уходит в себестоимость
+// той, что посчитана при сохранении версии.
+
+/** Материал/операция/декор(призн) → статья. Зеркалит _BUCKET_BY_MAT_TYPE в
+ * db.py: канонические значения дропдауна плюс легаси-коды источника, которые
+ * могут остаться в строке несмигрированной версии. Типа нет в словаре
+ * («пошив лиса», «раскрой лиса» у ФКСС) — сервер строку не пересчитывает и
+ * хранит её суммы как есть. */
+const VERSION_BUCKET_BY_MAT_TYPE: Record<string, string> = {
+  'Материал основной': 'Основные материалы',
+  'Материал вспомогательный': 'Вспомогательные материалы',
+  'Декор': 'Декоры',
+  'Пошив': 'Пошив',
+  'Раскрой': 'Раскрой',
+  'Вязание': 'Вязание',
+  'Всп': 'Вспомогательные материалы',
+  'Осн': 'Основные материалы',
+  'себестоимость лиса всп': 'Вспомогательные материалы',
+  'себестоимость лиса осн': 'Основные материалы',
+  'декор': 'Декоры',
+  'материал': 'Основные материалы',
+  'шт': 'Декоры',
+  'Декоры лиса': 'Декоры',
+  'пошив': 'Пошив',
+};
+const VERSION_MANAGED_BUCKETS = ['Основные материалы', 'Вспомогательные материалы', 'Декоры', 'Пошив', 'Раскрой', 'Вязание'];
+
+const versionRowTarget = (row: any): string | undefined =>
+  VERSION_BUCKET_BY_MAT_TYPE[(row['Материал/операция/декор(призн)'] || '').trim()];
+
+const isBlank = (v: any) => v === null || v === undefined || v === '';
+
+/** Коэффициент источника строки; пустой — «неизвестен, считать 1», как на сервере.
+ * Пустой USD-коэффициент заменяется рублёвым — так же делает _recalc_cost_buckets:
+ * USD-цена у строк редактора выведена из рублёвой (в кэше её нет). */
+function versionRowFactor(row: any, cur: 'руб.' | 'USD.'): number {
+  let f = row[cur === 'руб.' ? 'cost_factor_rub' : 'cost_factor_usd'];
+  if (cur === 'USD.' && isBlank(f)) f = row.cost_factor_rub;
+  if (isBlank(f)) return 1;
+  const v = Number(f);
+  return Number.isFinite(v) ? v : 1;
+}
+
+/** Пересчёт статей строки — тем же правилом, что _recalc_cost_buckets: прочие
+ * статьи в ноль, в свою — Норма × цена × коэффициент; у декоров сумма задаётся
+ * напрямую; нет нормы или цены — статья не трогается. */
+function recalcVersionRowBuckets(row: any): void {
+  const target = versionRowTarget(row);
+  if (!target) return;
+  for (const b of VERSION_MANAGED_BUCKETS) {
+    if (b !== target) {
+      row[`${b}, руб.`] = 0;
+      row[`${b}, USD.`] = 0;
+    }
+  }
+  if (isDecorRow(row)) return;
+  const norm = row['Норма'];
+  for (const cur of ['руб.', 'USD.'] as const) {
+    const price = row[cur === 'руб.' ? 'цена материала, руб.' : 'цена материала, USD.'];
+    if (isBlank(norm) || isBlank(price)) continue;
+    row[`${target}, ${cur}`] = Number(norm) * Number(price) * versionRowFactor(row, cur);
+  }
+}
+
+/** Валюты цены — коды и курсы из /purchase/rates (purchase.CURRENCIES). */
+const PRICE_CURRENCIES = ['BYN', 'USD', 'EUR', 'RUB', 'KZT', 'UZS', 'CNY'];
+/** Валюты, которые узнаются по коэффициенту приблизительно (см. блок выше). */
+const AUTO_PRICE_CURRENCIES = ['UZS', 'RUB'];
+const AUTO_CURRENCY_TOLERANCE = Math.log(1.3);
+
+/** Курсы НБ РБ к рублю на дату расчёта открытой калькуляции (BYN = 1). */
+const editorRates = ref<Record<string, number> | null>(null);
+const editorRatesDate = ref('');
+
+/** Дата, на которую брать курсы: дата расчёта самих открытых строк, а не строки
+ * главной таблицы. Коэффициент выбранной руками валюты ставится по курсу на дату
+ * строк версии; после пересчёта задания версию переналагают на новую дату, и по
+ * курсу новой даты валюта уже не узналась бы. */
+function editorRowsDate(): string {
+  const ev = editingVersion.value;
+  const withDate = ev?.rows?.find((r: any) => !isBlank(r['дата расчета']));
+  return String(withDate?.['дата расчета'] ?? ev?.date ?? '').slice(0, 10);
+}
+
+async function ensureEditorRates() {
+  const d = editorRowsDate();
+  if (d && d === editorRatesDate.value && editorRates.value) return;
+  await loadEditorRates(d);
+}
+
+async function loadEditorRates(calcDate: any) {
+  const d = (calcDate ?? '').toString().slice(0, 10);
+  editorRatesDate.value = d;
+  editorRates.value = null;
+  if (!d) return;
+  try {
+    const res = await $fetch<{ rates: Record<string, number> }>(
+      `${apiBase.value}/api/cost/purchase/rates?date=${encodeURIComponent(d)}`,
+      { headers: fetchHeaders.value },
+    );
+    // Пока шёл запрос, могли открыть другую калькуляцию.
+    if (editorRatesDate.value === d) editorRates.value = res.rates || null;
+  } catch (e) {
+    // DWH за VPN: без курсов суммы всё равно верные, не определится только валюта.
+    console.error('[cost] load editor rates failed', e);
+  }
+}
+
+/** Материал (основной/вспомогательный) не из состава мультипака — только у
+ * таких строк цена бывает в валюте закупки. */
+const isPriceCurrencyRow = (row: any): boolean => {
+  const t = versionRowTarget(row);
+  return (t === 'Основные материалы' || t === 'Вспомогательные материалы') && !isMultipackRow(row);
+};
+
+/** Валюта цены строки. null — не определить (нет курсов, а коэффициент далёк от 1). */
+function rowPriceCurrency(row: any): string | null {
+  if (row._cur) return row._cur;
+  // Признак ставит normalizeVersionRow — см. там. «BYN» у такой строки было бы
+  // неправдой: цена бывает в сумах, а сумма — статья источника как есть.
+  if (row._curUnknown) return null;
+  const raw = row.cost_factor_rub;
+  if (isBlank(raw)) return 'BYN';
+  const f = Number(raw);
+  if (!(f > 0)) return 'BYN';
+  const rates = editorRates.value;
+  if (!rates) return Math.abs(Math.log(f)) <= AUTO_CURRENCY_TOLERANCE ? 'BYN' : null;
+  for (const c of PRICE_CURRENCIES) {
+    const r = c === 'BYN' ? 0 : Number(currencyRate(row, c));
+    if (r > 0 && Math.abs(f / r - 1) < 1e-6) return c;
+    // Доллар, выбранный при прежнем курсе строки (или по курсу НБ РБ), — тоже он.
+    if (c === 'USD' && Number(rates.USD) > 0 && Math.abs(f / Number(rates.USD) - 1) < 1e-6) return c;
+  }
+  let best = 'BYN';
+  let bestDist = Math.abs(Math.log(f));
+  for (const c of AUTO_PRICE_CURRENCIES) {
+    const r = Number(rates[c]);
+    if (!(r > 0)) continue;
+    const dist = Math.abs(Math.log(f / r));
+    if (dist < bestDist) { best = c; bestDist = dist; }
+  }
+  return best !== 'BYN' && bestDist <= AUTO_CURRENCY_TOLERANCE ? best : 'BYN';
+}
+
+/** Курс валюты к рублю для строки. Доллар — по курсу самой строки («Курс на дату
+ * расчета»), если он есть: по нему считаются USD-цена и USD-сумма строки, и с
+ * курсом НБ РБ (отличается на 1,5–2,5%) у строки в долларах было бы две разные
+ * USD-цены. Остальные валюты — курс НБ РБ на дату расчёта строк. */
+function currencyRate(row: any, code: string): number | null {
+  if (code === 'BYN') return 1;
+  if (code === 'USD') {
+    const k = Number(row['Курс на дату расчета'] || 0);
+    if (k > 0) return k;
+  }
+  const r = Number(editorRates.value?.[code]);
+  return r > 0 ? r : null;
+}
+
+/** Курс валюты строки к рублю (BYN = 1); null — курса нет. */
+function rowCurrencyRate(row: any): number | null {
+  const c = rowPriceCurrency(row);
+  return c ? currencyRate(row, c) : null;
+}
+
+/** Строка ждёт выбора валюты: до него норму не вводим — иначе цена в сумах
+ * посчиталась бы как рублёвая (норма × цена × 1). */
+const needsCurrency = (row: any): boolean => isPriceCurrencyRow(row) && !!row._curUnknown && !row._cur;
+
+/** Можно ли вводить USD-цену руками. Только у материала в рублях без заметного
+ * коэффициента (или у операций, как раньше). Иначе USD-цена расчётная
+ * (foreignUsdPrice): у строки в валюте закупки ввод USD пересчитал бы цену в сумах
+ * как рублёвую, а у строки, где коэффициент — курс неопознанной валюты (выбрали
+ * USD, потом задание пересчитали на другую дату), курс применился бы дважды. */
+function usdPriceEditable(row: any): boolean {
+  if (!isPriceCurrencyRow(row)) return true;
+  if (rowPriceCurrency(row) !== 'BYN') return false;
+  const f = row.cost_factor_rub;
+  return isBlank(f) || Math.abs(Number(f) - 1) <= 0.02;
+}
+
+/** У материала USD-цена расчётная — см. usdPriceEditable. */
+const isForeignPriceRow = (row: any): boolean => isPriceCurrencyRow(row) && !usdPriceEditable(row);
+
+/** USD за единицу нормы у строки в валюте закупки: сумма в рублях / норма / курс USD. */
+function foreignUsdPrice(row: any): number | null {
+  const p = row['цена материала, руб.'];
+  const k = Number(row['Курс на дату расчета'] || 0);
+  // Валюта неизвестна — пересчитывать не из чего: цена в сумах / курс доллара
+  // выглядела бы долларовой ценой (79,49 у пакета за 236,6 сума).
+  if (isBlank(p) || !(k > 0) || rowPriceCurrency(row) === null) return null;
+  return (Number(p) * versionRowFactor(row, 'руб.')) / k;
+}
+
+/** Поправка источника к курсу (или коэффициент у рублёвой строки), если она
+ * заметная: «×0,35». У рублёвой строки порог 2% (меньше — округление цены), у
+ * валютной 5%: Лиса пересчитывает по курсу на дату закупки, и ±2–3% к курсу на
+ * дату расчёта есть почти у каждой строки в сумах и рос. рублях — пометка на
+ * всех строках только засоряла бы таблицу (в подсказке остаток виден всегда). */
+function factorNote(row: any): string {
+  if (!isPriceCurrencyRow(row) || isBlank(row.cost_factor_rub)) return '';
+  const rate = rowCurrencyRate(row);
+  if (!rate) return '';
+  const residual = Number(row.cost_factor_rub) / rate;
+  const threshold = rowPriceCurrency(row) === 'BYN' ? 0.02 : 0.05;
+  if (!Number.isFinite(residual) || Math.abs(residual - 1) <= threshold) return '';
+  return '×' + residual.toLocaleString('ru-RU', { maximumSignificantDigits: 3 });
+}
+
+function currencyHint(row: any): string {
+  const c = rowPriceCurrency(row);
+  const fRaw = row.cost_factor_rub;
+  const f = isBlank(fRaw) ? null : Number(fRaw);
+  const fmtF = (v: number) => v.toLocaleString('ru-RU', { maximumSignificantDigits: 6 });
+  if (!c && row._curUnknown) {
+    return 'Валюта цены не определена: у строки нет нормы, и источник не дал коэффициент '
+      + '(у ФКСС цена бывает в валюте закупки, например в сумах). Сумма — статья источника как есть. '
+      + 'Чтобы задать норму, сначала выберите валюту цены.';
+  }
+  if (!c) {
+    return 'Курсы НБ РБ на дату расчёта недоступны — валюту цены не определить. '
+      + `Сумма = норма × цена × ${f === null ? 1 : fmtF(f)}, так же её посчитает сервер.`;
+  }
+  const date = editorRatesDate.value ? editorRatesDate.value.split('-').reverse().join('.') : 'дату расчёта';
+  if (c === 'BYN') {
+    if (f === null || Math.abs(f - 1) <= 0.02) return 'Цена в бел. рублях. Сумма = норма × цена.';
+    return `Цена в бел. рублях. Сумма = норма × цена × ${fmtF(f)} — коэффициент источника: `
+      + 'в Лисе стоимость строки не равна норме × цене. При правке цены коэффициент сохраняется.';
+  }
+  const rate = rowCurrencyRate(row);
+  const rateTxt = rate ? `курс ${c} НБ РБ на ${date} — ${fmtF(rate)}` : `курса ${c} на ${date} нет`;
+  const resid = rate && f !== null ? f / rate : null;
+  const residTxt = resid !== null && Math.abs(resid - 1) > 1e-6
+    ? `; поправка источника ×${fmtF(resid)} (Лиса пересчитала по курсу на дату закупки)` : '';
+  return `Цена в ${c}. Сумма в рублях = норма × цена × ${f === null ? '—' : fmtF(f)} (${rateTxt}${residTxt}). `
+    + 'Сменить валюту — в режиме редактирования: сумма пересчитается по курсу на дату расчёта.';
+}
+
+/** Смена валюты цены. Меняется коэффициент строки: ставится ровно в курс новой
+ * валюты на дату расчёта, без поправки источника — она относилась к прежней
+ * цене (курс на дату закупки). Возврат к исходной валюте восстанавливает
+ * исходный коэффициент.
+ *
+ * Цена при этом пересчитывается в новую валюту так, чтобы сумма не изменилась:
+ * сама по себе смена валюты стоимость не меняет, а новую цену человек вводит
+ * следом. Иначе между шагами пакет показывал бы 238,98 руб. (236,61 сума как
+ * рубли). Коэффициент 0 (сумма строки в источнике нулевая) цену не пересчитывает —
+ * делить не на что.
+ *
+ * USD-цена — по соглашению источника: цена строки / курс USD, а USD-коэффициент
+ * равен рублёвому, — тогда сумма в USD = сумма в рублях / курс. */
+function onVersionCurrencyChange(row: any, event: Event) {
+  const code = (event.target as HTMLSelectElement).value;
+  const rate = code ? Number(currencyRate(row, code)) : 0;
+  if (!code || !(rate > 0)) return;
+  if (row._cur0 === undefined) {
+    row._cur0 = rowPriceCurrency(row);
+    row._f0 = row.cost_factor_rub ?? null;
+    row._fu0 = row.cost_factor_usd ?? null;
+    row._p0 = row['цена материала, руб.'];
+    row._pu0 = row['цена материала, USD.'];
+  }
+  const oldFactor = versionRowFactor(row, 'руб.');
+  // Исходная валюта неизвестна («?», строка без нормы и коэффициента) — цену не
+  // пересчитываем: пересчёт «как из рублей» умножил бы цену в сумах на ~3 900.
+  const fromKnown = rowPriceCurrency(row) !== null;
+  const back = code === row._cur0;
+  if (back) {
+    row.cost_factor_rub = row._f0;
+    row.cost_factor_usd = row._fu0;
+  } else {
+    row.cost_factor_rub = rate;
+    row.cost_factor_usd = rate;
+  }
+  row._cur = code;
+  const newFactor = versionRowFactor(row, 'руб.');
+  const p = row['цена материала, руб.'];
+  const restore = back && row._pConv !== undefined && p === row._pConv;
+  if (restore) {
+    // Вернулись к исходной валюте, а цену между переключениями не трогали —
+    // восстанавливаем её точно, без накопленной погрешности пересчётов, и
+    // USD-цену тоже: у строк с самостоятельной USD-ценой (КПСС) она не равна
+    // цене / курсу, и пересчёт поменял бы USD-статью.
+    row['цена материала, руб.'] = row._p0;
+    row['цена материала, USD.'] = row._pu0;
+  } else if (fromKnown && !isBlank(p) && oldFactor > 0 && newFactor > 0) {
+    // Десять значащих цифр: цена хранится без ограничения знаков (миграция 0061),
+    // и у ниток (0,000546 руб. за единицу нормы) четыре знака после запятой
+    // давали бы −8% к сумме после повторного открытия.
+    row['цена материала, руб.'] = Number((Number(p) * oldFactor / newFactor).toPrecision(10));
+  }
+  row._pConv = row['цена материала, руб.'];
+  const k = Number(row['Курс на дату расчета'] || 0);
+  const pNew = row['цена материала, руб.'];
+  if (!restore && k > 0 && !isBlank(pNew)) row['цена материала, USD.'] = Number(pNew) / k;
+  if (row.change_type === 'original') row.change_type = 'modified';
+  recalcVersionRowBuckets(row);
+}
 
 /** Нормализует строку версии: маппит старые значения типа и вычисляет USD цену. */
 function normalizeVersionRow(rr: any): any {
@@ -6792,6 +7125,24 @@ function normalizeVersionRow(rr: any): any {
   if (priceUsd === 0 && priceRub > 0 && rate > 0) {
     row['цена материала, USD.'] = priceRub / rate;
   }
+  // USD-цены в кэше нет (у всех строк ФКСС и ПФКСС колонка пуста), а с ней пуст
+  // и USD-коэффициент. USD-цена у строк редактора выведена из рублёвой — здесь
+  // или старым редактором при сохранении версии, — значит, коэффициент тот же:
+  // так в самом источнике (USD-цена = цена / курс, USD-сумма = сумма / курс).
+  // Без этого USD-сумма считалась с коэффициентом 1, и у строки в сумах
+  // сохранялась как 1,58 USD вместо 0,0004. Не зависит от того, пуста ли
+  // USD-цена: у версий, сохранённых до 01.10.2026, она уже записана.
+  if (isBlank(row.cost_factor_usd) && !isBlank(row.cost_factor_rub)) {
+    row.cost_factor_usd = row.cost_factor_rub;
+  }
+  // Валюта цены неизвестна: коэффициента нет, а норма пустая или 0 — источник
+  // коэффициент не выводит (_compute_cost_factors), хотя цена у таких строк
+  // бывает в сумах (у ФКСС от 15.06.2026 — 72 тыс. строк Узбекистана). Признак
+  // ставится при загрузке, а не по текущей норме: иначе ввод нормы превращал бы
+  // цену в сумах в рублёвую. Снимается явным выбором валюты (row._cur).
+  row._curUnknown = isBlank(row.cost_factor_rub)
+    && (isBlank(row['Норма']) || Number(row['Норма']) === 0)
+    && !isBlank(row['цена материала, руб.']) && Number(row['цена материала, руб.']) !== 0;
   // Merged property from свойство1/2/3
   const parts = [row['свойство1'], row['свойство2'], row['свойство3']]
     .map((v: any) => (v || '').toString().trim())
@@ -6819,22 +7170,29 @@ const onVersionPropertyEdit = (row: any, event: Event) => {
   if (row.change_type === 'original') row.change_type = 'modified';
 };
 
-/** Определяет, вносит ли строка нулевой вклад в себестоимость (нет нормы или нет цены). */
-/** Сумма по строке. У материалов это Норма × цена, у декоров — их собственная
- * сумма из «Декоры, руб./USD.»: нормы и цены у декоров в источнике нет вообще.
- * Раньше здесь всегда считалось произведение, и строки декоров показывали 0,
- * хотя в себестоимость входили. */
+/** Сумма по строке — та, что запишет сервер (_recalc_cost_buckets): у материалов
+ * Норма × цена × коэффициент источника (в нём валюта цены, см. блок «Сумма строки
+ * и валюта цены»), у декоров — их собственная сумма из «Декоры, руб./USD.»: нормы
+ * и цены у декоров в источнике нет вообще. */
 function versionRowSum(row: any, cur: 'руб.' | 'USD.'): number {
   if (isDecorRow(row)) return Number(row[`Декоры, ${cur}`] || 0);
-  const price = Number(row[cur === 'руб.' ? 'цена материала, руб.' : 'цена материала, USD.'] || 0);
-  return Number(row['Норма'] || 0) * price;
+  const target = versionRowTarget(row);
+  // Тип вне словаря («пошив лиса», «раскрой лиса» у ФКСС): сервер строку не
+  // пересчитывает, в себестоимость идут её суммы как есть. Раньше здесь было
+  // «Норма × цена» без цены — 0,00 при пошиве 1,516 в базе.
+  if (!target) {
+    return VERSION_MANAGED_BUCKETS.reduce((s, b) => s + Number(row[`${b}, ${cur}`] || 0), 0);
+  }
+  const norm = row['Норма'];
+  const price = row[cur === 'руб.' ? 'цена материала, руб.' : 'цена материала, USD.'];
+  // Нет нормы или цены — сервер статью не трогает.
+  if (isBlank(norm) || isBlank(price)) return Number(row[`${target}, ${cur}`] || 0);
+  return Number(norm) * Number(price) * versionRowFactor(row, cur);
 }
 
+/** Строка не даёт вклада в себестоимость — по той же сумме, что видна в редакторе. */
 function isZeroCostRow(row: any): boolean {
-  const norm = Number(row['Норма'] || 0);
-  const priceRub = Number(row['цена материала, руб.'] || 0);
-  const priceUsd = Number(row['цена материала, USD.'] || 0);
-  return norm === 0 || (priceRub === 0 && priceUsd === 0);
+  return Math.abs(versionRowSum(row, 'руб.')) < 1e-12;
 }
 
 /** Тип строки — декор, если тип ∈ {шт, Декоры лиса, декор}. */
@@ -7360,6 +7718,18 @@ const fmtPrice4 = (v: any): string => {
   if (v === null || v === undefined || v === "") return "—";
   const n = Number(v);
   if (Number.isNaN(n)) return String(v);
+  return n.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+};
+
+/** Цена материала в редакторе версий: как fmtPrice4, но мелкие цены (нитки —
+ * 0,000546 руб. за единицу нормы) — четырьмя значащими цифрами. С миграции 0061
+ * цена хранится без ограничения знаков, и «0,0005» вместо 0,000546 на экране
+ * обманывало бы на 8%. */
+const fmtPriceFine = (v: any): string => {
+  if (v === null || v === undefined || v === "") return "—";
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  if (n !== 0 && Math.abs(n) < 0.1) return n.toLocaleString("ru-RU", { maximumSignificantDigits: 4 });
   return n.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 };
 
@@ -10545,6 +10915,13 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .editor-input:focus { border-color:var(--accent-color, #4338ca); outline:none; background:#fff; }
 .editor-select { width:100%; border:1px solid transparent; padding:2px 4px; font-size:13px; background:transparent; }
 .editor-select:focus { border-color:var(--accent-color, #4338ca); outline:none; }
+/* Валюта цены рядом с ценой: поле цены и выбор валюты в одну строку. */
+.price-cell { white-space:nowrap; }
+.price-cell .editor-input { width:90px; }
+.price-cell .cur-select { width:auto; min-width:56px; margin-left:2px; border-color:var(--border-color, #e5e7eb); }
+.cur-tag { margin-left:4px; font-size:11px; color:var(--text-muted, #6b7280); font-family:var(--font-mono, monospace); }
+.cur-tag.cur-foreign { color:var(--accent-color, #4338ca); font-weight:600; }
+.factor-note { margin-left:3px; font-size:10px; color:var(--text-muted, #6b7280); cursor:help; }
 .row-added { background:#ecfdf5; }
 .row-modified { background:#fefce8; }
 

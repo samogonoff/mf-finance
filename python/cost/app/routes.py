@@ -32,6 +32,7 @@ from app.roles import (
 )
 from app import obsolete
 from app import group_pricing
+from app import material_compare
 
 router = APIRouter()
 
@@ -1565,6 +1566,35 @@ async def margin_deviations(
     qp = request.query_params
     filters: dict = {key: qp.getlist(key) for key in margin.FILTER_KEYS if qp.getlist(key)}
     return await margin.deviations(filters)
+
+
+@router.get("/margin/materials")
+async def margin_materials(
+    request: Request, _: str = Depends(_require_perm("cost:view"))
+) -> dict:
+    """Материалы ФКСС против ПФКСС по заданиям выборки (задача Б24 661229).
+    Фильтры те же, что у /margin; матрицу и Excel фронт собирает из этих строк."""
+    if _is_mock():
+        return material_compare.empty_result()
+    qp = request.query_params
+    filters: dict = {key: qp.getlist(key) for key in margin.FILTER_KEYS if qp.getlist(key)}
+    return await material_compare.compare(filters)
+
+
+@router.get("/margin/materials/lines")
+async def margin_material_lines(
+    model: str,
+    articul: str,
+    plan_id: str = "",
+    zadanie: str = "",
+    calc_date: str = "",
+    _: str = Depends(_require_perm("cost:view")),
+) -> dict:
+    """Построчное сравнение материалов одного задания ФКСС и его ПФКСС.
+    calc_date — дата расчёта строки списка (у задания их может быть несколько)."""
+    if _is_mock():
+        return {"pair": None, "rows": [], "totals": {}}
+    return await material_compare.material_lines(model, articul, plan_id, zadanie, calc_date or None)
 
 
 @router.get("/price-levels")
