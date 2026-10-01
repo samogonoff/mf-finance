@@ -1541,6 +1541,22 @@ async def margin_dashboard(
         raise HTTPException(400, str(exc))
 
 
+@router.get("/margin/deviations")
+async def margin_deviations(
+    request: Request, _: str = Depends(_require_perm("cost:view"))
+) -> dict:
+    """Лист «Отклонения по артикулам» целиком — для выгрузки в Excel (задача
+    Б24 660908). Фильтры те же, что у /margin; на экране лист обрезан до
+    margin.DEVIATION_ROW_LIMIT строк, здесь — до DEVIATION_EXPORT_LIMIT.
+    """
+    if _is_mock():
+        return mocks.margin_deviations()
+
+    qp = request.query_params
+    filters: dict = {key: qp.getlist(key) for key in margin.FILTER_KEYS if qp.getlist(key)}
+    return await margin.deviations(filters)
+
+
 @router.get("/price-levels")
 def get_price_levels() -> list[dict]:
     if _is_mock():

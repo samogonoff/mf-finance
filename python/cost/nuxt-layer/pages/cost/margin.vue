@@ -313,12 +313,21 @@
               Для носков и колготок план в Лисе не заводится — им смысл имеет вкладка «Норматив / факт».</span>
           </p>
         </div>
-        <div class="view-switch" role="group" aria-label="Что сравнивать">
-          <button v-for="v in devViews" :key="v.key" class="btn btn-sm"
-                  :class="v.key === devView ? 'btn-primary' : 'btn-ghost'"
-                  @click="devView = v.key">{{ v.label }}</button>
+        <div class="dev-actions">
+          <div class="view-switch" role="group" aria-label="Что сравнивать">
+            <button v-for="v in devViews" :key="v.key" class="btn btn-sm"
+                    :class="v.key === devView ? 'btn-primary' : 'btn-ghost'"
+                    @click="devView = v.key">{{ v.label }}</button>
+          </div>
+          <!-- Выгрузка — задача Б24 660908 (Журавская М.М., 30.09.2026). -->
+          <button class="btn btn-ghost btn-sm" :disabled="devExporting || loading"
+                  :title="`Выгрузить вкладку «${devViewLabel}» в Excel — все строки выборки, не только показанные`"
+                  @click="exportDeviations">
+            <Icon name="lucide:download" /> {{ devExporting ? 'Готовлю…' : 'Excel' }}
+          </button>
         </div>
       </div>
+      <p v-if="devExportError" class="error">{{ devExportError }}</p>
       <div class="table-wrap">
         <table class="matrix">
           <thead>
@@ -739,14 +748,15 @@ function sortDev(key: string) {
  * подсвечиваем. */
 const devKey = computed(() => (devView.value === 'plan' ? 'dev_fact_plan_pct' : 'dev_fact_norm_pct'))
 
-const devRows = computed(() => {
+/** Отбор и порядок строк текущей вкладки — общие для экрана и выгрузки в Excel. */
+function devViewRows(source: any[]): any[] {
   // Во вкладке «Факт / план» строки без плана скрываем: пустая колонка сравнения
   // — не информация, а шум на весь экран.
-  const rows = deviations.value.filter(r =>
+  const rows = source.filter(r =>
     devView.value === 'plan' ? isNum(r.unit_plan_byn) : isNum(r.unit_fact_byn))
   const k = devSort.key === 'dev' ? devKey.value : devSort.key
   const dir = devSort.asc ? 1 : -1
-  return [...rows].sort((a, b) => {
+  return rows.sort((a, b) => {
     const x = a[k], y = b[k]
     // Пустые всегда внизу, независимо от направления.
     if (!isNum(x) && !isNum(y)) return 0
@@ -755,7 +765,103 @@ const devRows = computed(() => {
     if (typeof x === 'string' || typeof y === 'string') return dir * String(x).localeCompare(String(y), 'ru')
     return dir * (Number(x) - Number(y))
   })
-})
+}
+
+const devRows = computed(() => devViewRows(deviations.value))
+
+const devViewLabel = computed(() => devViews.find(v => v.key === devView.value)?.label || '')
+
+// ── Выгрузка листа в Excel ──────────────────────────────────────────────────
+// На экране лист обрезан до meta.deviations_row_limit строк с наибольшим
+// выпуском, а в Excel его фильтруют сами — поэтому строки берутся отдельным
+// запросом /margin/deviations целиком (год — ~28 тыс. строк). Колонки, отбор и
+// сортировка — текущей вкладки, как на экране. Формат — как в остальном разделе:
+// HTML-таблица под application/vnd.ms-excel с BOM (настоящий .xlsx в разделе не
+// собирается). Числа — без разделителя тысяч и без «%», чтобы Excel принял их за
+// числа и по ним работали фильтры и сортировка.
+
+const devExporting = ref(false)
+const devExportError = ref('')
+
+async function exportDeviations() {
+  devExporting.value = true
+  devExportError.value = ''
+  try {
+    // Фильтры панели, без пути матрицы и базы себестоимости: лист от них не
+    // зависит (обе базы в нём рядом).
+    const p = new URLSearchParams()
+    for (const f of filterConfig) for (const v of selected[f.key] || []) p.append(f.key, v)
+    const res = await $fetch<any>(`${apiBase.value}/api/cost/margin/deviations?${p}`,
+                                  { headers: fetchHeaders.value })
+    const rows = devViewRows(res.rows || [])
+    if (!rows.length) {
+      devExportError.value = devView.value === 'plan'
+        ? 'Нечего выгружать: плановая себестоимость не заведена ни у одного артикула выборки'
+        : 'Нечего выгружать: нет артикулов с годной фактической себестоимостью'
+      return
+    }
+    downloadDeviationsXls(rows, res)
+  } catch (e: any) {
+    console.error('[cost] margin deviations export failed', e)
+    devExportError.value = `Не удалось выгрузить: ${e?.data?.detail || e?.message || 'ошибка сервера'}`
+  } finally {
+    devExporting.value = false
+  }
+}
+
+function downloadDeviationsXls(rows: any[], res: any) {
+  const esc = (v: any) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const xnum = (v: any, d: number) => (isNum(v) ? Number(v).toFixed(d).replace('.', ',') : '')
+  /** Текст — с форматом «@»: иначе Excel превращает артикул «1-2» в дату, а
+   * № задания с ведущими нулями — в число. */
+  const td = (v: any, text: boolean) =>
+    text ? `<td style="mso-number-format:'\\@'">${esc(v)}</td>` : `<td>${esc(v)}</td>`
+  const cellValue = (c: Col, r: any) => {
+    if (c.text) return r[c.key] || ''
+    if (c.key === 'vol') return xnum(r.vol, 0)
+    return xnum(r[c.key], c.key.endsWith('_pct') ? 1 : 2)
+  }
+  // Модель — сверх экранных колонок: она входит в ключ строки, и в Excel без неё
+  // две строки одного плана и артикула не различить.
+  const cols = devColumns.value.flatMap(c => c.key === 'name'
+    ? [c, { key: 'model', label: 'Модель', text: true, fmt: (r: any) => r.model || '—' }]
+    : [c])
+  const head ='<tr>' + cols.map(c => `<th>${esc(c.label)}</th>`).join('') + '</tr>'
+  const body = rows.map(r => '<tr>' + cols.map(c => td(cellValue(c, r), !!c.text)).join('') + '</tr>').join('')
+
+  // Шапка файла: что выгружено и по каким фильтрам — без неё файл через неделю
+  // уже не прочитать. Отклонение — «что сравниваем / база − 1», в процентах.
+  const filters = filterConfig
+    .filter(f => (selected[f.key] || []).length)
+    .map(f => `${f.label}: ${(f.key === 'month'
+      ? selected[f.key].map(m => MONTHS_FULL[Number(m) - 1] || m)
+      : selected[f.key]).join(', ')}`)
+  const span = cols.length
+  const info = [
+    `Отклонения по артикулам · ${devViewLabel.value}`,
+    `Период: ${periodLabel.value} · только ${meta.value.volume_sign || 'ФКСС'} с выпуском`,
+    filters.length ? `Фильтры: ${filters.join('; ')}` : 'Фильтры: не заданы',
+    'Себестоимость единицы, BYN. Отклонение, % — «что сравниваем / база − 1»; выше нуля — дороже базы.',
+    `Строк: ${rows.length}`
+      + (res.truncated ? ` — выборка обрезана до ${res.row_limit} строк с наибольшим выпуском, сузьте фильтры` : ''),
+    res.cache_refreshed_at ? `Данные на ${fmtDateTime(res.cache_refreshed_at)}` : '',
+  ].filter(Boolean)
+  const html = '<html><head><meta charset="utf-8"></head><body><table border="1">'
+    + info.map((s, i) => `<tr><td colspan="${span}">${i ? esc(s) : `<b>${esc(s)}</b>`}</td></tr>`).join('')
+    + `<tr><td colspan="${span}"></td></tr>`
+    + head + body + '</table></body></html>'
+
+  const blob = new Blob(['\uFEFF' + html], { type: 'application/vnd.ms-excel' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  const view = devView.value === 'plan' ? 'факт_план' : 'норматив_факт'
+  a.download = `Отклонения_по_артикулам_${view}_${new Date().toISOString().slice(0, 10)}.xls`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
 
 /** Доля показанных артикулов, у которых есть плановая себестоимость. */
 const devPlanCoverage = computed(() => {
@@ -1333,6 +1439,7 @@ const insightContextDeviations = computed(() => ({
 .warn { color: var(--neg); }
 .header-actions { display: flex; gap: var(--sp-3); align-items: center; }
 .currency-switch, .view-switch { display: flex; gap: var(--sp-1); }
+.dev-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 
 .basis { margin: 0; font-size: var(--fs-2xs); color: var(--text-muted); }
 
