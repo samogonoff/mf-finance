@@ -1,0 +1,32 @@
+slice_name: "comm-16 \xB7 \u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430 \u0441\
+  \u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438: \u0437\
+  \u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A \u0443\u0440\u043E\u0432\u043D\u044F\
+  \ \u0438 \u043A\u0440\u043E\u0448\u043A\u0438"
+description: null
+certified_by: null
+certification_details: null
+viz_type: handlebars
+params:
+  viz_type: handlebars
+  handlebars_template: "{{#with data.[0]}}<div id=\"cp3-structhead\"><div><h2>\u0421\
+    \u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430 \u0441\u0435\u0431\u0435\u0441\
+    \u0442\u043E\u0438\u043C\u043E\u0441\u0442\u0438 \xB7 {{struct_level_label}}</h2>{{#unless\
+    \ (eq struct_level_label \"\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\
+    \u043D\u0438\u0435 \u0442\u043E\u0432\u0430\u0440\u0430\")}}<span>\u043F\u0440\
+    \u043E\u0432\u0430\u043B\u0438\u0442\u044C\u0441\u044F \u2014 \u0444\u0438\u043B\
+    \u044C\u0442\u0440\u0430\u043C\u0438 \u043F\u0430\u043D\u0435\u043B\u0438</span>{{/unless}}</div><div>{{#if\
+    \ struct_crumb_last}}<ins>\u0412\u0441\u0435</ins>{{#if struct_crumb_head}}<small>\u203A\
+    </small><ins>{{struct_crumb_head}}</ins>{{/if}}<small>\u203A</small><span>{{struct_crumb_last}}</span>{{else}}<span>\u0412\
+    \u0441\u0435</span>{{/if}}</div></div>{{/with}}"
+  row_limit: 1
+  order_desc: true
+  query_mode: aggregate
+  metrics:
+  - struct_level_label
+  - struct_crumb_head
+  - struct_crumb_last
+query_context: null
+cache_timeout: null
+uuid: 5178a1a8-1cff-42dd-a0d8-d033aae03b56
+version: 1.0.0
+dataset_uuid: c7619b95-6ed8-428a-9c73-fc7ad310d71d

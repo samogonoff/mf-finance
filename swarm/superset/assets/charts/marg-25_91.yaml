@@ -1,7 +1,13 @@
 slice_name: "marg-25 \xB7 \u041C\u0430\u0440\u0436\u0438\u043D\u0430\u043B\u044C\u043D\
   \u043E\u0441\u0442\u044C \u043F\u043E \u0444\u0430\u043A\u0442\u0443 \u0438 \u043D\
   \u043E\u0440\u043C\u0430\u0442\u0438\u0432\u0443, %"
-description: null
+description: "\u041E\u0431\u0435 \u043B\u0438\u043D\u0438\u0438 \u2014 \u043F\u043E\
+  \ \u043E\u0434\u043D\u0438\u043C \u0438 \u0442\u0435\u043C \u0436\u0435 \u0441\u0442\
+  \u0440\u043E\u043A\u0430\u043C \u0441 \u0433\u043E\u0434\u043D\u044B\u043C \u0444\
+  \u0430\u043A\u0442\u043E\u043C. \u0420\u0430\u0437\u0440\u044B\u0432 \u2014 \u044D\
+  \u0444\u0444\u0435\u043A\u0442 \u0444\u0430\u043A\u0442\u0438\u0447\u0435\u0441\u043A\
+  \u043E\u0439 \u0441\u0442\u0430\u0432\u043A\u0438 \u043C\u0438\u043D\u0443\u0442\
+  \u044B."
 certified_by: null
 certification_details: null
 viz_type: echarts_timeseries_line
@@ -9,17 +15,30 @@ params:
   datasource: 14__table
   viz_type: echarts_timeseries_line
   metrics:
-  - margin_pct_fact_cur
-  - margin_pct_norm_cur
+  - expressionType: SQL
+    sqlExpression: '{{ metric(''margin_pct_fact_cur'', 14) }}'
+    label: "\u041F\u043E \u0444\u0430\u043A\u0442\u0443, %"
+    hasCustomLabel: true
+    optionName: metric_mp4_pct_fact
+    aggregate: null
+    column: null
+    datasourceWarning: false
+  - expressionType: SQL
+    sqlExpression: '{{ metric(''margin_pct_norm_cur'', 14) }}'
+    label: "\u041F\u043E \u043D\u043E\u0440\u043C\u0430\u0442\u0438\u0432\u0443, %"
+    hasCustomLabel: true
+    optionName: metric_mp4_pct_norm
+    aggregate: null
+    column: null
+    datasourceWarning: false
   groupby: []
-  x_axis: prod_month
-  time_grain_sqla: P1M
-  x_axis_time_format: '%m.%Y'
+  x_axis: prod_month_axis
+  time_grain_sqla: null
   x_axis_sort_series_type: name
   x_axis_sort_series_ascending: true
   row_limit: 1000
   y_axis_title: '%'
-  y_axis_format: ',.2f'
+  y_axis_format: ',.2~f'
   legend_orientation: bottom
   show_legend: true
   markerEnabled: true
@@ -27,8 +46,25 @@ params:
   rich_tooltip: true
   truncateYAxis: true
   color_scheme: supersetColors
-  adhoc_filters: []
+  adhoc_filters:
+  - expressionType: SQL
+    clause: HAVING
+    sqlExpression: count(*) FILTER (WHERE k = 'cur') > 0
+    subject: null
+    operator: null
+    comparator: null
+    isExtra: false
+    isNew: false
+    filterOptionName: filter_mp4_has_cur
   extra_form_data: {}
+  sort_series_type: name
+  sort_series_ascending: false
+  legendType: plain
+  echart_options: '{legend: {type: ''plain'', left: 4, width: 400, itemWidth: 10,
+    itemHeight: 10, itemGap: 8, textStyle: {fontSize: 11}}, grid: {bottom: 34}}'
+  xAxisLabelInterval: 0
+  y_axis_title_margin: 15
+  y_axis_title_position: Top
 query_context: null
 cache_timeout: null
 uuid: c6ffd27e-8c23-49f0-9209-90b8a431d54e

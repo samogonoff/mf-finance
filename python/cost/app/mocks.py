@@ -892,6 +892,20 @@ def margin_dashboard() -> dict:
     }
 
 
+def margin_deviations() -> dict:
+    """Заглушка выгрузки листа отклонений: в моке дашборда листа нет, и
+    выгрузка отдаёт пустую выборку той же формы, что в бою (margin.deviations)."""
+    from app import margin
+
+    return {
+        "rows": [],
+        "truncated": False,
+        "row_limit": margin.DEVIATION_EXPORT_LIMIT,
+        "cache_refreshed_at": "2026-08-12T06:00:00+00:00",
+        "period": {"year": ["2026"], "month": []},
+    }
+
+
 # ── Мультипаки ────────────────────────────────────────────────────────────────
 #
 # Состав отдаётся статикой: в mock-режиме нет ни кэша калькуляций, ни таблиц

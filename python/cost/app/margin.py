@@ -110,6 +110,11 @@ MATRIX_ROW_LIMIT = 300
 # Формат повторяет страницу «Отклонение сс» отчёта Power BI заказчика, который
 # он подтвердил как устраивающий.
 DEVIATION_ROW_LIMIT = 500
+# Выгрузка листа в Excel (задача Б24 660908, 30.09.2026) отдаёт ВСЕ строки
+# выборки, а не 500 на экране: в Excel лист фильтруют и сортируют сами. Год ФКСС —
+# ~28 тыс. строк, все годы — ~58 тыс. (01.10.2026); предел — с запасом, и при
+# его превышении выгрузка честно говорит, что обрезана.
+DEVIATION_EXPORT_LIMIT = 100_000
 
 # База себестоимости. С 01.01.2026 Лиса ведёт ФАКТИЧЕСКУЮ стоимость минуты пошива
 # и раскроя помесячно, и источник считает по ней вторую себестоимость
@@ -318,6 +323,182 @@ def _derive(row: dict) -> dict:
     return out
 
 
+def _deviation_ctes(where_sql: str, limit: int) -> str:
+    """CTE листа «Отклонения по артикулам»: dev_base → dev_src → deviations.
+
+    Один текст на дашборд и выгрузку в Excel — иначе файл и экран разошлись бы
+    при первой правке. where_sql — условия по витрине вместе с периодом по
+    production_date (только текущий период: сравнение здесь между базами
+    расчёта, а не между периодами). Лист живёт в BYN: заказчик сверяет его с
+    Power BI, а там плановая себестоимость (PLAN_PRICE справочника) в рублях
+    без пересчёта.
+    """
+    return f"""
+        -- Отбор отдельно от джойнов: условия where написаны голыми именами
+        -- колонок, а ниже три источника (строка ФКСС и два ранних этапа) —
+        -- Postgres на «cost_byn > 0» отвечает ambiguous column.
+        dev_base AS (
+            SELECT * FROM cost_calc_mv WHERE {where_sql}
+        ),
+        dev_src AS (
+            SELECT
+                c.plan_id, c.model, c.articul, c.zadanie, c.model_name,
+                c.volume_pcs                          AS vol,
+                c.volume_pcs * c.wholesale_price_byn  AS rev,
+                c.volume_pcs * c.cost_byn             AS cost_norm,
+                c.volume_pcs * ({_FACT_B})            AS cost_fact,
+                -- Ранние этапы ТОГО ЖЕ задания. Ключ сопоставления — модель +
+                -- артикул + план + задание, как у get_prev_stage_prices в db.py:
+                -- у КПСС и ПФКСС калькуляция привязана к заданию, а не к модели.
+                --
+                -- Этапов в источнике мало (КПСС 1 584 калькуляции, ПФКСС 1 026
+                -- против 88 456 ФКСС — их ведут не для всего ассортимента),
+                -- поэтому у большинства строк оба поля пусты. Это не пропуск
+                -- данных, а отсутствие предварительного расчёта.
+                c.volume_pcs * kp.cost_byn            AS cost_kpss,
+                CASE WHEN kp.cost_byn IS NOT NULL THEN c.volume_pcs END AS vol_kpss,
+                c.volume_pcs * pf.cost_byn            AS cost_pfkss,
+                CASE WHEN pf.cost_byn IS NOT NULL THEN c.volume_pcs END AS vol_pfkss
+            FROM dev_base c
+            -- LATERAL, а не GROUP BY: на этап бывает несколько дат расчёта,
+            -- берём последнюю — она и есть действующая.
+            LEFT JOIN LATERAL (
+                SELECT s.cost_byn FROM cost_calc_mv s
+                WHERE s.calc_sign = 'КПСС' AND s.model = c.model AND s.articul = c.articul
+                  AND coalesce(s.plan_id, '') = coalesce(c.plan_id, '')
+                  AND coalesce(s.zadanie, '') = coalesce(c.zadanie, '')
+                  AND s.cost_byn > 0
+                ORDER BY s.calc_date DESC LIMIT 1
+            ) kp ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT s.cost_byn FROM cost_calc_mv s
+                WHERE s.calc_sign = 'ПФКСС' AND s.model = c.model AND s.articul = c.articul
+                  AND coalesce(s.plan_id, '') = coalesce(c.plan_id, '')
+                  AND coalesce(s.zadanie, '') = coalesce(c.zadanie, '')
+                  AND s.cost_byn > 0
+                ORDER BY s.calc_date DESC LIMIT 1
+            ) pf ON TRUE
+        ),
+        -- Три себестоимости единицы на одной строке.
+        --
+        -- Плановая берётся из справочника моделей, а не из строк выпуска:
+        -- она задана на модель+артикул целиком. Умножаем на объём здесь же,
+        -- чтобы «плановая себестоимость выпуска» считалась тем же весом, что
+        -- нормативная и фактическая.
+        deviations AS (
+            SELECT
+                coalesce(d.plan_id, '')                   AS plan_id,
+                coalesce(d.model, '')                     AS model,
+                coalesce(d.articul, '')                   AS articul,
+                coalesce(d.zadanie, '')                   AS zadanie,
+                min(d.model_name)                         AS name,
+                sum(d.vol)                                AS vol,
+                sum(d.vol * pp.plan_price)                AS plan_total,
+                sum(d.vol) FILTER (WHERE pp.plan_price IS NOT NULL) AS plan_vol,
+                sum(d.cost_norm)                          AS norm_total,
+                sum(d.cost_fact)                          AS fact_total,
+                sum(d.vol) FILTER (WHERE d.cost_fact IS NOT NULL) AS fact_vol,
+                sum(d.rev)                                AS rev_total,
+                sum(d.cost_kpss)                          AS kpss_total,
+                sum(d.vol_kpss)                           AS kpss_vol,
+                sum(d.cost_pfkss)                         AS pfkss_total,
+                sum(d.vol_pfkss)                          AS pfkss_vol
+            FROM dev_src d
+            LEFT JOIN cost_plan_prices pp
+                   ON pp.model = d.model AND pp.articul = d.articul
+            GROUP BY 1, 2, 3, 4
+            ORDER BY sum(d.vol) DESC NULLS LAST
+            LIMIT {limit + 1}
+        )"""
+
+
+def _unit_deviations(rows: list[dict], limit: int) -> tuple[list[dict], bool]:
+    """Себестоимость ЕДИНИЦЫ по трём базам и отклонения между ними.
+
+    Плановая и фактическая делятся на объём ТЕХ строк, где они есть (plan_vol,
+    fact_vol), а не на весь выпуск артикула: иначе у артикула с планом на
+    половине тиража плановая себестоимость единицы вышла бы вдвое меньше
+    настоящей. Доля покрытия отдаётся рядом — цифра без неё обманчива.
+
+    Возвращает строки и признак, что выборка длиннее limit (CTE берёт limit + 1).
+    """
+    out = []
+    for r in rows[:limit]:
+        vol, plan_vol, fact_vol = r.get("vol"), r.get("plan_vol"), r.get("fact_vol")
+        unit_norm = _ratio(r.get("norm_total"), vol)
+        unit_fact = _ratio(r.get("fact_total"), fact_vol)
+        unit_pfkss = _ratio(r.get("pfkss_total"), r.get("pfkss_vol"))
+        # Плановая: КПСС того же задания, если он есть, иначе карточка модели в
+        # Лисе (решение заказчика 04.09.2026). Источник обязан быть виден в
+        # таблице — это разные вещи: КПСС считан по нормам конкретного задания,
+        # карточка проставлена человеком один раз при заведении модели.
+        unit_kpss = _ratio(r.get("kpss_total"), r.get("kpss_vol"))
+        unit_card = _ratio(r.get("plan_total"), plan_vol)
+        unit_plan = unit_kpss if unit_kpss is not None else unit_card
+        plan_source = "КПСС" if unit_kpss is not None else ("карточка" if unit_card is not None else None)
+        # Нормативная на том же объёме, что плановая и фактическая — чтобы
+        # отклонения считались на сопоставимых величинах, а не «норматив по всему
+        # тиражу против плана по половине».
+        rel = lambda a, b: (None if a is None or not b else 100.0 * (a / b - 1))
+        out.append({
+            "plan_id": r.get("plan_id") or "",
+            "model": r.get("model") or "",
+            "articul": r.get("articul") or "",
+            "zadanie": r.get("zadanie") or "",
+            "name": r.get("name"),
+            "vol": None if vol is None else float(vol),
+            "unit_plan_byn": unit_plan,
+            "unit_plan_source": plan_source,
+            "unit_kpss_byn": unit_kpss,
+            "unit_card_byn": unit_card,
+            "unit_pfkss_byn": unit_pfkss,
+            "unit_norm_byn": unit_norm,
+            "unit_fact_byn": unit_fact,
+            "unit_price_byn": _ratio(r.get("rev_total"), vol),
+            # Отклонения — как в Power BI: «факт / план − 1».
+            "dev_norm_plan_pct": rel(unit_norm, unit_plan),
+            "dev_fact_plan_pct": rel(unit_fact, unit_plan),
+            "dev_fact_norm_pct": rel(unit_fact, unit_norm),
+            "plan_coverage_pct": _pct(plan_vol or 0, vol),
+            "fact_coverage_pct": _pct(fact_vol or 0, vol),
+        })
+    return out, len(rows) > limit
+
+
+async def deviations(filters: dict, limit: int = DEVIATION_EXPORT_LIMIT) -> dict:
+    """Лист «Отклонения по артикулам» целиком — для выгрузки в Excel.
+
+    Те же фильтры, что у dashboard(), и тот же расчёт (_deviation_ctes,
+    _unit_deviations), но без остального дашборда и без лимита экрана.
+    Путь матрицы и база себестоимости листа не касаются: в листе обе базы
+    рядом, а проваливание применяется только к матрице.
+    """
+    filters = {k: v for k, v in filters.items() if v}
+    params: list = []
+    conditions = [
+        *_MARGIN_BASE,
+        *_collect_params(filters, params, MARGIN_FILTERS).values(),
+        *(c.replace(_DATE, "production_date")
+          for c in _collect_params(filters, params, DATE_EXPRS).values()),
+    ]
+    sql = f"""
+        WITH {_deviation_ctes(' AND '.join(conditions), limit)}
+        SELECT coalesce(json_agg(x), '[]'::json) FROM deviations x
+    """
+    async with pool().acquire() as conn:
+        raw = await conn.fetchval(sql, *params)
+        status = await conn.fetchrow("SELECT refreshed_at FROM cost_cache_status WHERE id = 1")
+    rows, truncated = _unit_deviations(_as_dict(raw) or [], limit)
+    refreshed = status["refreshed_at"] if status else None
+    return {
+        "rows": rows,
+        "truncated": truncated,
+        "row_limit": limit,
+        "cache_refreshed_at": refreshed.isoformat() if refreshed else None,
+        "period": {"year": filters.get("year") or [], "month": filters.get("month") or []},
+    }
+
+
 async def _max_year(conn) -> str | None:
     return await conn.fetchval(
         f"SELECT to_char(max(production_date), 'YYYY') FROM cost_calc_mv WHERE {' AND '.join(_MARGIN_BASE)}"
@@ -408,10 +589,6 @@ async def dashboard(
         dims = ", ".join(_DIM_COLS)
         values = ", ".join(_VALUE_COLS)
         sums = _sums()
-        # Лист отклонений живёт в BYN: заказчик сверяет его с Power BI, а там
-        # плановая себестоимость (PLAN_PRICE справочника) в рублях без пересчёта.
-        cur_sfx = "byn"
-        fact_expr = _FACT_B
 
         sql = f"""
         WITH src AS MATERIALIZED (
@@ -468,53 +645,9 @@ async def dashboard(
             WHERE u.m <= (SELECT m FROM horizon)
         ),
         period AS (SELECT * FROM shifted{on_label()}),
-        -- Источник листа отклонений: строки ТЕКУЩЕГО периода с плановым ключом
-        -- (план + модель + артикул) и тремя себестоимостями выпуска.
-        -- Отбор отдельно от джойнов: условия where() написаны голыми именами
-        -- колонок, а ниже в запросе три источника (строка ФКСС и два ранних
-        -- этапа) — Postgres на «cost_byn > 0» отвечает ambiguous column.
-        dev_base AS (
-            SELECT * FROM cost_calc_mv WHERE {where()}
-        ),
-        dev_src AS (
-            SELECT
-                c.plan_id, c.model, c.articul, c.zadanie, c.model_name,
-                c.volume_pcs                          AS vol,
-                c.volume_pcs * c.wholesale_price_{cur_sfx} AS rev,
-                c.volume_pcs * c.cost_{cur_sfx}        AS cost_norm,
-                c.volume_pcs * ({fact_expr})           AS cost_fact,
-                -- Ранние этапы ТОГО ЖЕ задания. Ключ сопоставления — модель +
-                -- артикул + план + задание, как у get_prev_stage_prices в db.py:
-                -- у КПСС и ПФКСС калькуляция привязана к заданию, а не к модели.
-                --
-                -- Этапов в источнике мало (КПСС 1 584 калькуляции, ПФКСС 1 026
-                -- против 88 456 ФКСС — их ведут не для всего ассортимента),
-                -- поэтому у большинства строк оба поля пусты. Это не пропуск
-                -- данных, а отсутствие предварительного расчёта.
-                c.volume_pcs * kp.cost_{cur_sfx}       AS cost_kpss,
-                CASE WHEN kp.cost_{cur_sfx} IS NOT NULL THEN c.volume_pcs END AS vol_kpss,
-                c.volume_pcs * pf.cost_{cur_sfx}       AS cost_pfkss,
-                CASE WHEN pf.cost_{cur_sfx} IS NOT NULL THEN c.volume_pcs END AS vol_pfkss
-            FROM dev_base c
-            -- LATERAL, а не GROUP BY: на этап бывает несколько дат расчёта,
-            -- берём последнюю — она и есть действующая.
-            LEFT JOIN LATERAL (
-                SELECT s.cost_byn, s.cost_usd FROM cost_calc_mv s
-                WHERE s.calc_sign = 'КПСС' AND s.model = c.model AND s.articul = c.articul
-                  AND coalesce(s.plan_id, '') = coalesce(c.plan_id, '')
-                  AND coalesce(s.zadanie, '') = coalesce(c.zadanie, '')
-                  AND s.cost_byn > 0
-                ORDER BY s.calc_date DESC LIMIT 1
-            ) kp ON TRUE
-            LEFT JOIN LATERAL (
-                SELECT s.cost_byn, s.cost_usd FROM cost_calc_mv s
-                WHERE s.calc_sign = 'ПФКСС' AND s.model = c.model AND s.articul = c.articul
-                  AND coalesce(s.plan_id, '') = coalesce(c.plan_id, '')
-                  AND coalesce(s.zadanie, '') = coalesce(c.zadanie, '')
-                  AND s.cost_byn > 0
-                ORDER BY s.calc_date DESC LIMIT 1
-            ) pf ON TRUE
-        ),
+        -- Лист «Отклонения по артикулам» — строки ТЕКУЩЕГО периода, текст
+        -- общий с выгрузкой в Excel (deviations()).
+        {_deviation_ctes(where(), DEVIATION_ROW_LIMIT)},
         tiles AS (
             SELECT {sums}
             FROM period
@@ -550,39 +683,6 @@ async def dashboard(
             GROUP BY 1 HAVING bool_or(k = 'cur')
             ORDER BY sum(rev_b - cost_b) FILTER (WHERE k = 'cur') DESC NULLS LAST
             LIMIT {MATRIX_ROW_LIMIT + 1}
-        ),
-        -- Отклонения по артикулам: три себестоимости единицы на одной строке.
-        -- Только текущий период (k = 'cur') — сравнение здесь между базами
-        -- расчёта, а не между периодами.
-        --
-        -- Плановая берётся из справочника моделей, а не из строк выпуска:
-        -- она задана на модель+артикул целиком. Умножаем на объём здесь же,
-        -- чтобы «плановая себестоимость выпуска» считалась тем же весом, что
-        -- нормативная и фактическая.
-        deviations AS (
-            SELECT
-                coalesce(d.plan_id, '')                   AS plan_id,
-                coalesce(d.model, '')                     AS model,
-                coalesce(d.articul, '')                   AS articul,
-                coalesce(d.zadanie, '')                   AS zadanie,
-                min(d.model_name)                         AS name,
-                sum(d.vol)                                AS vol,
-                sum(d.vol * pp.plan_price)                AS plan_total,
-                sum(d.vol) FILTER (WHERE pp.plan_price IS NOT NULL) AS plan_vol,
-                sum(d.cost_norm)                          AS norm_total,
-                sum(d.cost_fact)                          AS fact_total,
-                sum(d.vol) FILTER (WHERE d.cost_fact IS NOT NULL) AS fact_vol,
-                sum(d.rev)                                AS rev_total,
-                sum(d.cost_kpss)                          AS kpss_total,
-                sum(d.vol_kpss)                           AS kpss_vol,
-                sum(d.cost_pfkss)                         AS pfkss_total,
-                sum(d.vol_pfkss)                          AS pfkss_vol
-            FROM dev_src d
-            LEFT JOIN cost_plan_prices pp
-                   ON pp.model = d.model AND pp.articul = d.articul
-            GROUP BY 1, 2, 3, 4
-            ORDER BY sum(d.vol) DESC NULLS LAST
-            LIMIT {DEVIATION_ROW_LIMIT + 1}
         )
         SELECT json_build_object(
             'tiles',      (SELECT row_to_json(t) FROM tiles t),
@@ -623,55 +723,8 @@ async def dashboard(
     matrix_truncated = len(payload["matrix"]) > MATRIX_ROW_LIMIT
     payload["matrix"] = payload["matrix"][:MATRIX_ROW_LIMIT]
 
-    # Лист отклонений: себестоимость ЕДИНИЦЫ по трём базам и отклонения между ними.
-    #
-    # Плановая и фактическая делятся на объём ТЕХ строк, где они есть (plan_vol,
-    # fact_vol), а не на весь выпуск артикула: иначе у артикула с планом на
-    # половине тиража плановая себестоимость единицы вышла бы вдвое меньше
-    # настоящей. Доля покрытия отдаётся рядом — цифра без неё обманчива.
-    deviations = payload.get("deviations") or []
-    dev_truncated = len(deviations) > DEVIATION_ROW_LIMIT
-    out_dev = []
-    for r in deviations[:DEVIATION_ROW_LIMIT]:
-        vol, plan_vol, fact_vol = r.get("vol"), r.get("plan_vol"), r.get("fact_vol")
-        unit_norm = _ratio(r.get("norm_total"), vol)
-        unit_fact = _ratio(r.get("fact_total"), fact_vol)
-        unit_pfkss = _ratio(r.get("pfkss_total"), r.get("pfkss_vol"))
-        # Плановая: КПСС того же задания, если он есть, иначе карточка модели в
-        # Лисе (решение заказчика 04.09.2026). Источник обязан быть виден в
-        # таблице — это разные вещи: КПСС считан по нормам конкретного задания,
-        # карточка проставлена человеком один раз при заведении модели.
-        unit_kpss = _ratio(r.get("kpss_total"), r.get("kpss_vol"))
-        unit_card = _ratio(r.get("plan_total"), plan_vol)
-        unit_plan = unit_kpss if unit_kpss is not None else unit_card
-        plan_source = "КПСС" if unit_kpss is not None else ("карточка" if unit_card is not None else None)
-        # Нормативная на том же объёме, что плановая и фактическая — чтобы
-        # отклонения считались на сопоставимых величинах, а не «норматив по всему
-        # тиражу против плана по половине».
-        rel = lambda a, b: (None if a is None or not b else 100.0 * (a / b - 1))
-        out_dev.append({
-            "plan_id": r.get("plan_id") or "",
-            "model": r.get("model") or "",
-            "articul": r.get("articul") or "",
-            "zadanie": r.get("zadanie") or "",
-            "name": r.get("name"),
-            "vol": None if vol is None else float(vol),
-            "unit_plan_byn": unit_plan,
-            "unit_plan_source": plan_source,
-            "unit_kpss_byn": unit_kpss,
-            "unit_card_byn": unit_card,
-            "unit_pfkss_byn": unit_pfkss,
-            "unit_norm_byn": unit_norm,
-            "unit_fact_byn": unit_fact,
-            "unit_price_byn": _ratio(r.get("rev_total"), vol),
-            # Отклонения — как в Power BI: «факт / план − 1».
-            "dev_norm_plan_pct": rel(unit_norm, unit_plan),
-            "dev_fact_plan_pct": rel(unit_fact, unit_plan),
-            "dev_fact_norm_pct": rel(unit_fact, unit_norm),
-            "plan_coverage_pct": _pct(plan_vol or 0, vol),
-            "fact_coverage_pct": _pct(fact_vol or 0, vol),
-        })
-    payload["deviations"] = out_dev
+    payload["deviations"], dev_truncated = _unit_deviations(
+        payload.get("deviations") or [], DEVIATION_ROW_LIMIT)
 
     options = payload.get("options") or {}
     options_truncated: list[str] = []

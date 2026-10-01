@@ -18,28 +18,106 @@ params:
   - vol_cur
   - unit_cost_norm_all_cur
   - unit_cost_fact_cur
-  - unit_cost_fact_dev_pct
+  - expressionType: SQL
+    sqlExpression: ({{ metric('dev_fact_norm_all_pct', 14) }}) / 100.0
+    label: dev_fact_norm_all_pct_f
+    hasCustomLabel: true
+    optionName: metric_mp5_dev_fact_norm_all_pct_f
+    aggregate: null
+    column: null
+    datasourceWarning: false
   - unit_cost_pfkss_cur
-  - fact_coverage_pct_cur
+  - expressionType: SQL
+    sqlExpression: ({{ metric('fact_coverage_pct_cur', 14) }}) / 100.0
+    label: fact_coverage_pct_cur_f
+    hasCustomLabel: true
+    optionName: metric_mp5_fact_coverage_pct_cur_f
+    aggregate: null
+    column: null
+    datasourceWarning: false
   - unit_price_cur
   all_columns: []
   percent_metrics: []
   order_by_cols: []
-  timeseries_limit_metric: vol_sort
+  timeseries_limit_metric: dev_fact_norm_all_sort
   order_desc: true
   row_limit: 500
   server_page_length: 25
   show_cell_bars: false
-  color_pn: true
+  color_pn: false
   table_timestamp_format: smart_date
   conditional_formatting:
-  - colorScheme: '#EFA1AA'
-    column: unit_cost_fact_dev_pct
+  - column: dev_fact_norm_all_pct_f
     operator: '>'
     targetValue: 0
-  column_config: {}
-  adhoc_filters: []
+    colorScheme: '#b42318'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+  - column: dev_fact_norm_all_pct_f
+    operator: <
+    targetValue: 0
+    colorScheme: '#0a7f3f'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+  - column: fact_coverage_pct_cur_f
+    operator: <
+    targetValue: 1
+    colorScheme: '#b42318'
+    objectFormatting: TEXT_COLOR
+    useGradient: false
+  column_config:
+    plan_id:
+      customColumnName: "\u2116 \u043F\u043B\u0430\u043D\u0430"
+    model_name:
+      customColumnName: "\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\
+        \u0438\u0435"
+    articul:
+      customColumnName: "\u0410\u0440\u0442\u0438\u043A\u0443\u043B"
+    zadanie:
+      customColumnName: "\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F"
+    vol_cur:
+      customColumnName: "\u0412\u044B\u043F\u0443\u0441\u043A, \u0448\u0442"
+      d3NumberFormat: ',.0f'
+    unit_cost_norm_all_cur:
+      customColumnName: "\u041D\u043E\u0440\u043C\u0430\u0442\u0438\u0432 (\u0424\u041A\
+        \u0421\u0421)"
+      d3NumberFormat: ',.2f'
+    unit_cost_fact_cur:
+      customColumnName: "\u0424\u0430\u043A\u0442 (\u0424\u041A\u0421\u0421)"
+      d3NumberFormat: ',.2f'
+    unit_cost_pfkss_cur:
+      customColumnName: "\u0424\u0430\u043A\u0442\u0438\u0447\u0435\u0441\u043A\u0430\
+        \u044F \u0441\u0435\u0431\u0435\u0441\u0442\u043E\u0438\u043C\u043E\u0441\u0442\
+        \u044C \u0440\u0430\u0441\u0446\u0435\u043D\u043A\u0438 (\u041F\u0424\u041A\
+        \u0421\u0421)"
+      d3NumberFormat: ',.2f'
+    unit_price_cur:
+      customColumnName: "\u041E\u0442\u043F\u0443\u0441\u043A\u043D\u0430\u044F \u0446\
+        \u0435\u043D\u0430"
+      d3NumberFormat: ',.2f'
+    dev_fact_norm_all_pct_f:
+      customColumnName: "\u041E\u0442\u043A\u043B\u043E\u043D\u0435\u043D\u0438\u0435\
+        \ \u0444\u0430\u043A\u0442 / \u043D\u043E\u0440\u043C\u0430\u0442\u0438\u0432\
+        , %"
+      d3NumberFormat: +,.1%
+    fact_coverage_pct_cur_f:
+      customColumnName: "\u0424\u0430\u043A\u0442 \u0433\u043E\u0434\u0435\u043D,\
+        \ % \u0432\u044B\u043F\u0443\u0441\u043A\u0430"
+      d3NumberFormat: ',.0%'
+  adhoc_filters:
+  - expressionType: SQL
+    clause: HAVING
+    sqlExpression: min(dev_rank) <= 500 AND coalesce(sum(vol_f) FILTER (WHERE k =
+      'cur'), 0) > 0
+    subject: null
+    operator: null
+    comparator: null
+    isExtra: false
+    isNew: false
+    filterOptionName: filter_mp5_dev_top500_fact
   extra_form_data: {}
+  page_length: 0
+  server_pagination: false
 query_context: null
 cache_timeout: null
 uuid: 8cf543e9-5430-4751-bd00-e97e1858b6f4

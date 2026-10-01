@@ -3,6 +3,7 @@ from __future__ import annotations
 COST_PERMISSIONS: dict[str, str] = {
     "cost:view":           "Просмотр таблицы себестоимости",
     "cost:edit_price":     "Редактирование цен (save-changes / save-batch)",
+    "cost:manual_price":   "Ручные опт и розница у ПФКСС без привязки к уровню цен (маркетплейсы)",
     "cost:approve":        "Согласование калькуляций (финальное утверждение)",
     "cost:peo_mark":       "Отметки ПЭО (простановка статуса по строкам)",
     "cost:edit_materials": "Редактирование материалов (calculation drafts)",

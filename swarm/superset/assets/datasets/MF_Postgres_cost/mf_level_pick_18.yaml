@@ -1,0 +1,84 @@
+table_name: mf_level_pick
+main_dttm_col: null
+currency_code_column: null
+description: "MP5: \u0441\u043F\u0440\u0430\u0432\u043E\u0447\u043D\u0438\u043A \u0437\
+  \u043D\u0430\u0447\u0435\u043D\u0438\u0439 \u0444\u0438\u043B\u044C\u0442\u0440\u0430\
+  \ \xAB\u0423\u0440\u043E\u0432\u0435\u043D\u044C \u043C\u0430\u0442\u0440\u0438\u0446\
+  \u044B\xBB \u0434\u0430\u0448\u0431\u043E\u0440\u0434\u0430 \xAB\u041C\u0430\u0440\
+  \u0436\u0430 \u0432\u044B\u043F\u0443\u0441\u043A\u0430\xBB \u2014 \u0443\u0440\u043E\
+  \u0432\u043D\u0438 \u043F\u0440\u043E\u0432\u0430\u043B\u0438\u0432\u0430\u043D\u0438\
+  \u044F \u043C\u0430\u0442\u0440\u0438\u0446\u044B \u0444\u0440\u043E\u043D\u0442\
+  \u0430 (MATRIX_LEVELS \u0432 app/margin.py): Level 01 \u2026 Level 05, \u0410\u0440\
+  \u0442\u0438\u043A\u0443\u043B, \u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F\
+  ."
+default_endpoint: null
+offset: 0
+cache_timeout: 3600
+catalog: cost
+schema: public
+sql: "SELECT 'Level 01' AS level_pick, 1 AS sort_order\nUNION ALL SELECT 'Level 02',\
+  \ 2\nUNION ALL SELECT 'Level 03', 3\nUNION ALL SELECT 'Level 04', 4\nUNION ALL SELECT\
+  \ 'Level 05', 5\nUNION ALL SELECT '\u0410\u0440\u0442\u0438\u043A\u0443\u043B',\
+  \ 6\nUNION ALL SELECT '\u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F', 7"
+params: null
+template_params: null
+filter_select_enabled: true
+fetch_values_predicate: null
+extra: null
+normalize_columns: false
+always_filter_main_dttm: false
+folders: null
+uuid: 1a379220-f4b6-4f29-964b-94d45c0dfa21
+metrics:
+- metric_name: level_sort
+  verbose_name: "\u041F\u043E\u0440\u044F\u0434\u043E\u043A \u0443\u0440\u043E\u0432\
+    \u043D\u044F"
+  metric_type: null
+  expression: min(sort_order)
+  description: "MP5: \u043F\u043E\u0440\u044F\u0434\u043E\u043A \u0437\u043D\u0430\
+    \u0447\u0435\u043D\u0438\u0439 \u0444\u0438\u043B\u044C\u0442\u0440\u0430 \xAB\
+    \u0423\u0440\u043E\u0432\u0435\u043D\u044C \u043C\u0430\u0442\u0440\u0438\u0446\
+    \u044B\xBB \u2014 Level 01 \u2026 Level 05, \u0410\u0440\u0442\u0438\u043A\u0443\
+    \u043B, \u2116 \u0437\u0430\u0434\u0430\u043D\u0438\u044F."
+  d3format: ',.0f'
+  currency: null
+  extra: null
+  warning_text: null
+- metric_name: count
+  verbose_name: COUNT(*)
+  metric_type: count
+  expression: COUNT(*)
+  description: null
+  d3format: null
+  currency: null
+  extra: null
+  warning_text: null
+columns:
+- column_name: sort_order
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: INTEGER
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+- column_name: level_pick
+  verbose_name: null
+  is_dttm: false
+  is_active: true
+  type: STRING
+  advanced_data_type: null
+  groupby: true
+  filterable: true
+  expression: null
+  description: null
+  python_date_format: null
+  datetime_format: null
+  extra: null
+version: 1.0.0
+database_uuid: 9f1d4a10-0003-4c00-8b00-000000000003

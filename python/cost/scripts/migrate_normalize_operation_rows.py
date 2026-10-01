@@ -61,9 +61,11 @@ async def _migrate_version(conn, version_id: int, dry_run: bool) -> int:
         if dry_run:
             continue
         set_clause = ", ".join(f'"{c}" = ${i+2}' for i, c in enumerate(_NORMALIZED_COLUMNS))
+        # _num_param: выведенная цена операции — float, а цена с 0061 без
+        # масштаба; без него в базу легло бы двоичное разложение float.
         await conn.execute(
             f"""UPDATE cost_calc_version_rows SET {set_clause} WHERE id=$1""",
-            row["id"], *[row.get(c) for c in _NORMALIZED_COLUMNS],
+            row["id"], *[db._num_param(c, row.get(c)) for c in _NORMALIZED_COLUMNS],
         )
     return touched
 

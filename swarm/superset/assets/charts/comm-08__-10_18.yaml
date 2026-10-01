@@ -34,7 +34,7 @@ params:
   - decor_sum
   - knitting_sum
   - other_sum
-  x_axis: brand_manager
+  x_axis: struct_label
   timeseries_limit_metric: cost_sort_key
   x_axis_sort: cost_sort_key
   x_axis_sort_asc: false
@@ -47,8 +47,25 @@ params:
   stack: Stack
   y_axis_title: BYN
   y_axis_format: ',.0f'
-  legend_orientation: right
   orientation: vertical
+  legendOrientation: right
+  legendType: plain
+  show_legend: false
+  y_axis_title_margin: 50
+  y_axis_title_position: Left
+  adhoc_filters:
+  - clause: WHERE
+    expressionType: SIMPLE
+    subject: struct_label
+    operator: IS NOT NULL
+    operatorId: IS_NOT_NULL
+    comparator: null
+    isExtra: false
+    isNew: false
+    filterOptionName: filter_cp3_struct_label_notnull
+  xAxisLabelRotation: 60
+  xAxisLabelInterval: 0
+  legendMargin: null
 query_context: null
 cache_timeout: null
 uuid: 172a9c5e-68b8-449e-a2e8-84f46f4e200d
