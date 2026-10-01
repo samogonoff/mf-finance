@@ -151,7 +151,13 @@
               <td class="col-num">{{ formatDate(pc['дата расчета']) }}</td>
               <td class="col-num num">{{ fmt(pc['Курс на дату расчета']) }}</td>
 
-              <td>{{ pc['Уровень цен'] || '—' }}</td>
+              <!-- Ручная цена ПФКСС (задача 661209, миграция 0060): пара опт+розница
+                   могла не совпасть с уровнем — тогда в Лису уйдёт прейскурант без
+                   уровня, s_modeli.PRICE_LEVEL_ID процедура не тронет. -->
+              <td :title="pc.price_manual ? 'Цена введена вручную, без привязки к уровню. Без уровня прейскурант в Лису уйдёт с price_level_id = 0' : ''">
+                {{ pc['Уровень цен'] || (pc.price_manual ? 'без уровня' : '—') }}
+                <span v-if="pc.price_manual" class="manual-price-tag">✎ ручная</span>
+              </td>
               <td class="col-num num">{{ fmt(pc['Розничная цена по уровню, руб.']) }}</td>
               <td class="col-num num">{{ fmt(pc['Отпускная цена по уровню, руб']) }}</td>
               <td class="col-num num num-strong">{{ fmt(pc['Себестоимость, руб.']) }}</td>
@@ -683,5 +689,9 @@ onMounted(async () => {
 /* Filter card must not clip the absolutely-positioned dropdown */
 .page-approvals > section.card:first-of-type {
   overflow: visible;
+}
+.manual-price-tag {
+  display: inline-block; margin-left: 4px; padding: 0 4px; border-radius: 3px;
+  background: var(--accent-soft); color: var(--accent); font-size: 10px; font-weight: 600; white-space: nowrap;
 }
 </style>

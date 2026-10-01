@@ -1361,12 +1361,13 @@ async def upsert_pending_change(row_data: dict, username: str) -> int:
         row = await conn.fetchrow(
             f"""
             INSERT INTO cost_price_pending
-                ({", ".join(_PENDING_COLS_QUOTED)}, username, "Комментарий")
-            VALUES ({", ".join(_PENDING_PLACEHOLDERS)}, ${len(_PENDING_CACHE_COLS) + 1}, ${len(_PENDING_CACHE_COLS) + 2})
+                ({", ".join(_PENDING_COLS_QUOTED)}, username, "Комментарий", price_manual)
+            VALUES ({", ".join(_PENDING_PLACEHOLDERS)}, ${len(_PENDING_CACHE_COLS) + 1}, ${len(_PENDING_CACHE_COLS) + 2}, ${len(_PENDING_CACHE_COLS) + 3})
             ON CONFLICT ("Модель", "Артикул", "PLAN_ID", "Признак калькуляции") DO UPDATE SET
                 {set_expr}
                 username = EXCLUDED.username,
                 "Комментарий" = EXCLUDED."Комментарий",
+                price_manual = EXCLUDED.price_manual,
                 reviewed_by = NULL,
                 reviewed_at = NULL,
                 review_comment = NULL
@@ -1375,6 +1376,7 @@ async def upsert_pending_change(row_data: dict, username: str) -> int:
             *values,
             username,
             comment,
+            bool(row_data.get("price_manual")),
         )
         return row["id"]
 
@@ -1393,15 +1395,19 @@ async def upsert_pending_changes_batch(changes: list[dict], username: str) -> li
             if set_expr:
                 set_expr += ", "
 
+            # price_manual — ручная цена без привязки к уровню (миграция 0060).
+            # Колонка NOT NULL, поэтому отсутствие признака пишем явным false,
+            # а не NULL из row_data.get().
             row = await conn.fetchrow(
                 f"""
                 INSERT INTO cost_price_pending
-                    ({", ".join(_PENDING_COLS_QUOTED)}, username, "Комментарий")
-                VALUES ({", ".join(_PENDING_PLACEHOLDERS)}, ${len(_PENDING_CACHE_COLS) + 1}, ${len(_PENDING_CACHE_COLS) + 2})
+                    ({", ".join(_PENDING_COLS_QUOTED)}, username, "Комментарий", price_manual)
+                VALUES ({", ".join(_PENDING_PLACEHOLDERS)}, ${len(_PENDING_CACHE_COLS) + 1}, ${len(_PENDING_CACHE_COLS) + 2}, ${len(_PENDING_CACHE_COLS) + 3})
                 ON CONFLICT ("Модель", "Артикул", "PLAN_ID", "Признак калькуляции") DO UPDATE SET
                     {set_expr}
                     username = EXCLUDED.username,
                     "Комментарий" = EXCLUDED."Комментарий",
+                    price_manual = EXCLUDED.price_manual,
                     reviewed_by = NULL,
                     reviewed_at = NULL,
                     review_comment = NULL
@@ -1410,6 +1416,7 @@ async def upsert_pending_changes_batch(changes: list[dict], username: str) -> li
                 *values,
                 username,
                 comment,
+                bool(c.get("price_manual")),
             )
             ids.append(row["id"])
     return ids

@@ -735,6 +735,7 @@
                 {{ plannedProfitabilityPct(row) == null ? '—' : plannedProfitabilityPct(row)!.toFixed(1) + '%' }}
               </td>
               <td v-if="ck === 'avg_retail_rub' && isVisible('avg_retail_rub')">
+                <div class="retail-cell">
                 <select
                   class="price-select"
                   :class="{ 'price-select--no-wholesale': isRetailWithoutWholesale(row) }"
@@ -745,8 +746,20 @@
                   @change="onRetailPriceSelect(row, ($event.target as HTMLSelectElement).value)"
                 >
                   <option value="">{{ isRetailWithoutWholesale(row) ? `— (${fmt(row['avg_Розничная цена по уровню, руб.'])})` : '—' }}</option>
+                  <!-- Розница, которой нет в справочнике уровней (ручная цена, задача
+                       661209): без своего пункта селект показал бы пустоту. -->
+                  <option v-if="isCustomRetail(row)" :value="Number(row['avg_Розничная цена по уровню, руб.'])">{{ fmt(row['avg_Розничная цена по уровню, руб.']) }} ✎</option>
                   <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp">{{ fmt(rp) }}</option>
                 </select>
+                <button
+                  v-if="canManualPrice(row)"
+                  type="button"
+                  class="manual-price-btn"
+                  :class="{ 'manual-price-btn--on': row._price_manual }"
+                  :title="MANUAL_PRICE_HINT"
+                  @click.stop="openManualPrice(row)"
+                >✎</button>
+                </div>
               </td>
               <td v-if="ck === 'avg_rate' && isVisible('avg_rate')" class="col-num num">{{ row['avg_Курс на дату расчета'] != null ? fmt(row['avg_Курс на дату расчета']) : '—' }}</td>
               <td v-if="ck === 'retail_markup' && isVisible('retail_markup')">
@@ -759,7 +772,7 @@
                   @change="onMarkupSelect(row, ($event.target as HTMLSelectElement).value)"
                 >
                   <option value="">—</option>
-                  <option v-for="opt in getMarkupOptions(row)" :key="opt.value" :value="opt.value">
+                  <option v-for="opt in markupOptionsFor(row)" :key="opt.value" :value="opt.value">
                     {{ opt.label }}
                   </option>
                 </select>
@@ -842,7 +855,8 @@
                 >{{ reg713State(row).icon }}</span>
               </td>
               <td v-if="ck === 'avg_wholesale' && isVisible('avg_wholesale') && !showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, руб']) }}</td>
-              <td v-if="ck === 'price_level' && isVisible('price_level')">{{ row['Уровень цен'] || '—' }}</td>
+              <td v-if="ck === 'price_level' && isVisible('price_level')"
+                  :title="!row['Уровень цен'] && row._price_manual ? MANUAL_NO_LEVEL_HINT : ''">{{ row['Уровень цен'] || (row._price_manual ? 'без уровня ✎' : '—') }}</td>
               <td v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Розничная цена по уровню, USD.']) }}</td>
               <td v-if="ck === 'avg_retail_usd' && isVisible('avg_retail_usd') && showUSD" class="col-num num">{{ fmt(row['avg_Отпускная цена по уровню, USD.']) }}</td>
               <td v-if="ck === 'sum_materials' && isVisible('sum_materials') && !showUSD" class="col-num num">{{ fmt(row['sum_Основные материалы, руб.']) }}</td>
@@ -1645,7 +1659,10 @@
                   <td>{{ pc['Модель'] || pc.model || '—' }}</td>
                   <td>{{ pc['Артикул'] || pc.articul || '—' }}</td>
                   <td>{{ pc['PLAN_ID'] || '—' }}</td>
-                  <td>{{ pc['Уровень цен'] || pc.price_level || '—' }}</td>
+                  <td>
+                    {{ pc['Уровень цен'] || pc.price_level || (pc.price_manual ? 'без уровня' : '—') }}
+                    <span v-if="pc.price_manual" class="manual-price-tag" :title="MANUAL_PENDING_HINT">✎ ручная</span>
+                  </td>
                   <td class="col-num num">{{ fmt(pc['Розничная цена по уровню, руб.'] || pc.retail_rub) }}</td>
                   <td class="col-num num">{{ fmt(pc['Отпускная цена по уровню, руб'] || pc.wholesale_rub) }}</td>
                   <td class="col-num num">{{ fmt(pc['Цена РФ']) }}</td>
@@ -2470,6 +2487,101 @@
             <button class="btn btn-primary btn-sm" :disabled="calcCopyBusy || !calcCopyTarget" @click="submitCalcCopy">
               {{ calcCopyBusy ? 'Создаём…' : 'Создать калькуляцию' }}
             </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Ручная цена ПФКСС (задача Б24 661209): опт и розница руками, без
+           привязки к уровню. Рентабельность и маржа — от максимальной
+           себестоимости по заданиям, той же, что уйдёт в DWH. -->
+      <div v-if="manualPrice" class="modal-overlay" @click.self="closeManualPrice">
+        <div class="modal-content manual-price-modal" style="max-width:560px" @click.stop>
+          <div class="modal-header">
+            <h2>Ручная цена</h2>
+            <button class="modal-close" @click="closeManualPrice">×</button>
+          </div>
+          <div style="padding:var(--sp-4) var(--sp-5)">
+            <div class="manual-price-ctx">
+              <div><b>Модель:</b> {{ manualPrice.row['Модель'] }} · <b>Артикул:</b> {{ manualPrice.row['Артикул'] }}</div>
+              <div><b>План:</b> {{ manualPrice.row['PLAN_ID'] || '—' }} · <b>Признак:</b> {{ manualPrice.row['Признак калькуляции'] }}
+                · <b>НДС:</b> {{ manualVat > 0 ? manualVat + '%' : 'не задан' }}</div>
+            </div>
+
+            <div class="manual-price-grid">
+              <label for="mp-retail">Розница, руб</label>
+              <input id="mp-retail" class="manual-price-input" type="number" step="0.01" min="0"
+                list="mp-retail-list" :value="manualPrice.retail ?? ''"
+                @input="onManualRetailInput(($event.target as HTMLInputElement).value)" />
+              <datalist id="mp-retail-list">
+                <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp" />
+              </datalist>
+
+              <label for="mp-wholesale">Опт, руб</label>
+              <input id="mp-wholesale" class="manual-price-input" type="number" step="0.01" min="0"
+                :value="manualPrice.wholesale ?? ''"
+                @input="onManualWholesaleInput(($event.target as HTMLInputElement).value)" />
+
+              <label for="mp-markup">Розничная наценка, %</label>
+              <div class="manual-price-markup">
+                <input id="mp-markup" class="manual-price-input" type="number" step="0.1"
+                  :value="manualMetrics?.markupPct != null ? manualMetrics.markupPct.toFixed(2) : ''"
+                  :disabled="!(manualVat > 0) || !(Number(manualPrice.retail) > 0)"
+                  :title="manualVat > 0 ? 'Введите наценку — опт пересчитается от розницы' : 'НДС строки не задан — наценку не посчитать'"
+                  @change="onManualMarkupInput($event.target as HTMLInputElement)" />
+                <select v-if="manualLevelOptions.length" class="manual-price-input"
+                  :value="manualMatchedLevel?.name ?? ''"
+                  @change="onManualLevelPick(($event.target as HTMLSelectElement).value)">
+                  <option value="">варианты уровня…</option>
+                  <option v-for="o in manualLevelOptions" :key="o.level.name" :value="o.level.name">
+                    {{ o.markupPct != null ? o.markupPct.toFixed(1) + '%' : '—' }} · опт {{ fmt(o.level.price_type1) }} · {{ o.level.name }}
+                  </option>
+                </select>
+              </div>
+            </div>
+
+            <table class="manual-price-metrics">
+              <tbody>
+                <tr>
+                  <td>Себестоимость, макс. по заданиям</td>
+                  <td class="num">
+                    <template v-if="manualPrice.costLoading">…</template>
+                    <template v-else>{{ manualPrice.costRub != null ? fmt(manualPrice.costRub) + ' руб' : '—' }}</template>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Рентабельность</td>
+                  <td class="num" :class="manualMetrics?.profitPct == null ? '' : (manualMetrics.profitPct >= 0 ? 'delta-pos' : 'delta-neg')">
+                    {{ manualMetrics?.profitPct != null ? fmt(manualMetrics.profitRub) + ' руб · ' + manualMetrics.profitPct.toFixed(1) + '%' : '—' }}
+                  </td>
+                </tr>
+                <tr>
+                  <td>Маржа</td>
+                  <td class="num">{{ manualMetrics?.marginPct != null ? manualMetrics.marginPct.toFixed(1) + '%' : '—' }}</td>
+                </tr>
+                <tr>
+                  <td>Цена для МП, рос. руб</td>
+                  <td class="num">{{ manualMetrics?.mpPrice != null ? fmt(manualMetrics.mpPrice) : '—' }}</td>
+                </tr>
+                <tr>
+                  <td>Уровень цен</td>
+                  <td>
+                    <template v-if="manualMatchedLevel">{{ manualMatchedLevel.name }}</template>
+                    <span v-else class="muted">нет уровня с такой парой опт + розница</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="muted manual-price-note">
+              <template v-if="manualMatchedLevel">Уровень уйдёт в Лису вместе с ценой, цены РФ/КЗ/УЗ подставятся из него.</template>
+              <template v-else>В Лису уйдёт прейскурант с оптом без уровня цен. Цены РФ/КЗ/УЗ без уровня не подставляются — проверьте их в строке.</template>
+              Цена действует на все задания калькуляции и уходит на согласование ПЭО кнопкой «Сохранить изменения».
+            </p>
+            <div v-if="manualPrice.costNote" class="muted manual-price-note">{{ manualPrice.costNote }}</div>
+            <div v-if="manualPrice.error" class="cost-error" style="margin-top:var(--sp-3)">{{ manualPrice.error }}</div>
+          </div>
+          <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:var(--sp-3); padding:var(--sp-3) var(--sp-5)">
+            <button class="btn btn-ghost btn-sm" @click="closeManualPrice">Отмена</button>
+            <button class="btn btn-primary btn-sm" @click="applyManualPrice">Применить</button>
           </div>
         </div>
       </div>
@@ -5521,6 +5633,9 @@ const PRICE_DRAFT_FIELDS = [
   'avg_Розничная цена по уровню, USD.',
   'avg_Отпускная цена по уровню, USD.',
   'mp_price_rub',
+  // Признак ручной цены (задача 661209) — без него черновик после смены
+  // фильтра ушёл бы на сохранение как обычная цена и мимо проверки сервера.
+  '_price_manual',
 ];
 
 const isRowUnsaved = (row: any): boolean => changedRows.has(calcRowKey(row));
@@ -6777,6 +6892,7 @@ const onRetailPriceSelect = (row: any, value: string) => {
     r["avg_Розничная цена по уровню, USD."] = 0;
     r["avg_Отпускная цена по уровню, USD."] = 0;
     r["mp_price_rub"] = null;
+    r._price_manual = false;
     markupSelections[calcRowKey(r)] = "";
     changedRows.set(calcRowKey(r), r);
   };
@@ -6787,6 +6903,8 @@ const onRetailPriceSelect = (row: any, value: string) => {
     r["avg_Розничная цена по уровню, USD."] = 0;
     r["avg_Отпускная цена по уровню, USD."] = 0;
     r["mp_price_rub"] = null;
+    // Выбор из списка — снова цена по уровню, а не ручная (задача 661209).
+    r._price_manual = false;
     markupSelections[calcRowKey(r)] = "";
     changedRows.set(calcRowKey(r), r);
   };
@@ -6828,13 +6946,7 @@ const onMarkupSelect = async (row: any, markupValue: string) => {
       break;
     }
   }
-  // Курс RUB→USD
-  let rate = Number(row["avg_Курс на дату расчета"] || 0);
-  if (rate === 0) rate = _deriveRate(row);
-  if (rate === 0) {
-    for (const r of allAggregated.value) { rate = _deriveRate(r); if (rate > 0) break; }
-  }
-  if (rate === 0) rate = 92;
+  const rate = usdRateFor(row);
 
   const r2 = (v: number) => Math.round(v * 100) / 100;
 
@@ -6861,6 +6973,7 @@ const onMarkupSelect = async (row: any, markupValue: string) => {
     r["avg_Розничная цена по уровню, USD."] = retailUsd;
     r["avg_Отпускная цена по уровню, USD."] = wholesaleUsd;
     r["mp_price_rub"] = computeMpPriceJs(r);
+    r._price_manual = false;
     if (matchedLevel) {
       priceRF[k] = matchedLevel.price_type4;
       priceKZ[k] = matchedLevel.price_type5;
@@ -6870,6 +6983,243 @@ const onMarkupSelect = async (row: any, markupValue: string) => {
     changedRows.set(k, r);
   }
 };
+
+/** Курс RUB→USD строки: из калькуляции, иначе из её цен, иначе из любой строки
+ *  выдачи; последний запасной — 92, как было в `onMarkupSelect`. */
+function usdRateFor(row: any): number {
+  let rate = Number(row["avg_Курс на дату расчета"] || 0);
+  if (rate === 0) rate = _deriveRate(row);
+  if (rate === 0) {
+    for (const r of allAggregated.value) { rate = _deriveRate(r); if (rate > 0) break; }
+  }
+  return rate === 0 ? 92 : rate;
+}
+
+// ── Ручная цена ПФКСС (задача Б24 661209, миграция 0060) ──────────────────────
+//
+// Роль «Бренд-менеджер ТЕКС» (право cost:manual_price) ставит опт и розницу руками,
+// без привязки к уровню справочника — так расценивают товар для маркетплейсов.
+// Наценка либо выбирается из вариантов уровня с этой розницей, либо
+// пересчитывается от введённого опта. Уровень цен подбирается по ПАРЕ
+// опт+розница; не совпало — уровень пустой, и процедура Лисы получит
+// price_level_id = 0: прейскурант создаст, s_modeli.PRICE_LEVEL_ID не тронет.
+// Сервер подбирает уровень заново (`_vet_manual_prices`), здесь — то же правило
+// для показа. Рентабельность и маржа — от максимальной себестоимости по заданиям
+// (`POST /max-calc-cost` → `get_max_calc_cost`), той же, что уйдёт в DWH: цена
+// ставится на калькуляцию и действует на все её задания.
+
+const MANUAL_PRICE_CALC_SIGN = 'ПФКСС';
+const MANUAL_PRICE_HINT = 'Ручная цена: опт и розница без привязки к уровню цен';
+const MANUAL_NO_LEVEL_HINT = 'Цена введена вручную и не совпала ни с одним уровнем — в Лису уйдёт без уровня';
+const MANUAL_PENDING_HINT = 'Цена введена вручную. Без уровня прейскурант в Лису уйдёт с price_level_id = 0';
+
+const canManualPrice = (row: any): boolean =>
+  can('cost:manual_price')
+  && (row?.['Признак калькуляции'] ?? '').toString().trim() === MANUAL_PRICE_CALC_SIGN
+  && !isRowLocked(row);
+
+const _r2 = (v: number) => Math.round(v * 100) / 100;
+
+const retailPriceSet = computed(() => new Set(uniqueRetailPrices.value.map(p => _r2(Number(p)))));
+
+/** Розница строки есть, но её нет в справочнике уровней — пункта в селекте нет. */
+const isCustomRetail = (row: any): boolean => {
+  const retail = Number(row?.['avg_Розничная цена по уровню, руб.']);
+  return retail > 0 && !isRetailWithoutWholesale(row) && !retailPriceSet.value.has(_r2(retail));
+};
+
+/** Варианты наценки для селекта строки плюс текущая, если её среди них нет:
+ *  у ручного опта наценка не совпадает ни с одним уровнем, и селект показал бы
+ *  пустоту. `getMarkupOptions` не трогаем — по нему идёт автоподбор. */
+function markupOptionsFor(row: any): { value: string; label: string }[] {
+  const opts = getMarkupOptions(row);
+  const cur = markupSelections[calcRowKey(row)];
+  if (cur && !opts.some(o => o.value === cur)) {
+    return [...opts, { value: cur, label: `${Number(cur).toFixed(1)}% ✎` }];
+  }
+  return opts;
+}
+
+const manualPrice = ref<{
+  row: any;
+  retail: number | null;
+  wholesale: number | null;
+  costRub: number | null;
+  costLoading: boolean;
+  costNote: string;
+  error: string;
+} | null>(null);
+
+const manualVat = computed(() => Number(manualPrice.value?.row?.['avg_Ставка НДС'] || 0));
+
+/** Уровень, у которого розница и опт ровно такие (первый по имени, как на сервере). */
+const manualMatchedLevel = computed<PriceLevel | null>(() => {
+  const s = manualPrice.value;
+  if (!s) return null;
+  const retail = _r2(Number(s.retail) || 0);
+  const wholesale = _r2(Number(s.wholesale) || 0);
+  if (retail <= 0 || wholesale <= 0) return null;
+  return priceLevels.value.find(l => _r2(l.price_type3) === retail && _r2(l.price_type1) === wholesale) ?? null;
+});
+
+/** Уровни с введённой розницей — «варианты наценки», как в селекте таблицы. */
+const manualLevelOptions = computed(() => {
+  const s = manualPrice.value;
+  if (!s) return [];
+  const retail = _r2(Number(s.retail) || 0);
+  if (retail <= 0) return [];
+  const vat = manualVat.value;
+  return priceLevels.value
+    .filter(l => _r2(l.price_type3) === retail && l.price_type1 > 0)
+    .map(l => ({ level: l, markupPct: vat > 0 ? ((retail / (100 + vat) * 100) / l.price_type1 - 1) * 100 : null }))
+    .sort((a, b) => a.level.price_type1 - b.level.price_type1);
+});
+
+const manualMetrics = computed(() => {
+  const s = manualPrice.value;
+  if (!s) return null;
+  const retail = Number(s.retail) || 0;
+  const wholesale = Number(s.wholesale) || 0;
+  const vat = manualVat.value;
+  const cost = Number(s.costRub) || 0;
+  // Наценка — та же формула, что `computeMarkupFromRow`: без НДС она обращается
+  // в отношение розницы к опту, поэтому при пустой ставке её не показываем.
+  const markupPct = retail > 0 && wholesale > 0 && vat > 0
+    ? ((retail / (100 + vat) * 100) / wholesale - 1) * 100 : null;
+  const profitRub = wholesale > 0 && cost > 0 ? wholesale - cost : null;
+  return {
+    markupPct,
+    profitRub,
+    profitPct: profitRub != null ? profitRub / cost * 100 : null,
+    marginPct: profitRub != null ? profitRub / wholesale * 100 : null,
+    mpPrice: wholesale > 0 ? computeMpPriceJs({ ...s.row, 'avg_Отпускная цена по уровню, руб': wholesale }) : null,
+  };
+});
+
+async function openManualPrice(row: any) {
+  if (!canManualPrice(row)) return;
+  const retail = Number(row['avg_Розничная цена по уровню, руб.']) || null;
+  const wholesale = Number(row['avg_Отпускная цена по уровню, руб']) || null;
+  const state = { row, retail, wholesale, costRub: null as number | null, costLoading: true, costNote: '', error: '' };
+  manualPrice.value = state;
+  const rowCost = Number(row['sum_Себестоимость, руб.']) || null;
+  try {
+    const res = await $fetch<{ data: { rub: number; usd: number }[] }>(
+      `${apiBase.value}/api/cost/max-calc-cost`,
+      {
+        method: 'POST',
+        headers: fetchHeaders.value,
+        body: { keys: [{ model: row['Модель'], articul: row['Артикул'], calc_sign: row['Признак калькуляции'], plan_id: row['PLAN_ID'] }] },
+      },
+    );
+    if (manualPrice.value?.row !== row) return;
+    const hit = res.data?.[0];
+    if (hit && hit.rub > 0) {
+      manualPrice.value.costRub = hit.rub;
+      if (rowCost != null && Math.abs(hit.rub - rowCost) >= 0.005) {
+        manualPrice.value.costNote = `У задания в этой строке себестоимость ${fmt(rowCost)} руб — расчёт идёт от максимальной по заданиям, она же уйдёт в DWH.`;
+      }
+    } else {
+      manualPrice.value.costRub = rowCost;
+      manualPrice.value.costNote = 'Максимум по заданиям не найден — показана себестоимость задания этой строки.';
+    }
+  } catch (e: any) {
+    if (manualPrice.value?.row !== row) return;
+    manualPrice.value.costRub = rowCost;
+    manualPrice.value.costNote = `Максимум по заданиям не получен (${e?.data?.detail || e?.message || e}) — показана себестоимость задания этой строки.`;
+  } finally {
+    if (manualPrice.value?.row === row) manualPrice.value.costLoading = false;
+  }
+}
+
+function closeManualPrice() {
+  manualPrice.value = null;
+}
+
+const _parsePrice = (value: string): number | null => {
+  const n = parseFloat(String(value).replace(',', '.'));
+  return isFinite(n) && n > 0 ? n : null;
+};
+
+function onManualRetailInput(value: string) {
+  if (!manualPrice.value) return;
+  manualPrice.value.retail = _parsePrice(value);
+  manualPrice.value.error = '';
+}
+
+/** Опт руками — наценка пересчитывается от него (она вычисляемая, см. manualMetrics). */
+function onManualWholesaleInput(value: string) {
+  if (!manualPrice.value) return;
+  manualPrice.value.wholesale = _parsePrice(value);
+  manualPrice.value.error = '';
+}
+
+/** Наценка руками — опт от розницы без НДС, как в `onMarkupSelect` без уровня.
+ *
+ *  Опт округляется до копейки, поэтому фактическая наценка отличается от
+ *  введённой (45 → 45,20). Поле переписываем фактической явно: если опт после
+ *  округления не изменился, Vue поле не перерисует и в нём останется «45». */
+function onManualMarkupInput(el: HTMLInputElement) {
+  const s = manualPrice.value;
+  if (!s) return;
+  const pct = parseFloat(String(el.value).replace(',', '.'));
+  const retail = Number(s.retail) || 0;
+  const vat = manualVat.value;
+  if (isFinite(pct) && pct > -100 && retail > 0 && vat > 0) {
+    s.wholesale = _r2((retail / (100 + vat) * 100) / (1 + pct / 100));
+    s.error = '';
+  }
+  const actual = manualMetrics.value?.markupPct;
+  el.value = actual != null ? actual.toFixed(2) : '';
+}
+
+/** Вариант из уровней с этой розницей — опт берётся из уровня. */
+function onManualLevelPick(name: string) {
+  const s = manualPrice.value;
+  if (!s || !name) return;
+  const opt = manualLevelOptions.value.find(o => o.level.name === name);
+  if (opt) {
+    s.wholesale = opt.level.price_type1;
+    s.error = '';
+  }
+}
+
+function applyManualPrice() {
+  const s = manualPrice.value;
+  if (!s) return;
+  const retail = _r2(Number(s.retail) || 0);
+  const wholesale = _r2(Number(s.wholesale) || 0);
+  if (retail <= 0 || wholesale <= 0) {
+    s.error = 'Задайте и розницу, и опт';
+    return;
+  }
+  if (isRowLocked(s.row)) {
+    s.error = lockReasonText(s.row) || 'Строка заблокирована для правки';
+    return;
+  }
+  const level = manualMatchedLevel.value;
+  const rate = usdRateFor(s.row);
+  const markup = manualMetrics.value?.markupPct != null ? manualMetrics.value.markupPct.toFixed(2) : '';
+  // Как и выбор из списка — на все задания калькуляции сразу.
+  for (const r of [s.row, ...findSiblingRows(s.row)]) {
+    const k = calcRowKey(r);
+    r['avg_Розничная цена по уровню, руб.'] = retail;
+    r['avg_Отпускная цена по уровню, руб'] = wholesale;
+    r['Уровень цен'] = level ? level.name : '';
+    r['avg_Розничная цена по уровню, USD.'] = _r2(retail / rate);
+    r['avg_Отпускная цена по уровню, USD.'] = _r2(wholesale / rate);
+    r['mp_price_rub'] = computeMpPriceJs(r);
+    r._price_manual = true;
+    if (level) {
+      priceRF[k] = level.price_type4;
+      priceKZ[k] = level.price_type5;
+      priceUZ[k] = level.price_type6;
+    }
+    if (markup) markupSelections[k] = markup; else delete markupSelections[k];
+    changedRows.set(k, r);
+  }
+  manualPrice.value = null;
+}
 
 const saveAllChanges = async () => {
   if (!savableChanges.value.length) return;
@@ -6884,6 +7234,9 @@ const saveAllChanges = async () => {
         model: row["Модель"],
         articul: row["Артикул"],
         price_level: row["Уровень цен"],
+        // Ручная цена (задача 661209): сервер проверит право и признак ПФКСС и
+        // подберёт уровень заново по паре опт+розница.
+        price_manual: !!row._price_manual,
         retail_rub: row["avg_Розничная цена по уровню, руб."],
         wholesale_rub: row["avg_Отпускная цена по уровню, руб"],
         retail_usd: row["avg_Розничная цена по уровню, USD."],
@@ -9597,6 +9950,38 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 }
 .data-table .price-select--no-wholesale { color: var(--text-muted); font-style: italic; }
 .data-table .price-select--no-wholesale option { color: var(--text-strong); font-style: normal; }
+/* Ручная цена ПФКСС (задача 661209): кнопка рядом с селектом розницы. */
+.data-table .retail-cell { display: flex; align-items: center; gap: 2px; }
+.data-table .retail-cell .price-select { flex: 1 1 auto; }
+.manual-price-btn {
+  flex: 0 0 auto; width: 20px; height: 24px; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--rd-2);
+  background: var(--bg-surface); color: var(--text-muted);
+  font-size: 12px; line-height: 1; cursor: pointer;
+}
+.manual-price-btn:hover { color: var(--accent); border-color: var(--accent); }
+.manual-price-btn--on { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.manual-price-tag {
+  display: inline-block; margin-left: 4px; padding: 0 4px; border-radius: 3px;
+  background: var(--accent-soft); color: var(--accent); font-size: 10px; font-weight: 600; white-space: nowrap;
+}
+.manual-price-ctx { font-size: 13px; margin-bottom: var(--sp-3); }
+.manual-price-grid {
+  display: grid; grid-template-columns: 170px 1fr; gap: var(--sp-2) var(--sp-3);
+  align-items: center; font-size: 13px; margin-bottom: var(--sp-3);
+}
+.manual-price-markup { display: flex; gap: var(--sp-2); }
+.manual-price-input {
+  height: 28px; padding: 0 6px; min-width: 0; width: 100%;
+  border: 1px solid var(--border); border-radius: var(--rd-2);
+  background: var(--bg-surface); color: var(--text-strong);
+  font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; font-size: 13px;
+}
+.manual-price-markup .manual-price-input:first-child { flex: 0 0 90px; }
+.manual-price-metrics { width: 100%; border-collapse: collapse; font-size: 13px; }
+.manual-price-metrics td { padding: 4px 0; border-top: 1px solid var(--border); }
+.manual-price-metrics td.num { text-align: right; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+.manual-price-note { font-size: 12px; margin: var(--sp-3) 0 0; }
 .data-table .price-input {
   width: 100%;
   min-width: 80px;

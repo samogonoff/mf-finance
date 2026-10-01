@@ -891,7 +891,7 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                             "Модель", "Артикул", "PLAN_ID", "Признак калькуляции",
                             "Уровень цен",
                             "Розничная цена по уровню, руб.", "Отпускная цена по уровню, руб",
-                            "Цена РФ", "Цена КЗ", "Цена УЗ", "Комментарий"
+                            "Цена РФ", "Цена КЗ", "Цена УЗ", "Комментарий", price_manual
                             FROM cost_price_pending
                             WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {pending_ph})
                             ORDER BY "Модель", "Артикул", "PLAN_ID", "Признак калькуляции", created_at DESC
@@ -909,6 +909,7 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                         "wholesale_rub": r["Отпускная цена по уровню, руб"],
                         "price_rf": r["Цена РФ"], "price_kz": r["Цена КЗ"], "price_uz": r["Цена УЗ"],
                         "comment": r["Комментарий"] or "",
+                        "price_manual": bool(r["price_manual"]),
                     }
 
             # 2. FinSandBox.CostHistory_Changes (OLAP, primary approved source)
@@ -1019,8 +1020,17 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 if not rec:
                     continue
 
+                # Уровень и цены — одно решение. Если запись несёт опт, уровень
+                # берётся из неё же, даже пустой: иначе рядом с ручной ценой без
+                # уровня (задача 661209, миграция 0060) или с ценой из ветки «уровень
+                # не найден» в таблице стоял бы уровень источника — а при повторном
+                # сохранении строки он уехал бы в заявку и в Лису как price_level_id.
                 if rec.get("price_level"):
                     row["Уровень цен"] = rec["price_level"]
+                elif rec.get("wholesale_rub"):
+                    row["Уровень цен"] = ""
+                if rec.get("price_manual"):
+                    row["_price_manual"] = True
                 if rec.get("retail_rub") is not None:
                     row["avg_Розничная цена по уровню, руб."] = rec["retail_rub"]
                 if rec.get("wholesale_rub") is not None:
@@ -1564,6 +1574,39 @@ def get_price_levels() -> list[dict]:
     return _get_price_levels_sync()
 
 
+@router.post("/max-calc-cost")
+async def max_calc_cost(payload: dict, _: str = Depends(_require_perm("cost:view"))) -> dict:
+    """Максимальная себестоимость калькуляций по их заданиям.
+
+    Окно ручной цены (задача 661209) считает рентабельность и маржу от того же
+    значения, что уйдёт в DWH и в прейскурант при согласовании, —
+    `get_max_calc_cost`, а не от себестоимости задания в строке таблицы: цена
+    ставится на калькуляцию и действует на все её задания.
+
+    Body: {"keys": [{model, articul, calc_sign, plan_id}, ...]} — не больше 200.
+    Ответ: {"data": [{model, articul, calc_sign, plan_id, rub, usd}]}; ключа без
+    строк в кэше в ответе нет.
+    """
+    raw = payload.get("keys") or []
+    if not isinstance(raw, list) or len(raw) > 200:
+        raise HTTPException(400, "keys — список не длиннее 200")
+    keys = [
+        (
+            str(k.get("model") or "").strip(), str(k.get("articul") or "").strip(),
+            str(k.get("calc_sign") or "").strip(), str(k.get("plan_id") or "").strip(),
+        )
+        for k in raw if isinstance(k, dict)
+    ]
+    keys = [k for k in keys if k[0] and k[1]]
+    if not keys or _is_mock():
+        return {"data": []}
+    found = await get_max_calc_cost(keys)
+    return {"data": [
+        {"model": m, "articul": a, "calc_sign": cs, "plan_id": pi, "rub": v["rub"], "usd": v["usd"]}
+        for (m, a, cs, pi), v in found.items()
+    ]}
+
+
 # ── Save changes ─────────────────────────────────────────────────────────────
 
 
@@ -1732,6 +1775,102 @@ def _has_retail_price(change: dict) -> bool:
         return False
 
 
+# Ручная цена (задача Б24 661209, миграция 0060): опт и розница вводятся руками,
+# без привязки к уровню справочника. Только у ПФКСС — решение заказчика
+# 01.10.2026: эти калькуляции уходят в Лису при согласовании ПЭО.
+MANUAL_PRICE_CALC_SIGN = "ПФКСС"
+
+
+def _to_price(value) -> float:
+    try:
+        return round(float(value), 2) if value is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _match_price_level(levels: list[dict], retail, wholesale, preferred: str) -> str:
+    """Имя уровня, у которого розница и опт ровно такие; нет такого — ''.
+
+    Сверяем по паре, а не по одной рознице: на одну розницу в справочнике
+    несколько уровней с разным оптом (разные наценки и ставки НДС). Уровень,
+    выбранный на фронте, сохраняем, если он с парой сходится, — иначе берём
+    первый по имени (справочник отдаётся отсортированным по NAME).
+    """
+    r, w = _to_price(retail), _to_price(wholesale)
+    if r <= 0 or w <= 0:
+        return ""
+    names = [
+        lv["name"] for lv in levels
+        if lv.get("id") and lv.get("name")
+        and round(lv["price_type3"], 2) == r and round(lv["price_type1"], 2) == w
+    ]
+    if preferred and preferred in names:
+        return preferred
+    return names[0] if names else ""
+
+
+async def _vet_manual_prices(
+    user_email: str | None, changes: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Отделить допустимые правки от недопустимых ручных цен.
+
+    Правка с `price_manual` проходит, только если признак калькуляции — ПФКСС,
+    у автора есть право `cost:manual_price` (в mock-режиме права не проверяются,
+    как и в `_require_perm`) и заданы обе цены. Уровень у прошедших подбирается
+    здесь заново по паре розница+опт: в Лису он уходит как price_level_id,
+    поэтому верить имени, присланному фронтом, нельзя — там мог остаться уровень
+    прежнего выбора. Не совпал — уровень пустой, и процедура получит 0.
+
+    Возвращает (прошедшие, отказы); отказы — в формате `failed` у /save-batch.
+    """
+    manual = [c for c in changes if c.get("price_manual")]
+    if not manual:
+        return changes, []
+
+    allowed = True
+    if user_email:
+        allowed = "cost:manual_price" in await get_user_permissions(user_email)
+
+    levels: list[dict] = []
+    try:
+        levels = mocks.PRICE_LEVELS if _is_mock() else await asyncio.get_event_loop().run_in_executor(
+            None, _get_price_levels_sync
+        )
+    except Exception as exc:  # noqa: BLE001 — без справочника уровень просто пустой
+        log(logging.WARNING, "ручная цена: справочник уровней недоступен, уровень не подбирается",
+            error=str(exc)[:300])
+
+    ok: list[dict] = []
+    failed: list[dict] = []
+    for c in changes:
+        if not c.get("price_manual"):
+            ok.append(c)
+            continue
+        cs = str(c.get("calc_sign") or c.get("Признак калькуляции") or "").strip()
+        reason = ""
+        if not allowed:
+            reason = "Нет права на ручную цену (cost:manual_price)"
+        elif cs != MANUAL_PRICE_CALC_SIGN:
+            reason = f"Ручная цена ставится только у {MANUAL_PRICE_CALC_SIGN}"
+        elif _to_price(c.get("wholesale_rub")) <= 0:
+            reason = "Ручная цена: не задан опт"
+        if reason:
+            failed.append({
+                "model": c.get("model"), "articul": c.get("articul"),
+                "plan_id": c.get("plan_id"), "calc_sign": cs, "reason": reason,
+            })
+            continue
+        c["price_level"] = _match_price_level(
+            levels, c.get("retail_rub"), c.get("wholesale_rub"),
+            str(c.get("price_level") or "").strip(),
+        )
+        ok.append(c)
+    log(logging.INFO, "ручная цена: заявки проверены", user=user_email,
+        manual=len(manual), refused=len(failed),
+        without_level=sum(1 for c in ok if c.get("price_manual") and not c.get("price_level")))
+    return ok, failed
+
+
 @router.post("/save-changes")
 async def save_price_changes(payload: dict, user_email: str | None = Depends(_require_perm("cost:edit_price"))) -> dict:
     username = (payload.get("author_name") or "").strip() or user_email or "system"
@@ -1749,6 +1888,10 @@ async def save_price_changes(payload: dict, user_email: str | None = Depends(_re
             "Не задана розничная цена: строка с прочерком на согласование не отправляется "
             "и остаётся доступной для редактирования",
         )
+
+    _, manual_refused = await _vet_manual_prices(user_email, [payload])
+    if manual_refused:
+        raise HTTPException(403, manual_refused[0]["reason"])
 
     # Lock check (skip in mock mode where user_email is None)
     if user_email:
@@ -1804,6 +1947,7 @@ async def save_price_changes(payload: dict, user_email: str | None = Depends(_re
         "Цена КЗ": payload.get("price_kz"),
         "Цена УЗ": payload.get("price_uz"),
         "Комментарий": payload.get("comment") or "",
+        "price_manual": bool(payload.get("price_manual")),
     }
 
     if _is_mock():
@@ -1881,6 +2025,7 @@ def _row_data_from_payload(c: dict) -> dict:
         "Цена КЗ": c.get("price_kz"),
         "Цена УЗ": c.get("price_uz"),
         "Комментарий": c.get("comment") or "",
+        "price_manual": bool(c.get("price_manual")),
     }
 
 
@@ -1920,12 +2065,18 @@ async def save_batch_changes(payload: dict, user_email: str | None = Depends(_re
         for c in not_fkss if not _has_retail_price(c)
     ]
     skipped_no_price = len(failed)
+    # Ручные цены без права или не у ПФКСС — в `failed` с причиной, остальные
+    # идут дальше; у прошедших уровень подобран сервером по паре опт+розница.
+    filtered, manual_refused = await _vet_manual_prices(user_email, filtered)
+    failed.extend(manual_refused)
     if not filtered:
         reasons = []
         if len(changes) - len(not_fkss):
             reasons.append("ФКСС")
         if skipped_no_price:
             reasons.append("без розничной цены")
+        if manual_refused:
+            reasons.append(f"ручная цена — {manual_refused[0]['reason']}")
         return {
             "success": False,
             "error": "Нет изменений для сохранения"
