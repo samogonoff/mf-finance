@@ -3958,9 +3958,9 @@ async function loadData() {
     // Досчитываем USD-цены, если API вернуло их нулями
     const r2 = (v: number) => Math.round(v * 100) / 100;
     for (const r of allAggregated.value) {
-      const rubW = Number(r['avg_Отпускная цена по уровню, руб'] || 0);
       // Черновик не трогаем: его цены выбраны руками, а не пришли из API.
       if (changedRows.has(calcRowKey(r))) continue;
+      const rubW = Number(r['avg_Отпускная цена по уровню, руб'] || 0);
       const rubR = Number(r['avg_Розничная цена по уровню, руб.'] || 0);
       const usdW = Number(r['avg_Отпускная цена по уровню, USD.'] || 0);
       const usdR = Number(r['avg_Розничная цена по уровню, USD.'] || 0);
@@ -5620,7 +5620,6 @@ const calcRowKey = (row: any): string => [
  * Строка хранится вместе с ключом, чтобы сохранение собирало payload даже
  * когда правленая калькуляция ушла из текущей выдачи под фильтр. */
 const changedRows = reactive<Map<string, any>>(new Map());
-const saving = ref(false);
 
 /** Поля, которые бренд-менеджер меняет выбором розничной цены и наценки
  *  (`onRetailPriceSelect`, `onMarkupSelect`). В отличие от цен РФ/КЗ/УЗ и
@@ -5644,6 +5643,7 @@ const UNSAVED_ROW_HINT =
   'Изменения не сохранены и на согласование ПЭО не отправлены. Фильтры их не видят: '
   + '«Только строки без оптовой цены» считает по записанным ценам. '
   + 'Сохраняются кнопкой «Сохранить изменения», в том числе скрытые фильтром.';
+const saving = ref(false);
 
 /** Есть ли у строки розничная цена, то есть НЕ прочерк.
  *
@@ -5694,6 +5694,16 @@ const savableChanges = computed(() =>
  *  исчезнувшие строки читаются как «сохранение съело ввод». */
 const heldNoPriceCount = computed(() => changedRows.size - savableChanges.value.length);
 
+/** Сколько сохраняемых правок сейчас не видно в таблице: калькуляция ушла под
+ *  серверный фильтр или фильтр колонок. «Сохранить» отправит и их — бренд-
+ *  менеджер расценивает по частям и сохраняет в конце, — поэтому счётчик на
+ *  кнопке говорит об этом прямо. Страницы пагинации скрытыми не считаются. */
+const hiddenSavableCount = computed(() => {
+  if (!savableChanges.value.length) return 0;
+  const shown = new Set(filteredAggregated.value.map(calcRowKey));
+  return savableChanges.value.filter(([k]) => !shown.has(k)).length;
+});
+
 const HELD_NO_PRICE_HINT =
   'Пока в розничной цене прочерк, заявка не создаётся: согласовывать ПЭО нечего, '
   + 'а строка остаётся доступной для редактирования. Выберите цену — строка попадёт '
@@ -5708,16 +5718,6 @@ function discardChanges() {
 const uniqueRetailPrices = computed(() => {
   const prices = new Set(priceLevels.value.map(l => l.price_type3));
   return Array.from(prices).sort((a, b) => a - b);
-});
-
-/** Сколько сохраняемых правок сейчас не видно в таблице: калькуляция ушла под
- *  серверный фильтр или фильтр колонок. «Сохранить» отправит и их — бренд-
- *  менеджер расценивает по частям и сохраняет в конце, — поэтому счётчик на
- *  кнопке говорит об этом прямо. Страницы пагинации скрытыми не считаются. */
-const hiddenSavableCount = computed(() => {
-  if (!savableChanges.value.length) return 0;
-  const shown = new Set(filteredAggregated.value.map(calcRowKey));
-  return savableChanges.value.filter(([k]) => !shown.has(k)).length;
 });
 
 /** Выбранное значение «Розничная наценка» по строке (ключ калькуляции → value). */
@@ -10489,6 +10489,14 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
 tr.locked { opacity:0.55; }
 tr.row-pending { background-color: color-mix(in srgb, #d97706 10%, transparent) !important; }
 tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !important; }
+/* Несохранённый черновик — полоса акцентом по левому краю, а не заливка:
+   заливкой строка уже говорит об этапе (⏳ янтарь, 📤 зелень), а черновик
+   бывает и поверх них. Закреплённой ячейке сохраняем линии сетки. */
+#cost-table-1.data-table tr.row-unsaved > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+#cost-table-1.data-table tr.row-unsaved > td.sticky-col:first-child {
+  box-shadow: inset 3px 0 0 var(--accent), inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border);
+}
+.state-badge--unsaved { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .lock-icon { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; font-size:12px; margin-right:2px; vertical-align:middle; cursor:help; }
 .state-badge { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:4px; font-size:12px; margin-right:2px; vertical-align:middle; cursor:help; }
 .state-badge--pending { background:#fef3c7; color:#92400e; }
@@ -10507,14 +10515,6 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .version-select { width: auto; min-width: 280px; border:1px solid var(--border-color, #e5e7eb); padding:4px 8px; font-size:13px; background:#fff; border-radius:4px; }
 .version-select:disabled { background: var(--bg-tonal, #f3f4f6); color: var(--text-muted, #9ca3af); }
 .version-select:focus { border-color:var(--accent-color, #4338ca); outline:none; }
-/* Несохранённый черновик — полоса акцентом по левому краю, а не заливка:
-   заливкой строка уже говорит об этапе (⏳ янтарь, 📤 зелень), а черновик
-   бывает и поверх них. Закреплённой ячейке сохраняем линии сетки. */
-#cost-table-1.data-table tr.row-unsaved > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-#cost-table-1.data-table tr.row-unsaved > td.sticky-col:first-child {
-  box-shadow: inset 3px 0 0 var(--accent), inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border);
-}
-.state-badge--unsaved { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .version-status-badge { padding:2px 8px; background: var(--bg-tonal, #f3f4f6); color: var(--text-secondary, #6b7280); border-radius:999px; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; }
 .version-editor-table-wrap { flex:1; overflow:auto; padding:0 16px 16px; }
 .version-editor-table { width:100%; border-collapse:collapse; font-size:13px; }
