@@ -298,7 +298,7 @@
                с прочерком в розничной цене не уходят на сервер, и обещать их в
                подписи значит обмануть — сохранится меньше, чем на кнопке. -->
           <template v-if="savableChanges.length">
-            {{ saving ? "Сохранение…" : `Сохранить изменения (${savableChanges.length})` }}
+            {{ saving ? "Сохранение…" : `Сохранить изменения (${savableChanges.length}${hiddenSavableCount ? `, из них скрыто фильтром: ${hiddenSavableCount}` : ''})` }}
           </template>
           <template v-else>Сохранить изменения</template>
         </button>
@@ -649,7 +649,7 @@
             <tr
               v-for="(row, idx) in pageRows"
               :key="idx"
-              :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, 'row-obsolete': !!row.obsolete, selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
+              :class="{ locked: isRowLocked(row), 'row-pending': row._has_pending, 'row-audit': row._has_audit, 'row-obsolete': !!row.obsolete, 'row-unsaved': isRowUnsaved(row), selected: selectedRowIndex === getOriginalIndex(row), ...marginRowClass(row) }"
               @click="selectRow(getOriginalIndex(row))"
             >
               <td v-if="isVisible('peo_sel')" :class="stickyClasses('peo_sel')" :style="stickyStyle('peo_sel')" class="col-peo-sel">
@@ -665,6 +665,9 @@
                 />
               </td>
               <td :class="stickyClasses('actions')" :style="stickyStyle('actions')">
+                <!-- Черновик бренд-менеджера: введено, но не сохранено. Значок
+                     отдельный от ⏳ — тот означает уже отправленную заявку. -->
+                <span v-if="isRowUnsaved(row)" class="state-badge state-badge--unsaved" :title="UNSAVED_ROW_HINT">✱</span>
                 <span v-if="isRowLocked(row) && !row._has_pending && !row._has_audit" class="lock-icon" :title="lockReasonText(row)">🔒</span>
                 <span v-if="row._has_pending" class="state-badge state-badge--pending"
                   :title="isRowLocked(row) ? lockReasonText(row) : 'Ожидает согласования ПЭО'">⏳</span>
@@ -3809,8 +3812,13 @@ async function loadData() {
     for (const r of allAggregated.value) {
       const k = calcRowKey(r);
       if (changedRows.has(k)) {
-        // Правка ещё не сохранена — обновляем только ссылку на свежую строку,
-        // чтобы сохранение ушло с актуальными суммами.
+        // Правка ещё не сохранена — переходим на свежую строку, чтобы
+        // сохранение ушло с актуальными суммами, но цену переносим из прежней:
+        // выбранные розница, опт и уровень лежат в самой строке, а сервер
+        // отдаёт их из базы. Без переноса смена фильтра откатывала цены,
+        // проставленные бренд-менеджером (задача Б24 660875).
+        const prev = changedRows.get(k);
+        for (const f of PRICE_DRAFT_FIELDS) r[f] = prev[f];
         changedRows.set(k, r);
         continue;
       }
@@ -3838,6 +3846,8 @@ async function loadData() {
     const r2 = (v: number) => Math.round(v * 100) / 100;
     for (const r of allAggregated.value) {
       const rubW = Number(r['avg_Отпускная цена по уровню, руб'] || 0);
+      // Черновик не трогаем: его цены выбраны руками, а не пришли из API.
+      if (changedRows.has(calcRowKey(r))) continue;
       const rubR = Number(r['avg_Розничная цена по уровню, руб.'] || 0);
       const usdW = Number(r['avg_Отпускная цена по уровню, USD.'] || 0);
       const usdR = Number(r['avg_Розничная цена по уровню, USD.'] || 0);
@@ -5499,6 +5509,26 @@ const calcRowKey = (row: any): string => [
 const changedRows = reactive<Map<string, any>>(new Map());
 const saving = ref(false);
 
+/** Поля, которые бренд-менеджер меняет выбором розничной цены и наценки
+ *  (`onRetailPriceSelect`, `onMarkupSelect`). В отличие от цен РФ/КЗ/УЗ и
+ *  комментария они живут в самой строке, а не в словаре по ключу калькуляции,
+ *  поэтому `loadData` переносит их на свежую строку сам. */
+const PRICE_DRAFT_FIELDS = [
+  'avg_Розничная цена по уровню, руб.',
+  'avg_Отпускная цена по уровню, руб',
+  'Уровень цен',
+  'avg_Розничная цена по уровню, USD.',
+  'avg_Отпускная цена по уровню, USD.',
+  'mp_price_rub',
+];
+
+const isRowUnsaved = (row: any): boolean => changedRows.has(calcRowKey(row));
+
+const UNSAVED_ROW_HINT =
+  'Изменения не сохранены и на согласование ПЭО не отправлены. Фильтры их не видят: '
+  + '«Только строки без оптовой цены» считает по записанным ценам. '
+  + 'Сохраняются кнопкой «Сохранить изменения», в том числе скрытые фильтром.';
+
 /** Есть ли у строки розничная цена, то есть НЕ прочерк.
  *
  * Критерий ровно тот же, по которому селект розничной цены показывает «—»:
@@ -5545,6 +5575,16 @@ function discardChanges() {
 const uniqueRetailPrices = computed(() => {
   const prices = new Set(priceLevels.value.map(l => l.price_type3));
   return Array.from(prices).sort((a, b) => a - b);
+});
+
+/** Сколько сохраняемых правок сейчас не видно в таблице: калькуляция ушла под
+ *  серверный фильтр или фильтр колонок. «Сохранить» отправит и их — бренд-
+ *  менеджер расценивает по частям и сохраняет в конце, — поэтому счётчик на
+ *  кнопке говорит об этом прямо. Страницы пагинации скрытыми не считаются. */
+const hiddenSavableCount = computed(() => {
+  if (!savableChanges.value.length) return 0;
+  const shown = new Set(filteredAggregated.value.map(calcRowKey));
+  return savableChanges.value.filter(([k]) => !shown.has(k)).length;
 });
 
 /** Выбранное значение «Розничная наценка» по строке (ключ калькуляции → value). */
@@ -10062,6 +10102,14 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .version-select { width: auto; min-width: 280px; border:1px solid var(--border-color, #e5e7eb); padding:4px 8px; font-size:13px; background:#fff; border-radius:4px; }
 .version-select:disabled { background: var(--bg-tonal, #f3f4f6); color: var(--text-muted, #9ca3af); }
 .version-select:focus { border-color:var(--accent-color, #4338ca); outline:none; }
+/* Несохранённый черновик — полоса акцентом по левому краю, а не заливка:
+   заливкой строка уже говорит об этапе (⏳ янтарь, 📤 зелень), а черновик
+   бывает и поверх них. Закреплённой ячейке сохраняем линии сетки. */
+#cost-table-1.data-table tr.row-unsaved > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+#cost-table-1.data-table tr.row-unsaved > td.sticky-col:first-child {
+  box-shadow: inset 3px 0 0 var(--accent), inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border);
+}
+.state-badge--unsaved { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .version-status-badge { padding:2px 8px; background: var(--bg-tonal, #f3f4f6); color: var(--text-secondary, #6b7280); border-radius:999px; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; }
 .version-editor-table-wrap { flex:1; overflow:auto; padding:0 16px 16px; }
 .version-editor-table { width:100%; border-collapse:collapse; font-size:13px; }
