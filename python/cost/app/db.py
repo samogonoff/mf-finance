@@ -1178,7 +1178,7 @@ async def _load_cost_data_to_cache(partial_months: int | None = None) -> dict:
                 # Снимки источника (миграция 0057) — строго между наборами цен
                 # и версиями: после наложения версий строк источника в кэше уже
                 # нет, сравнивать нечего.
-                snapshots_created = await _snapshot_changed_sources(conn)
+                snapshots_created = await _snapshot_changed_sources(conn, cutoff_date)
                 await _reapply_active_versions_to_cache(conn)
 
         await prod_fut
@@ -2925,12 +2925,39 @@ async def _ensure_original_version(conn, model, articul, calc_sign, plan_id, use
     return new_id
 
 
-async def _snapshot_changed_sources(conn) -> int:
+async def _has_active_version(conn, model, articul, calc_sign, plan_id, task) -> bool:
+    """Есть ли у ключа задания pending/approved версия — та, что накладывается
+    на кэш при каждом обновлении (_reapply_active_versions_to_cache)."""
+    task_sql, task_params = _task_match_sql(task, 5)
+    return bool(await conn.fetchval(
+        f"""SELECT 1 FROM cost_calc_versions
+            WHERE model=$1 AND articul=$2
+              AND calc_sign IS NOT DISTINCT FROM $3
+              AND plan_id IS NOT DISTINCT FROM $4
+              AND status IN ('pending', 'approved'){task_sql}
+            LIMIT 1""",
+        model, articul, calc_sign, plan_id, *task_params,
+    ))
+
+
+async def _snapshot_changed_sources(conn, cutoff_date: datetime.date | None = None) -> int:
     """После реимпорта кэша: новый снимок источника для каждого ключа, у
     которого строки CostHistory отличаются от последнего снимка.
 
     Вызывать ПОСЛЕ наложения наборов цен плана и ДО наложения версий — иначе
     сравнивать будет нечего: версия уже заменит строки источника своими.
+
+    Сравниваются только строки, которые это обновление залило из источника.
+    *cutoff_date* — отсечка частичного обновления: строки с датой расчёта
+    раньше неё оно не трогало, и у ключа с активной версией в кэше лежат строки
+    самой версии (их наложило прошлое обновление). Раньше из них получался
+    «снимок источника» с 🔄, следующее полное обновление давало снимок с
+    настоящими строками, и так по кругу: на проде с 17.09.2026 у
+    532431-2 / 26-46218ПП-9 (ПКПСС) — 16 снимков при неизменном источнике, по
+    паре на каждое суточное полное обновление. Копии в cost_manual_calc
+    обновление не перезаливает вовсе, поэтому копия с активной версией
+    пропускается при любом обновлении. Цена этого: повторный импорт закупной
+    ГП поверх активной версии снимка не даст.
 
     Снимки до миграции 0057 отпечатка не имеют. Чтобы на выкате не наплодить
     снимков и признаков по всей базе, для них сравнивается только число строк:
@@ -2951,11 +2978,21 @@ async def _snapshot_changed_sources(conn) -> int:
     for k in keys:
         task = (k["task_number"] or "").strip()
         table = await _calc_table(conn, k["model"], k["articul"], k["calc_sign"], k["plan_id"])
+        if table == "cost_manual_calc" and await _has_active_version(
+            conn, k["model"], k["articul"], k["calc_sign"], k["plan_id"], task
+        ):
+            continue  # в копии строки версии — источника, с которым сравнивать, нет
         date = await _current_cache_date(
             conn, k["model"], k["articul"], k["calc_sign"], k["plan_id"], task, table=table
         )
         if date is None:
             continue  # калькуляция из кэша исчезла — снимать нечего
+        # Сравнение в SQL, тем же приведением даты, что у DELETE частичного
+        # обновления: дата расчёта — timestamptz, отсечка — date.
+        if cutoff_date is not None and not await conn.fetchval(
+            "SELECT $1::timestamptz >= $2::date", date, cutoff_date
+        ):
+            continue  # строки старше отсечки не перезаливались
         fp, n = await _source_fingerprint(
             conn, k["model"], k["articul"], k["calc_sign"], k["plan_id"], task, date, table
         )

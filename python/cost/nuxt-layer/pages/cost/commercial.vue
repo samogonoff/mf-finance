@@ -115,8 +115,8 @@
           </template>
         </nav>
         <p class="card-note">
-          Топ-10 по себестоимости, от большей к меньшей. Сегмент «прочее» —
-          остаток до полной себестоимости: прямые затраты покрывают около 79%
+          Топ-10 по себестоимости, от большей к меньшей. Шесть статей складываются
+          в полную себестоимость
         </p>
         <div class="chart-box chart-box-tall">
           <ClientOnly>
@@ -551,7 +551,6 @@ const STRUCTURE_PARTS = [
   ['cutting', 'Раскрой'],
   ['decor', 'Декоры'],
   ['knitting', 'Вязание'],
-  ['other', 'Прочее'],
 ] as const
 
 const structureData = computed(() => {
@@ -724,7 +723,7 @@ const insightCharts = computed(() => chartsOf([
     note: 'Себестоимость против отпускной и розничной цены по месяцам' },
   { title: `Структура себестоимости · ${meta.value.structure_label || ''}`,
     raw: structureData.value,
-    note: 'Статьи затрат: материалы, пошив, раскрой, декоры, вязание, прочее' },
+    note: 'Статьи затрат: материалы, пошив, раскрой, декоры, вязание; их сумма — полная себестоимость' },
   { title: 'Структура выпуска', raw: ringEmpty.value ? null : ringData.value,
     seriesName: 'Доля в выпуске',
     note: `Доли по измерению «${(meta.value.dimensions || []).find((d: any) => d.key === dimension.value)?.label || dimension.value}»` },
