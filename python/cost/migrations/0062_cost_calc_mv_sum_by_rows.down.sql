@@ -101,7 +101,7 @@ BEGIN
     END IF;
     FOR r IN
         SELECT a.grantee, a.privilege_type, a.is_grantable
-          FROM aclexplode(coalesce(v_acl, '{}'::aclitem[])) a
+          FROM aclexplode(v_acl) a  -- NULL → ноль строк; '{}' здесь падает (см. up)
          WHERE a.grantee IS DISTINCT FROM (SELECT oid FROM pg_roles WHERE rolname = v_owner)
     LOOP
         EXECUTE format('GRANT %s ON public.cost_calc_mv TO %s%s',
