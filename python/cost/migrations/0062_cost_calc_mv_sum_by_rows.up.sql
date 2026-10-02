@@ -159,9 +159,12 @@ BEGIN
         EXECUTE format('ALTER MATERIALIZED VIEW public.cost_calc_mv OWNER TO %I', v_owner);
     END IF;
     -- Права владельца приходят с владением; остальные — как были.
+    -- Без coalesce: у витрины без явных грантов relacl = NULL (так на проде),
+    -- aclexplode(NULL) даёт ноль строк, а пустой '{}' — нульмерный массив, и
+    -- функция падает «ACL arrays must be one-dimensional» (выкатка 02.10.2026).
     FOR r IN
         SELECT a.grantee, a.privilege_type, a.is_grantable
-          FROM aclexplode(coalesce(v_acl, '{}'::aclitem[])) a
+          FROM aclexplode(v_acl) a
          WHERE a.grantee IS DISTINCT FROM (SELECT oid FROM pg_roles WHERE rolname = v_owner)
     LOOP
         EXECUTE format('GRANT %s ON public.cost_calc_mv TO %s%s',
