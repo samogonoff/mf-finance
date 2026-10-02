@@ -323,10 +323,9 @@ async def dashboard(
             coalesce(sewing_byn, 0)        AS sewing_b,
             coalesce(cutting_byn, 0)       AS cutting_b,
             coalesce(decor_byn, 0)         AS decor_b,
-            coalesce(knitting_byn, 0)      AS knitting_b,
-            greatest(cost_byn - (coalesce(mat_main_byn, 0) + coalesce(mat_aux_byn, 0)
-                   + coalesce(sewing_byn, 0) + coalesce(cutting_byn, 0)
-                   + coalesce(decor_byn, 0) + coalesce(knitting_byn, 0)), 0) AS other_b
+            -- Остатка «прочее» нет: с 0062 себестоимость витрины и есть сумма
+            -- этих шести статей.
+            coalesce(knitting_byn, 0)      AS knitting_b
         FROM cost_calc_mv
         WHERE {where}
     ),
@@ -375,7 +374,7 @@ async def dashboard(
                sum(mat_main_b) AS mat_main, sum(mat_aux_b)  AS mat_aux,
                sum(sewing_b)   AS sewing,   sum(cutting_b)  AS cutting,
                sum(decor_b)    AS decor,    sum(knitting_b) AS knitting,
-               sum(other_b)    AS other,    sum(cost_b)     AS cost_total
+               sum(cost_b)     AS cost_total
         FROM base WHERE "{struct_dim}" IS NOT NULL{struct_where}
         GROUP BY 1 ORDER BY sum(cost_b) DESC NULLS LAST LIMIT 10
     ),
