@@ -1920,6 +1920,75 @@
               Расчётов на предыдущих этапах для этой модели и артикула не найдено — сравнивать не с чем.
             </template>
           </div>
+          <!-- Нормы расхода из Лисы — справочно (задача Б24 661869): кружево и
+               вышивка, не прошедшие по карте кроя, в ПФКСС не попадают, и по
+               расчёту этого не видно. Сравнение — по наименованию материала:
+               в ПФКСС одна норма Лисы бывает несколькими строками (кружево по
+               цветам партий) и наоборот (две нормы микрофибры — одна строка). -->
+          <div class="lisa-block">
+            <div class="mp-head">
+              <button class="mp-toggle" :disabled="!lisaGroups.length" @click="lisaNormsExpanded = !lisaNormsExpanded">
+                {{ lisaGroups.length ? (lisaNormsExpanded ? '▾' : '▸') : '·' }} Нормы Лисы
+                <span class="mp-count" :title="lisaNormsError">{{ lisaNormsSummary }}</span>
+              </button>
+              <span v-if="lisaMissing.length" class="lisa-missing-note"
+                    title="Материал есть в нормах Лисы, а в расчёте нет ни одной строки с таким наименованием">
+                ✕ нет в расчёте: {{ lisaMissing.map((g) => g.name).join(', ') }}
+              </span>
+            </div>
+            <div v-if="lisaNormsExpanded && lisaGroups.length" class="lisa-table-wrap">
+              <table class="version-editor-table lisa-table">
+                <thead>
+                  <tr>
+                    <th>Материал</th>
+                    <th>Тип</th>
+                    <th>Артикул материала</th>
+                    <th title="✓ — материал с этими свойствами есть в расчёте; ≈ — в расчёте он с другими свойствами">Свойство</th>
+                    <th class="col-num">Норма Лисы</th>
+                    <th>Ед.</th>
+                    <th class="col-num" title="Сумма норм строк расчёта с тем же наименованием и отличие от суммы норм Лисы">В расчёте</th>
+                    <th>Назначение</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template v-for="g in lisaGroups" :key="'lg-' + g.key">
+                    <tr v-for="(ln, li) in g.rows" :key="'ln-' + g.key + '-' + li" :class="{ 'lisa-row-missing': !g.calcCount }">
+                      <td v-if="li === 0" :rowspan="g.rows.length">{{ g.name }}</td>
+                      <td class="muted">{{ ln.tip === 1 ? 'осн' : ln.tip === 2 ? 'всп' : '—' }}</td>
+                      <td>{{ ln.material_art || '—' }}</td>
+                      <td>
+                        <template v-if="g.calcCount">
+                          <span v-if="lisaVariantInCalc(ln)" class="lisa-mark lisa-mark--ok" title="Материал с этими свойствами есть в расчёте">✓</span>
+                          <span v-else class="lisa-mark lisa-mark--diff" :title="'В расчёте этот материал с другими свойствами: ' + g.calcProps.join('; ')">≈</span>
+                        </template>
+                        {{ [ln.prop1, ln.prop2, ln.prop3].filter(Boolean).join(', ') || '—' }}
+                      </td>
+                      <td class="col-num num">
+                        {{ fmtNorm(ln.norm) }}
+                        <span v-if="ln.by_size" class="lisa-tag" title="В Лисе норма «ПО РАЗМЕРАМ»: материал зависит от размера">по разм.</span>
+                        <span v-if="lisaNorms?.source === 'task' && ln.card_norm !== null && ln.norm !== null && Math.abs(ln.card_norm - ln.norm) > 1e-9"
+                              class="lisa-tag" title="Норма в карточке модели, если отличается от нормы задания">карт. {{ fmtNorm(ln.card_norm) }}</span>
+                      </td>
+                      <td class="muted">{{ ln.unit || '—' }}</td>
+                      <td v-if="li === 0" :rowspan="g.rows.length" class="col-num num" :title="lisaGroupHint(g)">
+                        <span v-if="!g.calcCount" class="lisa-missing-text">✕ нет</span>
+                        <template v-else-if="g.calcNorm !== null">
+                          {{ fmtNorm(g.calcNorm) }}
+                          <!-- Без зелёного/красного: больше или меньше нормы Лисы —
+                               не «лучше» и не «хуже» (у ПФКСС норма из карты кроя). -->
+                          <span v-if="lisaGroupDelta(g) !== null" class="stage-delta muted">
+                            {{ (lisaGroupDelta(g)! >= 0 ? '+' : '') + lisaGroupDelta(g)!.toFixed(1) + '%' }}
+                          </span>
+                        </template>
+                        <span v-else class="muted">есть, без нормы</span>
+                      </td>
+                      <td class="muted lisa-purpose" :title="ln.purpose">{{ ln.purpose || '—' }}</td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
           <div class="version-editor-table-wrap">
             <table class="version-editor-table">
               <thead>
@@ -6310,6 +6379,172 @@ async function loadStagePrices(row: any) {
   }
 }
 
+// ── Нормы Лисы — справочно (задача Б24 661869) ──────────────────────────────
+// Материалы задания из Лисы (без задания — карточка норм модели) рядом с
+// расчётом: видно, чего в расчёте нет совсем (кружево, вышивка, не прошедшие по
+// карте кроя в ПФКСС), и насколько расходятся нормы. Сверка идёт со строками
+// редактора, а не с сервера: добавленная руками строка сразу снимает «нет в
+// расчёте».
+
+type LisaNorm = {
+  tip: number | null;
+  name: string;
+  material_art: string;
+  prop1: string;
+  prop2: string;
+  prop3: string;
+  unit: string;
+  norm: number | null;
+  card_norm: number | null;
+  purpose: string;
+  by_size: boolean;
+};
+
+type LisaNormsResp = {
+  source: 'task' | 'card' | null;
+  task_number: string | null;
+  task_empty: boolean;
+  rows: LisaNorm[];
+  mock?: boolean;
+};
+
+const lisaNorms = ref<LisaNormsResp | null>(null);
+const lisaNormsLoading = ref(false);
+const lisaNormsError = ref('');
+const lisaNormsExpanded = ref(false);
+/** Номер запроса: ответ по калькуляции, которую уже закрыли, отбрасывается. */
+let lisaNormsSeq = 0;
+
+/** Сравнение текста: регистр, пробелы и прочерки-заглушки («-», «--») не
+ * различаются — в расчёте у каркаса свойство «-», а в Лисе у тесьмы «--». */
+const lisaText = (v: any): string => {
+  const s = (v ?? '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+  return /^[-—–\s]*$/.test(s) ? '' : s;
+};
+const lisaFullKey = (name: any, p1: any, p2: any, p3: any): string =>
+  [name, p1, p2, p3].map(lisaText).join('\u0001');
+
+/** Строки расчёта с наименованием материала, по наименованию. */
+const lisaCalcByName = computed(() => {
+  const out = new Map<string, any[]>();
+  for (const vr of editingVersion.value?.rows || []) {
+    const name = lisaText(nameDisplayValue(vr));
+    if (!name) continue;
+    if (!out.has(name)) out.set(name, []);
+    out.get(name)!.push(vr);
+  }
+  return out;
+});
+
+const lisaCalcFullKeys = computed(() => new Set(
+  (editingVersion.value?.rows || []).map((vr) =>
+    lisaFullKey(nameDisplayValue(vr), vr['свойство1'], vr['свойство2'], vr['свойство3'])),
+));
+
+const lisaVariantInCalc = (ln: LisaNorm): boolean =>
+  lisaCalcFullKeys.value.has(lisaFullKey(ln.name, ln.prop1, ln.prop2, ln.prop3));
+
+const lisaSum = (vals: (number | null)[]): number | null => {
+  const nums = vals.filter((v): v is number => v !== null && Number.isFinite(v));
+  return nums.length ? nums.reduce((a, b) => a + b, 0) : null;
+};
+
+/** Нормы Лисы, сгруппированные по наименованию материала, в порядке Лисы
+ * (основные, затем вспомогательные). */
+const lisaGroups = computed(() => {
+  const groups = new Map<string, { key: string; name: string; rows: LisaNorm[] }>();
+  for (const ln of lisaNorms.value?.rows || []) {
+    const key = lisaText(ln.name);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, { key, name: ln.name, rows: [] });
+    groups.get(key)!.rows.push(ln);
+  }
+  return [...groups.values()].map((g) => {
+    const calc = lisaCalcByName.value.get(g.key) || [];
+    const calcNorms = calc.map((vr) => {
+      const v = vr['Норма'];
+      const n = v === null || v === undefined || v === '' ? NaN : Number(v);
+      return Number.isFinite(n) ? n : null;
+    });
+    return {
+      ...g,
+      lisaNorm: lisaSum(g.rows.map((r) => r.norm)),
+      calcCount: calc.length,
+      calcNorm: lisaSum(calcNorms),
+      calcProps: [...new Set(calc.map((vr) =>
+        [vr['свойство1'], vr['свойство2'], vr['свойство3']]
+          .map((p) => (p ?? '').toString().trim()).filter(Boolean).join(', ') || '—'))],
+    };
+  });
+});
+
+type LisaGroup = (typeof lisaGroups.value)[number];
+
+const lisaMissing = computed(() => lisaGroups.value.filter((g) => !g.calcCount));
+
+/** Отличие суммы норм расчёта от суммы норм Лисы, %. */
+const lisaGroupDelta = (g: LisaGroup): number | null => {
+  if (g.calcNorm === null || g.lisaNorm === null || g.lisaNorm === 0) return null;
+  const d = ((g.calcNorm - g.lisaNorm) / g.lisaNorm) * 100;
+  return Math.abs(d) < 0.05 ? null : d;
+};
+
+const lisaGroupHint = (g: LisaGroup): string => {
+  const lisa = `В Лисе: ${g.rows.length} норм(а), всего ${fmtNorm(g.lisaNorm)}`;
+  if (!g.calcCount) return `${lisa}. В расчёте строк с таким наименованием нет.`;
+  return `${lisa}. В расчёте: ${g.calcCount} строк(а), всего ${fmtNorm(g.calcNorm)}`;
+};
+
+const lisaNormsSummary = computed(() => {
+  if (lisaNormsLoading.value) return 'загрузка…';
+  if (lisaNormsError.value) return 'Лиса недоступна';
+  const res = lisaNorms.value;
+  if (!res) return '';
+  if (res.mock) return 'нет в mock-режиме';
+  if (!res.source) return 'в Лисе норм на это изделие нет';
+  const src = res.source === 'task'
+    ? `задание ${res.task_number}`
+    : res.task_empty
+      ? `по заданию ${res.task_number} материалов нет — карточка норм модели`
+      : 'карточка норм модели (у расчёта нет задания)';
+  return `${src} · ${lisaGroups.value.length} материал(ов), ${res.rows.length} норм`;
+});
+
+async function loadLisaNorms(row: any) {
+  const seq = ++lisaNormsSeq;
+  lisaNorms.value = null;
+  lisaNormsError.value = '';
+  lisaNormsExpanded.value = false;
+  const model = (row['Модель'] ?? '').toString().trim();
+  const articul = (row['Артикул'] ?? '').toString().trim();
+  if (!model || !articul) return;
+  lisaNormsLoading.value = true;
+  try {
+    const params = new URLSearchParams({ model, articul });
+    const task = (row['Номер задания производства'] ?? '').toString().trim();
+    if (task) params.set('task_number', task);
+    const res = await $fetch<LisaNormsResp>(
+      `${apiBase.value}/api/cost/calc-lisa-norms?${params.toString()}`,
+      { headers: fetchHeaders.value },
+    );
+    if (seq === lisaNormsSeq) lisaNorms.value = res;
+  } catch (e: any) {
+    // Справочный блок: Лиса за VPN, редактор без неё работает.
+    console.error('[cost] load lisa norms failed', e);
+    if (seq === lisaNormsSeq) lisaNormsError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    if (seq === lisaNormsSeq) lisaNormsLoading.value = false;
+  }
+}
+
+function resetLisaNorms() {
+  lisaNormsSeq++;
+  lisaNorms.value = null;
+  lisaNormsError.value = '';
+  lisaNormsLoading.value = false;
+  lisaNormsExpanded.value = false;
+}
+
 const openVersionEditor = async (row: any) => {
   const r = row;
   if (!r) return;
@@ -6372,6 +6607,8 @@ const openVersionEditor = async (row: any) => {
     // Справочные цены прошлых этапов — отдельным запросом и без await в общей
     // цепочке: редактор открывается сразу, колонки появляются по готовности.
     void loadStagePrices(r);
+    // Нормы Лисы — тоже справочные и тоже по готовности.
+    void loadLisaNorms(r);
     // Состав мультипака — тем же принципом: блок появляется по готовности и не
     // задерживает открытие расчёта.
     void loadMultipackState();
@@ -6629,6 +6866,7 @@ const closeVersionEditor = () => {
   editingVersion.value = null;
   editingTypeCell.value = -1;
   stagePrices.value = [];
+  resetLisaNorms();
   editorRates.value = null;
   editorRatesDate.value = '';
   multipackState.value = null;
@@ -10915,6 +11153,22 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .stage-orphans { margin-top: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-3); }
 .stage-orphan-head { font-size: var(--fs-xs); color: var(--text-muted); margin-bottom: 4px; }
 .stage-orphan-table { width: auto; min-width: 480px; }
+
+/* Нормы Лисы (задача Б24 661869): справочный блок над таблицей расчёта.
+   Высота ограничена — раскрытый блок не должен выдавливать сам расчёт. */
+.lisa-block { border-bottom: 1px solid var(--border-color, #e5e7eb); padding: 6px 16px; }
+.lisa-block .mp-toggle:disabled { cursor: default; }
+.lisa-missing-note { font-size: var(--fs-xs, 12px); color: var(--neg, #dc2626); }
+.lisa-table-wrap { margin-top: 6px; max-height: 38vh; overflow: auto; }
+.lisa-table { width: auto; min-width: 900px; }
+.lisa-table thead th { position: sticky; top: 0; background: var(--bg-surface, #fff); z-index: 1; }
+.lisa-purpose { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+.lisa-row-missing td { background: color-mix(in srgb, #ef4444 10%, transparent); }
+.lisa-missing-text { color: var(--neg, #dc2626); font-weight: var(--fw-medium, 500); }
+.lisa-mark { display: inline-block; width: 1em; margin-right: 2px; font-weight: 600; }
+.lisa-mark--ok { color: var(--pos, #16a34a); }
+.lisa-mark--diff { color: #d97706; cursor: help; }
+.lisa-tag { margin-left: 4px; font-size: var(--fs-2xs, 10px); color: var(--text-muted); cursor: help; }
 .version-editor-table .col-num { text-align:right; }
 .editor-input { width:100%; border:1px solid transparent; padding:2px 4px; font-size:13px; background:transparent; }
 .editor-input:focus { border-color:var(--accent-color, #4338ca); outline:none; background:#fff; }

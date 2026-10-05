@@ -33,6 +33,7 @@ from app.roles import (
 from app import obsolete
 from app import group_pricing
 from app import material_compare
+from app import lisa_norms
 
 router = APIRouter()
 
@@ -3262,6 +3263,26 @@ async def calc_stage_prices_endpoint(request: Request) -> dict:
         q.get("plan_id"), q.get("task_number"),
     )
     return {"stages": stages, "count": sum(len(s["rows"]) for s in stages)}
+
+
+@router.get("/calc-lisa-norms")
+async def calc_lisa_norms_endpoint(
+    model: str,
+    articul: str,
+    task_number: str = "",
+    _: str = Depends(_require_perm("cost:view")),
+) -> dict:
+    """Нормы расхода материалов из Лисы — справочно для редактора расчёта
+    (задача Б24 661869): материалы задания, без задания — карточка норм модели."""
+    if not model.strip() or not articul.strip():
+        raise HTTPException(400, "model and articul required")
+    if _is_mock():
+        return {"source": None, "task_number": task_number or None, "task_empty": False,
+                "model_item_id": None, "rows": [], "mock": True}
+    try:
+        return await lisa_norms.lisa_norms(model, articul, task_number)
+    except Exception as exc:  # noqa: BLE001 — Лиса за VPN
+        raise HTTPException(502, f"нормы Лисы недоступны: {exc}")
 
 
 # ── Настройки таблицы на пользователя (миграция 0041) ────────────────────────
