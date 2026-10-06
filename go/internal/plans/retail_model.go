@@ -107,11 +107,12 @@ func RetailMetricKnown(metric string) bool {
 // («базы сравнения нет»), а §6 отключает предупреждения W-01/W-02 для «нового»
 // и «до года». Значит статус — не декоративная метка, а переключатель расчёта.
 const (
-	LFLYes    = "lfl"     // LFL — сравнимый магазин
-	LFLUnder1 = "under1y" // до года
-	LFLNew    = "new"     // новый
-	LFLNoID   = "xxx"     // «ххх» — магазин есть, KLIENT_ID ещё нет (10 новых точек РБ)
-	LFLClosed = "closed"  // закрыт
+	LFLYes            = "lfl"            // LFL — сравнимый магазин
+	LFLUnder1         = "under1y"        // до года
+	LFLNew            = "new"            // новый
+	LFLNoID           = "xxx"            // «ххх» — магазин есть, KLIENT_ID ещё нет (10 новых точек РБ)
+	LFLClosed         = "closed"         // закрыт
+	LFLReconstruction = "reconstruction" // реконструкция магазина
 )
 
 // Коды параметров периода (ТЗ §5, §10). Хранятся в tp_period_param, а не в коде,
@@ -258,9 +259,13 @@ type RetailFactCell struct {
 // RetailSeries — набор срезов, на которых считаются индикаторы. Ключ —
 // (code_cfo, year, month); значения в НАЦ. валюте страны экземпляра.
 type RetailSeries struct {
-	Fact     map[RetailCellKey]float64 // факт продаж (выручка с НДС)
-	Strategy map[RetailCellKey]float64 // стратегия
-	Approved map[RetailCellKey]float64 // ранее утверждённая тактика (история плана)
+	Fact                   map[RetailCellKey]float64 // факт продаж (выручка с НДС)
+	ComparisonFact         map[RetailCellKey]float64 // начисленный факт Budgeting для колонок сравнения
+	ComparisonLoaded       bool                      // после успешного чтения отсутствие строки остаётся NULL
+	Strategy               map[RetailCellKey]float64 // стратегия
+	Approved               map[RetailCellKey]float64 // ранее утверждённая тактика (история плана)
+	NewStrategy            map[RetailCellKey]float64 // сценарий НовСтрат из Budgeting
+	NewStrategyUnavailable string                    // причина недоступности НовСтрат
 	// ClosedMonths — закрытые месяцы года ИЗ КАЛЕНДАРЯ (ТЗ §4.4: признак закрытого
 	// месяца ТОЛЬКО из календаря, не «по наличию чисел»).
 	ClosedMonths map[int]bool
@@ -276,10 +281,12 @@ type RetailCellKey struct {
 // NewRetailSeries — пустой набор срезов (готов к заполнению, без nil-мап).
 func NewRetailSeries() RetailSeries {
 	return RetailSeries{
-		Fact:         map[RetailCellKey]float64{},
-		Strategy:     map[RetailCellKey]float64{},
-		Approved:     map[RetailCellKey]float64{},
-		ClosedMonths: map[int]bool{},
+		Fact:           map[RetailCellKey]float64{},
+		ComparisonFact: map[RetailCellKey]float64{},
+		Strategy:       map[RetailCellKey]float64{},
+		Approved:       map[RetailCellKey]float64{},
+		NewStrategy:    map[RetailCellKey]float64{},
+		ClosedMonths:   map[int]bool{},
 	}
 }
 
@@ -292,9 +299,14 @@ func (s RetailSeries) put(m map[RetailCellKey]float64, cells []RetailFactCell) {
 }
 
 // AddFact / AddStrategy / AddApproved — наполнение срезов.
-func (s RetailSeries) AddFact(cells []RetailFactCell)     { s.put(s.Fact, cells) }
-func (s RetailSeries) AddStrategy(cells []RetailFactCell) { s.put(s.Strategy, cells) }
-func (s RetailSeries) AddApproved(cells []RetailFactCell) { s.put(s.Approved, cells) }
+func (s RetailSeries) AddFact(cells []RetailFactCell) { s.put(s.Fact, cells) }
+func (s *RetailSeries) AddComparisonFact(cells []RetailFactCell) {
+	s.put(s.ComparisonFact, cells)
+	s.ComparisonLoaded = true
+}
+func (s RetailSeries) AddStrategy(cells []RetailFactCell)    { s.put(s.Strategy, cells) }
+func (s RetailSeries) AddApproved(cells []RetailFactCell)    { s.put(s.Approved, cells) }
+func (s RetailSeries) AddNewStrategy(cells []RetailFactCell) { s.put(s.NewStrategy, cells) }
 
 // RetailParam — параметр периода (ТЗ §5, §10).
 type RetailParam struct {
@@ -433,6 +445,8 @@ func retailLFLStatus(raw string) string {
 		return ""
 	case strings.Contains(s, "закр") || strings.Contains(s, "closed"):
 		return LFLClosed
+	case strings.Contains(s, "рекон") || strings.Contains(s, "reconstruct"):
+		return LFLReconstruction
 	case s == "ххх" || s == "xxx" || strings.Contains(s, "ххх") || strings.Contains(s, "xxx"):
 		return LFLNoID
 	case strings.Contains(s, "нов") || strings.Contains(s, "new"):

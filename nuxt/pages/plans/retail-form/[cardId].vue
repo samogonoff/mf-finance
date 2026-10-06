@@ -22,6 +22,7 @@
     <header class="page-header">
       <div>
         <h1 class="page-title">{{ card?.title || "Розница" }} · {{ periodLabel }}</h1>
+        <strong v-if="form" class="tactic-period">Тактика: {{ monthLabel(form.month) }} {{ form.year }}</strong>
         <p class="page-subtitle">
           Форма ввода TPL-TO-RETAIL
           <span v-if="form"> · {{ form.country }} · {{ form.legal_entity || "ЮЛ не задано" }}</span>
@@ -31,7 +32,7 @@
                Показываем оба, иначе непонятно, почему суммы не делятся на один. -->
           <span v-if="fxNote" class="fx-note" :title="fxHint">{{ fxNote }}</span>
           <span v-if="form"> · {{ filteredRows.length }} из {{ form.rows.length }} магазинов</span>
-          <span v-if="form && !form.editable" class="lock-note">
+          <span v-if="form && !editable" class="lock-note">
             <Icon name="lucide:lock" /> период закрыт на запись
           </span>
         </p>
@@ -76,7 +77,7 @@
       {{ draftNote }}
       <button type="button" class="link-btn" @click="dropDraft">Отменить черновик</button>
     </p>
-    <p v-if="form && !form.editable" class="banner banner-warn">
+    <p v-if="form && !editable" class="banner banner-warn">
       Только просмотр: карточка на шаге «{{ form.step_code }}» ({{ form.status }}) или вы не исполнитель.
       Ввод сохранить не получится.
     </p>
@@ -115,7 +116,9 @@
             <button type="button" :aria-pressed="detail" @click="detail = true">с детализацией</button>
             <button type="button" :aria-pressed="!detail" @click="detail = false">без детализации</button>
           </div>
+          <button type="button" class="btn btn-sm" :class="!detail && groupBy === 'lfl_status' ? 'btn-primary' : 'btn-ghost'" @click="detail = false; groupBy = 'lfl_status'">Группы LFL</button>
           <select v-if="!detail" v-model="groupBy" class="select">
+            <option value="lfl_status">по: статусу LFL</option>
             <option v-for="g in GROUP_DIMS" :key="g.key" :value="g.key">по: {{ g.title }}</option>
           </select>
 
@@ -181,19 +184,20 @@
             </select>
           </label>
           <label class="form-field">
-            <span class="form-label">Месяцы</span>
+            <span class="form-label">Месяц операции</span>
             <select v-model="bulkMonthMode" class="select" @change="invalidatePreview">
-              <option value="all">все плановые</option>
+              <option value="all" :disabled="bulkOp === 'copy_scenario' && (bulkCoef != null || bulkPctDelta != null)">все плановые</option>
               <option value="one">только {{ monthLabel(selMonth) }}</option>
             </select>
           </label>
 
           <template v-if="bulkOp === 'copy_scenario'">
             <label class="form-field">
-              <span class="form-label">Источник</span>
+              <span class="form-label">Сценарий</span>
               <select v-model="bulkSource" class="select" @change="invalidatePreview">
                 <option value="strategy">Стратегия</option>
                 <option value="tactic">Утверждённая тактика</option>
+                <option value="new_strategy">Новая стратегия</option>
                 <option value="fact">Факт</option>
               </select>
             </label>
@@ -210,6 +214,8 @@
               <input v-model.number="bulkPctDelta" class="input" type="number" step="0.1" placeholder="0" @input="invalidatePreview" />
             </label>
           </template>
+
+          <p v-if="bulkOp === 'copy_scenario' && bulkConflict" class="bulk-conflict">задайте либо коэффициент, либо надбавку</p>
 
           <template v-if="bulkOp === 'distribute'">
             <label class="form-field">
@@ -269,7 +275,7 @@
             сбросить защиту ручных значений
           </label>
 
-          <button class="btn btn-primary bulk-go" :disabled="busy || !editable" @click="runPreview">
+          <button class="btn btn-primary bulk-go" :disabled="busy || !editable || bulkConflict" @click="runPreview">
             <Icon name="lucide:eye" /> Предпросмотр
           </button>
         </div>
@@ -344,10 +350,11 @@
                 <th class="st st-2 col-num sortable" :class="{ sorted: sortKey === 'code_cfo' }" @click="detail && toggleSort('code_cfo')">
                   ЦФО <Icon v-if="detail" :name="sortIcon('code_cfo')" class="s-ic" />
                 </th>
-                <th class="st st-3 sortable" :class="{ sorted: sortKey === 'cfo' }" @click="detail && toggleSort('cfo')">
+                <th class="st st-3">LFL-статус</th>
+                <th class="st st-4 sortable" :class="{ sorted: sortKey === 'cfo' }" @click="detail && toggleSort('cfo')">
                   {{ detail ? "Магазин" : groupTitle }} <Icon v-if="detail" :name="sortIcon('cfo')" class="s-ic" />
                 </th>
-                <th class="st st-4 sortable" :class="{ sorted: sortKey === 'city' }" @click="detail && toggleSort('city')">
+                <th class="st st-5 sortable" :class="{ sorted: sortKey === 'city' }" @click="detail && toggleSort('city')">
                   {{ detail ? "Город" : "Магазинов" }} <Icon v-if="detail" :name="sortIcon('city')" class="s-ic" />
                 </th>
                 <th
@@ -391,11 +398,12 @@
                   <input type="checkbox" :checked="selected.has(vr.row.code_cfo)" @change="toggleRow(vr.row.code_cfo)" />
                 </td>
                 <td class="st st-2 col-num">{{ vr.row.code_cfo }}</td>
-                <td class="st st-3">
+                <td class="st st-3"><button type="button" class="lfl-chip" :class="'lfl-' + vr.row.lfl_effective" :disabled="!canOverride || !editable" @click="openLfl(vr.row)">{{ lflLabel(vr.row.lfl_effective) }}</button></td>
+                <td class="st st-4">
                   <span class="s-name" :title="vr.row.cfo">{{ vr.row.cfo || "—" }}</span>
                   <span v-if="vr.row.lfl_override" class="s-ovr" :title="vr.row.lfl_reason">LFL переопределён</span>
                 </td>
-                <td class="st st-4">{{ vr.row.city || "—" }}</td>
+                <td class="st st-5">{{ vr.row.city || "—" }}</td>
 
                 <td v-for="c in visibleAttrCols" :key="c.key" :class="c.num ? 'col-num' : ''">
                   <button
@@ -458,24 +466,39 @@
 
             <!-- Свёрнутый вид (§4.6): итоги выбранного уровня, ячейки только читаются. -->
             <tbody v-else>
-              <tr v-for="g in groupRows" :key="g.key">
+              <template v-for="g in groupRows" :key="g.key">
+              <tr class="status-group" @click="toggleGroup(g.key)">
                 <td class="st st-1"></td>
                 <td class="st st-2 col-num">—</td>
-                <td class="st st-3"><span class="s-name">{{ g.key || "не задано" }}</span></td>
-                <td class="st st-4 col-num">{{ g.rows.length }}</td>
+                <td class="st st-3">{{ groupBy === 'lfl_status' ? lflLabel(g.key) : '—' }}</td>
+                <td class="st st-4"><button type="button" class="group-toggle"><Icon :name="groupOpen.has(g.key) ? 'lucide:chevron-down' : 'lucide:chevron-right'" /> {{ groupBy === 'lfl_status' ? lflLabel(g.key) : (g.key || 'не задано') }}</button></td>
+                <td class="st st-5 col-num">{{ g.rows.length }}</td>
                 <td v-for="c in visibleAttrCols" :key="c.key" :class="c.num ? 'col-num' : ''">—</td>
                 <td v-for="c in visibleCmpCols" :key="c.key" class="col-num cmp-c">{{ moneyOrDash(g.ind[c.key] as number | null) }}</td>
                 <td v-for="m in monthCols" :key="'gm' + m" class="col-num ro-c">{{ moneyOrDash(g.months[m] ?? null) }}</td>
                 <td v-for="c in visibleIndCols" :key="c.key" class="col-num ind-c">{{ indText(g, c.key) }}</td>
               </tr>
+              <tr v-for="r in groupOpen.has(g.key) ? g.rows : []" :key="r.code_cfo" class="group-store">
+                <td class="st st-1"><input type="checkbox" :checked="selected.has(r.code_cfo)" @change="toggleRow(r.code_cfo)" /></td>
+                <td class="st st-2 col-num">{{ r.code_cfo }}</td>
+                <td class="st st-3">{{ lflLabel(r.lfl_effective) }}</td>
+                <td class="st st-4"><span class="s-name">{{ r.cfo }}</span><input :value="commentValue(r)" class="input cmt-input" :disabled="!editable" placeholder="Комментарий к строке" @input="setComment(r.code_cfo, ($event.target as HTMLInputElement).value)" /></td>
+                <td class="st st-5">{{ r.city || '—' }}</td>
+                <td v-for="c in visibleAttrCols" :key="c.key">{{ attrText(r, c) }}</td>
+                <td v-for="c in visibleCmpCols" :key="c.key" class="col-num cmp-c">{{ moneyOrDash(liveInd(r)[c.key] as number | null) }}</td>
+                <td v-for="m in monthCols" :key="m" class="col-num inp-c"><NumberField :model-value="cellValue(r.code_cfo, m)" class="cell-input" :disabled="!editable" @update:model-value="setCell(r.code_cfo, m, $event)" /></td>
+                <td v-for="c in visibleIndCols" :key="c.key" class="col-num ind-c">{{ indText({ row: r, ind: liveInd(r), stale: rowDirty(r.code_cfo) }, c.key) }}</td>
+              </tr>
+              </template>
             </tbody>
 
             <tfoot>
               <tr>
                 <td class="st st-1"></td>
                 <td class="st st-2"></td>
-                <td class="st st-3">Итого по выборке</td>
-                <td class="st st-4 col-num">{{ filteredRows.length }}</td>
+                <td class="st st-3"></td>
+                <td class="st st-4">Итого по выборке</td>
+                <td class="st st-5 col-num">{{ filteredRows.length }}</td>
                 <td v-for="c in visibleAttrCols" :key="c.key"></td>
                 <td v-for="c in visibleCmpCols" :key="c.key" class="col-num">{{ moneyOrDash(totals.ind[c.key] as number | null) }}</td>
                 <td v-for="m in monthCols" :key="'tm' + m" class="col-num">{{ moneyOrDash(totals.months[m] ?? null) }}</td>
@@ -498,11 +521,20 @@
            быть недоступна, пока валидации §6 дают can_submit=false. -->
       <CardProcessPanel
         :card-id="cardId"
-        :can-submit="report ? report.can_submit : true"
-        :submit-hint="report && !report.can_submit ? `блокирующих замечаний: ${report.blocking.length}` : ''"
+        :can-submit="(report ? report.can_submit : true) && totalsReviewed && !dirty"
+        :retail-totals-reviewed="totalsReviewed"
+        :submit-hint="dirty ? 'Сначала сохраните изменения' : !totalsReviewed ? 'Сверьте итоги по статусам' : report && !report.can_submit ? `блокирующих замечаний: ${report.blocking.length}` : ''"
         :soft-warning="softWarning"
         @changed="reload"
-      />
+      >
+        <template #before-submit>
+          <div class="retail-review card">
+            <strong>Итоги по статусам перед отправкой</strong>
+            <div v-for="g in statusTotals" :key="g.key">{{ lflLabel(g.key) }} · {{ g.rows.length }} магазинов · тактика {{ moneyOrDash(g.ind.tactic) }} · итого период {{ moneyOrDash(g.ind.period_total) }}</div>
+            <label class="checkbox"><input v-model="totalsReviewed" type="checkbox" :disabled="dirty || !editable" /> Сверил итоги по четырём статусам</label>
+          </div>
+        </template>
+      </CardProcessPanel>
     </template>
 
     <!-- ===== Параметры периода (§4.5, §5) ===== -->
@@ -668,7 +700,7 @@ const edits = reactive(new Map<string, number | null>());
 /** Несохранённые комментарии: код ЦФО → текст. */
 const commentEdits = reactive(new Map<number, string>());
 
-const editable = computed(() => !!form.value?.editable);
+const editable = computed(() => !!form.value?.editable && route.query.readonly !== "1");
 const canOverride = computed(() => isAdmin.value || hasRole("ROLE_PLANS_ADMIN") || hasRole("ROLE_FINANCE_ADMIN"));
 
 const periodLabel = computed(() =>
@@ -757,9 +789,15 @@ const toggleAll = () => {
 // ─────────── представление (§4.6) ───────────
 type ViewMode = "store_months" | "month_stores";
 const mode = ref<ViewMode>("store_months");
-const detail = ref(true);
-const groupBy = ref("city");
-const selMonth = ref(1);
+const detail = ref(false);
+const groupBy = ref("lfl_status");
+const groupOpen = reactive(new Set<string>());
+const toggleGroup = (key: string) => groupOpen.has(key) ? groupOpen.delete(key) : groupOpen.add(key);
+const totalsReviewed = ref(false);
+const STATUS_ORDER = ["lfl", "under1y", "new", "reconstruction"];
+const statusKey = (r: RetailRow) => r.lfl_effective === "xxx" ? "new" : r.lfl_effective;
+// Set from the loaded tactic period, not an arbitrary calendar month.
+const selMonth = ref(0);
 
 const GROUP_DIMS = [
   { key: "city", title: "город" },
@@ -797,10 +835,10 @@ const CMP_COLS: ColDef[] = [
 ];
 const IND_COLS: ColDef[] = [
   { key: "plan_done_pct", title: "% вып.", hint: "Факт / тактика месяца" },
-  { key: "lfl_tactic", title: "LFL такт.", hint: "Тактика / факт того же месяца ПГ − 1" },
+  { key: "lfl_tactic", title: "LFL тактика", hint: "LFL тактика = тактика / факт того же месяца прошлого года − 1" },
   { key: "lfm_tactic", title: "LFM такт.", hint: "Тактика / факт предыдущего месяца − 1" },
-  { key: "vs_strategy_pct", title: "% к страт.", hint: "Тактика / стратегия − 1" },
-  { key: "period_total", title: "Итого период", hint: "Сумма плановых месяцев" },
+  { key: "vs_strategy_pct", title: "Тактика / стратегия, %", hint: "Тактика / стратегия, % = тактика / стратегия − 1" },
+  { key: "period_total", title: "Итого период", hint: "Итого период = сумма месяцев горизонта формы" },
   { key: "year_expectation", title: "Ожидание года", hint: "Факт закрытых месяцев + тактика остальных" },
   { key: "year_exp_vs_prev_pct", title: "Откл. к ПГ", hint: "Ожидание года / факт прошлого года − 1" }
 ];
@@ -961,7 +999,7 @@ const sortIcon = (key: string) => {
 };
 
 const visibleAttrCols = computed(() =>
-  attrOrder.value.map((k) => ATTR_COLS.find((c) => c.key === k)).filter((c): c is ColDef => !!c && cols[c.key])
+  attrOrder.value.map((k) => ATTR_COLS.find((c) => c.key === k)).filter((c): c is ColDef => !!c && c.key !== "lfl_status" && cols[c.key])
 );
 const visibleCmpCols = computed(() => CMP_COLS.filter((c) => cols[c.key]));
 const visibleIndCols = computed(() => IND_COLS.filter((c) => cols[c.key]));
@@ -973,7 +1011,7 @@ const monthCols = computed<number[]>(() => {
   return mode.value === "month_stores" ? [selMonth.value] : f.months;
 });
 const colCount = computed(
-  () => 4 + visibleAttrCols.value.length + visibleCmpCols.value.length + monthCols.value.length + visibleIndCols.value.length + (detail.value ? 1 : 0)
+  () => 5 + visibleAttrCols.value.length + visibleCmpCols.value.length + monthCols.value.length + visibleIndCols.value.length + (detail.value ? 1 : 0)
 );
 
 // ─────────── доступ к ячейкам ───────────
@@ -1080,15 +1118,18 @@ interface AggRow { key: string; rows: RetailRow[]; ind: Record<string, number | 
  */
 const aggregate = (rows: RetailRow[], gkey: string): AggRow => {
   const f = form.value!;
-  const s = { fpy: 0, fpm: 0, fcur: 0, strat: 0, appr: 0, tactic: 0, period: 0, yexp: 0 };
+  const s = { fpy: 0, fpm: 0, fcur: 0, strat: 0, appr: 0, tactic: 0, period: 0, yexp: 0, hasFpy: false, hasFpm: false, hasStrat: false };
   const months: Record<number, number> = {};
   for (const m of f.months) months[m] = 0;
   for (const r of rows) {
     const i = liveInd(r);
     s.fpy += i.fact_prev_year_month ?? 0;
+    s.hasFpy ||= i.fact_prev_year_month != null;
     s.fpm += i.fact_prev_month ?? 0;
+    s.hasFpm ||= i.fact_prev_month != null;
     s.fcur += i.fact_cur_month ?? 0;
     s.strat += i.strategy ?? 0;
+    s.hasStrat ||= i.strategy != null;
     s.appr += i.tactic_approved ?? 0;
     s.tactic += i.tactic ?? 0;
     s.period += i.period_total ?? 0;
@@ -1101,10 +1142,10 @@ const aggregate = (rows: RetailRow[], gkey: string): AggRow => {
     months,
     stale: rows.some((r) => rowDirty(r.code_cfo)),
     ind: {
-      fact_prev_year_month: s.fpy,
-      fact_prev_month: s.fpm,
+      fact_prev_year_month: s.hasFpy ? s.fpy : null,
+      fact_prev_month: s.hasFpm ? s.fpm : null,
       fact_cur_month: s.fcur,
-      strategy: s.strat,
+      strategy: s.hasStrat ? s.strat : null,
       tactic_approved: s.appr,
       tactic: s.tactic,
       plan_done_pct: iferrorDiv(s.fcur, s.tactic),
@@ -1121,16 +1162,18 @@ const aggregate = (rows: RetailRow[], gkey: string): AggRow => {
 const groupRows = computed<AggRow[]>(() => {
   const map = new Map<string, RetailRow[]>();
   for (const r of filteredRows.value) {
-    const k = String((r as unknown as Record<string, unknown>)[groupBy.value] ?? "");
+    const k = groupBy.value === "lfl_status" ? statusKey(r) : String((r as unknown as Record<string, unknown>)[groupBy.value] ?? "");
     if (!map.has(k)) map.set(k, []);
     map.get(k)!.push(r);
   }
   return [...map.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0], "ru"))
+    .sort((a, b) => groupBy.value === "lfl_status" ? (STATUS_ORDER.indexOf(a[0]) < 0 ? 99 : STATUS_ORDER.indexOf(a[0])) - (STATUS_ORDER.indexOf(b[0]) < 0 ? 99 : STATUS_ORDER.indexOf(b[0])) : a[0].localeCompare(b[0], "ru"))
     .map(([k, rows]) => aggregate(rows, k));
 });
 
 const totals = computed<AggRow>(() => aggregate(filteredRows.value, "Итого"));
+const statusTotals = computed<AggRow[]>(() => STATUS_ORDER.map((key) => aggregate((form.value?.rows || []).filter((r) => statusKey(r) === key), key)));
+watch([() => form.value?.rows, dirty], () => { totalsReviewed.value = false; });
 
 // ─────────── виртуализация ───────────
 // 375 строк × 12 месяцев — это 4500 полей ввода; без виртуализации браузер
@@ -1519,8 +1562,8 @@ const saveLfl = async () => {
 const bulkOpen = ref(false);
 const bulkOp = ref<RetailBulkRequest["op"]>("copy_scenario");
 const bulkScope = ref<RetailBulkRequest["scope"]>("filtered");
-const bulkMonthMode = ref<"all" | "one">("all");
-const bulkSource = ref<"strategy" | "tactic" | "fact">("strategy");
+const bulkMonthMode = ref<"all" | "one">("one");
+const bulkSource = ref<"strategy" | "tactic" | "fact" | "new_strategy">("strategy");
 const bulkSourceYear = ref(0);
 const bulkCoef = ref<number | null>(null);
 const bulkPctDelta = ref<number | null>(null);
@@ -1534,6 +1577,7 @@ const bulkPayrollBase = ref<NonNullable<RetailBulkRequest["payroll_base"]>>("str
 const bulkRentTurnover = ref(false);
 const bulkResetManual = ref(false);
 const bulkPreview = ref<RetailBulkResult | null>(null);
+const bulkConflict = computed(() => bulkCoef.value != null && bulkPctDelta.value != null && Math.abs(bulkCoef.value - (1 + bulkPctDelta.value / 100)) > 1e-9);
 /** Подпись параметров, на которых сделан предпросмотр: применять можно только её. */
 const previewSig = ref("");
 
@@ -1543,7 +1587,7 @@ const bulkRequest = (preview: boolean): RetailBulkRequest => {
     scope: bulkScope.value,
     preview,
     reset_manual: bulkResetManual.value,
-    months: bulkMonthMode.value === "one" ? [selMonth.value] : []
+    months: bulkOp.value === "copy_scenario" && (bulkCoef.value != null || bulkPctDelta.value != null) ? [selMonth.value] : bulkMonthMode.value === "one" ? [selMonth.value] : []
   };
   if (bulkScope.value === "filtered") req.code_cfos = filteredRows.value.map((r) => r.code_cfo);
   if (bulkScope.value === "selected") req.code_cfos = [...selected];
@@ -1552,6 +1596,8 @@ const bulkRequest = (preview: boolean): RetailBulkRequest => {
     req.source_year = bulkSourceYear.value || form.value?.year || 0;
     req.coefficient = bulkCoef.value ?? 0;
     req.percent_delta = (bulkPctDelta.value ?? 0) / 100;
+    req.coefficient_set = bulkCoef.value != null;
+    req.percent_delta_set = bulkPctDelta.value != null;
   }
   if (bulkOp.value === "distribute") {
     req.target_total = bulkTarget.value ?? 0;
@@ -1616,6 +1662,12 @@ const load = async () => {
     ]);
     form.value = f;
     card.value = c;
+    if (route.query.readonly === "1" || !f.editable || c?.status === "on_approval") {
+      detail.value = false;
+      groupBy.value = "lfl_status";
+      groupOpen.clear();
+      bulkOpen.value = false;
+    }
     if (!selMonth.value || !f.months.includes(selMonth.value)) selMonth.value = f.month;
     if (!bulkSourceYear.value) bulkSourceYear.value = f.year;
     paramDraft.value = (f.params || []).map((p) => ({ ...p }));
@@ -1758,6 +1810,14 @@ onMounted(async () => {
       presetList.value = list;
       const last = list.find((p) => p.name === "");
       if (last) applyPayload(last.payload);
+      if (form.value && (!selMonth.value || !form.value.months.includes(selMonth.value))) selMonth.value = form.value.month;
+      // Approval opens on the required collapsed LFL totals even when an old
+      // personal preset previously saved a detailed store view.
+      if (route.query.readonly === "1" || !form.value?.editable || card.value?.status === "on_approval") {
+        detail.value = false;
+        groupBy.value = "lfl_status";
+        groupOpen.clear();
+      }
     })
     .catch(() => {
       /* пресетов может не быть — открываемся на дефолтном представлении */
@@ -1783,6 +1843,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--sp-5);
 }
+.page-retail > .page-header { position: sticky; top: 0; z-index: 8; background: var(--bg-surface); padding-top: var(--sp-3); }
 .banner {
   margin: 0;
   padding: var(--sp-4) var(--sp-5);
@@ -1793,6 +1854,12 @@ onBeforeUnmount(() => {
 .banner-pos { background: var(--pos-soft); color: var(--pos-strong); }
 .banner-warn { background: var(--warn-soft); color: var(--warn); }
 .banner-info { background: var(--info-soft); color: var(--info); }
+.tactic-period { display: block; font-size: 1.3rem; color: var(--accent); }
+.bulk-conflict { color: var(--neg); font-weight: 600; }
+.status-group { cursor: pointer; background: var(--bg-surface-2); font-weight: 600; }
+.group-toggle { border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; display: inline-flex; align-items: center; gap: var(--sp-2); }
+.group-store .cmt-input { display: block; max-width: 220px; margin-top: 2px; }
+.retail-review { padding: var(--sp-4); display: grid; gap: var(--sp-2); margin-bottom: var(--sp-4); }
 .lock-note { margin-left: var(--sp-3); color: var(--neg); }
 .hidden-file { display: none; }
 .link-btn {
@@ -1935,8 +2002,9 @@ onBeforeUnmount(() => {
 .grid-table tfoot td.st { z-index: 3; background: var(--bg-surface-2); }
 .st-1 { left: 0; width: 32px; min-width: 32px; padding-left: var(--sp-3) !important; padding-right: 0 !important; }
 .st-2 { left: 32px; width: 60px; min-width: 60px; }
-.st-3 { left: 92px; width: 230px; min-width: 230px; max-width: 230px; }
-.st-4 { left: 322px; width: 120px; min-width: 120px; box-shadow: 1px 0 0 var(--border); }
+.st-3 { left: 92px; width: 125px; min-width: 125px; }
+.st-4 { left: 217px; width: 230px; min-width: 230px; max-width: 230px; }
+.st-5 { left: 447px; width: 120px; min-width: 120px; box-shadow: 1px 0 0 var(--border); }
 .grid-table tbody tr:hover td.st { background: var(--bg-surface-2); }
 .row-sel td.st, .grid-table tbody tr.row-sel:hover td.st { background: var(--accent-soft); }
 .row-sel td { background: var(--accent-soft); }

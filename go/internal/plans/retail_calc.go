@@ -42,6 +42,14 @@ func retailFactAt(s RetailSeries, codeCFO, year, month int) (float64, bool) {
 	return v, ok
 }
 
+func retailComparisonFactAt(s RetailSeries, codeCFO, year, month int) (float64, bool) {
+	if s.ComparisonLoaded {
+		v, ok := s.ComparisonFact[RetailCellKey{codeCFO, year, month}]
+		return v, ok
+	}
+	return retailFactAt(s, codeCFO, year, month)
+}
+
 // ComputeRetailIndicators — все индикаторы §4 для одной строки за месяц плана.
 //
 // year/month — период карточки (месяц, на котором стоит форма). Тактика берётся
@@ -50,12 +58,12 @@ func ComputeRetailIndicators(row RetailRow, s RetailSeries, year, month int, pla
 	var ind RetailIndicators
 
 	// Факт того же месяца прошлого года — Факт[M, Y−1] (§4).
-	if v, ok := retailFactAt(s, row.CodeCFO, year-1, month); ok {
+	if v, ok := retailComparisonFactAt(s, row.CodeCFO, year-1, month); ok {
 		ind.FactPrevYearMonth = fptr(v)
 	}
 	// Факт предыдущего месяца — Факт[M−1, Y]; для января это Факт[12, Y−1] (§4).
 	py, pm := retailPrevMonth(year, month)
-	if v, ok := retailFactAt(s, row.CodeCFO, py, pm); ok {
+	if v, ok := retailComparisonFactAt(s, row.CodeCFO, py, pm); ok {
 		ind.FactPrevMonth = fptr(v)
 	}
 	// Факт текущего месяца — нужен для % вып. тактич. плана и % факт/факт ПГ.

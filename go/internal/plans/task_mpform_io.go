@@ -26,6 +26,12 @@ func (s *TaskStore) MpFormExport(ctx context.Context, taskID int64) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
+	return mpFormExportData(f)
+}
+
+// mpFormExportData writes exactly the platforms and cells present in a scoped form.
+// The HTTP handler applies the caller's scope before invoking this helper.
+func mpFormExportData(f MpTaskForm) ([]byte, error) {
 	blockName := map[string]string{}
 	blockPL := map[string]int{}
 	for _, b := range f.Lines {

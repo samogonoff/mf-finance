@@ -171,6 +171,9 @@
             </div>
             <span class="badge" :class="cardBadge(c)">{{ cardStatus(c) }}</span>
             <span v-if="c.locked" class="fc-lock"><Icon name="lucide:lock" /> закрыт</span>
+            <span v-if="c.form_code === 'TPL-TO-RETAIL' && c.missing_countries?.length" class="fc-lock">
+              Не готовы к Сипаровой: {{ c.missing_countries.join(', ') }}
+            </span>
           </div>
           <div class="fc-links">
             <!-- /plans/mp-form — экран МП, а не общий: задание по рознице открывать
@@ -179,7 +182,7 @@
             <!-- Разрез карточки идёт в ссылку: крупные и мелкие МП — разные
                  карточки с разными согласующими, и открывать они должны разные
                  формы (замечание аналитика 08.09.2026). -->
-            <NuxtLink v-if="c.form_code === 'TPL-MP' && formTaskId(c)" :to="`/plans/mp-form/${formTaskId(c)}?scope=${c.scope_key}`" class="fc-link">
+            <NuxtLink v-if="c.form_code === 'TPL-MP' && formTaskId(c)" :to="`/plans/mp-form/${formTaskId(c)}?cardId=${c.id}&scope=${c.scope_key}`" class="fc-link">
               <Icon name="lucide:file-input" /> Форма
             </NuxtLink>
             <NuxtLink v-if="c.form_code === 'TPL-MP'" :to="`/plans/mp-conditions/${c.id}`" class="fc-link">
@@ -194,6 +197,9 @@
             <NuxtLink v-if="c.form_code === 'TPL-TO-RETAIL'" :to="`/plans/retail-form/${c.id}`" class="fc-link">
               <Icon name="lucide:file-input" /> Форма
             </NuxtLink>
+            <NuxtLink v-if="reviewUrl(c) && c.status === 'on_approval'" :to="reviewUrl(c)" class="fc-link">
+              <Icon name="lucide:eye" /> Проверить
+            </NuxtLink>
             <NuxtLink v-if="c.form_code === 'TPL-TO-RETAIL'" :to="`/plans/retail-summary/${c.id}`" class="fc-link">
               <Icon name="lucide:layout-list" /> Свод
             </NuxtLink>
@@ -206,7 +212,10 @@
               <Icon name="lucide:check-check" /> Согласование
             </button>
           </div>
-          <CardProcessPanel v-if="openCard === c.id" :card-id="c.id" @changed="loadCards" />
+          <CardProcessPanel v-if="openCard === c.id" :card-id="c.id" :review-url="reviewUrl(c)"
+            :can-submit="c.form_code !== 'TPL-TO-RETAIL'"
+            submit-hint="Откройте форму розницы и подтвердите итоги по четырём статусам перед отправкой"
+            @changed="loadCards" />
         </div>
       </div>
 
@@ -321,7 +330,10 @@
               <!-- Лист согласования — панель на этом же экране (CardProcessPanel),
                    поэтому не ссылка, а раскрытие панели: отдельной страницы
                    согласования карточки нет. -->
-              <button type="button" class="btn btn-sm btn-primary" @click="openCardFromStage(c.id)">
+              <NuxtLink v-if="reviewUrl(c)" :to="reviewUrl(c)" class="btn btn-sm btn-primary" @click="stageModal = null">
+                <Icon name="lucide:eye" /> Проверить
+              </NuxtLink>
+              <button type="button" class="btn btn-sm btn-ghost" @click="openCardFromStage(c.id)">
                 <Icon name="lucide:check-check" /> Согласование
               </button>
             </div>
@@ -486,7 +498,9 @@ const routeOnlySteps = computed<StageState[]>(() => {
   const out: StageState[] = [];
   for (const steps of Object.values(routes.value)) {
     for (const st of steps) {
-      if (!st.enabled || byCode.value[st.step_code] || seen.has(st.step_code)) continue;
+      // Calendar step 1.2 is the financial controller for sales cards.
+      if (!st.enabled || st.step_code === "fin" && ["TPL-MP", "TPL-TO-RETAIL"].includes(st.form_code) ||
+          byCode.value[st.step_code] || seen.has(st.step_code)) continue;
       seen.add(st.step_code);
       const waiting = cardsOnStep(st.step_code).length;
       out.push({
@@ -554,7 +568,9 @@ const waitingLabel = (code: string): string => {
 };
 
 const cardsOnStep = (code: string) =>
-  cards.value.filter((c) => c.step_code === code && ["on_approval", "returned"].includes(c.status));
+  cards.value.filter((c) => c.form_code !== "TPL-CFO-EXP" &&
+    (c.step_code === code || code === "1.2" && c.step_code === "fin") &&
+    ["on_approval", "returned"].includes(c.status));
 
 /** Из попапа этапа — к листу согласования карточки: закрываем попап и раскрываем панель. */
 const openCardFromStage = (cardID: number) => {
@@ -618,7 +634,14 @@ const scopeLabel = (scope: string) =>
   scope === "large" ? "крупные МП" : scope === "small" ? "мелкие МП" : scope === "all" ? "все площадки" : scope;
 // Ввод формы остаётся task-driven: карточка про процесс, задание — про права и
 // срез ЦФО. Связываем их по коду формы.
-const formTaskId = (c: PlanCard): number => tasks.value.find((t) => t.form_code === c.form_code)?.id || 0;
+const formTaskId = (c: PlanCard): number => tasks.value.find((t) => t.stage_code === "1.1" &&
+  t.form_code === c.form_code && (t.covered_card_ids?.includes(c.id) || t.card_id === c.id))?.id || 0;
+const reviewUrl = (c: PlanCard): string => {
+  if (c.form_code === "TPL-TO-RETAIL") return `/plans/retail-form/${c.id}?readonly=1`;
+  if (c.form_code === "TPL-MP" && formTaskId(c))
+    return `/plans/mp-form/${formTaskId(c)}?cardId=${c.id}&scope=${encodeURIComponent(c.scope_key)}&readonly=1`;
+  return "";
+};
 
 const loadCards = async () => {
   cardsError.value = "";
@@ -656,6 +679,10 @@ const load = async () => {
       byInstance(id).catch(() => []).then((v) => (tasks.value = v)),
       loadCards()
     ]);
+    const requestedCard = Number(route.query.card);
+    if (Number.isInteger(requestedCard) && cards.value.some((c) => c.id === requestedCard)) {
+      openCard.value = requestedCard;
+    }
   } catch (e: unknown) {
     error.value = apiError(e, "Ошибка загрузки");
   }

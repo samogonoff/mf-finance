@@ -45,7 +45,8 @@ type Task struct {
 	// CardID — карточка формы, к которой ведёт это задание. Без неё интерфейс не
 	// знает, какую форму открывать: у розницы карточек четыре (по стране), и
 	// раньше кнопки перехода в форму у неё просто не было.
-	CardID int64 `json:"card_id,omitempty"`
+	CardID         int64   `json:"card_id,omitempty"`
+	CoveredCardIDs []int64 `json:"covered_card_ids,omitempty"`
 	// FormPath — готовый адрес формы для перехода из списка заданий.
 	FormPath string `json:"form_path,omitempty"`
 }
@@ -79,6 +80,7 @@ type TaskActionInput struct {
 
 // TaskStore — доступ к заданиям.
 type TaskStore struct {
+	scope  FullScopeStore // полный срез для записи формы и XLSX-импорта
 	pool   *pgxpool.Pool
 	notify TaskNotifier // канал уведомлений участникам (может быть nil)
 	fact   MpFactSource // источник факта МП (read-only) для формы
@@ -109,6 +111,9 @@ func (s *TaskStore) WithCalcContext(cards CardStore, cond MpConditionsStore, rat
 	return s
 }
 
+// WithScope applies complete access rules to task form writes.
+func (s *TaskStore) WithScope(scope FullScopeStore) *TaskStore { s.scope = scope; return s }
+
 // WithHints подключает подсказки к полям ввода (правки ТЗ 02.09.2026, часть 1):
 // фактическое значение показывается РЯДОМ с полем, в само поле не подставляется.
 func (s *TaskStore) WithHints(h HintSource) *TaskStore {
@@ -127,7 +132,7 @@ func (s *TaskStore) WithFactSnapshot(snap *MpFactSnapshot) *TaskStore {
 // задания; при её отсутствии (старые периоды) остаётся legacy.
 func (s *TaskStore) calcModeFor(ctx context.Context, plID int64, segment string) (string, Card) {
 	if s.cards == nil {
-		return CalcLegacy, Card{}
+		return CalcInverse, Card{}
 	}
 	scopes := []string{segment}
 	// Разрез задан (в том числе разрезом карточки из запроса формы) — берём
@@ -139,13 +144,13 @@ func (s *TaskStore) calcModeFor(ctx context.Context, plID int64, segment string)
 	}
 	for _, sc := range scopes {
 		if c, err := s.cards.CardByScope(ctx, plID, TemplateMP, sc); err == nil {
-			if c.CalcMode == CalcInverse {
+			if c.CalcMode == CalcInverse || cardEditable(c) {
 				return CalcInverse, c
 			}
 			return CalcLegacy, c
 		}
 	}
-	return CalcLegacy, Card{}
+	return CalcInverse, Card{}
 }
 
 type taskTemplate struct {

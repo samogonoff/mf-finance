@@ -213,35 +213,29 @@ func TestInverse_FourPlatformsFoldIntoFormTotal(t *testing.T) {
 	approxMoney(t, "свод PL = сумма площадок", got.PlPlatforms, sum)
 }
 
-// Ручное переопределение расчётной суммы не перезатирается автопересчётом
-// (ТЗ §7.2): форма показывает и расчёт, и введённое значение.
-func TestInverse_ManualOverrideNotOverwritten(t *testing.T) {
+// Статья всегда считается от доли из условий, без ручной суммы.
+func TestInverse_CostAmountComesFromConditions(t *testing.T) {
 	in := MpInverseInput{
 		SalesManagerGross: 457_380_000,
 		Conditions:        conditionsWB(),
-		Overrides:         map[string]float64{BCostAds: 10_000_000},
 	}
 	out, log := computeMpPlatformInverse(in)
 
-	if out[BCostAds] != 10_000_000 {
-		t.Fatalf("ручное значение должно сохраниться, получено %.2f", out[BCostAds])
-	}
 	var cell MpInverseCell
 	for _, c := range log {
 		if c.BlockType == BCostAds {
 			cell = c
 		}
 	}
-	if !cell.Manual {
-		t.Fatal("ячейка должна быть помечена как ручная")
+	if cell.Manual {
+		t.Fatal("расчётная статья не бывает ручной")
 	}
-	// Расчёт по условиям продолжает считаться и показывается рядом. База —
-	// цена площадки без НДС (правка §20), а не цена менеджера.
+	// База — цена площадки без НДС.
 	approxMoney(t, "расчётное значение статьи", cell.Calculated, 262_208_559*0.04)
-	// Прямые затраты пересчитаны с ручным значением, а не с расчётным.
-	wantDirect := out[BCommission] + 10_000_000 +
+	approxMoney(t, "значение статьи", out[BCostAds], cell.Calculated)
+	wantDirect := out[BCommission] + out[BCostAds] +
 		262_208_559*(0.0530+0.0030+0.0315+0.0315+0.0010+0.0150+0.0020)
-	approxMoney(t, "прямые затраты с ручной правкой", out[BPlatformCosts], wantDirect)
+	approxMoney(t, "прямые затраты по долям", out[BPlatformCosts], wantDirect)
 }
 
 // Отрицательная доля (компенсации, ТЗ §4.2) уменьшает прямые затраты.
@@ -290,9 +284,12 @@ func conditionsWBPlatformBase() MpConditionsInput {
 }
 
 func TestInverse_DeltaAcceptanceWildberriesJune(t *testing.T) {
+	c := conditionsWBPlatformBase()
+	// Эталон задаёт агентское явно: отсутствующая доля теперь не выводится из норматива.
+	c.Shares[BCostAgent] = 20_137_208.38 / 262_208_559.17
 	out, _ := computeMpPlatformInverse(MpInverseInput{
 		SalesManagerGross: 457_380_000,
-		Conditions:        conditionsWBPlatformBase(),
+		Conditions:        c,
 	})
 
 	approxMoney(t, "продажи менеджера без НДС", out[BSalesManagerNet], 380_012_404.59)
@@ -314,24 +311,17 @@ func TestInverse_DeltaAcceptanceWildberriesJune(t *testing.T) {
 	approx(t, "1 − 1006/1045 = %СПП", 1-out[BSalesPlatNet]/out[BSalesManagerNet], 0.31)
 }
 
-// Доля агентского вознаграждения — ОСТАТОК норматива площадки (прототип, строка
-// 85). Проверяем на Wildberries: норматив вычитает долю комиссии и доли
-// транспортной, складской, штрафов и прочих удержаний.
-func TestInverse_AgentShareFromPlatformNorm(t *testing.T) {
+// Отсутствующая доля остаётся пустой, даже если есть норматив площадки.
+func TestInverse_AgentShareMissingIsNotInferred(t *testing.T) {
 	c := conditionsWB()
 	c.NormShare = 0.43
-	delete(c.Shares, BCostAgent) // доля не задана — считаем от норматива
+	delete(c.Shares, BCostAgent)
 
 	out, _ := computeMpPlatformInverse(MpInverseInput{SalesManagerGross: 457_380_000, Conditions: c})
 
 	platNet := out[BSalesPlatNet]
-	commissionShare := out[BCommission] / platNet
-	// Норматив задан к цене менеджера, доли — к цене площадки: перед вычитанием
-	// он приводится к базе долей делением на (1 − %СПП).
 	normBase := 0.43 / (1 - c.SppPct)
-	want := normBase - commissionShare - c.Shares[BCostLogTransport] - c.Shares[BCostLogWarehouse] -
-		c.Shares[BCostPenalties] - c.Shares[BCostOther]
-	approx(t, "доля агентского из норматива", out[BCostAgent]/platNet, want)
+	approx(t, "отсутствующая доля агентского", out[BCostAgent]/platNet, 0)
 	approx(t, "норматив в базе долей", out[BNormShare], normBase)
 
 	// Заданная руками доля норматив не трогает: условия площадки старше.
@@ -339,6 +329,19 @@ func TestInverse_AgentShareFromPlatformNorm(t *testing.T) {
 	c2.NormShare = 0.43
 	out2, _ := computeMpPlatformInverse(MpInverseInput{SalesManagerGross: 457_380_000, Conditions: c2})
 	approx(t, "заданная доля агентского сохранена", out2[BCostAgent]/out2[BSalesPlatNet], 0.0530)
+}
+
+func TestInverse_SalesSppAndOnlyConfiguredShares(t *testing.T) {
+	out, _ := computeMpPlatformInverse(MpInverseInput{
+		SalesManagerGross: 120,
+		Conditions: MpConditionsInput{VatRatio: 1.2, SppPct: 0.1,
+			MarkupPct: 0.5, MarkupTotalPct: 0.2,
+			Shares: map[string]float64{BCostAds: 0.1}},
+	})
+	approx(t, "выручка площадки без НДС", out[BSalesPlatNet], 90)
+	approx(t, "расход по заданной доле", out[BCostAds], 9)
+	approx(t, "отсутствующая доля не выводится", out[BCostAgent], 0)
+	approx(t, "себестоимость из наценки", out[BShipments], 60)
 }
 
 // Удержания превысили норматив: Excel считает отрицательную долю молча, кабинет

@@ -194,9 +194,9 @@ func ValidateRetailForm(in RetailValidationInput) (blocking, warnings []Validati
 			if m != in.Month {
 				continue
 			}
-			factPrevYear, hasFactPrevYear := retailFactAt(in.Series, r.CodeCFO, in.Year-1, m)
+			factPrevYear, hasFactPrevYear := retailComparisonFactAt(in.Series, r.CodeCFO, in.Year-1, m)
 			py, pm := retailPrevMonth(in.Year, m)
-			factPrevMonth, _ := retailFactAt(in.Series, r.CodeCFO, py, pm)
+			factPrevMonth, _ := retailComparisonFactAt(in.Series, r.CodeCFO, py, pm)
 			strategy := in.Series.Strategy[RetailCellKey{r.CodeCFO, in.Year, m}]
 
 			lflWarn := in.Params.ResolveOr(ParamLFLWarn, r, in.Country, DefaultLFLWarn)

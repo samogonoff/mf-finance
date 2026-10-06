@@ -16,9 +16,10 @@
 -->
 <template>
   <div class="page-mpf">
-    <header class="page-header">
+    <header class="page-header sticky-period">
       <div>
         <h1 class="page-title">Форма МП · {{ segmentTitle }}</h1>
+		<h2 v-if="form" class="tactic-month">Тактика: {{ tacticMonth }}</h2>
         <p class="page-subtitle">
           {{ form?.task.title }} · {{ form?.year }}-{{ String(form?.month || 0).padStart(2, "0") }} ·
           показано {{ visiblePlatforms.length }} из {{ form?.platforms.length || 0 }} площадок ·
@@ -59,8 +60,7 @@
             <option value="USD">USD</option>
           </select>
         </label>
-        <button v-if="canEdit" class="btn btn-sm btn-ghost" :disabled="!hasStrategy" title="Копировать стратегический бюджет в тактику (TPL-09)" @click="copyStrategy"><Icon name="lucide:copy" /> Стратегия→тактика</button>
-        <button v-if="canEdit" class="btn btn-sm btn-ghost" :disabled="!hasTarget" title="Копировать тактику-таргет (Budgeting) в форму" @click="copyTarget"><Icon name="lucide:copy-check" /> Таргет→тактика</button>
+		<button v-if="canEdit" class="btn btn-sm btn-ghost" title="Заполнить продажи из стратегического бюджета за месяц тактики" @click="copyStrategy"><Icon name="lucide:copy" /> Заполнить из стратегии</button>
         <button class="btn btn-sm btn-ghost" @click="doExport"><Icon name="lucide:download" /> Экспорт</button>
         <button v-if="canEdit" class="btn btn-sm btn-ghost" @click="fileInput?.click()"><Icon name="lucide:upload" /> Импорт</button>
         <input ref="fileInput" type="file" accept=".xlsx" class="hidden-file" @change="doImport" />
@@ -70,7 +70,7 @@
 
     <p v-if="error" class="banner banner-neg">{{ error }}</p>
     <p v-if="note" class="banner banner-pos">{{ note }}</p>
-    <p v-if="form && !canEdit" class="banner banner-warn">Только просмотр — вы не исполнитель этого задания.</p>
+	<p v-if="form && !canEdit" class="banner banner-warn">Форма для согласования · только просмотр.</p>
 
     <!-- Оболочка процесса: статус карточки, шаги, возврат, публикация. Отправку
          на согласование блокируем по результату валидаций (ТЗ §7 — блокирующие
@@ -119,7 +119,7 @@
 
     <!-- Одна форма на все МП: фильтры сужают показ, ввод по скрытым площадкам
          сохраняется как есть (фильтр — только представление). -->
-    <div v-if="form && form.platforms.length > 1" class="mp-filters">
+	<div v-if="form" class="mp-filters">
       <div class="mf">
         <span class="mf-lbl">Маркет</span>
         <select v-model="platformFilter" class="select select-sm">
@@ -129,17 +129,16 @@
           </option>
         </select>
       </div>
-      <div v-if="segments.length > 1" class="mf">
+	  <div class="mf">
         <span class="mf-lbl">Сегмент</span>
         <div class="chip-row">
-          <button type="button" class="chip" :class="{ active: segmentFilter === '' }" @click="segmentFilter = ''">все</button>
           <button
-            v-for="s in segments"
+			v-for="s in ['large', 'small']"
             :key="s"
             type="button"
             class="chip"
-            :class="{ active: segmentFilter === s }"
-            @click="segmentFilter = s"
+			:class="{ active: viewScope === s }"
+			@click="switchGroup(s)"
           >{{ s === "large" ? "крупные" : "мелкие" }}</button>
         </div>
       </div>
@@ -154,15 +153,25 @@
 
     <div v-if="form" class="legend">
       <span class="lg lg-input">ввод</span>
-      <span class="lg lg-calced">расчёт (правится)</span>
       <span class="lg lg-calc">расчёт</span>
       <span v-if="isInverse" class="lg-hint">
-        Режим «расчёт от условий»: руками вводятся только продажи с НДС. %СПП, наценки и
-        себестоимость правятся в реестре условий; сумму статьи затрат можно переопределить
-        вручную — автопересчёт её не затрёт.
+		Вводятся продажи с НДС и % СПП. Доли и наценки действуют из условий площадки; суммы затрат рассчитываются.
       </span>
       <span v-else class="lg-hint">Менеджер задаёт «Продажи с НДС», %СПП и статьи затрат — остальное считается автоматически.</span>
     </div>
+
+	<section v-if="form" class="card approval-summary">
+	  <div class="card-header"><span class="card-title">Свод по площадкам · продажи с НДС</span></div>
+	  <div class="table-wrap"><table class="data-table compact">
+		<thead><tr><th>Группа / площадка</th><th class="num">Тактика</th><th>ФБС, справочно</th><th class="num">Факт прошлого месяца</th><th class="num">Факт прошлого года</th><th class="num">Стратегия</th></tr></thead>
+		<tbody>
+		  <template v-for="group in summaryGroups" :key="group.segment">
+			<tr class="summary-group" @click="toggleGroup(group.segment)"><td>{{ expandedGroups.has(group.segment) ? '▾' : '▸' }} {{ group.segment === 'large' ? 'Крупные МП' : 'Мелкие МП' }}</td><td class="num">{{ fmtMoney(group.tactic) }}</td><td>источник ФБС не подключён</td><td class="num">{{ fmtMoney(group.prevMonth) }}</td><td class="num">{{ fmtMoney(group.prevYear) }}</td><td class="num">{{ fmtMoney(group.strategy) }}</td></tr>
+			<tr v-for="p in expandedGroups.has(group.segment) ? group.platforms : []" :key="p.code_cfo"><td><button type="button" class="plat-btn" @click="openPlatform(p)">{{ p.name || p.code_cfo }}</button></td><td class="num">{{ fmtMoney(platformValues[p.code_cfo]?.[B.salesManagerGross]) }}</td><td>источник ФБС не подключён</td><td class="num">{{ fmtMoney(cellRef(p.code_cfo, B.salesManagerGross)?.fact_prev_month) }}</td><td class="num">{{ fmtMoney(prevOf(p.code_cfo, B.salesManagerGross)) }}</td><td class="num">{{ fmtMoney(stratOf(p.code_cfo, B.salesManagerGross)) }}</td></tr>
+		  </template>
+		</tbody>
+	  </table></div>
+	</section>
 
     <!-- Первая загрузка: контур будущей таблицы. Форма тянет факт/стратегию/таргет
          из OLAP — это секунды, и пустой экран всё это время выглядит как зависание. -->
@@ -209,8 +218,8 @@
           </thead>
           <tbody>
             <template v-for="sec in sections" :key="sec.name">
-              <tr class="sec-row"><td :colspan="visiblePlatforms.length + 2">{{ sec.name }}</td></tr>
-              <tr v-for="line in sec.lines" :key="line.block_type" class="line-row" :class="lineClass(line)">
+			  <tr class="sec-row"><td :colspan="visiblePlatforms.length + 2"><button type="button" class="section-toggle" @click="toggleSection(sec.name)">{{ collapsedSections.has(sec.name) ? '▸' : '▾' }} {{ sec.name }}</button></td></tr>
+			  <tr v-for="line in collapsedSections.has(sec.name) ? [] : sec.lines" :key="line.block_type" class="line-row" :class="lineClass(line)">
                 <td class="col-line">
                   <span class="line-name">{{ line.name }}</span>
                   <span v-if="line.code_pl" class="cp">PL {{ line.code_pl }}</span>
@@ -251,6 +260,7 @@
                       <button v-if="canEdit && line.kind === 'input'" class="corr-btn" :class="{ on: isCorr(p.code_cfo, line.block_type) }" title="Корректировка с причиной (ADJ-02)" @click="toggleCorr(p.code_cfo, line.block_type)"><Icon name="lucide:pencil" /></button>
                     </div>
                     <span v-if="line.kind === 'input' && factOf(p.code_cfo, line.block_type) != null" class="fact">факт: {{ fmtMoney(factOf(p.code_cfo, line.block_type)) }}</span>
+					<span v-if="line.block_type === B.salesManagerGross" class="fbs-hint">ФБС, справочно: источник ФБС не подключён</span>
                     <!-- Подсказка к полю ввода (правки ТЗ 02.09.2026, часть 1):
                          %СПП и штрафы вводятся руками, а фактическое значение
                          показывается РЯДОМ — вместе с расхождением и оговорками
@@ -279,10 +289,11 @@
                     <input v-if="isCorr(p.code_cfo, line.block_type)" v-model="corr[key(p.code_cfo, line.block_type)]" class="corr-reason" :disabled="!canEdit" placeholder="причина корректировки…" />
                   </template>
                   <template v-else>
-                    <span class="calc-val" :class="{ neg: cellValue(line, p.code_cfo) < 0 }">{{ fmt(line, cellValue(line, p.code_cfo)) }}</span>
+					<span class="calc-val" :class="{ neg: cellValue(line, p.code_cfo) < 0 }">{{ missingShare(line, p.code_cfo) ? '—' : fmt(line, cellValue(line, p.code_cfo)) }}</span>
                     <!-- Доля статьи: в inverse она ЗАДАНА условиями площадки, поэтому
                          показываем её из реестра, а не считаем обратно от суммы. -->
-                    <span v-if="line.cost_line" class="share">доля {{ fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}</span>
+					<span v-if="line.cost_line" class="share">доля {{ missingShare(line, p.code_cfo) ? 'не задана' : fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}</span>
+					<span v-if="line.block_type === B.salesManagerGross" class="fbs-hint">ФБС, справочно: источник ФБС не подключён</span>
                   </template>
                 </td>
 
@@ -296,7 +307,7 @@
                     />
                   </template>
                   <template v-else>
-                    <span class="calc-val" :class="{ neg: totalValue(line) < 0 }">{{ fmt(line, totalValue(line)) }}</span>
+					<span class="calc-val" :class="{ neg: totalValue(line) < 0 }">{{ line.cost_line && visiblePlatforms.some(p => missingShare(line, p.code_cfo)) ? '—' : fmt(line, totalValue(line)) }}</span>
                   </template>
                 </td>
               </tr>
@@ -373,7 +384,6 @@ import {
   type MpTaskForm,
   type MpLine,
   type MpSaveRow,
-  type MpFormCell,
   type MpFormPlatform,
   type FieldHint
 } from "~/composables/useTasks";
@@ -399,6 +409,8 @@ const taskId = Number(route.params.taskId);
 // Разрез карточки (large|small) приходит ссылкой из блока «Формы периода»:
 // крупные и мелкие МП — разные карточки с разными согласующими.
 const scope = computed(() => String(route.query.scope || ""));
+const viewScope = ref(scope.value);
+const readonly = computed(() => route.query.readonly === "1");
 const api = useTasks();
 const cardApi = useMpConditions();
 const { user } = useAuth();
@@ -420,7 +432,8 @@ const fileInput = ref<HTMLInputElement | null>(null);
 
 // ── Режим расчёта, карточка процесса, валидации ──
 const isInverse = computed(() => form.value?.calc_mode === "inverse");
-const cardId = computed(() => form.value?.card_id || 0);
+const cardId = computed(() => form.value?.card_id || Number(route.query.cardId) || 0);
+const tacticMonth = computed(() => form.value ? new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(new Date(form.value.year, form.value.month - 1, 1)) : "");
 const modeLabel = computed(() => (isInverse.value ? "расчёт от условий" : "расчёт от сумм"));
 const modeHint = computed(() =>
   isInverse.value
@@ -478,6 +491,10 @@ const sections = computed(() => {
   }
   return out;
 });
+const collapsedSections = reactive(new Set<string>());
+const toggleSection = (name: string) => { if (collapsedSections.has(name)) collapsedSections.delete(name); else collapsedSections.add(name); };
+const expandedGroups = reactive(new Set<string>());
+const toggleGroup = (name: string) => { if (expandedGroups.has(name)) expandedGroups.delete(name); else expandedGroups.add(name); };
 
 // Одна форма на все МП (миграция 0029): площадки обоих сегментов приходят одним
 // заданием, фильтры ниже — только представление, они не влияют на сохранение.
@@ -491,6 +508,15 @@ const toggleFormula = (block: string) => {
 const platformFilter = ref("0");
 const segmentFilter = ref("");
 const legalFilter = ref("");
+const switchGroup = async (group: string) => {
+	if (viewScope.value === group) return;
+	if (dirty.value && !window.confirm("Несохранённые продажи и % СПП будут потеряны. Перейти к другой группе?")) return;
+	const before = viewScope.value;
+	viewScope.value = group;
+	platformFilter.value = "0";
+	segmentFilter.value = "";
+	if (!(await load())) viewScope.value = before;
+};
 
 const segments = computed(() =>
   [...new Set((form.value?.platforms || []).map((p) => p.segment).filter(Boolean))].sort()
@@ -595,8 +621,10 @@ const segmentGroups = computed(() => {
   return out;
 });
 
-const editableCell = (line: MpLine) => canEdit.value && line.editable;
+const editableCell = (line: MpLine) => canEdit.value && line.editable && (!isInverse.value || line.block_type === B.salesManagerGross || line.block_type === B.spp);
 const canEdit = computed(() => {
+  if (readonly.value) return false;
+	if (form.value?.editable === false) return false;
   if (isAdmin.value || hasRole("ROLE_PLANS_ADMIN")) return true;
   const uid = user.value?.id;
   const t = form.value?.task;
@@ -608,6 +636,7 @@ const backLink = computed(() => (form.value ? `/plans/process/${form.value.task.
 const condOf = (cfo: number): MpConditions | null => form.value?.conditions?.[cfo] ?? null;
 // Доля статьи из условий — она ЗАДАНА, а не выведена из суммы.
 const condShare = (line: MpLine, cfo: number): number => condOf(cfo)?.shares?.[line.block_type] ?? 0;
+const missingShare = (line: MpLine, cfo: number): boolean => isInverse.value && line.cost_line && !(line.block_type in (condOf(cfo)?.shares || {}));
 
 // Живой пересчёт каскада по каждой площадке из введённых значений.
 // Направление берём из calc_mode карточки: в inverse расходная часть считается из
@@ -616,6 +645,11 @@ const condShare = (line: MpLine, cfo: number): number => condOf(cfo)?.shares?.[l
 const platformValues = computed<Record<number, Record<string, number>>>(() => {
   const map: Record<number, Record<string, number>> = {};
   for (const p of form.value?.platforms || []) {
+	if (form.value?.editable === false) {
+	  map[p.code_cfo] = Object.fromEntries((form.value?.cells || [])
+		.filter(c => c.code_cfo === p.code_cfo).map(c => [c.block_type, c.value]));
+	  continue;
+	}
     const inp: Record<string, number | null | undefined> = {};
     for (const l of form.value?.lines || []) {
       if (l.scope === "platform" && l.editable) inp[l.block_type] = inputs[key(p.code_cfo, l.block_type)];
@@ -624,7 +658,9 @@ const platformValues = computed<Record<number, Record<string, number>>>(() => {
     // законодательная ставка страны — фолбэк, если ответ его не содержит.
     const vat = form.value?.vat_by_cfo?.[p.code_cfo] ?? vatBasisFromRate(vatByCountry(p.country));
     const cond = condOf(p.code_cfo);
-    map[p.code_cfo] = isInverse.value && cond ? computePlatformInverse(inp, cond, vat) : computePlatform(inp, vat);
+	map[p.code_cfo] = isInverse.value
+	  ? computePlatformInverse(inp, cond ?? { code_cfo: p.code_cfo, spp_pct: 0, markup_pct: 0, markup_total_pct: 0, shares: {} }, vat)
+	  : computePlatform(inp, vat);
   }
   return map;
 });
@@ -707,12 +743,19 @@ const shareOf = (line: MpLine, cfo: number): number => {
 };
 
 const cellRef = (cfo: number, block: string) => form.value?.cells.find((c) => c.code_cfo === cfo && c.block_type === block);
+const sumNullable = (platforms: MpFormPlatform[], field: "fact_prev_month" | "fact_prev" | "strategy"): number | null => {
+  const values = platforms.map(p => cellRef(p.code_cfo, B.salesManagerGross)?.[field]).filter((v): v is number => typeof v === "number");
+  return values.length ? values.reduce((a, b) => a + b, 0) : null;
+};
+const summaryGroups = computed(() => ["large", "small"].map(segment => {
+  const platforms = visiblePlatforms.value.filter(p => p.segment === segment);
+  return { segment, platforms, tactic: platforms.length ? platforms.reduce((s, p) => s + (platformValues.value[p.code_cfo]?.[B.salesManagerGross] ?? 0), 0) : null,
+    prevMonth: sumNullable(platforms, "fact_prev_month"), prevYear: sumNullable(platforms, "fact_prev"), strategy: sumNullable(platforms, "strategy") };
+}).filter(g => g.platforms.length));
 const factOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.fact ?? null;
 const prevOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.fact_prev ?? null;
 const stratOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.strategy ?? null;
 const targetOf = (cfo: number, block: string): number | null => cellRef(cfo, block)?.target ?? null;
-const hasStrategy = computed(() => !!form.value?.cells.some((c) => c.strategy != null));
-const hasTarget = computed(() => !!form.value?.cells.some((c) => c.target != null));
 
 // Ввод процентов — в процентах: в поле 31, в модели 0.31 (финансисты вводят «31»,
 // а не долю). Округление гасит артефакты float при ×100.
@@ -750,6 +793,7 @@ const fmt = (line: MpLine, v: number | null | undefined) => (line.value_kind ===
 const seedFromCells = () => {
   for (const k of Object.keys(inputs)) delete inputs[k];
   for (const k of Object.keys(totals)) delete totals[k];
+	for (const k of Object.keys(corr)) delete corr[k];
   for (const c of form.value?.cells || []) {
     const line = lineMap.value[c.block_type];
     if (!line?.editable) continue;
@@ -770,32 +814,46 @@ const seedFromCells = () => {
   }
 };
 
-// Перенос read-only сценария в тактику: стратегия (TPL-09) или таргет из Budgeting.
-const copyScenario = (pick: (c: MpFormCell) => number | null, what: string) => {
+const copyStrategy = () => {
   if (!form.value) return;
-  let cnt = 0;
-  for (const c of form.value.cells) {
-    const v = pick(c);
-    if (v == null) continue;
-    const line = lineMap.value[c.block_type];
-    if (!line?.editable) continue;
-    if (line.scope === "total") totals[c.block_type] = v;
-    else inputs[key(c.code_cfo, c.block_type)] = v;
-    cnt++;
+  if (dirty.value && !window.confirm("Несохранённые продажи и % СПП будут затёрты. Продолжить?")) return;
+  const empty: string[] = [];
+  let count = 0;
+  for (const p of form.value.platforms) {
+    const value = stratOf(p.code_cfo, B.salesManagerGross);
+    if (value == null) { empty.push(p.name || String(p.code_cfo)); continue; }
+    inputs[key(p.code_cfo, B.salesManagerGross)] = value;
+	inputs[key(p.code_cfo, B.spp)] = cellRef(p.code_cfo, B.spp)?.tactic ?? condOf(p.code_cfo)?.spp_pct ?? 0;
+	for (const block of [B.salesManagerGross, B.spp]) {
+	  const saved = cellRef(p.code_cfo, block);
+	  const k = key(p.code_cfo, block);
+	  if (saved?.is_manual) corr[k] = saved.reason || "";
+	  else delete corr[k];
+	}
+    count++;
   }
-  if (cnt) { dirty.value = true; note.value = `Скопировано из «${what}»: ${cnt} значений`; }
+  if (count) dirty.value = true;
+  note.value = count ? `Заполнены продажи ${count} площадок.` : "";
+  if (empty.length) note.value += ` Нет стратегии за выбранный период: ${empty.join(", ")}.`;
 };
-const copyStrategy = () => copyScenario((c) => c.strategy, "стратегия");
-const copyTarget = () => copyScenario((c) => c.target, "таргет");
 
 const load = async () => {
   loading.value = true;
   try {
-    form.value = await api.mpForm(taskId, currency.value, scope.value);
+	let loaded = await api.mpForm(taskId, currency.value, viewScope.value);
+	if (!viewScope.value && loaded.platforms.length) {
+	  viewScope.value = loaded.platforms[0].segment;
+	  loaded = await api.mpForm(taskId, currency.value, viewScope.value);
+	}
+	form.value = loaded;
     seedFromCells();
+	if (readonly.value) {
+	  for (const sec of sections.value) if (/затрат/i.test(sec.name)) collapsedSections.add(sec.name);
+	}
     dirty.value = false;
     await loadCommonCosts();
-  } catch (e) { error.value = apiError(e, "Ошибка загрузки формы"); }
+	return true;
+	} catch (e) { error.value = apiError(e, "Ошибка загрузки формы"); return false; }
   finally { loading.value = false; }
 };
 
@@ -834,7 +892,7 @@ const save = async () => {
   saving.value = true; error.value = ""; note.value = "";
   const rows: MpSaveRow[] = [];
   for (const line of form.value.lines) {
-    if (!line.editable) continue;
+    if (!line.editable || (isInverse.value && line.block_type !== B.salesManagerGross && line.block_type !== B.spp)) continue;
     if (line.scope === "total") {
       const v = totals[line.block_type];
       if (v != null && !Number.isNaN(v)) rows.push({ code_cfo: 0, block_type: line.block_type, code_pl: line.code_pl, amount: Number(v), is_manual: false, comment: "" });
@@ -882,6 +940,11 @@ onMounted(load);
 </script>
 
 <style scoped>
+.sticky-period { position: sticky; top: 0; z-index: 15; background: var(--bg, #fff); padding-bottom: var(--sp-2); }
+.tactic-month { margin: 2px 0; font-size: 1.35rem; font-weight: 750; }
+.section-toggle { border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
+.summary-group { cursor: pointer; font-weight: 700; background: var(--surface-alt, #f3f5f7); }
+.fbs-hint { display: block; color: var(--text-muted); font-size: var(--fs-2xs); }
 /* Кнопка формулы: иконка с нормальной зоной клика вместо нативного title. */
 .fi-btn { border: 0; background: none; padding: 2px; margin-left: 4px; cursor: pointer; color: var(--text-muted); line-height: 1; }
 .fi-btn:hover, .fi-btn.on { color: var(--accent); }

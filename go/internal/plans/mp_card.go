@@ -71,6 +71,21 @@ func (p *MpCardProvider) FormSnapshot(ctx context.Context, c Card) (map[string]a
 		"values":    rows,
 		"calc_mode": c.CalcMode,
 	}
+	// Зафиксированные условия нужны для чтения утверждённой версии: более
+	// поздняя правка реестра не должна менять её расходную часть задним числом.
+	if p.common != nil {
+		if list, err := p.common.Conditions(ctx, c.PlID, c.Year, c.Month); err == nil {
+			conditions := map[int]MpConditions{}
+			for _, condition := range list {
+				if segments[condition.Segment] {
+					conditions[condition.CodeCFO] = condition
+				}
+			}
+			snap["conditions"] = conditions
+		} else {
+			return nil, err
+		}
+	}
 	if p.rates != nil {
 		snap["fx"] = p.rates.Snapshot(ctx, c.Year, c.Month, "RUB", "BYN", "USD", "KZT", "UZS")
 		// Фиксируем ИМЕННО ТО, чем считалась форма: отношения плановых сумм, а

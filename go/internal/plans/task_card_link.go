@@ -28,8 +28,14 @@ func (s *TaskStore) attachFormLinks(ctx context.Context, tasks []Task) {
 		case TemplateMP:
 			// Форма МП открывается по заданию; карточку всё равно приложим —
 			// по ней экран показывает статус, условия и общие затраты.
-			if c, err := s.mpCardFor(ctx, t.PlID); err == nil {
-				t.CardID = c
+			segments := s.segmentsByCfo(ctx, t.CfoCodes)
+			for _, scope := range mpTaskScopes(t.CfoCodes, segments) {
+				if c, err := s.cards.CardByScope(ctx, t.PlID, TemplateMP, scope); err == nil {
+					t.CoveredCardIDs = append(t.CoveredCardIDs, c.ID)
+					if t.CardID == 0 {
+						t.CardID = c.ID
+					}
+				}
 			}
 			t.FormPath = fmt.Sprintf("/plans/mp-form/%d", t.ID)
 		case TemplateExp:
@@ -60,14 +66,29 @@ func (s *TaskStore) attachFormLinks(ctx context.Context, tasks []Task) {
 	}
 }
 
-// mpCardFor — карточка МП периода: сначала large, иначе small.
-func (s *TaskStore) mpCardFor(ctx context.Context, plID int64) (int64, error) {
-	for _, scope := range []string{"large", "small"} {
-		if c, err := s.cards.CardByScope(ctx, plID, TemplateMP, scope); err == nil {
-			return c.ID, nil
+func mpTaskScopes(codes []int, segments map[int]string) []string {
+	seen := map[string]bool{}
+	for _, code := range codes {
+		scope := segments[code]
+		if scope == "" {
+			for _, platform := range MarketplaceSeed() {
+				if platform.CodeCFO == code {
+					scope = platform.Segment
+					break
+				}
+			}
+		}
+		if scope == "large" || scope == "small" {
+			seen[scope] = true
 		}
 	}
-	return 0, fmt.Errorf("карточка МП периода %d не найдена", plID)
+	out := make([]string, 0, 2)
+	for _, scope := range []string{"large", "small"} {
+		if seen[scope] {
+			out = append(out, scope)
+		}
+	}
+	return out
 }
 
 // taskCountry — страна задания по его ЦФО. Берём страну первого магазина из

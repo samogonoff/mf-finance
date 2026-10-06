@@ -59,7 +59,9 @@ func TestProcessFlow_PG(t *testing.T) {
 
 	svc := NewCardService(cardStore).
 		WithStages(store).
-		WithFillTasks(tasks)
+		WithFillTasks(tasks).
+		WithRetailCountryGate(false).
+		WithOwners(ownerStub{owners: map[string]int64{"1.1": 7, "fin": 8, "1.2": 8, "1.3": 9, "1.4": 10}})
 
 	// ── Шаг 0: карточки форм и этапы периода ────────────────────────────────
 	cards, err := svc.EnsureCards(ctx, plID, 0)
@@ -85,7 +87,7 @@ func TestProcessFlow_PG(t *testing.T) {
 
 	// ── Шаг 1: заполняющий отправляет ОДНУ форму розницы ───────────────────
 	target := cardByScope(t, cards, TemplateRetail, "BY")
-	if _, err := svc.Action(ctx, target.ID, CardActionInput{Action: "submit", ActorID: 0}); err != nil {
+	if _, err := svc.Action(ctx, target.ID, CardActionInput{Action: "submit", ActorID: 0, RetailTotalsReviewed: true}); err != nil {
 		t.Fatalf("отправка формы на согласование: %v", err)
 	}
 	got := cardNow(ctx, t, cardStore, target.ID)
@@ -194,7 +196,7 @@ func walkCardToApproved(ctx context.Context, t *testing.T, svc *CardService, sto
 		if c.StepCode == "1.1" {
 			action = "submit"
 		}
-		if _, err := svc.Action(ctx, cardID, CardActionInput{Action: action, ActorID: 0}); err != nil {
+		if _, err := svc.Action(ctx, cardID, CardActionInput{Action: action, ActorID: 0, RetailTotalsReviewed: true}); err != nil {
 			t.Fatalf("карточка %d, действие %s на шаге %s: %v", cardID, action, c.StepCode, err)
 		}
 	}

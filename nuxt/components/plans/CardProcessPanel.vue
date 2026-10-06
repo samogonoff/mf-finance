@@ -70,8 +70,22 @@
       <Icon name="lucide:triangle-alert" /> {{ softWarning }}
     </p>
 
+    <p v-if="card?.form_code === 'TPL-TO-RETAIL' && card.missing_countries?.length" class="cpp-soft">
+      <Icon name="lucide:globe" /> До шага Сипаровой не готовы: {{ card.missing_countries.join(', ') }}.
+    </p>
+
+    <slot v-if="canSubmitStep" name="before-submit" />
+
+    <label v-if="canApproveStep" class="fld">
+      <span class="fld-lbl">Комментарий к согласованию</span>
+      <textarea v-model="approvalComment" class="textarea" rows="2" placeholder="пояснение к решению (необязательно)"></textarea>
+    </label>
+
     <!-- ===== Действия по статусу ===== -->
     <div v-if="card" class="cpp-actions">
+      <NuxtLink v-if="reviewUrl && canApproveStep" :to="reviewUrl" class="btn btn-sm btn-primary">
+        <Icon name="lucide:eye" /> Проверить форму
+      </NuxtLink>
       <button
         v-if="canSubmitStep"
         class="btn btn-sm btn-primary"
@@ -85,7 +99,7 @@
         v-if="canApproveStep"
         class="btn btn-sm btn-primary"
         :disabled="busy"
-        @click="act('approve')"
+        @click="act('approve', '', approvalComment)"
       ><Icon name="lucide:check-check" /> Согласовать</button>
 
       <button
@@ -375,8 +389,10 @@ const props = withDefaults(
      * шаблоне отдельной формы.
      */
     softWarning?: string;
+    retailTotalsReviewed?: boolean;
+    reviewUrl?: string;
   }>(),
-  { canSubmit: true, submitHint: "" }
+  { canSubmit: true, submitHint: "", retailTotalsReviewed: false, reviewUrl: "" }
 );
 const emit = defineEmits<{ (e: "changed", card: PlanCard): void }>();
 
@@ -401,6 +417,7 @@ const loading = ref(true);
 const busy = ref(false);
 const error = ref("");
 const note = ref("");
+const approvalComment = ref("");
 const ret = reactive({ open: false, target: "", comment: "" });
 const reopen = reactive({ open: false, comment: "" });
 const ver = reactive({ open: false, no: 0, text: "" });
@@ -543,10 +560,12 @@ const act = async (action: string, target = "", comment = "") => {
   error.value = "";
   note.value = "";
   try {
-    const c = await api.cardAction(props.cardId, { action, target_step: target, comment });
+    const c = await api.cardAction(props.cardId, { action, target_step: target, comment,
+      retail_totals_reviewed: action === "submit" ? props.retailTotalsReviewed : undefined });
     card.value = c;
     emit("changed", c);
     note.value = ACTION_NOTE[action] || "Состояние карточки обновлено.";
+    if (action === "approve") approvalComment.value = "";
     await load();
   } catch (e: unknown) {
     error.value = apiError(e, "Переход не выполнен");

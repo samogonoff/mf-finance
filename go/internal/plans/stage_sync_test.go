@@ -151,3 +151,17 @@ func TestScopeFilter_ExplicitFinStep(t *testing.T) {
 		t.Fatal("правило на другой шаг роль финансиста не даёт")
 	}
 }
+
+func TestFinancialControllerCardDrivesSalesStage12(t *testing.T) {
+	stages := []StageState{{Code: "1.2", Track: "sales", Status: "pending"}}
+	cards := []Card{{FormCode: TemplateRetail, Status: CardOnApproval, StepCode: StepFinCode}}
+	got := StageStatusFromCards(stages, cards)
+	if got[0].Status != "in_progress" {
+		t.Fatalf("fin should drive calendar stage 1.2: %+v", got[0])
+	}
+	cards[0].Status = CardReturned
+	got = StageStatusFromCards(stages, cards)
+	if got[0].Status != "returned" {
+		t.Fatalf("return to fin should appear on calendar: %+v", got[0])
+	}
+}

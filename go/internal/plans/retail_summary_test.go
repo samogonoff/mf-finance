@@ -36,8 +36,8 @@ func TestSummary_CurrencyBlocksAndFieldSets(t *testing.T) {
 	if nat.Currency != "BYN" || !nat.Full {
 		t.Errorf("первый блок должен быть нац. валютой с полным набором, got %+v", nat.Currency)
 	}
-	if len(nat.Fields) != 11 {
-		t.Errorf("нац. блок: показателей %d, ТЗ §8 требует 11", len(nat.Fields))
+	if len(nat.Fields) != 12 {
+		t.Errorf("нац. блок: показателей %d, включая факт предыдущего месяца нужно 12", len(nat.Fields))
 	}
 	for _, b := range sum.Blocks {
 		if b.Currency == "USD" {
@@ -45,11 +45,11 @@ func TestSummary_CurrencyBlocksAndFieldSets(t *testing.T) {
 		}
 	}
 
-	// Обязательные разрезы ТЗ §8: LFL / до года / новые / закрыты.
-	if len(nat.Sections) != 4 {
-		t.Fatalf("разрезов: got %d, want 4", len(nat.Sections))
+	// Четыре рабочих статуса плюс архив закрытых магазинов.
+	if len(nat.Sections) != 5 {
+		t.Fatalf("разрезов: got %d, want 5", len(nat.Sections))
 	}
-	wantKeys := []string{"lfl", "under1y", "new", "closed"}
+	wantKeys := []string{"lfl", "under1y", "new", "reconstruction", "closed"}
 	for i, k := range wantKeys {
 		if nat.Sections[i].Key != k {
 			t.Errorf("разрез %d: got %q, want %q", i, nat.Sections[i].Key, k)

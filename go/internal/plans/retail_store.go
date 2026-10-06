@@ -48,7 +48,7 @@ type RetailRepo interface {
 	// периода (V-09). Возвращает added/updated/removed.
 	SyncRows(ctx context.Context, inst RetailInstance, stores []RetailStore, klient map[int]string, actorID int64) (int, int, int, error)
 	SaveValues(ctx context.Context, instanceID int64, cells []RetailCellWrite, actorID int64, op string) (int, error)
-	SaveComment(ctx context.Context, instanceID int64, codeCFO int, comment string, actorID int64) error
+	SaveFormChanges(ctx context.Context, instanceID int64, req RetailSaveRequest, actorID int64) error
 	Params(ctx context.Context, instanceID int64) ([]RetailParam, error)
 	SaveParams(ctx context.Context, instanceID int64, params []RetailParam, actorID int64) error
 	DeleteParam(ctx context.Context, instanceID, paramID int64) error
@@ -61,6 +61,30 @@ type RetailRepo interface {
 }
 
 type pgRetailRepo struct{ pool *pgxpool.Pool }
+
+// lockEditableCard serializes retail writes with workflow transitions. The
+// service's earlier editable check is advisory: the card may be submitted
+// while validation or a bulk preview is being calculated.
+func lockEditableRetailCard(ctx context.Context, tx pgx.Tx, instanceID int64) error {
+	var c Card
+	err := tx.QueryRow(ctx, `SELECT c.form_code, c.status, c.step_code, c.locked
+		FROM form_card c JOIN tp_instance i ON i.card_id = c.id
+		WHERE i.id = $1 FOR UPDATE OF c`, instanceID).
+		Scan(&c.FormCode, &c.Status, &c.StepCode, &c.Locked)
+	if err != nil {
+		return err
+	}
+	if !cardEditable(c) {
+		return fmt.Errorf("период закрыт на запись: обновите форму")
+	}
+	return nil
+}
+
+func touchRetailCard(ctx context.Context, tx pgx.Tx, instanceID int64) error {
+	_, err := tx.Exec(ctx, `UPDATE form_card SET updated_at = clock_timestamp()
+		WHERE id = (SELECT card_id FROM tp_instance WHERE id = $1)`, instanceID)
+	return err
+}
 
 // NewRetailRepo — конструктор.
 func NewRetailRepo(pool *pgxpool.Pool) RetailRepo { return &pgRetailRepo{pool: pool} }
@@ -182,6 +206,9 @@ func (r *pgRetailRepo) SyncRows(ctx context.Context, inst RetailInstance, stores
 		return 0, 0, 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockEditableRetailCard(ctx, tx, inst.ID); err != nil {
+		return 0, 0, 0, err
+	}
 
 	var actor any
 	if actorID != 0 {
@@ -223,11 +250,24 @@ func (r *pgRetailRepo) SyncRows(ctx context.Context, inst RetailInstance, stores
 			    code_fox = EXCLUDED.code_fox, manager = EXCLUDED.manager,
 			    pl_analytic = EXCLUDED.pl_analytic, attrs = EXCLUDED.attrs,
 			    row_version = tp_row.row_version + 1, updated_at = NOW()
+			WHERE ROW(tp_row.klient_id, tp_row.name_cfo, tp_row.city, tp_row.lfl_status,
+			          tp_row.store_type, tp_row.category, tp_row.reg_manager,
+			          tp_row.legal_entity, tp_row.ploschad, tp_row.date_open,
+			          tp_row.date_close, tp_row.stage_of_store, tp_row.code_fox,
+			          tp_row.manager, tp_row.pl_analytic, tp_row.attrs)
+			      IS DISTINCT FROM
+			      ROW(EXCLUDED.klient_id, EXCLUDED.name_cfo, EXCLUDED.city, EXCLUDED.lfl_status,
+			          EXCLUDED.store_type, EXCLUDED.category, EXCLUDED.reg_manager,
+			          EXCLUDED.legal_entity, EXCLUDED.ploschad, EXCLUDED.date_open,
+			          EXCLUDED.date_close, EXCLUDED.stage_of_store, EXCLUDED.code_fox,
+			          EXCLUDED.manager, EXCLUDED.pl_analytic, EXCLUDED.attrs)
 			RETURNING (xmax = 0) AS inserted`,
 			inst.ID, st.CodeCFO, kl, st.NameCFO, st.City, retailLFLStatus(st.LFLStatus),
 			st.StoreType, st.Category, st.RegManager, st.CompanyMF, st.Ploschad,
 			st.DateOpen, st.DateClose, st.Stage, st.CodeFOX, st.Manager,
-			st.PLAnalytic, attrs).Scan(&isNew); err != nil {
+			st.PLAnalytic, attrs).Scan(&isNew); err == pgx.ErrNoRows {
+			continue // existing snapshot matches the directory; keep card timestamp
+		} else if err != nil {
 			return 0, 0, 0, fmt.Errorf("магазин %d: %w", st.CodeCFO, err)
 		}
 		if isNew {
@@ -245,6 +285,11 @@ func (r *pgRetailRepo) SyncRows(ctx context.Context, inst RetailInstance, stores
 			return 0, 0, 0, err
 		}
 		removed = tag.RowsAffected()
+	}
+	if added+updated+int(removed) > 0 {
+		if err := touchRetailCard(ctx, tx, inst.ID); err != nil {
+			return 0, 0, 0, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, 0, err
@@ -264,7 +309,24 @@ func (r *pgRetailRepo) SaveValues(ctx context.Context, instanceID int64,
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockEditableRetailCard(ctx, tx, instanceID); err != nil {
+		return 0, err
+	}
+	saved, err := saveRetailValuesTx(ctx, tx, instanceID, cells, actorID, op)
+	if err != nil {
+		return 0, err
+	}
+	if err := touchRetailCard(ctx, tx, instanceID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return saved, nil
+}
 
+func saveRetailValuesTx(ctx context.Context, tx pgx.Tx, instanceID int64,
+	cells []RetailCellWrite, actorID int64, op string) (int, error) {
 	// code_cfo → row_id: ячейки приходят с ключом строки формы (V-04), а не с
 	// внутренним id, чтобы импорт и массовые операции говорили на языке ТЗ.
 	rowIDs := map[int]int64{}
@@ -341,18 +403,42 @@ func (r *pgRetailRepo) SaveValues(ctx context.Context, instanceID int64,
 		}
 		saved++
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, err
-	}
 	return saved, nil
 }
 
-// SaveComment — комментарий к строке (ТЗ §3; обязателен при предупреждении, V-07).
-func (r *pgRetailRepo) SaveComment(ctx context.Context, instanceID int64, codeCFO int, comment string, actorID int64) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE tp_row SET comment = $3, updated_at = NOW()
-		 WHERE instance_id = $1 AND code_cfo = $2`, instanceID, codeCFO, comment)
-	return err
+// SaveFormChanges commits values and comments as one edit. Workflow submission
+// can never snapshot a half-saved form.
+func (r *pgRetailRepo) SaveFormChanges(ctx context.Context, instanceID int64, req RetailSaveRequest, actorID int64) error {
+	if len(req.Cells) == 0 && len(req.Comments) == 0 {
+		return nil
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockEditableRetailCard(ctx, tx, instanceID); err != nil {
+		return err
+	}
+	if len(req.Cells) > 0 {
+		if _, err := saveRetailValuesTx(ctx, tx, instanceID, req.Cells, actorID, "manual_edit"); err != nil {
+			return err
+		}
+	}
+	for _, cm := range req.Comments {
+		tag, err := tx.Exec(ctx, `UPDATE tp_row SET comment = $3, updated_at = NOW()
+			WHERE instance_id = $1 AND code_cfo = $2`, instanceID, cm.CodeCFO, cm.Comment)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("магазина %d нет в форме", cm.CodeCFO)
+		}
+	}
+	if err := touchRetailCard(ctx, tx, instanceID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *pgRetailRepo) Params(ctx context.Context, instanceID int64) ([]RetailParam, error) {
@@ -389,6 +475,14 @@ func (r *pgRetailRepo) SaveParams(ctx context.Context, instanceID int64, params 
 	if actorID != 0 {
 		actor = actorID
 	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockEditableRetailCard(ctx, tx, instanceID); err != nil {
+		return err
+	}
 	batch := &pgx.Batch{}
 	for _, p := range params {
 		batch.Queue(`
@@ -399,42 +493,82 @@ func (r *pgRetailRepo) SaveParams(ctx context.Context, instanceID int64, params 
 			    set_by = EXCLUDED.set_by, set_at = NOW()`,
 			instanceID, p.ScopeKind, p.ScopeValue, p.ParamCode, p.Value, p.Note, actor)
 	}
-	res := r.pool.SendBatch(ctx, batch)
-	defer res.Close()
+	res := tx.SendBatch(ctx, batch)
 	for range params {
 		if _, err := res.Exec(); err != nil {
+			_ = res.Close()
 			return err
 		}
 	}
-	return nil
+	if err := res.Close(); err != nil {
+		return err
+	}
+	if err := touchRetailCard(ctx, tx, instanceID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *pgRetailRepo) DeleteParam(ctx context.Context, instanceID, paramID int64) error {
-	_, err := r.pool.Exec(ctx, `DELETE FROM tp_period_param WHERE instance_id = $1 AND id = $2`, instanceID, paramID)
-	return err
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockEditableRetailCard(ctx, tx, instanceID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM tp_period_param WHERE instance_id = $1 AND id = $2`, instanceID, paramID)
+	if err != nil {
+		return err
+	}
+	if err := touchRetailCard(ctx, tx, instanceID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // SetLFLOverride — переопределение LFL-статуса на период (ТЗ §3). Пустой status
 // снимает переопределение; причина обязательна (проверка в сервисе).
 func (r *pgRetailRepo) SetLFLOverride(ctx context.Context, instanceID int64, codeCFO int,
 	status, reason string, actorID int64) error {
-	if strings.TrimSpace(status) == "" {
-		_, err := r.pool.Exec(ctx, `DELETE FROM tp_lfl_override WHERE instance_id = $1 AND code_cfo = $2`,
-			instanceID, codeCFO)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
 		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockEditableRetailCard(ctx, tx, instanceID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(status) == "" {
+		_, err := tx.Exec(ctx, `DELETE FROM tp_lfl_override WHERE instance_id = $1 AND code_cfo = $2`,
+			instanceID, codeCFO)
+		if err != nil {
+			return err
+		}
+		if err := touchRetailCard(ctx, tx, instanceID); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
 	var actor any
 	if actorID != 0 {
 		actor = actorID
 	}
-	_, err := r.pool.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		INSERT INTO tp_lfl_override (instance_id, code_cfo, lfl_status, reason, set_by)
 		VALUES ($1,$2,$3,$4,$5)
 		ON CONFLICT (instance_id, code_cfo) DO UPDATE SET
 		    lfl_status = EXCLUDED.lfl_status, reason = EXCLUDED.reason,
 		    set_by = EXCLUDED.set_by, set_at = NOW()`,
 		instanceID, codeCFO, status, reason, actor)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := touchRetailCard(ctx, tx, instanceID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // RegManagers — значения RegManager пользователя (ТЗ §9). Пустой результат =

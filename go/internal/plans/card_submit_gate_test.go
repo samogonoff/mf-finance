@@ -28,7 +28,8 @@ func gateFixture(g SubmitGate) (*CardService, *fakeCardStore) {
 		ID: 42, PlID: 7, FormCode: TemplateRetail, ScopeKey: "BY", Title: "Розница BY",
 		Country: "BY", Status: CardDraft, StepCode: "1.1", CurrentVersion: 1,
 	}}
-	svc := NewCardService(cards)
+	svc := NewCardService(cards).WithRetailCountryGate(false).
+		WithOwners(ownerStub{owners: map[string]int64{"1.1": 7, "1.2": 8, "1.4": 9}})
 	svc.cards = cards
 	if g != nil {
 		svc.WithSubmitGate(TemplateRetail, g)
@@ -48,7 +49,7 @@ func TestSubmitGate_BlocksSubmitWithReasons(t *testing.T) {
 	// Блокировка — жёсткий режим, к промышленной эксплуатации (ответ 41).
 	svc.WithSubmitStrict(true)
 
-	_, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7})
+	_, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7, RetailTotalsReviewed: true})
 	if err == nil {
 		t.Fatal("отправка с блокирующими замечаниями должна быть отклонена")
 	}
@@ -72,7 +73,7 @@ func TestSubmitGate_AllowsCleanForm(t *testing.T) {
 	g := &stubGate{}
 	svc, _ := gateFixture(g)
 
-	if _, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7}); err != nil {
+	if _, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7, RetailTotalsReviewed: true}); err != nil {
 		t.Fatalf("чистая форма должна отправляться: %v", err)
 	}
 	if g.calls != 1 {
@@ -102,7 +103,7 @@ func TestSubmitGate_UnavailableCheckDoesNotBlock(t *testing.T) {
 	g := &stubGate{err: errors.New("OLAP недоступен")}
 	svc, _ := gateFixture(g)
 
-	if _, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7}); err != nil {
+	if _, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7, RetailTotalsReviewed: true}); err != nil {
 		t.Fatalf("недоступность проверки не должна блокировать отправку: %v", err)
 	}
 }
@@ -111,7 +112,7 @@ func TestSubmitGate_UnavailableCheckDoesNotBlock(t *testing.T) {
 // форме требовало бы сразу написать ей валидации.
 func TestSubmitGate_FormWithoutGatePassesThrough(t *testing.T) {
 	svc, _ := gateFixture(nil)
-	if _, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7}); err != nil {
+	if _, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7, RetailTotalsReviewed: true}); err != nil {
 		t.Fatalf("форма без гейта должна отправляться: %v", err)
 	}
 }
@@ -127,7 +128,7 @@ func TestSubmitGate_SoftModeAllowsSubmitWithReasons(t *testing.T) {
 	if svc.SubmitStrict() {
 		t.Fatal("по умолчанию режим обязан быть мягким")
 	}
-	if _, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7}); err != nil {
+	if _, err := svc.Action(context.Background(), 42, CardActionInput{Action: "submit", ActorID: 7, RetailTotalsReviewed: true}); err != nil {
 		t.Fatalf("в мягком режиме отправка не должна блокироваться: %v", err)
 	}
 	if g.calls != 1 {

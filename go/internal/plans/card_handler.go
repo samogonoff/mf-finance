@@ -137,6 +137,7 @@ func (h *CardHandler) CardAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	body.Action = strings.TrimSpace(body.Action)
 	p := h.principal(r)
 	body.ActorID = p.UserID
 
@@ -153,6 +154,26 @@ func (h *CardHandler) CardAction(w http.ResponseWriter, r *http.Request) {
 	if !f.AllowsCard(c) {
 		writeErr(w, http.StatusForbidden, "карточка вне вашего среза доступа")
 		return
+	}
+	// Sales approval belongs to the named owner of this card and step. A
+	// country/CFO scope with an empty stage_code grants visibility, but cannot
+	// stand in for the controller, Degtereva or Siparova decision.
+	if (c.FormCode == TemplateRetail || c.FormCode == TemplateMP) &&
+		(body.Action == "approve" || body.Action == "return") && !p.PlansAdmin {
+		if h.svc.owners == nil {
+			writeErr(w, http.StatusServiceUnavailable, "ответственный за шаг не настроен")
+			return
+		}
+		owners, err := h.svc.owners.StepOwners(r.Context(), c.PlID, c.FormCode, c.ScopeKey)
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, "не удалось определить ответственного за шаг: "+err.Error())
+			return
+		}
+		if owners[c.StepCode] == 0 || owners[c.StepCode] != p.UserID {
+			writeErr(w, http.StatusForbidden, "решение на шаге "+c.StepCode+" доступно только назначенному согласующему")
+			return
+		}
+		body.StepOwner = owners
 	}
 	// Право действовать на шаге: reopen/archive — только админ процессов.
 	if body.Action == "reopen" || body.Action == "archive" {

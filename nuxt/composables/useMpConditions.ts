@@ -5,6 +5,10 @@
 import type { MpConditions } from "./useMpCascade";
 
 export interface MpConditionsRow extends MpConditions {
+	valid_from: string;
+  valid_to: string;
+	period_year: number;
+	period_month: number;
   id: number;
   name_cfo: string;
   segment: string;
@@ -52,6 +56,7 @@ export interface PlanCard {
   status: string;
   step_code: string;
   status_label: string;
+  missing_countries?: string[];
   current_version: number;
   locked: boolean;
 }
@@ -208,7 +213,7 @@ export function useMpConditions() {
 
   const cardAction = (
     cardId: number,
-    body: { action: string; target_step?: string; comment?: string }
+    body: { action: string; target_step?: string; comment?: string; retail_totals_reviewed?: boolean }
   ): Promise<PlanCard> =>
     $fetch<PlanCard>(`${base}/api/plans/cards/${cardId}/action`, {
       method: "POST",

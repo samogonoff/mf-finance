@@ -52,6 +52,7 @@ export interface Task {
   /** Карточка формы задания и готовый адрес экрана ввода — считает сервер:
    *  у розницы форм четыре (по стране), по form_code её не выбрать. */
   card_id?: number;
+  covered_card_ids?: number[];
   form_path?: string;
 }
 
@@ -113,11 +114,13 @@ export interface MpLine {
 }
 export interface MpFormCell {
   code_cfo: number; block_type: string; value: number;
-  fact: number | null; fact_prev: number | null; strategy: number | null;
+  fact: number | null; fact_prev: number | null; fact_prev_month: number | null; strategy: number | null;
   target: number | null; tactic: number | null;
   is_manual: boolean; reason: string;
+  missing_share?: boolean;
 }
 export interface MpTaskForm {
+  editable: boolean;
   task: Task;
   segment: string;
   year: number;

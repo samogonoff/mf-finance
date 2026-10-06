@@ -3,6 +3,9 @@ package plans
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -108,7 +111,11 @@ func scanCard(row interface {
 
 func (s *pgCardStore) EnsureCard(ctx context.Context, in Card) (Card, error) {
 	if in.CalcMode == "" {
-		in.CalcMode = CalcLegacy
+		if in.FormCode == TemplateMP {
+			in.CalcMode = CalcInverse
+		} else {
+			in.CalcMode = CalcLegacy
+		}
 	}
 	if in.StepCode == "" {
 		in.StepCode = "1.1"
@@ -167,10 +174,48 @@ func (s *pgCardStore) SaveTransition(ctx context.Context, cardID int64, tr CardT
 		return Card{}, err
 	}
 	defer tx.Rollback(ctx)
+	if tr.RetailPlID != 0 {
+		// Every retail transition in this period uses the same lock. A peer
+		// return cannot slip between the four-country check and this commit.
+		const retailLockNamespace int64 = 660066000000000000
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, retailLockNamespace+tr.RetailPlID); err != nil {
+			return Card{}, err
+		}
+	}
 
 	var version int
-	if err := tx.QueryRow(ctx, `SELECT current_version FROM form_card WHERE id = $1 FOR UPDATE`, cardID).Scan(&version); err != nil {
+	var status, step string
+	var updatedAt time.Time
+	if err := tx.QueryRow(ctx, `SELECT current_version, status, step_code, updated_at FROM form_card WHERE id = $1 FOR UPDATE`, cardID).Scan(&version, &status, &step, &updatedAt); err != nil {
 		return Card{}, err
+	}
+	if tr.ExpectedStatus != "" && (status != tr.ExpectedStatus || step != tr.ExpectedStep || version != tr.ExpectedVersion ||
+		!tr.ExpectedUpdatedAt.IsZero() && !updatedAt.Equal(tr.ExpectedUpdatedAt)) {
+		return Card{}, errors.New("карточка изменилась во время согласования; обновите страницу и повторите действие")
+	}
+	if tr.RequireRetailCountryGate {
+		rows, err := tx.Query(ctx, `SELECT id, country, scope_key, status, step_code
+			FROM form_card WHERE pl_id=$1 AND form_code=$2`, tr.RetailPlID, TemplateRetail)
+		if err != nil {
+			return Card{}, err
+		}
+		var peers []Card
+		for rows.Next() {
+			var peer Card
+			if err := rows.Scan(&peer.ID, &peer.Country, &peer.ScopeKey, &peer.Status, &peer.StepCode); err != nil {
+				rows.Close()
+				return Card{}, err
+			}
+			peer.FormCode = TemplateRetail
+			peers = append(peers, peer)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return Card{}, err
+		}
+		if missing := missingRetailCountries(peers, cardID, true); len(missing) > 0 {
+			return Card{}, fmt.Errorf("перед шагом Сипаровой нужны все четыре страны розницы; не готовы: %s", strings.Join(missing, ", "))
+		}
 	}
 	var actor any
 	if actorID != 0 {
@@ -200,11 +245,15 @@ func (s *pgCardStore) SaveTransition(ctx context.Context, cardID int64, tr CardT
 	// Аннулирование решений от целевого шага и выше (ТЗ §2.3): решения остаются,
 	// но помечаются revoked — согласующий видит историю.
 	if tr.RevokeFrom != "" {
+		steps := tr.RevokeSteps
+		if len(steps) == 0 {
+			steps = []string{tr.RevokeFrom}
+		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE card_approval SET revoked = TRUE, revoked_reason = $3
 			 WHERE card_id = $1 AND NOT revoked AND decision IN ('approve','auto_skipped')
-			   AND step_code >= $2`,
-			cardID, tr.RevokeFrom, "аннулировано возвратом на шаг "+tr.RevokeFrom); err != nil {
+			   AND step_code = ANY($2)`,
+			cardID, steps, "аннулировано возвратом на шаг "+tr.RevokeFrom); err != nil {
 			return Card{}, err
 		}
 	}

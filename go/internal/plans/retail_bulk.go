@@ -3,6 +3,7 @@ package plans
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -45,9 +46,10 @@ const (
 
 // Источники копирования сценария (ТЗ §5).
 const (
-	CopyFromStrategy = "strategy"
-	CopyFromTactic   = "tactic"
-	CopyFromFact     = "fact"
+	CopyFromStrategy    = "strategy"
+	CopyFromTactic      = "tactic"
+	CopyFromFact        = "fact"
+	CopyFromNewStrategy = "new_strategy"
 )
 
 // Базы индекса роста продаж (ТЗ §5). FactPrevMonth — дефолт по ТЗ.
@@ -77,11 +79,13 @@ type RetailBulkRequest struct {
 	ResetManual bool `json:"reset_manual"`
 
 	// --- copy_scenario ---
-	Source       string  `json:"source"`        // strategy|tactic|fact
-	SourceYear   int     `json:"source_year"`   // год источника
-	SourceMonth  int     `json:"source_month"`  // 0 → месяц-в-месяц
-	Coefficient  float64 `json:"coefficient"`   // × k (0 → не применяется)
-	PercentDelta float64 `json:"percent_delta"` // + x % (0.1 = +10 %)
+	Source          string  `json:"source"`        // strategy|tactic|fact
+	SourceYear      int     `json:"source_year"`   // год источника
+	SourceMonth     int     `json:"source_month"`  // 0 → месяц-в-месяц
+	Coefficient     float64 `json:"coefficient"`   // × k (0 → не применяется)
+	PercentDelta    float64 `json:"percent_delta"` // + x % (0.1 = +10 %)
+	CoefficientSet  bool    `json:"coefficient_set,omitempty"`
+	PercentDeltaSet bool    `json:"percent_delta_set,omitempty"`
 
 	// --- distribute («Методика Е.В.») ---
 	TargetTotal float64 `json:"target_total"` // целевой итог на область применения
@@ -112,6 +116,7 @@ type RetailBulkDiff struct {
 	Month        int      `json:"month"`
 	Before       *float64 `json:"before"` // nil — ячейка была пустой
 	After        float64  `json:"after"`
+	Base         *float64 `json:"base,omitempty"` // число выбранного сценария до коэффициента
 	BeforeSource string   `json:"before_source,omitempty"`
 	AfterSource  string   `json:"after_source"`
 	Note         string   `json:"note,omitempty"`
@@ -157,6 +162,9 @@ type RetailBulkContext struct {
 // предпросмотр гарантированно совпадает с результатом (ТЗ §5).
 func ApplyRetailBulk(req RetailBulkRequest, ctx RetailBulkContext) (RetailBulkResult, error) {
 	res := RetailBulkResult{Op: req.Op, Scope: req.Scope, Preview: req.Preview, Diff: []RetailBulkDiff{}}
+	if err := ValidateBulkRequest(req); err != nil {
+		return res, err
+	}
 
 	rows, err := bulkScopeRows(req, ctx.Rows)
 	if err != nil {
@@ -166,9 +174,15 @@ func ApplyRetailBulk(req RetailBulkRequest, ctx RetailBulkContext) (RetailBulkRe
 	months := req.Months
 	if len(months) == 0 {
 		months = ctx.PlanMonths
+		if req.Op == BulkCopyScenario && (req.CoefficientSet || req.PercentDeltaSet || req.Coefficient != 0 || req.PercentDelta != 0) {
+			months = []int{ctx.Month}
+		}
 	}
 	if len(months) == 0 {
 		return res, errors.New("не заданы целевые месяцы операции")
+	}
+	if req.Op == BulkCopyScenario && hasBulkMultiplier(req) && len(months) != 1 {
+		return res, errors.New("коэффициент и надбавка применяются к одному выбранному месяцу")
 	}
 
 	switch req.Op {
@@ -223,7 +237,7 @@ func bulkScopeRows(req RetailBulkRequest, all []RetailRow) ([]RetailRow, error) 
 // source=manual не перезатирается без явного ResetManual, а защищённые ячейки
 // считаются отдельно, чтобы пользователь видел, СКОЛЬКО его правок уцелело.
 func bulkSet(res *RetailBulkResult, req RetailBulkRequest, row RetailRow,
-	metric string, year, month int, value float64, source, note string) {
+	metric string, year, month int, value float64, source, note string, base ...float64) {
 	before, existed := row.cellOfMetric(metric, year, month)
 	if existed && before.Source == ValueManual && !req.ResetManual {
 		res.Protected++
@@ -239,22 +253,27 @@ func bulkSet(res *RetailBulkResult, req RetailBulkRequest, row RetailRow,
 	if beforePtr != nil && *beforePtr == value && beforeSource == source && before.Note == note {
 		return
 	}
-	res.Diff = append(res.Diff, RetailBulkDiff{
+	diff := RetailBulkDiff{
 		CodeCFO: row.CodeCFO, NameCFO: row.NameCFO, Metric: metric,
 		Year: year, Month: month, Before: beforePtr, After: value,
 		BeforeSource: beforeSource, AfterSource: source, Note: note,
-	})
+	}
+	if len(base) > 0 {
+		diff.Base = fptr(base[0])
+	}
+	res.Diff = append(res.Diff, diff)
 }
 
 // applyCoefficient — коэффициент операции: × k ИЛИ + x % (ТЗ §5).
 func applyCoefficient(v float64, req RetailBulkRequest) float64 {
-	if req.Coefficient != 0 {
-		v *= req.Coefficient
+	if req.CoefficientSet || req.Coefficient != 0 {
+		return v * req.Coefficient
 	}
-	if req.PercentDelta != 0 {
-		v *= 1 + req.PercentDelta
-	}
-	return v
+	return v * (1 + req.PercentDelta)
+}
+
+func hasBulkMultiplier(req RetailBulkRequest) bool {
+	return req.CoefficientSet || req.PercentDeltaSet || req.Coefficient != 0 || req.PercentDelta != 0
 }
 
 // bulkCopyScenario — «Копирование сценария» (ТЗ §5): источник = стратегия <год> |
@@ -270,8 +289,13 @@ func bulkCopyScenario(res *RetailBulkResult, req RetailBulkRequest, ctx RetailBu
 		src, source = ctx.Series.Approved, ValueFromPrevPer
 	case CopyFromFact:
 		src, source = ctx.Series.Fact, ValueFromPrevPer
+	case CopyFromNewStrategy:
+		if ctx.Series.NewStrategyUnavailable != "" {
+			return errors.New(ctx.Series.NewStrategyUnavailable)
+		}
+		src, source = ctx.Series.NewStrategy, ValueFromStrategy
 	default:
-		return fmt.Errorf("источник копирования должен быть %q, %q или %q", CopyFromStrategy, CopyFromTactic, CopyFromFact)
+		return fmt.Errorf("неизвестный сценарий копирования %q", req.Source)
 	}
 	srcYear := req.SourceYear
 	if srcYear == 0 {
@@ -289,12 +313,15 @@ func bulkCopyScenario(res *RetailBulkResult, req RetailBulkRequest, ctx RetailBu
 				continue
 			}
 			bulkSet(res, req, row, MetricSales, ctx.Year, m, applyCoefficient(base, req), source,
-				fmt.Sprintf("копирование: %s %02d.%d", req.Source, srcMonth, srcYear))
+				fmt.Sprintf("сценарий: %s %02d.%d", req.Source, srcMonth, srcYear), base)
 		}
 	}
 	if res.SkippedNoBase > 0 {
+		if res.SkippedNoBase == res.RowsIn*len(months) && (req.Source == CopyFromTactic || req.Source == CopyFromNewStrategy) {
+			return errors.New("нет утверждённой тактики за выбранный период")
+		}
 		res.Notes = append(res.Notes,
-			fmt.Sprintf("нет данных источника %q по %d ячейкам — они остались без изменений", req.Source, res.SkippedNoBase))
+			fmt.Sprintf("нет данных сценария %q по %d ячейкам — они остались без изменений", req.Source, res.SkippedNoBase))
 	}
 	return nil
 }
@@ -744,7 +771,18 @@ func ValidateBulkRequest(req RetailBulkRequest) error {
 		}
 	}
 	if req.Op == BulkCopyScenario && strings.TrimSpace(req.Source) == "" {
-		return errors.New("для копирования сценария укажите источник (strategy|tactic|fact)")
+		return errors.New("для копирования сценария укажите сценарий")
+	}
+	if req.Op == BulkCopyScenario && (math.IsNaN(req.Coefficient) || math.IsInf(req.Coefficient, 0) ||
+		math.IsNaN(req.PercentDelta) || math.IsInf(req.PercentDelta, 0) || math.IsInf(1+req.PercentDelta, 0)) {
+		return errors.New("коэффициент и надбавка должны быть конечными числами")
+	}
+	if req.Op == BulkCopyScenario && hasBulkMultiplier(req) && len(req.Months) > 1 {
+		return errors.New("коэффициент и надбавка применяются к одному выбранному месяцу")
+	}
+	if req.Op == BulkCopyScenario && (req.CoefficientSet || req.Coefficient != 0) && (req.PercentDeltaSet || req.PercentDelta != 0) &&
+		math.Abs(req.Coefficient-(1+req.PercentDelta)) > 1e-9 {
+		return errors.New("задайте либо коэффициент, либо надбавку")
 	}
 	return nil
 }

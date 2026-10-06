@@ -293,13 +293,16 @@ func main() {
 	// PLANS_MOCK=1 или отсутствие соединения → фикстуры (18 магазинов РБ): форма
 	// и синхронизация справочника работают в dev без VPN.
 	plansRetailSource := plans.NewRetailSource(cfg.PlansMock, mssqlDB, plans.RetailTables{
-		StoreTable:       cfg.PlansRetailStoreTable,
-		StoreGroup:       cfg.PlansRetailStoreGroup,
-		FactTable:        cfg.PlansRetailFactTable,
-		StrategyTable:    cfg.PlansRetailStrategyTable,
-		StrategyGroup:    cfg.PlansRetailStrategyGroup,
-		PlanHistTable:    cfg.PlansRetailPlanHistTable,
-		PlanHistNewTable: cfg.PlansRetailPlanHistNew,
+		StoreTable:          cfg.PlansRetailStoreTable,
+		StoreGroup:          cfg.PlansRetailStoreGroup,
+		FactTable:           cfg.PlansRetailFactTable,
+		StrategyTable:       cfg.PlansRetailStrategyTable,
+		ApprovedTable:       cfg.PlansRetailApprovedTable,
+		ComparisonFactTable: cfg.PlansRetailComparisonFactTable,
+		NewStrategyTable:    cfg.PlansRetailNewStrategyTable,
+		StrategyGroup:       cfg.PlansRetailStrategyGroup,
+		PlanHistTable:       cfg.PlansRetailPlanHistTable,
+		PlanHistNewTable:    cfg.PlansRetailPlanHistNew,
 	})
 	// Справочник магазинов розницы синхронизируется общим движком (версионирование
 	// строк, раз в сутки + кнопка) — ТЗ Розница §11. Провайдер регистрируется ДО
@@ -331,7 +334,7 @@ func main() {
 	plansH.SetJobPositions(plans.NewJobPositionStore(pool))
 	// Уведомления участникам заданий идут в общий поток кабинета (колокольчик +
 	// опциональное дублирование в B24) — тот же notifSvc, что у баг-трекера.
-	plansTasks := plans.NewTaskStore(pool, plansFact).WithNotifier(notifSvc).
+	plansTasks := plans.NewTaskStore(pool, plansFact).WithScope(plansScope).WithNotifier(notifSvc).
 		// Подсказки показываются РЯДОМ с полями ввода и в значения не попадают
 		// (правки ТЗ 02.09.2026, часть 1).
 		WithHints(plans.NewHintSource(plansDir)).
@@ -360,7 +363,7 @@ func main() {
 	}
 	plansCards := plans.NewCardService(plans.NewCardStore(pool)).
 		WithPublisher(plansPublisher, plans.NewPublishStore(pool)).
-		WithOwners(plans.NewStageOwnerResolver(plansTasks)).
+		WithOwners(plans.NewCardStepOwnerResolver(pool, plansTasks)).
 		// План пишется на РЕАЛЬНОЕ ЮЛ: колонка «Компания» приёмника тактики
 		// заполняется УНП из справочника (правки ТЗ 02.09.2026 §15/§16).
 		WithLegalEntities(plans.NewLegalEntityResolver(plansDir)).
@@ -411,6 +414,7 @@ func main() {
 	// переключаемая. Дефолт — мягкий: на стенде форма не должна вставать из-за
 	// расхождения, о котором согласующий и так увидит предупреждение.
 	plansCards.WithSubmitStrict(cfg.PlansSubmitStrict)
+	plansCards.WithRetailCountryGate(cfg.PlansRetailCountryGate)
 	plansCards.WithSubmitGate(plans.TemplateRetail, plans.NewRetailSubmitGate(plansRetail))
 	plansRetailH := plans.NewRetailHandler(plansRetail, plansPrincipal)
 

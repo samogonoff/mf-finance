@@ -59,47 +59,56 @@ type RouteStep struct {
 
 // Card — карточка формы в периоде.
 type Card struct {
-	ID             int64          `json:"id"`
-	PlID           int64          `json:"pl_id"`
-	FormCode       string         `json:"form_code"`
-	ScopeKey       string         `json:"scope_key"`
-	Title          string         `json:"title"`
-	Year           int            `json:"year"`
-	Month          int            `json:"month"`
-	Country        string         `json:"country"`
-	LegalEntity    string         `json:"legal_entity"`
-	Currency       string         `json:"currency"`
-	CalcMode       string         `json:"calc_mode"`
-	Status         string         `json:"status"`
-	StepCode       string         `json:"step_code"`
-	StatusLabel    string         `json:"status_label"`
-	CurrentVersion int            `json:"current_version"`
-	FxSnapshot     map[string]any `json:"fx_snapshot,omitempty"`
-	Locked         bool           `json:"locked"`
-	DueAt          *time.Time     `json:"due_at,omitempty"`
-	CreatedBy      int64          `json:"created_by"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	ID               int64          `json:"id"`
+	PlID             int64          `json:"pl_id"`
+	FormCode         string         `json:"form_code"`
+	ScopeKey         string         `json:"scope_key"`
+	Title            string         `json:"title"`
+	Year             int            `json:"year"`
+	Month            int            `json:"month"`
+	Country          string         `json:"country"`
+	LegalEntity      string         `json:"legal_entity"`
+	Currency         string         `json:"currency"`
+	CalcMode         string         `json:"calc_mode"`
+	Status           string         `json:"status"`
+	StepCode         string         `json:"step_code"`
+	StatusLabel      string         `json:"status_label"`
+	MissingCountries []string       `json:"missing_countries,omitempty"`
+	CurrentVersion   int            `json:"current_version"`
+	FxSnapshot       map[string]any `json:"fx_snapshot,omitempty"`
+	Locked           bool           `json:"locked"`
+	DueAt            *time.Time     `json:"due_at,omitempty"`
+	CreatedBy        int64          `json:"created_by"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 }
 
 // CardActionInput — запрос на переход по маршруту.
 type CardActionInput struct {
-	Action     string `json:"action"`      // submit|approve|return|reopen|archive
-	TargetStep string `json:"target_step"` // обязателен при return
-	Comment    string `json:"comment"`     // обязателен при return и reopen
-	ActorID    int64  `json:"-"`
+	Action               string `json:"action"`      // submit|approve|return|reopen|archive
+	TargetStep           string `json:"target_step"` // обязателен при return
+	Comment              string `json:"comment"`     // обязателен при return и reopen
+	RetailTotalsReviewed bool   `json:"retail_totals_reviewed"`
+	ActorID              int64  `json:"-"`
 	// StepOwner — кто назначен на шаг (для skip_if_same_user). Ключ — step_code.
 	StepOwner map[string]int64 `json:"-"`
 }
 
 // CardTransition — результат перехода: новое состояние + побочные требования.
 type CardTransition struct {
-	Status      string          `json:"status"`
-	StepCode    string          `json:"step_code"`
-	Locked      bool            `json:"locked"`
-	VersionBump bool            `json:"version_bump"`
-	Publish     bool            `json:"publish"`     // сработал шаг с publish_on_approve
-	RevokeFrom  string          `json:"revoke_from"` // с какого шага аннулировать согласования
-	Approvals   []ApprovalWrite `json:"approvals"`   // что записать в лист согласования
+	ExpectedStatus           string          `json:"-"`
+	ExpectedStep             string          `json:"-"`
+	ExpectedVersion          int             `json:"-"`
+	ExpectedUpdatedAt        time.Time       `json:"-"`
+	RetailPlID               int64           `json:"-"`
+	RequireRetailCountryGate bool            `json:"-"`
+	Status                   string          `json:"status"`
+	StepCode                 string          `json:"step_code"`
+	Locked                   bool            `json:"locked"`
+	VersionBump              bool            `json:"version_bump"`
+	Publish                  bool            `json:"publish"`                // сработал шаг с publish_on_approve
+	RevokeFrom               string          `json:"revoke_from"`            // с какого шага аннулировать согласования
+	RevokeSteps              []string        `json:"revoke_steps,omitempty"` // включённые шаги от целевого по порядку маршрута
+	Approvals                []ApprovalWrite `json:"approvals"`              // что записать в лист согласования
 }
 
 // ApprovalWrite — запись, которую нужно положить в card_approval.
@@ -216,7 +225,11 @@ func applyCardAction(c Card, allSteps []RouteStep, in CardActionInput) (CardTran
 			// листе стояло «согласовано автоматически» без человека. Такой пропуск
 			// невозможно отличить от настоящего решения, поэтому теперь шаг
 			// остаётся, и админ назначает владельца в кокпите процесса.
-			if s.SkipIfSameUser && in.ActorID != 0 {
+			// The named sales approvals are mandatory even if an old route row
+			// still carries the former self-approval shortcut.
+			mandatorySalesApproval := (c.FormCode == TemplateRetail || c.FormCode == TemplateMP) &&
+				(s.StepCode == "fin" || s.StepCode == "1.3" || s.StepCode == "1.4")
+			if s.SkipIfSameUser && !mandatorySalesApproval && in.ActorID != 0 {
 				if owner := in.StepOwner[s.StepCode]; owner != 0 && owner == in.ActorID {
 					tr.Approvals = append(tr.Approvals, ApprovalWrite{
 						StepCode: s.StepCode, Decision: "auto_skipped", UserID: in.ActorID,
@@ -267,6 +280,7 @@ func applyCardAction(c Card, allSteps []RouteStep, in CardActionInput) (CardTran
 			StepCode:    in.TargetStep,
 			VersionBump: true,
 			RevokeFrom:  in.TargetStep,
+			RevokeSteps: routeCodes(route[tgtIdx:]),
 			Approvals: []ApprovalWrite{{
 				StepCode: c.StepCode, Decision: "return",
 				TargetStep: in.TargetStep, Comment: comment, UserID: in.ActorID,
@@ -287,6 +301,7 @@ func applyCardAction(c Card, allSteps []RouteStep, in CardActionInput) (CardTran
 			Locked:      false,
 			VersionBump: true,
 			RevokeFrom:  first.StepCode,
+			RevokeSteps: routeCodes(route),
 			Approvals: []ApprovalWrite{{
 				StepCode: c.StepCode, Decision: "reopen", Comment: comment, UserID: in.ActorID,
 			}},
@@ -301,10 +316,21 @@ func applyCardAction(c Card, allSteps []RouteStep, in CardActionInput) (CardTran
 	return CardTransition{}, fmt.Errorf("неизвестное действие %q", action)
 }
 
+func routeCodes(route []RouteStep) []string {
+	out := make([]string, 0, len(route))
+	for _, step := range route {
+		out = append(out, step.StepCode)
+	}
+	return out
+}
+
 // cardEditable — можно ли править значения карточки. После утверждения период
 // закрыт на запись ДЛЯ ВСЕХ, включая автора (ТЗ Розница §2.4, МП §2.3).
 func cardEditable(c Card) bool {
 	if c.Locked {
+		return false
+	}
+	if (c.FormCode == TemplateRetail || c.FormCode == TemplateMP) && c.StepCode != "1.1" {
 		return false
 	}
 	switch c.Status {

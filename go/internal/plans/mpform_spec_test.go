@@ -3,7 +3,7 @@ package plans
 import "testing"
 
 // Спека формы зависит от режима расчёта карточки: в inverse руками заполняются
-// только продажи и total-строки, а %СПП/наценки/себестоимость приходят из реестра
+// только продажи и %СПП, а наценки/себестоимость приходят из реестра
 // условий (ТЗ §3.1). Если это разъедется со спекой, форма даст пользователю
 // править то, что всё равно перезатрёт пересчёт.
 func TestMpFormSpecFor_InverseChangesEditableSet(t *testing.T) {
@@ -14,8 +14,11 @@ func TestMpFormSpecFor_InverseChangesEditableSet(t *testing.T) {
 	if !legacy[BSalesManagerGross] || !inverse[BSalesManagerGross] {
 		t.Fatal("продажи по ценам менеджера должны вводиться в любом режиме")
 	}
-	// В inverse условия площадки задаются в реестре, а не в сетке.
-	for _, b := range []string{BSPP, BMarkup, BMarkupTotal, BShipments, BCogsTotal} {
+	if !inverse[BSPP] {
+		t.Fatal("%СПП вводится в форме")
+	}
+	// Наценки и себестоимость задаются условиями и каскадом.
+	for _, b := range []string{BMarkup, BMarkupTotal, BShipments, BCogsTotal} {
 		if inverse[b] {
 			t.Errorf("%s в inverse-режиме не должен редактироваться в сетке", b)
 		}
@@ -25,15 +28,12 @@ func TestMpFormSpecFor_InverseChangesEditableSet(t *testing.T) {
 			}
 		}
 	}
-	// Скидки/уценки — ввод в обоих режимах (одно значение на все площадки).
-	if !inverse[BDiscount] || !inverse[BMarkdown] {
-		t.Fatal("скидки и уценки вводятся и в inverse-режиме")
+	if inverse[BDiscount] || inverse[BMarkdown] {
+		t.Fatal("в форме вводятся только продажи и %СПП")
 	}
 }
 
-// Суммы статей затрат в inverse остаются переопределяемыми: ТЗ §7.2 требует, чтобы
-// ручное значение не перезатиралось автопересчётом, а значит его нужно где-то ввести.
-func TestMpFormSpecFor_InverseKeepsCostLinesOverridable(t *testing.T) {
+func TestMpFormSpecFor_InverseCostLinesCalculated(t *testing.T) {
 	spec := mpFormSpecFor(CalcInverse)
 	byBlock := map[string]MpLine{}
 	for _, l := range spec {
@@ -44,11 +44,11 @@ func TestMpFormSpecFor_InverseKeepsCostLinesOverridable(t *testing.T) {
 		if !ok {
 			t.Fatalf("статья %s пропала из спеки", b)
 		}
-		if l.Kind != KindCalcEditable {
-			t.Errorf("статья %s должна быть расчётной с возможностью правки, получено %q", b, l.Kind)
+		if l.Kind != KindCalc {
+			t.Errorf("статья %s должна быть расчётной, получено %q", b, l.Kind)
 		}
-		if !l.Editable {
-			t.Errorf("статья %s должна допускать ручное переопределение (ТЗ §7.2)", b)
+		if l.Editable {
+			t.Errorf("статья %s не должна редактироваться", b)
 		}
 	}
 }
