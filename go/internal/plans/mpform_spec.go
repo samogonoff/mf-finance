@@ -191,23 +191,23 @@ func mpLineByBlock() map[string]MpLine {
 // вызывающим); штрафы 6600 → penalties.
 func plToBlock() map[int]string {
 	return map[int]string{
-		1046:        BSalesManagerGross,
-		1045:        BSalesManagerNet,
-		1022:        BSalesPlatGross,
-		1006:        BSalesPlatNet,
-		8006:        BShipments,
-		2006:        BCogsTotal,
-		6006:        BCogsTotal,
-		64:          BCostAgent,
-		51:          BCostFreight,
-		52:          BCostLogTransport,
-		54:          BCostLogWarehouse,
-		13:          BCostAds,
-		15:          BCostAdsSocial,
-		45:          BCostPackaging,
-		58:          BCostAcquiring,
-		48:          BCostIT,
-		66:          BCostOther,
+		1046:             BSalesManagerGross,
+		1045:             BSalesManagerNet,
+		1022:             BSalesPlatGross,
+		1006:             BSalesPlatNet,
+		8006:             BShipments,
+		2006:             BCogsTotal,
+		6006:             BCogsTotal,
+		64:               BCostAgent,
+		51:               BCostFreight,
+		52:               BCostLogTransport,
+		54:               BCostLogWarehouse,
+		13:               BCostAds,
+		15:               BCostAdsSocial,
+		45:               BCostPackaging,
+		58:               BCostAcquiring,
+		48:               BCostIT,
+		66:               BCostOther,
 		mpPenaltyFactKey: BCostPenalties,
 	}
 }
@@ -233,7 +233,11 @@ func mpFormSpecFor(mode string) []MpLine {
 	}
 	for i := range spec {
 		switch spec[i].BlockType {
-		case BSPP, BMarkup, BMarkupTotal:
+		case BSPP:
+			spec[i].Kind = KindInput
+			spec[i].Editable = true
+			spec[i].Formula = "ручной ввод (тактика)"
+		case BMarkup, BMarkupTotal:
 			// Задаются в реестре условий, в сетке только показываются.
 			spec[i].Kind = KindCalc
 			spec[i].Editable = false
@@ -243,9 +247,13 @@ func mpFormSpecFor(mode string) []MpLine {
 			spec[i].Editable = false
 			spec[i].Formula = "= цена площадки без НДС / (1 + наценка)"
 		default:
-			if spec[i].CostLine && spec[i].Kind == KindInput {
-				spec[i].Kind = KindCalcEditable
+			if spec[i].CostLine {
+				spec[i].Kind = KindCalc
+				spec[i].Editable = false
 				spec[i].Formula = "= цена площадки без НДС × доля статьи (реестр условий)"
+			}
+			if spec[i].Scope == ScopeTotal {
+				spec[i].Editable = false
 			}
 		}
 	}
@@ -256,7 +264,7 @@ func mpFormSpecFor(mode string) []MpLine {
 func mpEditableSetFor(mode string) map[string]bool {
 	out := map[string]bool{}
 	for _, l := range mpFormSpecFor(mode) {
-		if l.Editable {
+		if l.Editable && (mode != CalcInverse || l.BlockType == BSalesManagerGross || l.BlockType == BSPP) {
 			out[l.BlockType] = true
 		}
 	}

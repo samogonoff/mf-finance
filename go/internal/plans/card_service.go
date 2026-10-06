@@ -41,7 +41,8 @@ type CardService struct {
 	stages StageStore
 	// fillTasks — задания заполнения: закрываются отправкой формы, возвращаются
 	// вместе с ней (task_card_sync.go).
-	fillTasks FillTaskSyncer
+	fillTasks         FillTaskSyncer
+	retailCountryGate bool
 }
 
 // SnapshotProvider — отдаёт снимок значений формы для версии карточки.
@@ -70,9 +71,10 @@ type AuditSink interface {
 // NewCardService — конструктор.
 func NewCardService(cards CardStore) *CardService {
 	return &CardService{
-		cards:     cards,
-		snapshots: map[string]SnapshotProvider{},
-		sources:   map[string]PublishSource{},
+		cards:             cards,
+		retailCountryGate: true,
+		snapshots:         map[string]SnapshotProvider{},
+		sources:           map[string]PublishSource{},
 	}
 }
 
@@ -112,6 +114,10 @@ func (s *CardService) WithSubmitStrict(v bool) *CardService { s.submitStrict = v
 // замечания показываются плашкой «не блокирует», а не «отправка заблокирована».
 func (s *CardService) SubmitStrict() bool { return s.submitStrict }
 
+// WithRetailCountryGate permits a test run through one country when explicitly disabled.
+// Production defaults to the complete four-country route.
+func (s *CardService) WithRetailCountryGate(v bool) *CardService { s.retailCountryGate = v; return s }
+
 // EnsureCards создаёт карточки периода по реестру форм (идемпотентно).
 func (s *CardService) EnsureCards(ctx context.Context, plID int64, actorID int64) ([]Card, error) {
 	for _, f := range FormRegistry() {
@@ -130,12 +136,30 @@ func (s *CardService) EnsureCards(ctx context.Context, plID int64, actorID int64
 
 // Cards — карточки периода.
 func (s *CardService) Cards(ctx context.Context, plID int64) ([]Card, error) {
-	return s.cards.Cards(ctx, plID)
+	cards, err := s.cards.Cards(ctx, plID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range cards {
+		if s.retailCountryGate && cards[i].FormCode == TemplateRetail {
+			cards[i].MissingCountries = missingRetailCountries(cards, cards[i].ID, false)
+		}
+	}
+	return cards, nil
 }
 
 // Card — одна карточка.
 func (s *CardService) Card(ctx context.Context, id int64) (Card, error) {
-	return s.cards.Card(ctx, id)
+	c, err := s.cards.Card(ctx, id)
+	if err != nil || !s.retailCountryGate || c.FormCode != TemplateRetail {
+		return c, err
+	}
+	cards, err := s.cards.Cards(ctx, c.PlID)
+	if err != nil {
+		return Card{}, err
+	}
+	c.MissingCountries = missingRetailCountries(cards, c.ID, false)
+	return c, nil
 }
 
 // Route — маршрут формы (все шаги, включая выключенные — для админки).
@@ -168,6 +192,7 @@ func (s *CardService) SaveRouteStep(ctx context.Context, st RouteStep, actorID i
 // сохранения перехода: провал публикации не откатывает утверждение, а переводит
 // карточку в publish_failed с возможностью повтора (ТЗ Розница §2.2).
 func (s *CardService) Action(ctx context.Context, cardID int64, in CardActionInput) (Card, error) {
+	in.Action = strings.TrimSpace(in.Action)
 	c, err := s.cards.Card(ctx, cardID)
 	if err != nil {
 		return Card{}, err
@@ -179,18 +204,50 @@ func (s *CardService) Action(ctx context.Context, cardID int64, in CardActionInp
 	// Отправка на согласование — единственное место, где формальные проверки
 	// формы обязательны: дальше по маршруту значения уже заморожены.
 	if strings.TrimSpace(in.Action) == "submit" {
+		if c.FormCode == TemplateRetail && !in.RetailTotalsReviewed {
+			return Card{}, errors.New("перед отправкой подтвердите итоги по четырём статусам LFL")
+		}
 		if err := s.checkSubmitGate(ctx, c); err != nil {
 			return Card{}, err
 		}
 	}
+	sales := c.FormCode == TemplateRetail || c.FormCode == TemplateMP
 	if in.StepOwner == nil && s.owners != nil {
-		if owners, err := s.owners.StepOwners(ctx, c.PlID, c.FormCode, c.ScopeKey); err == nil {
-			in.StepOwner = owners
+		owners, ownerErr := s.owners.StepOwners(ctx, c.PlID, c.FormCode, c.ScopeKey)
+		if ownerErr != nil && sales {
+			return Card{}, fmt.Errorf("не удалось определить ответственного карточки: %w", ownerErr)
 		}
+		in.StepOwner = owners
+	}
+	if sales && (in.Action == "submit" || in.Action == "approve" || in.Action == "return") && in.StepOwner == nil {
+		return Card{}, errors.New("ответственные за маршрут продаж не настроены")
 	}
 	tr, err := applyCardAction(c, route, in)
 	if err != nil {
 		return Card{}, err
+	}
+	if sales && (in.Action == "submit" || in.Action == "approve" || in.Action == "return") {
+		if in.StepOwner[c.StepCode] == 0 && in.Action != "submit" {
+			return Card{}, fmt.Errorf("не назначен ответственный текущего шага %s карточки %s/%s", c.StepCode, c.FormCode, c.ScopeKey)
+		}
+		if (tr.Status == CardOnApproval || tr.Status == CardReturned) && in.StepOwner[tr.StepCode] == 0 {
+			return Card{}, fmt.Errorf("не назначен ответственный следующего шага %s карточки %s/%s", tr.StepCode, c.FormCode, c.ScopeKey)
+		}
+	}
+	if s.retailCountryGate && c.FormCode == TemplateRetail && in.Action == "approve" && tr.StepCode == "1.4" && tr.Status == CardOnApproval {
+		cards, err := s.cards.Cards(ctx, c.PlID)
+		if err != nil {
+			return Card{}, err
+		}
+		if missing := missingRetailCountries(cards, c.ID, true); len(missing) > 0 {
+			return Card{}, fmt.Errorf("перед шагом Сипаровой нужны все четыре страны розницы; не готовы: %s", strings.Join(missing, ", "))
+		}
+	}
+	tr.ExpectedStatus, tr.ExpectedStep, tr.ExpectedVersion = c.Status, c.StepCode, c.CurrentVersion
+	tr.ExpectedUpdatedAt = c.UpdatedAt
+	if c.FormCode == TemplateRetail {
+		tr.RetailPlID = c.PlID
+		tr.RequireRetailCountryGate = s.retailCountryGate && in.Action == "approve" && tr.StepCode == "1.4" && tr.Status == CardOnApproval
 	}
 
 	snapshot := []byte(`{}`)

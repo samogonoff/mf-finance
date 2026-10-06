@@ -75,16 +75,13 @@ func TestCardNotify_SubmitNotifiesNextStepOwner(t *testing.T) {
 	if got[0].ObjectType != notifications.ObjPlanCard {
 		t.Fatalf("тип объекта: got %q", got[0].ObjectType)
 	}
-	if got[0].Data["url"] != "/plans/7" {
+	if got[0].Data["url"] != "/plans/7?card=42" {
 		t.Fatalf("ссылка должна вести на экран периода, got %v", got[0].Data["url"])
 	}
 }
 
-// Возврат уведомляет владельца шага, НА КОТОРЫЙ вернули, И автора карточки.
-//
-// Владелец шага заполнения часто не назначен (заполняют по заданиям, а не по
-// этапу), и без автора о возврате не узнавал никто — форма просто зависала.
-func TestCardNotify_ReturnNotifiesTargetStepAndAuthor(t *testing.T) {
+// Возврат формы продаж уведомляет только владельца целевого шага.
+func TestCardNotify_ReturnNotifiesTargetStepOnly(t *testing.T) {
 	svc, n := notifyFixture()
 	next := Card{ID: 42, PlID: 7, FormCode: TemplateRetail, Title: "Розница BY",
 		Status: CardReturned, StepCode: "1.1"}
@@ -93,9 +90,9 @@ func TestCardNotify_ReturnNotifiesTargetStepAndAuthor(t *testing.T) {
 		CardActionInput{Action: "return", Comment: "пересчитать август",
 			StepOwner: map[string]int64{"1.1": 11, "1.2": 55}})
 
-	got := n.wait(t, 2)
-	if len(got) != 2 {
-		t.Fatalf("ожидались уведомления владельцу шага и автору: %+v", got)
+	got := n.wait(t, 1)
+	if len(got) != 1 {
+		t.Fatalf("ожидалось уведомление владельцу шага: %+v", got)
 	}
 	users := map[int64]bool{}
 	for _, in := range got {
@@ -106,8 +103,8 @@ func TestCardNotify_ReturnNotifiesTargetStepAndAuthor(t *testing.T) {
 			t.Fatalf("в тексте должна быть причина возврата: %q", in.Message)
 		}
 	}
-	if !users[11] || !users[100] {
-		t.Fatalf("получатели: got %v, want владельца шага 11 и автора 100", users)
+	if !users[11] || users[100] {
+		t.Fatalf("получатели: got %v, want только владельца шага 11", users)
 	}
 }
 
@@ -125,18 +122,18 @@ func TestCardNotify_ReturnDoesNotDuplicateSameUser(t *testing.T) {
 	}
 }
 
-// Утверждение (и публикация) уведомляет того, кто отправлял форму в маршрут.
-func TestCardNotify_ApprovedNotifiesAuthor(t *testing.T) {
+// Финальное утверждение уведомляет владельца текущего шага.
+func TestCardNotify_ApprovedNotifiesFinalOwner(t *testing.T) {
 	svc, n := notifyFixture()
 	next := Card{ID: 42, PlID: 7, FormCode: TemplateRetail, Title: "Розница BY",
 		Status: CardPublished, StepCode: "1.4"}
 
 	svc.notifyCardTransition(context.Background(), Card{CreatedBy: 100}, next,
-		CardActionInput{Action: "approve", StepOwner: map[string]int64{}})
+		CardActionInput{Action: "approve", StepOwner: map[string]int64{"1.4": 77}})
 
 	got := n.wait(t, 1)
-	if len(got) != 1 || got[0].UserID != 100 {
-		t.Fatalf("утверждение должно уведомить автора карточки (100): %+v", got)
+	if len(got) != 1 || got[0].UserID != 77 {
+		t.Fatalf("утверждение должно уведомить владельца шага (77): %+v", got)
 	}
 	// «Утверждена» и «уехала в приёмник» — разные события, и это должно быть видно.
 	if !strings.Contains(got[0].Message, "опубликована") {
@@ -154,5 +151,29 @@ func TestCardNotify_NoOwnerIsSilent(t *testing.T) {
 
 	if got := n.waitFor(1, 50*time.Millisecond); len(got) != 0 {
 		t.Fatalf("без владельца шага уведомлений быть не должно: %+v", got)
+	}
+}
+
+func TestCardNotify_DistinguishesCardsAndStepsForSameOwner(t *testing.T) {
+	svc, n := notifyFixture()
+	owners := map[string]int64{"fin": 55, "1.3": 55}
+	by := Card{ID: 42, PlID: 7, FormCode: TemplateRetail, Country: "BY", ScopeKey: "BY", StepCode: "fin", Status: CardOnApproval}
+	ru := Card{ID: 43, PlID: 7, FormCode: TemplateRetail, Country: "RU", ScopeKey: "RU", StepCode: "1.3", Status: CardOnApproval}
+	svc.notifyCardTransition(context.Background(), Card{}, by, CardActionInput{Action: "submit", StepOwner: owners})
+	svc.notifyCardTransition(context.Background(), Card{}, ru, CardActionInput{Action: "approve", StepOwner: owners})
+	got := n.wait(t, 2)
+	if len(got) != 2 {
+		t.Fatalf("two cards/steps need two messages: %+v", got)
+	}
+	for _, in := range got {
+		if in.UserID != 55 {
+			t.Fatalf("wrong assignee: %+v", in)
+		}
+		if !strings.Contains(in.Title, "Розница") || !strings.Contains(in.Title, "шаг") {
+			t.Fatalf("title omits form/step: %q", in.Title)
+		}
+	}
+	if got[0].Title == got[1].Title || got[0].Data["card_id"] == got[1].Data["card_id"] {
+		t.Fatalf("distinct cards merged: %+v", got)
 	}
 }

@@ -33,6 +33,23 @@ func (h *MpConditionsHandler) principal(r *http.Request) Principal {
 	return p
 }
 
+func (h *MpConditionsHandler) cardScopeAllowed(r *http.Request, cardID int64) bool {
+	card, err := h.svc.cards.Card(r.Context(), cardID)
+	if err != nil {
+		return false
+	}
+	scope, err := h.svc.userScope(r.Context(), h.principal(r))
+	if err != nil {
+		return false
+	}
+	for _, mp := range MarketplaceSeed() {
+		if mpSegmentsOf(card)[mp.Segment] && mpSaveScopeAllows(scope, card.StepCode, mp.CodeCFO) {
+			return true
+		}
+	}
+	return false
+}
+
 // ConditionsGet — GET /api/plans/mp/cards/{cardId}/conditions.
 // Реестр условий периода: значения, diff к прошлому периоду и подсказки
 // «фактическая доля прошлого месяца» (ТЗ §3.1 — в реестр они не переносятся).
@@ -41,9 +58,9 @@ func (h *MpConditionsHandler) ConditionsGet(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	view, err := h.svc.Conditions(r.Context(), id)
+	view, err := h.svc.Conditions(r.Context(), id, h.principal(r))
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusForbidden, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -63,7 +80,7 @@ func (h *MpConditionsHandler) ConditionsSave(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	p := h.principal(r)
-	saved, err := h.svc.SaveConditions(r.Context(), id, body, p.UserID)
+	saved, err := h.svc.SaveConditions(r.Context(), id, body, p)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -103,7 +120,7 @@ func (h *MpConditionsHandler) Recalc(w http.ResponseWriter, r *http.Request) {
 	}
 	preview := r.URL.Query().Get("preview") == "1"
 	p := h.principal(r)
-	res, err := h.svc.Recalc(r.Context(), id, preview, p.UserID)
+	res, err := h.svc.Recalc(r.Context(), id, preview, p)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -122,7 +139,7 @@ func (h *MpConditionsHandler) Validate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	res, err := h.svc.Recalc(r.Context(), id, true, h.principal(r).UserID)
+	res, err := h.svc.Recalc(r.Context(), id, true, h.principal(r))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -142,6 +159,10 @@ func (h *MpConditionsHandler) CommonCostsGet(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
+	if !h.cardScopeAllowed(r, id) {
+		writeErr(w, http.StatusForbidden, "карточка вне вашего среза доступа")
+		return
+	}
 	rows, spec, err := h.svc.CommonCosts(r.Context(), id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -157,6 +178,10 @@ func (h *MpConditionsHandler) CommonCostsGet(w http.ResponseWriter, r *http.Requ
 func (h *MpConditionsHandler) CommonCostsSave(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "cardId")
 	if !ok {
+		return
+	}
+	if !h.cardScopeAllowed(r, id) {
+		writeErr(w, http.StatusForbidden, "карточка вне вашего среза доступа")
 		return
 	}
 	var body struct {

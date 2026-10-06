@@ -38,3 +38,17 @@ func TestLoad_FinDebtOverride(t *testing.T) {
 		t.Errorf("DebtFinDebt1Table = %q", cfg.DebtFinDebt1Table)
 	}
 }
+
+func TestLoad_RetailCountryGate(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{{"", true}, {"1", true}, {"0", false}} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("PLANS_RETAIL_COUNTRY_GATE", tc.value)
+			if got := Load().PlansRetailCountryGate; got != tc.want {
+				t.Fatalf("gate=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}

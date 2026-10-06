@@ -239,7 +239,7 @@ const rights = usePlansRights();
 const { hasRole } = useScope();
 const isAdmin = computed(() => hasRole("ROLE_PLANS_ADMIN") || hasRole("ROLE_ADMIN"));
 
-const STAGES = ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "2.1", "2.2", "2.3", "2.4", "3", "4"];
+const STAGES = ["1.1", "fin", "1.2", "1.3", "1.4", "1.5", "1.6", "2.1", "2.2", "2.3", "2.4", "3", "4"];
 const COUNTRIES = [
   { code: "BY", name: "Беларусь" }, { code: "RU", name: "Россия" },
   { code: "KZ", name: "Казахстан" }, { code: "UZ", name: "Узбекистан" }

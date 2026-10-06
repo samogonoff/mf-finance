@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -25,6 +26,7 @@ import (
 
 // MpConditions — условия площадки на период.
 type MpConditions struct {
+	CardID         int64              `json:"-"`
 	ID             int64              `json:"id"`
 	PlID           int64              `json:"pl_id"`
 	CodeCFO        int                `json:"code_cfo"`
@@ -34,6 +36,8 @@ type MpConditions struct {
 	LegalEntity    string             `json:"legal_entity"`
 	Year           int                `json:"period_year"`
 	Month          int                `json:"period_month"`
+	ValidFrom      string             `json:"valid_from"`
+	ValidTo        string             `json:"valid_to"`
 	SppPct         float64            `json:"spp_pct"`
 	MarkupPct      float64            `json:"markup_pct"`
 	MarkupTotalPct float64            `json:"markup_total_pct"`
@@ -64,9 +68,9 @@ type MpConditionsStore interface {
 	Conditions(ctx context.Context, plID int64, year, month int) ([]MpConditions, error)
 	SaveConditions(ctx context.Context, c MpConditions) (MpConditions, error)
 	// CopyConditions — заполнить период условиями предыдущего (ТЗ §6.1).
-	CopyConditions(ctx context.Context, fromPlID, toPlID int64, fromY, fromM, toY, toM int, allowed []int) (int, error)
+	CopyConditions(ctx context.Context, cardID, fromPlID, toPlID int64, fromY, fromM, toY, toM int, allowed []int) (int, error)
 	CommonCosts(ctx context.Context, plID int64, segment string, year, month int) ([]MpCommonCost, error)
-	SaveCommonCosts(ctx context.Context, plID int64, rows []MpCommonCost, actorID int64) error
+	SaveCommonCosts(ctx context.Context, cardID, plID int64, rows []MpCommonCost, actorID int64) error
 	// CalcOwner — владелец расчёта пары (статья, ЦФО): ТЗ §8.1, контроль МП-08.
 	CalcOwner(ctx context.Context, codePL, codeCFO int) (string, bool, error)
 	LogCalc(ctx context.Context, plID int64, codeCFO, year, month int, mode string, version int, cells []MpInverseCell) error
@@ -87,17 +91,53 @@ type MpCommonCost struct {
 
 type pgMpConditions struct{ pool *pgxpool.Pool }
 
+func lockEditableMpCardTx(ctx context.Context, tx pgx.Tx, cardID int64) error {
+	if cardID == 0 {
+		return nil
+	}
+	var card Card
+	card.ID = cardID
+	if err := tx.QueryRow(ctx, `SELECT form_code,status,step_code,locked FROM form_card WHERE id=$1 FOR UPDATE`, cardID).
+		Scan(&card.FormCode, &card.Status, &card.StepCode, &card.Locked); err != nil {
+		return err
+	}
+	if !cardEditable(card) {
+		return errors.New("карточка закрыта на ввод условий")
+	}
+	return nil
+}
+
+func touchMpCardTx(ctx context.Context, tx pgx.Tx, cardID int64) error {
+	if cardID == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `UPDATE form_card SET updated_at=GREATEST(clock_timestamp(), updated_at + INTERVAL '1 microsecond') WHERE id=$1`, cardID)
+	return err
+}
+
+func conditionIDs(conditions []MpConditions) []int64 {
+	ids := make([]int64, 0, len(conditions))
+	for _, c := range conditions {
+		ids = append(ids, c.ID)
+	}
+	return ids
+}
+
 // NewMpConditionsStore — конструктор.
 func NewMpConditionsStore(pool *pgxpool.Pool) MpConditionsStore { return &pgMpConditions{pool: pool} }
 
 func (s *pgMpConditions) Conditions(ctx context.Context, plID int64, year, month int) ([]MpConditions, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT c.id, c.pl_id, c.code_cfo, c.period_year, c.period_month, c.spp_pct,
+		SELECT DISTINCT ON (c.code_cfo) c.id, c.pl_id, c.code_cfo, c.period_year, c.period_month, c.spp_pct,
 		       c.markup_pct, c.markup_total_pct, c.vat_rate, c.currency, c.version,
-		       c.change_reason, c.status, COALESCE(c.author_id,0), c.updated_at
+		       c.change_reason, c.status, COALESCE(c.author_id,0), c.updated_at,
+		       COALESCE(to_char(c.valid_from,'YYYY-MM-DD'),''), COALESCE(to_char(c.valid_to,'YYYY-MM-DD'),'')
 		  FROM mp_conditions c
-		 WHERE c.pl_id = $1 AND c.period_year = $2 AND c.period_month = $3
-		 ORDER BY c.code_cfo`, plID, year, month)
+		 WHERE ((c.valid_from IS NOT NULL AND c.valid_from <= make_date($2,$3,1)
+		        AND (c.valid_to IS NULL OR c.valid_to >= make_date($2,$3,1)))
+		    OR (c.valid_from IS NULL AND c.pl_id = $1 AND c.period_year = $2 AND c.period_month = $3))
+		   AND (c.period_year < $2 OR (c.period_year = $2 AND c.period_month <= $3))
+		 ORDER BY c.code_cfo, c.valid_from DESC NULLS LAST, c.updated_at DESC`, plID, year, month)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +148,7 @@ func (s *pgMpConditions) Conditions(ctx context.Context, plID int64, year, month
 		var c MpConditions
 		if err := rows.Scan(&c.ID, &c.PlID, &c.CodeCFO, &c.Year, &c.Month, &c.SppPct,
 			&c.MarkupPct, &c.MarkupTotalPct, &c.VatRate, &c.Currency, &c.Version,
-			&c.ChangeReason, &c.Status, &c.AuthorID, &c.UpdatedAt); err != nil {
+			&c.ChangeReason, &c.Status, &c.AuthorID, &c.UpdatedAt, &c.ValidFrom, &c.ValidTo); err != nil {
 			return nil, err
 		}
 		c.Shares = map[string]float64{}
@@ -126,7 +166,7 @@ func (s *pgMpConditions) Conditions(ctx context.Context, plID int64, year, month
 		SELECT i.conditions_id, i.block_type, i.share_pct
 		  FROM mp_condition_item i
 		  JOIN mp_conditions c ON c.id = i.conditions_id
-		 WHERE c.pl_id = $1 AND c.period_year = $2 AND c.period_month = $3`, plID, year, month)
+		 WHERE c.id = ANY($1)`, conditionIDs(out))
 	if err != nil {
 		return nil, err
 	}
@@ -156,11 +196,30 @@ func (s *pgMpConditions) Conditions(ctx context.Context, plID int64, year, month
 }
 
 func (s *pgMpConditions) SaveConditions(ctx context.Context, c MpConditions) (MpConditions, error) {
+	if c.ValidFrom == "" {
+		c.ValidFrom = fmt.Sprintf("%04d-%02d-01", c.Year, c.Month)
+	}
+	if _, err := time.Parse("2006-01-02", c.ValidFrom); err != nil {
+		return MpConditions{}, fmt.Errorf("неверная дата начала действия: %w", err)
+	}
+	if c.ValidTo != "" {
+		end, err := time.Parse("2006-01-02", c.ValidTo)
+		if err != nil {
+			return MpConditions{}, fmt.Errorf("неверная дата окончания действия: %w", err)
+		}
+		start, _ := time.Parse("2006-01-02", c.ValidFrom)
+		if end.Before(start) {
+			return MpConditions{}, fmt.Errorf("дата окончания раньше начала действия")
+		}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return MpConditions{}, err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockEditableMpCardTx(ctx, tx, c.CardID); err != nil {
+		return MpConditions{}, err
+	}
 
 	var author any
 	if c.AuthorID != 0 {
@@ -170,8 +229,8 @@ func (s *pgMpConditions) SaveConditions(ctx context.Context, c MpConditions) (Mp
 	var version int
 	err = tx.QueryRow(ctx, `
 		INSERT INTO mp_conditions (pl_id, code_cfo, period_year, period_month, spp_pct,
-			markup_pct, markup_total_pct, vat_rate, currency, change_reason, status, author_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE(NULLIF($11,''),'draft'),$12)
+			markup_pct, markup_total_pct, vat_rate, currency, change_reason, status, author_id, valid_from, valid_to)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE(NULLIF($11,''),'draft'),$12,$13::date,NULLIF($14,'')::date)
 		ON CONFLICT (pl_id, code_cfo, period_year, period_month) DO UPDATE SET
 			spp_pct = EXCLUDED.spp_pct,
 			markup_pct = EXCLUDED.markup_pct,
@@ -181,11 +240,13 @@ func (s *pgMpConditions) SaveConditions(ctx context.Context, c MpConditions) (Mp
 			change_reason = EXCLUDED.change_reason,
 			status = EXCLUDED.status,
 			author_id = EXCLUDED.author_id,
+			valid_from = EXCLUDED.valid_from,
+			valid_to = EXCLUDED.valid_to,
 			version = mp_conditions.version + 1,
 			updated_at = NOW()
 		RETURNING id, version`,
 		c.PlID, c.CodeCFO, c.Year, c.Month, c.SppPct, c.MarkupPct, c.MarkupTotalPct,
-		c.VatRate, c.Currency, c.ChangeReason, c.Status, author).Scan(&id, &version)
+		c.VatRate, c.Currency, c.ChangeReason, c.Status, author, c.ValidFrom, c.ValidTo).Scan(&id, &version)
 	if err != nil {
 		return MpConditions{}, err
 	}
@@ -203,6 +264,9 @@ func (s *pgMpConditions) SaveConditions(ctx context.Context, c MpConditions) (Mp
 			return MpConditions{}, err
 		}
 	}
+	if err := touchMpCardTx(ctx, tx, c.CardID); err != nil {
+		return MpConditions{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return MpConditions{}, err
 	}
@@ -211,12 +275,15 @@ func (s *pgMpConditions) SaveConditions(ctx context.Context, c MpConditions) (Mp
 }
 
 // CopyConditions — «заполнить период условиями предыдущего» одним действием.
-func (s *pgMpConditions) CopyConditions(ctx context.Context, fromPlID, toPlID int64, fromY, fromM, toY, toM int, allowed []int) (int, error) {
+func (s *pgMpConditions) CopyConditions(ctx context.Context, cardID, fromPlID, toPlID int64, fromY, fromM, toY, toM int, allowed []int) (int, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockEditableMpCardTx(ctx, tx, cardID); err != nil {
+		return 0, err
+	}
 
 	// Копируем шапки условий, затем доли: INSERT … SELECT с переносом периода.
 	rows, err := tx.Query(ctx, `
@@ -226,14 +293,15 @@ func (s *pgMpConditions) CopyConditions(ctx context.Context, fromPlID, toPlID in
 			   AND ($6::int[] IS NULL OR code_cfo = ANY($6))
 		), ins AS (
 			INSERT INTO mp_conditions (pl_id, code_cfo, period_year, period_month, spp_pct,
-				markup_pct, markup_total_pct, vat_rate, currency, change_reason, status, author_id)
+				markup_pct, markup_total_pct, vat_rate, currency, change_reason, status, author_id, valid_from, valid_to)
 			SELECT $4, code_cfo, $5, $7, spp_pct, markup_pct, markup_total_pct, vat_rate,
-			       currency, 'скопировано из предыдущего периода', 'draft', author_id
+			       currency, 'скопировано из предыдущего периода', 'draft', author_id, make_date($5,$7,1), NULL
 			  FROM src
 			ON CONFLICT (pl_id, code_cfo, period_year, period_month) DO UPDATE SET
 				spp_pct = EXCLUDED.spp_pct, markup_pct = EXCLUDED.markup_pct,
 				markup_total_pct = EXCLUDED.markup_total_pct, vat_rate = EXCLUDED.vat_rate,
-				currency = EXCLUDED.currency, updated_at = NOW()
+				currency = EXCLUDED.currency, valid_from = EXCLUDED.valid_from,
+				valid_to = EXCLUDED.valid_to, updated_at = NOW()
 			RETURNING id, code_cfo
 		)
 		SELECT ins.id, src.id FROM ins JOIN src ON src.code_cfo = ins.code_cfo`,
@@ -263,6 +331,11 @@ func (s *pgMpConditions) CopyConditions(ctx context.Context, fromPlID, toPlID in
 			INSERT INTO mp_condition_item (conditions_id, block_type, code_pl, share_pct)
 			SELECT $1, block_type, code_pl, share_pct FROM mp_condition_item WHERE conditions_id = $2`,
 			p.dst, p.src); err != nil {
+			return 0, err
+		}
+	}
+	if len(pairs) > 0 {
+		if err := touchMpCardTx(ctx, tx, cardID); err != nil {
 			return 0, err
 		}
 	}
@@ -302,7 +375,7 @@ func (s *pgMpConditions) CommonCosts(ctx context.Context, plID int64, segment st
 	return out, rows.Err()
 }
 
-func (s *pgMpConditions) SaveCommonCosts(ctx context.Context, plID int64, rows []MpCommonCost, actorID int64) error {
+func (s *pgMpConditions) SaveCommonCosts(ctx context.Context, cardID, plID int64, rows []MpCommonCost, actorID int64) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -311,6 +384,9 @@ func (s *pgMpConditions) SaveCommonCosts(ctx context.Context, plID int64, rows [
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := lockEditableMpCardTx(ctx, tx, cardID); err != nil {
+		return err
+	}
 	var actor any
 	if actorID != 0 {
 		actor = actorID
@@ -332,6 +408,9 @@ func (s *pgMpConditions) SaveCommonCosts(ctx context.Context, plID int64, rows [
 			plID, r.Segment, r.CodePL, r.Year, r.Month, r.Currency, r.Amount, r.Source, actor); err != nil {
 			return err
 		}
+	}
+	if err := touchMpCardTx(ctx, tx, cardID); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

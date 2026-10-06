@@ -21,7 +21,7 @@ import (
 //   - отправили на согласование → владельцу ЦЕЛЕВОГО шага: «форма ждёт решения»;
 //   - согласовали и пошли дальше → владельцу следующего шага;
 //   - вернули → владельцу шага, на который вернули (он и будет исправлять);
-//   - утвердили и опубликовали → тому, кто отправлял форму в маршрут.
+//   - утвердили и опубликовали → владельцу финального шага карточки продаж.
 //
 // Доставка best-effort и в фоне (как у заданий): сбой канала не должен ронять
 // переход по маршруту — иначе процесс встанет из-за недоступного Bitrix.
@@ -41,7 +41,7 @@ func (s *CardService) WithNotifier(n CardNotifier) *CardService {
 
 // notifyCard — одно уведомление в фоне. userID=0 (владелец шага не назначен) —
 // молча пропускаем: это нормальное состояние настройки, а не ошибка.
-func (s *CardService) notifyCard(userID int64, c Card, title, message, link string) {
+func (s *CardService) notifyCard(userID int64, c Card, action, title, message, link string) {
 	if s.notify == nil || userID == 0 {
 		return
 	}
@@ -55,7 +55,10 @@ func (s *CardService) notifyCard(userID int64, c Card, title, message, link stri
 			"card_id":   c.ID,
 			"pl_id":     c.PlID,
 			"form_code": c.FormCode,
+			"scope_key": c.ScopeKey,
+			"country":   c.Country,
 			"step_code": c.StepCode,
+			"action":    action,
 			"url":       link,
 		},
 	}
@@ -70,8 +73,7 @@ func (s *CardService) notifyCard(userID int64, c Card, title, message, link stri
 
 // notifyCardTransition — разослать уведомления по итогу перехода карточки.
 //
-// Ссылка ведёт на экран периода: лист согласования — панель на нём, отдельной
-// страницы у карточки нет. Формулировки — от лица получателя («ждёт вашего
+// Ссылка ведёт на раскрытую карточку периода. Формулировки — от лица получателя («ждёт вашего
 // решения»), а не описания состояния системы: человек должен понять, что от него
 // требуется, из текста уведомления.
 func (s *CardService) notifyCardTransition(ctx context.Context, prev Card, next Card, in CardActionInput) {
@@ -84,46 +86,82 @@ func (s *CardService) notifyCardTransition(ctx context.Context, prev Card, next 
 			owners = o
 		}
 	}
-	link := fmt.Sprintf("/plans/%d", next.PlID)
+	link := fmt.Sprintf("/plans/%d?card=%d", next.PlID, next.ID)
+	sales := next.FormCode == TemplateRetail || next.FormCode == TemplateMP
 	title := next.Title
 	if title == "" {
 		title = next.FormCode
 	}
+	form := "форма " + next.FormCode
+	scope := next.Country
+	if next.FormCode == TemplateRetail {
+		form = "Розница"
+	}
+	if next.FormCode == TemplateMP {
+		form = "Маркетплейсы"
+		if next.ScopeKey == "large" {
+			scope = "крупные МП"
+		} else if next.ScopeKey == "small" {
+			scope = "мелкие МП"
+		} else {
+			scope = next.ScopeKey
+		}
+	}
+	identity := fmt.Sprintf("%s · %s · карточка #%d", form, scope, next.ID)
 
 	switch in.Action {
 	case "submit", "approve":
 		if next.Status == CardOnApproval {
 			s.notifyCard(owners[next.StepCode], next,
-				"Планы: форма ждёт согласования",
-				fmt.Sprintf("«%s» на шаге %s — ждёт вашего решения (согласовать или вернуть).", title, next.StepCode),
+				in.Action,
+				fmt.Sprintf("Планы: %s · шаг %s · %s", identity, next.StepCode, actionNotificationLabel(in.Action)),
+				fmt.Sprintf("%s: %s на шаг %s (%s). Проверьте форму, согласуйте или верните.", identity, actionNotificationLabel(in.Action), next.StepCode, title),
 				link)
 			return
 		}
 		// Дальше идти некуда — маршрут пройден.
 		if next.Status == CardApproved || next.Status == CardPublished {
-			s.notifyCard(prev.CreatedBy, next,
-				"Планы: форма утверждена",
-				fmt.Sprintf("«%s» прошла маршрут и утверждена%s.", title, publishedSuffix(next.Status)),
+			recipient := prev.CreatedBy
+			if sales {
+				recipient = owners[next.StepCode]
+			}
+			s.notifyCard(recipient, next,
+				in.Action,
+				fmt.Sprintf("Планы: %s · шаг %s · согласовано", identity, next.StepCode),
+				fmt.Sprintf("%s: согласовано на шаге %s%s.", identity, next.StepCode, publishedSuffix(next.Status)),
 				link)
 		}
 	case "return":
 		// Возврат: владелец целевого шага плюс автор карточки. Владелец шага
 		// заполнения часто не назначен (заполняют по заданиям, а не по этапу), и
 		// без автора о возврате не узнавал НИКТО — форма просто зависала.
-		for _, uid := range recipients(owners[next.StepCode], prev.CreatedBy) {
+		ids := recipients(owners[next.StepCode], prev.CreatedBy)
+		if sales {
+			ids = recipients(owners[next.StepCode])
+		}
+		for _, uid := range ids {
 			s.notifyCard(uid, next,
-				"Планы: форма возвращена на доработку",
-				fmt.Sprintf("«%s» вернули на шаг %s%s.", title, next.StepCode, reasonSuffix(in.Comment)),
+				in.Action,
+				fmt.Sprintf("Планы: %s · шаг %s · возвращено", identity, next.StepCode),
+				fmt.Sprintf("%s: возвращено на шаг %s%s.", identity, next.StepCode, reasonSuffix(in.Comment)),
 				link)
 		}
 	case "reopen":
 		for _, uid := range recipients(owners[next.StepCode], prev.CreatedBy) {
 			s.notifyCard(uid, next,
+				in.Action,
 				"Планы: период переоткрыт",
 				fmt.Sprintf("«%s» открыта на запись заново%s.", title, reasonSuffix(in.Comment)),
 				link)
 		}
 	}
+}
+
+func actionNotificationLabel(action string) string {
+	if action == "approve" {
+		return "согласовано"
+	}
+	return "отправлено"
 }
 
 // recipients — получатели без нулей и дублей: один человек не должен получить

@@ -20,6 +20,7 @@
     <header class="page-header">
       <div>
         <h1 class="page-title">{{ sum?.title || card?.title || "Свод розницы" }} · {{ periodLabel }}</h1>
+        <strong v-if="sum" class="tactic-period">Тактика: {{ new Date(sum.year, sum.month - 1, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' }) }}</strong>
         <p class="page-subtitle">
           Экран согласования TPL-TO-RETAIL
           <span v-if="sum"> · {{ sum.rows }} магазинов · показатели месяца {{ periodLabel }}</span>
@@ -182,11 +183,20 @@
       <!-- Лист согласования, версии, публикация (§5, §8). -->
       <CardProcessPanel
         :card-id="cardId"
-        :can-submit="report ? report.can_submit : true"
+        :can-submit="(report ? report.can_submit : true) && totalsReviewed"
+        :retail-totals-reviewed="totalsReviewed"
         :soft-warning="softWarning"
         :submit-hint="submitHint"
         @changed="load"
-      />
+      >
+        <template #before-submit>
+          <div class="card retail-review">
+            <strong>Итоги по статусам перед отправкой</strong>
+            <div v-for="s in statusSections" :key="s.key">{{ s.title }} · {{ s.rows }} магазинов · тактика {{ cellText(s.metrics, 'tactic') }}</div>
+            <label class="checkbox"><input v-model="totalsReviewed" type="checkbox" /> Сверил итоги по четырём статусам</label>
+          </div>
+        </template>
+      </CardProcessPanel>
     </template>
   </div>
 </template>
@@ -237,6 +247,8 @@ const error = ref("");
 
 /** Текущий разрез: "lfl" — разрезы §5.1, иначе ключ группировки из ответа. */
 const dim = ref("lfl");
+const totalsReviewed = ref(false);
+const statusSections = computed(() => ["lfl", "under1y", "new", "reconstruction"].map((key) => sum.value?.blocks?.[0]?.sections.find((s) => s.key === key) || { key, title: ({ lfl: "LFL", under1y: "до года", new: "новый", reconstruction: "реконструкция" } as Record<string, string>)[key], rows: 0, metrics: { tactic: 0 } }));
 /** Раскрытые разрезы. Пусто = свёрнутый вид по умолчанию (§5.0). */
 const open = reactive(new Set<string>());
 const openRecon = reactive(new Set<string>());
@@ -283,7 +295,10 @@ const rate = (v: number) => fmtNum(v, 4);
 
 const cellText = (m: RetailSummaryMetrics, f: string): string => {
   const v = m?.[f];
-  if (v === undefined || v === null) return "—";
+  if (v === undefined || v === null || typeof v !== "number") return "—";
+  if (f === "fact_prev_year" && m.has_fact_prev_year === false) return "—";
+  if (f === "fact_prev_month" && m.has_fact_prev_month === false) return "—";
+  if (f === "strategy" && m.has_strategy === false) return "—";
   if (MONEY_FIELDS.has(f)) return money(v);
   const p = v * 100;
   const s = p.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -294,7 +309,7 @@ const cellText = (m: RetailSummaryMetrics, f: string): string => {
 const scaleMetrics = (m: RetailSummaryMetrics, r: number): RetailSummaryMetrics => {
   if (!r || r === 1) return m;
   const out: RetailSummaryMetrics = { ...m };
-  for (const f of MONEY_FIELDS) if (typeof out[f] === "number") out[f] = out[f] * r;
+  for (const f of MONEY_FIELDS) if (typeof out[f] === "number") out[f] = (out[f] as number) * r;
   return out;
 };
 
@@ -318,6 +333,7 @@ const inSection = (r: RetailForm["rows"][number], key: string): boolean => {
     case "lfl": return r.lfl_effective === "lfl";
     case "under1y": return r.lfl_effective === "under1y";
     case "new": return r.lfl_effective === "new" || r.lfl_effective === "xxx";
+    case "reconstruction": return r.lfl_effective === "reconstruction";
     case "closed": return r.lfl_effective === "closed" || !!r.date_close;
     // «Прочие статусы» — всё, что не подошло ни под один разрез выше
     // («Реконструкция», пустой статус). Зеркало retailOtherRows на сервере:
@@ -328,6 +344,7 @@ const inSection = (r: RetailForm["rows"][number], key: string): boolean => {
         r.lfl_effective === "under1y" ||
         r.lfl_effective === "new" ||
         r.lfl_effective === "xxx" ||
+        r.lfl_effective === "reconstruction" ||
         r.lfl_effective === "closed" ||
         !!r.date_close
       );
@@ -359,6 +376,9 @@ const storesOf = (key: string): StoreLine[] => {
         cfo: r.cfo,
         city: r.city,
         metrics: {
+          has_fact_prev_year: i.fact_prev_year_month != null,
+          has_fact_prev_month: i.fact_prev_month != null,
+          has_strategy: i.strategy != null,
           fact_prev_year: fpy,
           strategy: strat,
           tactic: tact,
@@ -406,6 +426,7 @@ const reconBadge = computed(() => {
 });
 
 const submitHint = computed(() => {
+  if (!totalsReviewed.value) return "Сверьте итоги по статусам";
   if (hasBadRecon.value) return "контрольные сверки не сходятся";
   if (report.value && !report.value.can_submit) return `блокирующих замечаний: ${report.value.blocking.length}`;
   return "";
@@ -427,6 +448,7 @@ const load = async () => {
     form.value = f;
     card.value = c;
     report.value = rep;
+    totalsReviewed.value = false;
   } catch (e) {
     error.value = retailErrText(e, "Не удалось загрузить свод");
   } finally {
@@ -438,6 +460,8 @@ onMounted(load);
 </script>
 
 <style scoped>
+.tactic-period { display: block; font-size: 1.3rem; color: var(--accent); }
+.retail-review { padding: var(--sp-4); display: grid; gap: var(--sp-2); margin-bottom: var(--sp-4); }
 .page-rsum {
   display: flex;
   flex-direction: column;

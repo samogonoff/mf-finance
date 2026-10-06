@@ -278,6 +278,23 @@ func (s *MockRetailSource) Strategy(_ context.Context, country string, year int)
 	return out, nil
 }
 
+func (s *MockRetailSource) ComparisonFact(ctx context.Context, country string, years []int) ([]RetailFactCell, error) {
+	return s.Fact(ctx, country, years)
+}
+
+func (s *MockRetailSource) ApprovedTactic(ctx context.Context, country string, year int) ([]RetailFactCell, error) {
+	cells, _, err := s.PlanHistory(ctx, country, year)
+	return cells, err
+}
+
+func (s *MockRetailSource) NewStrategy(ctx context.Context, country string, year int) ([]RetailFactCell, error) {
+	cells, err := s.Strategy(ctx, country, year)
+	for i := range cells {
+		cells[i].Amount = math.Round(cells[i].Amount*1.03*100) / 100
+	}
+	return cells, err
+}
+
 // PlanHistory — ранее утверждённая тактика: стратегия × 0.97 (демо), плюс
 // соответствие CodeCFO → KLIENT_ID (в [001 CodeCFO] такой колонки нет, §2).
 func (s *MockRetailSource) PlanHistory(ctx context.Context, country string, year int) ([]RetailFactCell, map[int]string, error) {

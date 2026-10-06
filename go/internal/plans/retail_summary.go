@@ -27,6 +27,7 @@ var retailSectionOrder = []struct {
 	{"new", "в т.ч. новые", func(r RetailRow) bool {
 		return r.LFLEffective == LFLNew || r.LFLEffective == LFLNoID
 	}},
+	{"reconstruction", "в т.ч. реконструкция", func(r RetailRow) bool { return r.LFLEffective == LFLReconstruction }},
 	{"closed", "в т.ч. закрыты", func(r RetailRow) bool {
 		return r.LFLEffective == LFLClosed || r.DateClose != ""
 	}},
@@ -78,17 +79,20 @@ var retailGroupDims = []struct {
 // RetailSummaryMetrics — 11 показателей месяца (ТЗ §8). Денежные — в валюте
 // блока, процентные — отношения (от валюты не зависят).
 type RetailSummaryMetrics struct {
-	FactPrevYear   float64 `json:"fact_prev_year"`       // 1. факт M прошлого года
-	Strategy       float64 `json:"strategy"`             // 2. план стратегический M
-	Tactic         float64 `json:"tactic"`               // 3. план тактический M
-	TacticVsStrat  float64 `json:"tactic_vs_strategy"`   // 4. % тактика/стратегия
-	TacticVsPrevM  float64 `json:"tactic_vs_prev_month"` // 5. тактика M к факту M−1
-	FactCur        float64 `json:"fact_cur"`             // 6. факт M текущего года
-	LFL            float64 `json:"lfl"`                  // 7. LFL (тактика к факту ПГ − 1)
-	TacticVsFactPY float64 `json:"tactic_vs_fact_py"`    // 8. % тактика/факт ПГ
-	FactVsFactPY   float64 `json:"fact_vs_fact_py"`      // 9. % факт/факт ПГ
-	DoneVsStrategy float64 `json:"done_vs_strategy"`     // 10. % выполнения (факт/стратегия)
-	DoneVsTactic   float64 `json:"done_vs_tactic"`       // 11. % выполнения (факт/тактика)
+	HasFactPrevYear  bool    `json:"has_fact_prev_year"`
+	HasFactPrevMonth bool    `json:"has_fact_prev_month"`
+	HasStrategy      bool    `json:"has_strategy"`
+	FactPrevYear     float64 `json:"fact_prev_year"`       // 1. факт M прошлого года
+	Strategy         float64 `json:"strategy"`             // 2. план стратегический M
+	Tactic           float64 `json:"tactic"`               // 3. план тактический M
+	TacticVsStrat    float64 `json:"tactic_vs_strategy"`   // 4. % тактика/стратегия
+	TacticVsPrevM    float64 `json:"tactic_vs_prev_month"` // 5. тактика M к факту M−1
+	FactCur          float64 `json:"fact_cur"`             // 6. факт M текущего года
+	LFL              float64 `json:"lfl"`                  // 7. LFL (тактика к факту ПГ − 1)
+	TacticVsFactPY   float64 `json:"tactic_vs_fact_py"`    // 8. % тактика/факт ПГ
+	FactVsFactPY     float64 `json:"fact_vs_fact_py"`      // 9. % факт/факт ПГ
+	DoneVsStrategy   float64 `json:"done_vs_strategy"`     // 10. % выполнения (факт/стратегия)
+	DoneVsTactic     float64 `json:"done_vs_tactic"`       // 11. % выполнения (факт/тактика)
 	// Ниже — денежные итоги для сокращённых валютных блоков (ТЗ §8).
 	PeriodTotal     float64 `json:"period_total"`
 	YearExpectation float64 `json:"year_expectation"`
@@ -133,7 +137,7 @@ type RetailCurrencyBlock struct {
 // retailFullFields — все 11 показателей ТЗ §8 в порядке вывода.
 func retailFullFields() []string {
 	return []string{
-		"fact_prev_year", "strategy", "tactic", "tactic_vs_strategy", "tactic_vs_prev_month",
+		"fact_prev_month", "fact_prev_year", "strategy", "tactic", "tactic_vs_strategy", "tactic_vs_prev_month",
 		"fact_cur", "lfl", "tactic_vs_fact_py", "fact_vs_fact_py", "done_vs_strategy", "done_vs_tactic",
 	}
 }
@@ -144,7 +148,7 @@ func retailFullFields() []string {
 // слой отображения (§4), и проценты в нём те же самые числа, что в нац. блоке, —
 // дублировать их значит показать согласующему одно и то же дважды.
 func retailShortFields() []string {
-	return []string{"fact_prev_year", "strategy", "tactic", "fact_cur", "period_total", "year_expectation"}
+	return []string{"fact_prev_month", "fact_prev_year", "strategy", "tactic", "fact_cur", "period_total", "year_expectation"}
 }
 
 // RetailSummary — ответ GET /api/plans/retail/{cardId}/summary.
@@ -318,6 +322,9 @@ func aggregateMetrics(rows []RetailRow, in RetailSummaryInput) RetailSummaryMetr
 	var m RetailSummaryMetrics
 	for _, r := range rows {
 		ind := r.Indicators
+		m.HasFactPrevYear = m.HasFactPrevYear || ind.FactPrevYearMonth != nil
+		m.HasFactPrevMonth = m.HasFactPrevMonth || ind.FactPrevMonth != nil
+		m.HasStrategy = m.HasStrategy || ind.Strategy != nil
 		m.FactPrevYear += deref(ind.FactPrevYearMonth)
 		m.Strategy += deref(ind.Strategy)
 		m.Tactic += deref(ind.Tactic)

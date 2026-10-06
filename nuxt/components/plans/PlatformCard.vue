@@ -63,27 +63,30 @@
             <thead>
               <tr>
                 <th>Показатель</th>
+				<th class="col-num">Пр. месяц</th>
                 <th class="col-num">Пр. год</th>
                 <th class="col-num">Факт</th>
                 <th class="col-num">Стратегия</th>
                 <th class="col-num">Таргет</th>
                 <th class="col-num">Тактика</th>
+				<th class="col-num">ФБС, справочно</th>
               </tr>
             </thead>
             <tbody>
               <template v-for="sec in sections" :key="sec.name">
-                <tr class="pc-sec"><td colspan="6">{{ sec.name }}</td></tr>
+                <tr class="pc-sec"><td colspan="8">{{ sec.name }}</td></tr>
                 <tr v-for="l in sec.lines" :key="l.block_type">
                   <td>
                     <span class="pc-lname">{{ l.name }}</span>
                     <span v-if="l.code_pl" class="pc-pl">PL {{ l.code_pl }}</span>
                   </td>
-                  <td class="col-num dim">{{ fmt(l, cellOf(l.block_type)?.fact_prev) }}</td>
+				  <td class="col-num dim">{{ fmt(l, cellOf(l.block_type)?.fact_prev_month) }}</td>
+				  <td class="col-num dim">{{ fmt(l, cellOf(l.block_type)?.fact_prev) }}</td>
                   <td class="col-num dim">{{ fmt(l, cellOf(l.block_type)?.fact) }}</td>
                   <td class="col-num dim">{{ fmt(l, cellOf(l.block_type)?.strategy) }}</td>
                   <td class="col-num dim">{{ fmt(l, cellOf(l.block_type)?.target) }}</td>
                   <td class="col-num">
-                    <template v-if="editable && l.editable">
+					<template v-if="editable && l.editable && (!inverse || l.block_type === 'sales_manager_price' || l.block_type === 'spp')">
                       <NumberField
                         :model-value="viewInput(l)"
                         class="pc-input"
@@ -96,17 +99,15 @@
                       </span>
                     </template>
                     <span v-else class="pc-calc" :class="{ neg: (values[l.block_type] ?? 0) < 0 }">
-                      {{ fmt(l, values[l.block_type]) }}
+					  {{ inverse && l.cost_line && !(l.block_type in (conditions?.shares || {})) ? '—' : fmt(l, values[l.block_type]) }}
                     </span>
                   </td>
+				  <td class="col-num dim">{{ l.block_type === 'sales_manager_price' ? 'источник ФБС не подключён' : '—' }}</td>
                 </tr>
               </template>
             </tbody>
           </table>
         </div>
-        <!-- Слоя «предыдущий месяц» в /mp-form сервер пока не отдаёт (в ячейке есть
-             факт периода и факт того же месяца прошлого года) — колонку не рисуем,
-             чтобы не выдавать один слой за другой. -->
         <p class="pc-note">
           «Пр. год» — факт того же месяца прошлого года; отдельного слоя «предыдущий месяц»
           источник формы пока не отдаёт.

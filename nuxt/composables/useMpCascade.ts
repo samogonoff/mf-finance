@@ -167,10 +167,10 @@ export function computePlatformInverse(
   // Ставка, заданная руками в условиях площадки, старше отношения из плана —
   // это решение заполняющего (зеркало conditionsToInput).
   const ratio =
-    typeof cond.vat_rate === "number" && cond.vat_rate > 0
+    typeof cond.vat_rate === "number" && cond.vat_rate >= 0
       ? 1 + cond.vat_rate
       : vatBasis.ratio;
-  const spp = n(cond.spp_pct);
+  const spp = typeof input[B.spp] === "number" ? n(input[B.spp]) : n(cond.spp_pct);
   const shares = cond.shares ?? {};
 
   const managerGross = n(input[B.salesManagerGross]);
@@ -198,13 +198,11 @@ export function computePlatformInverse(
 
   let direct = commission;
   for (const b of COST_BLOCKS) {
-    // Ручное переопределение суммы статьи имеет приоритет над расчётом по доле
-    // (ТЗ §7.2: автопересчёт не перезатирает ручной ввод).
-    const manual = input[b];
+    if (!Object.prototype.hasOwnProperty.call(shares, b)) continue;
     // База начисления статьи — цена ПЛОЩАДКИ без НДС (правка ТЗ МП §20; было по
     // ценам менеджера). СПП уже удержан переходом к цене площадки, и начислять
     // статьи на цену менеджера значило считать комиссию внутри каждой статьи.
-    const v = typeof manual === "number" && !Number.isNaN(manual) ? manual : platNet * n(shares[b]);
+    const v = platNet * n(shares[b]);
     out[b] = v;
     direct += v;
   }

@@ -39,25 +39,27 @@ func distinctSegments(segmentOf map[int]string) []string {
 
 // MpFormCell — ячейка (площадка × строка): вычисленное значение + ввод/факт/стратегия.
 type MpFormCell struct {
-	CodeCFO   int      `json:"code_cfo"`
-	BlockType string   `json:"block_type"`
-	Value     float64  `json:"value"`            // вычисленное значение каскада (отображение)
-	Fact      *float64 `json:"fact"`             // из источника (для input-строк)
-	FactPrev  *float64 `json:"fact_prev"`        // факт того же месяца прошлого года (SPEC §9.6)
-	Strategy  *float64 `json:"strategy"`         // стратегический бюджет (read-only)
-	Target    *float64 `json:"target"`           // тактика-таргет (FormToLoaTaktTarget, read-only)
-	Tactic    *float64 `json:"tactic"`           // сохранённая тактика (editable); nil если нет
-	IsManual  bool     `json:"is_manual"`        // ручная корректировка (ADJ-02)
-	Reason    string   `json:"reason,omitempty"` // причина корректировки
+	CodeCFO       int      `json:"code_cfo"`
+	BlockType     string   `json:"block_type"`
+	Value         float64  `json:"value"`                   // вычисленное значение каскада (отображение)
+	Fact          *float64 `json:"fact"`                    // из источника (для input-строк)
+	FactPrev      *float64 `json:"fact_prev"`               // факт того же месяца прошлого года (SPEC §9.6)
+	FactPrevMonth *float64 `json:"fact_prev_month"`         // факт предыдущего месяца
+	Strategy      *float64 `json:"strategy"`                // стратегический бюджет (read-only)
+	Target        *float64 `json:"target"`                  // тактика-таргет (FormToLoaTaktTarget, read-only)
+	Tactic        *float64 `json:"tactic"`                  // сохранённая тактика (editable); nil если нет
+	IsManual      bool     `json:"is_manual"`               // ручная корректировка (ADJ-02)
+	Reason        string   `json:"reason,omitempty"`        // причина корректировки
+	MissingShare  bool     `json:"missing_share,omitempty"` // доля статьи не задана на дату тактики
 }
 
 // MpTaskForm — структура формы задания МП.
 type MpTaskForm struct {
-	Task      Task             `json:"task"`
-	Segment   string           `json:"segment"`
-	Year      int              `json:"year"`
-	Month     int              `json:"month"`
-	Currency  string           `json:"currency"`
+	Task     Task   `json:"task"`
+	Segment  string `json:"segment"`
+	Year     int    `json:"year"`
+	Month    int    `json:"month"`
+	Currency string `json:"currency"`
 	// Vat — ставка для шапки. Осмысленна, только когда она одна на всю форму:
 	// при разных ставках площадок (VatMixed) шапка обязана показать разрез, а не
 	// одно число — иначе повторится дефект «в шапке 19,60 %, в расчёте 20 %».
@@ -71,14 +73,15 @@ type MpTaskForm struct {
 	// VatMissing — площадки, по которым плана нет ни за месяц формы, ни за
 	// предыдущий: суммы посчитаны по аварийной ставке справочника, отправка на
 	// согласование заблокирована (МП-12).
-	VatMissing []int `json:"vat_missing,omitempty"`
-	Platforms []MpFormPlatform `json:"platforms"`
-	Lines     []MpLine         `json:"lines"`
-	Cells     []MpFormCell     `json:"cells"`
+	VatMissing []int            `json:"vat_missing,omitempty"`
+	Platforms  []MpFormPlatform `json:"platforms"`
+	Lines      []MpLine         `json:"lines"`
+	Cells      []MpFormCell     `json:"cells"`
 	// CalcMode — направление расчёта карточки: legacy («суммы → доли») либо
 	// inverse («условия → суммы», ТЗ §3.1). От него зависит, какие строки
 	// доступны на ввод, поэтому клиент обязан его учитывать.
 	CalcMode string `json:"calc_mode"`
+	Editable bool   `json:"editable"`
 	// PLWithCommon — в PL формы вычитаются общие затраты. На этапах 1.1/1.2 они
 	// не участвуют, начиная с 1.5 — участвуют (правка 08.09.2026 п. 10).
 	PLWithCommon bool `json:"pl_with_common"`
@@ -95,6 +98,43 @@ type MpTaskForm struct {
 	// снимок, а не OLAP вживую, и обязана показывать, когда он собран: иначе
 	// заполняющий не отличит свежий факт от факта месячной давности.
 	FactSnapshot *MpSnapshotMeta `json:"fact_snapshot,omitempty"`
+}
+
+type mpVersionSnapshot struct {
+	Conditions map[int]MpConditions `json:"conditions"`
+	Values     []struct {
+		CodeCFO   int     `json:"code_cfo"`
+		BlockType string  `json:"block_type"`
+		Amount    float64 `json:"amount"`
+		Currency  string  `json:"currency"`
+	} `json:"values"`
+}
+
+func (s *TaskStore) mpClosedSnapshot(ctx context.Context, card Card, currency string) (map[int]MpConditions, map[int]map[string]float64) {
+	if card.ID == 0 || cardEditable(card) {
+		return nil, nil
+	}
+	var raw []byte
+	if err := s.pool.QueryRow(ctx, `SELECT payload FROM card_version WHERE card_id=$1 AND version_no <= $2 ORDER BY version_no DESC LIMIT 1`, card.ID, card.CurrentVersion).Scan(&raw); err != nil {
+		return nil, nil
+	}
+	var snapshot mpVersionSnapshot
+	if json.Unmarshal(raw, &snapshot) != nil {
+		return nil, nil
+	}
+	values := map[int]map[string]float64{}
+	lines := mpLineByBlock()
+	for _, row := range snapshot.Values {
+		if values[row.CodeCFO] == nil {
+			values[row.CodeCFO] = map[string]float64{}
+		}
+		amount := row.Amount
+		if lines[row.BlockType].ValueKind != ValuePct {
+			amount = convertAmount(amount, row.Currency, currency)
+		}
+		values[row.CodeCFO][row.BlockType] = amount
+	}
+	return snapshot.Conditions, values
 }
 
 // seedPL — code_pl для подтяжки input-строк из источника (SUMIFS прототипа).
@@ -207,6 +247,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 	plID := t.PlID
 	mode, card := s.calcModeFor(ctx, plID, segment)
 	f.CalcMode, f.CardID = mode, card.ID
+	f.Editable = card.ID == 0 || cardEditable(card)
 	f.PLWithCommon = mpPLWithCommon(card)
 	f.Lines = mpFormSpecFor(mode)
 
@@ -218,6 +259,10 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 				condByCfo[c.CodeCFO] = c
 			}
 		}
+	}
+	snapshotConditions, snapshotValues := s.mpClosedSnapshot(ctx, card, f.Currency)
+	if snapshotConditions != nil {
+		condByCfo = snapshotConditions
 	}
 	if mode == CalcInverse {
 		f.Conditions = condByCfo
@@ -261,13 +306,17 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 			CodeCFO: c, Name: name, Country: countryOf[c], Segment: segmentOf[c], LegalEntity: le,
 		})
 	}
-	if segments := distinctSegments(segmentOf); len(segments) > 1 {
+	visibleSegments := map[int]string{}
+	for _, cfo := range cfoCodes {
+		visibleSegments[cfo] = segmentOf[cfo]
+	}
+	if segments := distinctSegments(visibleSegments); len(segments) > 1 {
 		f.Segment = "all"
 	}
 	// Базис НДС по каждой площадке: отношение плановых сумм, ставка справочника —
 	// фолбэк (mpform_vat.go). Одного числа на всю форму не существует: у площадок
 	// ставки разные, поэтому шапка отдаёт и разрез VatByCfo, и признак VatMixed.
-	segList := distinctSegments(segmentOf)
+	segList := distinctSegments(visibleSegments)
 	planLayer := mpPlanByBlock(ctx, s.fact, year, month, segList)
 	prevY, prevM := prevMonth(year, month)
 	planPrev := mpPlanByBlock(ctx, s.fact, prevY, prevM, segList)
@@ -322,9 +371,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 						tacByKey[k] = toDisplay(bt, *amt)
 						manualByKey[k] = im
 					}
-					if strat != nil {
-						stratByKey[k] = toDisplay(bt, *strat)
-					}
+					_ = strat // Стратегия формы читается только из FormToLoadPlan за месяц тактики.
 				}
 			}
 			rows.Close()
@@ -369,6 +416,9 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 		pl := layerSet.forCfo(p.CodeCFO)
 		values := s.platformValues(mode, f.VatByCfo[p.CodeCFO], s.normShareOf(ctx, p.CodeCFO, year, month),
 			condByCfo[p.CodeCFO], tacByKey, pl, p.CodeCFO)
+		if snapshotValues[p.CodeCFO] != nil {
+			values = snapshotValues[p.CodeCFO]
+		}
 
 		for _, l := range spec {
 			if l.Kind == KindHeader {
@@ -376,13 +426,17 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 			}
 			k := layerKey(p.CodeCFO, l.BlockType)
 			cell := MpFormCell{CodeCFO: p.CodeCFO, BlockType: l.BlockType}
+			if mode == CalcInverse && l.CostLine {
+				_, hasShare := condByCfo[p.CodeCFO].Shares[l.BlockType]
+				cell.MissingShare = !hasShare
+			}
 			if l.Scope == ScopeTotal {
 				cell.Value = totalInputs[l.BlockType]
 			} else {
 				cell.Value = values[l.BlockType]
 			}
 			// Факт (для input-строк) — из источника; рядом факт прошлого года.
-			if editable[l.BlockType] {
+			if l.Scope == ScopePlatform {
 				if fv, ok := factSeed(pl.fact, l.BlockType, p.CodeCFO); ok {
 					vv := fv
 					cell.Fact = &vv
@@ -390,6 +444,10 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 				if pv, ok := factSeed(pl.factPrev, l.BlockType, p.CodeCFO); ok {
 					vv := pv
 					cell.FactPrev = &vv
+				}
+				if pv, ok := factSeed(pl.factPrevMonth, l.BlockType, p.CodeCFO); ok {
+					vv := pv
+					cell.FactPrevMonth = &vv
 				}
 			}
 			if sv, ok := stratByKey[k]; ok {
@@ -446,21 +504,16 @@ func (s *TaskStore) platformValues(mode string, vat MpVatBasis, norm float64,
 	cond MpConditions, tactic map[string]float64, layers mpLayers, cfo int) map[string]float64 {
 
 	inputs := mpPlatformInputs(cfo, tactic, layers)
-	if mode != CalcInverse || cond.CodeCFO == 0 {
+	if mode != CalcInverse {
 		return computeMpPlatform(inputs, vat)
 	}
-	// Ручные переопределения: суммы статей, сохранённые пользователем поверх
-	// расчёта. Продажи и проценты сюда не попадают — они входы каскада.
-	overrides := map[string]float64{}
-	for _, b := range mpCostBlocks {
-		if v, ok := tactic[layerKey(cfo, b)]; ok {
-			overrides[b] = v
-		}
+	input := conditionsToInputNorm(cond, vat, norm)
+	if spp, ok := tactic[layerKey(cfo, BSPP)]; ok {
+		input.SppPct = spp
 	}
 	values, _ := computeMpPlatformInverse(MpInverseInput{
 		SalesManagerGross: inputs[BSalesManagerGross],
-		Conditions:        conditionsToInputNorm(cond, vat, norm),
-		Overrides:         overrides,
+		Conditions:        input,
 	})
 	return values
 }
@@ -557,6 +610,39 @@ type MpSaveRow struct {
 	Comment   string  `json:"comment"`
 }
 
+// mpSaveScopeAllows checks one complete rule, including workflow stage, for the
+// exact marketplace. Rules for different countries or stages cannot combine.
+func mpSaveScopeAllows(scope ScopeFilter, stage string, cfo int) bool {
+	if scope.Admin {
+		return true
+	}
+	if cfo == 0 {
+		for _, rule := range scope.Rules {
+			if rule.StageCode == "" || rule.StageCode == stage {
+				return true
+			}
+		}
+		return false
+	}
+	var platform MarketplaceRow
+	for _, candidate := range MarketplaceSeed() {
+		if candidate.CodeCFO == cfo {
+			platform = candidate
+			break
+		}
+	}
+	if platform.CodeCFO == 0 {
+		return false
+	}
+	for _, rule := range scope.Rules {
+		if (rule.StageCode == "" || rule.StageCode == stage) &&
+			ruleAllows(rule, cfo, platform.Country, platform.LegalEntity) {
+			return true
+		}
+	}
+	return false
+}
+
 // SaveMpForm сохраняет ввод тактики задания МП (только editable-строки спеки) в
 // pl_metric + снимок form_submission. Права: assignee/delegate/admin.
 // currency — валюта, в которой пользователь ВВОДИЛ суммы; хранение всегда в RUB,
@@ -569,11 +655,21 @@ func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdm
 	if !isAdmin && !(t.AssigneeID != nil && *t.AssigneeID == actorID) && !(t.DelegateID != nil && *t.DelegateID == actorID) {
 		return fmt.Errorf("нет прав на заполнение задания")
 	}
+	scope := NewScopeFilter(isAdmin, nil)
+	if !isAdmin {
+		if s.scope == nil {
+			return fmt.Errorf("срез доступа недоступен")
+		}
+		rules, scopeErr := s.scope.UserScopes(ctx, actorID)
+		if scopeErr != nil {
+			return fmt.Errorf("срез доступа недоступен: %w", scopeErr)
+		}
+		scope = NewScopeFilter(false, rules)
+	}
 	allowed := map[int]bool{}
 	for _, c := range t.CfoCodes {
 		allowed[c] = true
 	}
-	editable := mpEditableSet()
 	lineByBlock := mpLineByBlock()
 	src := normalizeCurrency(currency)
 
@@ -588,14 +684,58 @@ func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdm
 	}
 	// Значение «до корректировки» (ADJ-03) — факт в валюте хранения.
 	layerSet := s.mpLayersFor(ctx, year, month, segmentOf, allowed, "RUB")
+	type modeCard struct {
+		mode string
+		card Card
+	}
+	modeBySegment := map[string]modeCard{}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// Блокируем карточки в стабильном порядке до первой записи. Переход
+	// согласования ждёт эту транзакцию; проверка состояния ниже выполняется уже
+	// под FOR UPDATE и не может устареть посреди сохранения.
+	segments := map[string]bool{}
+	for _, cfo := range t.CfoCodes {
+		if seg := segmentFor(cfo); seg != "" {
+			segments[seg] = true
+		}
+	}
+	segmentList := make([]string, 0, len(segments))
+	for seg := range segments {
+		segmentList = append(segmentList, seg)
+	}
+	lockedRows, err := tx.Query(ctx, `
+		SELECT id, scope_key, status, step_code, locked, calc_mode
+		  FROM form_card WHERE pl_id=$1 AND form_code=$2 AND scope_key=ANY($3)
+		 ORDER BY id FOR UPDATE`, t.PlID, TemplateMP, segmentList)
+	if err != nil {
+		return err
+	}
+	for lockedRows.Next() {
+		var c Card
+		c.FormCode = TemplateMP
+		if err := lockedRows.Scan(&c.ID, &c.ScopeKey, &c.Status, &c.StepCode, &c.Locked, &c.CalcMode); err != nil {
+			lockedRows.Close()
+			return err
+		}
+		mode := c.CalcMode
+		if cardEditable(c) {
+			mode = CalcInverse
+		}
+		modeBySegment[c.ScopeKey] = modeCard{mode: mode, card: c}
+	}
+	err = lockedRows.Err()
+	lockedRows.Close()
+	if err != nil {
+		return err
+	}
+	touchedCards := map[int64]bool{}
 	for _, r := range rows {
 		line, ok := lineByBlock[r.BlockType]
-		if !ok || !editable[r.BlockType] {
+		if !ok {
 			return fmt.Errorf("строка не редактируется: %s", r.BlockType)
 		}
 		pc := r.CodeCFO
@@ -606,6 +746,23 @@ func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdm
 			return fmt.Errorf("ЦФО %d вне задания", pc)
 		} else {
 			rowSegment = segmentFor(pc)
+		}
+		if !mpSaveScopeAllows(scope, t.StageCode, pc) {
+			return fmt.Errorf("ЦФО %d вне вашего среза доступа", pc)
+		}
+		mc, found := modeBySegment[rowSegment]
+		if !found {
+			mc.mode = CalcInverse // период без карточки: новое направление по умолчанию
+			modeBySegment[rowSegment] = mc
+		}
+		if !mpEditableSetFor(mc.mode)[r.BlockType] {
+			return fmt.Errorf("строка не редактируется: %s", r.BlockType)
+		}
+		if mc.card.ID != 0 && !cardEditable(mc.card) {
+			return fmt.Errorf("карточка %s закрыта на ввод тактики", rowSegment)
+		}
+		if mc.card.ID != 0 {
+			touchedCards[mc.card.ID] = true
 		}
 		if r.IsManual && r.Comment == "" {
 			return fmt.Errorf("причина корректировки обязательна (ADJ-02)")
@@ -639,5 +796,10 @@ func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdm
 	}
 	_, _ = tx.Exec(ctx, `INSERT INTO form_submission (pl_id, template_code, json_payload, submitted_by, submitted_at) VALUES ($1,'TPL-MP',$2,$3,NOW())`, t.PlID, payload, actorID)
 	_, _ = tx.Exec(ctx, `UPDATE pl_task SET status=CASE WHEN status='pending' THEN 'in_progress' ELSE status END, updated_at=NOW() WHERE id=$1`, taskID)
+	for id := range touchedCards {
+		if _, err := tx.Exec(ctx, `UPDATE form_card SET updated_at=GREATEST(clock_timestamp(), updated_at + INTERVAL '1 microsecond') WHERE id=$1`, id); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }

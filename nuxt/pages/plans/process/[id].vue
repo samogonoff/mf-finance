@@ -70,6 +70,7 @@
               <!-- Адрес формы приходит с сервера (form_path): у розницы форм четыре
                    (по стране), и вычислить её на клиенте по form_code нельзя. -->
               <NuxtLink v-if="t.form_path" :to="t.form_path" class="btn btn-sm btn-ghost"><Icon name="lucide:pencil" /> Форма</NuxtLink>
+              <NuxtLink v-if="t.form_path && t.status === 'review'" :to="`${t.form_path}${t.form_path.includes('?') ? '&' : '?'}readonly=1`" class="btn btn-sm btn-primary"><Icon name="lucide:eye" /> Проверить</NuxtLink>
               <button class="btn btn-sm btn-ghost" @click="openData(t)"><Icon name="lucide:table" /> Данные</button>
               <button class="btn btn-sm btn-ghost" title="Кто взял, кто кому передал и зачем" @click="openHistory(t)">
                 <Icon name="lucide:history" /> История

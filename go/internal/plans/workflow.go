@@ -15,8 +15,8 @@ type StageDef struct {
 	Code       string
 	Track      string // sales|production|final
 	Name       string
-	DueRD      int    // N-й рабочий день месяца (0 = спец-срок)
-	DuePrev25  bool   // срок = 25-е предыдущего месяца (производство)
+	DueRD      int  // N-й рабочий день месяца (0 = спец-срок)
+	DuePrev25  bool // срок = 25-е предыдущего месяца (производство)
 	DependsOn  []string
 	IsApproval bool
 }
@@ -27,7 +27,7 @@ func stageDefs() []StageDef {
 		{Code: "2.1", Track: "production", Name: "Минуты и объёмы производства", DuePrev25: true},
 		{Code: "2.2", Track: "production", Name: "Согласование планов производства", DuePrev25: true, DependsOn: []string{"2.1"}, IsApproval: true},
 		{Code: "1.1", Track: "sales", Name: "Заполнение бюджетов продаж ЦП", DueRD: 2},
-		{Code: "1.2", Track: "sales", Name: "Согласование руководителем подразделения", DueRD: 3, DependsOn: []string{"1.1"}, IsApproval: true},
+		{Code: "1.2", Track: "sales", Name: "Согласование финансовым контролёром", DueRD: 3, DependsOn: []string{"1.1"}, IsApproval: true},
 		{Code: "1.3", Track: "sales", Name: "Согласование директором направления", DueRD: 3, DependsOn: []string{"1.2"}, IsApproval: true},
 		{Code: "2.3", Track: "production", Name: "Обновление бюджетов ЦЗ", DueRD: 3, DependsOn: []string{"2.2"}},
 		// 1.4 — именно УТВЕРЖДЕНИЕ: оно закрывает период на запись для всех,
@@ -37,7 +37,7 @@ func stageDefs() []StageDef {
 		{Code: "1.4", Track: "sales", Name: "Утверждение потока продаж", DueRD: 4, DependsOn: []string{"1.3"}, IsApproval: true},
 		{Code: "2.4", Track: "production", Name: "Формирование бюджетов по ЮЛ (пр-во)", DueRD: 4, DependsOn: []string{"2.3"}},
 		{Code: "1.5", Track: "sales", Name: "Обновление расходов в бюджетах ЦП", DueRD: 5, DependsOn: []string{"1.4"}},
-		{Code: "1.6", Track: "sales", Name: "Формирование по ЮЛ и каналам", DueRD: 5, DependsOn: []string{"1.5", "2.4"}}, // WF-DEP-01
+		{Code: "1.6", Track: "sales", Name: "Формирование по ЮЛ и каналам", DueRD: 5, DependsOn: []string{"1.5", "2.4"}},      // WF-DEP-01
 		{Code: "3", Track: "final", Name: "Согласование бюджетов ЮЛ", DueRD: 6, DependsOn: []string{"1.6"}, IsApproval: true}, // WF-DEP-02
 		{Code: "4", Track: "final", Name: "Итоговое утверждение", DueRD: 6, DependsOn: []string{"3"}, IsApproval: true},
 	}
@@ -113,7 +113,7 @@ func initStages(year, month int, country string, seed []CountryCalendar, resp ma
 		}
 		out = append(out, StageState{
 			IsApproval: d.IsApproval,
-			Code: d.Code, Track: d.Track, Name: d.Name,
+			Code:       d.Code, Track: d.Track, Name: d.Name,
 			Status: "pending", DueDate: due, DependsOn: d.DependsOn,
 			Responsible: resp[d.Code],
 		})

@@ -126,6 +126,8 @@ type Config struct {
 	// считаются и показываются, но процесс не держат. Включать к промышленной
 	// эксплуатации.
 	PlansSubmitStrict bool
+	// Four-country retail gate is enabled unless explicitly disabled for a test run.
+	PlansRetailCountryGate bool
 
 	// Форма «Расходы ЦП» (TPL-CFO-EXP, этап 1.5). Источники — тот же OLAP,
 	// что у остальных форм модуля. Пусто или PlansMock=1 → фикстуры exp_mock.go.
@@ -135,13 +137,16 @@ type Config struct {
 	// Форма «Розница» (TPL-TO-RETAIL, ТЗ Розница §11). Источники — тот же сервер
 	// FinDWH/Budgeting/Checks, что у МП; при PlansMock=1 или без MSSQL работают
 	// фикстуры (plans/retail_mock.go), форма и тесты не зависят от VPN.
-	PlansRetailStoreTable    string // справочник магазинов: FinDWH.dbo.[001 CodeCFO]
-	PlansRetailStoreGroup    string // значение GroupCFO1 справочника ('Магазины')
-	PlansRetailFactTable     string // факт продаж (выручка с НДС) из FOX
-	PlansRetailStrategyTable string // стратегия в нац. валюте: Budgeting.dbo.VFORMTOLOADPLAN
-	PlansRetailStrategyGroup string // ГруппыЦФО1 таблицы плана ('3.Магазины' — НЕ равно группе справочника)
-	PlansRetailPlanHistTable string // история плана: Checks.dbo.plan_saler_st
-	PlansRetailPlanHistNew   string // история плана новых магазинов: Checks.dbo.plan_saler_st_new_stores
+	PlansRetailStoreTable          string // справочник магазинов: FinDWH.dbo.[001 CodeCFO]
+	PlansRetailStoreGroup          string // значение GroupCFO1 справочника ('Магазины')
+	PlansRetailFactTable           string // факт продаж (выручка с НДС) из FOX
+	PlansRetailNewStrategyTable    string // необязательный источник НовСтрат с полем Scenario
+	PlansRetailComparisonFactTable string // факт Budgeting в национальной валюте
+	PlansRetailApprovedTable       string // утверждённая тактика, национальная валюта
+	PlansRetailStrategyTable       string // стратегия в нац. валюте: Budgeting.dbo.VFORMTOLOADPLAN
+	PlansRetailStrategyGroup       string // ГруппыЦФО1 таблицы плана ('3.Магазины' — НЕ равно группе справочника)
+	PlansRetailPlanHistTable       string // история плана: Checks.dbo.plan_saler_st
+	PlansRetailPlanHistNew         string // история плана новых магазинов: Checks.dbo.plan_saler_st_new_stores
 	// PlansRetailValueLimits — верхняя граница значения ячейки по стране (V-02),
 	// формат «BY=5000000,RU=50000000». Страна без записи → границы нет.
 	PlansRetailValueLimits map[string]float64
@@ -229,20 +234,24 @@ func Load() Config {
 		PlansPublishTargets: splitCSV(env("PLANS_PUBLISH_TARGETS",
 			"Budgeting.dbo.VFORMTOLOADTAKTTARGET,Budgeting.dbo.FormToLoaTaktTarget")),
 
-		PlansSubmitStrict: env("PLANS_SUBMIT_STRICT", "") == "1",
+		PlansSubmitStrict:      env("PLANS_SUBMIT_STRICT", "") == "1",
+		PlansRetailCountryGate: env("PLANS_RETAIL_COUNTRY_GATE", "1") != "0",
 
 		PlansExpCostsProc: env("PLANS_EXP_COSTS_PROC", "ZATRATY_DLYA_OKSANY_BYSTRYE"),
 		PlansExpCfoTable:  env("PLANS_EXP_CFO_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
 
-		PlansRetailStoreTable:    env("PLANS_RETAIL_STORE_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
-		PlansRetailStoreGroup:    env("PLANS_RETAIL_STORE_GROUP", "Магазины"),
-		PlansRetailFactTable:     env("PLANS_RETAIL_FACT_TABLE", "FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail"),
-		PlansRetailStrategyTable: env("PLANS_RETAIL_STRATEGY_TABLE", "Budgeting.dbo.VFORMTOLOADPLAN"),
-		PlansRetailStrategyGroup: env("PLANS_RETAIL_STRATEGY_GROUP", "3.Магазины"),
-		PlansRetailPlanHistTable: env("PLANS_RETAIL_PLAN_HISTORY_TABLE", "Checks.dbo.plan_saler_st"),
-		PlansRetailPlanHistNew:   env("PLANS_RETAIL_PLAN_HISTORY_NEW_TABLE", "Checks.dbo.plan_saler_st_new_stores"),
-		PlansRetailValueLimits:   parseCountryLimits(env("PLANS_RETAIL_VALUE_LIMITS", "")),
-		PlansRetailReconBlocking: env("PLANS_RETAIL_RECON_BLOCKING", "") == "1",
+		PlansRetailStoreTable:          env("PLANS_RETAIL_STORE_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
+		PlansRetailStoreGroup:          env("PLANS_RETAIL_STORE_GROUP", "Магазины"),
+		PlansRetailFactTable:           env("PLANS_RETAIL_FACT_TABLE", "FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail"),
+		PlansRetailNewStrategyTable:    env("PLANS_RETAIL_NEW_STRATEGY_TABLE", ""),
+		PlansRetailComparisonFactTable: env("PLANS_RETAIL_COMPARISON_FACT_TABLE", "Budgeting.dbo.VFORMTOLOADFACT"),
+		PlansRetailApprovedTable:       env("PLANS_RETAIL_APPROVED_TABLE", "Budgeting.dbo.VFORMTOLOADTAKTTARGET"),
+		PlansRetailStrategyTable:       env("PLANS_RETAIL_STRATEGY_TABLE", "Budgeting.dbo.VFORMTOLOADPLAN"),
+		PlansRetailStrategyGroup:       env("PLANS_RETAIL_STRATEGY_GROUP", "3.Магазины"),
+		PlansRetailPlanHistTable:       env("PLANS_RETAIL_PLAN_HISTORY_TABLE", "Checks.dbo.plan_saler_st"),
+		PlansRetailPlanHistNew:         env("PLANS_RETAIL_PLAN_HISTORY_NEW_TABLE", "Checks.dbo.plan_saler_st_new_stores"),
+		PlansRetailValueLimits:         parseCountryLimits(env("PLANS_RETAIL_VALUE_LIMITS", "")),
+		PlansRetailReconBlocking:       env("PLANS_RETAIL_RECON_BLOCKING", "") == "1",
 
 		LisaHost:          env("FOX_HOST", ""),
 		LisaPort:          env("FOX_PORT", "1433"),

@@ -20,18 +20,20 @@ import (
 // convertAmount в валюту формы. Сбой любого источника не роняет остальные —
 // слой просто остаётся пустым (колонка в UI покажет «—»).
 type mpLayers struct {
-	fact     map[[2]int]float64
-	factPrev map[[2]int]float64
-	strategy map[string]float64
-	target   map[string]float64
+	fact          map[[2]int]float64
+	factPrev      map[[2]int]float64
+	factPrevMonth map[[2]int]float64
+	strategy      map[string]float64
+	target        map[string]float64
 }
 
 func newMpLayers() mpLayers {
 	return mpLayers{
-		fact:     map[[2]int]float64{},
-		factPrev: map[[2]int]float64{},
-		strategy: map[string]float64{},
-		target:   map[string]float64{},
+		fact:          map[[2]int]float64{},
+		factPrev:      map[[2]int]float64{},
+		factPrevMonth: map[[2]int]float64{},
+		strategy:      map[string]float64{},
+		target:        map[string]float64{},
 	}
 }
 
@@ -77,11 +79,26 @@ func (s *TaskStore) segmentsByCfo(ctx context.Context, codes []int) map[int]stri
 		return out
 	}
 	defer rows.Close()
+	conflicted := map[int]bool{}
 	for rows.Next() {
 		var c int
 		var seg string
 		if rows.Scan(&c, &seg) == nil && seg != "" {
+			if existing, ok := out[c]; ok && existing != seg {
+				conflicted[c] = true
+			}
 			out[c] = seg
+		}
+	}
+	// plans_directory_row не имеет UNIQUE по payload_json.code_cfo. При двух
+	// конфликтующих сегментах не выбираем случайную строку по порядку запроса.
+	for c := range conflicted {
+		delete(out, c)
+		for _, mp := range MarketplaceSeed() {
+			if mp.CodeCFO == c {
+				out[c] = mp.Segment
+				break
+			}
 		}
 	}
 	return out
@@ -132,6 +149,10 @@ func (s *TaskStore) mpSourceLayers(ctx context.Context, year, month int, segment
 	}
 	if rows, err := s.fact.MpFact(ctx, year-1, month, segment); err == nil {
 		byPL(rows, l.factPrev)
+	}
+	prevY, prevM := prevMonth(year, month)
+	if rows, err := s.fact.MpFact(ctx, prevY, prevM, segment); err == nil {
+		byPL(rows, l.factPrevMonth)
 	}
 	if rows, err := s.fact.MpStrategy(ctx, year, month, segment); err == nil {
 		byBlock(rows, l.strategy)

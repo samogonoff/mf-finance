@@ -449,14 +449,63 @@ func TestBulk_CopyScenarioCoefficient(t *testing.T) {
 	rows := []RetailRow{{CodeCFO: 100, LFLEffective: LFLYes}}
 
 	req := RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: CopyFromFact,
-		SourceYear: 2025, Months: []int{7}, Coefficient: 2, PercentDelta: 0.1, Preview: true}
+		SourceYear: 2025, Months: []int{7}, Coefficient: 1.1, PercentDelta: 0.1, Preview: true}
 	res, err := ApplyRetailBulk(req, bulkCtx(rows, ser, nil))
 	if err != nil {
 		t.Fatalf("операция вернула ошибку: %v", err)
 	}
-	// 1000 × 2 × 1.1 = 2200.
-	if math.Abs(res.Diff[0].After-2200) > 1e-9 {
-		t.Errorf("копирование с коэффициентом: got %.2f, want 2200", res.Diff[0].After)
+	// Равные множители применяются один раз; база остаётся видна в diff.
+	if math.Abs(res.Diff[0].After-1100) > 1e-9 || res.Diff[0].Base == nil || *res.Diff[0].Base != 1000 {
+		t.Errorf("копирование с коэффициентом: got %+v, want 1100 от 1000", res.Diff[0])
+	}
+	req.Coefficient = 2
+	if _, err := ApplyRetailBulk(req, bulkCtx(rows, ser, nil)); err == nil || err.Error() != "задайте либо коэффициент, либо надбавку" {
+		t.Errorf("разные множители должны остановить операцию: %v", err)
+	}
+	req.Coefficient, req.PercentDelta = 1.1, 0
+	req.CoefficientSet, req.PercentDeltaSet = true, true
+	if _, err := ApplyRetailBulk(req, bulkCtx(rows, ser, nil)); err == nil || err.Error() != "задайте либо коэффициент, либо надбавку" {
+		t.Errorf("явно введённая нулевая надбавка конфликтует с 1.1: %v", err)
+	}
+}
+
+func TestBulk_BudgetingScenariosAndMissingBase(t *testing.T) {
+	ser := NewRetailSeries()
+	ser.AddApproved([]RetailFactCell{{CodeCFO: 100, Year: 2026, Month: 7, Amount: 90}})
+	ser.AddNewStrategy([]RetailFactCell{{CodeCFO: 100, Year: 2026, Month: 7, Amount: 120}})
+	ctx := bulkCtx([]RetailRow{{CodeCFO: 100, LFLEffective: LFLYes}}, ser, nil)
+	for source, want := range map[string]float64{CopyFromTactic: 90, CopyFromNewStrategy: 120} {
+		res, err := ApplyRetailBulk(RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: source, Months: []int{7}}, ctx)
+		if err != nil || len(res.Diff) != 1 || res.Diff[0].After != want {
+			t.Errorf("%s: diff=%+v, err=%v", source, res.Diff, err)
+		}
+	}
+	_, err := ApplyRetailBulk(RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: CopyFromTactic, Months: []int{8}}, ctx)
+	if err == nil || err.Error() != "нет утверждённой тактики за выбранный период" {
+		t.Errorf("пустой сценарий: %v", err)
+	}
+	ctx.Series.NewStrategyUnavailable = "источник сценария «Новая стратегия» не настроен"
+	_, err = ApplyRetailBulk(RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: CopyFromNewStrategy, Months: []int{7}}, ctx)
+	if err == nil || err.Error() != ctx.Series.NewStrategyUnavailable {
+		t.Errorf("недоступный источник должен сообщать причину: %v", err)
+	}
+}
+
+func TestBulkMultiplierRequiresOneMonthAndFiniteNumber(t *testing.T) {
+	ctx := bulkCtx([]RetailRow{{CodeCFO: 100, LFLEffective: LFLYes}}, NewRetailSeries(), nil)
+	base := RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: CopyFromStrategy,
+		Coefficient: 1.1, CoefficientSet: true, Months: []int{7, 8}}
+	if _, err := ApplyRetailBulk(base, ctx); err == nil || err.Error() != "коэффициент и надбавка применяются к одному выбранному месяцу" {
+		t.Errorf("два месяца с множителем: %v", err)
+	}
+	base.Months = []int{7}
+	base.Coefficient = math.Inf(1)
+	if _, err := ApplyRetailBulk(base, ctx); err == nil || err.Error() != "коэффициент и надбавка должны быть конечными числами" {
+		t.Errorf("бесконечный коэффициент: %v", err)
+	}
+	base.Coefficient = math.NaN()
+	if _, err := ApplyRetailBulk(base, ctx); err == nil || err.Error() != "коэффициент и надбавка должны быть конечными числами" {
+		t.Errorf("NaN коэффициент: %v", err)
 	}
 }
 

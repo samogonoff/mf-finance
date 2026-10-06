@@ -75,6 +75,9 @@ func (s *OlapFactSource) MpStrategy(ctx context.Context, year, month int, segmen
 	if err != nil {
 		return nil, err
 	}
+	for i := range rows {
+		rows[i].Scenario = "Стратегический бюджет"
+	}
 	sortFacts(rows)
 	return rows, nil
 }
@@ -116,7 +119,7 @@ func (s *OlapFactSource) formRows(ctx context.Context, table string, year, month
 		if err := rows.Scan(&cfo, &pl, &amt); err != nil {
 			return nil, err
 		}
-		if !cfo.Valid || !pl.Valid {
+		if !cfo.Valid || !pl.Valid || !amt.Valid {
 			continue
 		}
 		out = append(out, FactRow{
@@ -161,7 +164,7 @@ func (s *OlapFactSource) penaltyRows(ctx context.Context, year, month int, platf
 		if err := rows.Scan(&cfo, &amt); err != nil {
 			return nil, err
 		}
-		if !cfo.Valid {
+		if !cfo.Valid || !amt.Valid {
 			continue
 		}
 		out = append(out, FactRow{

@@ -16,7 +16,7 @@ export const RETAIL_FORM_CODE = "TPL-TO-RETAIL";
 export type RetailMetric = "sales" | "payroll" | "rent";
 
 /** LFL-статусы магазина (§2, §4.4). new/xxx — «базы сравнения нет». */
-export type RetailLFL = "lfl" | "under1y" | "new" | "xxx" | "closed";
+export type RetailLFL = "lfl" | "under1y" | "new" | "xxx" | "closed" | "reconstruction";
 
 export interface RetailValue {
   metric: RetailMetric;
@@ -181,11 +181,13 @@ export interface RetailBulkRequest {
   months?: number[];
   reset_manual?: boolean;
   // copy_scenario
-  source?: "strategy" | "tactic" | "fact";
+  source?: "strategy" | "tactic" | "fact" | "new_strategy";
   source_year?: number;
   source_month?: number;
   coefficient?: number;
   percent_delta?: number;
+  coefficient_set?: boolean;
+  percent_delta_set?: boolean;
   // distribute
   target_total?: number;
   base_months?: number[];
@@ -206,6 +208,7 @@ export interface RetailBulkDiff {
   month: number;
   before: number | null;
   after: number;
+  base?: number | null;
   before_source?: string;
   after_source: string;
   note?: string;
@@ -259,7 +262,7 @@ export interface RetailValidationReport {
   reconciliations: RetailReconciliation[];
 }
 
-export type RetailSummaryMetrics = Record<string, number>;
+export type RetailSummaryMetrics = Record<string, number | boolean>;
 
 export interface RetailSummarySection {
   key: string;
@@ -478,7 +481,8 @@ export const LFL_LABELS: Record<string, string> = {
   under1y: "до года",
   new: "новый",
   xxx: "ххх",
-  closed: "закрыт"
+  closed: "закрыт",
+  reconstruction: "реконструкция"
 };
 
 /** Подписи источников значения ячейки (§5: «результат — значения с source-признаком»). */

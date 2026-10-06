@@ -1,6 +1,17 @@
 package plans
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
+
+func TestNewStrategyRequiresConfiguredSource(t *testing.T) {
+	s := &mssqlRetailSource{tbl: RetailTables{StrategyTable: "Budgeting.dbo.VFORMTOLOADPLAN"}}
+	_, err := s.NewStrategy(context.Background(), "BY", 2026)
+	if err == nil || err.Error() != "источник сценария «Новая стратегия» не настроен" {
+		t.Fatalf("flat plan without Scenario must not be reused: %v", err)
+	}
+}
 
 // В справочнике [001 CodeCFO] есть технические коды вроде «40RUBK» (валютные
 // разрезы). Раньше синк читал CodeCFO как int64 и падал на первой такой строке —

@@ -135,9 +135,9 @@ func StageStatusFromCards(stages []StageState, cards []Card) []StageState {
 				} else if c.Status == CardOnApproval {
 					onStep++
 				}
-			case c.StepCode == step && c.Status == CardReturned:
+			case (c.StepCode == step || step == "1.2" && c.StepCode == StepFinCode) && c.Status == CardReturned:
 				returned++
-			case c.StepCode == step:
+			case c.StepCode == step || step == "1.2" && c.StepCode == StepFinCode:
 				onStep++
 			}
 		}

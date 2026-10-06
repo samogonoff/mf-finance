@@ -196,15 +196,32 @@ func (s *RetailService) series(ctx context.Context, country string, year, month 
 		} else {
 			ser.AddFact(cells)
 		}
+		if cells, err := s.source.ComparisonFact(ctx, country, []int{year - 1, year}); err != nil {
+			log.Printf("plans retail: факт по начислениям Budgeting %s недоступен: %v", country, err)
+			ser.ComparisonLoaded = true
+		} else {
+			ser.AddComparisonFact(cells)
+		}
 		if cells, err := s.source.Strategy(ctx, country, year); err != nil {
 			log.Printf("plans retail: стратегия %s недоступна: %v", country, err)
 		} else {
 			ser.AddStrategy(cells)
 		}
+		if cells, err := s.source.ApprovedTactic(ctx, country, year); err != nil {
+			log.Printf("plans retail: утверждённая тактика Budgeting %s недоступна: %v", country, err)
+		} else {
+			ser.AddApproved(cells)
+		}
+		if cells, err := s.source.NewStrategy(ctx, country, year); err != nil {
+			log.Printf("plans retail: новая стратегия Budgeting %s недоступна: %v", country, err)
+			ser.NewStrategyUnavailable = err.Error()
+		} else {
+			ser.AddNewStrategy(cells)
+		}
 		if cells, kl, err := s.source.PlanHistory(ctx, country, year); err != nil {
 			log.Printf("plans retail: история плана %s недоступна: %v", country, err)
 		} else {
-			ser.AddApproved(cells)
+			_ = cells // Checks нужен только для соответствия KLIENT_ID.
 			klient = kl
 		}
 	}
@@ -487,17 +504,14 @@ func (s *RetailService) SaveForm(ctx context.Context, p Principal, cardID int64,
 		}
 	}
 
-	if _, err := s.repo.SaveValues(ctx, a.inst.ID, req.Cells, p.UserID, "manual_edit"); err != nil {
-		return RetailForm{}, err
-	}
 	for _, cm := range req.Comments {
 		row, ok := byCode[cm.CodeCFO]
 		if !ok || !a.allowsRow(row) {
 			return RetailForm{}, fmt.Errorf("магазин %d вне вашего среза доступа", cm.CodeCFO)
 		}
-		if err := s.repo.SaveComment(ctx, a.inst.ID, cm.CodeCFO, cm.Comment, p.UserID); err != nil {
-			return RetailForm{}, err
-		}
+	}
+	if err := s.repo.SaveFormChanges(ctx, a.inst.ID, req, p.UserID); err != nil {
+		return RetailForm{}, err
 	}
 	s.rec(ctx, p.UserID, "retail_form_save", cardID)
 	return s.Form(ctx, p, cardID, "")

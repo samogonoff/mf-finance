@@ -165,3 +165,51 @@ func TestCardRoute_ApprovedIsClosed(t *testing.T) {
 		t.Fatal("approve утверждённой карточки должен быть отклонён")
 	}
 }
+
+func TestCardRoute_ReturnRevokesByRouteOrder(t *testing.T) {
+	route := []RouteStep{
+		{StepCode: "1.1", SortOrder: 10, Kind: StepFill, Enabled: true},
+		{StepCode: "fin", SortOrder: 20, Kind: StepApprove, Enabled: true},
+		{StepCode: "1.3", SortOrder: 30, Kind: StepApprove, Enabled: true},
+		{StepCode: "1.4", SortOrder: 40, Kind: StepFinal, Enabled: true},
+	}
+	tr, err := applyCardAction(Card{Status: CardOnApproval, StepCode: "1.4"}, route,
+		CardActionInput{Action: "return", TargetStep: "fin", Comment: "нужна сверка"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"fin", "1.3", "1.4"}
+	if len(tr.RevokeSteps) != len(want) {
+		t.Fatalf("revoke steps: %v", tr.RevokeSteps)
+	}
+	for i, step := range want {
+		if tr.RevokeSteps[i] != step {
+			t.Fatalf("revoke steps: %v", tr.RevokeSteps)
+		}
+	}
+}
+
+func TestSalesRouteCannotAutoSkipNamedApprover(t *testing.T) {
+	route := []RouteStep{
+		{StepCode: "1.1", SortOrder: 10, Kind: StepFill, Enabled: true},
+		{StepCode: "fin", SortOrder: 20, Kind: StepApprove, Enabled: true, SkipIfSameUser: true},
+		{StepCode: "1.3", SortOrder: 30, Kind: StepApprove, Enabled: true, SkipIfSameUser: true},
+		{StepCode: "1.4", SortOrder: 40, Kind: StepFinal, Enabled: true},
+	}
+	tr, err := applyCardAction(Card{FormCode: TemplateRetail, Status: CardDraft, StepCode: "1.1"}, route,
+		CardActionInput{Action: "submit", ActorID: 7, StepOwner: map[string]int64{"fin": 7, "1.3": 7}})
+	if err != nil || tr.StepCode != "fin" || len(tr.Approvals) != 1 {
+		t.Fatalf("financial controller step must remain explicit: %+v %v", tr, err)
+	}
+}
+
+func TestSalesCardEditableOnlyAtFillStep(t *testing.T) {
+	for _, form := range []string{TemplateRetail, TemplateMP} {
+		if cardEditable(Card{FormCode: form, Status: CardReturned, StepCode: "fin"}) {
+			t.Fatalf("%s returned to controller must stay read-only", form)
+		}
+		if !cardEditable(Card{FormCode: form, Status: CardReturned, StepCode: "1.1"}) {
+			t.Fatalf("%s returned to fill must be editable", form)
+		}
+	}
+}

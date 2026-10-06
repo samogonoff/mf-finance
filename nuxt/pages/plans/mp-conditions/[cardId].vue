@@ -86,6 +86,7 @@
           <thead>
             <tr>
               <th class="sticky-col">Площадка</th>
+			  <th>Действует с</th><th>Действует по</th>
               <th class="col-num">% СПП</th>
               <th class="col-num">Наценка</th>
               <th class="col-num">Наценка от общей сс</th>
@@ -104,6 +105,8 @@
                 <span class="pl-name">{{ row.name_cfo || row.code_cfo }}</span>
                 <span class="pl-meta">ЦФО {{ row.code_cfo }} · {{ row.segment === "large" ? "крупные" : "мелкие" }} · {{ row.currency || "—" }}</span>
               </td>
+			  <td><input v-model="row.valid_from" type="date" class="select" :disabled="!editable" /></td>
+			  <td><input v-model="row.valid_to" type="date" class="select" :disabled="!editable" /></td>
               <td class="col-num">
                 <NumberField
                   :model-value="row.spp_pct_view"
@@ -134,9 +137,9 @@
               </td>
               <td v-for="b in costBlocks" :key="b.block" class="col-num">
                 <NumberField
-                  :model-value="row.shares_view[b.block] ?? 0"
+				  :model-value="row.shares_view[b.block] ?? null"
                   class="cell-input pct" :disabled="!editable" placeholder="%"
-                  @update:model-value="row.shares_view[b.block] = $event ?? 0"
+				  @update:model-value="row.shares_view[b.block] = $event"
                 />
                 <span v-if="hint(row, 'share:' + b.block) !== null" class="cell-hint">
                   факт: {{ pct(hint(row, "share:" + b.block)!) }}
@@ -236,7 +239,7 @@ interface EditableRow extends MpConditionsRow {
   spp_pct_view: number;
   markup_pct_view: number;
   markup_total_pct_view: number;
-  shares_view: Record<string, number>;
+  shares_view: Record<string, number | null>;
   _origin: string;
 }
 
@@ -278,10 +281,14 @@ const pct = (v: number): string => `${(toNum(v) * 100).toFixed(2)} %`;
 const money = (v: number): string => fmtMoney(toNum(v), { currency: "" });
 
 const toRow = (r: MpConditionsRow): EditableRow => {
-  const shares: Record<string, number> = {};
-  for (const b of COST_BLOCKS) shares[b] = Number((((r.shares || {})[b] || 0) * 100).toFixed(4));
+  const shares: Record<string, number | null> = {};
+  for (const b of COST_BLOCKS) shares[b] = b in (r.shares || {}) ? Number((r.shares[b] * 100).toFixed(4)) : null;
   const row: EditableRow = {
     ...r,
+	valid_from: r.period_year === view.value?.period.year && r.period_month === view.value?.period.month
+	  ? (r.valid_from || `${view.value?.period.year}-${String(view.value?.period.month || 1).padStart(2, "0")}-01`)
+	  : `${view.value?.period.year}-${String(view.value?.period.month || 1).padStart(2, "0")}-01`,
+	valid_to: r.period_year === view.value?.period.year && r.period_month === view.value?.period.month ? (r.valid_to || "") : "",
     change_reason: r.change_reason || "",
     spp_pct_view: Number(((r.spp_pct || 0) * 100).toFixed(4)),
     markup_pct_view: Number(((r.markup_pct || 0) * 100).toFixed(4)),
@@ -294,7 +301,7 @@ const toRow = (r: MpConditionsRow): EditableRow => {
 };
 
 const signature = (r: EditableRow): string =>
-  JSON.stringify([r.spp_pct_view, r.markup_pct_view, r.markup_total_pct_view, r.shares_view, r.change_reason]);
+  JSON.stringify([r.valid_from, r.valid_to, r.spp_pct_view, r.markup_pct_view, r.markup_total_pct_view, r.shares_view, r.change_reason]);
 
 const isDirty = (r: EditableRow): boolean => signature(r) !== r._origin;
 const sharesSum = (r: EditableRow): number =>
@@ -334,8 +341,8 @@ const saveRow = async (r: EditableRow) => {
   try {
     const shares: Record<string, number> = {};
     for (const b of COST_BLOCKS) {
-      const v = toNum(r.shares_view[b]);
-      if (v !== 0) shares[b] = v / 100;
+      const v = r.shares_view[b];
+      if (v != null && !Number.isNaN(v)) shares[b] = v / 100;
     }
     const saved = await api.saveConditions(cardId, {
       code_cfo: r.code_cfo,
@@ -343,6 +350,8 @@ const saveRow = async (r: EditableRow) => {
       markup_pct: toNum(r.markup_pct_view) / 100,
       markup_total_pct: toNum(r.markup_total_pct_view) / 100,
       currency: r.currency,
+	  valid_from: r.valid_from,
+	  valid_to: r.valid_to,
       change_reason: r.change_reason,
       shares
     });

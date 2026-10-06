@@ -45,10 +45,6 @@ func (c MpConditionsInput) vatRatio() float64 {
 type MpInverseInput struct {
 	SalesManagerGross float64 // ПРОДАЖИ по ценам менеджера с НДС (1046) — единственная вводимая сумма
 	Conditions        MpConditionsInput
-	// Overrides — ручные переопределения расчётных сумм. Автопересчёт их НЕ
-	// перезатирает (ТЗ §7.2): форма показывает «расчёт даёт X, вручную стоит Y»,
-	// сброс — явное действие с записью в аудит.
-	Overrides map[string]float64
 }
 
 // MpInverseCell — вычисленная ячейка с происхождением значения.
@@ -67,18 +63,13 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 	out := map[string]float64{}
 	var log []MpInverseCell
 
-	// put — записать значение с учётом ручного переопределения.
+	// put — записать расчётное значение и его источник для аудита.
 	put := func(block string, calc float64, formula string) float64 {
-		val := calc
-		manual := false
-		if ov, ok := in.Overrides[block]; ok {
-			val, manual = ov, true
-		}
-		out[block] = val
+		out[block] = calc
 		log = append(log, MpInverseCell{
-			BlockType: block, Value: val, Calculated: calc, Manual: manual, Formula: formula,
+			BlockType: block, Value: calc, Calculated: calc, Formula: formula,
 		})
-		return val
+		return calc
 	}
 
 	// Продажи. НДС не считается «законодательным»: перевод в суммы без НДС идёт
@@ -130,18 +121,9 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 		put(BNormShare, normBase, "норматив удержаний площадки, приведённый к базе долей")
 	}
 
-	// Доля агентского вознаграждения — ОСТАТОК норматива площадки, если её не
-	// задали руками (прототип, строка 85). Считаем до статей: от неё зависит
-	// сумма агентского и весь итог прямых затрат.
+	// Не выводим отсутствующую долю из норматива: статья без действующей
+	// константы остаётся пустой в форме и не участвует в сумме расходов.
 	shares := c.Shares
-	if _, set := shares[BCostAgent]; !set && normBase > 0 {
-		merged := make(map[string]float64, len(shares)+1)
-		for k, v := range shares {
-			merged[k] = v
-		}
-		merged[BCostAgent] = agentShareFromNorm(normBase, safeDiv(commission, platNet), shares)
-		shares = merged
-	}
 
 	// Статьи прямых затрат: доля от выручки ПО ЦЕНЕ ПЛОЩАДКИ без НДС.
 	//
@@ -153,7 +135,10 @@ func computeMpPlatformInverse(in MpInverseInput) (map[string]float64, []MpInvers
 	// внутри каждой статьи ещё раз (см. §21 — там же убрано «+ Σ Комиссия»).
 	directTotal := commission
 	for _, block := range mpCostBlocks {
-		share := shares[block]
+		share, present := shares[block]
+		if !present {
+			continue
+		}
 		v := put(block, platNet*share, "= цена площадки без НДС × доля статьи")
 		directTotal += v
 	}
@@ -211,12 +196,12 @@ type MpFormTotals struct {
 	CommonCosts       float64 `json:"common_costs"`
 	PlPlatforms       float64 `json:"pl_platforms"`
 	PlTotalCost       float64 `json:"pl_total_cost"`
-	PL float64 `json:"pl"`
+	PL                float64 `json:"pl"`
 	// PLWithCommon — в PL вычтены общие затраты (этап 1.5 и далее). На этапах
 	// 1.1/1.2 они не участвуют, и подпись формы обязана это показывать.
-	PLWithCommon bool    `json:"pl_with_common"`
-	PLPct        float64 `json:"pl_pct"`
-	DirectShareTurn   float64 `json:"direct_share_turnover"`
+	PLWithCommon    bool    `json:"pl_with_common"`
+	PLPct           float64 `json:"pl_pct"`
+	DirectShareTurn float64 `json:"direct_share_turnover"`
 }
 
 // computeMpFormTotals — итоги формы из значений по площадкам и общих затрат.

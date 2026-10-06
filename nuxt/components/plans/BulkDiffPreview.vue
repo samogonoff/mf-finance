@@ -51,7 +51,9 @@
       Изменений нет: операция ничего не поменяет в выбранной области.
     </p>
 
-    <div v-else class="bdp-scroll">
+    <details v-else class="bdp-diff">
+      <summary>Показать изменения по магазинам ({{ num(result.diff.length) }})</summary>
+      <div class="bdp-scroll">
       <table class="data-table compact">
         <thead>
           <tr>
@@ -59,6 +61,7 @@
             <th>Период</th>
             <th>Метрика</th>
             <th class="col-num">Было</th>
+            <th v-if="result.op === 'copy_scenario'" class="col-num">Сценарий: база</th>
             <th class="col-num">Будет</th>
             <th class="col-num">Δ</th>
             <th>Пометка</th>
@@ -73,6 +76,7 @@
             <td class="d-per">{{ monthLabel(d.month) }} {{ d.year }}</td>
             <td class="d-metric">{{ metricLabel(d.metric) }}</td>
             <td class="col-num d-before">{{ d.before == null ? "пусто" : money(d.before) }}</td>
+            <td v-if="result.op === 'copy_scenario'" class="col-num">{{ d.base == null ? "—" : money(d.base) }}</td>
             <td class="col-num d-after">{{ money(d.after) }}</td>
             <td class="col-num" :class="deltaClass(d)">{{ deltaText(d) }}</td>
             <td class="d-note">
@@ -86,7 +90,8 @@
         Показаны первые {{ num(shown.length) }} из {{ num(result.diff.length) }} изменений —
         остальные применятся по тем же правилам.
       </p>
-    </div>
+      </div>
+    </details>
 
     <div class="bdp-actions">
       <button type="button" class="btn btn-ghost" :disabled="busy" @click="emit('close')">

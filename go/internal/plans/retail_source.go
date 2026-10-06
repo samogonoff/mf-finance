@@ -26,8 +26,12 @@ type RetailDataSource interface {
 	Stores(ctx context.Context, country string) ([]RetailStore, error)
 	// Fact — факт продаж (выручка с НДС) за указанные годы, все месяцы.
 	Fact(ctx context.Context, country string, years []int) ([]RetailFactCell, error)
+	ComparisonFact(ctx context.Context, country string, years []int) ([]RetailFactCell, error)
 	// Strategy — стратегия года (Budgeting, нац. валюта).
 	Strategy(ctx context.Context, country string, year int) ([]RetailFactCell, error)
+	// ApprovedTactic and NewStrategy are Budgeting scenarios for bulk operations.
+	ApprovedTactic(ctx context.Context, country string, year int) ([]RetailFactCell, error)
+	NewStrategy(ctx context.Context, country string, year int) ([]RetailFactCell, error)
 	// Cogs — себестоимость магазинов, ТОЛЬКО в BYN (правка ТЗ §6: ExRate в её
 	// строках жёстко равен 1, валютной аналитики по себестоимости нет).
 	Cogs(ctx context.Context, country string, years []int) ([]RetailFactCell, error)
@@ -50,13 +54,16 @@ type RetailDataSource interface {
 // PLDescrBK + четыре колонки сумм), и настраивать их env'ом стало вредно —
 // запрос зависит от смысла колонок, а не только от их имён.
 type RetailTables struct {
-	StoreTable       string // FinDWH.dbo.[001 CodeCFO]
-	StoreGroup       string // значение GroupCFO1 справочника: 'Магазины'
-	FactTable        string // FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail
-	StrategyTable    string // Budgeting.dbo.VFORMTOLOADPLAN (нац. валюта)
-	StrategyGroup    string // ГруппыЦФО1 таблицы плана: '3.Магазины'
-	PlanHistTable    string // Checks.dbo.plan_saler_st
-	PlanHistNewTable string // Checks.dbo.plan_saler_st_new_stores
+	StoreTable          string // FinDWH.dbo.[001 CodeCFO]
+	StoreGroup          string // значение GroupCFO1 справочника: 'Магазины'
+	FactTable           string // FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail
+	ComparisonFactTable string // Budgeting.dbo.VFORMTOLOADFACT, начисленный факт в нац. валюте
+	StrategyTable       string // Budgeting.dbo.VFORMTOLOADPLAN (нац. валюта)
+	ApprovedTable       string // Budgeting.dbo.VFORMTOLOADTAKTTARGET (нац. валюта)
+	NewStrategyTable    string // optional flat table with Scenario and localized columns
+	StrategyGroup       string // ГруппыЦФО1 таблицы плана: '3.Магазины'
+	PlanHistTable       string // Checks.dbo.plan_saler_st
+	PlanHistNewTable    string // Checks.dbo.plan_saler_st_new_stores
 }
 
 // Значения PLDescrBK — разделение выручки и себестоимости (правка ТЗ §1).
@@ -198,6 +205,25 @@ func (s *mssqlRetailSource) Fact(ctx context.Context, country string, years []in
 	return s.scanCells(ctx, q, retailPLRevenue, country)
 }
 
+func (s *mssqlRetailSource) ComparisonFact(ctx context.Context, country string, years []int) ([]RetailFactCell, error) {
+	if len(years) == 0 {
+		return []RetailFactCell{}, nil
+	}
+	table := s.tbl.ComparisonFactTable
+	if table == "" {
+		table = "Budgeting.dbo.VFORMTOLOADFACT"
+	}
+	q := fmt.Sprintf(`
+		SELECT TRY_CONVERT(int, [КодЦФО]) AS cfo, YEAR([Дата]) AS y, MONTH([Дата]) AS m, SUM([Значение]) AS amt
+		  FROM %s
+		 WHERE [Параметр] = N'ПРОДАЖИ'
+		   AND [ГруппыЦФО1] = @p1
+		   AND YEAR([Дата]) IN (%s)
+		   AND (@p2 = '' OR [Страна] = @p2)
+		 GROUP BY TRY_CONVERT(int, [КодЦФО]), YEAR([Дата]), MONTH([Дата])`, table, intList(years))
+	return s.scanCells(ctx, q, s.tbl.StrategyGroup, country)
+}
+
 // Cogs — себестоимость магазинов (правка ТЗ §6): лежит ТОЛЬКО в белорусских
 // рублях, ExRate в её строках жёстко равен 1. Валютной аналитики по
 // себестоимости в источнике нет, поэтому и метод отдаёт BYN.
@@ -284,7 +310,39 @@ func (s *mssqlRetailSource) TacticFxRate(ctx context.Context, country string, ye
 // ни индекса самовывоза ТЗ не определяет и в источниках их нет — эта база НЕ
 // реализована (см. отчёт: открытые вопросы к BI).
 func (s *mssqlRetailSource) Strategy(ctx context.Context, country string, year int) ([]RetailFactCell, error) {
-	if s.tbl.StrategyTable == "" {
+	return s.planScenario(ctx, s.tbl.StrategyTable, country, year)
+}
+
+func (s *mssqlRetailSource) ApprovedTactic(ctx context.Context, country string, year int) ([]RetailFactCell, error) {
+	table := s.tbl.ApprovedTable
+	if table == "" {
+		table = "Budgeting.dbo.VFORMTOLOADTAKTTARGET"
+	}
+	return s.planScenario(ctx, table, country, year)
+}
+
+func (s *mssqlRetailSource) NewStrategy(ctx context.Context, country string, year int) ([]RetailFactCell, error) {
+	if s.tbl.NewStrategyTable == "" {
+		return nil, errors.New("источник сценария «Новая стратегия» не настроен")
+	}
+	// This adapter is for a separately configured flat table with the localized
+	// plan columns and Scenario. Verified VFORMTOLOADPLAN has no Scenario and is
+	// never used here. Once BI identifies the source, configure its exact table.
+	q := fmt.Sprintf(`
+		SELECT TRY_CONVERT(int, [КодЦФО]) AS cfo, YEAR([Дата]) AS y, MONTH([Дата]) AS m, SUM([Значение]) AS amt
+		  FROM %s
+		 WHERE [Scenario] = @p1
+		   AND [Параметр] = N'ПРОДАЖИ'
+		   AND [ГруппыЦФО1] = @p2
+		   AND YEAR([Дата]) = @p3
+		   AND (@p4 = '' OR [Страна] = @p4)
+		 GROUP BY TRY_CONVERT(int, [КодЦФО]), YEAR([Дата]), MONTH([Дата])`, s.tbl.NewStrategyTable)
+	return s.scanCells(ctx, q, "НовСтрат", s.tbl.StrategyGroup, year, country)
+}
+
+// The flat plan tables identify scenarios by table and have no Scenario column.
+func (s *mssqlRetailSource) planScenario(ctx context.Context, table, country string, year int) ([]RetailFactCell, error) {
+	if table == "" {
 		return []RetailFactCell{}, nil
 	}
 	q := fmt.Sprintf(`
@@ -294,7 +352,7 @@ func (s *mssqlRetailSource) Strategy(ctx context.Context, country string, year i
 		   AND [ГруппыЦФО1] = @p1
 		   AND YEAR([Дата]) = @p2
 		   AND (@p3 = '' OR [Страна] = @p3)
-		 GROUP BY TRY_CONVERT(int, [КодЦФО]), YEAR([Дата]), MONTH([Дата])`, s.tbl.StrategyTable)
+		 GROUP BY TRY_CONVERT(int, [КодЦФО]), YEAR([Дата]), MONTH([Дата])`, table)
 	return s.scanCells(ctx, q, s.tbl.StrategyGroup, year, country)
 }
 
