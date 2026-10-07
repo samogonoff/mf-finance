@@ -1215,14 +1215,20 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     # ── Filter by PEO approval status (sent by frontend peoFilter) ─────────
     peo_filter = (payload.get("peo_filter") or "").strip()
     if peo_filter and peo_filter != "all":
+        # Список в фильтре исключающий: у неактуального изделия в колонке
+        # «Этап» стоит ⚫ поверх любого этапа (см. rowStage на фронте), поэтому
+        # конкретный этап такие строки не показывают. Раньше «Согласовано»
+        # оставляло калькуляции неактуальных изделий — «фильтр работает
+        # некорректно» (жалоба 07.10.2026, задача 663056). Скрыть их на «Все»
+        # по-прежнему можно галочкой «Не показывать неактуальные».
         if peo_filter == "none":
-            data = [r for r in data if r.get("peo_status") is None]
+            data = [r for r in data if r.get("peo_status") is None and not r.get("obsolete")]
         elif peo_filter == "obsolete":
             # Неактуальные изделия — состояние модели/артикула, не этап
-            # согласования; в остальных значениях фильтра они не отсекаются.
+            # согласования: показываем независимо от этапа калькуляции.
             data = [r for r in data if r.get("obsolete")]
         else:
-            data = [r for r in data if r.get("peo_status") == peo_filter]
+            data = [r for r in data if r.get("peo_status") == peo_filter and not r.get("obsolete")]
 
     mp_formula_inputs = None
     if internal_rate is not None and mp_constants is not None:
