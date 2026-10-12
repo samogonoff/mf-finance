@@ -1,6 +1,122 @@
 package plans
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
+
+type payrollCalcRepoStub struct {
+	ExpRepo
+	row      ExpRow
+	params   []ExpParamRow
+	saved    []ExpCell
+	instance ExpInstance
+}
+
+func (s *payrollCalcRepoStub) EnsureInstance(_ context.Context, in ExpInstance, _ int64) (ExpInstance, error) {
+	if s.instance.ID != 0 {
+		return s.instance, nil
+	}
+	in.ID = 1
+	s.instance = in
+	return in, nil
+}
+
+func (s *payrollCalcRepoStub) Rows(context.Context, int64, ExpFilter) ([]ExpRow, int, error) {
+	return []ExpRow{s.row}, 1, nil
+}
+
+func (s *payrollCalcRepoStub) Params(context.Context, int64) ([]ExpParamRow, error) {
+	return s.params, nil
+}
+
+func (s *payrollCalcRepoStub) SaveValues(_ context.Context, _ int64, cells []ExpCell, _ int64, _ int) (int, error) {
+	s.saved = append([]ExpCell(nil), cells...)
+	return len(cells), nil
+}
+
+type payrollCalcCardStoreStub struct {
+	CardStore
+	card Card
+}
+
+func (s payrollCalcCardStoreStub) Card(context.Context, int64) (Card, error) { return s.card, nil }
+
+type payrollCalcSourceStub struct {
+	ExpDataSource
+	sales map[int]map[int]float64
+}
+
+func (s payrollCalcSourceStub) SalesPlan(context.Context, string, int) (map[int]map[int]float64, error) {
+	return s.sales, nil
+}
+
+func TestExpServiceCalc_PersistsZeroWhenSalesPlanIsZero(t *testing.T) {
+	old := 100.0
+	base := 1000.0
+	repo := &payrollCalcRepoStub{
+		row: ExpRow{CodeCFO: 101, CodePL: ExpPLSalary, Values: []ExpValue{
+			{Scenario: ExpScenarioFact, Month: 1, Amount: &base},
+			{Scenario: ExpScenarioPlan, Month: 1, Amount: &old},
+		}},
+		params: []ExpParamRow{
+			{ParamCode: ExpParamPayrollShare, ScopeKind: "country", Value: 0.1},
+			{ParamCode: ExpParamPayrollCap, ScopeKind: "country", Value: 1.06},
+		},
+	}
+	cards := NewCardService(payrollCalcCardStoreStub{card: Card{
+		ID: 7, FormCode: TemplateExp, ScopeKey: "R-BY", Year: 2026,
+		Currency: "BYN", Status: CardDraft, StepCode: "1.1",
+	}})
+	svc := NewExpService(repo, cards, nil).WithSalesPlan(payrollCalcSourceStub{
+		sales: map[int]map[int]float64{101: {1: 0}},
+	})
+
+	got, err := svc.Calc(context.Background(), adminP, 7, ExpCalcRequest{
+		Op: ExpCalcPayroll, Months: []int{1}, Preview: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Changed != 1 || len(repo.saved) != 1 {
+		t.Fatalf("нулевой результат должен заменить старое значение: result=%+v saved=%+v", got, repo.saved)
+	}
+	if repo.saved[0].Amount == nil || *repo.saved[0].Amount != 0 {
+		t.Fatalf("ожидался явный ноль, получили %+v", repo.saved[0])
+	}
+}
+
+func TestExpServiceCalc_SkipsMissingSalesPlan(t *testing.T) {
+	old := 100.0
+	base := 1000.0
+	repo := &payrollCalcRepoStub{
+		row: ExpRow{CodeCFO: 101, CodePL: ExpPLSalary, Values: []ExpValue{
+			{Scenario: ExpScenarioFact, Month: 1, Amount: &base},
+			{Scenario: ExpScenarioPlan, Month: 1, Amount: &old},
+		}},
+		params: []ExpParamRow{
+			{ParamCode: ExpParamPayrollShare, ScopeKind: "country", Value: 0.1},
+			{ParamCode: ExpParamPayrollCap, ScopeKind: "country", Value: 1.06},
+		},
+	}
+	cards := NewCardService(payrollCalcCardStoreStub{card: Card{
+		ID: 7, FormCode: TemplateExp, ScopeKey: "R-BY", Year: 2026,
+		Currency: "BYN", Status: CardDraft, StepCode: "1.1",
+	}})
+	svc := NewExpService(repo, cards, nil).WithSalesPlan(payrollCalcSourceStub{
+		sales: map[int]map[int]float64{},
+	})
+
+	got, err := svc.Calc(context.Background(), adminP, 7, ExpCalcRequest{
+		Op: ExpCalcPayroll, Months: []int{1}, Preview: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Changed != 0 || len(repo.saved) != 0 {
+		t.Fatalf("отсутствующий план продаж не должен очищать старое значение: result=%+v saved=%+v", got, repo.saved)
+	}
+}
 
 // ТЗ §6.1: порог ограничивает БАЗУ НАЧИСЛЕНИЯ, а не сумму выплат.
 // «Выше 106 % никому не могут выплатить планы».
