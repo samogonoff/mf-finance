@@ -62,6 +62,20 @@ cd go && go test ./internal/plans/ -run TestName -v  # один тест
 - Go API: http://api.finance.local (или `http://localhost:8081` без nginx)
 - Postgres: `psql -h localhost -p 55432 -U finance finance`
 - Redis: `redis-cli -h localhost -p 63791`
+
+### Доступ к OLAP и Fox из WSL
+
+Из WSL проверен прямой доступ к внешним SQL Server-контурам:
+
+- OLAP: `10.10.6.15:1433`;
+- Fox: `10.10.7.22:1433`.
+
+Для обоих endpoint’ов выполнен безопасный `SELECT` через `mssql-tools`,
+поэтому дополнительные SSH-forwarding’и для Finance сейчас не нужны. Перед
+изменением сетевого контура сначала проверить эти адреса; при потере VPN
+повторить проверку и добавить отдельные forwarding’и только после
+подтверждения недоступности прямых адресов. Пароли и рабочие DSN в этот файл
+не записывать; запросы к внешним БД выполнять только на чтение.
 - python-analytics: только из `data_net`, наружу не торчит
 
 Эндпоинты `make cost-up`:
