@@ -193,6 +193,12 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 		if rowShare == 0 {
 			rowShare = share
 		}
+		// Нулевой удельный вес означает, что расчёт для строки не настроен.
+		// При заданном весе нулевой результат — валидное значение (например,
+		// при нулевом плане продаж) и должен заменить старую ячейку.
+		if rowShare <= 0 {
+			continue
+		}
 		rowCap := expParamValue(params, ExpParamPayrollCap, fmt.Sprint(r.CodeCFO))
 		if rowCap == 0 {
 			rowCap = capDefault
@@ -203,9 +209,6 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 			got := ExpPayrollFromSales(ExpPayrollInput{
 				SalesPlan: plan, Base: base, HasBase: hasBase, Cap: rowCap, Share: rowShare,
 			})
-			if got.Amount == 0 && !got.NoBase {
-				continue
-			}
 			before := expPlanOf(r, m)
 			note := ""
 			if got.Capped {
