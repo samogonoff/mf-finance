@@ -44,6 +44,15 @@ func main() {
 	tokens := auth.NewTokenRepo(rdb)
 	authSvc := auth.NewService(userRepo, tokens)
 	authH := auth.NewHandler(authSvc)
+	technicalGate, err := auth.NewTechnicalReadonlyGate(userRepo.ExistingByEmail)
+	if err != nil {
+		// The embedded registry contains public digests only. Fail closed without
+		// ever echoing credential material into logs.
+		log.Fatal("invalid technical read-only configuration")
+	}
+	technicalRead := func(pattern, handler string, h http.HandlerFunc) http.HandlerFunc {
+		return auth.TechnicalReadHandler(pattern, handler, h)
+	}
 
 	// Notifications: репозиторий → сервис (с фоновой доставкой в Б24 при
 	// заданном B24_NOTIFY_WEBHOOK_URL) → handler. Welcome-уведомление
@@ -68,7 +77,7 @@ func main() {
 	mux.HandleFunc("POST /api/auth/refresh", authH.Refresh)
 
 	// Authenticated
-	mux.HandleFunc("GET /api/auth/me", auth.RequireBearer(authSvc, authH.Me))
+	mux.HandleFunc("GET /api/auth/me", technicalRead("GET /api/auth/me", "auth.Me", auth.RequireBearer(authSvc, authH.Me)))
 	// Гейт обособленных контуров: зовёт nginx (auth_request), не браузер.
 	mux.HandleFunc("GET /api/auth/check", auth.RequireBearer(authSvc, authH.Check))
 	mux.HandleFunc("POST /api/auth/logout", auth.RequireBearer(authSvc, authH.Logout))
@@ -192,10 +201,10 @@ func main() {
 	// Доступ к отчёту «Задолженность ВГО» — только ROLE_FINANCE_ADMIN (или ROLE_ADMIN
 	// через иерархию ExpandRoles). До широкого внедрения отчётность закрыта от
 	// обычных пользователей; расширим RoleFinanceUser, когда определимся с моделью.
-	mux.HandleFunc("GET /api/reports/debt/filter-options", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.FilterOptions))
-	mux.HandleFunc("GET /api/reports/debt/report", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.Report))
-	mux.HandleFunc("GET /api/reports/debt/drilldown", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.Drilldown))
-	mux.HandleFunc("GET /api/reports/debt/saved-filters", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.ListSavedFilters))
+	mux.HandleFunc("GET /api/reports/debt/filter-options", technicalRead("GET /api/reports/debt/filter-options", "debt.FilterOptions", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.FilterOptions)))
+	mux.HandleFunc("GET /api/reports/debt/report", technicalRead("GET /api/reports/debt/report", "debt.Report", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.Report)))
+	mux.HandleFunc("GET /api/reports/debt/drilldown", technicalRead("GET /api/reports/debt/drilldown", "debt.Drilldown", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.Drilldown)))
+	mux.HandleFunc("GET /api/reports/debt/saved-filters", technicalRead("GET /api/reports/debt/saved-filters", "debt.ListSavedFilters", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.ListSavedFilters)))
 	mux.HandleFunc("POST /api/reports/debt/saved-filters", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.CreateSavedFilter))
 	mux.HandleFunc("DELETE /api/reports/debt/saved-filters", auth.RequireRole(authSvc, auth.RoleFinanceAdmin, debtH.DeleteSavedFilter))
 
@@ -619,7 +628,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           withLogging(withCORS(mux, cfg.CORSOrigins)),
+		Handler:           technicalGate.Middleware(mux, withLogging(withCORS(mux, cfg.CORSOrigins))),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

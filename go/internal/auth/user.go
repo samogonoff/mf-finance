@@ -113,6 +113,47 @@ func (r *UserRepo) ByID(ctx context.Context, id int64) (*User, error) {
 	return scanUser(r.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE id=$1`, id))
 }
 
+// ExistingByEmail resolves only an already provisioned user. It deliberately
+// performs a SELECT and never creates, updates, logs in, or synchronises a
+// user; technical read-only credentials depend on this fail-closed boundary.
+func (r *UserRepo) ExistingByEmail(ctx context.Context, email string) (*User, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+userColumns+` FROM users WHERE lower(email) = lower($1)`, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, existingByEmailRowsError(false, false)
+	}
+	u, err := scanUser(rows)
+	if err != nil {
+		return nil, err
+	}
+	// A case-insensitive duplicate is an ambiguous subject. Never choose one
+	// arbitrarily for a technical credential, even if legacy data lacks a
+	// functional unique index.
+	if err := existingByEmailRowsError(true, rows.Next()); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+func existingByEmailRowsError(hasFirst, hasSecond bool) error {
+	if !hasFirst {
+		return pgx.ErrNoRows
+	}
+	if hasSecond {
+		return errors.New("ambiguous user email")
+	}
+	return nil
+}
+
 // ListFilter — фильтры админского списка пользователей.
 type ListFilter struct {
 	Email     string

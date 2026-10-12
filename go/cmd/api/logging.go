@@ -142,6 +142,14 @@ func withLogging(next http.Handler) http.Handler {
 			"duration_ms", time.Since(start).Milliseconds(),
 			"bytes", rec.bytes,
 		}
+		if auth.TechnicalReadonly(r.Context()) {
+			attrs = append(attrs, "auth_mode", "technical-readonly", "credential_name", auth.TechnicalReadonlyName(r.Context()))
+			if info.userID == 0 {
+				if u := auth.CurrentUser(r); u != nil {
+					attrs = append(attrs, "user_id", u.ID)
+				}
+			}
+		}
 		if info.userID != 0 {
 			attrs = append(attrs, "user_id", info.userID)
 		}

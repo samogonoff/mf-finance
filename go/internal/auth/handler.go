@@ -94,6 +94,22 @@ var AuthObserver func(ctx context.Context, userID int64)
 // валидирует через сервис и кладёт *User в контекст.
 func RequireBearer(svc *Service, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The outer technical gate has already authenticated and attached a
+		// temporary SELECT-only identity. Only a reviewed exact handler may
+		// consume it; ordinary routes cannot fall back to this path.
+		if TechnicalReadonly(r.Context()) {
+			bound, _ := r.Context().Value(technicalBoundKey{}).(bool)
+			if !bound || userFromCtx(r.Context()) == nil {
+				writeErr(w, http.StatusForbidden, "technical read handler denied")
+				return
+			}
+			next(w, r)
+			return
+		}
+		if hasTechnicalCredential(r) {
+			writeErr(w, http.StatusUnauthorized, "technical credential requires read gate")
+			return
+		}
 		h := r.Header.Get("Authorization")
 		const p = "Bearer "
 		if !strings.HasPrefix(h, p) {
@@ -126,6 +142,12 @@ func userFromCtx(ctx context.Context) *User {
 func UserFromCtx(ctx context.Context) (*User, bool) {
 	u, ok := ctx.Value(ctxKeyUser).(*User)
 	return u, ok
+}
+
+// ContextWithUser is used by the technical gate to install its temporary,
+// cloned identity before the reviewed role middleware runs.
+func ContextWithUser(ctx context.Context, u *User) context.Context {
+	return context.WithValue(ctx, ctxKeyUser, u)
 }
 
 func tokenFromCtx(ctx context.Context) string {
@@ -169,9 +191,10 @@ func SetIdentityHeaders(h http.Header, u *User) {
 // любых присланных клиентом.
 //
 // Контракт:
-//   200 + X-Auth-User-Id/Email/Name/Roles — пускаем;
-//   401 — токена нет или он не жив (ставит RequireBearer);
-//   403 — роли не хватает либо роль неизвестна.
+//
+//	200 + X-Auth-User-Id/Email/Name/Roles — пускаем;
+//	401 — токена нет или он не жив (ставит RequireBearer);
+//	403 — роли не хватает либо роль неизвестна.
 //
 // Ответы вне 401/403 nginx превращает в 500 для пользователя, поэтому никаких
 // других кодов ручка не отдаёт. Тело ответа nginx отбрасывает — оно здесь
