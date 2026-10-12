@@ -11,6 +11,22 @@ Production allowlist сейчас содержит identity read и read-only м
 - `/api/reports/debt/drilldown` — `debt.Drilldown`;
 - `/api/reports/debt/saved-filters` — `debt.ListSavedFilters`.
 
+Для post-deploy smoke формы расходов ЦФО v2 также доступны только через
+проверенные GET-маршруты:
+
+- `/api/plans/cfo-exp/{cardId}/form` — текущее сохранённое состояние формы;
+- `/api/plans/cfo-exp/{cardId}/validate` — проверки сохранённых строк;
+- `/api/plans/cfo-exp/{cardId}/export` — экспорт сохранённых строк;
+- `/api/plans/cfo-exp/{cardId}/registry/{sheet}` — ручной реестр и его расчёт.
+
+Эти обработчики используют read-only путь без ленивой синхронизации источника.
+Новый GET-маршрут можно добавлять в manifest только вместе с явной проверкой,
+что handler и все вызываемые методы не создают и не обновляют данные. Обычные
+GET-обработчики с lazy hydration, cache warm или иным побочным эффектом в
+technical read-only manifest добавлять нельзя.
+Для бинарного экспорта `check.py` сохраняет только статус, тип, размер и хеш
+ответа; содержимое файла в результаты проверки не попадает.
+
 Остальные Finance UI GET-маршруты требуют отдельного review каждого handler и
 его вызываемых методов перед добавлением в manifest.
 

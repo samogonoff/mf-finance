@@ -17,8 +17,12 @@ FIXTURE = 'finance_ro_' + '1' * 64  # deterministic local test fixture; never a 
 
 class Response:
     status = 200
-    def __init__(self, raw=b'{"saved_only":true}'):
+    def __init__(self, raw=b'{"saved_only":true}', content_type=None):
         self.raw = raw
+        self.content_type = content_type
+        self.headers = self
+    def get_content_type(self):
+        return self.content_type
     def __enter__(self):
         return self
     def __exit__(self, *args):
@@ -125,6 +129,12 @@ class ToolsTest(unittest.TestCase):
         self.assertTrue(result['success'])
         self.assertEqual(opener.request.full_url, 'https://api.example.test/api/reports/debt/report?date_from=2026-01-01&date_to=2026-01-31')
         self.assertEqual(opener.request.get_method(), 'GET')
+        for path in (
+                '/api/plans/cfo-exp/123/form?code_cfo=31&limit=100',
+                '/api/plans/cfo-exp/123/validate',
+                '/api/plans/cfo-exp/123/export?dir=desc&sort=code_pl',
+                '/api/plans/cfo-exp/123/registry/travelBY'):
+            self.assertEqual(check.canonical_path(path), path)
         for bad in ('http://api.example.test', 'https://api.example.test/', 'https://api.example.test@evil.test',
                     'https://api.example.test#x', 'https://api.example.test?x', 'https://api.example.test:99999', '', None):
             with self.assertRaises((ValueError, TypeError)):
@@ -148,6 +158,13 @@ class ToolsTest(unittest.TestCase):
         escaped = json.dumps({'nested': [FIXTURE], FIXTURE: FIXTURE}).replace('1', '\\u0031').encode()
         result = check.read('/api/reports/debt/filter-options', self.private, FakeOpener(Response(escaped)))
         self.assertNotIn(FIXTURE, json.dumps(result))
+        binary = check.read('/api/plans/cfo-exp/123/export', self.private,
+                            FakeOpener(Response(bytes([0x50, 0x4b, 0x03, 0x04]) + b'binary',
+                                                   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')))
+        self.assertTrue(binary['success'])
+        self.assertEqual(binary['content_type'], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        self.assertEqual(binary['bytes'], 10)
+        self.assertNotIn('PK', json.dumps(binary))
         output = self.private.parent / 'result.json'
         check.write_result(output, result)
         self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)

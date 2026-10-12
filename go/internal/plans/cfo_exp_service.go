@@ -41,6 +41,17 @@ func (s *CfoExpenseService) card(ctx context.Context, p Principal, id int64) (Ca
 	return c, *sp, f, nil
 }
 func (s *CfoExpenseService) Form(ctx context.Context, p Principal, id int64, f CfoExpenseFilter) (CfoExpenseForm, error) {
+	return s.form(ctx, p, id, f, true)
+}
+
+// FormReadOnly returns the current persisted form state without hydrating rows
+// from the external source. It is used by technical read-only verification,
+// where a GET must not create or update database rows.
+func (s *CfoExpenseService) FormReadOnly(ctx context.Context, p Principal, id int64, f CfoExpenseFilter) (CfoExpenseForm, error) {
+	return s.form(ctx, p, id, f, false)
+}
+
+func (s *CfoExpenseService) form(ctx context.Context, p Principal, id int64, f CfoExpenseFilter, allowSourceSync bool) (CfoExpenseForm, error) {
 	c, sp, sf, e := s.card(ctx, p, id)
 	if e != nil {
 		return CfoExpenseForm{}, e
@@ -50,7 +61,7 @@ func (s *CfoExpenseService) Form(ctx context.Context, p Principal, id int64, f C
 		return CfoExpenseForm{}, e
 	}
 	sourceErr := ""
-	if total == 0 && s.source != nil {
+	if allowSourceSync && total == 0 && s.source != nil {
 		years := append([]int(nil), sp.FactYears...)
 		seenYear := map[int]bool{}
 		for _, y := range years {
@@ -170,7 +181,23 @@ func (s *CfoExpenseService) Bulk(ctx context.Context, p Principal, id int64, c C
 	return s.repo.Bulk(ctx, id, c, op, p.UserID)
 }
 func (s *CfoExpenseService) Validate(ctx context.Context, p Principal, id int64) ([]CfoExpenseIssue, error) {
-	form, e := s.Form(ctx, p, id, CfoExpenseFilter{Limit: 50000})
+	return s.validate(ctx, p, id, true)
+}
+
+// ValidateReadOnly evaluates only persisted rows. It never hydrates the form
+// from an external source, so technical GET verification remains read-only.
+func (s *CfoExpenseService) ValidateReadOnly(ctx context.Context, p Principal, id int64) ([]CfoExpenseIssue, error) {
+	return s.validate(ctx, p, id, false)
+}
+
+func (s *CfoExpenseService) validate(ctx context.Context, p Principal, id int64, allowSourceSync bool) ([]CfoExpenseIssue, error) {
+	var form CfoExpenseForm
+	var e error
+	if allowSourceSync {
+		form, e = s.Form(ctx, p, id, CfoExpenseFilter{Limit: 50000})
+	} else {
+		form, e = s.FormReadOnly(ctx, p, id, CfoExpenseFilter{Limit: 50000})
+	}
 	if e != nil {
 		return nil, e
 	}

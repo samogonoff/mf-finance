@@ -8,7 +8,23 @@ import (
 )
 
 func (s *CfoExpenseService) Export(ctx context.Context, p Principal, id int64, f CfoExpenseFilter) ([]byte, string, error) {
-	form, e := s.Form(ctx, p, id, f)
+	return s.export(ctx, p, id, f, true)
+}
+
+// ExportReadOnly exports only persisted rows and never hydrates an empty form.
+// This keeps technical GET verification free of database writes.
+func (s *CfoExpenseService) ExportReadOnly(ctx context.Context, p Principal, id int64, f CfoExpenseFilter) ([]byte, string, error) {
+	return s.export(ctx, p, id, f, false)
+}
+
+func (s *CfoExpenseService) export(ctx context.Context, p Principal, id int64, f CfoExpenseFilter, allowSourceSync bool) ([]byte, string, error) {
+	var form CfoExpenseForm
+	var e error
+	if allowSourceSync {
+		form, e = s.Form(ctx, p, id, f)
+	} else {
+		form, e = s.FormReadOnly(ctx, p, id, f)
+	}
 	if e != nil {
 		return nil, "", e
 	}
