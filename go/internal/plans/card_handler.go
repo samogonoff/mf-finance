@@ -265,6 +265,20 @@ func (h *CardHandler) CardPublish(w http.ResponseWriter, r *http.Request) {
 		mode = PublishModeDryRun
 	}
 	p := h.principal(r)
+	card, err := h.svc.Card(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	f, err := h.filter(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !f.AllowsCard(card) {
+		writeErr(w, http.StatusForbidden, "карточка вне вашего среза доступа")
+		return
+	}
 	if mode == PublishModeWrite && !p.PlansAdmin {
 		writeErr(w, http.StatusForbidden, "запись в приёмник доступна администратору процессов или финансисту")
 		return

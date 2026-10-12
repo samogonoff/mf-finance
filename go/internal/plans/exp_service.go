@@ -49,6 +49,9 @@ func NewExpService(repo ExpRepo, cards *CardService, source ExpDataSource) *ExpS
 // expKindOf — вид формы по области карточки. Область задаётся реестром форм
 // (form_registry.go) в виде "R-BY" / "MP-RU": префикс — вид, суффикс — страна.
 func expKindOf(scopeKey string) (kind, country string) {
+	if code, parsedCountry, ok := ParseCfoExpScope(scopeKey); ok {
+		return CfoExpKind(code), parsedCountry
+	}
 	parts := strings.SplitN(scopeKey, "-", 2)
 	if len(parts) != 2 {
 		return ExpKindRetail, ""

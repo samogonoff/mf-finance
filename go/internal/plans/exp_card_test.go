@@ -161,6 +161,19 @@ func TestExpPublishDuplicates(t *testing.T) {
 	}
 }
 
+func TestExpPublishDuplicates_DifferentCompaniesDoNotConflict(t *testing.T) {
+	d := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	rows := []PublishRow{
+		{CodeCFO: 250, CodePL: 48, Date: d, Company: "A", Value: 100},
+		{CodeCFO: 250, CodePL: 48, Date: d, Company: "B", Value: 50},
+		{CodeCFO: 250, CodePL: 48, Date: d, Company: "A", Value: 25},
+	}
+	got := ExpPublishDuplicates(rows)
+	if len(got) != 1 {
+		t.Fatalf("дубли должны считаться отдельно по юрлицу: %v", got)
+	}
+}
+
 func (f *fakeExpRepo) Params(context.Context, int64) ([]ExpParamRow, error) { return nil, nil }
 func (f *fakeExpRepo) SaveParam(context.Context, int64, ExpParamRow, int64) error {
 	return nil

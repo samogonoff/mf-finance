@@ -55,6 +55,14 @@ func FormRegistry() []FormDef {
 				// '3.Магазины'). Поэтому у розницы карточек ЧЕТЫРЕ, а не одна:
 				// ТЗ §2.1 показывал только отбор РБ, но расходы планируются по
 				// всем четырём странам, как и продажи на этапе 1.1.
+				// ТЗ v2: отдельные карточки расходов отделов. Legacy R-/MP-
+				// scopes remain for the existing 1.5 contour.
+				{Key: "CFO-31-BY", Title: "Форма 31 · Строительный отдел", Country: "BY", Currency: "BYN"},
+				{Key: "CFO-32-BY", Title: "Форма 32 · Отдел логистики", Country: "BY", Currency: "BYN"},
+				{Key: "CFO-33-BY", Title: "Форма 33 · Отдел снабжения", Country: "BY", Currency: "BYN"},
+				{Key: "CFO-34-BY", Title: "Форма 34 · Центральный склад", Country: "BY", Currency: "BYN"},
+				{Key: "CFO-37-BY", Title: "Форма 37 · Конструкторско-технологический отдел", Country: "BY", Currency: "BYN"},
+				{Key: "CFO-962-RU", Title: "Форма 962 · блок книги 37", Country: "RU", Currency: "RUB"},
 				{Key: "R-BY", Title: "Розница РБ", Country: "BY", LegalEntity: "F", Currency: "BYN"},
 				{Key: "R-RU", Title: "Розница РФ", Country: "RU", LegalEntity: "TDMF", Currency: "RUB"},
 				{Key: "R-KZ", Title: "Розница KZ", Country: "KZ", LegalEntity: "MFKaz", Currency: "KZT"},

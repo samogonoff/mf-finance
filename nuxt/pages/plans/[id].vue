@@ -203,11 +203,14 @@
             <NuxtLink v-if="c.form_code === 'TPL-TO-RETAIL'" :to="`/plans/retail-summary/${c.id}`" class="fc-link">
               <Icon name="lucide:layout-list" /> Свод
             </NuxtLink>
-            <!-- Расходы ЦП (этап 1.5): у формы четыре карточки — розница РБ и три
-                 страны МП, — и открывается она по карточке, как у розницы. -->
-            <NuxtLink v-if="c.form_code === 'TPL-CFO-EXP'" :to="`/plans/exp-form/${c.id}`" class="fc-link">
+			<!-- Legacy 1.5 cards keep the shared grid; CFO v2 cards use the
+			     code-based annual form. -->
+			<NuxtLink v-if="c.form_code === 'TPL-CFO-EXP' && !c.scope_key?.startsWith('CFO-')" :to="`/plans/exp-form/${c.id}`" class="fc-link">
               <Icon name="lucide:file-input" /> Форма
             </NuxtLink>
+			<NuxtLink v-if="c.form_code === 'TPL-CFO-EXP' && c.scope_key?.startsWith('CFO-')" :to="`/plans/cfo-exp/${c.id}`" class="fc-link">
+			  <Icon name="lucide:file-input" /> Форма ЦФО
+			</NuxtLink>
             <button type="button" class="fc-link btn-like" @click="openCard = openCard === c.id ? 0 : c.id">
               <Icon name="lucide:check-check" /> Согласование
             </button>

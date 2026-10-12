@@ -50,6 +50,14 @@ var expMockMPStatements = []expMockStatement{
 
 // expMockCfo — ЦФО фикстуры по виду формы и стране.
 func expMockCfo(kind, country string) []ExpCfoAttrs {
+	if code, ok := CfoExpCodeFromKind(kind); ok {
+		spec, _ := LookupCfoExpSpec(code)
+		company := ""
+		if spec.HasLegalEntity {
+			company = "Mark Formelle"
+		}
+		return []ExpCfoAttrs{{CodeCFO: int(code), CFO: fmt.Sprintf("ЦФО %d", code), GroupCFO1: "Отдел", GroupCFO2: "Отдел", Country: spec.Country, LegalEntity: company}}
+	}
 	if kind == ExpKindMP {
 		switch country {
 		case "KZ":
@@ -103,24 +111,38 @@ func (expMockSource) Costs(_ context.Context, kind, country string, years []int)
 	}
 	out := make([]ExpCostCell, 0, len(cfos)*len(stmts)*12)
 	for _, y := range years {
-		scenario := ExpSrcStrategy
-		if y == earliest {
-			scenario = ExpSrcFact
+		scenarios := []string{ExpSrcStrategy}
+		if code, ok := CfoExpCodeFromKind(kind); ok {
+			spec, _ := LookupCfoExpSpec(code)
+			scenarios = nil
+			for _, fy := range spec.FactYears {
+				if fy == y {
+					scenarios = append(scenarios, spec.FactScenario)
+					break
+				}
+			}
+			if y == spec.PlanYear {
+				scenarios = append(scenarios, spec.PlanScenario)
+			}
+		} else if y == earliest {
+			scenarios = []string{ExpSrcFact}
 		}
-		for _, c := range cfos {
-			for si, st := range stmts {
-				for m := 1; m <= 12; m++ {
-					// Разброс без случайности: тест и стенд должны видеть одно и то же.
-					amt := float64((st.CodePL*100+c.CodeCFO)%900+120) * (1 + float64(m)/24) * (1 + float64(si)/10)
-					out = append(out, ExpCostCell{
-						Scenario: scenario, Year: y, Month: m,
-						CodePL: st.CodePL, GroupPL: st.GroupPL, Expense: st.Expense,
-						CodeCFO: c.CodeCFO, CFO: c.CFO,
-						GroupCFO1: expKindGroup(kind), GroupCFO2: c.GroupCFO2,
-						Country: c.Country, CountryCompany: c.Country,
-						Company: c.LegalEntity, Projects: expProjectsNone,
-						Amount: float64(int(amt*100)) / 100,
-					})
+		for _, scenario := range scenarios {
+			for _, c := range cfos {
+				for si, st := range stmts {
+					for m := 1; m <= 12; m++ {
+						// Разброс без случайности: тест и стенд должны видеть одно и то же.
+						amt := float64((st.CodePL*100+c.CodeCFO)%900+120) * (1 + float64(m)/24) * (1 + float64(si)/10)
+						out = append(out, ExpCostCell{
+							Scenario: scenario, Year: y, Month: m,
+							CodePL: st.CodePL, GroupPL: st.GroupPL, Expense: st.Expense,
+							CodeCFO: c.CodeCFO, CFO: c.CFO,
+							GroupCFO1: expKindGroup(kind), GroupCFO2: c.GroupCFO2,
+							Country: c.Country, CountryCompany: c.Country,
+							Company: c.LegalEntity, Projects: expProjectsNone,
+							Amount: float64(int(amt*100)) / 100,
+						})
+					}
 				}
 			}
 		}
