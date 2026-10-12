@@ -26,5 +26,29 @@
     "handler": "debt.ListSavedFilters",
     "path_regex": "^/api/reports/debt/saved-filters$",
     "query_keys": []
+  },
+  {
+    "pattern": "GET /api/plans/cfo-exp/{cardId}/form",
+    "handler": "plans.CfoExpense.FormGet",
+    "path_regex": "^/api/plans/cfo-exp/[0-9]+/form$",
+    "query_keys": ["search", "group_pl", "country_company", "legal_entity", "sort", "dir", "code_pl", "code_cfo", "offset", "limit"]
+  },
+  {
+    "pattern": "GET /api/plans/cfo-exp/{cardId}/validate",
+    "handler": "plans.CfoExpense.Validate",
+    "path_regex": "^/api/plans/cfo-exp/[0-9]+/validate$",
+    "query_keys": []
+  },
+  {
+    "pattern": "GET /api/plans/cfo-exp/{cardId}/export",
+    "handler": "plans.CfoExpense.Export",
+    "path_regex": "^/api/plans/cfo-exp/[0-9]+/export$",
+    "query_keys": ["search", "group_pl", "country_company", "legal_entity", "sort", "dir", "code_pl", "code_cfo", "offset", "limit"]
+  },
+  {
+    "pattern": "GET /api/plans/cfo-exp/{cardId}/registry/{sheet}",
+    "handler": "plans.CfoExpenseRegistry.RegistryGet",
+    "path_regex": "^/api/plans/cfo-exp/[0-9]+/registry/[A-Za-z0-9_-]+$",
+    "query_keys": []
   }
 ]

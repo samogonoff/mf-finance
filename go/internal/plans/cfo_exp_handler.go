@@ -44,6 +44,15 @@ func cfoID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return id, true
 }
 func (h *CfoExpenseHandler) FormGet(w http.ResponseWriter, r *http.Request) {
+	h.formGet(w, r, true)
+}
+
+// FormGetReadOnly serves technical verification without source hydration.
+func (h *CfoExpenseHandler) FormGetReadOnly(w http.ResponseWriter, r *http.Request) {
+	h.formGet(w, r, false)
+}
+
+func (h *CfoExpenseHandler) formGet(w http.ResponseWriter, r *http.Request, allowSourceSync bool) {
 	id, ok := cfoID(w, r)
 	if !ok {
 		return
@@ -54,7 +63,13 @@ func (h *CfoExpenseHandler) FormGet(w http.ResponseWriter, r *http.Request) {
 	f.CodeCFO, _ = strconv.Atoi(q.Get("code_cfo"))
 	f.Offset, _ = strconv.Atoi(q.Get("offset"))
 	f.Limit, _ = strconv.Atoi(q.Get("limit"))
-	v, e := h.svc.Form(r.Context(), h.p(r), id, f)
+	var v CfoExpenseForm
+	var e error
+	if allowSourceSync {
+		v, e = h.svc.Form(r.Context(), h.p(r), id, f)
+	} else {
+		v, e = h.svc.FormReadOnly(r.Context(), h.p(r), id, f)
+	}
 	if e != nil {
 		cfoExpenseErr(w, e)
 		return
@@ -82,6 +97,15 @@ func (h *CfoExpenseHandler) FormSave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"saved": n})
 }
 func (h *CfoExpenseHandler) Export(w http.ResponseWriter, r *http.Request) {
+	h.export(w, r, true)
+}
+
+// ExportReadOnly serves technical verification without source hydration.
+func (h *CfoExpenseHandler) ExportReadOnly(w http.ResponseWriter, r *http.Request) {
+	h.export(w, r, false)
+}
+
+func (h *CfoExpenseHandler) export(w http.ResponseWriter, r *http.Request, allowSourceSync bool) {
 	id, ok := cfoID(w, r)
 	if !ok {
 		return
@@ -92,7 +116,14 @@ func (h *CfoExpenseHandler) Export(w http.ResponseWriter, r *http.Request) {
 	f.CodeCFO, _ = strconv.Atoi(q.Get("code_cfo"))
 	f.Offset, _ = strconv.Atoi(q.Get("offset"))
 	f.Limit, _ = strconv.Atoi(q.Get("limit"))
-	b, name, e := h.svc.Export(r.Context(), h.p(r), id, f)
+	var b []byte
+	var name string
+	var e error
+	if allowSourceSync {
+		b, name, e = h.svc.Export(r.Context(), h.p(r), id, f)
+	} else {
+		b, name, e = h.svc.ExportReadOnly(r.Context(), h.p(r), id, f)
+	}
 	if e != nil {
 		cfoExpenseErr(w, e)
 		return
@@ -130,11 +161,26 @@ func (h *CfoExpenseHandler) Import(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 func (h *CfoExpenseHandler) Validate(w http.ResponseWriter, r *http.Request) {
+	h.validate(w, r, true)
+}
+
+// ValidateReadOnly serves technical verification without source hydration.
+func (h *CfoExpenseHandler) ValidateReadOnly(w http.ResponseWriter, r *http.Request) {
+	h.validate(w, r, false)
+}
+
+func (h *CfoExpenseHandler) validate(w http.ResponseWriter, r *http.Request, allowSourceSync bool) {
 	id, ok := cfoID(w, r)
 	if !ok {
 		return
 	}
-	x, e := h.svc.Validate(r.Context(), h.p(r), id)
+	var x []CfoExpenseIssue
+	var e error
+	if allowSourceSync {
+		x, e = h.svc.Validate(r.Context(), h.p(r), id)
+	} else {
+		x, e = h.svc.ValidateReadOnly(r.Context(), h.p(r), id)
+	}
 	if e != nil {
 		cfoExpenseErr(w, e)
 		return

@@ -2,6 +2,7 @@
 """GET saved Finance data using an exact origin pinned at issuance; never print bearer."""
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -75,6 +76,14 @@ def read(path, credential_path, opener=None):
             raise ValueError('Response exceeds local limit')
         # Even a compromised/echoing server must not copy the credential to local output.
         raw = raw.replace(token.encode(), b'[redacted]')
+        headers = getattr(response, 'headers', None)
+        content_type = headers.get_content_type() if headers is not None and hasattr(headers, 'get_content_type') else None
+        # Binary read-only endpoints (for example CFO XLSX export) are verified
+        # by metadata only; never persist or print their payload.
+        if content_type not in (None, 'application/json', 'application/problem+json'):
+            return {'status': response.status, 'success': 200 <= response.status < 300,
+                    'content_type': content_type, 'bytes': len(raw),
+                    'sha256': hashlib.sha256(raw).hexdigest()}
         def redact(value):
             if isinstance(value, str):
                 return value.replace(token, '[redacted]')
@@ -83,8 +92,12 @@ def read(path, credential_path, opener=None):
             if isinstance(value, dict):
                 return {redact(key): redact(item) for key, item in value.items()}
             return value
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError('Expected JSON response') from exc
         return {'status': response.status, 'success': 200 <= response.status < 300,
-                'response': redact(json.loads(raw))}
+                'response': redact(decoded)}
 
 
 def write_result(path, result):
