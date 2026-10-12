@@ -1,0 +1,30 @@
+[{
+    "pattern": "GET /api/auth/me",
+    "handler": "auth.Me",
+    "path_regex": "^/api/auth/me$",
+    "query_keys": []
+  }, {
+    "pattern": "GET /api/reports/debt/filter-options",
+    "handler": "debt.FilterOptions",
+    "path_regex": "^/api/reports/debt/filter-options$",
+    "query_keys": []
+  },
+  {
+    "pattern": "GET /api/reports/debt/report",
+    "handler": "debt.Report",
+    "path_regex": "^/api/reports/debt/report$",
+    "query_keys": ["date_from", "date_to", "entity_inns", "accounts", "currencies", "lens", "only_ico"]
+  },
+  {
+    "pattern": "GET /api/reports/debt/drilldown",
+    "handler": "debt.Drilldown",
+    "path_regex": "^/api/reports/debt/drilldown$",
+    "query_keys": ["date_from", "date_to", "company_inn", "partner_inn", "account", "contract", "currency", "lens"]
+  },
+  {
+    "pattern": "GET /api/reports/debt/saved-filters",
+    "handler": "debt.ListSavedFilters",
+    "path_regex": "^/api/reports/debt/saved-filters$",
+    "query_keys": []
+  }
+]
