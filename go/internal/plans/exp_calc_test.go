@@ -86,6 +86,38 @@ func TestExpServiceCalc_PersistsZeroWhenSalesPlanIsZero(t *testing.T) {
 	}
 }
 
+func TestExpServiceCalc_SkipsMissingSalesPlan(t *testing.T) {
+	old := 100.0
+	base := 1000.0
+	repo := &payrollCalcRepoStub{
+		row: ExpRow{CodeCFO: 101, CodePL: ExpPLSalary, Values: []ExpValue{
+			{Scenario: ExpScenarioFact, Month: 1, Amount: &base},
+			{Scenario: ExpScenarioPlan, Month: 1, Amount: &old},
+		}},
+		params: []ExpParamRow{
+			{ParamCode: ExpParamPayrollShare, ScopeKind: "country", Value: 0.1},
+			{ParamCode: ExpParamPayrollCap, ScopeKind: "country", Value: 1.06},
+		},
+	}
+	cards := NewCardService(payrollCalcCardStoreStub{card: Card{
+		ID: 7, FormCode: TemplateExp, ScopeKey: "R-BY", Year: 2026,
+		Currency: "BYN", Status: CardDraft, StepCode: "1.1",
+	}})
+	svc := NewExpService(repo, cards, nil).WithSalesPlan(payrollCalcSourceStub{
+		sales: map[int]map[int]float64{},
+	})
+
+	got, err := svc.Calc(context.Background(), adminP, 7, ExpCalcRequest{
+		Op: ExpCalcPayroll, Months: []int{1}, Preview: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Changed != 0 || len(repo.saved) != 0 {
+		t.Fatalf("отсутствующий план продаж не должен очищать старое значение: result=%+v saved=%+v", got, repo.saved)
+	}
+}
+
 // ТЗ §6.1: порог ограничивает БАЗУ НАЧИСЛЕНИЯ, а не сумму выплат.
 // «Выше 106 % никому не могут выплатить планы».
 func TestExpPayrollFromSales_CapLimitsBaseNotAmount(t *testing.T) {

@@ -204,7 +204,15 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 			rowCap = capDefault
 		}
 		for _, m := range months {
-			plan := sales[r.CodeCFO][m]
+			byMonth, hasCFO := sales[r.CodeCFO]
+			plan, hasPlan := byMonth[m]
+			// SalesPlan — разреженная карта: отсутствующий ЦФО или месяц
+			// означает «данных нет», а не явный нулевой план. Явный ключ с
+			// нулевым значением, напротив, должен пройти расчёт и заменить
+			// прежнее значение нулём.
+			if !hasCFO || !hasPlan {
+				continue
+			}
 			base, hasBase := expFactOf(r, m)
 			got := ExpPayrollFromSales(ExpPayrollInput{
 				SalesPlan: plan, Base: base, HasBase: hasBase, Cap: rowCap, Share: rowShare,
