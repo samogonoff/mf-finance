@@ -13,10 +13,12 @@ import (
 
 // Публикация утверждённого плана во внешний контур (ТЗ МП §9.3, Розница §7.2).
 //
-// Приёмники — семейство Budgeting.dbo.FormToLoa*/VFORMTOLOAD*: девять колонок,
-// БЕЗ первичного ключа и без колонок сценария/ЮЛ. Отсюда три следствия:
+// Приёмники — семейство Budgeting.dbo.FormToLoa*/VFORMTOLOAD*: девять базовых
+// колонок (у таблиц *TaktTarget есть дополнительная «Компания»), без первичного
+// ключа и без колонок сценария. Отсюда три следствия:
 //  1. сценарий задаётся ВЫБОРОМ ТАБЛИЦЫ (тактика → FormToLoaTaktTarget / VFORMTOLOADTAKTTARGET);
-//  2. логическая уникальность строки — Параметр+Страна+КодЦФО+КодPL+Дата, и без
+//  2. логическая уникальность строки — Параметр+Страна+КодЦФО+КодPL+Дата+Компания
+//     для приёмников с колонкой Компания (для остальных Компания пуста), и без
 //     уникального индекса повторная публикация даёт ДУБЛИ, а не обновление;
 //  3. идемпотентность обеспечивает сервис: DELETE по логическому ключу + INSERT
 //     в одной транзакции, затем контроль «Σ введено − Σ прочитано из приёмника = 0».
@@ -167,6 +169,9 @@ func (s *CardService) Publish(ctx context.Context, cardID int64, mode string, ac
 	c, err := s.cards.Card(ctx, cardID)
 	if err != nil {
 		return PublishResult{}, err
+	}
+	if c.Status != CardApproved && c.Status != CardPublished {
+		return PublishResult{CardID: cardID, VersionNo: c.CurrentVersion, Mode: mode, Status: "blocked", Error: "публикация доступна только для утверждённой формы"}, nil
 	}
 	res := PublishResult{CardID: cardID, VersionNo: c.CurrentVersion, Mode: mode, Status: "ok"}
 
@@ -480,11 +485,14 @@ func foldPublishRows(rows []PublishRow) []PublishRow {
 		param, country, target string
 		cfo, pl                int
 		date                   string
+		company                string
 	}
 	idx := map[key]int{}
 	var out []PublishRow
 	for _, r := range rows {
-		k := key{r.Param, r.Country, r.TargetTable, r.CodeCFO, r.CodePL, r.Date.Format("2006-01-02")}
+		// Компания входит в ключ только как значение: для старых приёмников
+		// (формы 31/34) она всегда пуста и поведение остаётся прежним.
+		k := key{r.Param, r.Country, r.TargetTable, r.CodeCFO, r.CodePL, r.Date.Format("2006-01-02"), r.Company}
 		if i, ok := idx[k]; ok {
 			out[i].Value = round4(out[i].Value + r.Value)
 			continue
@@ -556,8 +564,12 @@ func (p *mssqlPublisher) Probe(ctx context.Context, target string, rows []Publis
 		q := fmt.Sprintf(`SELECT SUM([Значение]) FROM %s
 			WHERE [Параметр] = @p1 AND [Страна] = @p2 AND [КодЦФО] = @p3
 			  AND [КодPL] = @p4 AND [Дата] = @p5`, target)
-		if err := p.db.QueryRowContext(ctx, q, r.Param, r.Country,
-			fmt.Sprint(r.CodeCFO), fmt.Sprint(r.CodePL), r.Date).Scan(&v); err != nil {
+		args := []any{r.Param, r.Country, fmt.Sprint(r.CodeCFO), fmt.Sprint(r.CodePL), r.Date}
+		if targetHasCompany(target) {
+			q += ` AND [Компания] = @p6`
+			args = append(args, r.Company)
+		}
+		if err := p.db.QueryRowContext(ctx, q, args...).Scan(&v); err != nil {
 			return 0, err
 		}
 		if v.Valid {
@@ -585,10 +597,12 @@ func (p *mssqlPublisher) Write(ctx context.Context, target string, rows []Publis
 		VALUES (@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9)`, target)
 	// Колонка «Компания» есть только в семействе TaktTarget (правка ТЗ §16), и там
 	// она ОБЯЗАТЕЛЬНА: наша тактика пишется именно туда, а план идёт на реальное
-	// ЮЛ (§15). Ключ идемпотентности при этом остаётся логическим ключом ТЗ —
-	// Параметр+Страна+КодЦФО+КодPL+Дата: строка одной страны не должна
-	// размножаться по ЮЛ.
+	// ЮЛ (§15). Для такого приёмника Компания входит в ключ удаления/чтения,
+	// иначе запись следующего ЮЛ затрёт предыдущую.
 	withCompany := targetHasCompany(target)
+	if withCompany {
+		delQ += ` AND [Компания] = @p6`
+	}
 	if withCompany {
 		insQ = fmt.Sprintf(`INSERT INTO %s
 		([Параметр],[Страна],[КодЦФО],[ГруппыЦФО1],[ГруппыЦФО2],[ЦФО],[КодPL],[Дата],[Значение],[Компания])
@@ -597,8 +611,11 @@ func (p *mssqlPublisher) Write(ctx context.Context, target string, rows []Publis
 
 	written := 0
 	for _, r := range rows {
-		if _, err := tx.ExecContext(ctx, delQ, r.Param, r.Country,
-			fmt.Sprint(r.CodeCFO), fmt.Sprint(r.CodePL), r.Date); err != nil {
+		delArgs := []any{r.Param, r.Country, fmt.Sprint(r.CodeCFO), fmt.Sprint(r.CodePL), r.Date}
+		if withCompany {
+			delArgs = append(delArgs, r.Company)
+		}
+		if _, err := tx.ExecContext(ctx, delQ, delArgs...); err != nil {
 			return written, 0, fmt.Errorf("очистка ключа (%s/%d/%s): %w", r.Param, r.CodeCFO, r.Date.Format("2006-01-02"), err)
 		}
 		args := []any{r.Param, r.Country, fmt.Sprint(r.CodeCFO), r.GroupCFO1, r.GroupCFO2,

@@ -65,10 +65,27 @@ func TestExpKindOf(t *testing.T) {
 		{"MP-RU", ExpKindMP, "RU"},
 		{"MP-KZ", ExpKindMP, "KZ"},
 		{"MP-UZ", ExpKindMP, "UZ"},
+		{"CFO-31-BY", CfoExpKind(CfoExp31), "BY"},
+		{"CFO-962-RU", CfoExpKind(CfoExp962), "RU"},
 	} {
 		k, cn := expKindOf(c.scope)
 		if k != c.kind || cn != c.country {
 			t.Fatalf("%s → %s/%s, ожидали %s/%s", c.scope, k, cn, c.kind, c.country)
+		}
+	}
+}
+
+func TestExpMockSource_CFOFormUsesExactCodeAndScenarios(t *testing.T) {
+	cells, err := (expMockSource{}).Costs(context.Background(), CfoExpKind(CfoExp31), "BY", []int{2025, 2026})
+	if err != nil || len(cells) == 0 {
+		t.Fatalf("CFO mock source: %v, rows=%d", err, len(cells))
+	}
+	for _, c := range cells {
+		if c.CodeCFO != 31 || c.Country != "BY" {
+			t.Fatalf("unexpected CFO row: %+v", c)
+		}
+		if c.Scenario != "Факт по платежам" && c.Scenario != "Стратегический бюджет" {
+			t.Fatalf("unexpected scenario: %q", c.Scenario)
 		}
 	}
 }

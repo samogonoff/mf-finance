@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -153,6 +154,9 @@ func NewExpSource(mock bool, db *sql.DB, t ExpTables) ExpDataSource {
 
 // expKindGroup — значение GroupCFO1 для вида формы.
 func expKindGroup(kind string) string {
+	if _, ok := CfoExpCodeFromKind(kind); ok {
+		return "Отдел"
+	}
 	if kind == ExpKindMP {
 		return expGroupCfoMP
 	}
@@ -195,10 +199,15 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 		idx[strings.ToLower(strings.TrimSpace(c))] = i
 	}
 	need := []string{"scenario", "month", "codepl", "grouppl", "expense", "codecfo",
-		"cfo", "groupcfo1", "groupcfo2", "country", "country_company", "company", "amount"}
+		"cfo", "groupcfo1", "groupcfo2", "country", "country_company", "company"}
 	for _, n := range need {
 		if _, ok := idx[n]; !ok {
 			return nil, fmt.Errorf("в выдаче процедуры %s нет колонки %q", proc, n)
+		}
+	}
+	if _, ok := idx["amount"]; !ok {
+		if _, ok := idx["amountbyn"]; !ok {
+			return nil, fmt.Errorf("в выдаче процедуры %s нет колонки %q или %q", proc, "amount", "amountbyn")
 		}
 	}
 
@@ -233,6 +242,18 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 			return v
 		case int64:
 			return float64(v)
+		case int:
+			return float64(v)
+		case int32:
+			return float64(v)
+		case float32:
+			return float64(v)
+		case []byte:
+			parsed, _ := strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(string(v)), ",", "."), 64)
+			return parsed
+		case string:
+			parsed, _ := strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(v), ",", "."), 64)
+			return parsed
 		default:
 			return 0
 		}
@@ -247,7 +268,15 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 		if expDropCodePL[c.CodePL] {
 			continue
 		}
-		month, _ := raw[idx["month"]].(time.Time)
+		var month time.Time
+		switch v := raw[idx["month"]].(type) {
+		case time.Time:
+			month = v
+		case string:
+			month, _ = time.Parse("2006-01-02", strings.TrimSpace(v))
+		case []byte:
+			month, _ = time.Parse("2006-01-02", strings.TrimSpace(string(v)))
+		}
 		// 2. история до 2024 года (ТЗ §2.1, п.2)
 		if month.Year() < expCutoffYear {
 			continue
@@ -260,6 +289,10 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 		if c.GroupCFO1 != group {
 			continue
 		}
+		c.CodeCFO = int(num("codecfo"))
+		if code, ok := CfoExpCodeFromKind(kind); ok && c.CodeCFO != int(code) {
+			continue
+		}
 		c.Country = str("country")
 		if country != "" && c.Country != country {
 			continue
@@ -270,16 +303,20 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 		if c.Projects != "" && c.Projects != expProjectsNone {
 			continue
 		}
-		// 3. сценарий — КАК ПРИШЁЛ (ответ 44). Отбрасываем только «Факт по
-		// платежам»: на нём листы ввода эталона не построены.
+		// 3. Сценарий — как пришёл из источника. Legacy forms omit payment
+		// facts; code-based CFO forms retain the exact scenarios from ТЗ v2.
 		c.Scenario = str("scenario")
-		if !expScenarioForForm(c.Scenario) {
+		if !expScenarioForKind(kind, c.Scenario) {
 			continue
 		}
 		c.GroupPL, c.Expense = str("grouppl"), str("expense")
-		c.CodeCFO, c.CFO = int(num("codecfo")), str("cfo")
+		c.CFO = str("cfo")
 		c.GroupCFO2, c.CountryCompany, c.Company = str("groupcfo2"), str("country_company"), str("company")
-		c.Amount = num("amount")
+		if _, ok := idx["amount"]; ok {
+			c.Amount = num("amount")
+		} else {
+			c.Amount = num("amountbyn")
+		}
 		out = append(out, c)
 		if len(out) >= expRowCap {
 			capped = true
@@ -293,6 +330,16 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 		log.Printf("plans/exp: выборка затрат обрезана на %d строк — источник отдал больше «быстрого» среза", expRowCap)
 	}
 	return out, nil
+}
+
+// expScenarioForKind keeps legacy source filtering for retail/marketplace forms
+// while accepting the exact fact and plan scenario names of CFO forms.
+func expScenarioForKind(kind, scenario string) bool {
+	if code, ok := CfoExpCodeFromKind(kind); ok {
+		spec, exists := LookupCfoExpSpec(code)
+		return exists && (scenario == spec.FactScenario || scenario == spec.PlanScenario)
+	}
+	return expScenarioForForm(scenario)
 }
 
 // Cfo — справочник ЦФО (ТЗ §2.4). Ошибка справочника не фатальна для формы:

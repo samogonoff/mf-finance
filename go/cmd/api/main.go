@@ -445,12 +445,24 @@ func main() {
 	// в этом же релизе, иначе приёмник получил бы двойные затраты.
 	plansExpProvider := plans.NewExpCardProvider(plans.NewExpRepo(pool), plans.NewExpRegRepo(pool)).
 		WithCommonCosts(plansMpCond)
-	plansCards.RegisterForm(plans.TemplateExp, plansExpProvider, plansExpProvider)
+	// TЗ v2 adds six code-based department forms under the same route code.
+	// Route snapshots/publication by card scope so legacy 1.5 cards keep their
+	// existing provider and CFO cards use the year/scenario-aware model.
+	plansCfoRepo := plans.NewCfoExpenseRepo(pool)
+	plansCfoSvc := plans.NewCfoExpenseService(plansCfoRepo, plansCards,
+		plans.NewCfoExpenseSource(plansExpSource), plansScope)
+	plansCfoProvider := plans.NewCfoExpenseProvider(plansCfoRepo)
+	plansCards.RegisterForm(plans.TemplateExp,
+		plans.NewRoutedCfoExpenseProvider(plansExpProvider, plansExpProvider, plansCfoProvider, plansCfoProvider),
+		plans.NewRoutedCfoExpenseProvider(plansExpProvider, plansExpProvider, plansCfoProvider, plansCfoProvider))
 
 	// Гейт отправки формы 1.5: считает валидации §9 и контроли §8. Блокирует он
 	// или только предупреждает — решает PLANS_SUBMIT_STRICT (ответ 41).
-	plansCards.WithSubmitGate(plans.TemplateExp, plans.NewExpSubmitGate(plansExp))
+	plansCards.WithSubmitGate(plans.TemplateExp,
+		plans.NewRoutedExpSubmitGate(plans.NewExpSubmitGate(plansExp), plans.NewCfoSubmitGate(plansCfoSvc)))
 	plansExpH := plans.NewExpHandler(plansExp, plansPrincipal)
+	plansCfoH := plans.NewCfoExpenseHandler(plansCfoSvc, plansPrincipal)
+	plansCfoRegistryH := plans.NewCfoExpenseRegistryHandler(pool, plansCards, plansScope, plansPrincipal)
 
 	plansCardsH := plans.NewCardHandler(plansCards, plansScope, plansPrincipal).
 		WithPresets(plans.NewPresetStore(pool))
@@ -526,6 +538,17 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/registry/{kind}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistrySave))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/registry/{kind}/{rowId}/copy", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryCopy))
 	mux.HandleFunc("DELETE /api/plans/exp/{cardId}/registry/{kind}/{rowId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.RegistryDelete))
+	// Code-based CFO expense forms (ТЗ v2, cards CFO-{code}-{country}).
+	mux.HandleFunc("GET /api/plans/cfo-exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansCfoH.FormGet))
+	mux.HandleFunc("PUT /api/plans/cfo-exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansCfoH.FormSave))
+	mux.HandleFunc("POST /api/plans/cfo-exp/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansCfoH.Bulk))
+	mux.HandleFunc("GET /api/plans/cfo-exp/{cardId}/validate", auth.RequireRole(authSvc, auth.RolePlansUser, plansCfoH.Validate))
+	mux.HandleFunc("GET /api/plans/cfo-exp/{cardId}/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansCfoH.Export))
+	mux.HandleFunc("POST /api/plans/cfo-exp/{cardId}/import", auth.RequireRole(authSvc, auth.RolePlansUser, plansCfoH.Import))
+	mux.HandleFunc("GET /api/plans/cfo-exp/{cardId}/registry/{sheet}", auth.RequireRole(authSvc, auth.RolePlansUser, plansCfoRegistryH.RegistryGet))
+	mux.HandleFunc("PUT /api/plans/cfo-exp/{cardId}/registry/{sheet}", auth.RequireRole(authSvc, auth.RolePlansUser, plansCfoRegistryH.RegistrySave))
+	mux.HandleFunc("DELETE /api/plans/cfo-exp/{cardId}/registry/{sheet}/{rowId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansCfoRegistryH.RegistryDelete))
+	mux.HandleFunc("POST /api/plans/cfo-exp/{cardId}/registry/{sheet}/{rowId}/copy", auth.RequireRole(authSvc, auth.RolePlansUser, plansCfoRegistryH.RegistryCopy))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormGet))
 	mux.HandleFunc("PUT /api/plans/retail/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.FormSave))
 	mux.HandleFunc("POST /api/plans/retail/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.BulkApply))

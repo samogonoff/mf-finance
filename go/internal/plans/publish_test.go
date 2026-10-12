@@ -138,6 +138,28 @@ func TestFoldPublishRows_PenaltiesAndOtherMergeIntoOne66(t *testing.T) {
 	}
 }
 
+func TestFoldPublishRows_DifferentCompaniesRemainSeparate(t *testing.T) {
+	date := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	rows := []PublishRow{
+		{Param: "ЗАТРАТЫ", Country: "RU", CodeCFO: 335, CodePL: 24, Date: date, Company: "BY-A", Value: 100},
+		{Param: "ЗАТРАТЫ", Country: "RU", CodeCFO: 335, CodePL: 24, Date: date, Company: "BY-B", Value: 200},
+		// Пустая Компания остаётся обычной частью ключа для старых форм.
+		{Param: "ЗАТРАТЫ", Country: "RU", CodeCFO: 335, CodePL: 24, Date: date, Value: 300},
+	}
+	got := foldPublishRows(rows)
+	if len(got) != 3 {
+		t.Fatalf("юрлица не должны сливаться в одну строку: %+v", got)
+	}
+}
+
+func TestApplyPublishMapping_CfoExpenseUsesTacticalTarget(t *testing.T) {
+	date := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	rows, report := applyPublishMapping(Card{Country: "BY"}, []PublishRow{{BlockType: "cfo_exp", Country: "BY", CodeCFO: 31, CodePL: 24, Date: date, Value: 10}}, []PublishMapping{{FormCode: TemplateExp, BlockType: "cfo_exp", ParamName: "VFORMTOLOADTAKTTARGET", TargetTable: "Budgeting.dbo.VFORMTOLOADTAKTTARGET", Enabled: true}})
+	if len(report.unmapped) != 0 || len(rows) != 1 || rows[0].Param != "VFORMTOLOADTAKTTARGET" || rows[0].TargetTable == "" {
+		t.Fatalf("CFO mapping: rows=%+v report=%+v", rows, report)
+	}
+}
+
 // Синтетического кода 6600 в приёмнике быть не может: ключ штрафов в индексе
 // факта отрицательный, а публикация неположительные коды отбрасывает.
 func TestPenaltyFactKey_IsNotAPublishableCode(t *testing.T) {

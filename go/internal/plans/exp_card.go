@@ -21,7 +21,7 @@ import (
 //     отсюда: в форме МП те же статьи остаются расчётным индикатором PL продаж
 //     и в приёмник затрат не пишут (ответ 11).
 //
-// Свёртка по логическому ключу (Параметр + Страна + ЦФО + КодPL + Дата) делается
+// Свёртка по логическому ключу (Параметр + Страна + ЦФО + КодPL + Дата + ЮЛ) делается
 // общим механизмом публикации, поэтому несколько источников одной статьи под
 // ЦФО 250 сложатся в одну строку сами.
 
@@ -111,7 +111,7 @@ func (p *ExpCardProvider) PublishRows(ctx context.Context, c Card) ([]PublishRow
 	}
 
 	out := make([]PublishRow, 0, len(rows)*12)
-	mk := func(codeCFO, codePL, month int, name, group2 string, value float64) PublishRow {
+	mk := func(codeCFO, codePL, month int, name, group2 string, value float64, company string) PublishRow {
 		return PublishRow{
 			BlockType: "exp",
 			Param:     expPublishParam,
@@ -124,6 +124,7 @@ func (p *ExpCardProvider) PublishRows(ctx context.Context, c Card) ([]PublishRow
 			Date:      time.Date(in.PlanYear, time.Month(month), 1, 0, 0, 0, 0, time.UTC),
 			Value:     value,
 			Currency:  in.Currency,
+			Company:   company,
 		}
 	}
 
@@ -136,7 +137,7 @@ func (p *ExpCardProvider) PublishRows(ctx context.Context, c Card) ([]PublishRow
 			if v.Scenario != ExpScenarioPlan || v.Amount == nil || *v.Amount == 0 {
 				continue
 			}
-			out = append(out, mk(r.CodeCFO, r.CodePL, v.Month, r.CFO, r.GroupCFO2, *v.Amount))
+			out = append(out, mk(r.CodeCFO, r.CodePL, v.Month, r.CFO, r.GroupCFO2, *v.Amount, r.LegalEntity))
 		}
 	}
 
@@ -157,7 +158,7 @@ func (p *ExpCardProvider) PublishRows(ctx context.Context, c Card) ([]PublishRow
 					continue
 				}
 				out = append(out, mk(ExpCFOMarketplaceDept, r.CodePL, c.Month,
-					"Отдел маркетплейса", seg, r.Amount))
+					"Отдел маркетплейса", seg, r.Amount, ""))
 			}
 		}
 	}
@@ -166,7 +167,7 @@ func (p *ExpCardProvider) PublishRows(ctx context.Context, c Card) ([]PublishRow
 
 // registryRows — строки реестров для публикации.
 func (p *ExpCardProvider) registryRows(ctx context.Context, in ExpInstance,
-	mk func(codeCFO, codePL, month int, name, group2 string, value float64) PublishRow) []PublishRow {
+	mk func(codeCFO, codePL, month int, name, group2 string, value float64, company string) PublishRow) []PublishRow {
 	out := make([]PublishRow, 0, 64)
 
 	// Командировки: билеты и командировочные — статья 27, проживание — 30 (Н3).
@@ -179,11 +180,12 @@ func (p *ExpCardProvider) registryRows(ctx context.Context, in ExpInstance,
 			if month < 1 || month > 12 {
 				month = 1
 			}
+			company, _ := r.Attrs["legal_entity"].(string)
 			if v := expAttrFloat(r.Attrs, "tickets") + expAttrFloat(r.Attrs, "per_diem"); v != 0 {
-				out = append(out, mk(r.CodeCFO, ExpPLTravel, month, "", "", v))
+				out = append(out, mk(r.CodeCFO, ExpPLTravel, month, "", "", v, company))
 			}
 			if v := expAttrFloat(r.Attrs, "lodging"); v != 0 {
-				out = append(out, mk(r.CodeCFO, ExpPLLodging, month, "", "", v))
+				out = append(out, mk(r.CodeCFO, ExpPLLodging, month, "", "", v, company))
 			}
 		}
 	}
@@ -196,7 +198,7 @@ func (p *ExpCardProvider) registryRows(ctx context.Context, in ExpInstance,
 			}
 			for m := 1; m <= 12; m++ {
 				if v := r.MonthAmount(m); v != 0 {
-					out = append(out, mk(ExpCFOMarketplaceDept, r.CodePL, m, "Отдел маркетплейса", "", v))
+					out = append(out, mk(ExpCFOMarketplaceDept, r.CodePL, m, "Отдел маркетплейса", "", v, ""))
 				}
 			}
 		}
@@ -219,7 +221,8 @@ func (p *ExpCardProvider) registryRows(ctx context.Context, in ExpInstance,
 			}
 			for m := 1; m <= 12; m++ {
 				if v := r.MonthAmount(m); v != 0 {
-					out = append(out, mk(cfo, codePL, m, name, "", v))
+					company, _ := r.Attrs["legal_entity"].(string)
+					out = append(out, mk(cfo, codePL, m, name, "", v, company))
 				}
 			}
 		}
@@ -227,7 +230,7 @@ func (p *ExpCardProvider) registryRows(ctx context.Context, in ExpInstance,
 	return out
 }
 
-// ExpPublishDuplicates — пары «ЦФО + статья + месяц», которые приходят в
+// ExpPublishDuplicates — пары «ЦФО + статья + месяц + ЮЛ», которые приходят в
 // публикацию из РАЗНЫХ наборов формы.
 //
 // Ответ 34 прямо требует: «перед включением проверить дубли между этими тремя
@@ -238,15 +241,19 @@ func (p *ExpCardProvider) registryRows(ctx context.Context, in ExpInstance,
 func ExpPublishDuplicates(rows []PublishRow) []string {
 	type key struct {
 		cfo, pl, month int
+		company        string
 	}
 	seen := map[key]int{}
 	var out []string
 	for _, r := range rows {
-		k := key{r.CodeCFO, r.CodePL, int(r.Date.Month())}
+		k := key{r.CodeCFO, r.CodePL, int(r.Date.Month()), r.Company}
 		seen[k]++
 		if seen[k] == 2 {
-			out = append(out, fmt.Sprintf("ЦФО %d · статья %d · месяц %d приходит из двух наборов",
-				k.cfo, k.pl, k.month))
+			label := fmt.Sprintf("ЦФО %d · статья %d · месяц %d", k.cfo, k.pl, k.month)
+			if k.company != "" {
+				label += " · ЮЛ " + k.company
+			}
+			out = append(out, label+" приходит из двух наборов")
 		}
 	}
 	return out

@@ -77,10 +77,9 @@ func TestFormRegistry_HasExpForm(t *testing.T) {
 	if !ok {
 		t.Fatal("форма расходов ЦП не зарегистрирована в реестре форм")
 	}
-	// Ответ 42 (10.09.2026): страна — параметр карточки, розница планируется по
-	// всем четырём странам, а не только по РБ. Итого семь карточек.
-	if len(def.Scopes) != 7 {
-		t.Fatalf("областей формы %d, ожидали семь: розница BY/RU/KZ/UZ и МП RU/KZ/UZ", len(def.Scopes))
+	// Legacy 1.5 has seven scopes; TЗ v2 adds six code-based CFO forms.
+	if len(def.Scopes) != 13 {
+		t.Fatalf("областей формы %d, ожидали тринадцать: legacy семь и CFO 31/32/33/34/37/962", len(def.Scopes))
 	}
 	seen := map[string]string{}
 	for _, sc := range def.Scopes {
@@ -100,5 +99,20 @@ func TestFormRegistry_HasExpForm(t *testing.T) {
 	}
 	if seen["R-BY"] != ExpKindRetail || seen["MP-RU"] != ExpKindMP {
 		t.Fatalf("вид формы выводится из ключа неверно: %v", seen)
+	}
+	for _, code := range []CfoExpFormCode{CfoExp31, CfoExp32, CfoExp33, CfoExp34, CfoExp37, CfoExp962} {
+		key := "CFO-" + itoa(int64(code)) + "-"
+		found := false
+		for scope, kind := range seen {
+			if len(scope) >= len(key) && scope[:len(key)] == key {
+				if kind != CfoExpKind(code) {
+					t.Fatalf("область %q должна быть CFO kind %q, получили %q", scope, CfoExpKind(code), kind)
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("область CFO %d отсутствует: %v", code, seen)
+		}
 	}
 }

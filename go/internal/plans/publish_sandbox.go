@@ -67,8 +67,8 @@ func (p *sandboxPublisher) Probe(ctx context.Context, target string, rows []Publ
 		err := p.pool.QueryRow(ctx, `
 			SELECT SUM(value) FROM publish_sandbox
 			 WHERE target_table = $1 AND param = $2 AND country = $3
-			   AND code_cfo = $4 AND code_pl = $5 AND plan_date = $6`,
-			target, r.Param, r.Country, fmt.Sprint(r.CodeCFO), fmt.Sprint(r.CodePL), r.Date).Scan(&v)
+			   AND code_cfo = $4 AND code_pl = $5 AND plan_date = $6 AND company = $7`,
+			target, r.Param, r.Country, fmt.Sprint(r.CodeCFO), fmt.Sprint(r.CodePL), r.Date, r.Company).Scan(&v)
 		if err != nil {
 			return 0, err
 		}
@@ -93,9 +93,9 @@ func (p *sandboxPublisher) Write(ctx context.Context, target string, rows []Publ
 	for _, r := range rows {
 		if _, err := tx.Exec(ctx, `
 			DELETE FROM publish_sandbox
-			 WHERE target_table = $1 AND param = $2 AND country = $3
-			   AND code_cfo = $4 AND code_pl = $5 AND plan_date = $6`,
-			target, r.Param, r.Country, fmt.Sprint(r.CodeCFO), fmt.Sprint(r.CodePL), r.Date); err != nil {
+			WHERE target_table = $1 AND param = $2 AND country = $3
+			   AND code_cfo = $4 AND code_pl = $5 AND plan_date = $6 AND company = $7`,
+			target, r.Param, r.Country, fmt.Sprint(r.CodeCFO), fmt.Sprint(r.CodePL), r.Date, r.Company); err != nil {
 			return written, 0, fmt.Errorf("очистка ключа (%s/%d/%s): %w",
 				r.Param, r.CodeCFO, r.Date.Format("2006-01-02"), err)
 		}
