@@ -1231,6 +1231,49 @@ def _parse_halfyear_params(params: dict) -> dict:
     return p
 
 
+def _phl(values: list[str], sql_params: list) -> str | None:
+    """Регистрирует списочный срез как text[]-плейсхолдер; пустой срез → None."""
+    if not values:
+        return None
+    sql_params.append(list(values))
+    return "$%d" % len(sql_params)
+
+
+def _any_cond(expr: str, placeholder: str | None) -> str:
+    """AND-условие «expr = ANY($n)» или пустая строка, если среза нет."""
+    return "" if placeholder is None else " AND %s = ANY(%s::text[])" % (expr, placeholder)
+
+
+def _ic_where(p: dict) -> str:
+    """Срез ВГО → SQL-условие по fot_monthly."""
+    return {"все": "TRUE", "0": "m.is_intercompany = 0", "1": "m.is_intercompany = 1"}[
+        p["intercompany"]
+    ]
+
+
+# Срезы панели → колонки dim_CFO (порядок задаёт порядок плейсхолдеров).
+_FOT_SLICE_KEYS = (
+    ("group_cfo1", "cfo_groups"),
+    ("group_cfo2", "cfo_subgroups"),
+    ("direction", "directions"),
+    ("code_cfo", "cfos"),
+    ("country_code", "countries"),
+)
+
+
+def _dim_conds(p: dict, sql_params: list) -> str:
+    """AND-условия срезов dim_CFO для CTE dim: иерархия ЦФО и страна режут
+    числитель через справочник (порт срезов dim_CFO в PBI)."""
+    return "".join(
+        _any_cond(col, _phl(p[key], sql_params)) for col, key in _FOT_SLICE_KEYS
+    )
+
+
+def _legal_cond(p: dict, sql_params: list, col: str = "m.legal_entity") -> str:
+    """Срез юрлица; на план численности не влияет — звать только для факта."""
+    return _any_cond(col, _phl(p["legal_entities"], sql_params))
+
+
 def _half_sum_sql(key: str, scen: str, year: int, m1: int, m2: int, fam: str, col: str,
                   extra: str = "") -> str:
     """SUM FILTER по одному периоду; сценарий/год/месяцы — из _HALF_PERIODS.
@@ -1240,7 +1283,8 @@ def _half_sum_sql(key: str, scen: str, year: int, m1: int, m2: int, fam: str, co
     с DatatypeMismatchError (число AND булево) — поймано живым прогоном,
     мок SQL не исполняет и этого не видел.
     """
-    fam_sql = _SQL_FOT_FAMILY if fam == "fot" else _SQL_REV_FAMILY
+    # fam="raw" (HR-бюджет P13) — без семейства: статью задают в WHERE.
+    fam_sql = {"fot": _SQL_FOT_FAMILY, "rev": _SQL_REV_FAMILY}.get(fam, "TRUE")
     return (
         "sum(m.%s) FILTER (WHERE m.scenario_src = '%s'"
         " AND date_part('year', m.month_date) = %d"
@@ -1265,28 +1309,10 @@ def _halfyear_sql(p: dict) -> tuple[str, list]:
     """
     col = FOT_CURRENCIES[p["currency"]]
     sql_params: list = []
-
-    def _phl(values: list[str]):
-        if not values:
-            return None
-        sql_params.append(list(values))
-        return "$%d" % len(sql_params)
-
-    def _any_cond(expr: str, placeholder) -> str:
-        return "" if placeholder is None else " AND %s = ANY(%s::text[])" % (expr, placeholder)
-
-    ic_sql = {"все": "TRUE", "0": "m.is_intercompany = 0", "1": "m.is_intercompany = 1"}[
-        p["intercompany"]
-    ]
-    dim_conds = (
-        _any_cond("group_cfo1", _phl(p["cfo_groups"]))
-        + _any_cond("group_cfo2", _phl(p["cfo_subgroups"]))
-        + _any_cond("direction", _phl(p["directions"]))
-        + _any_cond("code_cfo", _phl(p["cfos"]))
-        + _any_cond("country_code", _phl(p["countries"]))
-    )
+    ic_sql = _ic_where(p)
+    dim_conds = _dim_conds(p, sql_params)
     hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
-    m_legal = _any_cond("m.legal_entity", _phl(p["legal_entities"]))
+    m_legal = _legal_cond(p, sql_params)
 
     grain_sums = ",\n        ".join(
         _half_sum_sql(key, scen, year, m1, m2, fam, col)
@@ -1383,6 +1409,497 @@ async def _dashboard_p11(p: dict, meta: dict) -> dict:
         "stale": meta.get("stale"),
         "refreshed_at": meta.get("refreshed_at"),
         "methodology": METHODOLOGY_P11,
+    }
+    if warning:
+        meta_out["warning"] = warning
+    return {"cards": cards, "charts": [], "tables": tables, "meta": meta_out}
+
+
+# ── Вкладки P12/P13: численность и HR-бюджет (слайды 22–46 презентации) ──────
+
+# Фиксированные срезы факта численности: полугодия жёстко привязаны к 30.06
+# (постановка), от срезов дат и «Плана» вкладки не зависят.
+HC_DATE_PREV = date(YEAR_PREV, 6, 1)
+HC_DATE_CURR = date(YEAR_PLAN, 6, 1)
+
+METHODOLOGY_P12 = (
+    "Численность на фиксированных срезах 30.06.2025 и 30.06.2026 — от срезов дат и «Плана» "
+    "вкладка не зависит. План — PlanChisl по ЦФО: «утв.» — утверждённая численность "
+    "(стратегия), «тактика» — численность тактики; план не распределён по юрлицам, срез "
+    "юрлица на него не влияет. Факт — ставки fot_headcount на 1-е число июня. "
+    "Укомплектованность = факт 1ПГ26 / план утв.; светофор: ≥95 % зелёный, 85–95 % жёлтый, "
+    "<85 % красный (правило слайда 23, отличается от Δ-светофора P10/P11). Δ — относительные "
+    "изменения численности: 1ПГ26 к 1ПГ25 и факт к утвержд. плану. Срезы панели (страна, "
+    "иерархия ЦФО, юрлицо) сужают факт и план через справочник ЦФО; срез ВГО на численность "
+    "не влияет. Числа — ставки, проценты округляются до одного знака."
+)
+
+METHODOLOGY_P13 = (
+    "HR-бюджет — ЦФО HR-служб по фиксированному списку кодов (BY 224, RU 604+324+346, "
+    "KZ 208, UZ 444) и трём статьям шаблона строк (Заработная плата, Прочие расходы на "
+    "персонал, Амортизация) за те же фиксированные полугодия, что на своде по группе; "
+    "«Ожидание 2026» = факт 1ПГ26 + тактика 2ПГ26; Δ год к 2025 красится мерой «_ФОТ Δ цвет» "
+    "(рост >+10 % — жёлтый; красный остаётся для растущей доли ФОТ, которой у HR-бюджета "
+    "нет). Срезы страны, юрлица и ВГО сужают HR-блок; иерархия ЦФО на него не влияет — "
+    "список кодов фиксирован. Блок «Отделы» — ФОТ (ЗП в P&L и «Производстве (BS)») по "
+    "странам отчёта со срезом направления из панели; карточки численности — план тактики "
+    "(PlanChisl) и факт 30.06.2026. Суммы таблиц — тыс. выбранной валюты витрины, у "
+    "HR-таблицы два знака (контрольные числа PBI — с копейками)."
+)
+
+# HR-ЦФО: коды ЦФО HR-служб по странам — фиксированный список постановки
+# (согласован, слайды 28–46), от справочника и срезов не зависит.
+HR_CFO_CODES = {"BY": ("224",), "RU": ("604", "324", "346"), "KZ": ("208",), "UZ": ("444",)}
+HR_CFO_ALL: tuple = tuple(code for codes in HR_CFO_CODES.values() for code in codes)
+
+# Статьи HR-бюджета (шаблон строки витрины fot_monthly.row_template).
+HR_TEMPLATES = ("Заработная плата", "Прочие расходы на персонал", "Амортизация")
+
+# Пороги светофора укомплектованности P12 (слайд 23), цвета презентации.
+_STAFF_THRESHOLDS = ((95.0, _DELTA_GREEN), (85.0, _DELTA_AMBER))
+
+
+def _staff_color(pct) -> str | None:
+    """Цвет укомплектованности: ≥95 % зелёный, 85–95 % жёлтый, <85 % красный."""
+    if pct is None:
+        return None
+    for threshold, color in _STAFF_THRESHOLDS:
+        if pct >= threshold:
+            return color
+    return _DELTA_RED
+
+
+def _p12_columns() -> list[dict]:
+    """Колонки таблиц P12: ставки и три процента (укомплектованность со
+    светофором и два Δ)."""
+    return [
+        {"key": "label", "label": "Разрез"},
+        {"key": "plan_approved", "label": "План утв. 2026", "unit": "ставок"},
+        {"key": "plan_tactic", "label": "План тактика", "unit": "ставок"},
+        {"key": "q25", "label": "Факт 1ПГ25", "unit": "ставок"},
+        {"key": "q26", "label": "Факт 1ПГ26", "unit": "ставок"},
+        {"key": "staff_pct", "label": "Укомплектованность", "unit": "%"},
+        {"key": "dev_2625", "label": "Δ 1ПГ26 к 1ПГ25", "unit": "%"},
+        {"key": "dev_appr", "label": "Δ факт к утвержд.", "unit": "%"},
+    ]
+
+
+def _p12_row(label: str, drill: str, parts: list[dict]) -> dict:
+    """Строка P12: ставки, укомплектованность с её светофором, Δ в процентах."""
+    q25 = _nsum([p.get("q25") for p in parts])
+    q26 = _nsum([p.get("q26") for p in parts])
+    pa = _nsum([p.get("pa") for p in parts])
+    pt = _nsum([p.get("pt") for p in parts])
+    staff = _pct(_div(q26, pa))
+    return {
+        "label": label,
+        "drill_value": drill,
+        "plan_approved": _r2(pa),
+        "plan_tactic": _r2(pt),
+        "q25": _r2(q25),
+        "q26": _r2(q26),
+        "staff_pct": _r1(staff),
+        "staff_pct_color": _staff_color(staff),
+        "dev_2625": _r1(_pct(_div(_diff(q26, q25), q25))),
+        "dev_appr": _r1(_pct(_div(_diff(q26, pa), pa))),
+    }
+
+
+def _p12_assemble(grain: list[dict]) -> tuple:
+    """Карточки и таблицы P12 из слитого зерна (группа ЦФО × страна).
+
+    Карточки — свод по всему зерну; таблицы — страны отчёта (в порядке
+    COUNTRY_OPTIONS) и группы ЦФО (по убыванию факта 1ПГ26) со строкой
+    «Итого» по показанным строкам. Возвращает (cards, tables, warning).
+    """
+    s = {key: _nsum([r.get(key) for r in grain]) for key in ("q25", "q26", "pa", "pt")}
+    staff = _pct(_div(s["q26"], s["pa"]))
+    cards = [
+        {"key": "plan_approved", "label": "План утв. 2026 (стратегия)",
+         "value": _r2(s["pa"]), "unit": "ставок"},
+        {"key": "plan_tactic", "label": "План тактика 2026",
+         "value": _r2(s["pt"]), "unit": "ставок"},
+        {"key": "fact_2025", "label": "Факт 30.06.2025",
+         "value": _r2(s["q25"]), "unit": "ставок"},
+        {"key": "fact_2026", "label": "Факт 30.06.2026",
+         "value": _r2(s["q26"]), "unit": "ставок"},
+        {"key": "staffing", "label": "Укомплектованность (факт 1ПГ26 / план утв.)",
+         "value": _r2(staff), "unit": "%"},
+    ]
+    by_country: dict = {}
+    by_group: dict = {}
+    for r in grain:
+        by_country.setdefault(r.get("ctry") or "", []).append(r)
+        by_group.setdefault(r.get("g1") or "", []).append(r)
+
+    rows: list = []
+    total_parts: list = []
+    for cc, label in COUNTRY_OPTIONS:
+        parts = by_country.get(cc)
+        if not parts:
+            continue
+        total_parts.extend(parts)
+        rows.append(_p12_row(label, cc, parts))
+    if total_parts:
+        rows.append(_p12_row("Итого", "", total_parts))
+
+    group_entries = sorted(
+        ((_nsum([p.get("q26") for p in parts]) or 0.0, key, parts)
+         for key, parts in by_group.items()),
+        key=lambda t: t[0], reverse=True,
+    )
+    group_rows: list = []
+    group_total: list = []
+    for _, gkey, parts in group_entries[:MATRIX_ROW_LIMIT]:
+        group_total.extend(parts)
+        group_rows.append(_p12_row(str(gkey) or "(не указана)", gkey, parts))
+    if group_total:
+        group_rows.append(_p12_row("Итого", "", group_total))
+
+    def _meta(dim: str, level_label: str, truncated: bool) -> dict:
+        return {"dim": dim, "level_label": level_label, "path": [], "can_drill": False,
+                "truncated": truncated, "row_limit": MATRIX_ROW_LIMIT}
+
+    tables = [
+        {"key": "by_country", "label": "Численность по странам",
+         "columns": _p12_columns(), "rows": rows,
+         "meta": _meta("country_code", "Страна", False)},
+        {"key": "by_department", "label": "Численность по подразделениям (группа ЦФО)",
+         "columns": _p12_columns(), "rows": group_rows,
+         "meta": _meta("group_cfo1", "Группа ЦФО", len(group_entries) > MATRIX_ROW_LIMIT)},
+    ]
+    warning = None
+    if not grain:
+        warning = "Нет данных численности/плана по выбранным срезам."
+    elif not s["pa"]:
+        warning = "План численности (PlanChisl) пуст: укомплектованность и Δ к утвержд. не считаются."
+    return cards, tables, warning
+
+
+def _p12_merge(payload: dict) -> list[dict]:
+    """Слияние трёх выборок P12 (факт 2025, факт 2026, план) по группа ЦФО ×
+    страна суммированием (план не размножен юрлицами и бывает без факта — тот
+    же приём, что lvl в SQL P9)."""
+    keys = ("q25", "q26", "pa", "pt")
+    merged: dict = {}
+    for src, pairs in (("h25", (("q", "q25"),)), ("h26", (("q", "q26"),)),
+                       ("plan", (("pa", "pa"), ("pt", "pt")))):
+        for r in payload.get(src) or []:
+            k = (r.get("g1") or "", r.get("ctry") or "")
+            row = merged.setdefault(k, {"g1": k[0], "ctry": k[1], **{x: None for x in keys}})
+            for src_col, dst_key in pairs:
+                row[dst_key] = (row[dst_key] or 0.0) + float(r.get(src_col) or 0.0)
+    return list(merged.values())
+
+
+def _p12_sql(p: dict) -> tuple[str, list]:
+    """Один запрос P12: факт численности на два фиксированных среза 30.06 и
+    план PlanChisl — в разрезе группа ЦФО × страна справочника.
+
+    dim — порт срезов dim_CFO (иерархия и страна режут факт и план через
+    справочник); при активном срезе «висячие» ЦФО отсекаются hier_gate, как у
+    P9/P10. Срез юрлица — только на факт; срез ВГО на численность не влияет.
+    """
+    sql_params: list = []
+    dim_conds = _dim_conds(p, sql_params)
+    hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
+    h_legal = _legal_cond(p, sql_params, "h.legal_entity")
+    sql = f"""
+WITH dim AS (
+    SELECT code_cfo, group_cfo1, country_code
+    FROM fot_cfo
+    WHERE TRUE{dim_conds}
+),
+h25 AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1, coalesce(c.country_code, '') AS ctry,
+           sum(h.quantity) AS q
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = DATE '{HC_DATE_PREV.isoformat()}'{h_legal}{hier_gate}
+    GROUP BY 1, 2
+),
+h26 AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1, coalesce(c.country_code, '') AS ctry,
+           sum(h.quantity) AS q
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = DATE '{HC_DATE_CURR.isoformat()}'{h_legal}{hier_gate}
+    GROUP BY 1, 2
+),
+plan AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1, coalesce(c.country_code, '') AS ctry,
+           sum(p.plan_approved) AS pa, sum(p.plan_tactic) AS pt
+    FROM fot_headcount_plan p
+    LEFT JOIN dim c ON c.code_cfo = p.code_cfo
+    WHERE TRUE{hier_gate}
+    GROUP BY 1, 2
+)
+SELECT jsonb_build_object(
+    'h25', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h25 x), '[]'::jsonb),
+    'h26', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h26 x), '[]'::jsonb),
+    'plan', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM plan x), '[]'::jsonb)
+)::text AS payload
+"""
+    return sql, sql_params
+
+
+def _p13_hr_columns(cur: str) -> list[dict]:
+    """Колонки HR-таблицы P13: девять периодов/Δ (короткий набор P10 без
+    «Бюджета 1ПГ26» нет — здесь бюджет есть, но нет Δ по полугодиям)."""
+    value_labels = (
+        ("f25_h1", "Факт 1ПГ25"), ("f25_h2", "Факт 2ПГ25"), ("f25", "Факт 2025"),
+        ("b26_h1", "Бюджет 1ПГ26"), ("f26_h1", "Факт 1ПГ26"),
+        ("b26_h2", "Бюджет 2ПГ26"), ("t26_h2", "Тактика 2ПГ26"),
+        ("exp26", "Ожидание 2026"), ("dev_year", "Δ год к 2025"),
+    )
+    return [{"key": "label", "label": "Статья — страна (ЦФО)"}] + [
+        {"key": key, "label": lbl, "unit": "%" if key.startswith("dev_") else cur}
+        for key, lbl in value_labels
+    ]
+
+
+def _p13_hr_row(label: str, parts: list[dict]) -> dict:
+    """Строка HR-таблицы: тыс. с двумя знаками (контрольные числа PBI —
+    с копейками); Δ год к 2025 = (Ожидание 2026 − Факт 2025)/Факт 2025 с
+    Δ-светофором (доли у HR нет — рост >+10 % всегда жёлтый, см. методологию)."""
+    s = {key: _nsum([p.get(key) for p in parts]) for key in _HALF_VALUE_KEYS}
+    f25 = _nsum([s.get("f25_h1"), s.get("f25_h2")])
+    exp26 = _nsum([s.get("f26_h1"), s.get("t26_h2")])
+    dev_year = _div(_diff(exp26, f25), f25)
+    row: dict = {"label": label}
+    for key in _HALF_VALUE_KEYS + ("exp26",):
+        v = exp26 if key == "exp26" else s.get(key)
+        row[key] = _r2(_t(v))
+    row["f25"] = _r2(_t(f25))
+    row["dev_year"] = _r1(_pct(dev_year))
+    row["dev_year_color"] = _fot_delta_color(dev_year, None)
+    return row
+
+
+def _p13_assemble(cur: str, hr: list[dict], dept: list[dict],
+                  hc: dict | None, plan: dict | None) -> tuple:
+    """Карточки и таблицы P13 «HR-бюджет и отделы».
+
+    HR-блок: 4 карточки + таблица «статья × страна HR-ЦФО» с Итого по статье
+    и общим Итого. Блок «Отделы»: 4 карточки (ФОТ 1ПГ26, ПЧ/ФЧ, Δ к 2025) +
+    таблица по странам отчёта со строкой «Итого». hc/plan — суммарные
+    численности карточек (факт 30.06.2026, план тактики). Возвращает
+    (cards, tables, warning).
+    """
+    s_hr = {key: _nsum([r.get(key) for r in hr]) for key in _HALF_VALUE_KEYS}
+    exp26_hr = _nsum([s_hr.get("f26_h1"), s_hr.get("t26_h2")])
+    hr_cards = [
+        {"key": "hr_fact_1h26", "label": "ФОТ HR-ЦФО: Факт 1ПГ26",
+         "value": _r2(_t(s_hr.get("f26_h1"))), "unit": "тыс " + cur},
+        {"key": "hr_budget_2h26", "label": "ФОТ HR-ЦФО: Бюджет 2ПГ26",
+         "value": _r2(_t(s_hr.get("b26_h2"))), "unit": "тыс " + cur},
+        {"key": "hr_tactic_2h26", "label": "ФОТ HR-ЦФО: Тактика 2ПГ26",
+         "value": _r2(_t(s_hr.get("t26_h2"))), "unit": "тыс " + cur},
+        {"key": "hr_expect_2026", "label": "ФОТ HR-ЦФО: Ожидание 2026",
+         "value": _r2(_t(exp26_hr)), "unit": "тыс " + cur},
+    ]
+
+    # HR-таблица: статья → страны отчёта (коды страны — из константы постановки)
+    # → Итого по статье, затем общий Итого по всем HR-ЦФО.
+    by_tmpl: dict = {}
+    for r in hr:
+        by_tmpl.setdefault(r.get("tmpl") or "", []).append(r)
+    hr_rows: list = []
+    for tmpl in HR_TEMPLATES:
+        parts = by_tmpl.get(tmpl) or []
+        if not parts:
+            continue
+        by_ctry: dict = {}
+        for r in parts:
+            by_ctry.setdefault(r.get("ctry") or "", []).append(r)
+        for cc, c_label in COUNTRY_OPTIONS:
+            c_parts = by_ctry.get(cc)
+            if c_parts:
+                codes = "+".join(HR_CFO_CODES.get(cc, ()))
+                hr_rows.append(_p13_hr_row("%s — %s (%s)" % (tmpl, c_label, codes), c_parts))
+        hr_rows.append(_p13_hr_row("Итого — %s" % tmpl, parts))
+    if hr:
+        hr_rows.append(_p13_hr_row("Итого", hr))
+
+    # Блок «Отделы»: карточки по всему dept-зерну, таблица — страны отчёта.
+    # Знаменателей долей у блока нет (den = {}), поэтому Δ-светофор — без
+    # «красной» ветки растущей доли, как в HR-таблице.
+    s_dept = _period_sums(dept)
+    # «Факт 2025» в выборке P13 нет (полугодия складываются, как в зерне мока)
+    # — иначе Δ год к 2025 и светофор молча обнулятся.
+    s_dept["f25"] = _nsum([s_dept.get("f25_h1"), s_dept.get("f25_h2")])
+    dv_dept = _half_derive(s_dept, {})
+    dept_cards = [
+        {"key": "dept_fot_1h26", "label": "ФОТ отделов 1ПГ26",
+         "value": _r1(_t(s_dept.get("f26_h1"))), "unit": "тыс " + cur},
+        {"key": "dept_headcount_plan", "label": "ПЧ (числ. план, тактика)",
+         "value": _r2(plan.get("pt") if plan else None), "unit": "ставок"},
+        {"key": "dept_headcount_fact", "label": "ФЧ (факт 30.06.2026)",
+         "value": _r2(hc.get("q") if hc else None), "unit": "ставок"},
+        {"key": "dept_dev_year", "label": "ФОТ отделов: Δ год к 2025",
+         "value": _r1(_pct(dv_dept["dev_year"])), "unit": "%"},
+    ]
+    by_ctry: dict = {}
+    for r in dept:
+        # «Факт 2025» (полугодия → год) нужен и строкам таблицы: _country_row
+        # собирает период-суммы из частей зерна.
+        r["f25"] = _nsum([r.get("f25_h1"), r.get("f25_h2")])
+        by_ctry.setdefault(r.get("ctry") or "", []).append(r)
+    dept_rows: list = []
+    total_parts: list = []
+    for cc, label in COUNTRY_OPTIONS:
+        parts = by_ctry.get(cc)
+        if not parts:
+            continue
+        total_parts.extend(parts)
+        dept_rows.append(_country_row(label, cc, parts, {}))
+    if total_parts:
+        dept_rows.append(_country_row("Итого", "", total_parts, {}))
+
+    tables = [
+        {"key": "hr_budget", "label": "HR-бюджет по статьям",
+         "columns": _p13_hr_columns(cur), "rows": hr_rows,
+         "meta": {"dim": "row_template", "level_label": "Статья (HR-ЦФО)", "path": [],
+                  "can_drill": False, "truncated": False, "row_limit": MATRIX_ROW_LIMIT}},
+        {"key": "by_country", "label": "Отделы: ФОТ по странам",
+         "columns": _half_columns(cur, "Страна", True), "rows": dept_rows,
+         "meta": {"dim": "country_code", "level_label": "Страна", "path": [],
+                  "can_drill": False, "truncated": False, "row_limit": MATRIX_ROW_LIMIT}},
+    ]
+    warning = None
+    if not hr and not dept:
+        warning = "Нет данных ФОТ/HR-бюджета по выбранным срезам."
+    return hr_cards + dept_cards, tables, warning
+
+
+def _p13_sql(p: dict) -> tuple[str, list]:
+    """Один запрос P13: HR-бюджет по кодам HR-ЦФО и статьям + ФОТ отделов по
+    странам + численность карточек (факт 30.06.2026, план тактики).
+
+    dim — порт срезов dim_CFO для блока «Отделы» (весь срез панели, включая
+    направление); dim_hr — для HR-блока: список кодов фиксирован, из срезов
+    остаётся только страна. Статьи HR и коды ЦФО уходят в SQL только из
+    констант (ANY по белым спискам).
+    """
+    sql_params: list = []
+    dim_conds = _dim_conds(p, sql_params)
+    hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
+    m_legal = _legal_cond(p, sql_params)
+    hr_codes_ph = _phl(list(HR_CFO_ALL), sql_params)
+    hr_tmpl_ph = _phl(list(HR_TEMPLATES), sql_params)
+    hr_country = _any_cond("country_code", _phl(p["countries"], sql_params))
+    ic_sql = _ic_where(p)
+    col = FOT_CURRENCIES[p["currency"]]
+    # «Факт 2025» в выборке нет — полугодия складываются в Python (как в зерне
+    # мока); остальные периоды — те же, что у P10.
+    hr_periods = tuple(
+        x for x in _HALF_PERIODS
+        if x[0] in ("f25_h1", "f25_h2", "b26_h1", "f26_h1", "b26_h2", "t26_h2")
+    )
+    hr_sums = ",\n        ".join(
+        _half_sum_sql(key, scen, year, m1, m2, "raw", col)
+        for key, scen, year, m1, m2, fam in hr_periods
+    )
+    dept_sums = ",\n        ".join(
+        _half_sum_sql(key, scen, year, m1, m2, "fot", col)
+        for key, scen, year, m1, m2, fam in hr_periods
+    )
+    sql = f"""
+WITH dim AS (
+    SELECT code_cfo, country_code
+    FROM fot_cfo
+    WHERE TRUE{dim_conds}
+),
+dim_hr AS (
+    SELECT code_cfo, country_code
+    FROM fot_cfo
+    WHERE code_cfo = ANY({hr_codes_ph}::text[]){hr_country}
+),
+hr AS (
+    SELECT coalesce(c.country_code, '') AS ctry, m.code_cfo AS cfo,
+           m.row_template AS tmpl,
+           {hr_sums}
+    FROM fot_monthly m
+    JOIN dim_hr c ON c.code_cfo = m.code_cfo
+    WHERE m.row_template = ANY({hr_tmpl_ph}::text[]) AND {ic_sql}{m_legal}
+    GROUP BY 1, 2, 3
+),
+dept AS (
+    SELECT coalesce(c.country_code, '') AS ctry,
+           {dept_sums}
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE {_SQL_FOT_FAMILY} AND {ic_sql}{m_legal}{hier_gate}
+    GROUP BY 1
+),
+hc AS (
+    SELECT coalesce(c.country_code, '') AS ctry, sum(h.quantity) AS q
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = DATE '{HC_DATE_CURR.isoformat()}'{hier_gate}
+    GROUP BY 1
+),
+plan AS (
+    SELECT coalesce(c.country_code, '') AS ctry, sum(p.plan_tactic) AS pt
+    FROM fot_headcount_plan p
+    LEFT JOIN dim c ON c.code_cfo = p.code_cfo
+    WHERE TRUE{hier_gate}
+    GROUP BY 1
+)
+SELECT jsonb_build_object(
+    'hr', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM hr x), '[]'::jsonb),
+    'dept', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM dept x), '[]'::jsonb),
+    'hc', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM hc x), '[]'::jsonb),
+    'plan', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM plan x), '[]'::jsonb)
+)::text AS payload
+"""
+    return sql, sql_params
+
+
+async def _dashboard_p12(p: dict, meta: dict) -> dict:
+    """Вкладка P12 «Численность план и факт»: карточки + таблицы по странам
+    и подразделениям."""
+    sql, sql_params = _p12_sql(p)
+    async with acquire() as pg:
+        payload = json.loads(await pg.fetchval(sql, *sql_params))
+    grain = _p12_merge(payload)
+    cards, tables, warning = _p12_assemble(grain)
+    closed = _closed_from_meta(meta)
+    meta_out = {
+        "tab": "p12",
+        "params": p,
+        "currency": p["currency"],
+        "periods": _periods_meta(),
+        "closed_period": closed.isoformat() if closed else None,
+        "stale": meta.get("stale"),
+        "refreshed_at": meta.get("refreshed_at"),
+        "methodology": METHODOLOGY_P12,
+    }
+    if warning:
+        meta_out["warning"] = warning
+    return {"cards": cards, "charts": [], "tables": tables, "meta": meta_out}
+
+
+async def _dashboard_p13(p: dict, meta: dict) -> dict:
+    """Вкладка P13 «HR-бюджет и отделы»: HR-блок + блок «Отделы»."""
+    sql, sql_params = _p13_sql(p)
+    async with acquire() as pg:
+        payload = json.loads(await pg.fetchval(sql, *sql_params))
+    hc_q = _nsum([float(r.get("q") or 0.0) for r in payload.get("hc") or []])
+    plan_pt = _nsum([float(r.get("pt") or 0.0) for r in payload.get("plan") or []])
+    cards, tables, warning = _p13_assemble(
+        p["currency"], payload.get("hr") or [], payload.get("dept") or [],
+        {"q": hc_q}, {"pt": plan_pt})
+    closed = _closed_from_meta(meta)
+    meta_out = {
+        "tab": "p13",
+        "params": p,
+        "currency": p["currency"],
+        "periods": _periods_meta(),
+        "closed_period": closed.isoformat() if closed else None,
+        "stale": meta.get("stale"),
+        "refreshed_at": meta.get("refreshed_at"),
+        "methodology": METHODOLOGY_P13,
     }
     if warning:
         meta_out["warning"] = warning
@@ -1936,9 +2453,9 @@ async def dashboard(tab: str, params: dict) -> dict:
     """Собирает одну вкладку P9–P13; чужой tab — ValueError (в роутах → 400).
 
     P9 — полный сборщик _dashboard_p9; P10/P11 — сводные вкладки фиксированных
-    полугодий (_dashboard_p10/_dashboard_p11); P12–P13 — заглушки шага 2c с той
-    же формой ответа (пустые cards/charts/tables), чтобы фронт уже мог
-    рендерить каркас вкладок.
+    полугодий (_dashboard_p10/_dashboard_p11); P12 — численность план/факт
+    (_dashboard_p12), P13 — HR-бюджет и отделы (_dashboard_p13), оба на тех же
+    срезах панели и фиксированных полугодиях.
     """
     if tab not in _FOT_TABS:
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
@@ -1946,17 +2463,16 @@ async def dashboard(tab: str, params: dict) -> dict:
     if tab == "p9":
         p = _parse_p9_params(params, meta)
         return await _dashboard_p9(p, meta)
-    if tab in ("p10", "p11"):
+    if tab in ("p10", "p11", "p12", "p13"):
         p = _parse_halfyear_params(params)
         if tab == "p10":
             return await _dashboard_p10(p, meta)
-        return await _dashboard_p11(p, meta)
-    return {
-        "cards": [],
-        "charts": [],
-        "tables": [],
-        "meta": {"tab": tab, "params": dict(params), "status": "not_implemented"},
-    }
+        if tab == "p11":
+            return await _dashboard_p11(p, meta)
+        if tab == "p12":
+            return await _dashboard_p12(p, meta)
+        return await _dashboard_p13(p, meta)
+    raise ValueError("fot: неизвестная вкладка %r" % (tab,))
 
 
 __all__ = [
@@ -1966,11 +2482,15 @@ __all__ = [
     "FOT_PLAN_SCENARIOS",
     "FOT_QUERY_TIMEOUT",
     "FOT_REFRESH_MINUTES",
+    "HR_CFO_CODES",
+    "HR_TEMPLATES",
     "IC_OPTIONS",
     "MATRIX_LEVELS",
     "MATRIX_ROW_LIMIT",
     "METHODOLOGY_P10",
     "METHODOLOGY_P11",
+    "METHODOLOGY_P12",
+    "METHODOLOGY_P13",
     "METHODOLOGY_P9",
     "P11_CHANNEL_LEVELS",
     "P11_MATRIX_LEVELS",
