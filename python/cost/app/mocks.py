@@ -1173,18 +1173,144 @@ def fot_filter_options() -> dict:
     }
 
 
+# ── P10/P11 «фиксированные полугодия»: зерно под контрольные числа ────────────
+
+# Восемь строк-«ЦФО» с весами (ctry, группа, подгруппа, направление, ЦФО, канал).
+_FOT_HALF_SPECS = (
+    ("BY", "Производство", "Производство Брест", "Пошив, раскрой, печать",
+     "2001 — Цех пошива 1", "Производство", 0.30),
+    ("BY", "Производство", "Логистика Брест", "Складская логистика",
+     "2101 — Склад готовой продукции", "Отдел", 0.10),
+    ("BY", "Магазины", "Магазины Минск", "Розница РБ",
+     "101 — Магазин Минск, Немига", "Розница РБ", 0.14),
+    ("BY", "Отдел", "Отдел", "HR", "601 — Отдел кадров", "Отдел", 0.08),
+    ("RU", "Магазины", "Магазины РФ", "Розница РФ",
+     "301 — Магазин Москва", "Розница РФ", 0.16),
+    ("RU", "Маркетплейсы", "Маркетплейсы РФ", "Маркетплейсы РФ",
+     "305 — Озон РФ", "Маркетплейсы", 0.14),
+    ("KZ", "Магазины", "Магазины KZ", "Розница КЗ",
+     "401 — Магазин Алматы", "Розница КЗ", 0.05),
+    ("UZ", "Производство", "Пошив UZ", "Пошив, раскрой, печать",
+     "501 — Цех Наманган", "Производство", 0.03),
+)
+
+# Контрольные итоги PBI в тыс. (факт 1ПГ25 = 87 000 + 2ПГ25 = 112 306 → 199 306;
+# выручка 590 000 + 658 000 = 1 248 000): доли 15,57/15,97 % и Ожидание
+# 217 260 тыс (108 630 факт 1ПГ26 + 108 630 тактика 2ПГ26). f25/rv_f25 в зерно
+# не пишем — это суммы полугодий, как SUM FILTER за 12 месяцев в _halfyear_sql.
+_FOT_HALF_TOTALS = {
+    "f25_h1": 87000, "f25_h2": 112306,
+    "b26_h1": 105000, "f26_h1": 108630, "b26_h2": 104000, "t26_h2": 108630,
+    "rv_f25_h1": 590000, "rv_f25_h2": 658000,
+    "rv_f26_h1": 745000, "rv_t26_h2": 650000,
+}
+
+# f25 у KZ и UZ занижен вдвое (срез компенсируется первой строкой BY — итоги
+# остаются контрольными): динамика обеих стран улетает за +10 %, KZ получает
+# жёлтый светофор (доля падает), UZ — красный (доля растёт): в моке видны все
+# три цвета Δ-колонок, а не только зелёный.
+_FOT_HALF_F25_CUT = {"401 — Магазин Алматы", "501 — Цех Наманган"}
+
+# Знаменатели долей в тыс., ключи как в den из _halfyear_sql: группа — из
+# контрольных долей; KZ — выручка по кодам 1006/1012; UZ — вся выручка UZ.
+_FOT_HALF_DEN = {
+    "dn_grp_rv_f25_h1": 590000, "dn_grp_rv_f25_h2": 658000, "dn_grp_rv_f25": 1248000,
+    "dn_grp_rv_f26_h1": 745000, "dn_grp_rv_t26_h2": 650000,
+    "dn_kz_rv_f25_h1": 38000, "dn_kz_rv_f25_h2": 42000, "dn_kz_rv_f25": 80000,
+    "dn_kz_rv_f26_h1": 95000, "dn_kz_rv_t26_h2": 90000,
+    "dn_uz_rv_f25_h1": 21000, "dn_uz_rv_f25_h2": 24000, "dn_uz_rv_f25": 45000,
+    "dn_uz_rv_f26_h1": 30000, "dn_uz_rv_t26_h2": 25000,
+}
+
+
+def _fot_half_mock() -> tuple[list[dict], dict]:
+    """Зерно P10/P11 и знаменатели долей.
+
+    Итоги заданы в тыс. (как в PBI) и умножаются на 1000 до сырых сумм
+    витрины — сборщики app.fot (_t/_ms) дают те же контрольные числа.
+    """
+    grain = []
+    for ctry, g1, g2, direction, cfon, chan, w in _FOT_HALF_SPECS:
+        row = {"g1": g1, "g2": g2, "dir": direction, "cfon": cfon, "cfol": cfon,
+               "chan": chan, "ctry": ctry}
+        for key, total in _FOT_HALF_TOTALS.items():
+            row[key] = round(total * 1000.0 * w, 2)
+        if cfon in _FOT_HALF_F25_CUT:
+            for key in ("f25_h1", "f25_h2"):
+                row[key] = round(row[key] * 0.5, 2)
+        grain.append(row)
+    # Срезанный f25 KZ/UZ компенсируем в первую строку: «Итого» остаётся ровно
+    # контрольным (199 306 тыс за 2025), светофор стран при этом не весь зелёный.
+    for key in ("f25_h1", "f25_h2"):
+        deficit = round(_FOT_HALF_TOTALS[key] * 1000.0 - sum(r[key] for r in grain), 2)
+        grain[0][key] = round(grain[0][key] + deficit, 2)
+    for r in grain:
+        r["f25"] = round(r["f25_h1"] + r["f25_h2"], 2)
+        r["rv_f25"] = round(r["rv_f25_h1"] + r["rv_f25_h2"], 2)
+    den = {k: v * 1000.0 for k, v in _FOT_HALF_DEN.items()}
+    return grain, den
+
+
+def _fot_half_mock_dashboard(tab: str, params: dict) -> dict:
+    """Сборка P10/P11 мока теми же функциями, что и боевой ответ.
+
+    app.fot._p10_assemble/_p11_assemble получают мок-зерно — формулы (доли,
+    Δ, светофор) и форма ответа не могут разойтись с боем. Срезы на числа не
+    влияют (это мок): страна карточек — None, пути дрилла берутся из запроса.
+    """
+    from app import fot
+
+    def _first(value, default: str) -> str:
+        if isinstance(value, (list, tuple)):
+            return str(value[0]) if value else default
+        return str(value) if value not in (None, "") else default
+
+    currency = _first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+    grain, den = _fot_half_mock()
+    if tab == "p10":
+        cards, tables, warning = fot._p10_assemble(currency, grain, den, None)
+        methodology = fot.METHODOLOGY_P10
+    else:
+        cards, tables, warning = fot._p11_assemble(
+            currency, grain, den, None,
+            fot._parse_str_list(params.get("matrix_path")),
+            fot._parse_str_list(params.get("channel_path")),
+        )
+        methodology = fot.METHODOLOGY_P11
+    meta = {
+        "tab": tab,
+        "params": dict(params),
+        "currency": currency,
+        "periods": fot._periods_meta(),
+        "closed_period": _FOT_MOCK_STATE["closed_period"],
+        "stale": False,
+        "refreshed_at": _FOT_MOCK_STATE["refreshed_at"],
+        "methodology": methodology,
+    }
+    meta.update(_FOT_MOCK_META)
+    if warning:
+        meta["warning"] = warning
+    return {"cards": cards, "charts": [], "tables": tables, "meta": meta}
+
+
 def fot_dashboard(tab: str, params: dict) -> dict:
     """Мок вкладки ФОТ-дашборда — форма ответа 1:1 с app.fot.dashboard().
 
     P9 всегда отдаёт один контрольный срез (июнь 2025, BYN): числа сняты с
     витрин шага 1 и PBI, чтобы фронт сверял рендер на них. Срезы из запроса
-    приезжают в meta.params, на числа не влияют — это мок. P10–P13 — пустой
-    каркас, как боевые заглушки шагов 2b/2c.
+    приезжают в meta.params, на числа не влияют — это мок. P10/P11 собираются
+    боевыми сборщиками app.fot на выдуманном зерне, подобранном под контрольные
+    числа PBI (см. _fot_half_mock). P12–P13 — пустой каркас, как боевые
+    заглушки шага 2c.
     """
     from app import fot
 
     if tab not in ("p9", "p10", "p11", "p12", "p13"):
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
+    if tab in ("p10", "p11"):
+        return _fot_half_mock_dashboard(tab, params)
     if tab != "p9":
         return {
             "cards": [],
