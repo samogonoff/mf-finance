@@ -46,36 +46,34 @@ func TestBulk_ManualNotOverwritten(t *testing.T) {
 		{Metric: MetricSales, Year: 2026, Month: 8, Amount: &generated, Source: ValueFromStrategy},
 	}
 
-	req := RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: CopyFromStrategy,
-		SourceYear: 2026, Months: []int{7, 8}, Preview: true}
-	res, err := ApplyRetailBulk(req, bulkCtx([]RetailRow{row}, ser, nil))
+	// Копирование сценария — по одному месяцу (ТЗ доработок п. 2.3).
+	july := RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: CopyFromStrategy,
+		Months: []int{7}, Preview: true}
+	res, err := ApplyRetailBulk(july, bulkCtx([]RetailRow{row}, ser, nil))
 	if err != nil {
-		t.Fatalf("операция вернула ошибку: %v", err)
+		t.Fatalf("июль: операция вернула ошибку: %v", err)
 	}
-	if res.Protected != 1 {
-		t.Errorf("защищено manual: got %d, want 1", res.Protected)
+	if res.Protected != 1 || res.Changed != 0 {
+		t.Errorf("июль: защищено %d, изменено %d — ждали 1/0", res.Protected, res.Changed)
 	}
-	if res.Changed != 1 {
-		t.Fatalf("изменится ячеек: got %d, want 1 (только август)", res.Changed)
+	aug := july
+	aug.Months = []int{8}
+	res, err = ApplyRetailBulk(aug, bulkCtx([]RetailRow{row}, ser, nil))
+	if err != nil {
+		t.Fatalf("август: операция вернула ошибку: %v", err)
 	}
-	if res.Diff[0].Month != 8 {
-		t.Errorf("изменилась не та ячейка: месяц %d, ожидался 8", res.Diff[0].Month)
-	}
-	if math.Abs(res.Diff[0].After-600) > 1e-9 {
-		t.Errorf("новое значение августа: got %.2f, want 600", res.Diff[0].After)
+	if res.Changed != 1 || res.Diff[0].Month != 8 || math.Abs(res.Diff[0].After-600) > 1e-9 {
+		t.Errorf("август: %+v", res.Diff)
 	}
 
 	// Явный сброс защиты — ТЗ §5: «сброс — явное действие».
-	req.ResetManual = true
-	res, err = ApplyRetailBulk(req, bulkCtx([]RetailRow{row}, ser, nil))
+	july.ResetManual = true
+	res, err = ApplyRetailBulk(july, bulkCtx([]RetailRow{row}, ser, nil))
 	if err != nil {
 		t.Fatalf("операция со сбросом вернула ошибку: %v", err)
 	}
-	if res.Protected != 0 {
-		t.Errorf("после ResetManual защищённых быть не должно, got %d", res.Protected)
-	}
-	if res.Changed != 2 {
-		t.Errorf("после ResetManual изменится ячеек: got %d, want 2", res.Changed)
+	if res.Protected != 0 || res.Changed != 1 || math.Abs(res.Diff[0].After-500) > 1e-9 {
+		t.Errorf("после ResetManual: защищено %d, изменено %d", res.Protected, res.Changed)
 	}
 }
 
@@ -417,7 +415,7 @@ func TestBulk_ScopeSelection(t *testing.T) {
 	rows := []RetailRow{{CodeCFO: 100, LFLEffective: LFLYes}, {CodeCFO: 200, LFLEffective: LFLYes}}
 
 	base := RetailBulkRequest{Op: BulkCopyScenario, Source: CopyFromStrategy,
-		SourceYear: 2026, Months: []int{7}, Preview: true}
+		Months: []int{7}, Preview: true}
 
 	all := base
 	all.Scope = BulkScopeAll
@@ -442,30 +440,52 @@ func TestBulk_ScopeSelection(t *testing.T) {
 	}
 }
 
-// TestBulk_CopyScenarioCoefficient — коэффициент операции (ТЗ §5): × k и + x %.
+// TestBulk_CopyScenarioCoefficient — коэффициент × k (ТЗ доработок п. 2.2:
+// надбавки больше нет, k < 1 допустим). Факт берётся за тот же месяц прошлого года.
 func TestBulk_CopyScenarioCoefficient(t *testing.T) {
 	ser := NewRetailSeries()
 	ser.AddFact([]RetailFactCell{{CodeCFO: 100, Year: 2025, Month: 7, Amount: 1000}})
 	rows := []RetailRow{{CodeCFO: 100, LFLEffective: LFLYes}}
 
 	req := RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: CopyFromFact,
-		SourceYear: 2025, Months: []int{7}, Coefficient: 1.1, PercentDelta: 0.1, Preview: true}
+		Months: []int{7}, Coefficient: 1.1, CoefficientSet: true, Preview: true}
 	res, err := ApplyRetailBulk(req, bulkCtx(rows, ser, nil))
 	if err != nil {
 		t.Fatalf("операция вернула ошибку: %v", err)
 	}
-	// Равные множители применяются один раз; база остаётся видна в diff.
 	if math.Abs(res.Diff[0].After-1100) > 1e-9 || res.Diff[0].Base == nil || *res.Diff[0].Base != 1000 {
 		t.Errorf("копирование с коэффициентом: got %+v, want 1100 от 1000", res.Diff[0])
 	}
-	req.Coefficient = 2
-	if _, err := ApplyRetailBulk(req, bulkCtx(rows, ser, nil)); err == nil || err.Error() != "задайте либо коэффициент, либо надбавку" {
-		t.Errorf("разные множители должны остановить операцию: %v", err)
+	req.Coefficient = 0.9
+	res, err = ApplyRetailBulk(req, bulkCtx(rows, ser, nil))
+	if err != nil || math.Abs(res.Diff[0].After-900) > 1e-9 {
+		t.Errorf("коэффициент < 1: %+v, %v", res.Diff, err)
 	}
-	req.Coefficient, req.PercentDelta = 1.1, 0
-	req.CoefficientSet, req.PercentDeltaSet = true, true
-	if _, err := ApplyRetailBulk(req, bulkCtx(rows, ser, nil)); err == nil || err.Error() != "задайте либо коэффициент, либо надбавку" {
-		t.Errorf("явно введённая нулевая надбавка конфликтует с 1.1: %v", err)
+	// Без коэффициента — значение как есть.
+	req.Coefficient, req.CoefficientSet = 0, false
+	res, err = ApplyRetailBulk(req, bulkCtx(rows, ser, nil))
+	if err != nil || res.Diff[0].After != 1000 {
+		t.Errorf("без коэффициента: %+v, %v", res.Diff, err)
+	}
+}
+
+// TestBulk_EmptySourceIsError — ТЗ доработок п. 1.2: пустой источник — явная
+// ошибка «нет данных за выбранный период», а не молча пустой diff.
+func TestBulk_EmptySourceIsError(t *testing.T) {
+	ctx := bulkCtx([]RetailRow{{CodeCFO: 100, LFLEffective: LFLYes}}, NewRetailSeries(), nil)
+	for _, src := range []string{CopyFromStrategy, CopyFromFact} {
+		_, err := ApplyRetailBulk(RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: src, Months: []int{7}}, ctx)
+		if err == nil || !strings.Contains(err.Error(), "нет данных за выбранный период (07.2026)") {
+			t.Errorf("%s: ждали «нет данных за выбранный период», got %v", src, err)
+		}
+	}
+	// Без явных месяцев копирование идёт в месяц тактики.
+	ser := NewRetailSeries()
+	ser.AddStrategy([]RetailFactCell{{CodeCFO: 100, Year: 2026, Month: 7, Amount: 5}})
+	res, err := ApplyRetailBulk(RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: CopyFromStrategy},
+		bulkCtx([]RetailRow{{CodeCFO: 100, LFLEffective: LFLYes}}, ser, nil))
+	if err != nil || len(res.Diff) != 1 || res.Diff[0].Month != 7 {
+		t.Errorf("месяц по умолчанию: %+v, %v", res.Diff, err)
 	}
 }
 
@@ -495,16 +515,16 @@ func TestBulkMultiplierRequiresOneMonthAndFiniteNumber(t *testing.T) {
 	ctx := bulkCtx([]RetailRow{{CodeCFO: 100, LFLEffective: LFLYes}}, NewRetailSeries(), nil)
 	base := RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: CopyFromStrategy,
 		Coefficient: 1.1, CoefficientSet: true, Months: []int{7, 8}}
-	if _, err := ApplyRetailBulk(base, ctx); err == nil || err.Error() != "коэффициент и надбавка применяются к одному выбранному месяцу" {
-		t.Errorf("два месяца с множителем: %v", err)
+	if _, err := ApplyRetailBulk(base, ctx); err == nil || err.Error() != "копирование сценария применяется к одному выбранному месяцу" {
+		t.Errorf("два месяца: %v", err)
 	}
 	base.Months = []int{7}
 	base.Coefficient = math.Inf(1)
-	if _, err := ApplyRetailBulk(base, ctx); err == nil || err.Error() != "коэффициент и надбавка должны быть конечными числами" {
+	if _, err := ApplyRetailBulk(base, ctx); err == nil || err.Error() != "коэффициент должен быть конечным числом" {
 		t.Errorf("бесконечный коэффициент: %v", err)
 	}
 	base.Coefficient = math.NaN()
-	if _, err := ApplyRetailBulk(base, ctx); err == nil || err.Error() != "коэффициент и надбавка должны быть конечными числами" {
+	if _, err := ApplyRetailBulk(base, ctx); err == nil || err.Error() != "коэффициент должен быть конечным числом" {
 		t.Errorf("NaN коэффициент: %v", err)
 	}
 }

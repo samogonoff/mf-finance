@@ -110,25 +110,6 @@ func (h *MpConditionsHandler) ConditionsCopy(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"copied": n})
 }
 
-// ConditionsSeedFact — POST /api/plans/mp/cards/{cardId}/conditions/seed-fact.
-// Первичное заполнение долей статей из факта последних закрытых месяцев:
-// только для площадок без долей, с обоснованием «из факта» (mp_conditions_seed.go).
-func (h *MpConditionsHandler) ConditionsSeedFact(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(w, r, "cardId")
-	if !ok {
-		return
-	}
-	res, err := h.svc.SeedSharesFromFact(r.Context(), id, h.principal(r))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if h.rec != nil {
-		h.rec(r, "mp_conditions_seed_fact", "form_card", id)
-	}
-	writeJSON(w, http.StatusOK, res)
-}
-
 // Recalc — POST /api/plans/mp/cards/{cardId}/recalc?preview=1.
 // Пересчёт расходной части от продаж и условий. preview=1 — предпросмотр без
 // сохранения (обязателен при изменении условий, ТЗ §7.2).

@@ -77,7 +77,17 @@ export interface MpConditions {
   markup_pct: number;
   markup_total_pct: number;
   vat_rate?: number | null;
+  /** Ручные доли (реестр). */
   shares?: Record<string, number>;
+  /** Доли по умолчанию из стратегии на месяц тактики (ТЗ доработок п. 2.1) — в реестр не пишутся. */
+  default_shares?: Record<string, number>;
+  /** Подпись источника умолчаний: «стратегия «НовСтрат» 11.2026». */
+  default_source?: string;
+}
+
+/** Эффективные доли: ручная поверх стратегической (зеркало MpConditions.EffectiveShares). */
+export function effectiveShares(cond: MpConditions | null | undefined): Record<string, number> {
+  return { ...(cond?.default_shares ?? {}), ...(cond?.shares ?? {}) };
 }
 
 // computePlatform — каскад legacy («суммы → доли»).
@@ -171,7 +181,7 @@ export function computePlatformInverse(
       ? 1 + cond.vat_rate
       : vatBasis.ratio;
   const spp = typeof input[B.spp] === "number" ? n(input[B.spp]) : n(cond.spp_pct);
-  const shares = cond.shares ?? {};
+  const shares = effectiveShares(cond);
 
   const managerGross = n(input[B.salesManagerGross]);
   const managerNet = div(managerGross, ratio);

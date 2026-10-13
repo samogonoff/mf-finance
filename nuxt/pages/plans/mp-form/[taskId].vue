@@ -29,10 +29,15 @@
         <!-- Отметка снимка факта (правка ТЗ МП §12): форма читает снимок, а не
              OLAP вживую, и обязана показывать, когда он собран. «Не собран» —
              отдельное состояние: показать нули вместо него значит соврать. -->
-        <p v-if="form" class="snap-line" :class="{ warn: !form.fact_snapshot?.collected || !!form.fact_snapshot?.error }">
+        <!-- ТЗ доработок п. 1.1: дата актуальности, источник и число строк;
+             пустой источник — явное сообщение, а не пустая сетка. -->
+        <p v-if="form" class="snap-line" :class="{ warn: !form.fact_snapshot?.collected || !!form.fact_snapshot?.error || form.fact_snapshot?.rows_total === 0 }">
           <Icon name="lucide:database" />
           <template v-if="form.fact_snapshot?.collected">
             данные факта актуальны на {{ snapAsOf }}
+            <span v-if="form.fact_snapshot?.source_note"> · источник: {{ form.fact_snapshot.source_note }}</span>
+            · строк: {{ form.fact_snapshot.rows_total ?? 0 }}
+            <span v-if="form.fact_snapshot?.rows_total === 0 && !form.fact_snapshot?.error" class="snap-err">· источник пуст за период — колонки факта пусты (не нули)</span>
             <span v-if="form.fact_snapshot?.error" class="snap-err">· ошибка сбора: {{ form.fact_snapshot.error }}</span>
           </template>
           <template v-else>
@@ -282,7 +287,7 @@
                     <!-- Доля статьи под каждой суммой — главное замечание заказчика
                          (07.09.2026): раньше доля была одна, итоговая по площадке.
                          В inverse она ЗАДАНА условиями, в legacy считается от суммы. -->
-                    <span v-if="line.cost_line" class="share">доля {{ fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}</span>
+                    <span v-if="line.cost_line" class="share">доля {{ fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}<template v-if="isInverse"><span v-if="shareOrigin(line, p.code_cfo) === 'default'" class="share-origin default" :title="condOf(p.code_cfo)?.default_source || 'стратегия'"> · стратегия</span><span v-else-if="shareOrigin(line, p.code_cfo) === 'manual'" class="share-origin manual" title="переопределено в условиях площадки"> · вручную</span></template></span>
                     <span v-if="isInverse && line.cost_line && displayInput(line, p.code_cfo) == null" class="calc-hint">
                       по доле: {{ fmtMoney(cellValue(line, p.code_cfo)) }}
                     </span>
@@ -292,7 +297,7 @@
 					<span class="calc-val" :class="{ neg: cellValue(line, p.code_cfo) < 0 }">{{ missingShare(line, p.code_cfo) ? '—' : fmt(line, cellValue(line, p.code_cfo)) }}</span>
                     <!-- Доля статьи: в inverse она ЗАДАНА условиями площадки, поэтому
                          показываем её из реестра, а не считаем обратно от суммы. -->
-					<span v-if="line.cost_line" class="share">доля {{ missingShare(line, p.code_cfo) ? 'не задана' : fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}</span>
+					<span v-if="line.cost_line" class="share">доля {{ missingShare(line, p.code_cfo) ? 'не задана' : fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}<template v-if="isInverse && !missingShare(line, p.code_cfo)"><span v-if="shareOrigin(line, p.code_cfo) === 'default'" class="share-origin default" :title="condOf(p.code_cfo)?.default_source || 'стратегия'"> · стратегия</span><span v-else-if="shareOrigin(line, p.code_cfo) === 'manual'" class="share-origin manual" title="переопределено в условиях площадки"> · вручную</span></template></span>
 					<span v-if="line.block_type === B.salesManagerGross" class="fbs-hint">ФБС, справочно: источник ФБС не подключён</span>
                   </template>
                 </td>
@@ -390,6 +395,7 @@ import {
 import {
   computePlatform,
   computePlatformInverse,
+  effectiveShares,
   vatBasisFromRate,
   computeFormTotals,
   vatByCountry,
@@ -433,7 +439,9 @@ const fileInput = ref<HTMLInputElement | null>(null);
 // ── Режим расчёта, карточка процесса, валидации ──
 const isInverse = computed(() => form.value?.calc_mode === "inverse");
 const cardId = computed(() => form.value?.card_id || Number(route.query.cardId) || 0);
-const tacticMonth = computed(() => form.value ? new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(new Date(form.value.year, form.value.month - 1, 1)) : "");
+// «Тактика: ноябрь 2026» (ТЗ доработок п. 2.4). Месяц отдельно от года: формат
+// «month+year» в ru-RU даёт «ноябрь 2026 г.» с лишним «г.».
+const tacticMonth = computed(() => form.value ? `${new Intl.DateTimeFormat("ru-RU", { month: "long" }).format(new Date(form.value.year, form.value.month - 1, 1))} ${form.value.year}` : "");
 const modeLabel = computed(() => (isInverse.value ? "расчёт от условий" : "расчёт от сумм"));
 const modeHint = computed(() =>
   isInverse.value
@@ -635,8 +643,15 @@ const backLink = computed(() => (form.value ? `/plans/process/${form.value.task.
 // Условия площадки (приходят только в inverse-режиме).
 const condOf = (cfo: number): MpConditions | null => form.value?.conditions?.[cfo] ?? null;
 // Доля статьи из условий — она ЗАДАНА, а не выведена из суммы.
-const condShare = (line: MpLine, cfo: number): number => condOf(cfo)?.shares?.[line.block_type] ?? 0;
-const missingShare = (line: MpLine, cfo: number): boolean => isInverse.value && line.cost_line && !(line.block_type in (condOf(cfo)?.shares || {}));
+const condShare = (line: MpLine, cfo: number): number => effectiveShares(condOf(cfo))[line.block_type] ?? 0;
+const missingShare = (line: MpLine, cfo: number): boolean => isInverse.value && line.cost_line && !(line.block_type in effectiveShares(condOf(cfo)));
+// Откуда доля (ТЗ доработок п. 2.1: различать умолчание и ручное значение).
+const shareOrigin = (line: MpLine, cfo: number): "manual" | "default" | "" => {
+  const c = condOf(cfo);
+  if (line.block_type in (c?.shares || {})) return "manual";
+  if (line.block_type in (c?.default_shares || {})) return "default";
+  return "";
+};
 
 // Живой пересчёт каскада по каждой площадке из введённых значений.
 // Направление берём из calc_mode карточки: в inverse расходная часть считается из
@@ -1030,6 +1045,8 @@ onMounted(load);
 .prev { color: var(--text-muted); }
 .strat { color: var(--accent); }
 .target { color: var(--pos-strong); }
+.share-origin.default { color: var(--accent); }
+.share-origin.manual { color: var(--warn); }
 .share { color: var(--text-muted); }
 .pct-sign { font-size: var(--fs-2xs); color: var(--text-muted); }
 .cur-switch .select-sm { height: 30px; }

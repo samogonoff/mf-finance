@@ -20,8 +20,8 @@ type MpConditionsService struct {
 	fact    MpFactSource
 	scope   ScopeStore
 	audit   AuditSink
-	// articleFact — факт по статьям для первичного заполнения долей (mp_conditions_seed.go).
-	articleFact MpArticleFactSource
+	// shareDefaults — стратегические доли по умолчанию (mp_share_defaults.go).
+	shareDefaults *MpShareDefaults
 }
 
 // NewMpConditionsService — конструктор.
@@ -34,9 +34,9 @@ func NewMpConditionsService(store MpConditionsStore, metrics MetricStore, cards 
 // WithAudit подключает журнал модуля.
 func (s *MpConditionsService) WithAudit(a AuditSink) *MpConditionsService { s.audit = a; return s }
 
-// WithArticleFact подключает факт по статьям («Заполнить доли из факта»).
-func (s *MpConditionsService) WithArticleFact(src MpArticleFactSource) *MpConditionsService {
-	s.articleFact = src
+// WithShareDefaults подключает стратегические доли по умолчанию (ТЗ доработок п. 2.1).
+func (s *MpConditionsService) WithShareDefaults(d *MpShareDefaults) *MpConditionsService {
+	s.shareDefaults = d
 	return s
 }
 
@@ -127,6 +127,30 @@ func (s *MpConditionsService) Conditions(ctx context.Context, cardID int64, acto
 				view.Hints[p.CodeCFO] = h
 			}
 		}
+	}
+
+	// Доли по умолчанию из стратегии (ТЗ доработок п. 2.1). Подмешиваются ПОСЛЕ
+	// diff: diff сравнивает введённое руками, а не стратегию. Площадка без строки
+	// реестра появляется в списке сразу — заполнять её можно с первого открытия.
+	if s.shareDefaults != nil {
+		platforms := make([]MarketplaceRow, 0, len(visible))
+		for _, mp := range MarketplaceSeed() {
+			if visible[mp.CodeCFO] {
+				platforms = append(platforms, mp)
+			}
+		}
+		byCfo := map[int]MpConditions{}
+		for _, c := range filtered {
+			byCfo[c.CodeCFO] = c
+		}
+		byCfo = s.shareDefaults.Attach(ctx, byCfo, platforms, card.Year, card.Month)
+		list := make([]MpConditions, 0, len(byCfo))
+		for _, mp := range platforms {
+			if c, ok := byCfo[mp.CodeCFO]; ok {
+				list = append(list, c)
+			}
+		}
+		view.Conditions = list
 	}
 	return view, nil
 }
@@ -306,6 +330,7 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 	for _, c := range conds {
 		condByCfo[c.CodeCFO] = c
 	}
+	condByCfo = s.shareDefaults.Attach(ctx, condByCfo, platformsInfo, card.Year, card.Month)
 	// Базис НДС — тот же, что в форме: отношение плановых сумм площадки, ставка
 	// справочника фолбэком. Иначе предпросмотр пересчёта показывал бы суммы,
 	// которых форма не даёт.

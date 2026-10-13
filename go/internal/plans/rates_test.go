@@ -94,3 +94,17 @@ func TestRateBook_Snapshot(t *testing.T) {
 		t.Fatalf("курс RUB в снимке: %.4f", rates["RUB"])
 	}
 }
+
+// Рубль в справочнике курсов — «RUR.»/«RUR2»; без приведения курс RUB→BYN
+// молча становился 1.0 (13.10.2026).
+func TestFxCurrencyCodeRubAliases(t *testing.T) {
+	for raw, want := range map[string]string{"RUR.": "RUB", "RUR2": "RUB", "rur": "RUB", "RUB": "RUB", "KZT": "KZT", "USD-UZS": "USD-UZS"} {
+		if got := fxCurrencyCode(raw); got != want {
+			t.Errorf("%q → %q, ждали %q", raw, got, want)
+		}
+	}
+	rows := []FxRow{{Currency: fxCurrencyCode("RUR."), RateBYN: 0.036}}
+	if v := pickFx(rows, "RUB", 2026, 11, FxScenarioFact); v != 0.036 {
+		t.Fatalf("курс RUB %v, ждали 0.036", v)
+	}
+}

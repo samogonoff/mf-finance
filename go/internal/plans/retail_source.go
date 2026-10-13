@@ -158,7 +158,7 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 			Country: ctry.String, CodeFOX: fox.String, Ploschad: plo.Float64, StoreType: typ.String,
 			DateOpen: retailDateOrEmpty(open.String), DateClose: retailDateOrEmpty(close_.String),
 			Stage: stage.String, CompanyMF: comp.String, Channel: ch.String, CFOold: old.String,
-			Category: cat.String, LFLStatus: retailLFLStatus(lfl.String), RegManager: rm.String,
+			Category: cat.String, LFLStatus: retailLFLStatus(lfl.String), LFLRaw: strings.TrimSpace(lfl.String), RegManager: rm.String,
 			Manager: mgr.String, PLAnalytic: pla.String,
 		}
 		out = append(out, st)

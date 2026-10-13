@@ -15,6 +15,15 @@ type MpCardProvider struct {
 	rates  *RateBook
 	fact   MpFactSource
 	common MpConditionsStore
+	// shares — стратегические доли по умолчанию: фиксируются в версии вместе с
+	// условиями, иначе утверждённые суммы поплывут со следующей заливкой стратегии.
+	shares *MpShareDefaults
+}
+
+// WithShareDefaults подключает доли по умолчанию к снимку версии.
+func (p *MpCardProvider) WithShareDefaults(d *MpShareDefaults) *MpCardProvider {
+	p.shares = d
+	return p
 }
 
 // WithCommonCosts подключает реестр общих затрат: они публикуются под ЦФО 250 и
@@ -80,6 +89,9 @@ func (p *MpCardProvider) FormSnapshot(ctx context.Context, c Card) (map[string]a
 				if segments[condition.Segment] {
 					conditions[condition.CodeCFO] = condition
 				}
+			}
+			if c.CalcMode == CalcInverse {
+				conditions = p.shares.Attach(ctx, conditions, mpPlatformsOf(c), c.Year, c.Month)
 			}
 			snap["conditions"] = conditions
 		} else {

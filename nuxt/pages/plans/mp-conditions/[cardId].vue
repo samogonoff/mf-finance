@@ -26,12 +26,6 @@
         <button class="btn btn-sm btn-ghost" :disabled="!editable || busy" title="Заполнить условия значениями предыдущего периода" @click="doCopy">
           <Icon name="lucide:copy" /> Копировать из прошлого месяца
         </button>
-        <!-- Первичное наполнение: когда копировать из прошлого месяца нечего.
-             Доли — Σ статьи ÷ Σ продаж по цене площадки без НДС за последние
-             закрытые месяцы факта; введённые доли не перезаписываются. -->
-        <button class="btn btn-sm btn-ghost" :disabled="!editable || busy" title="Доли статей по факту последних закрытых месяцев — только для площадок, где доли ещё не заданы" @click="doSeedFact">
-          <Icon name="lucide:database" /> Заполнить доли из факта
-        </button>
         <button class="btn btn-sm btn-ghost" :disabled="busy" @click="doPreview">
           <Icon name="lucide:calculator" /> Предпросмотр пересчёта
         </button>
@@ -43,22 +37,6 @@
 
     <p v-if="error" class="banner banner-neg">{{ error }}</p>
     <p v-if="note" class="banner banner-pos">{{ note }}</p>
-    <section v-if="seedResult" class="card seed-card">
-      <div class="card-header">
-        <span class="card-title">Заполнение из факта · {{ seedWindow }}</span>
-        <span class="hdr-hint">источник {{ seedResult.source }}</span>
-        <button class="btn btn-sm btn-ghost" @click="seedResult = null"><Icon name="lucide:x" /></button>
-      </div>
-      <ul class="seed-list">
-        <li v-for="p in seedResult.platforms" :key="p.code_cfo">
-          <b>{{ p.name_cfo }}</b>:
-          <span v-if="p.status === 'filled'" class="pos">заполнено статей — {{ Object.keys(p.shares || {}).length }}</span>
-          <span v-else class="muted">{{ p.reason }}</span>
-          <span v-for="(why, b) in p.dropped || {}" :key="b" class="muted"> · {{ COST_LABELS[b]?.[0] || b }}: {{ why }}</span>
-        </li>
-      </ul>
-      <p class="hdr-hint">%СПП и наценки из факта не подставляются — введите их и сохраните строку площадки.</p>
-    </section>
     <p v-if="view && !editable" class="banner banner-warn">
       Только просмотр: период закрыт или вы не исполнитель. Изменение утверждённых условий — через переоткрытие периода с причиной.
     </p>
@@ -160,9 +138,18 @@
               <td v-for="b in costBlocks" :key="b.block" class="col-num">
                 <NumberField
 				  :model-value="row.shares_view[b.block] ?? null"
-                  class="cell-input pct" :disabled="!editable" placeholder="%"
+                  class="cell-input pct" :disabled="!editable"
+                  :placeholder="defaultView(row, b.block) ?? '%'"
 				  @update:model-value="row.shares_view[b.block] = $event"
                 />
+                <!-- Пустое поле = доля по умолчанию из стратегии (ТЗ доработок п. 2.1);
+                     введённое значение — переопределение, только оно пишется в реестр. -->
+                <span v-if="row.shares_view[b.block] == null && defaultView(row, b.block) != null" class="cell-hint default" :title="row.default_source">
+                  стратегия
+                </span>
+                <span v-else-if="row.shares_view[b.block] != null && defaultView(row, b.block) != null" class="cell-hint manual" :title="row.default_source">
+                  вручную · страт. {{ defaultView(row, b.block) }} %
+                </span>
                 <span v-if="hint(row, 'share:' + b.block) !== null" class="cell-hint">
                   факт: {{ pct(hint(row, "share:" + b.block)!) }}
                 </span>
@@ -237,7 +224,7 @@
 import { apiError } from "~/utils/apiError";
 import NumberField from "~/components/NumberField.vue";
 import SkeletonTable from "~/components/SkeletonTable.vue";
-import { useMpConditions, type MpSeedResult, type MpConditionsRow, type MpConditionsView, type MpRecalcResult, type PlanCard } from "~/composables/useMpConditions";
+import { useMpConditions, type MpConditionsRow, type MpConditionsView, type MpRecalcResult, type PlanCard } from "~/composables/useMpConditions";
 import { COST_BLOCKS } from "~/composables/useMpCascade";
 import { money as fmtMoney } from "~/utils/format";
 
@@ -326,8 +313,16 @@ const signature = (r: EditableRow): string =>
   JSON.stringify([r.valid_from, r.valid_to, r.spp_pct_view, r.markup_pct_view, r.markup_total_pct_view, r.shares_view, r.change_reason]);
 
 const isDirty = (r: EditableRow): boolean => signature(r) !== r._origin;
+// Сумма считается по ЭФФЕКТИВНЫМ долям — тем, от которых считается форма:
+// пустое поле берёт стратегию.
 const sharesSum = (r: EditableRow): number =>
-  COST_BLOCKS.reduce((acc, b) => acc + toNum(r.shares_view[b]) / 100, 0);
+  COST_BLOCKS.reduce((acc, b) => acc + (r.shares_view[b] != null ? toNum(r.shares_view[b]) / 100 : r.default_shares?.[b] ?? 0), 0);
+
+// Доля по умолчанию в процентах для подсказки в пустом поле.
+const defaultView = (r: EditableRow, b: string): string | null => {
+  const v = r.default_shares?.[b];
+  return v == null ? null : (v * 100).toFixed(2);
+};
 
 // Подсказка «в прошлом месяце фактическая доля была такой» (ТЗ §3.1): показываем,
 // но в реестр не переносим — иначе производные значения станут условиями.
@@ -402,29 +397,6 @@ const doCopy = async () => {
   }
 };
 
-const seedResult = ref<MpSeedResult | null>(null);
-const seedWindow = computed(() =>
-  (seedResult.value?.months || []).map((m) => `${String(m.month).padStart(2, "0")}.${m.year}`).join(", ")
-);
-
-const doSeedFact = async () => {
-  busy.value = true;
-  error.value = "";
-  note.value = "";
-  try {
-    const res = await api.seedSharesFromFact(cardId);
-    seedResult.value = res;
-    note.value = res.filled
-      ? `Доли заполнены из факта по ${res.filled} площадк(ам). Проверьте значения и введите %СПП и наценки.`
-      : "Ничего не заполнено — подробности ниже.";
-    await load();
-  } catch (e: unknown) {
-    error.value = apiError(e, "Не удалось заполнить доли из факта");
-  } finally {
-    busy.value = false;
-  }
-};
-
 const doPreview = () => runRecalc(true);
 const doRecalc = () => runRecalc(false);
 
@@ -451,29 +423,6 @@ onMounted(load);
   display: flex;
   flex-direction: column;
   gap: var(--sp-5);
-}
-.seed-list {
-  margin: 0;
-  padding: var(--sp-3) var(--sp-4);
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  font-size: var(--fs-sm);
-}
-.seed-card .card-header {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-}
-.seed-card .hdr-hint {
-  padding: 0 var(--sp-4) var(--sp-3);
-}
-.pos {
-  color: var(--pos);
-}
-.muted {
-  color: var(--text-muted);
 }
 .lock-note {
   margin-left: var(--sp-3);
@@ -516,6 +465,9 @@ onMounted(load);
   display: block;
   font-size: var(--fs-xs);
   color: var(--text-muted);
+}
+.cell-hint.default {
+  color: var(--accent);
 }
 .vat-cell {
   color: var(--text-secondary);

@@ -88,6 +88,32 @@ func NewRetailScope(rules []RetailScopeRule) *RetailScope {
 	return sc
 }
 
+// retailFormStores — магазины, из которых строятся строки формы: без
+// строк-итогов источника и вне правила состава розницы (ЦФО 40, 722).
+func retailFormStores(stores []RetailStore, scope *RetailScope) []RetailStore {
+	out := make([]RetailStore, 0, len(stores))
+	for _, st := range stores {
+		if isRetailTotalRow(st) || !scope.Includes(st.CodeCFO, st.GroupCFO1) {
+			continue
+		}
+		out = append(out, st)
+	}
+	if len(out) > 0 || len(stores) == 0 {
+		return out
+	}
+	// Правило не совпало ни с одним магазином — значит, разошлись названия
+	// групп в справочнике и источнике. Пустая форма хуже: оставляем всё, кроме
+	// явных исключений, и пишем в лог — это надо чинить в справочнике.
+	log.Printf("plans retail: правило состава розницы не совпало ни с одним из %d магазинов — применены только исключения ЦФО", len(stores))
+	for _, st := range stores {
+		if isRetailTotalRow(st) || (scope != nil && scope.excludeCFO[st.CodeCFO]) {
+			continue
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
 // retailGroupKey — сравнение групп ЦФО без завязки на префикс-номер: в
 // справочнике группа называется «Магазины», а в таблице плана «3.Магазины»
 // (ТЗ §6 п.1 прямо предупреждает, что это одно и то же разными строками).

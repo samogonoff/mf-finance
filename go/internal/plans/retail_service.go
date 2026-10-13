@@ -39,6 +39,10 @@ type RetailService struct {
 	mu     sync.RWMutex
 	cache  map[string]cachedSeries
 	cached time.Duration
+	// scopeDir — справочник состава розницы (dir_retail_scope); nil → правило ТЗ.
+	scopeDir dirRowsSource
+	// watch — журнал прогонов источников (ТЗ доработок п. 1.1). nil → не ведётся.
+	watch *SourceWatch
 }
 
 type cachedSeries struct {
@@ -59,6 +63,13 @@ func NewRetailService(repo RetailRepo, cards *CardService, source RetailDataSour
 
 // WithRates подключает курсы (слой отображения BYN/USD, ТЗ §4).
 func (s *RetailService) WithRates(r *RateBook) *RetailService { s.rates = r; return s }
+
+// WithScopeSource подключает справочник состава розницы: строки формы строятся
+// по тому же правилу ALL_view, что и справочник магазинов (без ЦФО 40 и 722).
+func (s *RetailService) WithScopeSource(dir dirRowsSource) *RetailService { s.scopeDir = dir; return s }
+
+// WithWatch подключает журнал прогонов источников и алерты по ним.
+func (s *RetailService) WithWatch(w *SourceWatch) *RetailService { s.watch = w; return s }
 
 // WithCalendar подключает календарь. Без него «ожидание года» (§4.4) считает,
 // что закрытых месяцев нет, — то есть год целиком по тактике.
@@ -184,45 +195,63 @@ func (s *RetailService) series(ctx context.Context, country string, year, month 
 	var stores []RetailStore
 
 	if s.source != nil {
-		if st, err := s.source.Stores(ctx, country); err != nil {
-			log.Printf("plans retail: справочник магазинов %s недоступен: %v", country, err)
-		} else {
-			stores = st
+		// Каждая загрузка фиксируется: для шапки формы (дата, строк, ошибка) и
+		// для журнала прогонов — падение строк против прошлого успешного
+		// прогона сверх порога поднимает алерт (ТЗ доработок п. 1.1).
+		scope := fmt.Sprintf("%s:%d", country, year)
+		note := func(code, label string, rows int, err error) {
+			info := RetailSourceInfo{Code: code, Label: label, Rows: rows, LoadedAt: time.Now()}
+			if err != nil {
+				info.Error = err.Error()
+				log.Printf("plans retail: %s %s недоступен: %v", label, country, err)
+			}
+			ser.Sources = append(ser.Sources, info)
+			s.watch.Record(ctx, "retail:"+code, scope, rows, err)
 		}
+		st, err := s.source.Stores(ctx, country)
+		if err == nil {
+			// ТЗ доработок п. 3.1: правило состава розницы (без интернет-магазина
+			// 40 и техзаписи 722) раньше применялось только в синхронизации
+			// справочника, а строки формы строились из сырого источника — и ЦФО 40
+			// всё равно попадал в форму. Фильтр — здесь, на входе в форму.
+			stores = retailFormStores(st, NewRetailScope(scopeRulesFromDir(ctx, s.scopeDir)))
+		}
+		note("stores", "справочник магазинов", len(st), err)
 		// Факт нужен за текущий и предыдущий год: §4 требует Факт[M, Y−1] и
 		// «откл. ожидания к факту прошлого года».
-		if cells, err := s.source.Fact(ctx, country, []int{year - 1, year}); err != nil {
-			log.Printf("plans retail: факт продаж %s недоступен: %v", country, err)
-		} else {
+		cells, err := s.source.Fact(ctx, country, []int{year - 1, year})
+		if err == nil {
 			ser.AddFact(cells)
 		}
-		if cells, err := s.source.ComparisonFact(ctx, country, []int{year - 1, year}); err != nil {
-			log.Printf("plans retail: факт по начислениям Budgeting %s недоступен: %v", country, err)
+		note("fact", "факт продаж", len(cells), err)
+		cells, err = s.source.ComparisonFact(ctx, country, []int{year - 1, year})
+		if err != nil {
 			ser.ComparisonLoaded = true
 		} else {
 			ser.AddComparisonFact(cells)
 		}
-		if cells, err := s.source.Strategy(ctx, country, year); err != nil {
-			log.Printf("plans retail: стратегия %s недоступна: %v", country, err)
-		} else {
+		note("comparison_fact", "факт по начислениям Budgeting", len(cells), err)
+		cells, err = s.source.Strategy(ctx, country, year)
+		if err == nil {
 			ser.AddStrategy(cells)
 		}
-		if cells, err := s.source.ApprovedTactic(ctx, country, year); err != nil {
-			log.Printf("plans retail: утверждённая тактика Budgeting %s недоступна: %v", country, err)
-		} else {
+		note("strategy", "стратегия", len(cells), err)
+		cells, err = s.source.ApprovedTactic(ctx, country, year)
+		if err == nil {
 			ser.AddApproved(cells)
 		}
-		if cells, err := s.source.NewStrategy(ctx, country, year); err != nil {
-			log.Printf("plans retail: новая стратегия Budgeting %s недоступна: %v", country, err)
+		note("approved", "утверждённая тактика Budgeting", len(cells), err)
+		cells, err = s.source.NewStrategy(ctx, country, year)
+		if err != nil {
 			ser.NewStrategyUnavailable = err.Error()
 		} else {
 			ser.AddNewStrategy(cells)
 		}
-		if cells, kl, err := s.source.PlanHistory(ctx, country, year); err != nil {
+		note("new_strategy", "новая стратегия Budgeting", len(cells), err)
+		if _, kl, err := s.source.PlanHistory(ctx, country, year); err != nil {
 			log.Printf("plans retail: история плана %s недоступна: %v", country, err)
 		} else {
-			_ = cells // Checks нужен только для соответствия KLIENT_ID.
-			klient = kl
+			klient = kl // Checks нужен только для соответствия KLIENT_ID.
 		}
 	}
 	s.mu.Lock()
@@ -326,6 +355,7 @@ func (s *RetailService) Form(ctx context.Context, p Principal, cardID int64, cur
 		Year: a.card.Year, Month: a.card.Month, Months: planMonths,
 		Editable: editable, Status: CardStatusLabel(a.card.Status, a.card.StepCode),
 		StepCode: a.card.StepCode, Params: params, Warnings: blocking, FxRate: 1,
+		Sources: ser.Sources,
 	}
 	// Слой отображения: пересчёт денежных величин, проценты те же (ТЗ §4).
 	// Курс не один: у тактики он свой — курс предыдущего месяца (см. retailFx).

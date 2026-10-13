@@ -71,6 +71,19 @@
       </div>
     </header>
 
+    <!-- Источники данных (ТЗ доработок п. 1.1): дата актуальности, источник,
+         число строк. Пустой или упавший источник — явное сообщение. -->
+    <p v-if="form?.sources?.length" class="src-line">
+      <Icon name="lucide:database" />
+      данные загружены {{ sourcesAsOf }} ·
+      <span v-for="(s, i) in form.sources" :key="s.code" :class="{ 'src-bad': s.error || s.rows === 0 }" :title="s.error || ''">
+        {{ s.label }}: {{ s.error ? "ошибка" : s.rows.toLocaleString("ru-RU") }}<template v-if="i < form.sources.length - 1">; </template>
+      </span>
+    </p>
+    <p v-if="badSources.length" class="banner banner-warn">
+      Нет данных из источников: {{ badSources.map((s) => s.label + (s.error ? ` (${s.error})` : " — 0 строк")).join("; ") }}.
+      Соответствующие колонки пусты, это не нули.
+    </p>
     <p v-if="error" class="banner banner-neg">{{ error }}</p>
     <p v-if="note" class="banner banner-pos">{{ note }}</p>
     <p v-if="draftNote" class="banner banner-info">
@@ -183,10 +196,18 @@
               <option value="selected" :disabled="!selected.size">выделенные ({{ selected.size }})</option>
             </select>
           </label>
-          <label class="form-field">
+          <!-- Копирование сценария — к ОДНОМУ месяцу, по умолчанию месяц тактики
+               (ТЗ доработок п. 2.3); предпросмотр показывает только его. -->
+          <label v-if="bulkOp === 'copy_scenario'" class="form-field">
+            <span class="form-label">Месяц применения</span>
+            <select v-model.number="bulkApplyMonth" class="select" @change="invalidatePreview">
+              <option v-for="m in form.months" :key="m" :value="m">{{ monthLabel(m) }} {{ form.year }}{{ m === form.month ? " · месяц тактики" : "" }}</option>
+            </select>
+          </label>
+          <label v-else class="form-field">
             <span class="form-label">Месяц операции</span>
             <select v-model="bulkMonthMode" class="select" @change="invalidatePreview">
-              <option value="all" :disabled="bulkOp === 'copy_scenario' && (bulkCoef != null || bulkPctDelta != null)">все плановые</option>
+              <option value="all">все плановые</option>
               <option value="one">только {{ monthLabel(selMonth) }}</option>
             </select>
           </label>
@@ -198,24 +219,16 @@
                 <option value="strategy">Стратегия</option>
                 <option value="tactic">Утверждённая тактика</option>
                 <option value="new_strategy">Новая стратегия</option>
-                <option value="fact">Факт</option>
+                <option value="fact">Факт прошлого года</option>
               </select>
             </label>
-            <label class="form-field">
-              <span class="form-label">Год источника</span>
-              <input v-model.number="bulkSourceYear" class="input" type="number" @input="invalidatePreview" />
-            </label>
+            <!-- Надбавка убрана (ТЗ доработок п. 2.2): рабочее поле — коэффициент,
+                 допускается значение меньше 1. -->
             <label class="form-field">
               <span class="form-label">Коэффициент × k</span>
-              <input v-model.number="bulkCoef" class="input" type="number" step="0.01" placeholder="1" @input="invalidatePreview" />
-            </label>
-            <label class="form-field">
-              <span class="form-label">Надбавка, %</span>
-              <input v-model.number="bulkPctDelta" class="input" type="number" step="0.1" placeholder="0" @input="invalidatePreview" />
+              <input v-model.number="bulkCoef" class="input" type="number" step="0.01" min="0" placeholder="1" @input="invalidatePreview" />
             </label>
           </template>
-
-          <p v-if="bulkOp === 'copy_scenario' && bulkConflict" class="bulk-conflict">задайте либо коэффициент, либо надбавку</p>
 
           <template v-if="bulkOp === 'distribute'">
             <label class="form-field">
@@ -275,7 +288,7 @@
             сбросить защиту ручных значений
           </label>
 
-          <button class="btn btn-primary bulk-go" :disabled="busy || !editable || bulkConflict" @click="runPreview">
+          <button class="btn btn-primary bulk-go" :disabled="busy || !editable" @click="runPreview">
             <Icon name="lucide:eye" /> Предпросмотр
           </button>
         </div>
@@ -1558,15 +1571,26 @@ const saveLfl = async () => {
   }
 };
 
+// ─────────── источники данных (ТЗ доработок п. 1.1) ───────────
+const sourcesAsOf = computed(() => {
+  const at = form.value?.sources?.map((s) => s.loaded_at).sort()[0];
+  return at ? new Date(at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+});
+// «Новая стратегия» и факт по начислениям — необязательные колонки: их пустота
+// не повод для предупреждения, а ошибка — повод.
+const badSources = computed(() =>
+  (form.value?.sources || []).filter((s) => !!s.error || (s.rows === 0 && ["stores", "fact", "strategy"].includes(s.code)))
+);
+
 // ─────────── массовые операции ───────────
 const bulkOpen = ref(false);
 const bulkOp = ref<RetailBulkRequest["op"]>("copy_scenario");
 const bulkScope = ref<RetailBulkRequest["scope"]>("filtered");
 const bulkMonthMode = ref<"all" | "one">("one");
 const bulkSource = ref<"strategy" | "tactic" | "fact" | "new_strategy">("strategy");
-const bulkSourceYear = ref(0);
+/** Месяц применения копирования сценария (ТЗ доработок п. 2.3), дефолт — месяц тактики. */
+const bulkApplyMonth = ref(0);
 const bulkCoef = ref<number | null>(null);
-const bulkPctDelta = ref<number | null>(null);
 const bulkTarget = ref<number | null>(null);
 const bulkBaseMonths = ref("");
 const bulkIndexBase = ref<"fact_prev_month" | "fact_prev_year" | "approved_prev" | "strategy">("fact_prev_month");
@@ -1577,7 +1601,6 @@ const bulkPayrollBase = ref<NonNullable<RetailBulkRequest["payroll_base"]>>("str
 const bulkRentTurnover = ref(false);
 const bulkResetManual = ref(false);
 const bulkPreview = ref<RetailBulkResult | null>(null);
-const bulkConflict = computed(() => bulkCoef.value != null && bulkPctDelta.value != null && Math.abs(bulkCoef.value - (1 + bulkPctDelta.value / 100)) > 1e-9);
 /** Подпись параметров, на которых сделан предпросмотр: применять можно только её. */
 const previewSig = ref("");
 
@@ -1587,17 +1610,14 @@ const bulkRequest = (preview: boolean): RetailBulkRequest => {
     scope: bulkScope.value,
     preview,
     reset_manual: bulkResetManual.value,
-    months: bulkOp.value === "copy_scenario" && (bulkCoef.value != null || bulkPctDelta.value != null) ? [selMonth.value] : bulkMonthMode.value === "one" ? [selMonth.value] : []
+    months: bulkOp.value === "copy_scenario" ? [bulkApplyMonth.value || form.value?.month || selMonth.value] : bulkMonthMode.value === "one" ? [selMonth.value] : []
   };
   if (bulkScope.value === "filtered") req.code_cfos = filteredRows.value.map((r) => r.code_cfo);
   if (bulkScope.value === "selected") req.code_cfos = [...selected];
   if (bulkOp.value === "copy_scenario") {
     req.source = bulkSource.value;
-    req.source_year = bulkSourceYear.value || form.value?.year || 0;
     req.coefficient = bulkCoef.value ?? 0;
-    req.percent_delta = (bulkPctDelta.value ?? 0) / 100;
     req.coefficient_set = bulkCoef.value != null;
-    req.percent_delta_set = bulkPctDelta.value != null;
   }
   if (bulkOp.value === "distribute") {
     req.target_total = bulkTarget.value ?? 0;
@@ -1669,7 +1689,7 @@ const load = async () => {
       bulkOpen.value = false;
     }
     if (!selMonth.value || !f.months.includes(selMonth.value)) selMonth.value = f.month;
-    if (!bulkSourceYear.value) bulkSourceYear.value = f.year;
+    if (!bulkApplyMonth.value || !f.months.includes(bulkApplyMonth.value)) bulkApplyMonth.value = f.month;
     paramDraft.value = (f.params || []).map((p) => ({ ...p }));
   } catch (e) {
     error.value = retailErrText(e, "Не удалось загрузить форму");
@@ -1854,8 +1874,9 @@ onBeforeUnmount(() => {
 .banner-pos { background: var(--pos-soft); color: var(--pos-strong); }
 .banner-warn { background: var(--warn-soft); color: var(--warn); }
 .banner-info { background: var(--info-soft); color: var(--info); }
+.src-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0; font-size: var(--fs-xs); color: var(--text-muted); font-family: var(--font-mono); }
+.src-bad { color: var(--warn); font-weight: 600; }
 .tactic-period { display: block; font-size: 1.3rem; color: var(--accent); }
-.bulk-conflict { color: var(--neg); font-weight: 600; }
 .status-group { cursor: pointer; background: var(--bg-surface-2); font-weight: 600; }
 .group-toggle { border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; display: inline-flex; align-items: center; gap: var(--sp-2); }
 .group-store .cmt-input { display: block; max-width: 220px; margin-top: 2px; }
