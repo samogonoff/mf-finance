@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import close_pool, get_cache_status, init_pool, load_cost_data_to_cache
+from app.fot import fot_mock_enabled, fot_worker
 from app.logship import log, setup_logging
 from app.routes import router
 
@@ -33,6 +34,7 @@ API_PREFIX = os.environ.get("COST_API_PREFIX", "/api/cost")
 setup_logging()
 
 _cache_task: asyncio.Task | None = None
+_fot_task: asyncio.Task | None = None
 
 
 async def _cache_worker() -> None:
@@ -105,12 +107,18 @@ async def _cache_worker() -> None:
 async def lifespan(_: FastAPI):
     await init_pool()
     try:
-        global _cache_task
+        global _cache_task, _fot_task
         _cache_task = asyncio.create_task(_cache_worker())
+        # ФОТ-дашборд: свой воркер витрин (TTL решает refresh_fot, тик — минута).
+        if fot_mock_enabled():
+            log(logging.INFO, "fot_worker: выключен (mock-режим)")
+        else:
+            _fot_task = asyncio.create_task(fot_worker())
         yield
     finally:
-        if _cache_task is not None:
-            _cache_task.cancel()
+        for _task in (_cache_task, _fot_task):
+            if _task is not None:
+                _task.cancel()
         await close_pool()
 
 

@@ -1103,3 +1103,79 @@ def models_catalog(payload: dict, limit: int, offset: int, all_columns: bool) ->
         "offset": offset,
         "columns": [{"key": k, "label": MODELI_COLUMN_LABELS.get(k, k)} for k in keys],
     }
+
+
+# ── ФОТ-дашборд «ФОТ и численность» (P9–P13) ──────────────────────────────────
+
+# Контрольные числа шага 1 (сверка с PBI CFO_ALL_AGG на живом MSSQL, 13.10.2026).
+# Мок отдаёт их в meta, чтобы шаг 2 сверял сборку витрин с эталоном без VPN.
+_FOT_MOCK_META = {
+    "fot_2026": 217260.0,          # тыс BYN: ФОТ «Ожидание 2026» (факт 1ПГ + тактика 2ПГ)
+    "fot_share_2026": 15.57,       # % к «Продажам без НДС», тот же срез
+    "fot_share_2025": 15.97,       # % за факт 2025
+    "headcount_2026_06_01": 7203.16,   # ставки, факт на 01.06.2026
+    "headcount_plan_approved": 7353.2, # ставки, план «утверждено» (PlanChisl)
+    "closed_period": "2026-08-31",
+}
+
+
+def fot_filter_options() -> dict:
+    """Мок каскадных фильтров ФОТ-дашборда.
+
+    Ключи ответа 1:1 с app.fot.filter_options(). Схема элемента списка
+    ({id, text} — как в остальных фильтрах раздела) предварительная,
+    финальную определит шаг 2 вместе с серверной сборкой.
+    """
+    return {
+        "directions": [
+            {"id": "retail-by", "text": "Розница РБ"},
+            {"id": "retail-ru", "text": "Розница РФ"},
+            {"id": "retail-kz", "text": "Розница КЗ"},
+            {"id": "production", "text": "Производство"},
+        ],
+        "cfo_groups": [
+            {"id": "g1", "text": "Розничная сеть"},
+            {"id": "g2", "text": "Производство и логистика"},
+        ],
+        "cfo_subgroups": [
+            {"id": "sg1", "text": "Магазины Минск"},
+            {"id": "sg2", "text": "Магазины регионы РБ"},
+        ],
+        "cfos": [
+            {"id": "101", "text": "101 — Магазин Минск, Немига"},
+            {"id": "2001", "text": "2001 — Цех пошива 1"},
+        ],
+        "legal_entities": [
+            {"id": "ЧТУП «Марк Формэль»", "text": "ЧТУП «Марк Формэль»"},
+            {"id": "ООО «Марк Формэль Рус»", "text": "ООО «Марк Формэль Рус»"},
+        ],
+        "countries": [
+            {"id": "BY", "text": "Беларусь"},
+            {"id": "RU", "text": "Россия"},
+            {"id": "KZ", "text": "Казахстан"},
+        ],
+        "scenarios": [
+            {"id": "бюджет", "text": "Бюджет"},
+            {"id": "тактика", "text": "Тактика"},
+            {"id": "НовСтрат", "text": "Новая стратегия"},
+        ],
+        "intercompany": [
+            {"id": "0", "text": "Без ВГО"},
+            {"id": "1", "text": "ВГО"},
+        ],
+        "years": [{"id": "2025", "text": "2025"}, {"id": "2026", "text": "2026"}],
+        "months": [{"id": str(m), "text": str(m)} for m in range(1, 13)],
+    }
+
+
+def fot_dashboard(tab: str, params: dict) -> dict:
+    """Мок вкладки ФОТ-дашборда — форма ответа 1:1 с app.fot.dashboard().
+
+    cards/charts/tables остаются пустыми: их схему определит шаг 2, здесь
+    фиксируются только ключи и meta с контрольными числами (_FOT_MOCK_META).
+    """
+    if tab not in ("p9", "p10", "p11", "p12", "p13"):
+        raise ValueError("fot: неизвестная вкладка %r" % (tab,))
+    meta = {"tab": tab, "params": params}
+    meta.update(_FOT_MOCK_META)
+    return {"cards": [], "charts": [], "tables": [], "meta": meta}
