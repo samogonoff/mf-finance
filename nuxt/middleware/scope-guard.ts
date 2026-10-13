@@ -22,6 +22,15 @@ export default defineNuxtRouteMiddleware(async (to) => {
     if (!hasScope("admin")) return navigateTo("/", { replace: true });
     return;
   }
+  if (path.startsWith("/reports/fot")) {
+    // ФОТ-дашборд — страница cost-раздела, живущая под /reports (внутренний
+    // гейт — право cost:fot через useCostPermission, не роли кабинета).
+    // Без ветки cost страница не открывалась в изолированном cost-контуре:
+    // заглушка cost-bypass даёт только ROLE_COST_ADMIN, и дев-проверка без
+    // Б24-логина (НУЖНОГО ТОЛЬКО НА ПРОДЕ) редиректила на корень.
+    if (!hasScope("cost") && !hasScope("finance")) return navigateTo("/", { replace: true });
+    return;
+  }
   if (path.startsWith("/reports")) {
     // Отчётность пока закрыта только для ROLE_FINANCE_ADMIN (или ROLE_ADMIN
     // через иерархию). До расширения модели ролей шире не пускаем.
