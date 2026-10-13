@@ -12,8 +12,9 @@
     ОДНОЙ транзакции Postgres (TRUNCATE+INSERT каждой), при ошибке данные не
     трогаются и API продолжает отдавать предыдущий снимок;
   * fot_worker() — фоновый воркер для lifespan в app/main.py;
-  * filter_options() / dashboard() — публичные заглушки шага 2 (сборка
-    карточек/графиков/таблиц вкладок P9–P13).
+  * filter_options() / dashboard() — сборка ответов вкладок для роутов:
+    каскадные фильтры и карточки/графики/таблицы (P9 реализован полностью,
+    P10–P13 — каркас до шагов 2b/2c).
 
 Чтение данных дашбордом — только из Postgres; MSSQL нужен лишь refresh'у и
 доступен по VPN (учётка OLAP_*, см. db.get_olap_conn()).
@@ -765,52 +766,649 @@ async def fot_worker() -> None:
 
 # ── Публичные сборщики (шаг 2) ───────────────────────────────────────────────
 
-async def filter_options() -> dict:
+# Валюты ответа: значение среза → колонка витрины. Имя колонки подставляется в
+# SQL только из этого белого списка — из запроса приходят лишь значения.
+FOT_CURRENCIES = {"BYN": "amount_byn", "USD": "amount_usd", "RUB": "amount_rub"}
+
+# Срез «План»: значение фильтра совпадает с именем сценария в витрине
+# (scenario_src). «Бюджет»-колонки P10/P11 жёстко берут сценарий «бюджет».
+FOT_PLAN_SCENARIOS = ("бюджет", "тактика", "НовСтрат")
+
+# Статические опции. Страны — только отчётные: прочие country_code источника
+# (TR/CN/BR, «Error») — шум выгрузки, срезов по ним в PBI нет.
+COUNTRY_OPTIONS = (("BY", "Беларусь"), ("RU", "Россия"), ("KZ", "Казахстан"), ("UZ", "Узбекистан"))
+SCENARIO_OPTIONS = (("бюджет", "Бюджет"), ("тактика", "Тактика"), ("НовСтрат", "Новая стратегия"))
+IC_OPTIONS = (("0", "Без ВГО"), ("1", "ВГО"))
+
+# Уровни матрицы «По подразделениям» (порядок дрилла) и предел строк выборки.
+MATRIX_LEVELS = (
+    ("group_cfo1", "Группа ЦФО"),
+    ("group_cfo2", "Подгруппа ЦФО"),
+    ("direction", "Направление"),
+    ("code_cfo", "ЦФО"),
+)
+MATRIX_ROW_LIMIT = 500
+
+# Семейства мер одним условием: ФОТ-контекст (ЗП в P&L + Производстве) и выручка
+# («Продажи без НДС» в P&L). Знаки уже применены при загрузке витрин.
+_SQL_FOT_FAMILY = "(m.row_template = 'Заработная плата' AND m.kontur IN ('P&L', 'Производство (BS)'))"
+_SQL_REV_FAMILY = "(m.row_template = 'Продажи без НДС' AND m.kontur = 'P&L')"
+
+METHODOLOGY_P9 = (
+    "ФОТ = статьи «Заработная плата» в контурах P&L и «Производство (BS)» за выбранный "
+    "месяц, не позже закрытого периода. Факт — сценарий «факт»; лимит — сценарий из среза "
+    "«План» (Бюджет/Тактика/НовСтрат). «ФОТ % от выручки» = ФОТ / «Продажи без НДС» "
+    "(контур P&L; для лимита — тот же план-сценарий). Знаменатель по стране: KZ — продажи "
+    "KZ по кодам 1006/1012, UZ — все продажи UZ, остальное (BY/RU/микс) — вся выручка "
+    "группы; срезы ЦФО и юрлица на знаменатель не влияют. «% от выручки своей страны» в "
+    "матрице берёт страну строки из справочника ЦФО, у строк-смесей — вся выручка группы. "
+    "Численность — ставки на 1-е число выбранного месяца; «Числ. план (тактика)» — план "
+    "численности PlanChisl по ЦФО (на юрлица не распределён, срез юрлица на него не "
+    "влияет). Суммы — в выбранной валюте витрины (BYN/USD/RUB), без пересчёта. График — "
+    "месяцы выбранного года с января по выбранный месяц."
+)
+
+_SCENARIO_LABELS = dict(SCENARIO_OPTIONS)
+
+# Ключ уровня матрицы → колонка зерна lvl (для условий проваливания).
+_LEVEL_SQL_COLUMN = {"group_cfo1": "l.g1", "group_cfo2": "l.g2", "direction": "l.dir"}
+
+
+def _r2(v) -> float | None:
+    """Число для JSON: None остаётся None, остальное — float с двумя знаками."""
+    return None if v is None else round(float(v), 2)
+
+
+def _closed_from_meta(meta: dict) -> date | None:
+    """Закрытый период витрин: closed_period, при его отсутствии — fallback."""
+    for key in ("closed_period", "fallback_closed"):
+        raw = meta.get(key)
+        if raw:
+            try:
+                return date.fromisoformat(str(raw)[:10])
+            except ValueError:
+                continue
+    return None
+
+
+async def filter_options(year: int | None = None) -> dict:
     """Каскадные опции фильтров дашборда.
 
-    TODO(шаг 2): собрать из fot_cfo / fot_monthly (паттерн margin.py):
-    направления/группы/подгруппы/ЦФО (только активные на срезах ЦФО и
-    подгруппы), юрлица, страны, сценарии плана, ВГО, годы и месяцы факта.
+    Иерархия ЦФО — из fot_cfo. На подгруппах ЦФО и самих ЦФО оставляем только
+    ЦФО с данными fot_monthly в выбранном году — это порт меры «_ЦФО активно»
+    из PBI («по ЦФО есть данные в выбранном периоде»); направления и группы
+    ЦФО — весь справочник: у части ЦФО без оборота группы пустыми не бывают,
+    а фильтр по пустой группе просто даст пустую выборку. Юрлица и годы —
+    DISTINCT из fot_monthly. Страны, сценарии плана, ВГО и месяцы — статика.
+
+    *year* ограничивает списки подгрупп и ЦФО (каскад по году); по умолчанию —
+    плановый год YEAR_PLAN.
     """
-    return {
-        "directions": [],
-        "cfo_groups": [],
-        "cfo_subgroups": [],
-        "cfos": [],
-        "legal_entities": [],
-        "countries": [],
-        "scenarios": [],
-        "intercompany": [],
-        "years": [],
-        "months": [],
+    if year is None:
+        year = YEAR_PLAN
+    async with acquire() as pg:
+        rows = await pg.fetch(
+            """
+            WITH act AS (
+                SELECT DISTINCT code_cfo FROM fot_monthly
+                WHERE date_part('year', month_date) = $1::int
+            )
+            SELECT kind, id, text FROM (
+                SELECT DISTINCT 'direction' AS kind, direction AS id, direction AS text
+                    FROM fot_cfo WHERE coalesce(direction, '') <> ''
+                UNION ALL
+                SELECT DISTINCT 'group', group_cfo1, group_cfo1
+                    FROM fot_cfo WHERE coalesce(group_cfo1, '') <> ''
+                UNION ALL
+                SELECT DISTINCT 'subgroup', c.group_cfo2, c.group_cfo2
+                    FROM fot_cfo c JOIN act a ON a.code_cfo = c.code_cfo
+                    WHERE coalesce(c.group_cfo2, '') <> ''
+                UNION ALL
+                SELECT 'cfo', c.code_cfo, c.cfo_label
+                    FROM fot_cfo c JOIN act a ON a.code_cfo = c.code_cfo
+                UNION ALL
+                SELECT DISTINCT 'legal', m.legal_entity, m.legal_entity
+                    FROM fot_monthly m WHERE coalesce(m.legal_entity, '') <> ''
+                UNION ALL
+                SELECT DISTINCT 'year', date_part('year', m.month_date)::int::text,
+                       date_part('year', m.month_date)::int::text
+                    FROM fot_monthly m
+            ) t
+            ORDER BY
+                CASE kind WHEN 'direction' THEN 1 WHEN 'group' THEN 2 WHEN 'subgroup' THEN 3
+                          WHEN 'cfo' THEN 4 WHEN 'legal' THEN 5 ELSE 6 END,
+                -- коды ЦФО не дополнены нулями: '1001' должен идти до '101'
+                CASE WHEN kind IN ('cfo', 'year') AND id ~ '^[0-9]+$'
+                     THEN lpad(id, 12, '0') ELSE id END
+            """,
+            year,
+        )
+        meta = await fot_meta()
+
+    key_by_kind = {
+        "direction": "directions",
+        "group": "cfo_groups",
+        "subgroup": "cfo_subgroups",
+        "cfo": "cfos",
+        "legal": "legal_entities",
+        "year": "years",
     }
+    buckets: dict = {v: [] for v in key_by_kind.values()}
+    for r in rows:
+        buckets[key_by_kind[r["kind"]]].append({"id": r["id"], "text": r["text"]})
+    buckets["countries"] = [{"id": c, "text": t} for c, t in COUNTRY_OPTIONS]
+    buckets["scenarios"] = [{"id": s, "text": t} for s, t in SCENARIO_OPTIONS]
+    buckets["intercompany"] = [{"id": i, "text": t} for i, t in IC_OPTIONS]
+    buckets["months"] = [{"id": str(m), "text": str(m)} for m in range(1, 13)]
+    buckets["meta"] = meta
+    return buckets
+
+
+def _parse_int(value, name: str, default: int, lo: int, hi: int) -> int:
+    """Целый срез с дефолтом и границами; вне диапазона — ValueError (→ 400)."""
+    if value is None or value == "":
+        return default
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("fot: %s — ожидалось целое число, получено %r" % (name, value))
+    if not lo <= n <= hi:
+        raise ValueError("fot: %s вне диапазона %d..%d" % (name, lo, hi))
+    return n
+
+
+def _parse_str_list(values) -> list[str]:
+    """Списочный срез: пустые и None-значения отбрасываем, пробелы срезаем.
+
+    Одиночная строка трактуется как ОДНО значение, а не как итерируемое по
+    символам: иначе прямой вызов dashboard() со скаляром «KZ» молча искал бы
+    страны 'K' и 'Z' и отдавал пустую выборку (через HTTP это не грозит —
+    qp.getlist всегда даёт список, но контракт функции не должен зависеть от
+    способа вызова).
+    """
+    if isinstance(values, str):
+        values = [values]
+    return [str(v).strip() for v in (values or []) if v is not None and str(v).strip()]
+
+
+def _parse_p9_params(params: dict, meta: dict) -> dict:
+    """Разбор и валидация срезов P9. Неизвестные значения — ValueError (→ 400).
+
+    Списочные срезы (direction, cfo_group, cfo_subgroup, cfo, legal_entity,
+    country, matrix_path) приходят списками, одиночные (scenario_plan,
+    intercompany, year, month, currency) — скалярами; все необязательные.
+    """
+    closed = _closed_from_meta(meta)
+    p = {
+        "directions": _parse_str_list(params.get("direction")),
+        "cfo_groups": _parse_str_list(params.get("cfo_group")),
+        "cfo_subgroups": _parse_str_list(params.get("cfo_subgroup")),
+        "cfos": _parse_str_list(params.get("cfo")),
+        "legal_entities": _parse_str_list(params.get("legal_entity")),
+        "countries": _parse_str_list(params.get("country")),
+        "matrix_path": _parse_str_list(params.get("matrix_path")),
+    }
+    p["scenario_plan"] = str(params.get("scenario_plan") or "тактика").strip()
+    if p["scenario_plan"] not in FOT_PLAN_SCENARIOS:
+        raise ValueError(
+            "fot: scenario_plan — ожидалось одно из %s" % (", ".join(FOT_PLAN_SCENARIOS),)
+        )
+    p["currency"] = str(params.get("currency") or "BYN").strip().upper()
+    if p["currency"] not in FOT_CURRENCIES:
+        raise ValueError("fot: currency — ожидалось одно из %s" % ", ".join(FOT_CURRENCIES))
+    p["intercompany"] = str(params.get("intercompany") or "все").strip().lower()
+    if p["intercompany"] == "all":
+        p["intercompany"] = "все"
+    if p["intercompany"] not in ("все", "0", "1"):
+        raise ValueError("fot: intercompany — ожидалось все | 0 | 1")
+    p["year"] = _parse_int(params.get("year"), "year", YEAR_PLAN, 2000, 2100)
+    p["month"] = _parse_int(
+        params.get("month"), "month", closed.month if closed else 12, 1, 12
+    )
+    return p
+
+
+async def _dashboard_p9(p: dict, meta: dict) -> dict:
+    """Вкладка P9 «ФОТ и численность».
+
+    Всё считается ОДНИМ запросом к витринам (паттерн margin.dashboard):
+    карточки выбранного месяца, месячная серия графика и зерно матрицы
+    по ЦФО с агрегацией до запрошенного уровня проваливания. Знаменатели
+    долей (den) считаются отдельно — без срезов ЦФО и юрлица.
+    """
+    closed = _closed_from_meta(meta)
+    year, month = p["year"], p["month"]
+    currency = p["currency"]
+    col = FOT_CURRENCIES[currency]
+    md = date(year, month, 1)
+
+    # График — месяцы выбранного года с января по выбранный месяц, но не дальше
+    # закрытого периода: в источнике есть «факт» будущих месяцев (мусор в
+    # контуре Производство (BS)), и без гард-а он попадал бы на график.
+    chart_last = md
+    if closed:
+        chart_last = min(md, date(closed.year, closed.month, 1))
+    n_months = chart_last.month if chart_last.year == year else 0
+
+    warning = None
+    if closed and md > closed:
+        warning = (
+            "Выбранный период %s позже закрытого (%s): факт за будущие месяцы в источнике "
+            "не заполняется — карточки и матрица будут пустыми." % (md.isoformat(), closed.isoformat())
+        )
+
+    # Параметры собираем в порядке появления плейсхолдеров; каждый используется
+    # в SQL столько раз, сколько нужно ($n адресные).
+    sql_params: list = []
+
+    def _pv(v) -> str:
+        sql_params.append(v)
+        return "$%d" % len(sql_params)
+
+    p_closed = _pv(closed) if closed else None
+    p_md = _pv(md)
+    p_scen = _pv(p["scenario_plan"])
+    # Знаменатель долей: выбрана ровно одна страна KZ/UZ — её выручка,
+    # иначе (BY/RU/микс/пусто) — вся выручка группы.
+    p_sel = _pv(p["countries"][0] if len(p["countries"]) == 1 else "")
+    p_ystart = _pv(date(year, 1, 1))
+    p_chart_last = _pv(chart_last)
+
+    # Срез ВГО. Имена колонок в условиях ниже — из белых списков модуля.
+    ic_sql = {"все": "TRUE", "0": "m.is_intercompany = 0", "1": "m.is_intercompany = 1"}[
+        p["intercompany"]
+    ]
+
+    # Плейсхолдеры списочных срезов строим ОДИН раз: один и тот же список
+    # используется в нескольких CTE (факты/численность/план), дубли не нужны.
+    def _list_placeholder(values: list[str]):
+        return _pv(list(values)) if values else None
+
+    def _any_cond(expr: str, placeholder) -> str:
+        if placeholder is None:
+            return ""
+        return " AND %s = ANY(%s::text[])" % (expr, placeholder)
+
+    ph_g1 = _list_placeholder(p["cfo_groups"])
+    ph_g2 = _list_placeholder(p["cfo_subgroups"])
+    ph_dir = _list_placeholder(p["directions"])
+    ph_cfo = _list_placeholder(p["cfos"])
+    ph_country = _list_placeholder(p["countries"])
+    ph_legal = _list_placeholder(p["legal_entities"])
+
+    # Иерархия ЦФО живёт в справочнике: срезы — условия в dim (порт срезов
+    # dim_CFO в PBI), а не в фактах, иначе «висячие» ЦФО терялись бы молча.
+    dim_conds = (
+        _any_cond("group_cfo1", ph_g1)
+        + _any_cond("group_cfo2", ph_g2)
+        + _any_cond("direction", ph_dir)
+        + _any_cond("code_cfo", ph_cfo)
+    )
+    # При активном срезе иерархии строки без справочника отсекаем (LEFT JOIN
+    # оставил бы все прочие ЦФО в корзине «(не указана)»); без среза —
+    # оставляем: «висячие» коды витрины показываем корзиной.
+    hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
+
+    m_closed = " AND m.month_date <= %s" % p_closed if p_closed else ""
+    h_closed = " AND h.month_date <= %s" % p_closed if p_closed else ""
+    m_country = _any_cond("m.country_code", ph_country)
+    m_legal = _any_cond("m.legal_entity", ph_legal)
+    h_country = _any_cond("h.country_code", ph_country)
+    h_legal = _any_cond("h.legal_entity", ph_legal)
+    # У плана численности страны и юрлица нет: страна — через справочник ЦФО,
+    # юрлицом план не режем вовсе (PlanChisl ведётся по ЦФО).
+    p_country = _any_cond("c.country_code", ph_country)
+
+    # Суммы FILTER'ом по семействам мер: один скан фактов даёт сразу ФОТ
+    # (факт и план-сценарий) и выручку.
+    def _fot_sum(scen_sql: str) -> str:
+        return "sum(m.%s) FILTER (WHERE m.scenario_src = %s AND %s)" % (
+            col, scen_sql, _SQL_FOT_FAMILY)
+
+    def _rev_sum(scen_sql: str, extra: str = "") -> str:
+        return "sum(m.%s) FILTER (WHERE m.scenario_src = %s%s AND %s)" % (
+            col, scen_sql, extra, _SQL_REV_FAMILY)
+
+    fact = "'факт'"
+    # Знаменатель KZ — только коды 1006/1012 (флаг kz_denominator в зерне).
+    kz_extra = " AND m.country_code = 'KZ' AND m.kz_denominator"
+    uz_extra = " AND m.country_code = 'UZ'"
+
+    # Уровень матрицы: длина пути определяет группировку (паттерн margin).
+    path = p["matrix_path"][: len(MATRIX_LEVELS) - 1]
+    level_key, level_label = MATRIX_LEVELS[len(path)]
+    can_drill = len(path) < len(MATRIX_LEVELS) - 1
+    path_conds = "".join(
+        " AND %s = %s" % (_LEVEL_SQL_COLUMN[MATRIX_LEVELS[i][0]], _pv(v))
+        for i, v in enumerate(path)
+    )
+    if level_key == "group_cfo1":
+        dim_expr = "l.g1"
+        label_expr = "CASE WHEN l.g1 = '' THEN '(не указана)' ELSE l.g1 END"
+    elif level_key == "group_cfo2":
+        dim_expr = "l.g2"
+        label_expr = "CASE WHEN l.g2 = '' THEN '(не указана)' ELSE l.g2 END"
+    elif level_key == "direction":
+        dim_expr = "l.dir"
+        label_expr = "CASE WHEN l.dir = '' THEN '(не указано)' ELSE l.dir END"
+    else:  # code_cfo — метка ЦФО из справочника, у «висячих» — сам код
+        dim_expr = "l.cfo"
+        label_expr = ("coalesce(nullif(max(l.cfo_label), ''),"
+                      " CASE WHEN l.cfo = '' THEN '(без кода)' ELSE l.cfo END)")
+
+    sql = f"""
+WITH dim AS (
+    SELECT code_cfo, cfo_label, group_cfo1, group_cfo2, direction, country_code
+    FROM fot_cfo
+    WHERE TRUE{dim_conds}
+),
+den AS (
+    -- Знаменатели долей: выручка БЕЗ срезов ЦФО и юрлица (они с знаменателя
+    -- снимаются), с срезом ВГО и гардом закрытого периода.
+    SELECT
+        {_rev_sum(fact)} AS grp_f,
+        {_rev_sum(p_scen)} AS grp_p,
+        {_rev_sum(fact, kz_extra)} AS kz_f,
+        {_rev_sum(p_scen, kz_extra)} AS kz_p,
+        {_rev_sum(fact, uz_extra)} AS uz_f,
+        {_rev_sum(p_scen, uz_extra)} AS uz_p
+    FROM fot_monthly m
+    WHERE m.month_date = {p_md}{m_closed} AND {ic_sql}
+),
+cards AS (
+    SELECT
+        {_fot_sum(fact)} AS fot_fact,
+        {_fot_sum(p_scen)} AS fot_limit,
+        {_rev_sum(fact)} AS rev_fact
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE m.month_date = {p_md} AND ({_SQL_FOT_FAMILY} OR {_SQL_REV_FAMILY}){m_closed}
+      AND {ic_sql}{m_country}{m_legal}{hier_gate}
+),
+hc AS (
+    SELECT sum(h.quantity) AS q
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = {p_md}{h_closed}{h_country}{h_legal}{hier_gate}
+),
+months AS (
+    SELECT to_char(m.month_date, 'YYYY-MM') AS ym, {_fot_sum(fact)} AS fot_fact
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE m.month_date >= {p_ystart} AND m.month_date <= {p_chart_last}
+      AND ({_SQL_FOT_FAMILY} OR {_SQL_REV_FAMILY}) AND {ic_sql}{m_country}{m_legal}{hier_gate}
+    GROUP BY 1
+),
+hcm AS (
+    SELECT to_char(h.month_date, 'YYYY-MM') AS ym, sum(h.quantity) AS q
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date >= {p_ystart} AND h.month_date <= {p_chart_last}
+      {h_country}{h_legal}{hier_gate}
+    GROUP BY 1
+),
+grain AS (
+    -- Зерно ЦФО: карточные суммы на каждый код; row_country — страна строки
+    -- для «% от выручки своей страны», у смесей стран — NULL (знаменатель ГК).
+    SELECT
+        coalesce(c.group_cfo1, '') AS g1,
+        coalesce(c.group_cfo2, '') AS g2,
+        coalesce(c.direction, '') AS dir,
+        coalesce(m.code_cfo, '') AS cfo,
+        max(c.cfo_label) AS cfo_label,
+        CASE WHEN min(c.country_code) = max(c.country_code)
+             THEN max(c.country_code) END AS row_country,
+        {_fot_sum(fact)} AS fot_fact,
+        {_fot_sum(p_scen)} AS fot_limit,
+        {_rev_sum(fact)} AS rev_fact
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE m.month_date = {p_md} AND ({_SQL_FOT_FAMILY} OR {_SQL_REV_FAMILY}){m_closed}
+      AND {ic_sql}{m_country}{m_legal}{hier_gate}
+    GROUP BY 1, 2, 3, 4
+),
+hc_grain AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1, coalesce(c.group_cfo2, '') AS g2,
+           coalesce(c.direction, '') AS dir, coalesce(h.code_cfo, '') AS cfo,
+           sum(h.quantity) AS q
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = {p_md}{h_closed}{h_country}{h_legal}{hier_gate}
+    GROUP BY 1, 2, 3, 4
+),
+plan_grain AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1, coalesce(c.group_cfo2, '') AS g2,
+           coalesce(c.direction, '') AS dir, coalesce(p.code_cfo, '') AS cfo,
+           sum(p.plan_tactic) AS pt
+    FROM fot_headcount_plan p
+    LEFT JOIN dim c ON c.code_cfo = p.code_cfo
+    WHERE TRUE{p_country}{hier_gate}
+    GROUP BY 1, 2, 3, 4
+),
+lvl AS (
+    -- Слияние трёх зёрен по коду ЦФО (UNION ALL + группировка вместо FULL
+    -- JOIN): план численности не размножается юрлицами факта.
+    SELECT g1, g2, dir, cfo,
+           max(cfo_label) AS cfo_label,
+           CASE WHEN min(row_country) = max(row_country) THEN max(row_country) END AS row_country,
+           sum(fot_fact) AS fot_fact, sum(fot_limit) AS fot_limit, sum(rev_fact) AS rev_fact,
+           sum(q) AS hc, sum(pt) AS plan_t
+    FROM (
+        SELECT g1, g2, dir, cfo, cfo_label, row_country, fot_fact, fot_limit, rev_fact,
+               NULL::numeric AS q, NULL::numeric AS pt
+        FROM grain
+        UNION ALL
+        SELECT g1, g2, dir, cfo, NULL, NULL, NULL, NULL, NULL, q, NULL FROM hc_grain
+        UNION ALL
+        SELECT g1, g2, dir, cfo, NULL, NULL, NULL, NULL, NULL, NULL, pt FROM plan_grain
+    ) u
+    GROUP BY 1, 2, 3, 4
+),
+matrix AS (
+    SELECT
+        {dim_expr} AS drill_value,
+        {label_expr} AS label,
+        CASE WHEN min(l.row_country) = max(l.row_country) THEN min(l.row_country) END AS row_country,
+        sum(l.hc) AS hc, sum(l.plan_t) AS plan_t,
+        sum(l.fot_fact) AS fot_fact, sum(l.fot_limit) AS fot_limit,
+        sum(l.rev_fact) AS rev_fact
+    FROM lvl l
+    WHERE TRUE{path_conds}
+    GROUP BY 1, 2
+),
+matrix_full AS (
+    SELECT
+        x.drill_value, x.label,
+        x.hc AS headcount,
+        x.plan_t AS headcount_plan,
+        x.hc - x.plan_t AS headcount_dev,
+        x.fot_fact, x.fot_limit,
+        100.0 * x.fot_fact / NULLIF(CASE {p_sel} WHEN 'KZ' THEN d.kz_f WHEN 'UZ' THEN d.uz_f
+                                       ELSE d.grp_f END, 0) AS fot_share_pct,
+        100.0 * x.fot_limit / NULLIF(CASE {p_sel} WHEN 'KZ' THEN d.kz_p WHEN 'UZ' THEN d.uz_p
+                                      ELSE d.grp_p END, 0) AS limit_share_pct,
+        100.0 * x.fot_fact / NULLIF(CASE x.row_country WHEN 'KZ' THEN d.kz_f WHEN 'UZ' THEN d.uz_f
+                                     ELSE d.grp_f END, 0) AS country_share_pct,
+        x.fot_fact / NULLIF(x.hc, 0) AS fot_per_head,
+        x.rev_fact / NULLIF(x.hc, 0) AS revenue_per_head
+    FROM matrix x
+    CROSS JOIN den d
+    ORDER BY x.fot_fact DESC NULLS LAST
+    LIMIT {MATRIX_ROW_LIMIT + 1}
+)
+SELECT jsonb_build_object(
+    'cards', jsonb_build_object(
+        'fot_fact', c.fot_fact,
+        'fot_limit', c.fot_limit,
+        'fot_share_pct', 100.0 * c.fot_fact / NULLIF(
+            CASE {p_sel} WHEN 'KZ' THEN d.kz_f WHEN 'UZ' THEN d.uz_f ELSE d.grp_f END, 0),
+        'headcount', h.q,
+        'fot_per_head', c.fot_fact / NULLIF(h.q, 0)
+    ),
+    'months', COALESCE((
+        SELECT jsonb_agg(jsonb_build_object('ym', y.ym, 'fot_fact', y.fot_fact,
+                                            'headcount', h2.q) ORDER BY y.ym)
+        FROM months y LEFT JOIN hcm h2 ON h2.ym = y.ym
+    ), '[]'::jsonb),
+    'matrix', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM matrix_full x), '[]'::jsonb),
+    'matrix_truncated', (SELECT count(*) FROM matrix_full) > {MATRIX_ROW_LIMIT}
+)::text AS payload
+FROM cards c
+CROSS JOIN den d
+CROSS JOIN hc h
+"""
+    async with acquire() as pg:
+        payload = json.loads(await pg.fetchval(sql, *sql_params))
+
+    # ── Постобработка: форма ответа для фронта ───────────────────────────────
+    scenario_label = _SCENARIO_LABELS.get(p["scenario_plan"], p["scenario_plan"])
+    cards_raw = payload["cards"] or {}
+    cards = [
+        {"key": "fot_fact", "label": "ФОТ факт за месяц",
+         "value": _r2(cards_raw.get("fot_fact")), "unit": currency},
+        {"key": "fot_limit", "label": "ФОТ лимит (%s)" % scenario_label,
+         "value": _r2(cards_raw.get("fot_limit")), "unit": currency},
+        {"key": "fot_share", "label": "ФОТ, % от выручки",
+         "value": _r2(cards_raw.get("fot_share_pct")), "unit": "%"},
+        {"key": "headcount", "label": "Численность",
+         "value": _r2(cards_raw.get("headcount")), "unit": "ставок"},
+        {"key": "fot_per_head", "label": "ФОТ на сотрудника",
+         "value": _r2(cards_raw.get("fot_per_head")), "unit": currency},
+    ]
+
+    # График: полная сетка месяцев января..последнего — отсутствующие месяцы
+    # (нет факта) отдаются None, а не выпадают из оси.
+    by_ym = {m["ym"]: m for m in payload["months"]}
+    labels: list[str] = []
+    fot_series: list = []
+    hc_series: list = []
+    for mnum in range(1, n_months + 1):
+        ym = "%04d-%02d" % (year, mnum)
+        row_m = by_ym.get(ym) or {}
+        labels.append(ym)
+        fot_series.append(_r2(row_m.get("fot_fact")))
+        hc_series.append(_r2(row_m.get("headcount")))
+    charts = [{
+        "key": "monthly",
+        "label": "ФОТ и численность по месяцам",
+        "type": "bar_line",
+        "labels": labels,
+        "series": [
+            {"key": "fot_fact", "label": "ФОТ факт", "type": "bar",
+             "unit": currency, "values": fot_series},
+            {"key": "headcount", "label": "Численность", "type": "line", "axis": "y2",
+             "unit": "ставок", "values": hc_series},
+        ],
+    }]
+
+    columns = [
+        {"key": "label", "label": level_label},
+        {"key": "headcount", "label": "Численность", "unit": "ставок"},
+        {"key": "headcount_plan", "label": "Числ. план (тактика)", "unit": "ставок"},
+        {"key": "headcount_dev", "label": "Откл. от плана", "unit": "ставок"},
+        {"key": "fot_fact", "label": "ФОТ факт", "unit": currency},
+        {"key": "fot_limit", "label": "ФОТ лимит", "unit": currency},
+        {"key": "fot_share_pct", "label": "ФОТ, % от выручки", "unit": "%"},
+        {"key": "limit_share_pct", "label": "Лимит, % от выручки", "unit": "%"},
+        {"key": "country_share_pct", "label": "% от выручки своей страны", "unit": "%"},
+        {"key": "fot_per_head", "label": "ФОТ на сотрудника", "unit": currency},
+        {"key": "revenue_per_head", "label": "Выручка на сотрудника", "unit": currency},
+    ]
+    rows = [
+        {
+            "label": r.get("label"),
+            "drill_value": r.get("drill_value"),
+            "headcount": _r2(r.get("headcount")),
+            "headcount_plan": _r2(r.get("headcount_plan")),
+            "headcount_dev": _r2(r.get("headcount_dev")),
+            "fot_fact": _r2(r.get("fot_fact")),
+            "fot_limit": _r2(r.get("fot_limit")),
+            "fot_share_pct": _r2(r.get("fot_share_pct")),
+            "limit_share_pct": _r2(r.get("limit_share_pct")),
+            "country_share_pct": _r2(r.get("country_share_pct")),
+            "fot_per_head": _r2(r.get("fot_per_head")),
+            "revenue_per_head": _r2(r.get("revenue_per_head")),
+        }
+        for r in payload["matrix"][:MATRIX_ROW_LIMIT]
+    ]
+    tables = [{
+        "key": "by_department",
+        "label": "По подразделениям",
+        "columns": columns,
+        "rows": rows,
+        "meta": {
+            "dim": level_key,
+            "level_label": level_label,
+            "path": p["matrix_path"],
+            "can_drill": can_drill,
+            "truncated": bool(payload["matrix_truncated"]),
+            "row_limit": MATRIX_ROW_LIMIT,
+        },
+    }]
+
+    meta_out = {
+        "tab": "p9",
+        "params": p,
+        "period": {"year": year, "month": month, "month_date": md.isoformat()},
+        "currency": currency,
+        "scenario_plan": p["scenario_plan"],
+        "scenario_plan_label": scenario_label,
+        "closed_period": closed.isoformat() if closed else None,
+        "stale": meta.get("stale"),
+        "refreshed_at": meta.get("refreshed_at"),
+        "matrix": {
+            "dim": level_key,
+            "label": level_label,
+            "path": [
+                {"level": MATRIX_LEVELS[i][0], "label": MATRIX_LEVELS[i][1], "value": v}
+                for i, v in enumerate(path)
+            ],
+            "can_drill": can_drill,
+            "levels": [{"key": k, "label": lbl} for k, lbl in MATRIX_LEVELS],
+        },
+        "methodology": METHODOLOGY_P9,
+    }
+    if warning:
+        meta_out["warning"] = warning
+
+    return {"cards": cards, "charts": charts, "tables": tables, "meta": meta_out}
 
 
 async def dashboard(tab: str, params: dict) -> dict:
-    """Собирает одну вкладку P9–P13.
+    """Собирает одну вкладку P9–P13; чужой tab — ValueError (в роутах → 400).
 
-    TODO(шаг 2): карточки/графики/таблицы из витрин fot_*; периодика P9 — по
-    срезам Год/Месяц, P10–P13 — фиксированные полугодия YEAR_PREV/YEAR_PLAN.
-    Права и фильтры params: направление, группа ЦФО, подгруппа ЦФО, ЦФО,
-    юрлицо, страна, сценарий плана, ВГО, год, месяц.
+    P9 — полный сборщик _dashboard_p9; P10–P13 — заглушки шагов 2b/2c с той
+    же формой ответа (пустые cards/charts/tables), чтобы фронт уже мог
+    рендерить каркас вкладок.
     """
     if tab not in _FOT_TABS:
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
-    # Заглушка шага 1: структура ответа фиксируется здесь, наполнение — шаг 2.
-    return {
-        "cards": [],
-        "charts": [],
-        "tables": [],
-        "meta": {"tab": tab, "params": params},
-    }
+    if tab != "p9":
+        return {
+            "cards": [],
+            "charts": [],
+            "tables": [],
+            "meta": {"tab": tab, "params": dict(params), "status": "not_implemented"},
+        }
+    meta = await fot_meta()
+    p = _parse_p9_params(params, meta)
+    return await _dashboard_p9(p, meta)
 
 
 __all__ = [
+    "COUNTRY_OPTIONS",
+    "FOT_CURRENCIES",
     "FOT_DATABASE",
+    "FOT_PLAN_SCENARIOS",
     "FOT_QUERY_TIMEOUT",
     "FOT_REFRESH_MINUTES",
+    "IC_OPTIONS",
+    "MATRIX_LEVELS",
+    "MATRIX_ROW_LIMIT",
+    "METHODOLOGY_P9",
     "ROW_TEMPLATE_BY_CODE",
     "ROW_TEMPLATE_BY_GROUP",
+    "SCENARIO_OPTIONS",
     "YEAR_PLAN",
     "YEAR_PREV",
     "dashboard",

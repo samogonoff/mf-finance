@@ -1108,7 +1108,7 @@ def models_catalog(payload: dict, limit: int, offset: int, all_columns: bool) ->
 # ── ФОТ-дашборд «ФОТ и численность» (P9–P13) ──────────────────────────────────
 
 # Контрольные числа шага 1 (сверка с PBI CFO_ALL_AGG на живом MSSQL, 13.10.2026).
-# Мок отдаёт их в meta, чтобы шаг 2 сверял сборку витрин с эталоном без VPN.
+# Мок отдаёт их в meta, чтобы фронт и шаги 2b/2c сверяли сборку с эталоном без VPN.
 _FOT_MOCK_META = {
     "fot_2026": 217260.0,          # тыс BYN: ФОТ «Ожидание 2026» (факт 1ПГ + тактика 2ПГ)
     "fot_share_2026": 15.57,       # % к «Продажам без НДС», тот же срез
@@ -1118,28 +1118,43 @@ _FOT_MOCK_META = {
     "closed_period": "2026-08-31",
 }
 
+# Состояние fot_meta для моков; счётчики — с витрин шага 1 (13.10.2026).
+_FOT_MOCK_STATE = {
+    "closed_period": "2026-08-31",
+    "fallback_closed": "2026-12-01",
+    "refreshed_at": "2026-10-13T17:36:52+00:00",
+    "refreshing_since": None,
+    "source_counts": {
+        "fot_monthly": 297962, "fot_headcount": 10660,
+        "fot_headcount_plan": 492, "fot_cfo": 691,
+    },
+    "stale": False,
+}
+
 
 def fot_filter_options() -> dict:
-    """Мок каскадных фильтров ФОТ-дашборда.
+    """Мок каскадных фильтров ФОТ-дашборда — ключи 1:1 с app.fot.filter_options().
 
-    Ключи ответа 1:1 с app.fot.filter_options(). Схема элемента списка
-    ({id, text} — как в остальных фильтрах раздела) предварительная,
-    финальную определит шаг 2 вместе с серверной сборкой.
+    Статические списки (страны, сценарии, ВГО, месяцы) берём из модуля
+    дашборда, а не переписываем сюда — копия расходилась бы при первой же
+    правке набора.
     """
+    from app import fot
+
     return {
         "directions": [
-            {"id": "retail-by", "text": "Розница РБ"},
-            {"id": "retail-ru", "text": "Розница РФ"},
-            {"id": "retail-kz", "text": "Розница КЗ"},
-            {"id": "production", "text": "Производство"},
+            {"id": "Розница РБ", "text": "Розница РБ"},
+            {"id": "Розница РФ", "text": "Розница РФ"},
+            {"id": "Розница КЗ", "text": "Розница КЗ"},
+            {"id": "Производство", "text": "Производство"},
         ],
         "cfo_groups": [
-            {"id": "g1", "text": "Розничная сеть"},
-            {"id": "g2", "text": "Производство и логистика"},
+            {"id": "Розничная сеть", "text": "Розничная сеть"},
+            {"id": "Производство и логистика", "text": "Производство и логистика"},
         ],
         "cfo_subgroups": [
-            {"id": "sg1", "text": "Магазины Минск"},
-            {"id": "sg2", "text": "Магазины регионы РБ"},
+            {"id": "Магазины Минск", "text": "Магазины Минск"},
+            {"id": "Магазины регионы РБ", "text": "Магазины регионы РБ"},
         ],
         "cfos": [
             {"id": "101", "text": "101 — Магазин Минск, Немига"},
@@ -1149,33 +1164,156 @@ def fot_filter_options() -> dict:
             {"id": "ЧТУП «Марк Формэль»", "text": "ЧТУП «Марк Формэль»"},
             {"id": "ООО «Марк Формэль Рус»", "text": "ООО «Марк Формэль Рус»"},
         ],
-        "countries": [
-            {"id": "BY", "text": "Беларусь"},
-            {"id": "RU", "text": "Россия"},
-            {"id": "KZ", "text": "Казахстан"},
-        ],
-        "scenarios": [
-            {"id": "бюджет", "text": "Бюджет"},
-            {"id": "тактика", "text": "Тактика"},
-            {"id": "НовСтрат", "text": "Новая стратегия"},
-        ],
-        "intercompany": [
-            {"id": "0", "text": "Без ВГО"},
-            {"id": "1", "text": "ВГО"},
-        ],
+        "countries": [{"id": c, "text": t} for c, t in fot.COUNTRY_OPTIONS],
+        "scenarios": [{"id": s, "text": t} for s, t in fot.SCENARIO_OPTIONS],
+        "intercompany": [{"id": i, "text": t} for i, t in fot.IC_OPTIONS],
         "years": [{"id": "2025", "text": "2025"}, {"id": "2026", "text": "2026"}],
         "months": [{"id": str(m), "text": str(m)} for m in range(1, 13)],
+        "meta": dict(_FOT_MOCK_STATE),
     }
 
 
 def fot_dashboard(tab: str, params: dict) -> dict:
     """Мок вкладки ФОТ-дашборда — форма ответа 1:1 с app.fot.dashboard().
 
-    cards/charts/tables остаются пустыми: их схему определит шаг 2, здесь
-    фиксируются только ключи и meta с контрольными числами (_FOT_MOCK_META).
+    P9 всегда отдаёт один контрольный срез (июнь 2025, BYN): числа сняты с
+    витрин шага 1 и PBI, чтобы фронт сверял рендер на них. Срезы из запроса
+    приезжают в meta.params, на числа не влияют — это мок. P10–P13 — пустой
+    каркас, как боевые заглушки шагов 2b/2c.
     """
+    from app import fot
+
     if tab not in ("p9", "p10", "p11", "p12", "p13"):
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
-    meta = {"tab": tab, "params": params}
+    if tab != "p9":
+        return {
+            "cards": [],
+            "charts": [],
+            "tables": [],
+            "meta": {"tab": tab, "params": dict(params), "status": "not_implemented"},
+        }
+
+    def _first(value, default: str) -> str:
+        if isinstance(value, (list, tuple)):
+            return str(value[0]) if value else default
+        return str(value) if value not in (None, "") else default
+
+    scenario = _first(params.get("scenario_plan"), "тактика")
+    scenario_label = dict(fot.SCENARIO_OPTIONS).get(scenario, scenario)
+    currency = _first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+
+    # Контрольные числа июня-2025 (BYN): ФОТ/численность/выручка сняты с витрин
+    # шага 1 и PBI, лимит — иллюстративный (якоря на лимит июня-2025 нет);
+    # производные считаем здесь же, чтобы карточки, матрица и график не
+    # расходились между собой.
+    fot_fact = 16818034.73
+    fot_limit = 17250000.00
+    rev_fact = 104838622.76
+    headcount = 6995.91
+
+    cards = [
+        {"key": "fot_fact", "label": "ФОТ факт за месяц",
+         "value": round(fot_fact, 2), "unit": currency},
+        {"key": "fot_limit", "label": "ФОТ лимит (%s)" % scenario_label,
+         "value": round(fot_limit, 2), "unit": currency},
+        {"key": "fot_share", "label": "ФОТ, % от выручки",
+         "value": round(fot_fact / rev_fact * 100, 2), "unit": "%"},
+        {"key": "headcount", "label": "Численность",
+         "value": round(headcount, 2), "unit": "ставок"},
+        {"key": "fot_per_head", "label": "ФОТ на сотрудника",
+         "value": round(fot_fact / headcount, 2), "unit": currency},
+    ]
+
+    # Серия июня предшествующих месяцев подобрана так, что сумма ФОТ за
+    # 2025-01..2025-06 равна контрольной карточке месяца.
+    fot_by_month = [2700000.0, 2750000.0, 2800000.0, 2850000.0, 2900000.0, 2818034.73]
+    hc_by_month = [6800.0, 6850.0, 6900.0, 6950.0, 6970.0, 6995.91]
+    labels = ["2025-%02d" % m for m in range(1, len(fot_by_month) + 1)]
+    charts = [{
+        "key": "monthly",
+        "label": "ФОТ и численность по месяцам",
+        "type": "bar_line",
+        "labels": labels,
+        "series": [
+            {"key": "fot_fact", "label": "ФОТ факт", "type": "bar",
+             "unit": currency, "values": [round(v, 2) for v in fot_by_month]},
+            {"key": "headcount", "label": "Численность", "type": "line", "axis": "y2",
+             "unit": "ставок", "values": [round(v, 2) for v in hc_by_month]},
+        ],
+    }]
+
+    def _row(label, hc, plan, fot_f, fot_l, rev):
+        return {
+            "label": label,
+            "drill_value": label,
+            "headcount": round(hc, 2),
+            "headcount_plan": round(plan, 2),
+            "headcount_dev": round(hc - plan, 2),
+            "fot_fact": round(fot_f, 2),
+            "fot_limit": round(fot_l, 2),
+            "fot_share_pct": round(fot_f / rev_fact * 100, 2),
+            "limit_share_pct": round(fot_l / rev_fact * 100, 2),
+            "country_share_pct": round(fot_f / rev_fact * 100, 2),
+            "fot_per_head": round(fot_f / hc, 2) if hc else None,
+            "revenue_per_head": round(rev / hc, 2) if hc else None,
+        }
+
+    # Строки суммируются в карточные значения: розница+производство+логистика
+    # + управление = ФОТ/численность/выручка месяца.
+    rows = [
+        _row("Розничная сеть", 3000.00, 3050.00, 7200000.00, 7400000.00, 45000000.00),
+        _row("Производство", 2200.00, 2250.00, 5100000.00, 5250000.00, 33000000.00),
+        _row("Логистика", 1000.00, 1010.00, 2300000.00, 2360000.00, 15000000.00),
+        _row("Управление", 795.91, 800.00, 2218034.73, 2240000.00, 11838622.76),
+    ]
+    columns = [
+        {"key": "label", "label": "Группа ЦФО"},
+        {"key": "headcount", "label": "Численность", "unit": "ставок"},
+        {"key": "headcount_plan", "label": "Числ. план (тактика)", "unit": "ставок"},
+        {"key": "headcount_dev", "label": "Откл. от плана", "unit": "ставок"},
+        {"key": "fot_fact", "label": "ФОТ факт", "unit": currency},
+        {"key": "fot_limit", "label": "ФОТ лимит", "unit": currency},
+        {"key": "fot_share_pct", "label": "ФОТ, % от выручки", "unit": "%"},
+        {"key": "limit_share_pct", "label": "Лимит, % от выручки", "unit": "%"},
+        {"key": "country_share_pct", "label": "% от выручки своей страны", "unit": "%"},
+        {"key": "fot_per_head", "label": "ФОТ на сотрудника", "unit": currency},
+        {"key": "revenue_per_head", "label": "Выручка на сотрудника", "unit": currency},
+    ]
+    tables = [{
+        "key": "by_department",
+        "label": "По подразделениям",
+        "columns": columns,
+        "rows": rows,
+        "meta": {
+            "dim": "group_cfo1",
+            "level_label": "Группа ЦФО",
+            "path": [],
+            "can_drill": True,
+            "truncated": False,
+            "row_limit": fot.MATRIX_ROW_LIMIT,
+        },
+    }]
+
+    meta = {
+        "tab": "p9",
+        "params": dict(params),
+        "period": {"year": 2025, "month": 6, "month_date": "2025-06-01"},
+        "currency": currency,
+        "scenario_plan": scenario,
+        "scenario_plan_label": scenario_label,
+        "closed_period": _FOT_MOCK_STATE["closed_period"],
+        "stale": False,
+        "refreshed_at": _FOT_MOCK_STATE["refreshed_at"],
+        "matrix": {
+            "dim": "group_cfo1",
+            "label": "Группа ЦФО",
+            "path": [],
+            "can_drill": True,
+            "levels": [{"key": k, "label": lbl} for k, lbl in fot.MATRIX_LEVELS],
+        },
+        "methodology": fot.METHODOLOGY_P9,
+    }
     meta.update(_FOT_MOCK_META)
-    return {"cards": [], "charts": [], "tables": [], "meta": meta}
+    return {"cards": cards, "charts": charts, "tables": tables, "meta": meta}

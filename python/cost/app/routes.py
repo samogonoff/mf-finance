@@ -11,9 +11,10 @@ from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 
-from app import articul_replace, commercial, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
+from app import articul_replace, commercial, fot, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
 from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED, row_comments_for, set_row_comment)
 from app.logship import log
 from app.db import get_source_change_flags
@@ -1620,6 +1621,83 @@ async def margin_material_lines(
     if _is_mock():
         return {"pair": None, "rows": [], "totals": {}}
     return await material_compare.material_lines(model, articul, plan_id, zadanie, calc_date or None)
+
+
+# ── ФОТ-дашборд «ФОТ и численность» (P9–P13, витрины fot_*) ──────────────────
+
+
+@router.get("/fot/filters")
+async def fot_filters(
+    year: int | None = None, _: str = Depends(_require_perm("cost:fot"))
+) -> dict:
+    """Каскадные опции фильтров ФОТ-дашборда (сборка app/fot.py).
+
+    year ограничивает списки подгрупп ЦФО и самих ЦФО годом с данными —
+    порт меры «_ЦФО активно» из PBI.
+    """
+    if fot.fot_mock_enabled():
+        return mocks.fot_filter_options()
+    try:
+        return await fot.filter_options(year)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/fot/dashboard")
+async def fot_dashboard(
+    request: Request, _: str = Depends(_require_perm("cost:fot"))
+) -> dict:
+    """Вкладка ФОТ-дашборда (?tab=p9 плюс срезы) — сборка app/fot.py.
+
+    tab — вкладка p9…p13 (по умолчанию p9). Срезы иерархии ЦФО, юрлица,
+    страны и путь проваливания матрицы — повторяющимися параметрами
+    (?cfo=101&cfo=102&matrix_path=Розничная сеть), одиночные срезы —
+    scenario_plan/intercompany/year/month/currency. Неизвестная вкладка
+    или значение вне белого списка — 400 (ValueError из fot.dashboard).
+    """
+    qp = request.query_params
+    tab = (qp.get("tab") or "p9").strip()
+    params: dict = {
+        key: qp.getlist(key)
+        for key in ("direction", "cfo_group", "cfo_subgroup", "cfo",
+                    "legal_entity", "country", "matrix_path")
+        if qp.getlist(key)
+    }
+    for key in ("scenario_plan", "intercompany", "year", "month", "currency"):
+        params[key] = qp.get(key, "")
+    try:
+        if fot.fot_mock_enabled():
+            return mocks.fot_dashboard(tab, params)
+        return await fot.dashboard(tab, params)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+# Ссылка на фоновую задачу обновления витрин ФОТ — по той же причине, что и
+# _refresh_task ниже: asyncio держит задачи слабой ссылкой, и без модульного
+# поля GC может собрать задачу посреди загрузки.
+_fot_refresh_task: asyncio.Task | None = None
+
+
+@router.post("/fot/refresh")
+async def fot_refresh(
+    payload: dict | None = Body(None),
+    _: str = Depends(_require_perm("cost:fot")),
+) -> JSONResponse:
+    """Запускает обновление витрин ФОТ в фоне, не дожидаясь его (202 + fot_meta).
+
+    Полная загрузка из MSSQL идёт минуты, а прокси рвёт длинные ответы, поэтому
+    загрузку не ждём: refresh_fot() захватывает гард в fot_meta.refreshing_since,
+    прогресс виден по fot_meta — он же приезжает в meta фильтров и вкладок.
+    force=true в теле снимает чужой застрявший гард безусловно.
+    """
+    if fot.fot_mock_enabled():
+        return JSONResponse(status_code=202, content={"skipped": True, "reason": "mock"})
+    global _fot_refresh_task
+    _fot_refresh_task = asyncio.ensure_future(
+        fot.refresh_fot(force=bool((payload or {}).get("force")))
+    )
+    return JSONResponse(status_code=202, content=await fot.fot_meta())
 
 
 @router.get("/price-levels")
