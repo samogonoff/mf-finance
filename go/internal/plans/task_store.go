@@ -96,6 +96,8 @@ type TaskStore struct {
 	// factSnap — снимок факта МП: из него берётся отметка «данные актуальны на …»
 	// (правка ТЗ 02.09.2026 МП §12).
 	factSnap *MpFactSnapshot
+	// shareDefaults — стратегические доли статей по умолчанию (ТЗ доработок п. 2.1).
+	shareDefaults *MpShareDefaults
 }
 
 // NewTaskStore — конструктор. fact может быть nil (факт тогда пуст).
@@ -108,6 +110,13 @@ func NewTaskStore(pool *pgxpool.Pool, fact MpFactSource) *TaskStore {
 // условий, а не подтягивается суммами.
 func (s *TaskStore) WithCalcContext(cards CardStore, cond MpConditionsStore, rates *RateBook) *TaskStore {
 	s.cards, s.cond, s.rates = cards, cond, rates
+	return s
+}
+
+// WithShareDefaults подключает стратегические доли по умолчанию: форма считает
+// статьи по ним, пока доля не переопределена в условиях площадки.
+func (s *TaskStore) WithShareDefaults(d *MpShareDefaults) *TaskStore {
+	s.shareDefaults = d
 	return s
 }
 

@@ -129,7 +129,7 @@ func ValidateMpForm(in MpValidationInput) []MpIssue {
 				normBase = norm / (1 - cond.SppPct)
 			}
 			commissionShare := safeDiv(vals[BCommission], vals[BSalesPlatNet])
-			if used, exceeded := mpNormExceeded(normBase, commissionShare, cond.Shares); exceeded {
+			if used, exceeded := mpNormExceeded(normBase, commissionShare, cond.EffectiveShares()); exceeded {
 				add("МП-13", MpBlocking, false,
 					"сумма удержаний по площадке %s равна %.2f %% и превышает норматив %.2f %%: уменьшите доли или измените норматив",
 					p.NameCFO, used*100, normBase*100)
@@ -150,7 +150,7 @@ func ValidateMpForm(in MpValidationInput) []MpIssue {
 				add("МП-01", MpBlocking, false, "не задана наценка от общей себестоимости")
 			}
 			// МП-02/МП-03: диапазоны и сумма долей.
-			if err := validateConditions(cond); err != nil {
+			if err := validateConditions(cond.withEffectiveShares()); err != nil {
 				code := "МП-02"
 				if isShareSumError(err) {
 					code = "МП-03"

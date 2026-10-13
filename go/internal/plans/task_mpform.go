@@ -260,6 +260,17 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 			}
 		}
 	}
+	// Доли по умолчанию из стратегии — до снимка: утверждённая версия читает
+	// зафиксированные в ней доли, а не текущую стратегию.
+	if mode == CalcInverse {
+		platforms := make([]MarketplaceRow, 0)
+		for _, mp := range MarketplaceSeed() {
+			if segment == "" || mp.Segment == segment {
+				platforms = append(platforms, mp)
+			}
+		}
+		condByCfo = s.shareDefaults.Attach(ctx, condByCfo, platforms, year, month)
+	}
 	snapshotConditions, snapshotValues := s.mpClosedSnapshot(ctx, card, f.Currency)
 	if snapshotConditions != nil {
 		condByCfo = snapshotConditions
@@ -427,7 +438,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 			k := layerKey(p.CodeCFO, l.BlockType)
 			cell := MpFormCell{CodeCFO: p.CodeCFO, BlockType: l.BlockType}
 			if mode == CalcInverse && l.CostLine {
-				_, hasShare := condByCfo[p.CodeCFO].Shares[l.BlockType]
+				_, hasShare := condByCfo[p.CodeCFO].EffectiveShares()[l.BlockType]
 				cell.MissingShare = !hasShare
 			}
 			if l.Scope == ScopeTotal {

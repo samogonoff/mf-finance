@@ -32,25 +32,6 @@ export interface MpConditionsDiff {
   needs_why: boolean;
 }
 
-/** Итог «Заполнить доли из факта» по площадке. */
-export interface MpSeedPlatform {
-  code_cfo: number;
-  name_cfo: string;
-  status: "filled" | "skipped";
-  reason?: string;
-  shares?: Record<string, number>;
-  base: number;
-  dropped?: Record<string, string>;
-}
-
-/** Ответ POST …/conditions/seed-fact: окно закрытых месяцев и итог по площадкам. */
-export interface MpSeedResult {
-  months: { year: number; month: number }[];
-  source: string;
-  filled: number;
-  platforms: MpSeedPlatform[];
-}
-
 export interface MpConditionsView {
   period: { year: number; month: number };
   conditions: MpConditionsRow[];
@@ -296,14 +277,6 @@ export function useMpConditions() {
       headers: authHeader()
     });
 
-  // Первичное заполнение долей из факта последних закрытых месяцев: только
-  // площадки без долей, %СПП и наценки не трогает (вводятся руками).
-  const seedSharesFromFact = (cardId: number): Promise<MpSeedResult> =>
-    $fetch<MpSeedResult>(`${base}/api/plans/mp/cards/${cardId}/conditions/seed-fact`, {
-      method: "POST",
-      headers: authHeader()
-    });
-
   // ── Пересчёт и валидации ──
   const recalc = (cardId: number, preview = false): Promise<MpRecalcResult> =>
     $fetch<MpRecalcResult>(`${base}/api/plans/mp/cards/${cardId}/recalc`, {
@@ -336,7 +309,7 @@ export function useMpConditions() {
   return {
     cards, card, cardAction, setCalcMode, versionPayload, publish, publishLog, publishSandbox,
     formRoute, saveFormRoute,
-    conditions, saveConditions, copyConditions, seedSharesFromFact,
+    conditions, saveConditions, copyConditions,
     recalc, validate, commonCosts, saveCommonCosts
   };
 }

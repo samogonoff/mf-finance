@@ -44,11 +44,16 @@ type MpConditions struct {
 	VatRate        *float64           `json:"vat_rate,omitempty"` // nil → из справочника dir_vat
 	Currency       string             `json:"currency"`
 	Shares         map[string]float64 `json:"shares"` // block_type → доля статьи
-	Version        int                `json:"version"`
-	ChangeReason   string             `json:"change_reason"`
-	Status         string             `json:"status"`
-	AuthorID       int64              `json:"author_id"`
-	UpdatedAt      time.Time          `json:"updated_at"`
+	// DefaultShares — доли по умолчанию из стратегии на месяц тактики (ТЗ
+	// доработок п. 2.1, mp_share_defaults.go). В реестр не пишутся: Shares —
+	// только ручные значения, поэтому «по умолчанию / вручную» различимо.
+	DefaultShares map[string]float64 `json:"default_shares,omitempty"`
+	DefaultSource string             `json:"default_source,omitempty"`
+	Version       int                `json:"version"`
+	ChangeReason  string             `json:"change_reason"`
+	Status        string             `json:"status"`
+	AuthorID      int64              `json:"author_id"`
+	UpdatedAt     time.Time          `json:"updated_at"`
 }
 
 // MpConditionsDiff — изменение одной величины условий (для согласующего).
@@ -589,6 +594,27 @@ func blockToPL() map[string]int {
 	return out
 }
 
+// EffectiveShares — доли, от которых считается каскад: ручная доля поверх
+// стратегической по умолчанию. Статьи без обеих в карте нет — каскад её
+// пропускает, а форма пишет «доля не задана» (расчёта от нуля нет).
+func (c MpConditions) EffectiveShares() map[string]float64 {
+	out := make(map[string]float64, len(c.DefaultShares)+len(c.Shares))
+	for k, v := range c.DefaultShares {
+		out[k] = v
+	}
+	for k, v := range c.Shares {
+		out[k] = v
+	}
+	return out
+}
+
+// withEffectiveShares — копия условий, где Shares = эффективные доли (для
+// проверок МП-02/03/13: блокирует то, чем форма реально считается).
+func (c MpConditions) withEffectiveShares() MpConditions {
+	c.Shares = c.EffectiveShares()
+	return c
+}
+
 // conditionsToInput — условия площадки → вход каскада.
 //
 // Перевод «с НДС → без НДС»: ставка, ЗАДАННАЯ РУКАМИ в условиях площадки, старше
@@ -606,10 +632,7 @@ func conditionsToInputNorm(c MpConditions, vat MpVatBasis, norm float64) MpCondi
 	if c.VatRate != nil {
 		rate, ratio = *c.VatRate, 1+*c.VatRate
 	}
-	shares := make(map[string]float64, len(c.Shares))
-	for k, v := range c.Shares {
-		shares[k] = v
-	}
+	shares := c.EffectiveShares()
 	return MpConditionsInput{
 		CodeCFO: c.CodeCFO, VatRate: rate, VatRatio: ratio, NormShare: norm, SppPct: c.SppPct,
 		MarkupPct: c.MarkupPct, MarkupTotalPct: c.MarkupTotalPct, Shares: shares,

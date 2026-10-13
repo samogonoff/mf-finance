@@ -395,8 +395,13 @@ func main() {
 	// Реестр условий площадки нужен и провайдеру карточки (общие затраты идут в
 	// приёмник под ЦФО 250), и сервису формы — заводим до обоих.
 	plansMpCond := plans.NewMpConditionsStore(pool)
+	// Стратегические доли статей по умолчанию (ТЗ доработок п. 2.1): ОПУ-витрина,
+	// сценарий стратегии на месяц тактики. Общий экземпляр — общий кэш.
+	plansMpShareDefaults := plans.NewMpShareDefaults(
+		plans.NewMpArticleSource(cfg.PlansMock, mssqlDB, cfg.PlansMpArticleFactTable),
+		cfg.PlansMpStrategyScenario)
 	mpCardProvider := plans.NewMpCardProvider(plansStore, plansRates).
-		WithFactSource(plansFact).WithCommonCosts(plansMpCond)
+		WithFactSource(plansFact).WithCommonCosts(plansMpCond).WithShareDefaults(plansMpShareDefaults)
 	plansCards.RegisterForm(plans.TemplateMP, mpCardProvider, mpCardProvider)
 
 	// Форма «Розница» (TPL-TO-RETAIL): карточка + сервис сетки/расчёта/валидаций.
@@ -472,9 +477,10 @@ func main() {
 	// тем же направлением, что указано в карточке (calc_mode).
 	plansMpCondSvc := plans.NewMpConditionsService(plansMpCond, plansStore, plans.NewCardStore(pool),
 		plansRates, plansFact, plansScope).WithAudit(plansAudit).
-		WithArticleFact(plans.NewMpArticleFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpArticleFactTable))
+		WithShareDefaults(plansMpShareDefaults)
 	plansMpCondH := plans.NewMpConditionsHandler(plansMpCondSvc, plansPrincipal)
-	plansTasks.WithCalcContext(plans.NewCardStore(pool), plansMpCond, plansRates)
+	plansTasks.WithCalcContext(plans.NewCardStore(pool), plansMpCond, plansRates).
+		WithShareDefaults(plansMpShareDefaults)
 
 	mux.HandleFunc("GET /api/plans/health", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Health))
 	mux.HandleFunc("GET /api/plans/directories", auth.RequireRole(authSvc, auth.RolePlansUser, plansH.Directories))
@@ -516,7 +522,6 @@ func main() {
 	mux.HandleFunc("GET /api/plans/mp/cards/{cardId}/conditions", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.ConditionsGet))
 	mux.HandleFunc("PUT /api/plans/mp/cards/{cardId}/conditions", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.ConditionsSave))
 	mux.HandleFunc("POST /api/plans/mp/cards/{cardId}/conditions/copy", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.ConditionsCopy))
-	mux.HandleFunc("POST /api/plans/mp/cards/{cardId}/conditions/seed-fact", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.ConditionsSeedFact))
 	mux.HandleFunc("POST /api/plans/mp/cards/{cardId}/recalc", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.Recalc))
 	mux.HandleFunc("GET /api/plans/mp/cards/{cardId}/validate", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.Validate))
 	mux.HandleFunc("GET /api/plans/mp/cards/{cardId}/common-costs", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.CommonCostsGet))

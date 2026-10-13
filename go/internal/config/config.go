@@ -80,6 +80,9 @@ type Config struct {
 	// PlansMpArticleFactTable — факт по статьям прямых затрат площадок для
 	// первичного заполнения долей (ОПУ-витрина, сценарий «факт»). Пусто → mock.
 	PlansMpArticleFactTable string
+	// PlansMpStrategyScenario — сценарий витрины, из которого берутся
+	// стратегические доли статей по умолчанию (ТЗ доработок п. 2.1).
+	PlansMpStrategyScenario string
 	PlansAuditEnabled       bool
 	// PlansLegacyMpAPI=1 возвращает к жизни устаревшую ветку /api/plans/mp/{form,
 	// compute,copy,formula,export,import} — форма из двух editable-строк (1046/8006)
@@ -224,6 +227,7 @@ func Load() Config {
 		PlansMpTaktTable:          env("PLANS_MP_TAKT_TABLE", "Budgeting.dbo.FormToLoaTaktTarget"),
 		PlansMpPenaltyView:        env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
 		PlansMpArticleFactTable:   env("PLANS_MP_ARTICLE_FACT_TABLE", "FinDWH.dbo.Table_Fin_PL"),
+		PlansMpStrategyScenario:   env("PLANS_MP_STRATEGY_SCENARIO", "НовСтрат"),
 		PlansAuditEnabled:         env("PLANS_AUDIT_ENABLED", "0") == "1",
 		PlansLegacyMpAPI:          env("PLANS_LEGACY_MP_API", "0") == "1",
 		PlansPublishEnabled:       env("PLANS_PUBLISH_ENABLED", "0") == "1",
