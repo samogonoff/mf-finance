@@ -463,6 +463,12 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     select_parts.append("MIN(cd.manual_source_sign) AS manual_source_sign")
     select_parts.append("MIN(cd.manual_created_by) AS manual_created_by")
     select_parts.append("MIN(cd.manual_batch_id) AS manual_batch_id")
+    # Фактически раскроено штук по карте кроя задания (миграция 0063). На
+    # октябрьских данных источник дублирует в поле «выпуск шт» построчно
+    # (проверено: в каждой строке значения равны), поэтому агрегируем как
+    # «выпуск шт» в витрине — MAX, не SUM: SUM размножил бы значение по числу
+    # строк-материалов.
+    select_parts.append('MAX(cd."Раскрой, ШТ") AS "Раскроено шт"')
     select_parts.append(
         "CASE WHEN BOOL_AND(ca.status = 'approved') THEN 'approved'"
         "     WHEN BOOL_OR(ca.status = 'rejected') THEN 'rejected'"

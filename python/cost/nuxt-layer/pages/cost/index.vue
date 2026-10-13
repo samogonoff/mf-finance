@@ -589,6 +589,12 @@
                 Раскрой ($)<span v-if="sortField === 'sum_Раскрой, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
+              <!-- Фактически выкроено штук по карте кроя задания (задача Б24 663722).
+                   Источник заполняет с октября 2026, до этого пусто — «—». -->
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'cut_qty' && isVisible('cut_qty')" class="col-num" :class="{ sorted: sortField === 'Раскроено шт' }" @click="toggleSort('Раскроено шт')" title="Сколько единиц фактически выкроено по карте кроя задания">
+                Раскроено, шт<span v-if="sortField === 'Раскроено шт'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
+              </th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_decors' && isVisible('sum_decors') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
                 Декоры (руб)<span v-if="sortField === 'sum_Декоры, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
@@ -869,6 +875,7 @@
               <td v-if="ck === 'avg_cutting_min' && isVisible('avg_cutting_min')" class="col-num num">{{ fmt(row['avg_Раскрой, минуты']) }}</td>
               <td v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && !showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, руб.']) }}</td>
               <td v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, USD.']) }}</td>
+              <td v-if="ck === 'cut_qty' && isVisible('cut_qty')" class="col-num num">{{ fmt(row['Раскроено шт']) }}</td>
               <td v-if="ck === 'sum_decors' && isVisible('sum_decors') && !showUSD" class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
               <td v-if="ck === 'sum_decors' && isVisible('sum_decors') && showUSD" class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
               <td v-if="ck === 'sum_knitting' && isVisible('sum_knitting') && !showUSD" class="col-num num">{{ fmt(row['sum_Вязание, руб.']) }}</td>
@@ -2872,6 +2879,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'sum_sewing', label: 'Пошив' },
   { key: 'avg_cutting_min', label: 'Раскрой (мин)' },
   { key: 'sum_cutting', label: 'Раскрой' },
+  { key: 'cut_qty', label: 'Раскроено, шт' },
   { key: 'sum_decors', label: 'Декоры' },
   { key: 'sum_knitting', label: 'Вязание' },
   { key: 'sum_cost', label: 'Себестоимость' },
@@ -2888,7 +2896,7 @@ const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','
 const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
-const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation'];
+const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','cut_qty','sum_decors','sum_knitting','sum_cost','cost_deviation'];
 const calcColumnKeys = ['calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 
 const mainColumns = computed(() => COLUMNS_CONFIG.filter(c => mainColumnKeys.includes(c.key)));
@@ -2919,6 +2927,7 @@ const COL_DEFAULT_WIDTHS: Record<string, number> = {
   // валютные и себестоимость
   avg_retail_usd: 92, sum_materials: 92, sum_aux_materials: 92,
   avg_sewing_min: 80, sum_sewing: 88, avg_cutting_min: 80, sum_cutting: 88,
+  cut_qty: 88,
   sum_decors: 88, sum_knitting: 88, sum_cost: 92, cost_deviation: 92,
   // расчётные метрики
   calc_markup: 92, calc_markup_pct: 116, calc_margin_pct: 96,
@@ -2943,7 +2952,7 @@ const STORAGE_KEY = 'cost_column_visibility';
  *
  * Порядок хранится списком ключей, а не индексами: список ключей переживает
  * добавление и удаление колонок в коде, а индексы — нет. */
-const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
+const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','cut_qty','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 const ORDER_STORAGE_KEY = 'cost_column_order';
 /** Все колонки таблицы: закреплённые слева плюс переносимые. */
 const ALL_COL_KEYS = [...STICKY_COL_KEYS, ...MOVABLE_COL_KEYS];
