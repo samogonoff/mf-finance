@@ -59,6 +59,15 @@ type MpFactSnapshot struct {
 	// дальше, — мусор источника: правка МП §13 называет конкретный пример, месяц
 	// 2027-09-01 на две строки с суммой −1119.
 	horizonYears int
+	// watch — журнал прогонов источников (ТЗ доработок п. 1.1). nil → не ведётся.
+	watch *SourceWatch
+}
+
+// WithWatch подключает контроль прогонов: падение строк слоя против прошлого
+// успешного прогона сверх порога — алерт.
+func (s *MpFactSnapshot) WithWatch(w *SourceWatch) *MpFactSnapshot {
+	s.watch = w
+	return s
 }
 
 // NewMpFactSnapshot — конструктор. src — откуда питается снимок (OLAP или mock).
@@ -91,6 +100,7 @@ func (s *MpFactSnapshot) Refresh(ctx context.Context, year, month int, segment s
 	var out []MpSnapshotMeta
 	for _, l := range layers {
 		rows, err := l.load(ctx, year, month, segment)
+		s.watch.Record(ctx, "mp_snapshot:"+l.name, fmt.Sprintf("%04d-%02d %s", year, month, segment), len(rows), err)
 		if err != nil {
 			log.Printf("plans: снимок факта МП (%s, %04d-%02d): %v", l.name, year, month, err)
 			if merr := s.markRun(ctx, year, month, l.name, segment, 0, l.note, err.Error()); merr != nil {

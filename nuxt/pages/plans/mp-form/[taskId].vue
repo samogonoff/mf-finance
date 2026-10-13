@@ -29,10 +29,15 @@
         <!-- Отметка снимка факта (правка ТЗ МП §12): форма читает снимок, а не
              OLAP вживую, и обязана показывать, когда он собран. «Не собран» —
              отдельное состояние: показать нули вместо него значит соврать. -->
-        <p v-if="form" class="snap-line" :class="{ warn: !form.fact_snapshot?.collected || !!form.fact_snapshot?.error }">
+        <!-- ТЗ доработок п. 1.1: дата актуальности, источник и число строк;
+             пустой источник — явное сообщение, а не пустая сетка. -->
+        <p v-if="form" class="snap-line" :class="{ warn: !form.fact_snapshot?.collected || !!form.fact_snapshot?.error || form.fact_snapshot?.rows_total === 0 }">
           <Icon name="lucide:database" />
           <template v-if="form.fact_snapshot?.collected">
             данные факта актуальны на {{ snapAsOf }}
+            <span v-if="form.fact_snapshot?.source_note"> · источник: {{ form.fact_snapshot.source_note }}</span>
+            · строк: {{ form.fact_snapshot.rows_total ?? 0 }}
+            <span v-if="form.fact_snapshot?.rows_total === 0 && !form.fact_snapshot?.error" class="snap-err">· источник пуст за период — колонки факта пусты (не нули)</span>
             <span v-if="form.fact_snapshot?.error" class="snap-err">· ошибка сбора: {{ form.fact_snapshot.error }}</span>
           </template>
           <template v-else>
@@ -434,7 +439,9 @@ const fileInput = ref<HTMLInputElement | null>(null);
 // ── Режим расчёта, карточка процесса, валидации ──
 const isInverse = computed(() => form.value?.calc_mode === "inverse");
 const cardId = computed(() => form.value?.card_id || Number(route.query.cardId) || 0);
-const tacticMonth = computed(() => form.value ? new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(new Date(form.value.year, form.value.month - 1, 1)) : "");
+// «Тактика: ноябрь 2026» (ТЗ доработок п. 2.4). Месяц отдельно от года: формат
+// «month+year» в ru-RU даёт «ноябрь 2026 г.» с лишним «г.».
+const tacticMonth = computed(() => form.value ? `${new Intl.DateTimeFormat("ru-RU", { month: "long" }).format(new Date(form.value.year, form.value.month - 1, 1))} ${form.value.year}` : "");
 const modeLabel = computed(() => (isInverse.value ? "расчёт от условий" : "расчёт от сумм"));
 const modeHint = computed(() =>
   isInverse.value

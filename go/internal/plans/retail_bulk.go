@@ -79,13 +79,15 @@ type RetailBulkRequest struct {
 	ResetManual bool `json:"reset_manual"`
 
 	// --- copy_scenario ---
-	Source          string  `json:"source"`        // strategy|tactic|fact
-	SourceYear      int     `json:"source_year"`   // год источника
-	SourceMonth     int     `json:"source_month"`  // 0 → месяц-в-месяц
-	Coefficient     float64 `json:"coefficient"`   // × k (0 → не применяется)
-	PercentDelta    float64 `json:"percent_delta"` // + x % (0.1 = +10 %)
-	CoefficientSet  bool    `json:"coefficient_set,omitempty"`
-	PercentDeltaSet bool    `json:"percent_delta_set,omitempty"`
+	//
+	// ТЗ доработок кабинета (п. 2.2, 2.3): поле «Надбавка» убрано — рабочее поле
+	// коэффициент (допустимо < 1); копирование идёт в ОДИН выбранный месяц
+	// (по умолчанию месяц тактики) из того же месяца сценария. Независимых
+	// фильтров «год/месяц источника» больше нет: факт берётся за тот же месяц
+	// прошлого года — для планового месяца другого факта не бывает.
+	Source         string  `json:"source"`      // strategy|tactic|new_strategy|fact
+	Coefficient    float64 `json:"coefficient"` // × k (0 и не задан → без коэффициента)
+	CoefficientSet bool    `json:"coefficient_set,omitempty"`
 
 	// --- distribute («Методика Е.В.») ---
 	TargetTotal float64 `json:"target_total"` // целевой итог на область применения
@@ -174,15 +176,15 @@ func ApplyRetailBulk(req RetailBulkRequest, ctx RetailBulkContext) (RetailBulkRe
 	months := req.Months
 	if len(months) == 0 {
 		months = ctx.PlanMonths
-		if req.Op == BulkCopyScenario && (req.CoefficientSet || req.PercentDeltaSet || req.Coefficient != 0 || req.PercentDelta != 0) {
-			months = []int{ctx.Month}
+		if req.Op == BulkCopyScenario {
+			months = []int{ctx.Month} // по умолчанию — месяц тактики (ТЗ доработок п. 2.3)
 		}
 	}
 	if len(months) == 0 {
 		return res, errors.New("не заданы целевые месяцы операции")
 	}
-	if req.Op == BulkCopyScenario && hasBulkMultiplier(req) && len(months) != 1 {
-		return res, errors.New("коэффициент и надбавка применяются к одному выбранному месяцу")
+	if req.Op == BulkCopyScenario && len(months) != 1 {
+		return res, errors.New("копирование сценария применяется к одному выбранному месяцу")
 	}
 
 	switch req.Op {
@@ -204,9 +206,28 @@ func ApplyRetailBulk(req RetailBulkRequest, ctx RetailBulkContext) (RetailBulkRe
 	if err != nil {
 		return res, err
 	}
+	// ТЗ доработок п. 1.2: при пустом источнике операция не должна «молча ничего
+	// не делать». Если не нашлось ни одной базы — это ошибка, а не пустой diff.
+	// Защищённые ручные значения — другой случай: база была, менять нельзя.
+	if len(res.Diff) == 0 && res.Protected == 0 && res.SkippedNoBase > 0 {
+		return res, fmt.Errorf("нет данных за выбранный период (%s): ни у одного магазина области нет базы для операции",
+			bulkMonthsLabel(months, ctx.Year))
+	}
 	sortBulkDiff(res.Diff)
 	res.Changed = len(res.Diff)
 	return res, nil
+}
+
+// bulkMonthsLabel — «11.2026» / «11–12.2026» для сообщений об отсутствии данных.
+func bulkMonthsLabel(months []int, year int) string {
+	if len(months) == 1 {
+		return fmt.Sprintf("%02d.%d", months[0], year)
+	}
+	lo, hi := months[0], months[0]
+	for _, m := range months {
+		lo, hi = min(lo, m), max(hi, m)
+	}
+	return fmt.Sprintf("%02d–%02d.%d", lo, hi, year)
 }
 
 // bulkScopeRows — строки области применения (ТЗ §5).
@@ -269,11 +290,7 @@ func applyCoefficient(v float64, req RetailBulkRequest) float64 {
 	if req.CoefficientSet || req.Coefficient != 0 {
 		return v * req.Coefficient
 	}
-	return v * (1 + req.PercentDelta)
-}
-
-func hasBulkMultiplier(req RetailBulkRequest) bool {
-	return req.CoefficientSet || req.PercentDeltaSet || req.Coefficient != 0 || req.PercentDelta != 0
+	return v
 }
 
 // bulkCopyScenario — «Копирование сценария» (ТЗ §5): источник = стратегия <год> |
@@ -297,16 +314,14 @@ func bulkCopyScenario(res *RetailBulkResult, req RetailBulkRequest, ctx RetailBu
 	default:
 		return fmt.Errorf("неизвестный сценарий копирования %q", req.Source)
 	}
-	srcYear := req.SourceYear
-	if srcYear == 0 {
-		srcYear = ctx.Year
+	// Месяц источника = месяц применения; год — год периода, у факта — прошлый.
+	srcYear := ctx.Year
+	if req.Source == CopyFromFact {
+		srcYear = ctx.Year - 1
 	}
 	for _, row := range rows {
 		for _, m := range months {
 			srcMonth := m
-			if req.SourceMonth != 0 {
-				srcMonth = req.SourceMonth
-			}
 			base, ok := src[RetailCellKey{row.CodeCFO, srcYear, srcMonth}]
 			if !ok {
 				res.SkippedNoBase++
@@ -773,16 +788,11 @@ func ValidateBulkRequest(req RetailBulkRequest) error {
 	if req.Op == BulkCopyScenario && strings.TrimSpace(req.Source) == "" {
 		return errors.New("для копирования сценария укажите сценарий")
 	}
-	if req.Op == BulkCopyScenario && (math.IsNaN(req.Coefficient) || math.IsInf(req.Coefficient, 0) ||
-		math.IsNaN(req.PercentDelta) || math.IsInf(req.PercentDelta, 0) || math.IsInf(1+req.PercentDelta, 0)) {
-		return errors.New("коэффициент и надбавка должны быть конечными числами")
+	if req.Op == BulkCopyScenario && (math.IsNaN(req.Coefficient) || math.IsInf(req.Coefficient, 0)) {
+		return errors.New("коэффициент должен быть конечным числом")
 	}
-	if req.Op == BulkCopyScenario && hasBulkMultiplier(req) && len(req.Months) > 1 {
-		return errors.New("коэффициент и надбавка применяются к одному выбранному месяцу")
-	}
-	if req.Op == BulkCopyScenario && (req.CoefficientSet || req.Coefficient != 0) && (req.PercentDeltaSet || req.PercentDelta != 0) &&
-		math.Abs(req.Coefficient-(1+req.PercentDelta)) > 1e-9 {
-		return errors.New("задайте либо коэффициент, либо надбавку")
+	if req.Op == BulkCopyScenario && len(req.Months) > 1 {
+		return errors.New("копирование сценария применяется к одному выбранному месяцу")
 	}
 	return nil
 }

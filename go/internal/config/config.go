@@ -83,6 +83,9 @@ type Config struct {
 	// PlansMpStrategyScenario — сценарий витрины, из которого берутся
 	// стратегические доли статей по умолчанию (ТЗ доработок п. 2.1).
 	PlansMpStrategyScenario string
+	// PlansSourceDropAlertPct — порог падения строк источника против прошлого
+	// успешного прогона, %, после которого алерт (ТЗ доработок п. 1.1).
+	PlansSourceDropAlertPct float64
 	PlansAuditEnabled       bool
 	// PlansLegacyMpAPI=1 возвращает к жизни устаревшую ветку /api/plans/mp/{form,
 	// compute,copy,formula,export,import} — форма из двух editable-строк (1046/8006)
@@ -228,6 +231,7 @@ func Load() Config {
 		PlansMpPenaltyView:        env("PLANS_MP_PENALTIES_VIEW", "FINDWHACCESSGROUP"),
 		PlansMpArticleFactTable:   env("PLANS_MP_ARTICLE_FACT_TABLE", "FinDWH.dbo.Table_Fin_PL"),
 		PlansMpStrategyScenario:   env("PLANS_MP_STRATEGY_SCENARIO", "НовСтрат"),
+		PlansSourceDropAlertPct:   envFloat("PLANS_SOURCE_DROP_ALERT_PCT", 30),
 		PlansAuditEnabled:         env("PLANS_AUDIT_ENABLED", "0") == "1",
 		PlansLegacyMpAPI:          env("PLANS_LEGACY_MP_API", "0") == "1",
 		PlansPublishEnabled:       env("PLANS_PUBLISH_ENABLED", "0") == "1",
@@ -337,4 +341,13 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// envFloat — число из env; нераспознанное значение → дефолт (не роняем старт).
+func envFloat(k string, def float64) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(k)), 64)
+	if err != nil {
+		return def
+	}
+	return v
 }

@@ -27,6 +27,11 @@
           <Icon name="lucide:clipboard-list" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Тактические планы</span>
         </NuxtLink>
+        <!-- ТЗ доработок п. 5.1: «Стратегические планы» на одном уровне с тактическими. -->
+        <NuxtLink v-if="!isCostOnly && hasScope('plans')" to="/strategy" class="nav-item">
+          <Icon name="lucide:target" class="nav-item-icon" />
+          <span v-if="!sidebarCollapsed">Стратегические планы</span>
+        </NuxtLink>
         <NuxtLink v-if="!isCostOnly" to="/counterparties" class="nav-item">
           <Icon name="lucide:users" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Контрагенты</span>

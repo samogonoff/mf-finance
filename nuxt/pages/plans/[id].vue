@@ -6,6 +6,12 @@
         <p class="page-subtitle">Формирование тактических планов Profit &amp; Loss — согласование по схеме</p>
       </div>
       <div class="page-actions">
+        <NuxtLink :to="`/plans/route-scheme/${id}`" class="btn btn-ghost">
+          <Icon name="lucide:git-branch" /> Схема согласования
+        </NuxtLink>
+        <NuxtLink v-if="cards.some((c) => c.form_code === 'TPL-TO-RETAIL')" :to="`/plans/retail-consolidated/${id}`" class="btn btn-ghost">
+          <Icon name="lucide:globe" /> Свод розницы · 4 страны
+        </NuxtLink>
         <NuxtLink :to="`/plans/process/${id}`" class="btn btn-primary">
           <Icon name="lucide:list-checks" /> Процесс · задания
         </NuxtLink>

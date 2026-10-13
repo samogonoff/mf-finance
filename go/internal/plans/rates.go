@@ -254,7 +254,7 @@ func (b *RateBook) load(ctx context.Context) ([]VatRow, []FxRow) {
 			fx = fx[:0]
 			for _, r := range rows {
 				fx = append(fx, FxRow{
-					Currency: strings.ToUpper(strAt(r.Payload, "currency")),
+					Currency: fxCurrencyCode(strAt(r.Payload, "currency")),
 					Year:     intAt(r.Payload, "year"),
 					Month:    intAt(r.Payload, "month"),
 					RateBYN:  floatAt(r.Payload, "rate_byn"),
@@ -524,6 +524,21 @@ func (b *RateBook) Snapshot(ctx context.Context, year, month int, currencies ...
 	}
 	out["rates_byn"] = rates
 	return out
+}
+
+// fxCurrencyCode — код валюты строки справочника курсов к коду модуля.
+//
+// В dir_fx_rate (выгрузка из учётной системы) рубль записан не как RUB, а как
+// «RUR.» (текущий курс) и «RUR2» (прежний). Без приведения pickFx не находил
+// RUB и молча брал 1.0: в BYN-блоке розницы РФ рубли шли один к одному, и свод
+// «все четыре розницы» завышал РФ примерно в 28 раз (найдено 13.10.2026).
+func fxCurrencyCode(raw string) string {
+	c := strings.ToUpper(strings.TrimSpace(raw))
+	switch strings.TrimRight(c, ".0123456789") {
+	case "RUR", "RUB":
+		return "RUB"
+	}
+	return c
 }
 
 // normalizeAnyCurrency — допустимые валюты модуля: BYN/RUB/USD + валюты площадок

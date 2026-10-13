@@ -261,7 +261,18 @@ func main() {
 	// заполняющий. Снимок питается регламентом (раз в сутки) и ручкой админа.
 	// PLANS_FACT_SNAPSHOT=0 — аварийный откат на прямое чтение источника.
 	plansFactOrigin := plans.NewMpFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpFactTable, cfg.PlansMpPlanTable, cfg.PlansMpTaktTable, cfg.PlansMpPenaltyView)
-	plansFactSnap := plans.NewMpFactSnapshot(pool, plansFactOrigin)
+	// Журнал прогонов источников (ТЗ доработок п. 1.1): падение числа строк
+	// против прошлого успешного прогона сверх порога — warn в лог и уведомление
+	// администраторам.
+	plansSourceWatch := plans.NewSourceWatch(pool, cfg.PlansSourceDropAlertPct,
+		func(ctx context.Context, title, message string) {
+			if _, err := notifSvc.CreateForAllAdmins(ctx, notifications.Input{
+				Title: title, Message: message, Type: "warning", ObjectType: "plans_source",
+			}); err != nil {
+				log.Printf("plans source-watch: уведомление админам не отправлено: %v", err)
+			}
+		})
+	plansFactSnap := plans.NewMpFactSnapshot(pool, plansFactOrigin).WithWatch(plansSourceWatch)
 	plansFact := plansFactOrigin
 	if cfg.PlansFactSnapshot {
 		plansFact = plans.NewSnapshotFactSource(plansFactSnap)
@@ -370,9 +381,13 @@ func main() {
 		log.Printf("plans: публикация идёт в ПЕСОЧНИЦУ publish_sandbox (PLANS_PUBLISH_SANDBOX=1) — в Budgeting записи не будет")
 		plansPublisher = plans.NewSandboxPublisher(pool, cfg.PlansPublishTargets)
 	}
+	// Исполнители шагов маршрута — один резолвер и для переходов карточек, и для
+	// схемы согласования (ТЗ доработок п. 4.3): схема показывает ровно тех, кому
+	// карточка реально придёт.
+	plansStepOwners := plans.NewCardStepOwnerResolver(pool, plansTasks)
 	plansCards := plans.NewCardService(plans.NewCardStore(pool)).
 		WithPublisher(plansPublisher, plans.NewPublishStore(pool)).
-		WithOwners(plans.NewCardStepOwnerResolver(pool, plansTasks)).
+		WithOwners(plansStepOwners).
 		// План пишется на РЕАЛЬНОЕ ЮЛ: колонка «Компания» приёмника тактики
 		// заполняется УНП из справочника (правки ТЗ 02.09.2026 §15/§16).
 		WithLegalEntities(plans.NewLegalEntityResolver(plansDir)).
@@ -415,6 +430,8 @@ func main() {
 	plansCards.RegisterForm(plans.TemplateRetail, plansRetailProvider, plansRetailProvider)
 	plansRetail := plans.NewRetailService(plansRetailRepo, plansCards, plansRetailSource).
 		WithRates(plansRates).
+		WithScopeSource(plansDir).
+		WithWatch(plansSourceWatch).
 		WithCalendar(plansCalendar).
 		WithScope(plansScope).
 		WithAudit(plansAudit).
@@ -512,6 +529,8 @@ func main() {
 	// Содержимое PG-песочницы приёмника (PLANS_PUBLISH_SANDBOX=1) — проверка записи.
 	mux.HandleFunc("GET /api/plans/publish-sandbox", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.PublishSandbox))
 	mux.HandleFunc("GET /api/plans/forms/{formCode}/route", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.FormRoute))
+	mux.HandleFunc("GET /api/plans/period/{plId}/route-scheme", auth.RequireRole(authSvc, auth.RolePlansUser,
+		plans.NewRouteSchemeHandler(plansCards, plansStepOwners, pool, plansScope, plansPrincipal).Get))
 	mux.HandleFunc("PUT /api/plans/forms/{formCode}/route", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.FormRouteSave))
 	mux.HandleFunc("GET /api/plans/forms/{formCode}/publish-mapping", auth.RequireRole(authSvc, auth.RolePlansUser, plansCardsH.PublishMappings))
 	mux.HandleFunc("PUT /api/plans/forms/{formCode}/publish-mapping", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansCardsH.PublishMappingSave))
@@ -563,6 +582,11 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/retail/{cardId}/params", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansRetailH.ParamsSave))
 	mux.HandleFunc("PUT /api/plans/retail/{cardId}/lfl-override", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansRetailH.LFLOverride))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/summary", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.SummaryGet))
+	mux.HandleFunc("GET /api/plans/retail/period/{plId}/consolidated", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.ConsolidatedGet))
+	mux.HandleFunc("GET /api/plans/retail/lfl-statuses", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.LFLStatusesGet))
+	// Раздел «Стратегические планы» (ТЗ доработок п. 5.1).
+	mux.HandleFunc("GET /api/plans/strategy/mp-shares", auth.RequireRole(authSvc, auth.RolePlansUser,
+		plans.NewStrategyHandler(plansMpShareDefaults).MpShares))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/validate", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.ValidateGet))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.Export))
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/import-template", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.ImportTemplate))

@@ -161,26 +161,29 @@ const (
 // FinDWH.dbo.[001 CodeCFO] WHERE GroupCFO1='Магазины'). Имена полей — по
 // колонкам источника, чтобы сверка с BI шла без словаря переименований.
 type RetailStore struct {
-	CodeCFO    int     `json:"code_cfo"`
-	KlientID   string  `json:"klient_id"`
-	NameCFO    string  `json:"cfo"`         // CFO — название магазина
-	GroupCFO1  string  `json:"group_cfo1"`  // 'Магазины'
-	City       string  `json:"city"`        // GroupCFO2
-	Country    string  `json:"country"`     // Country
-	CodeFOX    string  `json:"code_fox"`    // CodeFOX
-	Ploschad   float64 `json:"ploschad"`    // метраж
-	StoreType  string  `json:"store_type"`  // TypeOfStore
-	DateOpen   string  `json:"date_open"`   // YYYY-MM-DD (пусто = неизвестно)
-	DateClose  string  `json:"date_close"`  // YYYY-MM-DD (пусто = не закрыт)
-	Stage      string  `json:"stage"`       // StadiyaOfStore
-	CompanyMF  string  `json:"company_mf"`  // ЮЛ
-	Channel    string  `json:"channel"`     // Channel
-	CFOold     string  `json:"cfo_old"`     // CFOold
-	Category   string  `json:"category"`    // Category
-	LFLStatus  string  `json:"lfl_status"`  // LfLStatus — приводится к каноническим кодам
-	RegManager string  `json:"reg_manager"` // RegManager (права РМ, §9)
-	Manager    string  `json:"manager"`     // Manager
-	PLAnalytic string  `json:"pl_analytic"` // PLAnalyticCFO1
+	CodeCFO   int     `json:"code_cfo"`
+	KlientID  string  `json:"klient_id"`
+	NameCFO   string  `json:"cfo"`        // CFO — название магазина
+	GroupCFO1 string  `json:"group_cfo1"` // 'Магазины'
+	City      string  `json:"city"`       // GroupCFO2
+	Country   string  `json:"country"`    // Country
+	CodeFOX   string  `json:"code_fox"`   // CodeFOX
+	Ploschad  float64 `json:"ploschad"`   // метраж
+	StoreType string  `json:"store_type"` // TypeOfStore
+	DateOpen  string  `json:"date_open"`  // YYYY-MM-DD (пусто = неизвестно)
+	DateClose string  `json:"date_close"` // YYYY-MM-DD (пусто = не закрыт)
+	Stage     string  `json:"stage"`      // StadiyaOfStore
+	CompanyMF string  `json:"company_mf"` // ЮЛ
+	Channel   string  `json:"channel"`    // Channel
+	CFOold    string  `json:"cfo_old"`    // CFOold
+	Category  string  `json:"category"`   // Category
+	LFLStatus string  `json:"lfl_status"` // LfLStatus — приводится к каноническим кодам
+	// LFLRaw — значение LfLStatus как в справочнике (до приведения): список
+	// статусов показывается заказчику «из справочника, а не из файла» (п. 5.2).
+	LFLRaw     string `json:"lfl_raw,omitempty"`
+	RegManager string `json:"reg_manager"` // RegManager (права РМ, §9)
+	Manager    string `json:"manager"`     // Manager
+	PLAnalytic string `json:"pl_analytic"` // PLAnalyticCFO1
 }
 
 // RetailRow — строка формы: снапшот атрибутов магазина + ячейки по месяцам.
@@ -256,6 +259,17 @@ type RetailFactCell struct {
 	Amount  float64 `json:"amount"`
 }
 
+// RetailSourceInfo — что форма прочитала из источника (ТЗ доработок п. 1.1:
+// «дата актуальности данных, источник, число строк; если источник пуст —
+// явное сообщение, а не пустая сетка»).
+type RetailSourceInfo struct {
+	Code     string    `json:"code"`  // stores|fact|comparison_fact|strategy|approved|new_strategy
+	Label    string    `json:"label"` // «факт продаж»
+	Rows     int       `json:"rows"`
+	LoadedAt time.Time `json:"loaded_at"`
+	Error    string    `json:"error,omitempty"`
+}
+
 // RetailSeries — набор срезов, на которых считаются индикаторы. Ключ —
 // (code_cfo, year, month); значения в НАЦ. валюте страны экземпляра.
 type RetailSeries struct {
@@ -266,6 +280,8 @@ type RetailSeries struct {
 	Approved               map[RetailCellKey]float64 // ранее утверждённая тактика (история плана)
 	NewStrategy            map[RetailCellKey]float64 // сценарий НовСтрат из Budgeting
 	NewStrategyUnavailable string                    // причина недоступности НовСтрат
+	// Sources — сведения о загрузке источников (шапка формы, п. 1.1).
+	Sources []RetailSourceInfo
 	// ClosedMonths — закрытые месяцы года ИЗ КАЛЕНДАРЯ (ТЗ §4.4: признак закрытого
 	// месяца ТОЛЬКО из календаря, не «по наличию чисел»).
 	ClosedMonths map[int]bool
@@ -419,6 +435,8 @@ type RetailForm struct {
 	// не подставляется — реестра договоров в базах нет, и решение принимает
 	// финансист.
 	Hints []FieldHint `json:"hints,omitempty"`
+	// Sources — источники данных формы: строк, когда загружено, ошибка.
+	Sources []RetailSourceInfo `json:"sources,omitempty"`
 }
 
 // retailPlanMonths — плановые месяцы экземпляра. Форма ведёт план от месяца

@@ -126,6 +126,16 @@ export interface RetailForm {
   fx_rates?: RetailFxRates;
   /** Подсказки к полям ввода: для аренды — факт предыдущего месяца, справочно. */
   hints?: FieldHint[];
+  /** Источники данных формы: строк, когда загружено, ошибка (ТЗ доработок п. 1.1). */
+  sources?: RetailSourceInfo[];
+}
+
+export interface RetailSourceInfo {
+  code: "stores" | "fact" | "comparison_fact" | "strategy" | "approved" | "new_strategy";
+  label: string;
+  rows: number;
+  loaded_at: string;
+  error?: string;
 }
 
 /** Курсы отображения по назначению колонки (зеркало plans.RetailFxRates). */
@@ -181,13 +191,11 @@ export interface RetailBulkRequest {
   months?: number[];
   reset_manual?: boolean;
   // copy_scenario
+  // ТЗ доработок п. 2.2/2.3: только коэффициент (надбавки нет), один месяц,
+  // источник — тот же месяц сценария (факт — прошлого года).
   source?: "strategy" | "tactic" | "fact" | "new_strategy";
-  source_year?: number;
-  source_month?: number;
   coefficient?: number;
-  percent_delta?: number;
   coefficient_set?: boolean;
-  percent_delta_set?: boolean;
   // distribute
   target_total?: number;
   base_months?: number[];
@@ -375,6 +383,22 @@ export function useRetail() {
   const summary = (cardId: number): Promise<RetailSummary> =>
     $fetch<RetailSummary>(url(cardId, "summary"), { headers: authHeader() });
 
+  /** Свод «все четыре розницы» периода (ТЗ доработок п. 3.2). */
+  const consolidated = (plId: number): Promise<RetailConsolidated> =>
+    $fetch<RetailConsolidated>(`${base}/api/plans/retail/period/${plId}/consolidated`, { headers: authHeader() });
+
+  /** Статусы LFL из справочника [001 CodeCFO] (ТЗ доработок п. 5.2). */
+  const lflStatuses = (): Promise<{ source: string; statuses: RetailLFLStatusCount[] }> =>
+    $fetch(`${base}/api/plans/retail/lfl-statuses`, { headers: authHeader() });
+
+  /** Схема согласования карточек розницы и МП периода (ТЗ доработок п. 4.3). */
+  const routeScheme = (plId: number): Promise<{ pl_id: number; cards: RouteSchemeCard[] }> =>
+    $fetch(`${base}/api/plans/period/${plId}/route-scheme`, { headers: authHeader() });
+
+  /** Стратегические доли статей МП по месяцам года (раздел «Стратегические планы», п. 5.1). */
+  const strategyMpShares = (year: number): Promise<StrategyMpShares> =>
+    $fetch(`${base}/api/plans/strategy/mp-shares`, { params: { year }, headers: authHeader() });
+
   const validate = (cardId: number): Promise<RetailValidationReport> =>
     $fetch<RetailValidationReport>(url(cardId, "validate"), { headers: authHeader() });
 
@@ -424,9 +448,78 @@ export function useRetail() {
 
   return {
     form, saveForm, bulk, params, saveParams, lflOverride,
-    summary, validate, exportXlsx, importXlsx, importTemplateXlsx,
+    summary, consolidated, lflStatuses, routeScheme, strategyMpShares, validate, exportXlsx, importXlsx, importTemplateXlsx,
     presets, savePreset, deletePreset
   };
+}
+
+/** Свод «все четыре розницы»: итог и страны в BYN, магазины — в BYN. */
+export interface RetailConsolidatedStore {
+  code_cfo: number;
+  cfo: string;
+  city: string;
+  lfl: string;
+  metrics: RetailSummaryMetrics;
+}
+export interface RetailConsolidatedCountry {
+  country: string;
+  card_id: number;
+  title: string;
+  status: string;
+  step_code: string;
+  nat_currency: string;
+  rows: number;
+  nat: RetailSummaryMetrics;
+  byn: RetailSummaryMetrics;
+  stores: RetailConsolidatedStore[];
+  error?: string;
+}
+export interface RetailConsolidated {
+  pl_id: number;
+  year: number;
+  month: number;
+  currency: string;
+  total: RetailSummaryMetrics;
+  countries: RetailConsolidatedCountry[];
+  /** Страны, которые ещё не дошли до шага 1.3: пока список не пуст, на 1.4 не уходит. */
+  pending: string[];
+}
+
+export interface RetailLFLStatusCount {
+  raw: string;
+  canonical: string;
+  stores: number;
+  by_country: Record<string, number>;
+}
+
+export interface RouteSchemeStep {
+  step_code: string;
+  step_name: string;
+  kind: "fill" | "approve" | "final";
+  responsible: string;
+  owner_user_id?: number;
+  owner_name?: string;
+  gap: boolean;
+  current: boolean;
+  skip_if_same_user: boolean;
+  due_rd: number;
+}
+export interface RouteSchemeCard {
+  card_id: number;
+  form_code: string;
+  scope_key: string;
+  title: string;
+  status: string;
+  steps: RouteSchemeStep[];
+  gaps: number;
+  error?: string;
+}
+
+export interface StrategyMpShares {
+  year: number;
+  source: string;
+  platforms: { code_cfo: number; name_cfo: string; segment: string; country: string }[];
+  months: { month: number; shares: Record<string, Record<string, number>> | null }[];
 }
 
 // ───────────────────────── чистые хелперы ─────────────────────────

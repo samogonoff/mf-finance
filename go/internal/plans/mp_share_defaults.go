@@ -202,6 +202,14 @@ func (d *MpShareDefaults) Label(year, month int) string {
 	return fmt.Sprintf("стратегия «%s» %02d.%d", d.scenario, month, year)
 }
 
+// SourceLabel — источник без периода: «FinDWH.dbo.Table_Fin_PL, сценарий «НовСтрат»».
+func (d *MpShareDefaults) SourceLabel() string {
+	if d == nil || d.src == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s, сценарий «%s»", d.src.SourceName(), d.scenario)
+}
+
 // For — доли по умолчанию площадок на месяц тактики. Ошибка источника не валит
 // форму: доли остаются пустыми, и форма честно пишет «доля не задана».
 func (d *MpShareDefaults) For(ctx context.Context, year, month int) map[int]map[string]float64 {

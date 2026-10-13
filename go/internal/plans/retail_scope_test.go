@@ -125,3 +125,23 @@ func TestRetailMetricKnown(t *testing.T) {
 		}
 	}
 }
+
+// ТЗ доработок п. 3.1: интернет-магазин (40) и техзапись 722 не попадают в
+// строки формы, даже если источник отдаёт их в группе магазинов.
+func TestRetailFormStoresExcludesOnlineShop(t *testing.T) {
+	stores := []RetailStore{
+		{CodeCFO: 101, GroupCFO1: "Магазины"},
+		{CodeCFO: 40, GroupCFO1: "Магазины", NameCFO: "Интернет-магазин"},
+		{CodeCFO: 722, GroupCFO1: "Магазины"},
+	}
+	got := retailFormStores(stores, NewRetailScope(RetailScopeSeed()))
+	if len(got) != 1 || got[0].CodeCFO != 101 {
+		t.Fatalf("в форме должны остаться только магазины: %+v", got)
+	}
+	// Разошлись названия групп — форма не пустеет, исключения действуют.
+	odd := []RetailStore{{CodeCFO: 101, GroupCFO1: "Shops"}, {CodeCFO: 40, GroupCFO1: "Shops"}}
+	got = retailFormStores(odd, NewRetailScope(RetailScopeSeed()))
+	if len(got) != 1 || got[0].CodeCFO != 101 {
+		t.Fatalf("фолбэк должен оставить магазины без исключённых ЦФО: %+v", got)
+	}
+}
