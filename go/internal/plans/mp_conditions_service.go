@@ -20,6 +20,8 @@ type MpConditionsService struct {
 	fact    MpFactSource
 	scope   ScopeStore
 	audit   AuditSink
+	// articleFact — факт по статьям для первичного заполнения долей (mp_conditions_seed.go).
+	articleFact MpArticleFactSource
 }
 
 // NewMpConditionsService — конструктор.
@@ -31,6 +33,12 @@ func NewMpConditionsService(store MpConditionsStore, metrics MetricStore, cards 
 
 // WithAudit подключает журнал модуля.
 func (s *MpConditionsService) WithAudit(a AuditSink) *MpConditionsService { s.audit = a; return s }
+
+// WithArticleFact подключает факт по статьям («Заполнить доли из факта»).
+func (s *MpConditionsService) WithArticleFact(src MpArticleFactSource) *MpConditionsService {
+	s.articleFact = src
+	return s
+}
 
 func (s *MpConditionsService) userScope(ctx context.Context, p Principal) (ScopeFilter, error) {
 	if p.PlansAdmin {

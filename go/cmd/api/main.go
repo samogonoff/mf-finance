@@ -471,7 +471,8 @@ func main() {
 	// расчёта. TaskStore получает контекст расчёта, чтобы сетка формы считалась
 	// тем же направлением, что указано в карточке (calc_mode).
 	plansMpCondSvc := plans.NewMpConditionsService(plansMpCond, plansStore, plans.NewCardStore(pool),
-		plansRates, plansFact, plansScope).WithAudit(plansAudit)
+		plansRates, plansFact, plansScope).WithAudit(plansAudit).
+		WithArticleFact(plans.NewMpArticleFactSource(cfg.PlansMock, mssqlDB, cfg.PlansMpArticleFactTable))
 	plansMpCondH := plans.NewMpConditionsHandler(plansMpCondSvc, plansPrincipal)
 	plansTasks.WithCalcContext(plans.NewCardStore(pool), plansMpCond, plansRates)
 
@@ -515,6 +516,7 @@ func main() {
 	mux.HandleFunc("GET /api/plans/mp/cards/{cardId}/conditions", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.ConditionsGet))
 	mux.HandleFunc("PUT /api/plans/mp/cards/{cardId}/conditions", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.ConditionsSave))
 	mux.HandleFunc("POST /api/plans/mp/cards/{cardId}/conditions/copy", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.ConditionsCopy))
+	mux.HandleFunc("POST /api/plans/mp/cards/{cardId}/conditions/seed-fact", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.ConditionsSeedFact))
 	mux.HandleFunc("POST /api/plans/mp/cards/{cardId}/recalc", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.Recalc))
 	mux.HandleFunc("GET /api/plans/mp/cards/{cardId}/validate", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.Validate))
 	mux.HandleFunc("GET /api/plans/mp/cards/{cardId}/common-costs", auth.RequireRole(authSvc, auth.RolePlansUser, plansMpCondH.CommonCostsGet))
