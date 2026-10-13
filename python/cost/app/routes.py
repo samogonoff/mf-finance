@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from app import articul_replace, commercial, fot, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
+from app import articul_replace, commercial, fot, fot_insights, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
 from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED, row_comments_for, set_row_comment)
 from app.logship import log
 from app.db import get_source_change_flags
@@ -3833,6 +3833,16 @@ async def analyze_block(
     block_title = str(payload.get("block_title") or "").strip()
     if not block:
         raise HTTPException(400, "Не указан ключ блока (block)")
+
+    # Вкладки ФОТ-дашборда (fot_p9..fot_p13) серии с фронта не присылают —
+    # данные вкладки бэкенд собирает сам (app/fot_insights.py). Их разбор
+    # уходит в свой модуль ДО validate_charts, которая требует charts.
+    # Право то же (cost:insights), чужие блоки не затронуты.
+    if block.startswith("fot_"):
+        try:
+            return await fot_insights.analyze_block(payload, email)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     try:
         charts = insights.validate_charts(payload.get("charts"))
