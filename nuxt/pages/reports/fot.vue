@@ -6,7 +6,20 @@
         <p class="page-sub">Отчёты / Бюджет ФОТ 2026</p>
       </div>
       <div class="header-actions">
+        <span v-if="pptxNote" class="refresh-note">{{ pptxNote }}</span>
         <span v-if="refreshNote" class="refresh-note">{{ refreshNote }}</span>
+        <!-- Дека собирается на бэкенде из витрин; наблюдения «Разбора ИИ»
+             подставляются, если пользователь их насчитал на странице. -->
+        <div class="pptx-group">
+          <select v-model="pptxMode" class="select" aria-label="Режим презентации">
+            <option value="full">Полная</option>
+            <option value="short">Краткая</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" :disabled="pptxBusy" @click="exportPptx">
+            <Icon name="lucide:presentation" />
+            {{ pptxBusy ? 'Собираю…' : 'Выгрузить презентацию' }}
+          </button>
+        </div>
         <!-- Обновление витрин идёт в фоне (202), прогресс виден по meta.refreshing_since. -->
         <button class="btn btn-ghost btn-sm" :disabled="refreshing" @click="startRefresh">
           <Icon name="lucide:refresh-cw" :class="{ spinning: refreshing || !!refreshingSince }" />
@@ -35,8 +48,8 @@
                 @click="setTab(t.key)">{{ t.label }}</button>
       </div>
 
-      <!-- P10/P11 собираются по фиксированным полугодиям — срезы дат на них не влияют -->
-      <p v-if="tab === 'p10' || tab === 'p11'" class="basis">
+      <!-- P10–P13 собираются по фиксированным полугодиям — срезы дат на них не влияют -->
+      <p v-if="isHalfTab" class="basis">
         Вкладка не зависит от срезов дат (полугодия 2025/2026 фиксированы)
       </p>
 
@@ -192,10 +205,10 @@
                     <td v-for="col in t.columns" :key="col.key"
                         :class="[col.key === 'label' ? 'col-label' : 'num', cellDeltaClass(row, col)]">
                       <span v-if="col.key === 'label'" class="row-label">
-                        {{ cellText(row, col) }}
+                        {{ cellText(t, row, col) }}
                         <Icon v-if="t.meta?.can_drill" name="lucide:chevron-right" class="drill-icon" />
                       </span>
-                      <template v-else>{{ cellText(row, col) }}</template>
+                      <template v-else>{{ cellText(t, row, col) }}</template>
                     </td>
                   </tr>
                   <tr v-if="!(t.rows || []).length">
@@ -205,6 +218,13 @@
               </table>
             </div>
           </section>
+
+          <!-- Разбор ИИ вкладки: данные собирает сервер (fot_p9..fot_p13, до
+               validate_charts), фронт отдаёт только срезы. charts компоненту
+               нужен лишь как признак «есть что разбирать» — путь fot_* их
+               игнорирует, поэтому на сводных вкладках передаём серию карточек. -->
+          <CostChartInsight :block="`fot_${tab}`" :block-title="`${tabLabel} (${tab.toUpperCase()})`"
+                            :charts="insightCharts" :context="insightContext" />
         </div>
 
         <!-- Методология + свежесть данных -->
@@ -417,8 +437,48 @@ const chart = computed<any>(() =>
 const tables = computed<any[]>(() => dash.value?.tables || [])
 /** CSV-кнопка в заголовке каждой таблицы — только сводным вкладкам P10/P11. */
 const canExport = computed(() => tab.value === 'p10' || tab.value === 'p11')
-/** P10/P11 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
-const isHalfTab = computed(() => tab.value === 'p10' || tab.value === 'p11')
+/** P10–P13 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
+const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13'].includes(tab.value))
+/** Метка активной вкладки — заголовок блока ИИ и нотификации. */
+const tabLabel = computed(() => TABS.find((t) => t.key === tab.value)?.label || tab.value)
+
+// ── Разбор ИИ (CostChartInsight) ─────────────────────────────────────────────
+
+/** Срезы для ИИ — те же, что уходят в /fot/dashboard: списки списками,
+ *  скаляры строками (контракт _params_from_context в app/fot_insights.py).
+ *  Пути дрилла входят туда же: без них сервер соберёт вкладку свёрнутой. */
+const insightContext = computed<Record<string, any>>(() => ({
+  direction: [...(selected.direction || [])],
+  cfo_group: [...(selected.cfo_group || [])],
+  cfo_subgroup: [...(selected.cfo_subgroup || [])],
+  cfo: [...(selected.cfo || [])],
+  legal_entity: [...(selected.legal_entity || [])],
+  country: [...(selected.country || [])],
+  matrix_path: [...(tablePaths.value.by_department || [])],
+  channel_path: [...(tablePaths.value.by_channel || [])],
+  scenario_plan: scenarioPlan.value || '',
+  intercompany: intercompany.value || '',
+  year: year.value || '',
+  month: month.value || '',
+  currency: currency.value || '',
+}))
+
+/** charts компоненту нужен только как признак «есть что разбирать»
+ *  (hasData смотрит на datasets[].data): серверный fot_*-путь их не читает.
+ *  У P9 берём настоящий график, на сводных вкладках — серию из карточек. */
+const insightCharts = computed<any[]>(() => {
+  if (chartData.value) {
+    return [{ title: chart.value?.label || 'Динамика по месяцам', series: chartData.value }]
+  }
+  const cardsNum = cards.value.filter((c: any) => isNum(c.value))
+  return [{
+    title: 'Карточки вкладки',
+    series: {
+      labels: cardsNum.map((c: any) => c.label),
+      datasets: [{ label: 'Значения карточек', data: cardsNum.map((c: any) => Number(c.value)) }],
+    },
+  }]
+})
 
 // ── Проваливание ─────────────────────────────────────────────────────────────
 
@@ -574,14 +634,20 @@ const fmtCard = (v: any) => (isNum(v) ? nf2.format(Number(v)) : '—')
  *  фактических col.unit API (app/fot.py), фронт ничего не угадывает. */
 const UNITS_2DP = new Set(['%', 'п.п.', 'ставок'])
 
+/** Таблицы с деньгами в копейках: HR-бюджет P13 бэкенд округляет до двух
+ *  знаков (_r2) при unit=валюта — точность в col.unit не выражена, поэтому
+ *  исключение держим картой по ключу таблицы (контроль деки — «592,29»). */
+const MONEY_2DP_TABLES = new Set(['hr_budget'])
+
 /** Ячейка таблицы: пустое значение — прочерк, никогда не NaN.
  *  Точность — по col.unit; отрицательные Δ ru-RU пишет со знаком минус. */
-function cellText(row: any, col: any): string {
+function cellText(t: any, row: any, col: any): string {
   const v = row?.[col.key]
   if (v === null || v === undefined || v === '') return '—'
   if (col.key === 'label' || !isNum(v)) return String(v)
   const n = Number(v)
-  return UNITS_2DP.has(String(col.unit || '').trim()) ? nf2.format(n) : nf0.format(n)
+  if (UNITS_2DP.has(String(col.unit || '').trim())) return nf2.format(n)
+  return MONEY_2DP_TABLES.has(t?.key) ? nf2.format(n) : nf0.format(n)
 }
 
 /** Светофор Δ-ячеек: цвет считает сервер и кладёт рядом со значением —
@@ -628,6 +694,62 @@ function exportCsv(t: any) {
   a.click()
   a.remove()
   URL.revokeObjectURL(url)
+}
+
+// ── Выгрузка презентации (POST /fot/export/pptx) ─────────────────────────────
+
+/** Режим деки: full — все слайды, short — сводный. Значения — контракт
+ *  эндпоинта (mode: "full" | "short"), имя файла строит и сервер. */
+const pptxMode = ref<'full' | 'short'>('full')
+const pptxBusy = ref(false)
+const pptxNote = ref('')
+
+/** Наблюдения «Разбора ИИ» для слайда ИИ в деке. Компонент ответ наружу не
+ *  отдаёт (событий нет, python/cost править нельзя), поэтому берём тексты
+ *  обзорных наблюдений (result.observations) из отрендеренных блоков
+ *  активной вкладки: ul.insight-list — прямой ребёнок секции блока, списки
+ *  «углублённого исследования» сидят глубже и не попадают. Маркер «расчёт
+ *  модели» (obs-warn) в текст не входит. Нет блоков — пустой список, деки
+ *  слайд ИИ покажет с заглушкой. */
+function collectObservations(): string[] {
+  const texts: string[] = []
+  for (const el of document.querySelectorAll('.page-fot .insight > ul.insight-list > li.obs > .obs-text')) {
+    const text = String(el.childNodes[0]?.textContent || '').trim()
+    if (text) texts.push(text)
+  }
+  return texts
+}
+
+async function exportPptx() {
+  if (pptxBusy.value) return
+  pptxBusy.value = true
+  pptxNote.value = ''
+  try {
+    const blob = await api<Blob>('/fot/export/pptx', {
+      method: 'POST',
+      responseType: 'blob',
+      body: {
+        mode: pptxMode.value,
+        filters: insightContext.value,
+        observations: collectObservations(),
+      },
+    })
+    const now = new Date()
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `ФОТ_2026_${pptxMode.value}_${stamp}.pptx`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    pptxNote.value = 'Презентация собрана'
+  } catch (e: any) {
+    pptxNote.value = `Не удалось собрать презентацию: ${errText(e)}`
+  } finally {
+    pptxBusy.value = false
+  }
 }
 
 const periodLabel = computed(() => {
@@ -703,6 +825,8 @@ const fmtDateTime = (iso: any) => {
 }
 .page-sub { margin: var(--sp-1) 0 0; font-size: 14px; color: var(--fot-muted); }
 .header-actions { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+/* Селект режима деки + кнопка выгрузки — одна группа в шапке */
+.pptx-group { display: flex; align-items: center; gap: var(--sp-2); }
 .refresh-note { font-size: 12px; color: var(--fot-muted); max-width: 340px; }
 
 .fot-center { display: flex; align-items: center; justify-content: center; gap: var(--sp-2); padding: var(--sp-6) 0; }
