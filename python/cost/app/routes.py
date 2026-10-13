@@ -3594,8 +3594,14 @@ async def multipack_usage(
     return {"data": await multipack.packs_using(model, articul)}
 
 
+# Чтение цен по плану: право cost:plan_prices_view даёт Бренд-менеджеру
+# модалку в режиме просмотра (задача 663794). Мутации наборов ниже гейтятся
+# строже — edit_materials/admin.
+_PLAN_PRICES_READ = _require_any_perm("cost:edit_materials", "cost:plan_prices_view", "cost:admin")
+
+
 @router.get("/plan-materials")
-async def plan_materials_endpoint(request: Request, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:
+async def plan_materials_endpoint(request: Request, _: str = Depends(_PLAN_PRICES_READ)) -> dict:
     """Материалы плана, агрегированные по ключу из пяти полей источника.
 
     Отдаёт средние цены и курс, разброс внутри группы и сколько строк уже
@@ -3615,7 +3621,7 @@ async def plan_materials_endpoint(request: Request, _: str = Depends(_require_an
 
 
 @router.get("/plan-price-sets")
-async def plan_price_sets_endpoint(request: Request, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:
+async def plan_price_sets_endpoint(request: Request, _: str = Depends(_PLAN_PRICES_READ)) -> dict:
     """Список наборов. plan_id опционален — без него отдаём все, чтобы в UI
     работал фильтр по номеру плана."""
     if _is_mock():
@@ -3625,7 +3631,7 @@ async def plan_price_sets_endpoint(request: Request, _: str = Depends(_require_a
 
 
 @router.get("/plan-price-sets/{set_id}")
-async def plan_price_set_endpoint(set_id: int, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:
+async def plan_price_set_endpoint(set_id: int, _: str = Depends(_PLAN_PRICES_READ)) -> dict:
     if _is_mock():
         raise HTTPException(404, "not available in mock mode")
     data = await get_plan_price_set(set_id)
