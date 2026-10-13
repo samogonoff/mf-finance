@@ -416,6 +416,80 @@ def fetch_olap_changes(keys: list[tuple[str, str, str, str]]) -> list[dict]:
         olap.close()
 
 
+# ── Живые комментарии к строке (задача Б24 664394) ────────────────────────────
+#
+# Комментарий раньше сохранялся только вместе с заявкой на цену, а строка без
+# розничной цены заявкой не становится — текст жил в браузере до перезагрузки.
+# Теперь комментарий пишется сразу при вводе и накладывается на выдачу всем.
+# Ключ — как у заявки (uq_pending_row): модель, артикул, план, признак.
+
+RowCommentKey = tuple[str, str, str, str]
+
+_ROW_COMMENT_KEYS_PER_QUERY = 2000  # тот же предел параметров, что в routes.KEYS_PER_QUERY
+
+
+def _row_comment_batches(keys: list[RowCommentKey]):
+    for i in range(0, len(keys), _ROW_COMMENT_KEYS_PER_QUERY):
+        yield keys[i : i + _ROW_COMMENT_KEYS_PER_QUERY]
+
+
+async def row_comments_for(keys: list[RowCommentKey]) -> dict[RowCommentKey, str]:
+    """Комментарии по ключам — для наложения на строки /aggregated.
+
+    Возвращаются и пустые записи: наличие записи означает, что комментарий
+    ведут здесь, и пустота осознанная (пользователь стёр текст) — она должна
+    перекрыть снимок из заявки/истории.
+    """
+    uniq = list({k for k in keys if k[0] and k[1]})
+    out: dict[RowCommentKey, str] = {}
+    if not uniq:
+        return out
+    async with acquire() as conn:
+        for batch in _row_comment_batches(uniq):
+            ph = ", ".join(
+                f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
+                for i in range(len(batch))
+            )
+            params: list[str] = []
+            for m, a, cs, pi in batch:
+                params.extend([m, a, cs, pi])
+            rows = await conn.fetch(
+                f"""SELECT "Модель", "Артикул", "Признак калькуляции", "PLAN_ID", "Комментарий"
+                      FROM cost_row_comments
+                     WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {ph})""",
+                *params,
+            )
+            for r in rows:
+                out[(
+                    str(r["Модель"]).strip(), str(r["Артикул"]).strip(),
+                    str(r["Признак калькуляции"]).strip(), str(r["PLAN_ID"]).strip(),
+                )] = r["Комментарий"] or ""
+    return out
+
+
+async def set_row_comment(
+    model: str, articul: str, plan_id: str, calc_sign: str,
+    comment: str, updated_by: str,
+) -> str:
+    """Записать комментарий. Пустой текст — тоже запись («осознанная пустота»):
+    наличие записи перекрывает комментарий заявки и истории, поэтому DELETE при
+    стирании вернул бы заявочный текст обратно. Возвращает сохраненный текст."""
+    text = (comment or "").strip()
+    async with acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO cost_row_comments
+                   ("Модель", "Артикул", "PLAN_ID", "Признак калькуляции", "Комментарий", updated_by)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT ON CONSTRAINT uq_row_comment DO UPDATE
+                  SET "Комментарий" = EXCLUDED."Комментарий",
+                      updated_by = EXCLUDED.updated_by,
+                      updated_at = now()
+               RETURNING "Комментарий\"""",
+            model, articul, plan_id, calc_sign, text, updated_by,
+        )
+    return (row["Комментарий"] if row else text) or ""
+
+
 def fetch_gpartner_planned(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
     """Плановая оптовая цена/НДС/себестоимость из Gpartner S_MODELI (fallback source).
 

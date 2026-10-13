@@ -818,7 +818,7 @@
                 <input class="comment-input" type="text"
                   :value="comments[calcRowKey(row)] ?? ''"
                   placeholder="..."
-                  :disabled="isFkssRow(row) || isRowLocked(row)"
+                  :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
                   :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
                   @input="onCommentInput(row, ($event.target as HTMLInputElement).value)"
@@ -3980,6 +3980,47 @@ async function clearMyPendingChanges() {
   } catch { /* best-effort */ }
 }
 
+// ── Живые комментарии (задача Б24 664394) ───────────────────────────────────
+// Комментарий — самостоятельная сущность: сохраняется сразу при вводе в
+// cost_row_comments через POST /api/cost/row-comment, а не только вместе с
+// заявкой на цену. Раньше строка без розничной цены («прочерк») заявкой не
+// становилась — и комментарий молча умирал при перезагрузке. Объявлены до
+// loadData: она на них ссылается, а её watch — immediate.
+// Отправка — дебаунсом по вводу (700 мс тишины); таймер переживает исчезновение
+// строки из выдачи (смена фильтра без blur): замыкание держит ключ и текст.
+const commentSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const lastCommentSaved = new Map<string, string>();
+
+const scheduleCommentSave = (row: any, key: string, value: string) => {
+  const prev = commentSaveTimers.get(key);
+  if (prev) clearTimeout(prev);
+  commentSaveTimers.set(key, setTimeout(() => {
+    commentSaveTimers.delete(key);
+    if (lastCommentSaved.get(key) === value) return;
+    flushCommentSave(row, key, value);
+  }, 700));
+};
+
+const flushCommentSave = async (row: any, key: string, value: string) => {
+  try {
+    await $fetch(`${apiBase.value}/api/cost/row-comment`, {
+      method: "POST",
+      headers: fetchHeaders.value,
+      body: {
+        model: row["Модель"],
+        articul: row["Артикул"],
+        plan_id: row["PLAN_ID"],
+        calc_sign: row["Признак калькуляции"],
+        comment: value,
+      },
+    });
+    lastCommentSaved.set(key, value);
+  } catch (e: any) {
+    console.warn("[cost] живой комментарий не сохранён (текст виден до перезагрузки)", e);
+    lastError.value = `Комментарий не сохранён: ${e?.data?.detail || e?.message || "нет связи с API"}`;
+  }
+};
+
 async function loadData() {
   loading.value = true;
   try {
@@ -4023,7 +4064,11 @@ async function loadData() {
       if (r.price_rf != null) priceRF[k] = r.price_rf; else delete priceRF[k];
       if (r.price_kz != null) priceKZ[k] = r.price_kz; else delete priceKZ[k];
       if (r.price_uz != null) priceUZ[k] = r.price_uz; else delete priceUZ[k];
-      if (r.comment != null) comments[k] = r.comment; else delete comments[k];
+      // Живой комментарий в полёте (дебаунс) не затираем серверным значением —
+      // иначе перезагрузка выдачи откатывала бы недопечатанный текст.
+      if (commentSaveTimers.has(k)) {
+        // локальный ввод важнее, ждём отправки
+      } else if (r.comment != null) comments[k] = r.comment; else delete comments[k];
       // Авто-вычисляем наценку из розничной и оптовой цен строки
       const markup = computeMarkupFromRow(r);
       if (markup) markupSelections[k] = markup; else delete markupSelections[k];
@@ -4035,6 +4080,9 @@ async function loadData() {
     const liveKeys = new Set(allAggregated.value.map(calcRowKey));
     for (const store of [priceRF, priceKZ, priceUZ, comments, markupSelections] as Record<string, any>[]) {
       for (const k of Object.keys(store)) {
+        // Комментарий в полёте не выбрасываем: сервер его ещё не видел, а
+        // таймер дошлёт текст даже когда строка ушла из выдачи.
+        if (store === comments && commentSaveTimers.has(k)) continue;
         if (!liveKeys.has(k) && !changedRows.has(k)) delete store[k];
       }
     }
@@ -5959,10 +6007,17 @@ const onPriceUZInput = (row: any, value: string) => {
   changedRows.set(calcRowKey(row), row);
 };
 
+// Комментарий — самостоятельная сущность (задача 664394): сохраняется сразу
+// при вводе в cost_row_comments, а не только вместе с заявкой на цену. Раньше
+// строка без розничной цены («прочерк») заявкой не становилась — и комментарий
+// молча умирал при перезагрузке. Здесь changedRows не трогаем: комментарий
+// больше не «придерживает» строку в несохранённых, своё сохранение у него своё.
+// Сама отправка — дебаунсом, см. блок «Живые комментарии» рядом с loadData.
 const onCommentInput = (row: any, value: string) => {
   if (!row || isRowLocked(row)) return;
-  comments[calcRowKey(row)] = value || "";
-  changedRows.set(calcRowKey(row), row);
+  const k = calcRowKey(row);
+  comments[k] = value || "";
+  scheduleCommentSave(row, k, value || "");
 };
 
 // ── Мультипаки ──────────────────────────────────────────────────────────────

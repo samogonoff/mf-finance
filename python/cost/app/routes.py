@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app import articul_replace, commercial, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
-from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
+from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED, row_comments_for, set_row_comment)
 from app.logship import log
 from app.db import get_source_change_flags
 from app.middleware import require_perm
@@ -1017,6 +1017,13 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                                 "price_uz": rec.get("price_uz"),
                                 "comment": str(rec.get("comment") or ""),
                             }
+            # 4. ЖИВЫЕ КОММЕНТАРИИ (задача 664394) — приоритетнее заявки и
+            # истории: это то, что пользователь видит и правит прямо сейчас.
+            # Наличие записи (даже пустой) перекрывает снимок комментария из
+            # pending/DWH: пустота здесь — осознанное «стёрли текст», а не «не
+            # нашли». Заявка и дальше носит свой снимок в согласование.
+            live_comments = await row_comments_for(keys)
+
             # Apply overrides to ALL rows
             for row in data:
                 m = str(row.get("Модель", "") or "").strip()
@@ -1024,6 +1031,9 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 cs = str(row.get("Признак калькуляции", "") or "").strip()
                 pi = str(row.get("PLAN_ID", "") or "").strip()
                 ky = (m, a, cs, pi)
+                live = live_comments.get(ky)
+                if live is not None:
+                    row["comment"] = live
                 rec = override_map.get(ky)
                 if not rec:
                     continue
@@ -1049,7 +1059,9 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                     row["price_kz"] = rec["price_kz"]
                 if rec.get("price_uz") is not None:
                     row["price_uz"] = rec["price_uz"]
-                if rec.get("comment"):
+                # Живой комментарий (live) уже стоит строкой выше и главнее;
+                # сюда попадаем только при его отсутствии.
+                if rec.get("comment") and live is None:
                     row["comment"] = rec["comment"]
     except Exception:
         # Падение здесь означает, что НИ ОДНА утверждённая цена не наложится на
@@ -2179,6 +2191,40 @@ async def save_batch_changes(payload: dict, user_email: str | None = Depends(_re
             + (" …" if len(failed) > 3 else "")
         )
     return result
+
+
+@router.post("/row-comment")
+async def save_row_comment(
+    payload: dict, user_email: str | None = Depends(_require_perm("cost:edit_price"))
+) -> dict:
+    """Сохранить комментарий строки сразу при вводе (задача Б24 664394).
+
+    Комментарий больше не ждёт кнопки «Сохранить изменения» и не зависит от
+    того, введена ли цена: раньше строка без розничной цены заявкой не
+    становилась и комментарий молча отбрасывался. Тело: model, articul,
+    plan_id, calc_sign, comment. Пустой комментарий — осознанная пустота
+    (запись-маркер перекрывает комментарий заявки и истории).
+    """
+    model = str(payload.get("model") or "").strip()
+    articul = str(payload.get("articul") or "").strip()
+    raw_plan = payload.get("plan_id")
+    plan_id = str(raw_plan if raw_plan is not None else "").strip()
+    calc_sign = str(payload.get("calc_sign") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "Не заданы модель и/или артикул строки")
+    if calc_sign == "ФКСС":
+        raise HTTPException(400, "ФКСС — история себестоимости: комментарий не редактируется")
+
+    comment = await set_row_comment(
+        model, articul, plan_id, calc_sign,
+        str(payload.get("comment") or ""), user_email or "",
+    )
+    log(
+        logging.INFO, "комментарий строки калькуляции",
+        model=model, articul=articul, calc_sign=calc_sign, plan_id=plan_id,
+        length=len(comment), user=user_email,
+    )
+    return {"success": True, "comment": comment}
 
 
 # ── Price approval workflow ────────────────────────────────────────────────────
