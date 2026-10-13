@@ -19,9 +19,6 @@ routes.analyze_block — строго по префиксу `fot_`, до validat
 и модели в него входит sha256-дайджест собранных данных. Без него после
 обновления витрин (`POST /fot/refresh`) пользователь получал бы протухшие
 наблюдения по свежим цифрам.
-
-P12/P13 пока отдают degraded «вкладка в разработке»: их сборщики ещё не
-слиты; при появлении фактов добавляется одна функция в _TAB_FACTS.
 """
 
 from __future__ import annotations
@@ -218,6 +215,32 @@ def _closed_note(data: dict) -> str | None:
     return (f"ВНИМАНИЕ: месяц среза {md.isoformat()} позже закрытого периода "
             f"{closed.isoformat()} — период почти наверняка НЕ ЗАКРЫТ и "
             f"несопоставим с полными периодами")
+
+
+_COLOR_WORDS = {
+    _DELTA_RED: "красный",
+    _DELTA_AMBER: "янтарный",
+    _DELTA_GREEN: "зелёный",
+}
+
+
+def _color_word(color: Any) -> str:
+    """Светофор из payload словом (для фактов); неизвестный цвет — пусто."""
+    return _COLOR_WORDS.get(str(color or ""), "")
+
+
+def _staff_zone(pct: float | None, color: Any = None) -> str:
+    """Укомплектованность словами: пороги 95/85 %, цвет — из payload."""
+    if pct is None:
+        return ""
+    if pct >= 95:
+        word = "норма (порог 95 % соблюдён)"
+    elif pct >= 85:
+        word = "ниже ориентира 95 %, но не ниже тревожного 85 %"
+    else:
+        word = "ниже тревожного порога 85 %"
+    swatch = _color_word(color)
+    return f"{word}" + (f", светофор {swatch}" if swatch else "")
 
 
 # ─── Факты P9 «ФОТ и численность» ────────────────────────────────────────────
@@ -481,11 +504,231 @@ def _facts_p11(data: dict) -> list[str]:
     return facts
 
 
-# P12/P13 facts не пишем: их сборщики ещё не слиты, вкладки отдают degraded.
+# ─── Факты P12 «Численность план и факт» ─────────────────────────────────────
+
+def _facts_p12(data: dict) -> list[str]:
+    """Карточки ПЧ/ФЧ/укомплектованность, страны и группы ЦФО (фикс. полугодия).
+
+    Укомплектованность = ФЧ 1ПГ26 / ПЧ утв.; пороги 95/85 %, светофор строки
+    берём из payload (staff_pct_color), зону называем словами порогов.
+    """
+    facts: list[str] = []
+    cards = data.get("cards") or []
+
+    pa = _card_value(cards, "plan_approved")
+    pt = _card_value(cards, "plan_tactic")
+    q25 = _card_value(cards, "fact_2025")
+    q26 = _card_value(cards, "fact_2026")
+    staff = _card_value(cards, "staffing")
+
+    if pa is not None:
+        facts.append(f"Карточки: ПЧ утв. 2026 (стратегия) = {_fmt(pa)} ставок")
+    if pt is not None:
+        facts.append(f"Карточки: ПЧ тактика 2026 = {_fmt(pt)} ставок"
+                     + (f", на {_fmt(pt - pa)} ставок больше утверждённой"
+                        if pa is not None else ""))
+    if q25 is not None:
+        facts.append(f"Карточки: ФЧ на 30.06.2025 = {_fmt(q25)} ставок")
+    if q26 is not None:
+        facts.append(f"Карточки: ФЧ на 30.06.2026 = {_fmt(q26)} ставок")
+    if q25 is not None and q26 is not None and q25:
+        delta = q26 - q25
+        facts.append(f"Карточки: численность за год — {_fmt(delta)} ставок "
+                     f"({_fmt(delta / q25 * 100)}%)")
+    if staff is not None:
+        facts.append(f"Карточки: укомплектованность (ФЧ 1ПГ26 / ПЧ утв.) = "
+                     f"{_fmt(staff)}% — {_staff_zone(staff)}")
+
+    rows = _rows(data, "by_country")
+    countries = [r for r in rows if r.get("label") and r.get("label") != "Итого"]
+    itogo = next((r for r in rows if r.get("label") == "Итого"), None)
+
+    staff_rows = [(str(r.get("label") or "?"), _num(r.get("staff_pct")),
+                   r.get("staff_pct_color")) for r in countries]
+    staff_rows = [(lbl, v, c) for lbl, v, c in staff_rows if v is not None]
+    if staff_rows:
+        hi = max(staff_rows, key=lambda p: p[1])
+        lo = min(staff_rows, key=lambda p: p[1])
+        facts.append(f"Страны: лучшая укомплектованность — {hi[0]} "
+                     f"{_fmt(hi[1])}% ({_staff_zone(hi[1], hi[2])}); худшая — "
+                     f"{lo[0]} {_fmt(lo[1])}% ({_staff_zone(lo[1], lo[2])})")
+        alarms = [f"{lbl} {_fmt(v)}%" for lbl, v, c in staff_rows if v < 85]
+        if alarms:
+            facts.append(f"Страны НИЖЕ тревожного порога 85 % (красный "
+                         f"светофор): {', '.join(alarms)}")
+        else:
+            facts.append("Стран ниже тревожного порога 85 % нет")
+    dev_rows = [(str(r.get("label") or "?"), _num(r.get("dev_2625")))
+                for r in countries]
+    dev_rows = [(lbl, v) for lbl, v in dev_rows if v is not None]
+    if dev_rows:
+        hi_lbl, hi = max(dev_rows, key=lambda p: p[1])
+        lo_lbl, lo = min(dev_rows, key=lambda p: p[1])
+        facts.append(f"Страны: Δ численности 1ПГ26 к 1ПГ25 — максимум {hi_lbl} "
+                     f"{_fmt(hi)}%, минимум {lo_lbl} {_fmt(lo)}%")
+    if itogo is not None:
+        it_staff = _num(itogo.get("staff_pct"))
+        if it_staff is not None:
+            facts.append(f"Строка «Итого» по странам таблицы: укомплектованность "
+                         f"{_fmt(it_staff)}% — "
+                         f"{_staff_zone(it_staff, itogo.get('staff_pct_color'))}")
+
+    groups = _rows(data, "by_department")
+    g_rows = [(str(r.get("label") or "?"), _num(r.get("q26")),
+               _num(r.get("staff_pct"))) for r in groups
+              if r.get("label") and r.get("label") != "Итого"]
+    g_rows = [(lbl, q, s) for lbl, q, s in g_rows if q is not None]
+    if g_rows:
+        total_q = sum(q for _, q, _ in g_rows)
+        top_lbl, top_q, top_staff = max(g_rows, key=lambda p: p[1])
+        facts.append(f"Подразделения: наибольшая ФЧ 1ПГ26 — {top_lbl} "
+                     f"{_fmt(top_q)} ставок"
+                     + (f", укомплектованность {_fmt(top_staff)}%"
+                        if top_staff is not None else "")
+                     + (f", {_fmt(top_q / total_q * 100)}% суммы строк"
+                        if total_q else ""))
+
+    warning = str((data.get("meta") or {}).get("warning") or "").strip()
+    if warning:
+        facts.append(f"ПРЕДУПРЕЖДЕНИЕ вкладки: {warning}")
+    return facts
+
+
+# ─── Факты P13 «HR-бюджет и отделы» ──────────────────────────────────────────
+
+def _facts_p13(data: dict) -> list[str]:
+    """HR-карточки и HR-таблица (статья × страна HR-ЦФО), блок «Отделы»."""
+    facts: list[str] = []
+    cards = data.get("cards") or []
+    cur = str((data.get("meta") or {}).get("currency") or "BYN")
+
+    hr_fact = _card_value(cards, "hr_fact_1h26")
+    hr_budget = _card_value(cards, "hr_budget_2h26")
+    hr_tactic = _card_value(cards, "hr_tactic_2h26")
+    hr_expect = _card_value(cards, "hr_expect_2026")
+    if hr_fact is not None:
+        facts.append(f"HR-карточки: ФОТ HR-ЦФО (6 подразделений), все статьи, "
+                     f"Факт 1ПГ26 = {_fmt(hr_fact)} тыс {cur}")
+    if hr_budget is not None:
+        facts.append(f"HR-карточки: Бюджет 2ПГ26 = {_fmt(hr_budget)} тыс {cur}")
+    if hr_tactic is not None:
+        facts.append(f"HR-карточки: Тактика 2ПГ26 = {_fmt(hr_tactic)} тыс {cur}"
+                     + (f", на {_fmt(hr_tactic - hr_budget)} тыс больше бюджета"
+                        if hr_budget is not None else ""))
+    if hr_expect is not None:
+        facts.append(f"HR-карточки: Ожидание 2026 = {_fmt(hr_expect)} тыс {cur}"
+                     + (f", на {_fmt(hr_expect - hr_fact)} тыс больше Факта "
+                        f"1ПГ26 (Ожидание = Факт 1ПГ26 + Тактика 2ПГ26)"
+                        if hr_fact is not None else ""))
+
+    # HR-таблица: итоги по статьям («Итого — статья») и итог всей таблицы.
+    hr_rows = _rows(data, "hr_budget")
+    articles = [r for r in hr_rows
+                if str(r.get("label") or "").startswith("Итого — ")]
+    grand = next((r for r in hr_rows if str(r.get("label") or "") == "Итого"),
+                 None)
+    art_rows = [(str(r.get("label") or "?")[len("Итого — "):],
+                 _num(r.get("exp26")), _num(r.get("dev_year")),
+                 r.get("dev_year_color")) for r in articles]
+    art_rows = [(lbl, v, d, c) for lbl, v, d, c in art_rows if v is not None]
+    if art_rows:
+        top_lbl, top_v, top_d, top_c = max(art_rows, key=lambda p: p[1])
+        total_art = sum(v for _, v, _, _ in art_rows)
+        facts.append(f"HR-таблица: статья-лидер по Ожиданию 2026 — {top_lbl} "
+                     f"{_fmt(top_v)} тыс {cur}"
+                     + (f", {_fmt(top_v / total_art * 100)}% суммы статей"
+                        if total_art else ""))
+        # Контрольная детализация лидера: факт 1ПГ26 и динамика со светофором.
+        top_row = next((r for r in articles
+                        if str(r.get("label") or "") == f"Итого — {top_lbl}"), None)
+        if top_row is not None:
+            f26 = _num(top_row.get("f26_h1"))
+            if f26 is not None:
+                facts.append(f"HR-таблица, «{top_lbl}», итого: Факт 1ПГ26 = "
+                             f"{_fmt(f26)} тыс {cur}"
+                             + (f", Δ год к 2025 {_fmt(top_d)}%"
+                                f" (светофор {_color_word(top_c) or 'нет'})"
+                                if top_d is not None else ""))
+        ambers = [lbl for lbl, _, d, c in art_rows
+                  if c == _DELTA_AMBER and lbl != top_lbl]
+        greens = [lbl for lbl, _, d, c in art_rows if c == _DELTA_GREEN]
+        if ambers:
+            facts.append(f"HR-таблица: статьи с янтарным светофором Δ "
+                         f"(рост >10 %): {', '.join(ambers)}")
+        if greens:
+            facts.append(f"HR-таблица: статьи в зелёной зоне Δ "
+                         f"(рост в пределах +10 %): {', '.join(greens)}")
+
+    # Страны HR: строки «статья — страна (коды)» — сумма Ожиданий по стране.
+    hr_country: dict = {}
+    for r in hr_rows:
+        label = str(r.get("label") or "")
+        if label.startswith("Итого") or " — " not in label:
+            continue
+        parts = label.split(" — ")
+        if len(parts) < 2:
+            continue
+        ctry = parts[1].split(" (")[0].strip()
+        value = _num(r.get("exp26"))
+        if value is not None:
+            hr_country[ctry] = hr_country.get(ctry, 0.0) + value
+    if hr_country:
+        top_ctry, top_sum = max(hr_country.items(), key=lambda p: p[1])
+        facts.append(f"HR-таблица по странам: наибольший ФОТ HR (Ожидание "
+                     f"2026) — {top_ctry}: {_fmt(top_sum)} тыс {cur} "
+                     f"({_fmt(top_sum / sum(hr_country.values()) * 100)}% HR-ЦФО)")
+    # Крупнейшая строка «статья × страна»: в ней сидят контрольные числа
+    # PBI (например, ЗП Беларуси 224 — факт 592,29 тыс).
+    line_rows = [(str(r.get("label") or "?"), _num(r.get("exp26")),
+                  _num(r.get("f26_h1"))) for r in hr_rows
+                 if not str(r.get("label") or "").startswith("Итого")]
+    line_rows = [(lbl, v, f) for lbl, v, f in line_rows if v is not None]
+    if line_rows:
+        lbl, v, f = max(line_rows, key=lambda p: p[1])
+        facts.append(f"HR-таблица, крупнейшая строка — {lbl}: Ожидание 2026 "
+                     f"{_fmt(v)} тыс {cur}"
+                     + (f", Факт 1ПГ26 {_fmt(f)} тыс" if f is not None else ""))
+
+    # Блок «Отделы»: карточки ФОТ/ПЧ/ФЧ и таблица по странам.
+    dept_fot = _card_value(cards, "dept_fot_1h26")
+    plan = _card_value(cards, "dept_headcount_plan")
+    fact = _card_value(cards, "dept_headcount_fact")
+    dev = _card_value(cards, "dept_dev_year")
+    if dept_fot is not None:
+        facts.append(f"Отделы: ФОТ 1ПГ26 суммарно = {_fmt(dept_fot)} тыс {cur}"
+                     + (f", Δ год к 2025 {_fmt(dev)}%" if dev is not None else ""))
+    if plan is not None and fact is not None:
+        facts.append(f"Отделы: ПЧ (тактика) = {_fmt(plan)} ставок, ФЧ "
+                     f"(30.06.2026) = {_fmt(fact)} ставок"
+                     + (f", укомплектованность {_fmt(fact / plan * 100)}%"
+                        if plan else ""))
+    dept_rows = _rows(data, "by_country")
+    countries = [r for r in dept_rows
+                 if r.get("label") and r.get("label") != "Итого"]
+    exps = [(str(r.get("label") or "?"), _num(r.get("exp26")),
+             _num(r.get("f26_h1"))) for r in countries]
+    exps = [(lbl, v, f) for lbl, v, f in exps if v is not None]
+    if exps:
+        total = sum(v for _, v, _ in exps)
+        top_lbl, top_v, top_f = max(exps, key=lambda p: p[1])
+        facts.append(f"Отделы, страны: наибольший ФОТ (Ожидание 2026) — "
+                     f"{top_lbl} {_fmt(top_v)} тыс {cur}"
+                     + (f" ({_fmt(top_v / total * 100)}% суммы стран)"
+                        if total else "")
+                     + (f"; Факт 1ПГ26 {_fmt(top_f)} тыс" if top_f is not None else ""))
+
+    warning = str((data.get("meta") or {}).get("warning") or "").strip()
+    if warning:
+        facts.append(f"ПРЕДУПРЕЖДЕНИЕ вкладки: {warning}")
+    return facts
+
+
 _TAB_FACTS = {
     "p9": _facts_p9,
     "p10": _facts_p10,
     "p11": _facts_p11,
+    "p12": _facts_p12,
+    "p13": _facts_p13,
 }
 
 
@@ -603,23 +846,11 @@ async def analyze_block(payload: dict, email: Any) -> dict:
         raise ValueError("context должен быть объектом")
 
     tab = block[len("fot_"):].strip().lower()
-    if tab in ("p12", "p13"):
-        # Бэкенд вкладок ещё не слит: вместе с ним добавится факты-функция
-        # в _TAB_FACTS, а до тех пор — внятный degraded вместо разбора.
-        started = time.monotonic()
-        result: dict[str, Any] = {
-            "block": block, "facts": [], "observations": [],
-            "model": insights._model(), "degraded": True,
-            "error": f"вкладка {tab.upper()} в разработке — разбор появится "
-                     f"вместе с её данными",
-            "elapsed_ms": int((time.monotonic() - started) * 1000),
-        }
-        return {"cached": False, **result}
 
     data = await _fot_dashboard(tab, _params_from_context(context))
     if tab not in _TAB_FACTS:
-        # Сюда попадаем, только если живой fot.dashboard отдал неизвестную
-        # вкладку без ValueError (например, новую вкладку без фактов).
+        # Чужая вкладка: fot.dashboard/mocks.fot_dashboard уже кинули ValueError;
+        # эта страховка — на случай, если бэкенд отдаст вкладку без фактов.
         raise ValueError(f"fot: неизвестная вкладка {tab!r}")
 
     # В mock-режиме пользователя в заголовке может не быть: права отключены,
