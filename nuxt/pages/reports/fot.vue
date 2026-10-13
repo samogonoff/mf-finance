@@ -93,7 +93,8 @@
           </div>
         </section>
 
-        <!-- Не-P9: каркас вкладки. Плашку показывает и ответ со status='not_implemented'. -->
+        <!-- Вкладки без бэкенда (p12/p13 до выката шага 2c): плашку показывает
+             и ответ со status='not_implemented'. -->
         <div v-if="notImplemented" class="fot-wip">
           <Icon name="lucide:construction" class="fot-wip-icon" />
           <strong>Раздел в разработке</strong>
@@ -101,14 +102,23 @@
         </div>
 
         <div v-else class="fot-body" :class="{ pending: loading }">
+          <!-- P10/P11 — фиксированные полугодия: срезы дат и «План» сервер
+               игнорирует, поэтому в строке базы показываем то, что работает. -->
           <p class="basis">
-            Период: <strong>{{ periodLabel }}</strong>
-            <span class="dot">·</span> План: {{ scenarioLabel }}
-            <span class="dot">·</span> Валюта: {{ currency }}
-            <span class="dot">·</span> ВГО: {{ icLabel }}
+            <template v-if="isHalfTab">
+              Периоды: фиксированные полугодия {{ meta.periods?.year_prev || '2025' }}/{{ meta.periods?.year_plan || '2026' }}
+              <span class="dot">·</span> Валюта: {{ currency }}
+              <span class="dot">·</span> ВГО: {{ icLabel }}
+            </template>
+            <template v-else>
+              Период: <strong>{{ periodLabel }}</strong>
+              <span class="dot">·</span> План: {{ scenarioLabel }}
+              <span class="dot">·</span> Валюта: {{ currency }}
+              <span class="dot">·</span> ВГО: {{ icLabel }}
+            </template>
           </p>
 
-          <!-- KPI: 5 карточек в ряд -->
+          <!-- KPI-карточки вкладки: у P10 пять, у P11 четыре -->
           <section class="fot-kpis">
             <article v-for="c in cards" :key="c.key" class="fot-kpi">
               <span class="fot-kpi-label">{{ c.label }}</span>
@@ -116,8 +126,9 @@
             </article>
           </section>
 
-          <!-- Комбо-график: столбцы ФОТ + линия численности на второй оси -->
-          <section class="card">
+          <!-- Комбо-график: столбцы ФОТ + линия численности на второй оси.
+               Только у вкладок с данными графика (P9) — у P10/P11 charts пустой. -->
+          <section v-if="chartData" class="card">
             <div class="card-head">
               <h3 class="card-title">{{ chart?.label || 'Динамика по месяцам' }}</h3>
               <span class="hint">месяцы выбранного года, с января по выбранный месяц</span>
@@ -129,50 +140,64 @@
             </div>
           </section>
 
-          <!-- Таблица с проваливанием: Группа ЦФО → Подгруппа → Направление → ЦФО -->
-          <section v-if="table" class="card">
+          <!-- Таблицы вкладки — по порядку из dash.tables: у P9 матрица с
+               проваливанием, у P10 одна таблица по странам, у P11 три
+               (подразделения, каналы сбыта, направления). Дрилл, крошки и
+               CSV-кнопка включаются признаками из meta таблицы и вкладки. -->
+          <section v-for="t in tables" :key="t.key" class="card">
             <div class="card-head">
               <div>
-                <h3 class="card-title">{{ table.label }} · {{ tableMeta.level_label || tableMeta.dim }}</h3>
-                <nav class="crumbs">
-                  <button class="crumb" type="button" :disabled="!matrixPath.length" @click="drillTo(0)">Все</button>
-                  <template v-for="(c, i) in (tableMeta.path || [])" :key="i">
+                <!-- Уровень в заголовке — только у дриллимых таблиц: у остальных он дублирует label -->
+                <h3 class="card-title">
+                  {{ t.label }}<template v-if="t.meta?.can_drill"> · {{ t.meta.level_label || t.meta.dim }}</template>
+                </h3>
+                <nav v-if="t.meta?.can_drill" class="crumbs">
+                  <button class="crumb" type="button" :disabled="!tablePath(t).length" @click="drillTo(t, 0)">Все</button>
+                  <template v-for="(c, i) in (t.meta?.path || [])" :key="i">
                     <span class="crumb-sep">›</span>
-                    <button class="crumb" type="button" :disabled="i === matrixPath.length - 1"
-                            :title="c.label || c.value" @click="drillTo(i + 1)">{{ c.value || c.label || '(не указано)' }}</button>
+                    <button class="crumb" type="button" :disabled="i === tablePath(t).length - 1"
+                            :title="c.label || c.value" @click="drillTo(t, i + 1)">{{ c.value || c.label || '(не указано)' }}</button>
                   </template>
                 </nav>
               </div>
+              <!-- Клиентский CSV (Blob + BOM, разделитель «;») — сводным вкладкам P10/P11 -->
+              <button v-if="canExport" class="btn btn-ghost btn-sm" type="button"
+                      title="Скачать CSV: разделитель «;», BOM — Excel откроет без мастера импорта"
+                      @click="exportCsv(t)">
+                <Icon name="lucide:download" /> CSV
+              </button>
             </div>
-            <p class="card-note">
-              <span v-if="tableMeta.can_drill">Клик по строке — провалиться на уровень ниже. </span>
-              <span v-if="tableMeta.truncated" class="warn">
-                Показаны первые {{ tableMeta.row_limit }} строк — сузьте фильтры.
+            <p v-if="t.meta?.can_drill || t.meta?.truncated" class="card-note">
+              <span v-if="t.meta?.can_drill">Клик по строке — провалиться на уровень ниже. </span>
+              <span v-if="t.meta?.truncated" class="warn">
+                Показаны первые {{ t.meta.row_limit }} строк — сузьте фильтры.
               </span>
             </p>
             <div class="table-wrap">
               <table class="matrix">
                 <thead>
                   <tr>
-                    <th v-for="col in table.columns" :key="col.key" :class="{ 'col-label': col.key === 'label' }">
+                    <th v-for="col in t.columns" :key="col.key" :class="{ 'col-label': col.key === 'label' }">
                       {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
                     </th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(row, i) in (table.rows || [])" :key="i"
-                      :class="{ drillable: tableMeta.can_drill }"
-                      @click="drill(row.drill_value)">
-                    <td v-for="col in table.columns" :key="col.key" :class="col.key === 'label' ? 'col-label' : 'num'">
+                  <tr v-for="(row, i) in (t.rows || [])" :key="i"
+                      :class="{ drillable: t.meta?.can_drill }"
+                      @click="drill(t, row.drill_value)">
+                    <!-- Светофор Δ-колонок: класс вешается по hex из row['<ключ>_color'] -->
+                    <td v-for="col in t.columns" :key="col.key"
+                        :class="[col.key === 'label' ? 'col-label' : 'num', cellDeltaClass(row, col)]">
                       <span v-if="col.key === 'label'" class="row-label">
                         {{ cellText(row, col) }}
-                        <Icon v-if="tableMeta.can_drill" name="lucide:chevron-right" class="drill-icon" />
+                        <Icon v-if="t.meta?.can_drill" name="lucide:chevron-right" class="drill-icon" />
                       </span>
                       <template v-else>{{ cellText(row, col) }}</template>
                     </td>
                   </tr>
-                  <tr v-if="!(table.rows || []).length">
-                    <td :colspan="table.columns.length" class="empty-row">Нет данных по выбранным срезам</td>
+                  <tr v-if="!(t.rows || []).length">
+                    <td :colspan="t.columns.length" class="empty-row">Нет данных по выбранным срезам</td>
                   </tr>
                 </tbody>
               </table>
@@ -337,14 +362,21 @@ function setCurrency(c: string) {
 const dash = ref<any>(null)
 const loading = ref(false)
 const error = ref('')
-/** Путь проваливания матрицы — повторяющийся параметр matrix_path. */
-const matrixPath = ref<string[]>([])
+/** Пути проваливания по таблицам: ключ таблицы → пройденные уровни.
+ *  Имя повторяющегося query-параметра — по контракту app/fot.py: матрица
+ *  P9/P11 — matrix_path, каналы P11 — channel_path; у остальных таблиц
+ *  дрилла нет, путь им не нужен. */
+const tablePaths = ref<Record<string, string[]>>({})
+const PATH_PARAM: Record<string, string> = { by_department: 'matrix_path', by_channel: 'channel_path' }
+const tablePath = (t: any): string[] => tablePaths.value[t.key] || []
 
 function buildQuery(): string {
   const p = new URLSearchParams()
   p.set('tab', tab.value)
   for (const f of MULTI_FILTERS) for (const v of selected[f.key] || []) p.append(f.key, v)
-  for (const v of matrixPath.value) p.append('matrix_path', v)
+  for (const [key, path] of Object.entries(tablePaths.value)) {
+    for (const v of path) p.append(PATH_PARAM[key] || 'matrix_path', v)
+  }
   if (scenarioPlan.value) p.set('scenario_plan', scenarioPlan.value)
   if (intercompany.value) p.set('intercompany', intercompany.value)
   if (year.value) p.set('year', year.value)
@@ -369,7 +401,7 @@ async function loadDash() {
 function setTab(key: string) {
   if (tab.value === key) return
   tab.value = key
-  matrixPath.value = [] // путь проваливания — только у матрицы P9
+  tablePaths.value = {} // пути проваливания между вкладками не переезжают
   loadDash()
 }
 
@@ -379,20 +411,24 @@ const notImplemented = computed(() => meta.value.status === 'not_implemented')
 const cards = computed<any[]>(() => dash.value?.cards || [])
 const chart = computed<any>(() =>
   (dash.value?.charts || []).find((c: any) => c.key === 'monthly') || (dash.value?.charts || [])[0] || null)
-const table = computed<any>(() =>
-  (dash.value?.tables || []).find((t: any) => t.key === 'by_department') || (dash.value?.tables || [])[0] || null)
-const tableMeta = computed<any>(() => table.value?.meta || {})
+/** Все таблицы вкладки — по порядку API: у P9 матрица, у P10 одна, у P11 три. */
+const tables = computed<any[]>(() => dash.value?.tables || [])
+/** CSV-кнопка в заголовке каждой таблицы — только сводным вкладкам P10/P11. */
+const canExport = computed(() => tab.value === 'p10' || tab.value === 'p11')
+/** P10/P11 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
+const isHalfTab = computed(() => tab.value === 'p10' || tab.value === 'p11')
 
 // ── Проваливание ─────────────────────────────────────────────────────────────
 
-function drill(value: string | null | undefined) {
-  if (!tableMeta.value.can_drill || value === null || value === undefined || value === '') return
-  matrixPath.value = [...matrixPath.value, String(value)]
+function drill(t: any, value: string | null | undefined) {
+  if (!t?.meta?.can_drill || value === null || value === undefined || value === '') return
+  tablePaths.value = { ...tablePaths.value, [t.key]: [...tablePath(t), String(value)] }
   loadDash()
 }
-function drillTo(depth: number) {
-  if (depth >= matrixPath.value.length) return
-  matrixPath.value = matrixPath.value.slice(0, depth)
+function drillTo(t: any, depth: number) {
+  const path = tablePath(t)
+  if (depth >= path.length) return
+  tablePaths.value = { ...tablePaths.value, [t.key]: path.slice(0, depth) }
   loadDash()
 }
 
@@ -531,14 +567,65 @@ const isNum = (v: any) => v !== null && v !== undefined && v !== '' && Number.is
 
 const fmtCard = (v: any) => (isNum(v) ? nf2.format(Number(v)) : '—')
 
+/** Единицы с двумя знаками — проценты, п.п. и ставки; деньги (в col.unit
+ *  валюта витрины: BYN/USD/RUB, суммы в тыс.) — целые. Список снят с
+ *  фактических col.unit API (app/fot.py), фронт ничего не угадывает. */
+const UNITS_2DP = new Set(['%', 'п.п.', 'ставок'])
+
 /** Ячейка таблицы: пустое значение — прочерк, никогда не NaN.
- *  Деньги — без копеек (компактнее строки), ставки и проценты — с двумя. */
+ *  Точность — по col.unit; отрицательные Δ ru-RU пишет со знаком минус. */
 function cellText(row: any, col: any): string {
   const v = row?.[col.key]
   if (v === null || v === undefined || v === '') return '—'
   if (col.key === 'label' || !isNum(v)) return String(v)
   const n = Number(v)
-  return col.unit === 'ставок' || col.unit === '%' ? nf2.format(n) : nf0.format(n)
+  return UNITS_2DP.has(String(col.unit || '').trim()) ? nf2.format(n) : nf0.format(n)
+}
+
+/** Светофор Δ-ячеек: цвет считает сервер и кладёт рядом со значением —
+ *  row['<ключ колонки>_color'], hex палитры деки (#1C8A5A/#9E6B0F/#C0392B)
+ *  или пусто. Фронт только маппит hex на класс с CSS-переменной темы,
+ *  логику покраски не повторяет. */
+const DELTA_COLOR_CLASS: Record<string, string> = {
+  '#1C8A5A': 'delta-pos', // var(--fot-pos) — рост в пределах порога
+  '#9E6B0F': 'delta-mid', // var(--fot-mid) — рост выше порога без роста доли
+  '#C0392B': 'delta-neg', // var(--fot-neg) — зона контроля
+}
+function cellDeltaClass(row: any, col: any): string {
+  const hex = String(row?.[col.key + '_color'] || '').trim().toUpperCase()
+  return DELTA_COLOR_CLASS[hex] || ''
+}
+
+// ── CSV-экспорт таблиц (клиентский, без библиотек) ───────────────────────────
+
+/** Выгрузка одной таблицы: BOM + разделитель «;» — Excel с ру-локалью
+ *  открывает файл двойным кликом. Числа уходят сырыми значениями JSON
+ *  с десятичной запятой; экранное ру-форматирование в файл не тащим. */
+function exportCsv(t: any) {
+  const cols: any[] = t.columns || []
+  const q = (v: any): string => {
+    const s = v === null || v === undefined ? '' : String(v)
+    return /[";\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const cell = (row: any, col: any): string => {
+    const v = row?.[col.key]
+    if (v === null || v === undefined || v === '') return ''
+    if (col.key === 'label' || !isNum(v)) return String(v)
+    return String(Number(v)).replace('.', ',')
+  }
+  const head = cols.map((c) => q(c.label + (c.unit && c.key !== 'label' ? `, ${c.unit}` : '')))
+  const lines = [head.join(';')]
+  for (const row of t.rows || []) lines.push(cols.map((c) => q(cell(row, c))).join(';'))
+  const BOM = String.fromCharCode(0xFEFF) // U+FEFF — Excel по нему узнаёт UTF-8
+  const blob = new Blob([BOM + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `fot_${tab.value}_${t.key}.csv`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }
 
 const periodLabel = computed(() => {
@@ -752,6 +839,11 @@ const fmtDateTime = (iso: any) => {
 .row-label { display: inline-flex; align-items: center; gap: var(--sp-1); }
 .drill-icon { width: 12px; height: 12px; color: var(--fot-accent-light); opacity: 0.8; }
 .empty-row { text-align: center; color: var(--fot-muted); padding: var(--sp-4) !important; }
+/* Светофор Δ-ячеек — классы вешает cellDeltaClass по hex из API,
+   красим через токены: в тёмной теме значения те же (палитра деки). */
+.matrix td.delta-pos { color: var(--fot-pos); }
+.matrix td.delta-mid { color: var(--fot-mid); }
+.matrix td.delta-neg { color: var(--fot-neg); }
 /* В тёмной теме шапка на светлом винном — белый текст не читается, берём тёмный. */
 .fot-dark .matrix th { color: #2A1E22; }
 
