@@ -1650,7 +1650,8 @@ async def fot_dashboard(
     """Вкладка ФОТ-дашборда (?tab=p9 плюс срезы) — сборка app/fot.py.
 
     tab — вкладка p9…p13 (по умолчанию p9). Срезы иерархии ЦФО, юрлица,
-    страны и путь проваливания матрицы — повторяющимися параметрами
+    страны и пути проваливания (матрица подразделений — matrix_path, каналы
+    сбыта P11 — channel_path) — повторяющимися параметрами
     (?cfo=101&cfo=102&matrix_path=Розничная сеть), одиночные срезы —
     scenario_plan/intercompany/year/month/currency. Неизвестная вкладка
     или значение вне белого списка — 400 (ValueError из fot.dashboard).
@@ -1660,7 +1661,7 @@ async def fot_dashboard(
     params: dict = {
         key: qp.getlist(key)
         for key in ("direction", "cfo_group", "cfo_subgroup", "cfo",
-                    "legal_entity", "country", "matrix_path")
+                    "legal_entity", "country", "matrix_path", "channel_path")
         if qp.getlist(key)
     }
     for key in ("scenario_plan", "intercompany", "year", "month", "currency"):

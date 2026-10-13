@@ -147,11 +147,13 @@
           <section v-for="t in tables" :key="t.key" class="card">
             <div class="card-head">
               <div>
-                <!-- Уровень в заголовке — только у дриллимых таблиц: у остальных он дублирует label -->
+                <!-- Уровень в заголовке и крошки — у дриллимых таблиц, и НЕ
+                     пропадают на последнем уровне: там can_drill=false, но
+                     path непуст — иначе пользователь теряет кнопку «Назад» -->
                 <h3 class="card-title">
-                  {{ t.label }}<template v-if="t.meta?.can_drill"> · {{ t.meta.level_label || t.meta.dim }}</template>
+                  {{ t.label }}<template v-if="t.meta?.can_drill || (t.meta?.path?.length || 0) > 0"> · {{ t.meta.level_label || t.meta.dim }}</template>
                 </h3>
-                <nav v-if="t.meta?.can_drill" class="crumbs">
+                <nav v-if="t.meta?.can_drill || (t.meta?.path?.length || 0) > 0" class="crumbs">
                   <button class="crumb" type="button" :disabled="!tablePath(t).length" @click="drillTo(t, 0)">Все</button>
                   <template v-for="(c, i) in (t.meta?.path || [])" :key="i">
                     <span class="crumb-sep">›</span>
