@@ -23,6 +23,10 @@
           <Icon name="lucide:file-bar-chart-2" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Отчёты</span>
         </NuxtLink>
+        <NuxtLink v-if="!isCostOnly" to="/reports/fot" class="nav-item">
+          <Icon name="lucide:users" class="nav-item-icon" />
+          <span v-if="!sidebarCollapsed">ФОТ и численность</span>
+        </NuxtLink>
         <NuxtLink v-if="!isCostOnly && hasScope('plans')" to="/plans" class="nav-item">
           <Icon name="lucide:clipboard-list" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Тактические планы</span>
@@ -120,6 +124,10 @@
               <NuxtLink to="/reports" class="nav-item" @click="closeMobileMenu">
                 <Icon name="lucide:file-bar-chart-2" class="nav-item-icon" />
                 <span>Отчёты</span>
+              </NuxtLink>
+              <NuxtLink to="/reports/fot" class="nav-item" @click="closeMobileMenu">
+                <Icon name="lucide:users" class="nav-item-icon" />
+                <span>ФОТ и численность</span>
               </NuxtLink>
               <NuxtLink to="/counterparties" class="nav-item" @click="closeMobileMenu">
                 <Icon name="lucide:users" class="nav-item-icon" />
@@ -227,6 +235,7 @@ const titleByPath: Record<string, string> = {
   "/": "Дашборд",
   "/operations": "Операции",
   "/reports": "Отчёты",
+  "/reports/fot": "ФОТ и численность",
   "/counterparties": "Контрагенты",
   "/analytics": "Аналитика",
   "/account": "Профиль",
