@@ -70,7 +70,7 @@
           <div v-for="f in MULTI_FILTERS" :key="f.key" class="filter-item">
             <label>{{ f.label }}</label>
             <CostMultiSelect v-model="selected[f.key]" :options="multiOptions(f)"
-                             :placeholder="`Все · ${f.label.toLowerCase()}`" @change="loadDash" />
+                             :placeholder="`Все · ${f.label.toLowerCase()}`" @change="onFilterChange" />
           </div>
           <div class="filter-item">
             <label>План</label>
@@ -419,14 +419,17 @@ const wipText = computed(() => WIP_TEXT[tab.value] || 'Раздел готови
 
 // ── Фильтры ──────────────────────────────────────────────────────────────────
 
-/** Ключи — белый список срезов app/fot.py; лишнее сервер игнорирует. */
+/** Ключи — белый список срезов app/fot.py; лишнее сервер игнорирует.
+ *  Порядок панели: страна → юрлицо → иерархия ЦФО (направление → группа →
+ *  подгруппа → ЦФО). Опции каскадятся: выбор в одном фильтре сужает списки
+ *  остальных (см. loadFilters / onFilterChange). */
 const MULTI_FILTERS = [
+  { key: 'country', label: 'Страна', opt: 'countries' },
+  { key: 'legal_entity', label: 'Юрлицо', opt: 'legal_entities' },
   { key: 'direction', label: 'Направление', opt: 'directions' },
   { key: 'cfo_group', label: 'Группа ЦФО', opt: 'cfo_groups' },
   { key: 'cfo_subgroup', label: 'Подгруппа ЦФО', opt: 'cfo_subgroups' },
   { key: 'cfo', label: 'ЦФО', opt: 'cfos' },
-  { key: 'legal_entity', label: 'Юрлицо', opt: 'legal_entities' },
-  { key: 'country', label: 'Страна', opt: 'countries' },
 ]
 
 const selected = reactive<Record<string, string[]>>(
@@ -451,7 +454,17 @@ const asOptions = (raw: any): { value: string; label: string }[] =>
   (Array.isArray(raw) ? raw : [])
     .map((o: any) => (typeof o === 'string' ? { value: o, label: o } : { value: String(o.id), label: String(o.text ?? o.id) }))
 
-const multiOptions = (f: { opt: string }) => asOptions(filterOptions.value[f.opt])
+/** Опции фильтра — каскад от бэкенда плюс выбранные значения, которых каскад
+ *  не вернул: выбор, исключённый другим фильтром, остаётся в списке и на чипе
+ *  (компонент незнакомые значения показывает сырым id — добавляем их явно). */
+const multiOptions = (f: { key: string; opt: string }) => {
+  const opts = asOptions(filterOptions.value[f.opt])
+  const have = new Set(opts.map((o) => o.value))
+  for (const v of selected[f.key] || []) {
+    if (!have.has(v)) opts.push({ value: v, label: v })
+  }
+  return opts
+}
 const scenarioOptions = computed(() => asOptions(filterOptions.value.scenarios))
 const icOptions = computed(() => [{ value: 'all', label: 'Все' }, ...asOptions(filterOptions.value.intercompany)])
 const yearOptions = computed(() => asOptions(filterOptions.value.years))
@@ -480,7 +493,14 @@ function applyDefaultsFromClosed() {
 
 async function loadFilters() {
   try {
-    const res = await api<any>('/fot/filters', { query: year.value ? { year: year.value } : {} })
+    // Каскад: выбранные срезы уходят в /fot/filters повторяющимися
+    // параметрами — опции каждого фильтра сужаются остальными выборами
+    // (свой выбор себя не сужает). Год тоже каскадит все списки.
+    const query: Record<string, any> = year.value ? { year: year.value } : {}
+    for (const f of MULTI_FILTERS) {
+      if ((selected[f.key] || []).length) query[f.key] = [...selected[f.key]]
+    }
+    const res = await api<any>('/fot/filters', { query })
     filterOptions.value = res || {}
     filtersMeta.value = res?.meta || {}
     applyDefaultsFromClosed()
@@ -488,6 +508,12 @@ async function loadFilters() {
     // Сбой справочника не должен прятать дашборд — сервер подставит свои дефолты.
     console.error('[fot] filters failed', e)
   }
+}
+
+/** Смена среза: пересобираем каскад опций и сам дашборд. */
+function onFilterChange() {
+  loadFilters()
+  loadDash()
 }
 
 function onYearChange() {

@@ -2032,72 +2032,97 @@ async def _dashboard_p13(p: dict, meta: dict) -> dict:
     return {"cards": cards, "charts": [], "tables": tables, "meta": meta_out}
 
 
-async def filter_options(year: int | None = None) -> dict:
+# Каскадные опции фильтров: ключ параметра → колонка (fot_monthly m JOIN
+# fot_cfo c). Опции каждого измерения считаются по данным года с условиями
+# ОСТАЛЬНЫХ выбранных срезов — свой выбор измерение не сужает (снятое
+# значение остаётся в списке, кросс-фильтрация до отмены выбора).
+_FOT_FILTER_DIMS = (
+    ("country", "c.country_code"),
+    ("legal_entity", "m.legal_entity"),
+    ("direction", "c.direction"),
+    ("cfo_group", "c.group_cfo1"),
+    ("cfo_subgroup", "c.group_cfo2"),
+    ("cfo", "m.code_cfo"),
+)
+
+
+async def filter_options(year: int | None = None, params: dict | None = None) -> dict:
     """Каскадные опции фильтров дашборда.
 
-    Иерархия ЦФО — из fot_cfo. На подгруппах ЦФО и самих ЦФО оставляем только
-    ЦФО с данными fot_monthly в выбранном году — это порт меры «_ЦФО активно»
-    из PBI («по ЦФО есть данные в выбранном периоде»); направления и группы
-    ЦФО — весь справочник: у части ЦФО без оборота группы пустыми не бывают,
-    а фильтр по пустой группе просто даст пустую выборку. Юрлица и годы —
-    DISTINCT из fot_monthly. Страны, сценарии плана, ВГО и месяцы — статика.
+    Кросс-фильтрация: список значений каждого измерения (страна, юрлицо,
+    направление, группа/подгруппа ЦФО, ЦФО) — только те, у которых есть данные
+    fot_monthly в выбранном году при выбранных значениях остальных срезов
+    (порт «_ЦФО активно» из PBI распространён на все измерения). Страна —
+    только отчётные коды COUNTRY_OPTIONS в порядке справочника, ЦФО — с
+    подписью справочника, коды сортируются как числа. Сценарии плана, ВГО и
+    месяцы — статика, годы — DISTINCT всех лет (не каскадятся).
 
-    *year* ограничивает списки подгрупп и ЦФО (каскад по году); по умолчанию —
-    плановый год YEAR_PLAN.
+    *year* — год каскада (по умолчанию плановый YEAR_PLAN); *params* — dict
+    выбранных срезов списками по ключам _FOT_FILTER_DIMS.
     """
     if year is None:
         year = YEAR_PLAN
-    async with acquire() as pg:
-        rows = await pg.fetch(
-            """
-            WITH act AS (
-                SELECT DISTINCT code_cfo FROM fot_monthly
-                WHERE date_part('year', month_date) = $1::int
-            )
-            SELECT kind, id, text FROM (
-                SELECT DISTINCT 'direction' AS kind, direction AS id, direction AS text
-                    FROM fot_cfo WHERE coalesce(direction, '') <> ''
-                UNION ALL
-                SELECT DISTINCT 'group', group_cfo1, group_cfo1
-                    FROM fot_cfo WHERE coalesce(group_cfo1, '') <> ''
-                UNION ALL
-                SELECT DISTINCT 'subgroup', c.group_cfo2, c.group_cfo2
-                    FROM fot_cfo c JOIN act a ON a.code_cfo = c.code_cfo
-                    WHERE coalesce(c.group_cfo2, '') <> ''
-                UNION ALL
-                SELECT 'cfo', c.code_cfo, c.cfo_label
-                    FROM fot_cfo c JOIN act a ON a.code_cfo = c.code_cfo
-                UNION ALL
-                SELECT DISTINCT 'legal', m.legal_entity, m.legal_entity
-                    FROM fot_monthly m WHERE coalesce(m.legal_entity, '') <> ''
-                UNION ALL
-                SELECT DISTINCT 'year', date_part('year', m.month_date)::int::text,
-                       date_part('year', m.month_date)::int::text
-                    FROM fot_monthly m
-            ) t
-            ORDER BY
-                CASE kind WHEN 'direction' THEN 1 WHEN 'group' THEN 2 WHEN 'subgroup' THEN 3
-                          WHEN 'cfo' THEN 4 WHEN 'legal' THEN 5 ELSE 6 END,
-                -- коды ЦФО не дополнены нулями: '1001' должен идти до '101'
-                CASE WHEN kind IN ('cfo', 'year') AND id ~ '^[0-9]+$'
-                     THEN lpad(id, 12, '0') ELSE id END
-            """,
-            year,
+    sel = {k: [str(v) for v in (params.get(k) or [])] if params and params.get(k) else []
+           for k, _ in _FOT_FILTER_DIMS}
+
+    def _conds(exclude: str, sql_params: list) -> str:
+        """AND-условия выбранных срезов кроме *exclude* (себя не сужаем)."""
+        return "".join(
+            _any_cond(col, _phl(sel[key], sql_params))
+            for key, col in _FOT_FILTER_DIMS
+            if key != exclude and sel[key]
         )
+
+    async with acquire() as pg:
+        buckets: dict = {}
+
+        # Страны: пересечение данных с отчётными кодами (шум TR/CN/BR/Error
+        # источника в опциях не показываем), порядок — справочник.
+        sp = [year]
+        rows = await pg.fetch(
+            "SELECT DISTINCT c.country_code AS id FROM fot_monthly m"
+            " JOIN fot_cfo c ON c.code_cfo = m.code_cfo"
+            " WHERE date_part('year', m.month_date) = $1::int" + _conds("country", sp),
+            *sp)
+        present = {r["id"] for r in rows}
+        buckets["countries"] = [{"id": c, "text": t} for c, t in COUNTRY_OPTIONS if c in present]
+
+        # Юрлицо / направление / группа / подгруппа — DISTINCT значения колонки.
+        for key, bucket, col in (
+            ("legal_entity", "legal_entities", "m.legal_entity"),
+            ("direction", "directions", "c.direction"),
+            ("cfo_group", "cfo_groups", "c.group_cfo1"),
+            ("cfo_subgroup", "cfo_subgroups", "c.group_cfo2"),
+        ):
+            sp = [year]
+            rows = await pg.fetch(
+                "SELECT DISTINCT %s AS id FROM fot_monthly m"
+                " JOIN fot_cfo c ON c.code_cfo = m.code_cfo"
+                " WHERE date_part('year', m.month_date) = $1::int%s"
+                " AND coalesce(%s, '') <> '' ORDER BY 1"
+                % (col, _conds(key, sp), col),
+                *sp)
+            buckets[bucket] = [{"id": r["id"], "text": r["id"]} for r in rows]
+
+        # ЦФО — с подписью справочника; коды не дополнены нулями ('1001' до '101')
+        sp = [year]
+        rows = await pg.fetch(
+            "SELECT DISTINCT m.code_cfo AS id, c.cfo_label AS text,"
+            " CASE WHEN m.code_cfo ~ '^[0-9]+$' THEN lpad(m.code_cfo, 12, '0')"
+            " ELSE m.code_cfo END AS sortkey"
+            " FROM fot_monthly m JOIN fot_cfo c ON c.code_cfo = m.code_cfo"
+            " WHERE date_part('year', m.month_date) = $1::int" + _conds("cfo", sp)
+            + " ORDER BY sortkey",
+            *sp)
+        buckets["cfos"] = [{"id": r["id"], "text": r["text"]} for r in rows]
+
+        rows = await pg.fetch(
+            "SELECT DISTINCT date_part('year', month_date)::int::text AS id"
+            " FROM fot_monthly ORDER BY 1")
+        buckets["years"] = [{"id": r["id"], "text": r["id"]} for r in rows]
+
         meta = await fot_meta()
 
-    key_by_kind = {
-        "direction": "directions",
-        "group": "cfo_groups",
-        "subgroup": "cfo_subgroups",
-        "cfo": "cfos",
-        "legal": "legal_entities",
-        "year": "years",
-    }
-    buckets: dict = {v: [] for v in key_by_kind.values()}
-    for r in rows:
-        buckets[key_by_kind[r["kind"]]].append({"id": r["id"], "text": r["text"]})
-    buckets["countries"] = [{"id": c, "text": t} for c, t in COUNTRY_OPTIONS]
     buckets["scenarios"] = [{"id": s, "text": t} for s, t in SCENARIO_OPTIONS]
     buckets["intercompany"] = [{"id": i, "text": t} for i, t in IC_OPTIONS]
     buckets["months"] = [{"id": str(m), "text": str(m)} for m in range(1, 13)]

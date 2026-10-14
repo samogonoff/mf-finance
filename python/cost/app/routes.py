@@ -1629,17 +1629,24 @@ async def margin_material_lines(
 
 @router.get("/fot/filters")
 async def fot_filters(
-    year: int | None = None, _: str = Depends(_require_perm("cost:fot"))
+    request: Request, year: int | None = None, _: str = Depends(_require_perm("cost:fot"))
 ) -> dict:
     """Каскадные опции фильтров ФОТ-дашборда (сборка app/fot.py).
 
-    year ограничивает списки подгрупп ЦФО и самих ЦФО годом с данными —
-    порт меры «_ЦФО активно» из PBI.
+    year ограничивает все списки годом с данными (порт меры «_ЦФО активно»
+    из PBI). Повторяющиеся параметры country/legal_entity/direction/
+    cfo_group/cfo_subgroup/cfo — выбранные срезы: опции каждого измерения
+    сужаются остальными выборами (кросс-фильтрация), свой выбор список не
+    сужает. В mock-режиме опции статичны и каскад выключен.
     """
     if fot.fot_mock_enabled():
         return mocks.fot_filter_options()
+    slices = {
+        key: request.query_params.getlist(key)
+        for key in ("country", "legal_entity", "direction", "cfo_group", "cfo_subgroup", "cfo")
+    }
     try:
-        return await fot.filter_options(year)
+        return await fot.filter_options(year, slices)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -1724,6 +1731,14 @@ async def fot_export_pptx(
     observations = body.get("observations") or []
     if not isinstance(observations, list):
         raise HTTPException(400, "observations должен быть списком строк")
+    if fot_pptx.Presentation is None:
+        # python-pptx — опциональная зависимость образа: без неё работает весь
+        # раздел, выгрузка деки — нет (503 с внятной причиной, а не падение API).
+        raise HTTPException(
+            503,
+            "Выгрузка презентации недоступна: в образе python-cost нет python-pptx"
+            + (f" ({fot_pptx.PPTX_IMPORT_ERROR})" if fot_pptx.PPTX_IMPORT_ERROR else "")
+            + ". Пересоберите образ python-cost — раздел ФОТ работает и без неё.")
     blob = await fot_pptx.export_pptx(mode, filters, observations)
     fname = "ФОТ_2026_%s_%s.pptx" % (mode, date.today().strftime("%Y%m%d"))
     return StreamingResponse(

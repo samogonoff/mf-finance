@@ -24,13 +24,27 @@ import io
 import logging
 from datetime import date
 
-from pptx import Presentation
-from pptx.chart.data import CategoryChartData
-from pptx.dml.color import RGBColor
-from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION
-from pptx.enum.shapes import MSO_SHAPE
-from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
-from pptx.util import Inches, Pt
+try:
+    from pptx import Presentation
+    from pptx.chart.data import CategoryChartData
+    from pptx.dml.color import RGBColor
+    from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+    from pptx.util import Inches, Pt
+except ImportError as exc:  # python-pptx — опциональная фича (только выгрузка
+    # деки): без неё работает весь раздел, кроме /fot/export/pptx. Стабы нужны
+    # модульным константам-цветам и дефолтам аргументов (align=PP_ALIGN.RIGHT
+    # вычисляется при import); остальные имена в рантайме зовёт только выгрузка
+    # — см. гард в export_pptx.
+    from types import SimpleNamespace
+
+    Presentation = None
+    RGBColor = lambda *args, **kwargs: None
+    PP_ALIGN = SimpleNamespace(LEFT=None, CENTER=None, RIGHT=None, JUSTIFY=None)
+    PPTX_IMPORT_ERROR = str(exc)
+else:
+    PPTX_IMPORT_ERROR = None
 
 from app import fot_insights
 from app.logship import log
@@ -602,5 +616,9 @@ async def _collect_tabs(mode: str, filters: dict) -> dict:
 
 async def export_pptx(mode: str, filters: dict, observations: list) -> bytes:
     """Точка входа эндпоинта: сбор вкладок + дека; LLM-вызовов здесь нет."""
+    if Presentation is None:
+        raise RuntimeError(
+            "python-pptx не установлен в образе python-cost (см. requirements.txt): "
+            "пересоберите образ. Причина: %s" % PPTX_IMPORT_ERROR)
     payloads = await _collect_tabs(mode, filters or {})
     return build_deck(mode, payloads, filters or {}, list(observations or []))
