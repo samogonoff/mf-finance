@@ -131,8 +131,129 @@
             </template>
           </p>
 
-          <!-- KPI-карточки вкладки: у P10 пять, у P11 четыре -->
-          <section class="fot-kpis">
+          <!-- P11: верхний свод — реплика листа 1 деки «Бюджет ФОТ 2026»
+               (KPI-лента + панель численности + таблица стран + карточки
+               стран); разрезы вкладки — таблицами ниже. -->
+          <template v-if="isP11">
+            <section class="slide" aria-label="Свод по группе">
+              <header class="slide-hdr">
+                <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
+                <span class="slide-subtitle">Бюджет ФОТ {{ yearPlan }} — направления и подразделения</span>
+                <span class="slide-year" aria-hidden="true">{{ yearPlan }}</span>
+                <span class="slide-unit">млн {{ currency }}</span>
+              </header>
+
+              <!-- KPI-лента: 6 показателей группы + панель численности (P12) -->
+              <div class="ribbon">
+                <div class="rb">
+                  <span class="rb-label">Факт, год {{ yearPrev }}</span>
+                  <span class="rb-value">{{ fmt1(kpiNum('fot_fact_2025')) }}<span class="rb-unit"> млн {{ currency }}</span></span>
+                </div>
+                <div class="rb">
+                  <span class="rb-label">Доля ФОТ в выручке {{ yearPrev }}</span>
+                  <span class="rb-value">{{ fmt1(kpiNum('fot_share_2025')) }}<span class="rb-unit"> %</span></span>
+                </div>
+                <div class="rb rb-big">
+                  <span class="rb-label">Ожидание, год {{ yearPlan }}</span>
+                  <span class="rb-value">{{ fmt1(kpiNum('fot_expect_2026')) }}<span class="rb-unit"> млн {{ currency }}</span></span>
+                </div>
+                <div class="rb">
+                  <span class="rb-label">Динамика ФОТ к {{ yearPrev }}</span>
+                  <span class="rb-value" :class="signCf(kpiNum('fot_dev_year'))">{{ fmtSigned(kpiNum('fot_dev_year')) }}<span class="rb-unit"> %</span></span>
+                </div>
+                <div class="rb rb-big">
+                  <span class="rb-label">Доля ФОТ в выручке {{ yearPlan }}</span>
+                  <span class="rb-value">{{ fmt1(kpiNum('fot_share_2026')) }}<span class="rb-unit"> %</span></span>
+                  <span class="rb-sub" :class="signCf(kpiNum('fot_share_delta_pp'))">{{ fmtSigned(kpiNum('fot_share_delta_pp')) }} п.п. к факту {{ yearPrev }}</span>
+                </div>
+                <div class="rb">
+                  <span class="rb-label">Динамика выручки к {{ yearPrev }}</span>
+                  <span class="rb-value">{{ fmtSigned(kpiNum('revenue_dev_year')) }}<span class="rb-unit"> %</span></span>
+                </div>
+                <div v-if="headcount" class="rb-hc">
+                  <div class="hc">
+                    <span class="hc-label">ПЧ {{ yearPlan }}</span>
+                    <span class="hc-value">{{ fmt1(headcount.plan_approved) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">ФЧ 1ПГ{{ yr2(yearPrev) }}</span>
+                    <span class="hc-value">{{ fmt1(headcount.fact_2025) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">ФЧ 1ПГ{{ yr2(yearPlan) }}</span>
+                    <span class="hc-value">{{ fmt1(headcount.fact_2026) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">Δ план</span>
+                    <span class="hc-value" :class="signCf(headcount.var_plan)">{{ fmtSigned(headcount.var_plan) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">Δ {{ yr2(yearPrev) }}</span>
+                    <span class="hc-value" :class="signCf(headcount.var_2025)">{{ fmtSigned(headcount.var_2025) }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Таблица «страна × полугодия»: светофор «факт/тактика против
+                   бюджета» и «ожидание против факта 2025», итог — тёмной строкой -->
+              <section v-if="slideTable" class="card">
+                <div class="card-head">
+                  <h3 class="card-title">{{ slideTable.label }}</h3>
+                  <button class="btn btn-ghost btn-sm" type="button"
+                          title="Скачать CSV: разделитель «;», BOM — Excel откроет без мастера импорта"
+                          @click="exportCsv(slideTable)">
+                    <Icon name="lucide:download" /> CSV
+                  </button>
+                </div>
+                <div class="table-wrap">
+                  <table class="stable">
+                    <thead>
+                      <tr>
+                        <th v-for="col in slideTable.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
+                          {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(row, i) in (slideTable.rows || [])" :key="i" :class="{ total: row.total }">
+                        <td v-for="col in slideTable.columns" :key="col.key"
+                            :class="[col.key === 'label' ? 'col-name' : 'num', row.total ? slideCmpDk(row, col.key) : slideCmp(row, col.key)]">
+                          {{ cellText(slideTable, row, col) }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <!-- Карточки стран «Ожидание 2026 к факту 2025» -->
+              <template v-if="countryCards.length">
+                <h3 class="grid-caption">Ожидание {{ yearPlan }} к факту {{ yearPrev }}, ФОТ</h3>
+                <section class="cc-grid">
+                  <article v-for="c in countryCards" :key="c.cc" class="ccard">
+                    <span class="cc-code">{{ c.cc }}</span>
+                    <span class="cc-dyncap">Динамика, п.п. ({{ yearPlan }}/{{ yearPrev }}):</span>
+                    <span class="cc-badge" :class="signCf(c.share_delta_pp)">{{ fmtSigned(c.share_delta_pp, 2) }}</span>
+                    <span class="cc-big">{{ fmt1(c.exp26) }} млн</span>
+                    <span class="cc-delta" :class="signCf(c.dev_year)">{{ fmtSigned(c.dev_year) }}% к {{ yearPrev }} ({{ fmtSigned(c.dev_abs) }} млн)</span>
+                    <div class="cc-sep" role="presentation" />
+                    <p class="cc-line">Доля в ФОТ группы: <b>{{ fmt1(c.fot_share) }}%</b></p>
+                    <p class="cc-line">Доля ФОТ в выручке гр. ({{ yearPlan }}): <b>{{ fmt1(c.rev_share_2026) }}%</b></p>
+                    <p class="cc-line">Доля ФОТ в выручке гр. ({{ yearPrev }}): <b>{{ fmt1(c.rev_share_2025) }}%</b></p>
+                    <div class="cc-sep cc-sep-soft" role="presentation" />
+                    <p class="cc-hc">
+                      ПЧ: <b>{{ fmt1(c.plan_approved) }}</b>&nbsp;&nbsp;ФЧ 1ПГ {{ yearPlan }}:
+                      <b :class="cmpCf(c.fact_h1_2026, c.plan_approved)">{{ fmt1(c.fact_h1_2026) }}</b><br>
+                      Откл. (Ф-П): <b :class="signCf(c.hc_var)">{{ fmtSigned(c.hc_var) }}</b>
+                    </p>
+                  </article>
+                </section>
+              </template>
+            </section>
+          </template>
+
+          <!-- KPI-карточки вкладки: у P10 пять; у P11 — лента слайда выше -->
+          <section v-if="!isP11" class="fot-kpis">
             <article v-for="c in cards" :key="c.key" class="fot-kpi">
               <span class="fot-kpi-label">{{ c.label }}</span>
               <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
@@ -155,9 +276,10 @@
 
           <!-- Таблицы вкладки — по порядку из dash.tables: у P9 матрица с
                проваливанием, у P10 одна таблица по странам, у P11 три
-               (подразделения, каналы сбыта, направления). Дрилл, крошки и
-               CSV-кнопка включаются признаками из meta таблицы и вкладки. -->
-          <section v-for="t in tables" :key="t.key" class="card">
+               (подразделения, каналы сбыта, направления) — таблица стран у
+               P11 рендерится в слайде выше. Дрилл, крошки и CSV-кнопка
+               включаются признаками из meta таблицы и вкладки. -->
+          <section v-for="t in shownTables" :key="t.key" class="card">
             <div class="card-head">
               <div>
                 <!-- Уровень в заголовке и крошки — у дриллимых таблиц, и НЕ
@@ -433,10 +555,32 @@ const notImplemented = computed(() => meta.value.status === 'not_implemented')
 const cards = computed<any[]>(() => dash.value?.cards || [])
 const chart = computed<any>(() =>
   (dash.value?.charts || []).find((c: any) => c.key === 'monthly') || (dash.value?.charts || [])[0] || null)
-/** Все таблицы вкладки — по порядку API: у P9 матрица, у P10 одна, у P11 три. */
+/** Все таблицы вкладки — по порядку API: у P9 матрица, у P10 одна, у P11
+ *  таблица стран слайда + три разреза. */
 const tables = computed<any[]>(() => dash.value?.tables || [])
 /** CSV-кнопка в заголовке каждой таблицы — только сводным вкладкам P10/P11. */
 const canExport = computed(() => tab.value === 'p10' || tab.value === 'p11')
+
+// ── P11: верхний свод — реплика листа 1 деки «Бюджет ФОТ 2026» ───────────────
+
+const isP11 = computed(() => tab.value === 'p11')
+const yearPlan = computed(() => Number(meta.value.periods?.year_plan) || 2026)
+const yearPrev = computed(() => Number(meta.value.periods?.year_prev) || 2025)
+const yr2 = (y: any) => String(y).slice(2)
+/** Панель численности (правый край KPI-ленты) и карточки стран — отдельные
+ *  блоки ответа p11 (headcount, cards_by_country), карточек они не касаются. */
+const headcount = computed<any>(() => dash.value?.headcount || null)
+const countryCards = computed<any[]>(() => dash.value?.cards_by_country || [])
+/** Таблица стран рендерится внутри слайда; в общем списке таблиц её нет. */
+const slideTable = computed<any>(() =>
+  isP11.value ? tables.value.find((t: any) => t.key === 'by_country') || null : null)
+const shownTables = computed<any[]>(() =>
+  isP11.value ? tables.value.filter((t: any) => t.key !== 'by_country') : tables.value)
+/** Значение карточки по ключу — для KPI-ленты слайда. */
+const kpiNum = (key: string): number | null => {
+  const c = cards.value.find((x: any) => x.key === key)
+  return c && isNum(c.value) ? Number(c.value) : null
+}
 /** P10–P13 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
 const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13'].includes(tab.value))
 /** Метка активной вкладки — заголовок блока ИИ и нотификации. */
@@ -624,10 +768,44 @@ const chartOptions = computed(() => {
 // ── Форматтеры (ru-RU, mono/tabular-nums задаёт CSS) ─────────────────────────
 
 const nf0 = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 })
+const nf1 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 const nf2 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const isNum = (v: any) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v))
 
 const fmtCard = (v: any) => (isNum(v) ? nf2.format(Number(v)) : '—')
+/** Один знак — KPI-лента, таблица стран и карточки слайда P11 (млн/%). */
+const fmt1 = (v: any) => (isNum(v) ? nf1.format(Number(v)) : '—')
+/** Со знаком: «+» для положительных — динамики и отклонения слайда P11. */
+const fmtSigned = (v: any, dp: 1 | 2 = 1): string => {
+  if (!isNum(v)) return '—'
+  const n = Number(v)
+  const s = dp === 2 ? nf2.format(n) : nf1.format(n)
+  return n > 0 ? `+${s}` : s
+}
+
+// ── Светофор верхнего свода P11 — реплика деки, по знаку (без порога +10 %,
+//    как у Δ-колонок таблиц разрезов): рост ФОТ/доли и превышение базы —
+//    красный (cf-neg), снижение/экономия — зелёный (cf-pos). ──────────────────
+
+const signCf = (v: any): string => (!isNum(v) ? '' : Number(v) > 0 ? 'cf-neg' : Number(v) < 0 ? 'cf-pos' : '')
+const cmpCf = (v: any, base: any): string => {
+  if (!isNum(v) || !isNum(base)) return ''
+  const a = Number(v)
+  const b = Number(base)
+  return a > b ? 'cf-neg' : a < b ? 'cf-pos' : ''
+}
+/** Базы светофора таблицы стран: колонка → колонка-база той же строки
+ *  (факт против бюджета, ожидание против факта 2025 — как на листе деки). */
+const SLIDE_CMP_BASE: Record<string, string> = { f26_h1: 'b26_h1', t26_h2: 'b26_h2', exp26: 'f25' }
+const slideCmp = (row: any, colKey: string): string => {
+  const base = SLIDE_CMP_BASE[colKey]
+  return base ? cmpCf(row?.[colKey], row?.[base]) : ''
+}
+/** В тёмной итоговой строке — светлые варианты цветов для контраста. */
+const slideCmpDk = (row: any, colKey: string): string => {
+  const cls = slideCmp(row, colKey)
+  return cls ? `${cls}-dk` : ''
+}
 
 /** Единицы с двумя знаками — проценты, п.п. и ставки; деньги (в col.unit
  *  валюта витрины: BYN/USD/RUB, суммы в тыс.) — целые. Список снят с
@@ -640,13 +818,16 @@ const UNITS_2DP = new Set(['%', 'п.п.', 'ставок'])
 const MONEY_2DP_TABLES = new Set(['hr_budget'])
 
 /** Ячейка таблицы: пустое значение — прочерк, никогда не NaN.
- *  Точность — по col.unit; отрицательные Δ ru-RU пишет со знаком минус. */
+ *  Точность — по col.unit (млн-колонки — один знак); отрицательные Δ
+ *  ru-RU пишет со знаком минус. */
 function cellText(t: any, row: any, col: any): string {
   const v = row?.[col.key]
   if (v === null || v === undefined || v === '') return '—'
   if (col.key === 'label' || !isNum(v)) return String(v)
   const n = Number(v)
-  if (UNITS_2DP.has(String(col.unit || '').trim())) return nf2.format(n)
+  const unit = String(col.unit || '').trim()
+  if (unit.startsWith('млн')) return nf1.format(n)
+  if (UNITS_2DP.has(unit)) return nf2.format(n)
   return MONEY_2DP_TABLES.has(t?.key) ? nf2.format(n) : nf0.format(n)
 }
 
@@ -984,6 +1165,126 @@ const fmtDateTime = (iso: any) => {
 }
 .fot-method-text { margin: var(--sp-3) 0 0; font-size: 13px; color: var(--fot-muted); line-height: 1.55; white-space: pre-line; }
 .fot-method-meta { margin: var(--sp-2) 0 0; font-size: 12px; color: var(--fot-muted); }
+
+/* ── P11: верхний свод — реплика листа 1 деки «Бюджет ФОТ 2026» ──────────── */
+.slide { display: flex; flex-direction: column; gap: var(--sp-4); }
+.slide-hdr { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.slide-title {
+  font-family: 'Cambria', 'Times New Roman', serif;
+  font-size: 24px; font-weight: var(--fw-bold, 700);
+  color: var(--fot-accent-light); margin: 0; white-space: nowrap;
+}
+.slide-subtitle { font-size: 15px; color: var(--fot-muted); }
+.slide-year {
+  margin-left: auto; width: 44px; height: 44px; border-radius: 50%;
+  background: var(--fot-accent-light); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: var(--fw-bold, 700); flex-shrink: 0;
+}
+.fot-dark .slide-year { color: #2A1E22; }
+.slide-unit { font-size: 12px; color: var(--fot-muted); }
+
+/* KPI-лента: ячейки через вертикальные разделители, численность — справа */
+.ribbon { display: flex; align-items: stretch; gap: var(--sp-4) var(--sp-5); flex-wrap: wrap; }
+.rb {
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  padding-left: var(--sp-5); border-left: 1px solid var(--fot-border);
+}
+.ribbon > .rb:first-child { padding-left: 0; border-left: none; }
+.rb-label {
+  font-size: 11px; font-weight: var(--fw-bold, 700);
+  color: var(--fot-accent-light); letter-spacing: .2px; white-space: nowrap;
+}
+.rb-value {
+  font-family: 'Cambria', 'Times New Roman', serif; font-size: 21px;
+  font-weight: var(--fw-bold, 700); color: var(--fot-ink); white-space: nowrap;
+}
+.rb-big .rb-value { font-size: 30px; }
+.rb-unit { font-size: 12px; font-weight: var(--fw-regular); color: var(--fot-muted); margin-left: 2px; }
+.rb-sub { font-size: 12px; font-weight: var(--fw-bold, 700); color: var(--fot-ink); white-space: nowrap; }
+.rb-hc { margin-left: auto; display: flex; gap: var(--sp-3); padding-left: var(--sp-4); flex-wrap: wrap; }
+.hc {
+  display: flex; flex-direction: column; gap: 2px;
+  padding-left: var(--sp-3); border-left: 1px solid var(--fot-border);
+}
+.rb-hc > .hc:first-child { padding-left: 0; border-left: none; }
+.hc-label { font-size: 10px; font-weight: var(--fw-bold, 700); color: var(--fot-accent-light); white-space: nowrap; }
+.hc-value {
+  font-family: 'Cambria', 'Times New Roman', serif; font-size: 15px;
+  font-weight: var(--fw-bold, 700); color: var(--fot-ink); white-space: nowrap;
+}
+
+/* Светофор слайда: по знаку; *-dk — светлые варианты для тёмной строки итога */
+.cf-pos { color: var(--fot-pos); }
+.cf-neg { color: var(--fot-neg); }
+.cf-pos-dk { color: #8FD9B0; }
+.cf-neg-dk { color: #F2A69D; }
+
+/* Таблица стран слайда: рамочная, как на листе деки, итог — тёмной строкой */
+.stable { width: 100%; border-collapse: collapse; font-size: 13px; color: var(--fot-ink); }
+.stable th, .stable td {
+  border: 1px solid var(--fot-border); text-align: center;
+  padding: 4px 6px; white-space: nowrap;
+}
+.stable th { background: var(--fot-accent); color: var(--fot-accent-ink); font-weight: var(--fw-bold, 700); font-size: 12px; }
+.fot-dark .stable th { color: #2A1E22; }
+.stable th.col-name, .stable td.col-name { text-align: left; padding-left: 10px; }
+.stable td.num { font-variant-numeric: tabular-nums; }
+.stable tbody tr:nth-child(odd):not(.total) td { background: var(--fot-card); }
+.stable tr.total td {
+  /* винный итог листа деки — тёмный в обеих темах, светлые цифры */
+  background: #6B3347; color: #fff;
+  font-weight: var(--fw-bold, 700); border-color: #6B3347;
+}
+/* светофор в тёмной итоговой строке — светлые варианты, специфичнее белого */
+.stable tr.total td.cf-pos-dk { color: #8FD9B0; }
+.stable tr.total td.cf-neg-dk { color: #F2A69D; }
+
+/* Заголовок и карточки стран «Ожидание 2026 к факту 2025» */
+.grid-caption { font-size: 16px; font-weight: var(--fw-bold, 700); color: var(--fot-accent-light); margin: 0; }
+.cc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: var(--sp-3); }
+.ccard {
+  position: relative; background: var(--fot-card);
+  border: 1px solid var(--fot-border); border-radius: 8px;
+  padding: var(--sp-3) var(--sp-4);
+  display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0;
+}
+.cc-code { font-size: 16px; font-weight: var(--fw-bold, 700); color: var(--fot-accent-light); }
+.cc-dyncap {
+  position: absolute; right: 58px; top: 16px;
+  font-size: 10px; color: var(--fot-muted); white-space: nowrap;
+}
+.cc-badge {
+  position: absolute; right: var(--sp-4); top: 10px; width: 32px; height: 32px;
+  border-radius: 50%; background: #fff; border: 1.3px solid currentColor;
+  color: var(--fot-ink); font-size: 10px; font-weight: var(--fw-bold, 700);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.cc-badge.cf-pos { color: var(--fot-pos); }
+.cc-badge.cf-neg { color: var(--fot-neg); }
+.fot-dark .cc-badge { background: #1E1418; }
+.cc-big {
+  font-family: 'Cambria', 'Times New Roman', serif; font-size: 25px;
+  font-weight: var(--fw-bold, 700); color: var(--fot-ink); white-space: nowrap;
+}
+.cc-delta { font-size: 13.5px; font-weight: var(--fw-bold, 700); color: var(--fot-ink); white-space: nowrap; }
+/* светофор строки «% к 2025»: специфичнее дефолтного цвета .cc-delta */
+.cc-delta.cf-pos { color: var(--fot-pos); }
+.cc-delta.cf-neg { color: var(--fot-neg); }
+.cc-sep { border: none; border-top: 1px solid var(--fot-border); margin: 0; }
+.cc-sep-soft { border-top-color: color-mix(in srgb, var(--fot-border) 55%, transparent); }
+.cc-line { margin: 0; font-size: 13px; color: var(--fot-muted); white-space: nowrap; }
+.cc-line b { color: var(--fot-ink); font-weight: var(--fw-bold, 700); }
+.cc-hc { margin: 0; font-size: 12px; color: var(--fot-muted); line-height: 1.55; white-space: nowrap; }
+.cc-hc b { color: var(--fot-ink); font-weight: var(--fw-bold, 700); }
+/* светофор внутри .cc-hc: специфичнее дефолтного цвета b */
+.cc-hc b.cf-pos { color: var(--fot-pos); }
+.cc-hc b.cf-neg { color: var(--fot-neg); }
+
+@media (max-width: 520px) {
+  .cc-dyncap { display: none; }
+  .rb, .rb-hc { border-left: none; padding-left: 0; }
+}
 
 .spinning { animation: fot-spin 0.9s linear infinite; }
 @keyframes fot-spin { to { transform: rotate(360deg); } }

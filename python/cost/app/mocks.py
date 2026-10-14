@@ -1280,8 +1280,10 @@ def _fot_half_mock_dashboard(tab: str, params: dict) -> dict:
     """Сборка P10/P11 мока теми же функциями, что и боевой ответ.
 
     app.fot._p10_assemble/_p11_assemble получают мок-зерно — формулы (доли,
-    Δ, светофор) и форма ответа не могут разойтись с боем. Срезы на числа не
-    влияют (это мок): страна карточек — None, пути дрилла берутся из запроса.
+    Δ, светофор) и форма ответа не могут разойтись с боем. P11 берёт и мок
+    численности P12 (_fot_hc_mock) для панели и карточек стран. Срезы на
+    числа не влияют (это мок): страна карточек — None, пути дрилла берутся
+    из запроса.
     """
     from app import fot
 
@@ -1294,12 +1296,13 @@ def _fot_half_mock_dashboard(tab: str, params: dict) -> dict:
     if currency not in fot.FOT_CURRENCIES:
         currency = "BYN"
     grain, den = _fot_half_mock()
+    headcount = cards_by_country = None
     if tab == "p10":
         cards, tables, warning = fot._p10_assemble(currency, grain, den, None)
         methodology = fot.METHODOLOGY_P10
     else:
-        cards, tables, warning = fot._p11_assemble(
-            currency, grain, den, None,
+        cards, headcount, cards_by_country, tables, warning = fot._p11_assemble(
+            currency, grain, den, _fot_hc_mock(), None,
             fot._parse_str_list(params.get("matrix_path")),
             fot._parse_str_list(params.get("channel_path")),
         )
@@ -1317,7 +1320,11 @@ def _fot_half_mock_dashboard(tab: str, params: dict) -> dict:
     meta.update(_FOT_MOCK_META)
     if warning:
         meta["warning"] = warning
-    return {"cards": cards, "charts": [], "tables": tables, "meta": meta}
+    out = {"cards": cards, "charts": [], "tables": tables, "meta": meta}
+    if tab == "p11":
+        out["headcount"] = headcount
+        out["cards_by_country"] = cards_by_country
+    return out
 
 
 # ── P12 «Численность план и факт»: зерно под контрольные числа ────────────────

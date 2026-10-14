@@ -894,7 +894,15 @@ METHODOLOGY_P10 = (
 
 METHODOLOGY_P11 = (
     "Разрезы ФОТ за те же фиксированные полугодия 2025 vs 2026, что на своде по группе; "
-    "формулы, доли и покраска динамик — там же (см. методологию P10). Верхняя матрица "
+    "формулы, доли и покраска динамик — там же (см. методологию P10). Верхний свод — лист 1 "
+    "деки «Бюджет ФОТ 2026»: KPI-лента группы (факт и доля 2025, ожидание 2026, динамика "
+    "ФОТ, доля 2026 с Δ доли в п.п., динамика выручки), панель численности (план утв. 2026 "
+    "и факты 30.06.2025/2026 — то же зерно, что у P12), таблица «страна × полугодия» в млн "
+    "и карточки стран «Ожидание 2026 к факту 2025» (доля в ФОТ группы, доли ФОТ в выручке "
+    "группы 2026/2025, ПЧ/ФЧ и отклонение от плана). Доли карточек стран — к выручке группы "
+    "(dn_grp), а не к страновой ветке знаменателя — как на листе деки. Светофор верхнего "
+    "свода проще порога Δ-колонок: по знаку — рост ФОТ/доли и превышение базы (факт против "
+    "бюджета, ФЧ против ПЧ) — красный, снижение и экономия — зелёный. Матрица подразделений "
     "дриллится группа ЦФО → подгруппа ЦФО (площадка) → подразделение и открывается свёрнутой "
     "до групп; таблица каналов сбыта — канал → ЦФО по справочнику; таблица направлений "
     "показывает все направления ЦФО («отделы» — направления группы «2.Отделы» — без "
@@ -1053,6 +1061,37 @@ def _country_row(label: str, cc: str, parts: list[dict], den: dict) -> dict:
     return _half_row(label, cc, s, dv, True)
 
 
+# Периоды таблицы стран слайда P11 (лист 1 деки): 8 колонок значений в млн,
+# без Δ-колонок сводной таблицы P10.
+_SLIDE_VALUE_KEYS = (
+    "f25_h1", "f25_h2", "f25", "b26_h1", "f26_h1", "b26_h2", "t26_h2",
+)
+
+
+def _country_slide_columns(cur: str) -> list[dict]:
+    """Колонки таблицы стран верхнего свода P11 — реплика листа 1 деки."""
+    labels = (
+        ("f25_h1", "Факт 1ПГ25"), ("f25_h2", "Факт 2ПГ25"), ("f25", "Итого Факт 2025"),
+        ("b26_h1", "Бюджет 1ПГ26"), ("f26_h1", "Факт 1ПГ26"),
+        ("b26_h2", "Бюджет 2ПГ26"), ("t26_h2", "Тактика 2ПГ26"), ("exp26", "Ожидание 2026"),
+    )
+    return [{"key": "label", "label": "Страна"}] + [
+        {"key": key, "label": lbl, "unit": "млн " + cur} for key, lbl in labels
+    ]
+
+
+def _country_slide_row(label: str, parts: list[dict], total: bool = False) -> dict:
+    """Строка таблицы стран слайда P11: значения в млн с одним знаком; итоговая
+    строка несёт total=True — фронт красит её тёмным, как лист деки."""
+    s = _period_sums(parts)
+    dv = _half_derive(s, {})
+    row: dict = {"label": label, "drill_value": None, "total": total}
+    for key in _SLIDE_VALUE_KEYS:
+        row[key] = _r1(_ms(s.get(key)))
+    row["exp26"] = _r1(_ms(dv["exp26"]))
+    return row
+
+
 def _p10_assemble(cur: str, grain: list[dict], den: dict, sel_country: str | None) -> tuple:
     """Карточки и таблица по странам P10 из зерна и знаменателей.
 
@@ -1117,18 +1156,34 @@ def _p10_assemble(cur: str, grain: list[dict], den: dict, sel_country: str | Non
     return cards, tables, warning
 
 
-def _p11_assemble(cur: str, grain: list[dict], den: dict, sel_country: str | None,
-                  matrix_path: list[str], channel_path: list[str]) -> tuple:
-    """Карточки и три таблицы P11 из зерна и знаменателей.
+def _p11_assemble(cur: str, grain: list[dict], den: dict, hc_grain: list[dict],
+                  sel_country: str | None, matrix_path: list[str],
+                  channel_path: list[str]) -> tuple:
+    """Верхний свод и таблицы P11 из зерна, знаменателей и численности.
 
-    Верхняя матрица дриллится matrix_path (группа → подгруппа → подразделение),
-    каналы — channel_path (канал → ЦФО), направления — плоско. Знаменатель
-    цвета — страна строки (min=max), у смесей — вся выручка группы.
-    Возвращает (cards, tables, warning).
+    Верхний свод — реплика листа 1 деки «Бюджет ФОТ 2026»: карточки группы
+    (факт/доля 2025, ожидание 2026, динамика ФОТ, доля 2026 с Δ доли в п.п.,
+    динамика выручки), панель численности (план утв. и факты 30.06.2025/2026 —
+    зерно P12), таблица «страна × полугодия» в млн и карточки стран «Ожидание
+    2026 к факту 2025» (доля в ФОТ группы, доли ФОТ в выручке группы, ПЧ/ФЧ).
+    Доли карточек стран — к выручке группы (ветка grp знаменателя), а не к
+    страновой ветке — как на листе деки. Ниже — три таблицы разрезов: матрица
+    дриллится matrix_path (группа → подгруппа → подразделение), каналы —
+    channel_path (канал → ЦФО), направления — плоско. Знаменатель цвета —
+    страна строки (min=max), у смесей — вся выручка группы.
+    Возвращает (cards, headcount, cards_by_country, tables, warning).
     """
     s_all = _period_sums(grain)
-    dv_all = _half_derive(s_all, _den_branch(den, sel_country))
+    dn_cards = _den_branch(den, sel_country)
+    dv_all = _half_derive(s_all, dn_cards)
+    # Динамика выручки — из знаменателей карточной ветки (наружу они не видны).
+    rv_exp = _nsum([dn_cards.get("rv_f26_h1"), dn_cards.get("rv_t26_h2")])
+    rev_dev = _div(_diff(rv_exp, dn_cards.get("rv_f25")), dn_cards.get("rv_f25"))
     cards = [
+        {"key": "fot_fact_2025", "label": "ФОТ Факт 2025, млн",
+         "value": _r2(_ms(s_all.get("f25"))), "unit": "млн " + cur},
+        {"key": "fot_share_2025", "label": "ФОТ доля выручки 2025",
+         "value": _r2(_pct(dv_all["sh25"])), "unit": "%"},
         {"key": "fot_expect_2026", "label": "ФОТ Ожидание 2026, млн",
          "value": _r2(_ms(dv_all["exp26"])), "unit": "млн " + cur},
         {"key": "fot_fact_1h2026", "label": "ФОТ Факт 1ПГ26",
@@ -1137,7 +1192,64 @@ def _p11_assemble(cur: str, grain: list[dict], den: dict, sel_country: str | Non
          "value": _r1(_pct(dv_all["dev_year"])), "unit": "%"},
         {"key": "fot_share_2026", "label": "ФОТ доля выручки (ожид. 2026)",
          "value": _r2(_pct(dv_all["sh26"])), "unit": "%"},
+        {"key": "fot_share_delta_pp", "label": "ФОТ Δ доли в выручке, п.п.",
+         "value": _r1(dv_all["d_year"]), "unit": "п.п."},
+        {"key": "revenue_dev_year", "label": "Выручка Δ год к 2025",
+         "value": _r1(_pct(rev_dev)), "unit": "%"},
     ]
+
+    # Панель численности (правый край KPI-ленты): Δ считаем сами, чтобы фронт
+    # не собирал их из трёх карточек.
+    hc_s = {key: _nsum([r.get(key) for r in hc_grain]) for key in ("q25", "q26", "pa")}
+    headcount = {
+        "plan_approved": _r2(hc_s["pa"]),
+        "fact_2025": _r2(hc_s["q25"]),
+        "fact_2026": _r2(hc_s["q26"]),
+        "var_plan": _r2(_diff(hc_s["q26"], hc_s["pa"])),
+        "var_2025": _r2(_diff(hc_s["q26"], hc_s["q25"])),
+    }
+
+    # Карточки стран: ФОТ — из зерна P11, численность — из зерна P12 по коду
+    # страны справочника (у P12 страна приходит из fot_cfo, как и ctry зерна).
+    dn_grp = _den_branch(den, None)
+    rv_exp_grp = _nsum([dn_grp.get("rv_f26_h1"), dn_grp.get("rv_t26_h2")])
+    rv_f25_grp = dn_grp.get("rv_f25")
+    by_cc: dict = {}
+    for r in grain:
+        by_cc.setdefault(r.get("ctry") or "", []).append(r)
+    hc_by_cc: dict = {}
+    for r in hc_grain:
+        hc_by_cc.setdefault(r.get("ctry") or "", []).append(r)
+    cards_by_country: list = []
+    slide_rows: list = []
+    total_parts: list = []
+    for cc, label in COUNTRY_OPTIONS:
+        parts = by_cc.get(cc)
+        if not parts:
+            continue
+        total_parts.extend(parts)
+        slide_rows.append(_country_slide_row("%s (%s)" % (cc, label), parts))
+        s = _period_sums(parts)
+        dv = _half_derive(s, _den_branch(den, cc))
+        hc = {key: _nsum([r.get(key) for r in hc_by_cc.get(cc) or []])
+              for key in ("pa", "q26")}
+        sh26 = _div(dv["exp26"], rv_exp_grp)
+        sh25 = _div(s.get("f25"), rv_f25_grp)
+        cards_by_country.append({
+            "cc": cc, "label": label,
+            "exp26": _r1(_ms(dv["exp26"])),
+            "dev_year": _r1(_pct(dv["dev_year"])),
+            "dev_abs": _r1(_ms(_diff(dv["exp26"], s.get("f25")))),
+            "fot_share": _r1(_pct(_div(dv["exp26"], dv_all["exp26"]))),
+            "rev_share_2026": _r1(_pct(sh26)),
+            "rev_share_2025": _r1(_pct(sh25)),
+            "share_delta_pp": _r2(_pct(_diff(sh26, sh25))),
+            "plan_approved": _r2(hc["pa"]),
+            "fact_h1_2026": _r2(hc["q26"]),
+            "hc_var": _r2(_diff(hc["q26"], hc["pa"])),
+        })
+    if total_parts:
+        slide_rows.append(_country_slide_row("Общий итог", total_parts, True))
 
     def _matrix(levels: tuple, attrs: dict, path: list[str], full: bool) -> dict:
         path = list(path)
@@ -1183,6 +1295,14 @@ def _p11_assemble(cur: str, grain: list[dict], den: dict, sel_country: str | Non
     }
     channel_attrs = {"sales_channel": ("chan", "(не указан)"), "cfo_label": ("cfol", "(без названия)")}
     tables = [
+        {
+            "key": "by_country",
+            "label": "ФОТ по странам",
+            "columns": _country_slide_columns(cur),
+            "rows": slide_rows,
+            "meta": {"dim": "country_code", "level_label": "Страна", "path": [],
+                     "can_drill": False, "truncated": False, "row_limit": MATRIX_ROW_LIMIT},
+        },
         {**_matrix(P11_MATRIX_LEVELS, matrix_attrs, matrix_path, True),
          "key": "by_department", "label": "По подразделениям"},
         {**_matrix(P11_CHANNEL_LEVELS, channel_attrs, channel_path, False),
@@ -1197,7 +1317,7 @@ def _p11_assemble(cur: str, grain: list[dict], den: dict, sel_country: str | Non
         warning = "Факт 1ПГ26 пуст: «Ожидание 2026» опирается только на тактику 2ПГ26."
     elif s_all.get("t26_h2") is None:
         warning = "Тактика 2ПГ26 в источнике пуста: «Ожидание 2026» равно факту 1ПГ26."
-    return cards, tables, warning
+    return cards, headcount, cards_by_country, tables, warning
 
 
 def _parse_halfyear_params(params: dict) -> dict:
@@ -1390,15 +1510,20 @@ async def _dashboard_p10(p: dict, meta: dict) -> dict:
 
 
 async def _dashboard_p11(p: dict, meta: dict) -> dict:
-    """Вкладка P11 «ФОТ направления и подразделения»: карточки + 3 таблицы."""
+    """Вкладка P11 «ФОТ направления и подразделения»: верхний свод (лист 1
+    деки) + таблицы разрезов. Численность для панели и карточек стран — вторым
+    запросом (то же зерно, что у P12), срезы панели действуют одинаково."""
     sql, sql_params = _halfyear_sql(p)
+    hc_sql, hc_params = _p12_sql(p)
     async with acquire() as pg:
         payload = json.loads(await pg.fetchval(sql, *sql_params))
+        hc_payload = json.loads(await pg.fetchval(hc_sql, *hc_params))
     grain = payload["grain"] or []
     den = payload["den"] or {}
     sel_country = p["countries"][0] if len(p["countries"]) == 1 else None
-    cards, tables, warning = _p11_assemble(
-        p["currency"], grain, den, sel_country, p["matrix_path"], p["channel_path"])
+    cards, headcount, cards_by_country, tables, warning = _p11_assemble(
+        p["currency"], grain, den, _p12_merge(hc_payload), sel_country,
+        p["matrix_path"], p["channel_path"])
     closed = _closed_from_meta(meta)
     meta_out = {
         "tab": "p11",
@@ -1412,7 +1537,8 @@ async def _dashboard_p11(p: dict, meta: dict) -> dict:
     }
     if warning:
         meta_out["warning"] = warning
-    return {"cards": cards, "charts": [], "tables": tables, "meta": meta_out}
+    return {"cards": cards, "headcount": headcount, "cards_by_country": cards_by_country,
+            "charts": [], "tables": tables, "meta": meta_out}
 
 
 # ── Вкладки P12/P13: численность и HR-бюджет (слайды 22–46 презентации) ──────
