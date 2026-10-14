@@ -1468,18 +1468,88 @@ def _fot_p13_mock_dashboard(params: dict) -> dict:
     return {"cards": cards, "charts": [], "tables": tables, "meta": meta}
 
 
+# ── P14 «ФОТ по направлениям бизнеса»: зерно под числа листа 4 деки ──────────
+
+# Направления BY (тыс. BYN; выручка — в тех же тыс., ставки): ФОТ-периоды и
+# численность сняты с листа 4 деки v16, выручка — собственная по ЦФО
+# направлений (живые пропорции: розница РБ ~116 млн 1ПГ25, опт/прочее ~140,
+# ИМ ~8, картонаж ~0,8; у производства своих продаж почти нет). Знаменатель
+# «беспродажных» направлений (производство, отделы) — вся выручка среза —
+# досчитывает боевой сборщик (fot._P14_OWN_REVENUE), поэтому их доли здесь
+# получаются «как в деке» (~12 % / ~9 %), а не от собственной выручки.
+# «Ожидание» — факт+тактика (формула витрины), с декой расходится на единицы
+# тыс: у деки слагаемые из разных кэшей.
+_FOT_P14_MOCK = (
+    # direction, f25_h1, f25_h2, b26_h1, f26_h1, b26_h2, t26_h2,
+    # rv_f25_h1, rv_f25_h2, rv_f25, rv_f26_h1, rv_t26_h2, pa, q26, q25
+    ("Производство", 30880, 31817, 31130, 32123, 32202, 33210,
+     2218, 2200, 4418, 2300, 2400, 2441.9, 2342.2, 2283.9),
+    ("Производство картонажное", 101, 144, 190, 188, 193, 193,
+     802, 900, 1702, 979, 1100, 11.0, 12.0, 11.0),
+    ("Отделы", 23604, 26013, 25585, 26644, 25866, 27651,
+     140300, 155000, 295300, 170000, 190000, 821.2, 792.3, 815.8),
+    ("Магазины", 10929, 12237, 11440, 13174, 11725, 13191,
+     115529, 128000, 243529, 131740, 155179, 1159.8, 1136.0, 1084.0),
+    ("Интернет-магазин", 253, 267, 310, 260, 310, 259,
+     8161, 9000, 17161, 10000, 12745, 12.0, 12.0, 10.0),
+)
+
+
+def _fot_p14_mock_payload() -> dict:
+    """Ответ _p14_sql моком: зерно/выручка/численность по направлениям BY.
+
+    ФОТ и выручка константы держат в тыс (как на листе деки), сюда приезжают
+    сырыми суммами витрины (×1000) — те же единицы, что у SQL и боевых
+    сборщиков; численность — ставки, без множителя."""
+    grain, rev, h25, h26, plan = [], [], [], [], []
+    for (label, f25_h1, f25_h2, b26_h1, f26_h1, b26_h2, t26_h2,
+         rv1, rv2, rv3, rv4, rv5, pa, q26, q25) in _FOT_P14_MOCK:
+        grain.append({"dir": label, "f25_h1": f25_h1 * 1000.0,
+                      "f25_h2": f25_h2 * 1000.0,
+                      "f25": (f25_h1 + f25_h2) * 1000.0, "b26_h1": b26_h1 * 1000.0,
+                      "f26_h1": f26_h1 * 1000.0, "b26_h2": b26_h2 * 1000.0,
+                      "t26_h2": t26_h2 * 1000.0})
+        rev.append({"dir": label, "rv_f25_h1": rv1 * 1000.0, "rv_f25_h2": rv2 * 1000.0,
+                    "rv_f25": rv3 * 1000.0, "rv_f26_h1": rv4 * 1000.0,
+                    "rv_t26_h2": rv5 * 1000.0})
+        h25.append({"dir": label, "q25": q25})
+        h26.append({"dir": label, "q26": q26})
+        plan.append({"dir": label, "pa": pa})
+    return {"grain": grain, "rev": rev, "h25": h25, "h26": h26, "plan": plan}
+
+
+def _fot_p14_mock_dashboard(params: dict) -> dict:
+    """P14 моком: боевой сборщик app.fot._p14_assemble на зерне листа 4 деки
+    (контрольные числа — в комментарии к _FOT_P14_MOCK). Срезы на числа не
+    влияют (это мок): шапка листа — Беларусь BY."""
+    from app import fot
+
+    currency = _fot_first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+    cards, headcount, directions, tables, warning = fot._p14_assemble(
+        currency, _fot_p14_mock_payload(), "BY")
+    meta = _fot_mock_meta("p14", params, currency, fot.METHODOLOGY_P14)
+    meta["slide"] = {"cc": "BY", "label": "Беларусь"}
+    if warning:
+        meta["warning"] = warning
+    return {"cards": cards, "headcount": headcount, "directions": directions,
+            "charts": [], "tables": tables, "meta": meta}
+
+
 def fot_dashboard(tab: str, params: dict) -> dict:
     """Мок вкладки ФОТ-дашборда — форма ответа 1:1 с app.fot.dashboard().
 
     P9 всегда отдаёт один контрольный срез (июнь 2025, BYN): числа сняты с
     витрин шага 1 и PBI, чтобы фронт сверял рендер на них. Срезы из запроса
-    приезжают в meta.params, на числа не влияют — это мок. P10–P13 собираются
+    приезжают в meta.params, на числа не влияют — это мок. P10–P14 собираются
     боевыми сборщиками app.fot на выдуманном зерне, подобранном под контрольные
-    числа PBI и презентации (см. _fot_half_mock, _FOT_HC_MOCK, _FOT_HR_F26).
+    числа PBI и презентации (см. _fot_half_mock, _FOT_HC_MOCK, _FOT_HR_F26,
+    _FOT_P14_MOCK).
     """
     from app import fot
 
-    if tab not in ("p9", "p10", "p11", "p12", "p13"):
+    if tab not in ("p9", "p10", "p11", "p12", "p13", "p14"):
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
     if tab in ("p10", "p11"):
         return _fot_half_mock_dashboard(tab, params)
@@ -1487,6 +1557,8 @@ def fot_dashboard(tab: str, params: dict) -> dict:
         return _fot_p12_mock_dashboard(params)
     if tab == "p13":
         return _fot_p13_mock_dashboard(params)
+    if tab == "p14":
+        return _fot_p14_mock_dashboard(params)
 
     def _first(value, default: str) -> str:
         if isinstance(value, (list, tuple)):

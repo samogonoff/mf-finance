@@ -46,7 +46,7 @@ FOT_DATABASE = os.environ.get("FOT_DATABASE", "FinDWH")
 YEAR_PREV = 2025
 YEAR_PLAN = 2026
 
-_FOT_TABS = ("p9", "p10", "p11", "p12", "p13")
+_FOT_TABS = ("p9", "p10", "p11", "p12", "p13", "p14")
 
 
 def fot_mock_enabled() -> bool:
@@ -1573,6 +1573,25 @@ METHODOLOGY_P13 = (
     "HR-таблицы два знака (контрольные числа PBI — с копейками)."
 )
 
+METHODOLOGY_P14 = (
+    "Лист «ФОТ по направлениям бизнеса» — реплика листа 4 деки «Бюджет ФОТ 2026»: за "
+    "фиксированные полугодия (как P10/P11), в развороте по направлениям бизнеса. "
+    "Направление бизнеса — группа ЦФО, из которой ЦФО интернет-магазина выделяются "
+    "отдельной строкой (как на листе деки). Таблица «Направление × периоды» — те же "
+    "период-суммы ФОТ, что у P10/P11, значения в тыс., итог среза — первой строкой; "
+    "донат «Доля ФОТ по направлениям» — колонка «Ожидание 2026» к итогу среза, сектора "
+    "<1 % остаются без подписи (best-fit Excel). «Доля ФОТ в выручке направления» "
+    "(мини-бары и бейджи п.п.) — порт правила Excel-сводки: у продающих направлений "
+    "(Магазины, Интернет-магазин, Производство картонажное) знаменатель — выручка их "
+    "ЦФО, у остальных (производство, отделы — своих продаж в витрине нет) — вся выручка "
+    "среза; числитель и знаменатель режутся одними срезами панели. Бейджи — Δ доли: "
+    "факт 1ПГ26 к факту 1ПГ25, тактика 2ПГ26 к факту 2ПГ25, ожидание 2026 к факту "
+    "2025. ПЧ/ФЧ в карточках — то же зерно, что у P12 (план PlanChisl и факты "
+    "30.06.2025/2026), в группировке по направлению; строка шапки — свод по всему "
+    "срезу. Светофор по знаку (как верхний свод P11): рост ФОТ/доли и превышение ФЧ "
+    "плана — красный, снижение — зелёный; таблица без светофора, как на листе деки."
+)
+
 # HR-ЦФО: коды ЦФО HR-служб по странам — фиксированный список постановки
 # (согласован, слайды 28–46), от справочника и срезов не зависит.
 HR_CFO_CODES = {"BY": ("224",), "RU": ("604", "324", "346"), "KZ": ("208",), "UZ": ("444",)}
@@ -2600,13 +2619,310 @@ CROSS JOIN hc h
     return {"cards": cards, "charts": charts, "tables": tables, "meta": meta_out}
 
 
+# ── Вкладка P14 «ФОТ по направлениям бизнеса»: реплика листа 4 деки ───────────
+
+# Цвета секторов доната «Доля ФОТ по направлениям» — палитра chart1 деки
+# (назначаются по месту в порядке убывания «Ожидания 2026»).
+_P14_PIE_COLORS = (
+    "#7A1F3D", "#F4A6C1", "#C2185B", "#E85D75", "#FFC845", "#9E6B0F", "#9B5A70",
+)
+
+# «Направление бизнеса» листа 4 деки — группа ЦФО, но ЦФО интернет-магазина
+# (они сидят в группе «Магазины») показываются отдельной строкой. Разрез
+# собирается CASE-колонкой nb в _p14_sql.
+_P14_IM_DIRECTION = "Интернет-магазин"
+
+# Направления с собственной выручкой: их доля ФОТ в выручке считается по
+# выручке своих ЦФО (розница РБ, продажи ИМ, картонаж). Остальные —
+# производственный и офисный ФОТ — соотносятся со всей выручкой среза, как в
+# Excel-сводке заказчика (у их ЦФО продаж нет, доля от собственной выручки
+# уходила бы в сотни процентов). Сверено с листом 4 деки v16 14.10.2026.
+_P14_OWN_REVENUE = frozenset({"Магазины", _P14_IM_DIRECTION, "Производство картонажное"})
+
+
+def _p14_sql(p: dict) -> tuple[str, list]:
+    """Один запрос вкладки P14: ФОТ, выручка и численность по направлениям.
+
+    Разрез nb («направление бизнеса») — группа ЦФО, из которой ЦФО
+    интернет-магазина выделяются отдельной строкой (лист 4 деки). grain/rev —
+    период-суммы семейств fot/rev в границах срезов панели (dim + юрлицо +
+    ВГО; висячие ЦФО при активном срезе отсекает hier_gate — то же правило,
+    что у зерна P10/P11). Знаменатель доли здесь режется теми же условиями,
+    что числитель (доля сравнивает числа одного среза), в отличие от
+    REMOVEFILTERS-знаменателя P10/P11. Численность — то же зерно, что у P12
+    (факты 30.06 и план PlanChisl), в группировке по направлению; план, как у
+    P12, срезом юрлица не режется.
+    """
+    col = FOT_CURRENCIES[p["currency"]]
+    sql_params: list = []
+    ic_sql = _ic_where(p)
+    dim_conds = _dim_conds(p, sql_params)
+    hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
+    m_legal = _legal_cond(p, sql_params)
+    h_legal = _legal_cond(p, sql_params, "h.legal_entity")
+    nb = ("CASE WHEN coalesce(c.direction, '') = '%s' THEN '%s'"
+          " ELSE coalesce(c.group_cfo1, '') END") % (_P14_IM_DIRECTION, _P14_IM_DIRECTION)
+
+    fot_sums = ",\n        ".join(
+        _half_sum_sql(key, scen, year, m1, m2, fam, col)
+        for key, scen, year, m1, m2, fam in _HALF_PERIODS if fam == "fot"
+    )
+    rev_sums = ",\n        ".join(
+        _half_sum_sql(key, scen, year, m1, m2, fam, col)
+        for key, scen, year, m1, m2, fam in _HALF_PERIODS if fam == "rev"
+    )
+    grain_where = f"{ic_sql}{m_legal}{hier_gate}"
+
+    sql = f"""
+WITH dim AS (
+    SELECT code_cfo, group_cfo1, direction
+    FROM fot_cfo
+    WHERE TRUE{dim_conds}
+),
+grain AS (
+    SELECT {nb} AS dir,
+           {fot_sums}
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE {grain_where}
+    GROUP BY 1
+),
+rev AS (
+    SELECT {nb} AS dir,
+           {rev_sums}
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE {grain_where}
+    GROUP BY 1
+),
+h25 AS (
+    SELECT {nb} AS dir, sum(h.quantity) AS q25
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = DATE '{HC_DATE_PREV.isoformat()}'{h_legal}{hier_gate}
+    GROUP BY 1
+),
+h26 AS (
+    SELECT {nb} AS dir, sum(h.quantity) AS q26
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = DATE '{HC_DATE_CURR.isoformat()}'{h_legal}{hier_gate}
+    GROUP BY 1
+),
+plan AS (
+    SELECT {nb} AS dir, sum(p.plan_approved) AS pa
+    FROM fot_headcount_plan p
+    LEFT JOIN dim c ON c.code_cfo = p.code_cfo
+    WHERE TRUE{hier_gate}
+    GROUP BY 1
+)
+SELECT jsonb_build_object(
+    'grain', COALESCE((SELECT jsonb_agg(to_jsonb(g)) FROM grain g), '[]'::jsonb),
+    'rev', COALESCE((SELECT jsonb_agg(to_jsonb(r)) FROM rev r), '[]'::jsonb),
+    'h25', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h25 x), '[]'::jsonb),
+    'h26', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h26 x), '[]'::jsonb),
+    'plan', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM plan x), '[]'::jsonb)
+)::text AS payload
+"""
+    return sql, sql_params
+
+
+def _p14_assemble(cur: str, payload: dict, sel_country: str | None) -> tuple:
+    """Лист P14 из одного ответа _p14_sql: таблица-слайд, донат, бары, карточки.
+
+    Таблица «Направление × периоды» — значения в тыс. с итоговой строкой
+    сверху (тёмная, как лист деки); строки — по убыванию «Ожидания 2026»,
+    направление без названия («(без направления)») идёт последним и в итог
+    входит. Донат — «Ожидание 2026» направления к итогу среза; карточки —
+    факт 1ПГ26 / тактика 2ПГ26 / ожидание с приростом к факту 2025 (%, +тыс)
+    и бейджами Δ доли ФОТ в выручке направления; ПЧ/ФЧ — план и факты P12 по
+    направлению. Возвращает (cards, headcount, directions, tables, warning).
+    """
+    grain = payload.get("grain") or []
+    by_dir: dict = {}
+    for r in grain:
+        by_dir[r.get("dir") or ""] = {"fot": r, "rev": {}}
+    for r in payload.get("rev") or []:
+        by_dir.setdefault(r.get("dir") or "", {"fot": {}})["rev"] = r
+    for src in ("h25", "h26", "plan"):
+        for r in payload.get(src) or []:
+            by_dir.setdefault(r.get("dir") or "", {"fot": {}, "rev": {}}).update(r)
+
+    # Итог среза — по всему зерну (включая строки без направления). rv среза —
+    # знаменатель «беспродажных» направлений (производство, отделы).
+    tot = {key: _nsum([v["fot"].get(key) for v in by_dir.values()])
+           for key in _HALF_VALUE_KEYS}
+    tot_exp = _nsum([tot.get("f26_h1"), tot.get("t26_h2")])
+    tot_hc = {
+        key: _nsum([v.get(key) for v in by_dir.values()]) for key in ("q25", "q26", "pa")
+    }
+    tot_rv = {key: _nsum([v["rev"].get(key) for v in by_dir.values()])
+              for key in ("rv_f25_h1", "rv_f25_h2", "rv_f25", "rv_f26_h1", "rv_t26_h2")}
+    tot_rv["rv_exp"] = _nsum([tot_rv.get("rv_f26_h1"), tot_rv.get("rv_t26_h2")])
+
+    # Порядок листа — по убыванию «Ожидания 2026»; направление без названия
+    # (строки ЦФО мимо справочника) идёт последним, в итог оно входит.
+    entries = sorted(
+        by_dir.items(),
+        key=lambda kv: (bool(kv[0]),
+                        _nsum([kv[1]["fot"].get("f26_h1"),
+                               kv[1]["fot"].get("t26_h2")]) or 0.0),
+        reverse=True,
+    )
+    directions: list = []
+    for i, (dkey, v) in enumerate(entries):
+        s = v["fot"]
+        # Строки без ФОТ и численности (только выручка — бывают в RU) на лист
+        # не идут: их вклад остаётся в знаменателе среза и в итоговой строке.
+        if (_nsum([s.get(key) for key in _HALF_VALUE_KEYS]) is None
+                and _nsum([v.get(k) for k in ("q25", "q26", "pa")]) is None):
+            continue
+        # Знаменатель доли: своя выручка у продающих направлений, выручка
+        # среза — у остальных (см. _P14_OWN_REVENUE). rv_exp в собственной
+        # ветке не лежит — складываем из полугодий, как в tot_rv.
+        rv = v["rev"] if dkey in _P14_OWN_REVENUE else tot_rv
+        exp = _nsum([s.get("f26_h1"), s.get("t26_h2")])
+        rv_exp = rv.get("rv_exp")
+        if rv_exp is None:
+            rv_exp = _nsum([rv.get("rv_f26_h1"), rv.get("rv_t26_h2")])
+        dev_h1 = _div(_diff(s.get("f26_h1"), s.get("f25_h1")), s.get("f25_h1"))
+        dev_h2 = _div(_diff(s.get("t26_h2"), s.get("f25_h2")), s.get("f25_h2"))
+        dev_year = _div(_diff(exp, s.get("f25")), s.get("f25"))
+        directions.append({
+            "label": str(dkey) or "(без направления)",
+            "color": _P14_PIE_COLORS[min(i, len(_P14_PIE_COLORS) - 1)],
+            # периоды для таблицы и карточек — тыс.
+            "f25_h1": _r1(_t(s.get("f25_h1"))), "f25_h2": _r1(_t(s.get("f25_h2"))),
+            "f25": _r1(_t(s.get("f25"))), "b26_h1": _r1(_t(s.get("b26_h1"))),
+            "f26_h1": _r1(_t(s.get("f26_h1"))), "b26_h2": _r1(_t(s.get("b26_h2"))),
+            "t26_h2": _r1(_t(s.get("t26_h2"))), "exp26": _r1(_t(exp)),
+            # приросты карточек к факту 2025: % и абсолют, тыс.
+            "dev_h1_pct": _r1(_pct(dev_h1)),
+            "dev_h1_abs": _r1(_t(_diff(s.get("f26_h1"), s.get("f25_h1")))),
+            "dev_h2_pct": _r1(_pct(dev_h2)),
+            "dev_h2_abs": _r1(_t(_diff(s.get("t26_h2"), s.get("f25_h2")))),
+            "dev_year_pct": _r1(_pct(dev_year)),
+            "dev_year_abs": _r1(_t(_diff(exp, s.get("f25")))),
+            # доли ФОТ в выручке направления (числитель и знаменатель одного
+            # среза) — мини-бары и базы бейджей.
+            "share_h1_25": _r1(_pct(_div(s.get("f25_h1"), rv.get("rv_f25_h1")))),
+            "share_h1_26": _r1(_pct(_div(s.get("f26_h1"), rv.get("rv_f26_h1")))),
+            "share_h2_tac": _r1(_pct(_div(s.get("t26_h2"), rv.get("rv_t26_h2")))),
+            "share_exp": _r1(_pct(_div(exp, rv_exp))),
+            "share_f25": _r1(_pct(_div(s.get("f25"), rv.get("rv_f25")))),
+            # бейджи Δ доли, п.п.
+            "pp_h1": _r2(_pct(_diff(_div(s.get("f26_h1"), rv.get("rv_f26_h1")),
+                                    _div(s.get("f25_h1"), rv.get("rv_f25_h1"))))),
+            "pp_h2": _r2(_pct(_diff(_div(s.get("t26_h2"), rv.get("rv_t26_h2")),
+                                    _div(s.get("f25_h2"), rv.get("rv_f25_h2"))))),
+            "pp_year": _r2(_pct(_diff(_div(exp, rv_exp),
+                                      _div(s.get("f25"), rv.get("rv_f25"))))),
+            # донат: доля «Ожидания» направления в итоге среза.
+            "pie_pct": _r1(_pct(_div(exp, tot_exp))),
+            # численность направления: план утв., факт 30.06.26, укомпл., Δ к 1ПГ25.
+            "hc_plan": _r2(v.get("pa")),
+            "hc_fact": _r2(v.get("q26")),
+            "hc_staffing": _r1(_pct(_div(v.get("q26"), v.get("pa")))),
+            "hc_dev": _r2(_diff(v.get("q26"), v.get("q25"))),
+        })
+
+    # Таблица-слайд: колонки как у таблицы стран P11, но значения в тыс.
+    # (лист деки показывает целые тысячи) и итог — первой строкой.
+    labels = (
+        ("f25_h1", "Факт 1ПГ25"), ("f25_h2", "Факт 2ПГ25"), ("f25", "Итого Факт 2025"),
+        ("b26_h1", "Бюджет 1ПГ26"), ("f26_h1", "Факт 1ПГ26"),
+        ("b26_h2", "Бюджет 2ПГ26"), ("t26_h2", "Тактика 2ПГ26"), ("exp26", "Ожидание 2026"),
+    )
+    country_label = dict(COUNTRY_OPTIONS).get(sel_country)
+    total_label = "Общий Итого %s" % sel_country if sel_country else "Общий итог"
+    total_row = {"label": total_label, "drill_value": None, "total": True}
+    for key, _lbl in labels:
+        v = tot_exp if key == "exp26" else tot.get(key)
+        total_row[key] = _r1(_t(v))
+    value_keys = tuple(key for key, _lbl in labels)
+    rows = [total_row] + [
+        {"label": d["label"], **{k: d[k] for k in value_keys}} for d in directions
+    ]
+    table = {
+        "key": "by_direction",
+        "label": "ФОТ по направлениям",
+        "columns": [{"key": "label", "label": "Направление"}] + [
+            {"key": key, "label": lbl, "unit": "тыс " + cur} for key, lbl in labels
+        ],
+        "rows": rows,
+        "meta": {"dim": "direction", "level_label": "Направление", "path": [],
+                 "can_drill": False, "truncated": False, "row_limit": MATRIX_ROW_LIMIT},
+    }
+
+    # Карточки — свод среза (для «Разбора ИИ» и KPI-фолбэка), численность шапки.
+    dv = _half_derive(tot, {})
+    cards = [
+        {"key": "fot_fact_2025", "label": "ФОТ Факт 2025, млн",
+         "value": _r2(_ms(tot.get("f25"))), "unit": "млн " + cur},
+        {"key": "fot_expect_2026", "label": "ФОТ Ожидание 2026, млн",
+         "value": _r2(_ms(dv["exp26"])), "unit": "млн " + cur},
+        {"key": "fot_dev_year", "label": "ФОТ Δ год к 2025",
+         "value": _r1(_pct(dv["dev_year"])), "unit": "%"},
+        {"key": "hc_fact_2026", "label": "ФЧ 1ПГ 2026",
+         "value": _r2(tot_hc.get("q26")), "unit": "ставок"},
+    ]
+    headcount = {
+        "plan_approved": _r2(tot_hc.get("pa")),
+        "fact_2025": _r2(tot_hc.get("q25")),
+        "fact_2026": _r2(tot_hc.get("q26")),
+        "staffing": _r1(_pct(_div(tot_hc.get("q26"), tot_hc.get("pa")))),
+    }
+
+    warning = None
+    if not grain:
+        warning = "Нет данных ФОТ/выручки по выбранным срезам."
+    elif tot.get("f26_h1") is None:
+        warning = "Факт 1ПГ26 пуст: «Ожидание 2026» опирается только на тактику 2ПГ26."
+    elif tot.get("t26_h2") is None:
+        warning = "Тактика 2ПГ26 в источнике пуста: «Ожидание 2026» равно факту 1ПГ26."
+    elif not tot_hc.get("pa"):
+        warning = "План численности (PlanChisl) пуст: ПЧ и укомплектованность не считаются."
+    return cards, headcount, directions, [table], warning
+
+
+async def _dashboard_p14(p: dict, meta: dict) -> dict:
+    """Вкладка P14 «ФОТ по направлениям бизнеса»: лист 4 деки — таблица
+    «Направление × периоды», донат структуры, мини-бары «доля ФОТ в выручке»
+    и карточки направлений с численностью. Те же срезы панели, что у P11."""
+    sql, sql_params = _p14_sql(p)
+    async with acquire() as pg:
+        payload = json.loads(await pg.fetchval(sql, *sql_params))
+    sel_country = p["countries"][0] if len(p["countries"]) == 1 else None
+    cards, headcount, directions, tables, warning = _p14_assemble(
+        p["currency"], payload, sel_country)
+    closed = _closed_from_meta(meta)
+    country_label = dict(COUNTRY_OPTIONS).get(sel_country)
+    meta_out = {
+        "tab": "p14",
+        "params": p,
+        "currency": p["currency"],
+        "periods": _periods_meta(),
+        "closed_period": closed.isoformat() if closed else None,
+        "stale": meta.get("stale"),
+        "refreshed_at": meta.get("refreshed_at"),
+        "methodology": METHODOLOGY_P14,
+        # Шапка листа: страна среза или свод по группе.
+        "slide": {"cc": sel_country, "label": country_label or "Группа"},
+    }
+    if warning:
+        meta_out["warning"] = warning
+    return {"cards": cards, "headcount": headcount, "directions": directions,
+            "charts": [], "tables": tables, "meta": meta_out}
+
+
 async def dashboard(tab: str, params: dict) -> dict:
-    """Собирает одну вкладку P9–P13; чужой tab — ValueError (в роутах → 400).
+    """Собирает одну вкладку P9–P14; чужой tab — ValueError (в роутах → 400).
 
     P9 — полный сборщик _dashboard_p9; P10/P11 — сводные вкладки фиксированных
     полугодий (_dashboard_p10/_dashboard_p11); P12 — численность план/факт
-    (_dashboard_p12), P13 — HR-бюджет и отделы (_dashboard_p13), оба на тех же
-    срезах панели и фиксированных полугодиях.
+    (_dashboard_p12), P13 — HR-бюджет и отделы (_dashboard_p13), P14 — лист
+    «ФОТ по направлениям бизнеса» (_dashboard_p14), все на тех же срезах
+    панели и фиксированных полугодиях.
     """
     if tab not in _FOT_TABS:
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
@@ -2614,7 +2930,7 @@ async def dashboard(tab: str, params: dict) -> dict:
     if tab == "p9":
         p = _parse_p9_params(params, meta)
         return await _dashboard_p9(p, meta)
-    if tab in ("p10", "p11", "p12", "p13"):
+    if tab in ("p10", "p11", "p12", "p13", "p14"):
         p = _parse_halfyear_params(params)
         if tab == "p10":
             return await _dashboard_p10(p, meta)
@@ -2622,7 +2938,9 @@ async def dashboard(tab: str, params: dict) -> dict:
             return await _dashboard_p11(p, meta)
         if tab == "p12":
             return await _dashboard_p12(p, meta)
-        return await _dashboard_p13(p, meta)
+        if tab == "p13":
+            return await _dashboard_p13(p, meta)
+        return await _dashboard_p14(p, meta)
     raise ValueError("fot: неизвестная вкладка %r" % (tab,))
 
 
@@ -2642,6 +2960,7 @@ __all__ = [
     "METHODOLOGY_P11",
     "METHODOLOGY_P12",
     "METHODOLOGY_P13",
+    "METHODOLOGY_P14",
     "METHODOLOGY_P9",
     "P11_CHANNEL_LEVELS",
     "P11_MATRIX_LEVELS",

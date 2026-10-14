@@ -252,8 +252,136 @@
             </section>
           </template>
 
-          <!-- KPI-карточки вкладки: у P10 пять; у P11 — лента слайда выше -->
-          <section v-if="!isP11" class="fot-kpis">
+          <!-- P14 «ФОТ по направлениям бизнеса»: лист 4 деки — таблица
+               «Направление × периоды» с донатом структуры, ряд мини-баров
+               «доля ФОТ в выручке» и карточки направлений с ПЧ/ФЧ. -->
+          <template v-if="isP14">
+            <section class="slide" aria-label="ФОТ по направлениям бизнеса">
+              <header class="slide-hdr">
+                <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
+                <span class="slide-subtitle">{{ slideCountryLabel }} — ФОТ по направлениям бизнеса: свод, структура и динамика</span>
+                <span class="slide-year p14-geo" aria-hidden="true">{{ slideCountryCc }}</span>
+                <span v-if="headcount" class="slide-note">
+                  Числ. (ПЧ/ФЧ 1ПГ{{ yr2(yearPlan) }}):
+                  <b>{{ fmt1(headcount.plan_approved) }}/{{ fmt1(headcount.fact_2026) }}</b>,
+                  {{ fmt1(headcount.staffing) }}% укомпл.
+                </span>
+              </header>
+
+              <!-- Таблица «Направление × периоды» + донат «Доля ФОТ» -->
+              <div class="p14-top">
+                <section v-if="slideTable14" class="card p14-table">
+                  <div class="card-head">
+                    <h3 class="card-title">{{ slideTable14.label }}, тыс {{ currency }}</h3>
+                    <button class="btn btn-ghost btn-sm" type="button"
+                            title="Скачать CSV: разделитель «;», BOM — Excel откроет без мастера импорта"
+                            @click="exportCsv(slideTable14)">
+                      <Icon name="lucide:download" /> CSV
+                    </button>
+                  </div>
+                  <div class="table-wrap">
+                    <table class="stable p14-stable">
+                      <thead>
+                        <tr>
+                          <th v-for="col in slideTable14.columns" :key="col.key"
+                              :class="{ 'col-name': col.key === 'label' }">
+                            {{ col.label }}
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(row, i) in (slideTable14.rows || [])" :key="i" :class="{ total: row.total }">
+                          <td v-for="col in slideTable14.columns" :key="col.key"
+                              :class="col.key === 'label' ? 'col-name' : 'num'">
+                            {{ cellText(slideTable14, row, col) }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <section v-if="pieSegs.length" class="card p14-pie">
+                  <h3 class="card-title">ДОЛЯ ФОТ ПО НАПРАВЛЕНИЯМ, ОЖИДАНИЕ {{ yearPlan }}</h3>
+                  <svg class="p14-pie-svg" viewBox="0 0 340 182" role="img"
+                       :aria-label="`Структура ФОТ ожидания ${yearPlan} по направлениям`">
+                    <g class="p14-pie-segs">
+                      <path v-for="(s, i) in pieSegs" :key="i" :d="s.path" :fill="s.color" />
+                    </g>
+                    <g fill="#FFFFFF" font-size="10.7" text-anchor="middle" class="p14-pie-num">
+                      <text v-for="(s, i) in pieSegs" :key="i" v-show="s.labeled" :x="s.lx" :y="s.ly">
+                        {{ fmt1(s.pct) }}%
+                      </text>
+                    </g>
+                    <g class="p14-pie-legend" font-size="10">
+                      <g v-for="(s, i) in pieSegs" :key="i" :transform="`translate(196, ${18 + i * 20})`">
+                        <rect width="6.5" height="6.5" y="-6" :fill="s.color" />
+                        <text x="11" dy="0">{{ s.label }}</text>
+                      </g>
+                    </g>
+                  </svg>
+                </section>
+              </div>
+
+              <!-- Ряд мини-чартов «Доля ФОТ в выручке по направлениям, %» -->
+              <section v-if="directions.length" class="card">
+                <h3 class="card-title">ДОЛЯ ФОТ В ВЫРУЧКЕ ПО НАПРАВЛЕНИЯМ, %</h3>
+                <div class="p14-bars">
+                  <div v-for="d in directions" :key="d.label" class="p14-bar">
+                    <span class="p14-bar-title" :title="d.label">{{ d.label }}</span>
+                    <svg viewBox="0 0 227 82" role="img" aria-hidden="true">
+                      <g v-for="(b, i) in barGeom(d)" :key="i">
+                        <rect :x="18 + i * 49.5" :y="60 - b.h" width="42" :height="b.h" :fill="b.color" />
+                        <text :x="39 + i * 49.5" :y="b.v === null ? 57 : 60 - b.h - 5"
+                              text-anchor="middle" class="p14-bar-val">{{ b.v === null ? '—' : fmt1(b.v) + '%' }}</text>
+                        <text :x="39 + i * 49.5" y="74" text-anchor="middle" class="p14-bar-cap">{{ b.label }}</text>
+                      </g>
+                    </svg>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Карточки направлений: три числа к факту прошлого года -->
+              <template v-if="directions.length">
+                <h3 class="grid-caption">Направления: {{ yearPlan }} к факту {{ yearPrev }}</h3>
+                <section class="p14-cards">
+                  <article v-for="d in directions" :key="d.label" class="p14card" :style="{ '--dcolor': d.color }">
+                    <div class="p14c-block">
+                      <span class="p14c-label">1 ПГ {{ yearPlan }}</span>
+                      <span class="p14c-badge cc-badge" :class="signCf(d.pp_h1)"
+                            :title="`Δ доли ФОТ в выручке к факту 1ПГ${yr2(yearPrev)}`">{{ fmtSigned(d.pp_h1, 2) }}</span>
+                      <span class="p14c-value">{{ fmt0(d.f26_h1) }}<span class="p14c-unit"> тыс {{ currency }}</span></span>
+                      <span class="p14c-delta" :class="signCf(d.dev_h1_pct)">{{ fmtSigned(d.dev_h1_pct) }}% к факту {{ yearPrev }} ({{ fmtSigned(d.dev_h1_abs) }})</span>
+                    </div>
+                    <div class="p14c-block">
+                      <span class="p14c-label">ТАКТИКА 2 ПГ {{ yearPlan }}</span>
+                      <span class="p14c-badge cc-badge" :class="signCf(d.pp_h2)"
+                            :title="`Δ доли ФОТ в выручке к факту 2ПГ${yr2(yearPrev)}`">{{ fmtSigned(d.pp_h2, 2) }}</span>
+                      <span class="p14c-value">{{ fmt0(d.t26_h2) }}<span class="p14c-unit"> тыс {{ currency }}</span></span>
+                      <span class="p14c-delta" :class="signCf(d.dev_h2_pct)">{{ fmtSigned(d.dev_h2_pct) }}% к факту {{ yearPrev }} ({{ fmtSigned(d.dev_h2_abs) }})</span>
+                    </div>
+                    <div class="p14c-block">
+                      <span class="p14c-label">ОЖИДАНИЕ, ГОД {{ yearPlan }}</span>
+                      <span class="p14c-badge cc-badge" :class="signCf(d.pp_year)"
+                            :title="`Δ доли ФОТ в выручке: ожидание ${yearPlan} к факту ${yearPrev}`">{{ fmtSigned(d.pp_year, 2) }}</span>
+                      <span class="p14c-value">{{ fmt0(d.exp26) }}<span class="p14c-unit"> тыс {{ currency }}</span></span>
+                      <span class="p14c-delta" :class="signCf(d.dev_year_pct)">{{ fmtSigned(d.dev_year_pct) }}% к факту {{ yearPrev }} ({{ fmtSigned(d.dev_year_abs) }})</span>
+                    </div>
+                    <div class="cc-sep" role="presentation" />
+                    <p class="cc-hc">
+                      ПЧ/ФЧ 1ПГ {{ yearPlan }}:
+                      <b>{{ fmt1(d.hc_plan) }}</b>/<b :class="cmpCf(d.hc_fact, d.hc_plan)">{{ fmt1(d.hc_fact) }}</b>,
+                      {{ fmt0(d.hc_staffing) }}% укомпл.
+                    </p>
+                    <p class="cc-hc">Откл. ФЧ к 1ПГ{{ yr2(yearPrev) }}: <b :class="signCf(d.hc_dev)">{{ fmtSigned(d.hc_dev) }}</b></p>
+                  </article>
+                </section>
+              </template>
+            </section>
+          </template>
+
+          <!-- KPI-карточки вкладки: у P10 пять; у P11/P14 — слайд выше -->
+          <section v-if="!isP11 && !isP14" class="fot-kpis">
             <article v-for="c in cards" :key="c.key" class="fot-kpi">
               <span class="fot-kpi-label">{{ c.label }}</span>
               <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
@@ -405,6 +533,7 @@ const TABS = [
   { key: 'p11', label: 'Направления и подразделения' },
   { key: 'p12', label: 'Численность план и факт' },
   { key: 'p13', label: 'HR-бюджет и отделы' },
+  { key: 'p14', label: 'ФОТ по направлениям бизнеса' },
 ] as const
 const tab = ref<string>('p9')
 
@@ -590,6 +719,60 @@ const canExport = computed(() => tab.value === 'p10' || tab.value === 'p11')
 // ── P11: верхний свод — реплика листа 1 деки «Бюджет ФОТ 2026» ───────────────
 
 const isP11 = computed(() => tab.value === 'p11')
+
+// ── P14 «ФОТ по направлениям бизнеса»: лист 4 деки ───────────────────────────
+
+const isP14 = computed(() => tab.value === 'p14')
+/** Направления листа и шапка страны — отдельные блоки ответа p14. */
+const directions = computed<any[]>(() => dash.value?.directions || [])
+const slideMeta = computed<any>(() => meta.value.slide || {})
+const slideCountryLabel = computed(() => slideMeta.value.label || 'Группа')
+const slideCountryCc = computed(() => slideCountryLabel.value === 'Группа' ? 'ГК' : (slideMeta.value.cc || 'ГК'))
+/** Таблица направлений рендерится в слайде; в общем списке таблиц её нет. */
+const slideTable14 = computed<any>(() =>
+  isP14.value ? tables.value.find((t: any) => t.key === 'by_direction') || null : null)
+
+/** Сектора пирога «Доля ФОТ по направлениям» (ожидание года плана): от 12
+ *  часов по часовой, подписи — только у секторов ≥1 % (best-fit Excel). */
+const pieSegs = computed<any[]>(() => {
+  const R = 75, CX = 91, CY = 91
+  let a0 = -Math.PI / 2
+  const segs: any[] = []
+  for (const d of directions.value) {
+    const p = isNum(d.pie_pct) ? Number(d.pie_pct) : 0
+    if (p <= 0) continue
+    const ang = (p / 100) * Math.PI * 2
+    const a1 = a0 + ang
+    const mid = (a0 + a1) / 2
+    const pt = (r: number, a: number) => [CX + r * Math.cos(a), CY + r * Math.sin(a)]
+    const [x0, y0] = pt(R, a0)
+    const [x1, y1] = pt(R, a1)
+    segs.push({
+      path: `M ${CX} ${CY} L ${x0.toFixed(2)} ${y0.toFixed(2)}`
+           + ` A ${R} ${R} 0 ${ang > Math.PI ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} Z`,
+      color: d.color, label: d.label, pct: p, labeled: p >= 1,
+      lx: (CX + 48 * Math.cos(mid)).toFixed(1),
+      ly: (CY + 48 * Math.sin(mid) + 3.5).toFixed(1),
+    })
+    a0 = a1
+  }
+  return segs
+})
+
+/** Мини-бары «доля ФОТ в выручке направления»: 4 периода, шкала своя на
+ *  направление (линейная), цвета периодов — палитра chart2..6 деки. */
+const BAR_COLORS = ['#C9AEB6', '#6B3347', '#9B5A70', '#C27B92']
+const barSpecs = computed(() => [
+  { key: 'share_h1_25', label: `Факт 1ПГ${yr2(yearPrev.value)}` },
+  { key: 'share_h1_26', label: `Факт 1ПГ${yr2(yearPlan.value)}` },
+  { key: 'share_h2_tac', label: `Такт.2ПГ${yr2(yearPlan.value)}` },
+  { key: 'share_exp', label: `Ожид.${yr2(yearPlan.value)}` },
+])
+const barGeom = (d: any): any[] => {
+  const vals = barSpecs.value.map((s) => ({ ...s, v: isNum(d[s.key]) ? Number(d[s.key]) : null }))
+  const max = Math.max(1, ...vals.map((x) => x.v ?? 0)) * 1.18
+  return vals.map((x, i) => ({ ...x, color: BAR_COLORS[i], h: x.v === null ? 0 : Math.max(2, (x.v / max) * 56) }))
+}
 const yearPlan = computed(() => Number(meta.value.periods?.year_plan) || 2026)
 const yearPrev = computed(() => Number(meta.value.periods?.year_prev) || 2025)
 const yr2 = (y: any) => String(y).slice(2)
@@ -600,15 +783,18 @@ const countryCards = computed<any[]>(() => dash.value?.cards_by_country || [])
 /** Таблица стран рендерится внутри слайда; в общем списке таблиц её нет. */
 const slideTable = computed<any>(() =>
   isP11.value ? tables.value.find((t: any) => t.key === 'by_country') || null : null)
-const shownTables = computed<any[]>(() =>
-  isP11.value ? tables.value.filter((t: any) => t.key !== 'by_country') : tables.value)
+const shownTables = computed<any[]>(() => {
+  if (isP11.value) return tables.value.filter((t: any) => t.key !== 'by_country')
+  if (isP14.value) return tables.value.filter((t: any) => t.key !== 'by_direction')
+  return tables.value
+})
 /** Значение карточки по ключу — для KPI-ленты слайда. */
 const kpiNum = (key: string): number | null => {
   const c = cards.value.find((x: any) => x.key === key)
   return c && isNum(c.value) ? Number(c.value) : null
 }
-/** P10–P13 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
-const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13'].includes(tab.value))
+/** P10–P14 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
+const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13', 'p14'].includes(tab.value))
 /** Метка активной вкладки — заголовок блока ИИ и нотификации. */
 const tabLabel = computed(() => TABS.find((t) => t.key === tab.value)?.label || tab.value)
 
@@ -801,6 +987,8 @@ const isNum = (v: any) => v !== null && v !== undefined && v !== '' && Number.is
 const fmtCard = (v: any) => (isNum(v) ? nf2.format(Number(v)) : '—')
 /** Один знак — KPI-лента, таблица стран и карточки слайда P11 (млн/%). */
 const fmt1 = (v: any) => (isNum(v) ? nf1.format(Number(v)) : '—')
+/** Целое — тыс. на листе P14 и % укомплектованности (лист деки показывает целые). */
+const fmt0 = (v: any) => (isNum(v) ? nf0.format(Number(v)) : '—')
 /** Со знаком: «+» для положительных — динамики и отклонения слайда P11. */
 const fmtSigned = (v: any, dp: 1 | 2 = 1): string => {
   if (!isNum(v)) return '—'
@@ -1306,6 +1494,61 @@ const fmtDateTime = (iso: any) => {
 /* светофор внутри .cc-hc: специфичнее дефолтного цвета b */
 .cc-hc b.cf-pos { color: var(--fot-pos); }
 .cc-hc b.cf-neg { color: var(--fot-neg); }
+
+/* ── P14 «ФОТ по направлениям бизнеса»: лист 4 деки ─────────────────────── */
+.slide-note { font-size: 12px; color: var(--fot-muted); white-space: nowrap; }
+.slide-note b { color: var(--fot-ink); font-weight: var(--fw-bold, 700); }
+.p14-geo { font-size: 13px; letter-spacing: .3px; }
+
+/* Верхний ряд: таблица (шире) + донат структуры */
+.p14-top { display: grid; grid-template-columns: minmax(0, 3fr) minmax(260px, 2fr); gap: var(--sp-4); align-items: start; }
+@media (max-width: 980px) { .p14-top { grid-template-columns: 1fr; } }
+.p14-stable th { font-size: 11px; }
+.p14-stable td { font-size: 12px; }
+.p14-stable td.num { font-family: var(--font-mono); }
+
+/* Пирог «Доля ФОТ по направлениям»: зазор секторов — цвет подложки */
+.p14-pie-svg { width: 100%; height: auto; max-width: 420px; --fot-pie-gap: #F9F9F9; }
+.fot-dark .p14-pie-svg { --fot-pie-gap: #241A1E; }
+.p14-pie-segs path { stroke: var(--fot-pie-gap); stroke-width: 1; }
+.p14-pie-legend text { fill: var(--fot-muted); }
+.p14-pie-num text { font-family: var(--font-mono); }
+
+/* Ряд мини-чартов «доля ФОТ в выручке» */
+.p14-bars { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--sp-3); }
+.p14-bar { min-width: 0; }
+.p14-bar-title {
+  display: block; font-size: 12.7px; font-weight: var(--fw-bold, 700);
+  color: var(--fot-accent-light); text-align: center; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; margin-bottom: var(--sp-1);
+}
+.p14-bar svg { width: 100%; height: auto; }
+.p14-bar-val { fill: var(--fot-ink); font-size: 8.4px; font-family: var(--font-mono); }
+.p14-bar-cap { fill: var(--fot-muted); font-size: 8.4px; }
+
+/* Карточки направлений: три блока чисел + численность; слева — полоска
+   цвета сектора доната (визуальная связка структуры и карточки) */
+.p14-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--sp-3); }
+.p14card {
+  position: relative; background: var(--fot-card);
+  border: 1px solid var(--fot-border); border-left: 3px solid var(--dcolor, var(--fot-accent-light));
+  border-radius: 8px; padding: var(--sp-3) var(--sp-4);
+  display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0;
+}
+.p14c-block { position: relative; display: flex; flex-direction: column; gap: 2px; padding-right: 44px; }
+.p14c-block + .p14c-block { border-top: 1px solid color-mix(in srgb, var(--fot-border) 60%, transparent); padding-top: var(--sp-2); }
+.p14c-label { font-size: 10.4px; font-weight: var(--fw-bold, 700); color: var(--fot-accent-light); letter-spacing: .2px; }
+.p14c-value {
+  font-family: 'Cambria', 'Times New Roman', serif; font-size: 17px;
+  font-weight: var(--fw-bold, 700); color: var(--fot-ink); white-space: nowrap;
+}
+.p14c-unit { font-size: 11px; font-weight: var(--fw-regular); color: var(--fot-muted); }
+.p14c-delta { font-size: 12px; font-weight: var(--fw-bold, 700); color: var(--fot-ink); white-space: nowrap; }
+/* светофор строк «% к 2025» — специфичнее дефолтного цвета .p14c-delta */
+.p14c-delta.cf-pos { color: var(--fot-pos); }
+.p14c-delta.cf-neg { color: var(--fot-neg); }
+/* бейдж Δ доли, п.п. — справа от блока (классы цвета у cc-badge уже есть) */
+.p14c-badge { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
 
 @media (max-width: 520px) {
   .cc-dyncap { display: none; }

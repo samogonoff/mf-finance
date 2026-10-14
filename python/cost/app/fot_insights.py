@@ -1,4 +1,4 @@
-"""Разбор вкладок ФОТ-дашборда (fot_p9..fot_p13) языковой моделью.
+"""Разбор вкладок ФОТ-дашборда (fot_p9..fot_p14) языковой моделью.
 
 Блок «Разбор ИИ» на ФОТ-дашборде работает через тот же эндпоинт
 `POST /insights/block`, что и в себестоимости: диспетчеризация в
@@ -6,7 +6,7 @@ routes.analyze_block — строго по префиксу `fot_`, до validat
 (вкладки серии с фронта не присылают). Право остаётся `cost:insights`.
 
 Отличие от app/insights.py: **данные вкладки бэкенд собирает сам**. Фронт
-шлёт только block («fot_p9»..«fot_p13») и context с теми же срезами, что
+шлёт только block («fot_p9»..«fot_p14») и context с теми же срезами, что
 уходит в `GET /fot/dashboard`; отсюда вызывается тот же сборщик
 (`app.fot.dashboard` в live, `app.mocks.fot_dashboard` в моке — ветвление
 продублировано здесь, fot.py не знает про ИИ). Арифметику считает код:
@@ -723,12 +723,91 @@ def _facts_p13(data: dict) -> list[str]:
     return facts
 
 
+# ─── Факты P14 «ФОТ по направлениям бизнеса» (лист 4 деки) ────────────────────
+
+def _facts_p14(data: dict) -> list[str]:
+    """Лист направлений: таблица-слайд, доли выручки, бейджи п.п., ПЧ/ФЧ."""
+    facts: list[str] = []
+    cards = data.get("cards") or []
+    cur = str((data.get("meta") or {}).get("currency") or "BYN")
+    slide = (data.get("meta") or {}).get("slide") or {}
+    where = str(slide.get("label") or "срез")
+
+    f25 = _card_value(cards, "fot_fact_2025")
+    exp26 = _card_value(cards, "fot_expect_2026")
+    dev = _card_value(cards, "fot_dev_year")
+    if f25 is not None:
+        facts.append(f"Свод ({where}): ФОТ Факт 2025 = {_fmt(f25)} млн {cur}")
+    if exp26 is not None:
+        facts.append(f"Свод ({where}): ФОТ Ожидание 2026 = {_fmt(exp26)} млн {cur}")
+    if dev is not None:
+        facts.append(f"Свод ({where}): Δ ФОТ год к 2025 = {_fmt(dev)}%")
+    hc = data.get("headcount") or {}
+    if hc.get("plan_approved") is not None and hc.get("fact_2026") is not None:
+        facts.append(f"Численность ({where}): ПЧ 2026 = {_fmt(_num(hc['plan_approved']))} "
+                     f"ставок, ФЧ 1ПГ26 = {_fmt(_num(hc['fact_2026']))}"
+                     + (f", укомплектованность {_fmt(_num(hc['staffing']))}%"
+                        if hc.get("staffing") is not None else ""))
+
+    dirs = [d for d in (data.get("directions") or [])
+            if isinstance(d, dict) and str(d.get("label") or "") != "(без направления)"]
+    exps = [(str(d.get("label") or "?"), _num(d.get("exp26"))) for d in dirs]
+    exps = [(lbl, v) for lbl, v in exps if v is not None]
+    if exps:
+        total = sum(v for _, v in exps)
+        top_lbl, top_v = max(exps, key=lambda p: p[1])
+        if total:
+            facts.append(f"Направления: наибольшее Ожидание 2026 — {top_lbl} "
+                         f"{_fmt(top_v)} тыс {cur} ({_fmt(top_v / total * 100)}% среза)")
+
+    devs = [(str(d.get("label") or "?"), _num(d.get("dev_year_pct")),
+             _num(d.get("dev_year_abs"))) for d in dirs]
+    devs = [t for t in devs if t[1] is not None]
+    if devs:
+        hi_lbl, hi, hi_abs = max(devs, key=lambda p: p[1])
+        lo_lbl, lo, _lo_abs = min(devs, key=lambda p: p[1])
+        facts.append(f"Направления, Δ год к 2025: максимальный рост — {hi_lbl} "
+                     f"{_fmt(hi)}% ({_fmt(hi_abs)} тыс)")
+        if hi_lbl != lo_lbl:
+            lo_word = "падение" if lo < 0 else "минимальный рост"
+            facts.append(f"Направления, Δ год к 2025: {lo_word} — {lo_lbl} {_fmt(lo)}%")
+
+    rising = [str(d.get("label")) for d in dirs
+              if (_num(d.get("pp_year")) or 0) > 0]
+    if rising:
+        facts.append(f"Направления с РАСТУЩЕЙ долей ФОТ в выручке (Ожидание 2026 к "
+                     f"Факту 2025, пп): {', '.join(rising)}")
+    sh = [(str(d.get("label") or "?"), _num(d.get("share_h1_25")),
+           _num(d.get("share_exp"))) for d in dirs]
+    sh = [t for t in sh if t[1] is not None and t[2] is not None]
+    if sh:
+        top_lbl, top_s25, top_s26 = max(sh, key=lambda p: max(p[1], p[2]))
+        facts.append(f"Самая высокая доля ФОТ в выручке направления — {top_lbl}: "
+                     f"{_fmt(max(top_s25, top_s26))}% (Факт 1ПГ25 {_fmt(top_s25)}%, "
+                     f"Ожидание 2026 {_fmt(top_s26)}%)")
+    staff = [(str(d.get("label") or "?"), _num(d.get("hc_staffing")),
+              _num(d.get("hc_dev"))) for d in dirs]
+    staff = [t for t in staff if t[1] is not None]
+    if staff:
+        lo_lbl, lo_s, lo_dev = min(staff, key=lambda p: p[1])
+        facts.append(f"Численность направлений: минимальная укомплектованность — "
+                     f"{lo_lbl} {_fmt(lo_s)}%"
+                     + (f" (Откл. ФЧ к 1ПГ25 {_fmt(lo_dev)} ставок)"
+                        if lo_dev is not None else ""))
+
+    warning = str((data.get("meta") or {}).get("warning") or "").strip()
+    if warning:
+        facts.append(f"ПРЕДУПРЕЖДЕНИЕ вкладки: {warning}")
+    return facts
+
+
 _TAB_FACTS = {
     "p9": _facts_p9,
     "p10": _facts_p10,
     "p11": _facts_p11,
     "p12": _facts_p12,
     "p13": _facts_p13,
+    "p14": _facts_p14,
 }
 
 
