@@ -16,11 +16,19 @@
 // ============================================================================
 // ENV:
 //
-//	MODE                  — bootstrap | incremental | currency | debtarh (дефолт bootstrap).
+//	MODE                  — bootstrap | incremental | currency | debtarh | findwh (дефолт bootstrap).
 //	                        currency — справочники курса (dim_valuta, currency_daily).
 //	                        debtarh  — сырые факты метода аналитика (debt_facts,
 //	                        turnover_facts) из Debt_arh/Wholesales_arh. Оба — для
 //	                        второго потока findebt-docdate.
+//	                        findwh   — реплика FinDWH → CH findwh (GLMF, Table_Fin_PL,
+//	                        ExRates) для аналитиков, docs/bi/findwh-etl.md. Начальная
+//	                        загрузка GLMF идёт этим же режимом (пустая реплика = всё грязное).
+//	FINDWH_TABLES         — через запятую: ex_rates,table_fin_pl,glmf (дефолт все).
+//	FINDWH_FORCE=1        — грузить, даже если сегодня уже загружено / DWH ещё не собран.
+//	FINDWH_GLMF_FULL=1    — GLMF: игнорировать отпечатки реплики, перегрузить всё.
+//	FINDWH_DB, FINDWH_GLMF_FROM, FINDWH_GLMF_CHUNK_MONTHS, FINDWH_BATCH,
+//	FINDWH_READY_CHECK, FINDWH_READY_AFTER_HOUR — как у воркера go-api (.env.example).
 //	MSSQL_VALUTA_FQN         — FQN справочника валют (дефолт [SRV-SQL].Gpartner.dbo.valuta).
 //	MSSQL_CURRENCY_DAILY_FQN — FQN курсов (дефолт [SRV-SQL].Checks.dbo.CurrencyDaily).
 //	MSSQL_DEBT_ARH_FQN       — FQN Debt_arh (дефолт [Payments].[dbo].[Debt_arh]).
@@ -119,6 +127,8 @@ func main() {
 			Fin1FQN:       tables.Fin1FQN,
 			CpartyCol:     os.Getenv("MSSQL_DEBT_ARH_CPARTY_COL"),
 		}, opts.MinDate)
+	case "findwh":
+		n, err = etl.RunFinDWHDaily(ctx, deps, finDWHOptsFromEnv())
 	default:
 		n, err = etl.RunBootstrapFinDebt(ctx, deps, opts)
 	}
@@ -154,4 +164,33 @@ func openMSSQL() *sql.DB {
 		log.Fatalf("mssql ping: %v", err)
 	}
 	return conn
+}
+
+// finDWHOptsFromEnv — параметры MODE=findwh (те же переменные, что у воркера go-api).
+func finDWHOptsFromEnv() etl.FinDWHOpts {
+	from, err := etl.ParseFinDWHDate(envOr("FINDWH_GLMF_FROM", "2025-01-01"))
+	if err != nil {
+		log.Fatalf("FINDWH_GLMF_FROM: %v", err)
+	}
+	var tables []string
+	for _, t := range strings.Split(os.Getenv("FINDWH_TABLES"), ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			tables = append(tables, t)
+		}
+	}
+	chunk, _ := strconv.Atoi(envOr("FINDWH_GLMF_CHUNK_MONTHS", "3"))
+	batch, _ := strconv.Atoi(envOr("FINDWH_BATCH", "20000"))
+	hour, _ := strconv.Atoi(envOr("FINDWH_READY_AFTER_HOUR", "9"))
+	return etl.FinDWHOpts{
+		DB:             envOr("FINDWH_DB", "FinDWH"),
+		GLMFFrom:       from,
+		ChunkMonths:    chunk,
+		BatchSize:      batch,
+		ReadyCheck:     envOr("FINDWH_READY_CHECK", "1") == "1",
+		ReadyAfterHour: hour,
+		Tables:         tables,
+		Force:          os.Getenv("FINDWH_FORCE") == "1",
+		GLMFFull:       os.Getenv("FINDWH_GLMF_FULL") == "1",
+		TriggeredBy:    "cli",
+	}
 }

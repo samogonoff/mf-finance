@@ -252,6 +252,39 @@ func main() {
 		}, "").Start(context.Background(), time.Duration(cfg.DebtArhSyncInterval)*time.Second)
 	}
 
+	// Реплика FinDWH → ClickHouse findwh (GLMF, Table_Fin_PL, ExRates) для
+	// аналитиков, docs/bi/findwh-etl.md. Свой пул на 2 соединения: поток GLMF
+	// держит соединение часами и не должен отнимать его у общего OLAP-пула (4).
+	if cfg.FinDWHSyncInterval > 0 && !cfg.DebtMock {
+		fwFrom, ferr := etl.ParseFinDWHDate(cfg.FinDWHGLMFFrom)
+		if ferr != nil {
+			log.Fatalf("findwh: FINDWH_GLMF_FROM: %v", ferr)
+		}
+		fwDB, ferr := debt.NewOLAPPool(cfg.PremasterServer, cfg.PremasterPort, cfg.FinDWHDB, cfg.PremasterUser, cfg.PremasterPassword)
+		switch {
+		case ferr != nil:
+			log.Fatalf("findwh: mssql open: %v", ferr)
+		case fwDB == nil:
+			log.Printf("findwh-worker: disabled (MSSQL_PREMASTER_* не заданы)")
+		default:
+			defer fwDB.Close()
+			fwDB.SetMaxOpenConns(2)
+			etl.NewFinDWHWorker(etl.Deps{
+				MSSQL:  fwDB,
+				CHURL:  cfg.ClickHouseHTTPURL,
+				CHUser: cfg.ClickHouseUser,
+				CHPass: cfg.ClickHousePass,
+			}, etl.FinDWHOpts{
+				DB:             cfg.FinDWHDB,
+				GLMFFrom:       fwFrom,
+				ChunkMonths:    cfg.FinDWHChunkMonths,
+				BatchSize:      cfg.FinDWHBatch,
+				ReadyCheck:     cfg.FinDWHReadyCheck,
+				ReadyAfterHour: cfg.FinDWHReadyAfterHour,
+			}).Start(context.Background(), time.Duration(cfg.FinDWHSyncInterval)*time.Second)
+		}
+	}
+
 	// Тактические планы (VS0 каркас + VS1 справочники + VS2 факт МП).
 	// docs/reports/plans/SPEC.md. Факт: PLANS_MOCK=1 → фикстуры; иначе online
 	// FinDWH (переиспользуем mssqlDB ВГО-отчёта; при nil — fallback на mock).

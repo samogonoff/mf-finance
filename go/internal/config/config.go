@@ -67,6 +67,18 @@ type Config struct {
 	// 0 → воркер выключен (dev). Прод: несколько часов (вьюхи суточные).
 	DebtFinDebtSyncInterval int
 
+	// Реплика FinDWH → ClickHouse findwh (GLMF, Table_Fin_PL, ExRates) для
+	// аналитиков, docs/bi/findwh-etl.md. Коннект — те же MSSQL_PREMASTER_*,
+	// но отдельный пул. FinDWHSyncInterval (сек) — как часто воркер проверяет,
+	// не пора ли загрузить; 0 → выключен.
+	FinDWHSyncInterval   int
+	FinDWHDB             string
+	FinDWHGLMFFrom       string // YYYY-MM-DD
+	FinDWHChunkMonths    int
+	FinDWHBatch          int
+	FinDWHReadyCheck     bool
+	FinDWHReadyAfterHour int
+
 	// Модуль «Тактические планы» (docs/reports/plans/SPEC.md §10).
 	// PlansMock=1 → факт МП из фикстур (sources/mock_mp.go), как DEBT_MOCK.
 	// Онлайн-источник — тот же сервер FinDWH (переиспользуем MSSQL_PREMASTER_*).
@@ -214,6 +226,14 @@ func Load() Config {
 		DebtFinDebt1Table:       env("MSSQL_FINDEBT1_TABLE", "FinDebt1"),
 		DebtFinDebt3Table:       env("MSSQL_FINDEBT3_TABLE", "FinDebt3"),
 		DebtFinDebtSyncInterval: atoiDef(env("FINDEBT_SYNC_INTERVAL", "0"), 0),
+
+		FinDWHSyncInterval:   atoiDef(env("FINDWH_SYNC_INTERVAL", "0"), 0),
+		FinDWHDB:             env("FINDWH_DB", "FinDWH"),
+		FinDWHGLMFFrom:       env("FINDWH_GLMF_FROM", "2025-01-01"),
+		FinDWHChunkMonths:    atoiDef(env("FINDWH_GLMF_CHUNK_MONTHS", "3"), 3),
+		FinDWHBatch:          atoiDef(env("FINDWH_BATCH", "20000"), 20000),
+		FinDWHReadyCheck:     env("FINDWH_READY_CHECK", "1") == "1",
+		FinDWHReadyAfterHour: atoiDef(env("FINDWH_READY_AFTER_HOUR", "9"), 9),
 
 		DebtValutaFQN:        env("MSSQL_VALUTA_FQN", "[SRV-SQL].Gpartner.dbo.valuta"),
 		DebtCurrencyDailyFQN: env("MSSQL_CURRENCY_DAILY_FQN", "[SRV-SQL].Checks.dbo.CurrencyDaily"),
