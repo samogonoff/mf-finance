@@ -380,8 +380,210 @@
             </section>
           </template>
 
-          <!-- KPI-карточки вкладки: у P10 пять; у P11/P14 — слайд выше -->
-          <section v-if="!isP11 && !isP14" class="fot-kpis">
+          <!-- P15 «Отделы: свод»: лист 7 деки — таблица «Отдел × периоды»,
+               карточки «требующих внимания» и баннер «Тенденции и прогноз». -->
+          <template v-if="isP15">
+            <section class="slide" aria-label="Отделы: свод">
+              <header class="slide-hdr">
+                <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
+                <span class="slide-subtitle">{{ slideCountryLabel }} — Отделы: свод по {{ deptCards.length }} подразделениям</span>
+                <span v-if="headcount" class="slide-note">
+                  Числ. направления (ПЧ/ФЧ 1ПГ{{ yr2(yearPlan) }}):
+                  <b>{{ fmt1(headcount.plan_approved) }}/{{ fmt1(headcount.fact_2026) }}</b>,
+                  {{ fmt0(headcount.staffing) }}% укомпл.
+                </span>
+                <span class="slide-year p15-badge" aria-hidden="true">
+                  <span>{{ slideCountryCc }}</span><span>ОТДЕЛЫ</span>
+                </span>
+              </header>
+
+              <!-- Таблица «Отдел × периоды»: итог — тёмной строкой, без светофора -->
+              <section v-if="slideTable15" class="card">
+                <div class="card-head">
+                  <h3 class="card-title">{{ slideTable15.label }}, тыс {{ currency }}</h3>
+                  <button class="btn btn-ghost btn-sm" type="button"
+                          title="Скачать CSV: разделитель «;», BOM — Excel откроет без мастера импорта"
+                          @click="exportCsv(slideTable15)">
+                    <Icon name="lucide:download" /> CSV
+                  </button>
+                </div>
+                <div class="table-wrap">
+                  <table class="stable p15-stable">
+                    <thead>
+                      <tr>
+                        <th v-for="col in slideTable15.columns" :key="col.key"
+                            :class="{ 'col-name': col.key === 'label' }">
+                          {{ col.label }}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(row, i) in (slideTable15.rows || [])" :key="i" :class="{ total: row.total }">
+                        <td v-for="col in slideTable15.columns" :key="col.key"
+                            :class="col.key === 'label' ? 'col-name' : 'num'">
+                          {{ cellText(slideTable15, row, col) }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p class="card-note">
+                  тыс. {{ currency }}. «Ожидание 2026» = факт 1ПГ + тактика 2ПГ (формула витрины);
+                  CFO-свод деки даёт немного другие значения итога.
+                </p>
+              </section>
+
+              <!-- Карточки «Отделы, требующие внимания» -->
+              <template v-if="deptAttention.length">
+                <h3 class="grid-caption">ОТДЕЛЫ, ТРЕБУЮЩИЕ ВНИМАНИЯ: ИСПОЛНЕНИЕ БЮДЖЕТА ФОТ И ДИНАМИКА К {{ yearPrev }}</h3>
+                <section class="dpc-grid dp15-grid">
+                  <article v-for="d in deptAttention" :key="d.label" class="dpcard">
+                    <div class="dpc-title" :title="d.label">{{ d.label }}</div>
+                    <div class="dpc-block">
+                      <span class="dpc-label">1 ПГ {{ yearPlan }}</span>
+                      <span class="dpc-ppwrap">
+                        <span class="dpc-pp" :class="signCf(d.pp_h1)"
+                              :title="`Δ доли ФОТ в выручке: факт 1ПГ${yr2(yearPlan)} к факту 1ПГ${yr2(yearPrev)}`">
+                          <span class="pp-val">{{ ppText(d.pp_h1) }}</span><span class="pp-unit">п.п.</span>
+                        </span>
+                        <span class="dpc-ppcap">к факту 25</span>
+                      </span>
+                      <span class="dpc-value">{{ fmt0(d.f26_h1) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
+                      <span class="dpc-delta" :class="ndCf(d.dev_h1_pct)">{{ deptDelta(d, 'h1', false) }}</span>
+                    </div>
+                    <div class="dpc-block">
+                      <span class="dpc-label">ТАКТИКА 2 ПГ {{ yearPlan }}</span>
+                      <span class="dpc-ppwrap">
+                        <span class="dpc-pp" :class="signCf(d.pp_h2)"
+                              :title="`Δ доли ФОТ в выручке: тактика 2ПГ${yr2(yearPlan)} к факту 2ПГ${yr2(yearPrev)}`">
+                          <span class="pp-val">{{ ppText(d.pp_h2) }}</span><span class="pp-unit">п.п.</span>
+                        </span>
+                        <span class="dpc-ppcap">к факту 2П25</span>
+                      </span>
+                      <span class="dpc-value">{{ fmt0(d.t26_h2) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
+                      <span class="dpc-delta" :class="ndCf(d.dev_h2_pct)">{{ deptDelta(d, 'h2', false) }}</span>
+                    </div>
+                    <div class="dpc-block">
+                      <span class="dpc-label">ОЖИДАНИЕ, ГОД {{ yearPlan }}</span>
+                      <span class="dpc-ppwrap">
+                        <span class="dpc-pp pp3" :class="signCf(d.pp_year)"
+                              :title="`Δ доли ФОТ в выручке: ожидание ${yearPlan} к факту ${yearPrev}`">
+                          <span class="pp-val">{{ ppText(d.pp_year) }}</span><span class="pp-unit">п.п.</span>
+                        </span>
+                        <span class="dpc-ppcap">Год/факт25</span>
+                      </span>
+                      <span class="dpc-value">{{ fmt0(d.exp26) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
+                      <span class="dpc-delta" :class="ndCf(d.dev_year_pct)">{{ deptDelta(d, 'year', false) }}</span>
+                    </div>
+                    <div class="cc-sep" role="presentation" />
+                    <p class="cc-hc" v-if="isNum(d.hc_fact)">
+                      ПЧ/ФЧ 1ПГ {{ yearPlan }}:
+                      <b>{{ fmt1(d.hc_plan) }}</b>/<b :class="cmpCf(d.hc_fact, d.hc_plan)">{{ fmt1(d.hc_fact) }}</b>,
+                      {{ fmt0(d.hc_staffing) }}% укомпл.
+                    </p>
+                    <p class="cc-hc" v-if="isNum(d.hc_dev)">
+                      Откл. ФЧ к 1ПГ{{ yr2(yearPrev) }}: <b :class="signCf(d.hc_dev)">{{ fmtSigned(d.hc_dev) }}</b>
+                    </p>
+                  </article>
+                </section>
+              </template>
+
+              <!-- Баннер «Тенденции и прогноз»: генерируется сервером по правилам -->
+              <div v-if="deptTrends.length" class="dp-banner">
+                <span class="dpb-text"><b>Тенденции и прогноз: </b>{{ deptTrends.join(' ') }}</span>
+              </div>
+            </section>
+          </template>
+
+          <!-- P16 «Отделы: анализ по подразделениям»: лист 8 деки — карточки
+               остальных отделов и баннеры «Лучшая тенденция» / «Второй приоритет». -->
+          <template v-if="isP16">
+            <section class="slide" aria-label="Отделы: анализ по подразделениям">
+              <header class="slide-hdr">
+                <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
+                <span class="slide-subtitle">{{ slideCountryLabel }} — Отделы: анализ по подразделениям (доля ФОТ в выручке и динамика)</span>
+                <span v-if="headcount" class="slide-note">
+                  Числ. направления (ПЧ/ФЧ 1ПГ{{ yr2(yearPlan) }}):
+                  <b>{{ fmt1(headcount.plan_approved) }}/{{ fmt1(headcount.fact_2026) }}</b>,
+                  {{ fmt0(headcount.staffing) }}% укомпл.
+                </span>
+                <span class="slide-year p15-badge" aria-hidden="true">
+                  <span>{{ slideCountryCc }}</span><span>ОТДЕЛЫ</span>
+                </span>
+              </header>
+
+              <template v-if="deptRest.length">
+                <section class="dpc-grid dp16-grid">
+                  <article v-for="d in deptRest" :key="d.label" class="dpcard dp16">
+                    <div class="dpc-title" :title="d.label">{{ d.label }}</div>
+                    <div class="dpc-block">
+                      <span class="dpc-label">1 ПГ {{ yearPlan }}</span>
+                      <span class="dpc-ppwrap">
+                        <span class="dpc-pp" :class="signCf(d.pp_h1)"
+                              :title="`Δ доли ФОТ в выручке: факт 1ПГ${yr2(yearPlan)} к факту 1ПГ${yr2(yearPrev)}`">
+                          <span class="pp-val">{{ ppText(d.pp_h1) }}</span><span class="pp-unit">п.п.</span>
+                        </span>
+                        <span class="dpc-ppcap">к факту 25</span>
+                      </span>
+                      <span class="dpc-value">{{ fmt0(d.f26_h1) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
+                      <span class="dpc-delta" :class="ndCf(d.dev_h1_pct)">{{ deptDelta(d, 'h1', true) }}</span>
+                    </div>
+                    <div class="dpc-block">
+                      <span class="dpc-label">ТАКТИКА 2 ПГ {{ yearPlan }}</span>
+                      <span class="dpc-ppwrap">
+                        <span class="dpc-pp" :class="signCf(d.pp_h2)"
+                              :title="`Δ доли ФОТ в выручке: тактика 2ПГ${yr2(yearPlan)} к факту 2ПГ${yr2(yearPrev)}`">
+                          <span class="pp-val">{{ ppText(d.pp_h2) }}</span><span class="pp-unit">п.п.</span>
+                        </span>
+                        <span class="dpc-ppcap">факту 2П25</span>
+                      </span>
+                      <span class="dpc-value">{{ fmt0(d.t26_h2) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
+                      <span class="dpc-delta" :class="ndCf(d.dev_h2_pct)">{{ deptDelta(d, 'h2', true) }}</span>
+                    </div>
+                    <div class="dpc-block">
+                      <span class="dpc-label">ОЖИДАНИЕ, ГОД {{ yearPlan }}</span>
+                      <span class="dpc-ppwrap">
+                        <span class="dpc-pp" :class="signCf(d.pp_year)"
+                              :title="`Δ доли ФОТ в выручке: ожидание ${yearPlan} к факту ${yearPrev}`">
+                          <span class="pp-val">{{ ppText(d.pp_year) }}</span><span class="pp-unit">п.п.</span>
+                        </span>
+                        <span class="dpc-ppcap">Год/факт25</span>
+                      </span>
+                      <span class="dpc-value">{{ fmt0(d.exp26) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
+                      <span class="dpc-delta" :class="ndCf(d.dev_year_pct)">{{ deptDelta(d, 'year', true) }}</span>
+                    </div>
+                    <div class="cc-sep" role="presentation" />
+                    <p class="cc-hc" v-if="isNum(d.hc_fact)">
+                      ПЧ/ФЧ: <b>{{ fmt1(d.hc_plan) }}</b>/<b :class="cmpCf(d.hc_fact, d.hc_plan)">{{ fmt1(d.hc_fact) }}</b>,
+                      {{ fmt0(d.hc_staffing) }}%
+                    </p>
+                    <p class="cc-hc" v-if="isNum(d.hc_dev)">
+                      Откл. к 1П{{ yr2(yearPrev) }}: <b :class="signCf(d.hc_dev)">{{ fmtSigned(d.hc_dev) }}</b>
+                    </p>
+                  </article>
+                </section>
+              </template>
+
+              <!-- Итоговые баннеры листа 8: генерируются сервером по правилам -->
+              <div class="dp-banners">
+                <div v-if="deptBanners?.good?.items?.length" class="dp-banner dpb-good">
+                  <span class="dpb-title">{{ deptBanners.good.lead }}</span>
+                  <span class="dpb-text">
+                    <template v-for="(it, i) in deptBanners.good.items" :key="it.name"><b class="nm">{{ it.name }}</b> ({{ it.note }}){{ i < deptBanners.good.items.length - 1 ? ', ' : '.' }} </template>
+                  </span>
+                </div>
+                <div v-if="deptBanners?.warn?.items?.length" class="dp-banner dpb-warn">
+                  <span class="dpb-title">{{ deptBanners.warn.lead }}</span>
+                  <span class="dpb-text">
+                    <template v-for="(it, i) in deptBanners.warn.items" :key="it.name"><b class="nm">{{ it.name }}</b> ({{ it.note }}){{ i < deptBanners.warn.items.length - 1 ? ', ' : '. ' }} </template>{{ deptBanners.warn.tail }}
+                  </span>
+                </div>
+              </div>
+            </section>
+          </template>
+
+          <!-- KPI-карточки вкладки: у P10 пять; у P11/P14–P16 — слайд выше -->
+          <section v-if="!isP11 && !isP14 && !isDeptTab" class="fot-kpis">
             <article v-for="c in cards" :key="c.key" class="fot-kpi">
               <span class="fot-kpi-label">{{ c.label }}</span>
               <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
@@ -469,11 +671,12 @@
             </div>
           </section>
 
-          <!-- Разбор ИИ вкладки: данные собирает сервер (fot_p9..fot_p13, до
+          <!-- Разбор ИИ вкладки: данные собирает сервер (fot_p9..fot_p14, до
                validate_charts), фронт отдаёт только срезы. charts компоненту
                нужен лишь как признак «есть что разбирать» — путь fot_* их
-               игнорирует, поэтому на сводных вкладках передаём серию карточек. -->
-          <CostChartInsight :block="`fot_${tab}`" :block-title="`${tabLabel} (${tab.toUpperCase()})`"
+               игнорирует, поэтому на сводных вкладках передаём серию карточек.
+               У P15/P16 серверного пути разбора нет — блок скрыт. -->
+          <CostChartInsight v-if="!isDeptTab" :block="`fot_${tab}`" :block-title="`${tabLabel} (${tab.toUpperCase()})`"
                             :charts="insightCharts" :context="insightContext" />
         </div>
 
@@ -534,6 +737,8 @@ const TABS = [
   { key: 'p12', label: 'Численность план и факт' },
   { key: 'p13', label: 'HR-бюджет и отделы' },
   { key: 'p14', label: 'ФОТ по направлениям бизнеса' },
+  { key: 'p15', label: 'Отделы: свод' },
+  { key: 'p16', label: 'Отделы: анализ по подразделениям' },
 ] as const
 const tab = ref<string>('p9')
 
@@ -723,6 +928,13 @@ const isP11 = computed(() => tab.value === 'p11')
 // ── P14 «ФОТ по направлениям бизнеса»: лист 4 деки ───────────────────────────
 
 const isP14 = computed(() => tab.value === 'p14')
+
+// ── P15/P16 «Отделы»: листы 7–8 деки ─────────────────────────────────────────
+
+const isP15 = computed(() => tab.value === 'p15')
+const isP16 = computed(() => tab.value === 'p16')
+/** Обе вкладки «Отделы» живут на одном слайде: KPI-лента и блок ИИ скрыты. */
+const isDeptTab = computed(() => isP15.value || isP16.value)
 /** Направления листа и шапка страны — отдельные блоки ответа p14. */
 const directions = computed<any[]>(() => dash.value?.directions || [])
 const slideMeta = computed<any>(() => meta.value.slide || {})
@@ -731,6 +943,18 @@ const slideCountryCc = computed(() => slideCountryLabel.value === 'Группа'
 /** Таблица направлений рендерится в слайде; в общем списке таблиц её нет. */
 const slideTable14 = computed<any>(() =>
   isP14.value ? tables.value.find((t: any) => t.key === 'by_direction') || null : null)
+
+/** Отделы листов 7–8 — отдельный блок ответа (cards_by_department): топ-6
+ *  «требующих внимания» — лист 7 (P15), остальные — лист 8 (P16). */
+const deptCards = computed<any[]>(() => dash.value?.cards_by_department || [])
+const deptAttention = computed<any[]>(() => deptCards.value.filter((d: any) => d.attention))
+const deptRest = computed<any[]>(() => deptCards.value.filter((d: any) => !d.attention))
+/** Таблица отделов рендерится в слайде P15; в общем списке таблиц её нет. */
+const slideTable15 = computed<any>(() =>
+  isP15.value ? tables.value.find((t: any) => t.key === 'departments') || null : null)
+/** Баннеры-выводы: P15 — «Тенденции и прогноз», P16 — пара листа 8. */
+const deptTrends = computed<string[]>(() => dash.value?.dept_trends || [])
+const deptBanners = computed<any>(() => dash.value?.dept_banners || null)
 
 /** Сектора пирога «Доля ФОТ по направлениям» (ожидание года плана): от 12
  *  часов по часовой, подписи — только у секторов ≥1 % (best-fit Excel). */
@@ -786,6 +1010,7 @@ const slideTable = computed<any>(() =>
 const shownTables = computed<any[]>(() => {
   if (isP11.value) return tables.value.filter((t: any) => t.key !== 'by_country')
   if (isP14.value) return tables.value.filter((t: any) => t.key !== 'by_direction')
+  if (isP15.value) return tables.value.filter((t: any) => t.key !== 'departments')
   return tables.value
 })
 /** Значение карточки по ключу — для KPI-ленты слайда. */
@@ -793,8 +1018,8 @@ const kpiNum = (key: string): number | null => {
   const c = cards.value.find((x: any) => x.key === key)
   return c && isNum(c.value) ? Number(c.value) : null
 }
-/** P10–P14 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
-const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13', 'p14'].includes(tab.value))
+/** P10–P16 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
+const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13', 'p14', 'p15', 'p16'].includes(tab.value))
 /** Метка активной вкладки — заголовок блока ИИ и нотификации. */
 const tabLabel = computed(() => TABS.find((t) => t.key === tab.value)?.label || tab.value)
 
@@ -1019,6 +1244,26 @@ const slideCmp = (row: any, colKey: string): string => {
 const slideCmpDk = (row: any, colKey: string): string => {
   const cls = slideCmp(row, colKey)
   return cls ? `${cls}-dk` : ''
+}
+
+/** Динамика карточки отдела к факту прошлого года (правила листов 7–8 деки):
+ *  P15 — «+9,1% к факту 25 (+606)», P16 — короткая «+13,5% факт25 (+71)»;
+ *  без базы 2025 — «н/д …» (nd-growth деки — всегда зелёный). */
+const deptDelta = (d: any, per: 'h1' | 'h2' | 'year', short: boolean): string => {
+  const pct = d['dev_' + per + '_pct']
+  const abs = d['dev_' + per + '_abs']
+  const base = short ? `факт${yr2(yearPrev.value)}` : `к факту ${yr2(yearPrev.value)}`
+  const head = isNum(pct) ? `${fmtSigned(pct)}% ${base}` : `н/д ${base}`
+  return `${head} (${fmtSigned(abs)})`
+}
+/** Светофор строки динамики: н/д (нет базы) — всегда зелёный, как в деке. */
+const ndCf = (v: any): string => (!isNum(v) ? 'cf-pos' : signCf(v))
+/** Круг Δ доли ФОТ в выручке: «−0,35 п.п.» / «н/д п.п.» (0 и н/д — нейтральные;
+ *  околонулевые после округления — беззнаковый «0,00», как на листе деки). */
+const ppText = (v: any): string => {
+  if (!isNum(v)) return 'н/д'
+  const n = Number(v)
+  return Math.abs(n) < 0.005 ? '0,00' : fmtSigned(n, 2)
 }
 
 /** Единицы с двумя знаками — проценты, п.п. и ставки; деньги (в col.unit
@@ -1549,6 +1794,107 @@ const fmtDateTime = (iso: any) => {
 .p14c-delta.cf-neg { color: var(--fot-neg); }
 /* бейдж Δ доли, п.п. — справа от блока (классы цвета у cc-badge уже есть) */
 .p14c-badge { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
+
+/* ── P15/P16 «Отделы»: листы 7–8 деки ───────────────────────────────────── */
+/* Круглый бейдж шапки «BY ОТДЕЛЫ» — как печать отдела на листах деки. */
+.p15-badge {
+  flex-direction: column; width: 50px; height: 50px;
+  font-size: 8px; line-height: 1.15; letter-spacing: .4px;
+}
+.fot-dark .p15-badge { color: #2A1E22; }
+
+/* Таблица «Отдел × периоды»: плотнее базовой stable — строк много */
+.p15-stable th { font-size: 10.5px; }
+.p15-stable td { font-size: 11.5px; padding: 3px 5px; }
+.p15-stable td.num { font-family: var(--font-mono); }
+.p15-stable td.col-name { font-weight: var(--fw-bold, 700); font-size: 11px; }
+
+/* Карточки отделов (лист 7 — «требующие внимания», лист 8 — остальные) */
+.dpc-grid { display: grid; gap: var(--sp-3); }
+.dp15-grid { grid-template-columns: repeat(auto-fit, minmax(235px, 1fr)); }
+.dp16-grid { grid-template-columns: repeat(auto-fit, minmax(225px, 1fr)); }
+.dpcard {
+  position: relative; background: var(--fot-card);
+  border: 1px solid var(--fot-accent-light); border-radius: 5px;
+  padding: var(--sp-2) var(--sp-3);
+  display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0;
+}
+.dp16 .dpcard { padding: var(--sp-2); gap: 5px; }
+.dpc-title {
+  font-size: 12px; font-weight: var(--fw-bold, 700); color: var(--fot-accent-light);
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding-bottom: var(--sp-1); border-bottom: 1px solid var(--fot-border);
+}
+.dp16 .dpc-title { font-size: 11px; }
+.dpc-block { position: relative; display: flex; flex-direction: column; gap: 1px; padding-right: 48px; }
+.dpc-block + .dpc-block {
+  border-top: 1px solid color-mix(in srgb, var(--fot-border) 60%, transparent);
+  padding-top: var(--sp-2);
+}
+.dp16 .dpc-block + .dpc-block { padding-top: 5px; }
+.dpc-label {
+  font-size: 9.5px; font-weight: var(--fw-bold, 700);
+  color: var(--fot-accent-light); letter-spacing: .2px; white-space: nowrap;
+}
+.dp16 .dpc-label { font-size: 9px; }
+.dpc-value {
+  font-family: 'Cambria', 'Times New Roman', serif; font-size: 17px;
+  font-weight: var(--fw-bold, 700); color: var(--fot-ink); white-space: nowrap;
+}
+.dp16 .dpc-value { font-size: 15px; }
+.dpc-unit { font-size: 10px; font-weight: var(--fw-regular); color: var(--fot-muted); margin-left: 2px; }
+.dpc-delta { font-size: 11px; font-weight: var(--fw-bold, 700); color: var(--fot-ink); white-space: nowrap; }
+/* светофор динамики — специфичнее дефолтного цвета .dpc-delta */
+.dpc-delta.cf-pos { color: var(--fot-pos); }
+.dpc-delta.cf-neg { color: var(--fot-neg); }
+
+/* Круг «Δ доли ФОТ в выручке, п.п.» + подпись базы (листы 7–8 деки):
+   число и рамка — currentColor, «п.п.» остаётся серым; 0 и н/д — нейтральные */
+.dpc-ppwrap {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.dpc-pp {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: #fff; border: 1.5px solid currentColor;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  line-height: 1.05; color: var(--fot-muted);
+}
+.dpc-pp.pp3 { border-width: 1.7px; }
+.dpc-pp .pp-val { font-size: 9px; font-weight: var(--fw-bold, 700); color: var(--fot-ink); }
+.dpc-pp .pp-unit { font-size: 8px; color: var(--fot-muted); }
+/* светофор круга — специфичнее базовых цветов .dpc-pp/.pp-val */
+.dpc-pp.cf-pos { color: var(--fot-pos); }
+.dpc-pp.cf-neg { color: var(--fot-neg); }
+.dpc-pp.cf-pos .pp-val { color: var(--fot-pos); }
+.dpc-pp.cf-neg .pp-val { color: var(--fot-neg); }
+.fot-dark .dpc-pp { background: #1E1418; }
+.dpc-ppcap { font-size: 7.5px; color: var(--fot-muted); white-space: nowrap; }
+
+/* Баннеры-выводы: «Тенденции и прогноз» (лист 7) и пара листа 8.
+   Светлой теме — точные цвета деки, тёмной — подмес к фону карточки. */
+.dp-banner {
+  border-radius: 5px; background: #F7ECEF; border: 1px solid #C27B92;
+  padding: 7px 14px; font-size: 12px; color: var(--fot-ink); line-height: 1.45;
+}
+.dp-banner b, .dp-banner .nm { font-weight: var(--fw-bold, 700); }
+.dp-banner .nm { color: var(--fot-accent); }
+.dpb-good { background: #EAF3EC; border-color: var(--fot-pos); }
+.dpb-title {
+  display: block; font-size: 12.5px; font-weight: var(--fw-bold, 700);
+  margin-bottom: 5px; color: var(--fot-ink);
+}
+.dpb-good .dpb-title { color: var(--fot-pos); }
+.dpb-warn .dpb-title { color: var(--fot-mid); }
+.dp-banners { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--sp-3); }
+.fot-dark .dp-banner { background: color-mix(in srgb, #C27B92 14%, var(--fot-card)); }
+.fot-dark .dpb-good { background: color-mix(in srgb, var(--fot-pos) 14%, var(--fot-card)); }
+
+@media (max-width: 520px) {
+  .dpc-value { font-size: 15px; }
+  .dp16 .dpc-value { font-size: 13.5px; }
+  .dpc-block { padding-right: 44px; }
+}
 
 @media (max-width: 520px) {
   .cc-dyncap { display: none; }

@@ -46,7 +46,7 @@ FOT_DATABASE = os.environ.get("FOT_DATABASE", "FinDWH")
 YEAR_PREV = 2025
 YEAR_PLAN = 2026
 
-_FOT_TABS = ("p9", "p10", "p11", "p12", "p13", "p14")
+_FOT_TABS = ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16")
 
 
 def fot_mock_enabled() -> bool:
@@ -2915,14 +2915,437 @@ async def _dashboard_p14(p: dict, meta: dict) -> dict:
             "charts": [], "tables": tables, "meta": meta_out}
 
 
+# ── Вкладки P15/P16 «Отделы» (листы 7–8 деки «Бюджет ФОТ 2026») ──────────────
+
+# «Отдел» листов 7–8 деки — колонка direction справочника внутри группы ЦФО
+# «Отдел» (живая сверка 15.10.2026: 22 направления среза BY — ровно 22 строкам
+# таблицы листа 7, 13 из них сходятся с декой до 0,1 тыс). Деке «Складская
+# логистика» соответствует пара направлений Складская + Транспортная (бюджет
+# деки 6976 тыс = 5654 + 1322) — объединяются в сборщике.
+_P15_DEPT_GROUP = "Отдел"
+_P15_DEPT_MERGE = {"Транспортная логистика": "Складская логистика"}
+
+# Пороги правил «внимания» (лист 7) и баннеров (лист 8) — семантика деки.
+_P15_ATTN_MAX = 6             # карточек «требующих внимания»
+_P15_GROWTH_PCT = 25.0        # рост факта 1ПГ к 1ПГ25 — «резкий рост»
+_P15_SAVINGS_PCT = -10.0      # экономия к прошлому году — «план-экономия»
+_P15_BOOM_PCT = 100.0         # рост года с низкой базы — «высокая база роста»
+_P15_TAC_OVER_PCT = 10.0      # тактика 2ПГ выше бюджета — «расширение»
+_P16_GREEN_BUDGET_PCT = -2.0  # Δ бюджета для «лучшей тенденции»
+_P16_WARN_BUDGET_PCT = 3.0    # Δ бюджета для «второго приоритета контроля»
+
+METHODOLOGY_P15 = (
+    "Лист «Беларусь — Отделы: свод» — реплика листа 7 деки «Бюджет ФОТ 2026»: "
+    "за фиксированные полугодия (как P10–P14), в развороте по отделам. Отдел — "
+    "колонка «Направление» справочника ЦФО внутри группы «Отдел» среза; пара "
+    "«Складская» + «Транспортная логистика» показывается одной строкой "
+    "(так в CFO-своде деки). Таблица «Отдел × периоды» — период-суммы ФОТ в "
+    "тыс., итог — первой строкой (тёмной), без светофора, как на листе; "
+    "«Ожидание 2026» = факт 1ПГ26 + тактика 2ПГ26 (формула витрины; CFO-свод "
+    "деки даёт немного другие значения). Карточки «требующих внимания» — топ-6 "
+    "по правилу деки (перерасход бюджета 1 ПГ или тактики к бюджету, рост/"
+    "экономия к 2025-му, новое направление): в карточке три периода с Δ% к "
+    "факту 2025 («н/д» у направлений без базы, всегда зелёный), три круга "
+    "Δ доли ФОТ в выручке среза в п.п. (своей выручки у отделов нет — "
+    "знаменатель, как у беспродажных направлений P14, вся выручка среза) и "
+    "ПЧ/ФЧ 1ПГ26 с отклонением ФЧ к 1ПГ25 (то же зерно, что у P12). Баннер "
+    "«Тенденции и прогноз» генерируется по правилам из данных (топ "
+    "перерасхода, тактика выше бюджета, новые направления, план-экономия), "
+    "без языковой модели. Светофор по знаку: рост ФОТ/доли — красный, "
+    "снижение — зелёный, 0/н/д — нейтрально."
+)
+
+METHODOLOGY_P16 = (
+    "Лист «Беларусь — Отделы: анализ по подразделениям» — реплика листа 8 "
+    "деки: карточки остальных отделов (все, кроме топ-6 «внимания» листа 7) — "
+    "те же поля и светофор, что у P15. Зелёный баннер «Лучшая тенденция» — "
+    "отделы с отрицательным Δ бюджета 1ПГ26 (факт к бюджету ≤ −2 %) и "
+    "отрицательным Δ доли ФОТ в выручке, сортировка по Δ бюджета; розовый "
+    "«Второй приоритет контроля» — не попавшие в топ-внимания отделы с "
+    "умеренным превышением бюджета 1 ПГ (> +3 %). Тексты баннеров собираются "
+    "из данных детерминированно (без языковой модели). Численность в шапке — "
+    "свод по группе «Отдел» среза (ПЧ PlanChisl, ФЧ 30.06)."
+)
+
+
+def _ru_s(v, digits: int = 1, signed: bool = True) -> str:
+    """Число для текстов-выводов: запятая, минус U+2212, опциональный плюс, н/д."""
+    if v is None:
+        return "н/д"
+    sign = ("−" if v < 0 else ("+" if signed else ""))
+    return (sign + "%.*f" % (digits, abs(v))).replace(".", ",")
+
+
+def _p15_sql(p: dict) -> tuple[str, list]:
+    """Один запрос вкладок P15/P16: ФОТ отделов, выручка среза, численность.
+
+    Зерно — направление справочника внутри группы ЦФО «Отдел» (см.
+    _P15_DEPT_MERGE), период-суммы — те же семейства fot, что у P10/P11.
+    Выручка среза (знаменатель долей) режется теми же условиями, что
+    числитель, — по всем строкам среза, не только отделам (доля сравнивает
+    числа одного среза, как у P14). Численность — то же зерно, что у P12
+    (факты 30.06 и план PlanChisl), в группировке по направлению; план, как
+    у P12, срезом юрлица не режется.
+    """
+    col = FOT_CURRENCIES[p["currency"]]
+    sql_params: list = []
+    ic_sql = _ic_where(p)
+    dim_conds = _dim_conds(p, sql_params)
+    hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
+    m_legal = _legal_cond(p, sql_params)
+    h_legal = _legal_cond(p, sql_params, "h.legal_entity")
+    dept = " AND c.group_cfo1 = '%s'" % _P15_DEPT_GROUP
+
+    fot_sums = ",\n        ".join(
+        _half_sum_sql(key, scen, year, m1, m2, fam, col)
+        for key, scen, year, m1, m2, fam in _HALF_PERIODS if fam == "fot"
+    )
+    rev_sums = ",\n        ".join(
+        _half_sum_sql(key, scen, year, m1, m2, fam, col)
+        for key, scen, year, m1, m2, fam in _HALF_PERIODS if fam == "rev"
+    )
+
+    sql = f"""
+WITH dim AS (
+    SELECT code_cfo, group_cfo1, direction
+    FROM fot_cfo
+    WHERE TRUE{dim_conds}
+),
+fot AS (
+    SELECT coalesce(c.direction, '') AS dir,
+           {fot_sums}
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE {ic_sql}{m_legal}{hier_gate}{dept}
+    GROUP BY 1
+),
+rev AS (
+    SELECT {rev_sums}
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE {ic_sql}{m_legal}{hier_gate}
+),
+h25 AS (
+    SELECT coalesce(c.direction, '') AS dir, sum(h.quantity) AS v
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = DATE '{HC_DATE_PREV.isoformat()}'{h_legal}{hier_gate}{dept}
+    GROUP BY 1
+),
+h26 AS (
+    SELECT coalesce(c.direction, '') AS dir, sum(h.quantity) AS v
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = DATE '{HC_DATE_CURR.isoformat()}'{h_legal}{hier_gate}{dept}
+    GROUP BY 1
+),
+plan AS (
+    SELECT coalesce(c.direction, '') AS dir, sum(p.plan_approved) AS v
+    FROM fot_headcount_plan p
+    LEFT JOIN dim c ON c.code_cfo = p.code_cfo
+    WHERE TRUE{hier_gate}{dept}
+    GROUP BY 1
+)
+SELECT jsonb_build_object(
+    'fot', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM fot x), '[]'::jsonb),
+    'rev', (SELECT to_jsonb(r) FROM rev r),
+    'h25', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h25 x), '[]'::jsonb),
+    'h26', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h26 x), '[]'::jsonb),
+    'plan', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM plan x), '[]'::jsonb)
+)::text AS payload
+"""
+    return sql, sql_params
+
+
+def _p15_assemble(cur: str, payload: dict, sel_country: str | None) -> tuple:
+    """Листы 7–8 деки из одного ответа _p15_sql: таблица, карточки, баннеры.
+
+    Таблица (лист 7) — направления по убыванию «Ожидания 2026», итог —
+    первой строкой. Карточки (cards_by_department) — все направления среза:
+    три периода, Δ% к факту 2025 («н/д» без базы — правило nd-growth деки),
+    круги Δ доли ФОТ в выручке среза (п.п., «н/д» без базы 2025), ПЧ/ФЧ и
+    отклонение ФЧ к 1ПГ25 (нет строк — None, фронт строку прячет, как деке
+    у «Гр. аудита кач-ва»). Топ-_P15_ATTN_MAX по правилу «внимания» несёт
+    attention=True (лист 7), остальные — лист 8. Баннеры-выводы собираются
+    по правилам деки из данных. Возвращает (cards, headcount, departments,
+    tables, trends, banners, warning).
+    """
+    # Зерно ФОТ по направлениям (с объединением пары деки).
+    by_dir: dict = {}
+    for r in payload.get("fot") or []:
+        d = _P15_DEPT_MERGE.get(r.get("dir") or "", r.get("dir") or "")
+        slot = by_dir.setdefault(d, {})
+        for key in _HALF_VALUE_KEYS:
+            v = r.get(key)
+            if v is not None:
+                slot[key] = slot.get(key, 0.0) + float(v)
+    hc: dict = {}
+    for src, key in (("h25", "q25"), ("h26", "q26"), ("plan", "pa")):
+        for r in payload.get(src) or []:
+            d = _P15_DEPT_MERGE.get(r.get("dir") or "", r.get("dir") or "")
+            v = r.get("v")
+            if v is not None:
+                hc.setdefault(d, {})[key] = hc.setdefault(d, {}).get(key, 0.0) + float(v)
+
+    rev = payload.get("rev") or {}
+    rv = {key: float(rev[key]) for key in
+          ("rv_f25_h1", "rv_f25_h2", "rv_f25", "rv_f26_h1", "rv_t26_h2") if rev.get(key)}
+    rv_exp = _nsum([rv.get("rv_f26_h1"), rv.get("rv_t26_h2")])
+
+    tot = {key: _nsum([v.get(key) for v in by_dir.values()]) for key in _HALF_VALUE_KEYS}
+    tot_exp = _nsum([tot.get("f26_h1"), tot.get("t26_h2")])
+    tot_hc = {key: _nsum([v.get(key) for v in hc.values()]) for key in ("q25", "q26", "pa")}
+
+    entries = sorted(
+        by_dir.items(),
+        key=lambda kv: (bool(kv[0]), _nsum([kv[1].get("f26_h1"), kv[1].get("t26_h2")]) or 0.0),
+        reverse=True,
+    )
+    scored: list = []
+    for dkey, s in entries:
+        h = hc.get(dkey) or {}
+        exp = _nsum([s.get("f26_h1"), s.get("t26_h2")])
+        base_h1, base_h2, base_y = s.get("f25_h1"), s.get("f25_h2"), s.get("f25")
+        # Δ% к базе считается только от положительной базы: нулевая — «нет
+        # базы» (н/д деки), отрицательная (сторно 2025-го) делает процент
+        # бессмысленным — тоже н/д, абсолют при этом показываем.
+        pos_h1 = base_h1 if base_h1 and base_h1 > 0 else None
+        pos_h2 = base_h2 if base_h2 and base_h2 > 0 else None
+        pos_y = base_y if base_y and base_y > 0 else None
+        dev_h1 = _div(_diff(s.get("f26_h1"), pos_h1), pos_h1)
+        dev_h2 = _div(_diff(s.get("t26_h2"), pos_h2), pos_h2)
+        dev_year = _div(_diff(exp, pos_y), pos_y)
+        # Доля ФОТ в выручке среза и её Δ, п.п.: без положительной базы 2025 —
+        # н/д (правило деки).
+        pp_h1 = (_pct(_diff(_div(s.get("f26_h1"), rv.get("rv_f26_h1")),
+                            _div(pos_h1, rv.get("rv_f25_h1"))))
+                 if pos_h1 and rv.get("rv_f26_h1") and rv.get("rv_f25_h1") else None)
+        pp_h2 = (_pct(_diff(_div(s.get("t26_h2"), rv.get("rv_t26_h2")),
+                            _div(pos_h2, rv.get("rv_f25_h2"))))
+                 if pos_h2 and rv.get("rv_t26_h2") and rv.get("rv_f25_h2") else None)
+        pp_year = (_pct(_diff(_div(exp, rv_exp), _div(pos_y, rv.get("rv_f25"))))
+                   if pos_y and rv_exp and rv.get("rv_f25") else None)
+        over_h1 = _diff(s.get("f26_h1"), s.get("b26_h1"))
+        over_h2 = _diff(s.get("t26_h2"), s.get("b26_h2"))
+        budget_dev = _div(over_h1, s.get("b26_h1")) if (s.get("b26_h1") or 0) > 0 else None
+        # Правило «внимания» (лист 7): максимальный из критериев в тыс —
+        # перерасход бюджета/тактики, резкий рост или экономия к 2025-му,
+        # рост года с низкой базы (≥100 % — «высокая база роста» деки).
+        dev_h1_pct = _pct(dev_h1)
+        dev_year_pct = _pct(dev_year)
+        score = max(
+            over_h1 or 0.0, over_h2 or 0.0,
+            _diff(s.get("f26_h1"), base_h1) or 0.0
+            if dev_h1_pct is not None and dev_h1_pct >= _P15_GROWTH_PCT else 0.0,
+            _diff(base_h1, s.get("f26_h1")) or 0.0
+            if dev_h1_pct is not None and dev_h1_pct <= _P15_SAVINGS_PCT else 0.0,
+            _diff(exp, base_y) or 0.0
+            if dev_year_pct is not None and dev_year_pct >= _P15_BOOM_PCT else 0.0,
+        )
+        scored.append({
+            "label": str(dkey) or "(без направления)",
+            "f25_h1": _r1(_t(s.get("f25_h1"))), "f25_h2": _r1(_t(s.get("f25_h2"))),
+            "f25": _r1(_t(s.get("f25"))), "b26_h1": _r1(_t(s.get("b26_h1"))),
+            "f26_h1": _r1(_t(s.get("f26_h1"))), "b26_h2": _r1(_t(s.get("b26_h2"))),
+            "t26_h2": _r1(_t(s.get("t26_h2"))), "exp26": _r1(_t(exp)),
+            "dev_h1_pct": _r1(_pct(dev_h1)),
+            "dev_h1_abs": _r1(_t(_diff(s.get("f26_h1"), base_h1))),
+            "dev_h2_pct": _r1(_pct(dev_h2)),
+            "dev_h2_abs": _r1(_t(_diff(s.get("t26_h2"), base_h2))),
+            "dev_year_pct": _r1(_pct(dev_year)),
+            "dev_year_abs": _r1(_t(_diff(exp, base_y))),
+            "pp_h1": _r2(pp_h1), "pp_h2": _r2(pp_h2), "pp_year": _r2(pp_year),
+            "hc_plan": _r2(h.get("pa")), "hc_fact": _r2(h.get("q26")),
+            "hc_staffing": _r1(_pct(_div(h.get("q26"), h.get("pa")))),
+            "hc_dev": _r2(_diff(h.get("q26"), h.get("q25"))),
+            "budget_dev_pct": _r1(_pct(budget_dev)),
+            # внутренние поля правил (в ответ не идут)
+            "_over_h1": over_h1 or 0.0, "_over_h2": over_h2 or 0.0,
+            "_tac_pct": (_pct(_div(over_h2, s.get("b26_h2")))
+                         if (s.get("b26_h2") or 0) > 0 else None),
+            "_dev_year_pct": _pct(dev_year), "_score": score,
+        })
+    for rank, d in enumerate(
+            sorted(scored, key=lambda d: d["_score"], reverse=True)[:_P15_ATTN_MAX], 1):
+        if d["_score"] > 0:
+            d["attention"] = True
+            d["attn_rank"] = rank
+    departments = [{k: v for k, v in d.items() if not k.startswith("_")} for d in scored]
+
+    # Таблица листа 7: та же форма, что у P14 (тыс., итог первой строкой).
+    labels = (
+        ("f25_h1", "Факт 1ПГ25"), ("f25_h2", "Факт 2ПГ25"), ("f25", "Итого Факт 2025"),
+        ("b26_h1", "Бюджет 1ПГ26"), ("f26_h1", "Факт 1ПГ26"),
+        ("b26_h2", "Бюджет 2ПГ26"), ("t26_h2", "Тактика 2ПГ26"), ("exp26", "Ожидание 2026"),
+    )
+    total_label = "Итого Отделы%s" % (" %s" % sel_country if sel_country else "")
+    total_row = {"label": total_label, "drill_value": None, "total": True}
+    for key, _lbl in labels:
+        v = tot_exp if key == "exp26" else tot.get(key)
+        total_row[key] = _r1(_t(v))
+    value_keys = tuple(key for key, _lbl in labels)
+    table = {
+        "key": "departments",
+        "label": "Отделы: ФОТ по направлениям",
+        "columns": [{"key": "label", "label": "Отдел"}] + [
+            {"key": key, "label": lbl, "unit": "тыс " + cur} for key, lbl in labels
+        ],
+        "rows": [total_row] + [
+            {"label": d["label"], **{k: d[k] for k in value_keys}} for d in departments
+        ],
+        "meta": {"dim": "direction", "level_label": "Отдел", "path": [],
+                 "can_drill": False, "truncated": False, "row_limit": MATRIX_ROW_LIMIT},
+    }
+
+    # Карточки-свод (KPI-фолбэк и «Разбор ИИ») и численность шапки.
+    dv = _half_derive(tot, {})
+    cards = [
+        {"key": "fot_fact_2025", "label": "ФОТ Факт 2025, млн",
+         "value": _r2(_ms(tot.get("f25"))), "unit": "млн " + cur},
+        {"key": "fot_expect_2026", "label": "ФОТ Ожидание 2026, млн",
+         "value": _r2(_ms(dv["exp26"])), "unit": "млн " + cur},
+        {"key": "fot_dev_year", "label": "ФОТ Δ год к 2025",
+         "value": _r1(_pct(dv["dev_year"])), "unit": "%"},
+        {"key": "hc_fact_2026", "label": "ФЧ 1ПГ 2026",
+         "value": _r2(tot_hc.get("q26")), "unit": "ставок"},
+    ]
+    headcount = {
+        "plan_approved": _r2(tot_hc.get("pa")),
+        "fact_2026": _r2(tot_hc.get("q26")),
+        "staffing": _r1(_pct(_div(tot_hc.get("q26"), tot_hc.get("pa")))),
+    }
+
+    # Баннер «Тенденции и прогноз» (лист 7) — по правилам деки, без LLM.
+    trends: list[str] = []
+    over = sorted((d for d in scored if d["_over_h1"] > 0),
+                  key=lambda d: d["_over_h1"], reverse=True)
+    if over:
+        names = " и ".join(d["label"] for d in over[:2])
+        plus = " и ".join("+%d" % round(d["_over_h1"] / 1000.0) for d in over[:2])
+        trends.append("%s — крупнейшие по абсолютному перерасходу бюджета "
+                      "1 ПГ %d (%s тыс)" % (names, YEAR_PLAN, plus))
+    tac = sorted((d for d in scored
+                  if d["_tac_pct"] is not None and d["_tac_pct"] >= _P15_TAC_OVER_PCT),
+                 key=lambda d: d["_tac_pct"], reverse=True)
+    for d in tac[:2]:
+        trends.append("%s: тактика 2 ПГ выше бюджета на %s%% — расширение "
+                      "направления" % (d["label"], _ru_s(d["_tac_pct"], signed=False)))
+    new = [d for d in scored if not d["f25"] and d["exp26"]]
+    for d in new[:3]:
+        trends.append("%s — новое направление (нет базы %d), требует контроля "
+                      "штата" % (d["label"], YEAR_PREV))
+    save = sorted((d for d in scored
+                   if d["_dev_year_pct"] is not None and d["_dev_year_pct"] <= _P15_SAVINGS_PCT),
+                  key=lambda d: d["_dev_year_pct"])
+    if save:
+        d = save[0]
+        trends.append("%s сокращает расходы к факту %d (%s%%) — плановая "
+                      "экономия либо риск недофинансирования"
+                      % (d["label"], YEAR_PREV, _ru_s(d["_dev_year_pct"])))
+    if not trends:
+        trends.append("Отделы исполняют бюджет 1 ПГ %d без существенных "
+                      "отклонений." % YEAR_PLAN)
+
+    # Баннеры листа 8: «лучшая тенденция» и «второй приоритет контроля».
+    green = sorted(
+        (d for d in scored if d["budget_dev_pct"] is not None
+         and d["budget_dev_pct"] <= _P16_GREEN_BUDGET_PCT
+         and d["pp_h1"] is not None and d["pp_h1"] < 0),
+        key=lambda d: d["budget_dev_pct"],
+    )
+    warn = sorted(
+        (d for d in scored if d.get("attention") is not True
+         and d["budget_dev_pct"] is not None and d["budget_dev_pct"] > _P16_WARN_BUDGET_PCT),
+        key=lambda d: d["budget_dev_pct"], reverse=True,
+    )
+    banners = {
+        "good": {
+            "lead": "ЛУЧШАЯ ТЕНДЕНЦИЯ: ЭКОНОМИЯ БЮДЖЕТА И СНИЖЕНИЕ ДОЛИ ФОТ В ВЫРУЧКЕ",
+            "items": [{"name": d["label"],
+                       "note": "бюдж. %s%%, доля %s п.п."
+                               % (_ru_s(d["budget_dev_pct"]), _ru_s(d["pp_h1"], 2))}
+                      for d in green],
+        },
+        "warn": {
+            "lead": "ВТОРОЙ ПРИОРИТЕТ КОНТРОЛЯ: РОСТ РАСХОДОВ К БЮДЖЕТУ",
+            "items": [{"name": d["label"], "note": "%s%% к бюдж." % _ru_s(d["budget_dev_pct"])}
+                      for d in warn],
+            "tail": "Умеренное превышение бюджета 1 ПГ — требует мониторинга во 2 ПГ.",
+        },
+    }
+
+    warning = None
+    if not by_dir:
+        warning = "Нет данных ФОТ по отделам в выбранных срезах."
+    elif tot.get("f26_h1") is None:
+        warning = "Факт 1ПГ26 пуст: «Ожидание 2026» опирается только на тактику 2ПГ26."
+    elif tot.get("t26_h2") is None:
+        warning = "Тактика 2ПГ26 в источнике пуста: «Ожидание 2026» равно факту 1ПГ26."
+    elif not tot_hc.get("pa"):
+        warning = "План численности (PlanChisl) пуст: ПЧ и укомплектованность не считаются."
+    return cards, headcount, departments, [table], trends, banners, warning
+
+
+def _p15_meta(p: dict, meta: dict, methodology: str, tab: str) -> dict:
+    """Общая meta вкладок P15/P16 (та же форма, что у P14)."""
+    sel_country = p["countries"][0] if len(p["countries"]) == 1 else None
+    country_label = dict(COUNTRY_OPTIONS).get(sel_country)
+    closed = _closed_from_meta(meta)
+    meta_out = {
+        "tab": tab,
+        "params": p,
+        "currency": p["currency"],
+        "periods": _periods_meta(),
+        "closed_period": closed.isoformat() if closed else None,
+        "stale": meta.get("stale"),
+        "refreshed_at": meta.get("refreshed_at"),
+        "methodology": methodology,
+        "slide": {"cc": sel_country, "label": country_label or "Группа"},
+    }
+    return meta_out
+
+
+async def _dashboard_p15(p: dict, meta: dict) -> dict:
+    """Вкладка P15 «Отделы: свод»: лист 7 деки — таблица «Отдел × периоды»,
+    карточки «требующих внимания» и баннер «Тенденции и прогноз»."""
+    sql, sql_params = _p15_sql(p)
+    async with acquire() as pg:
+        payload = json.loads(await pg.fetchval(sql, *sql_params))
+    sel_country = p["countries"][0] if len(p["countries"]) == 1 else None
+    cards, headcount, departments, tables, trends, _banners, warning = _p15_assemble(
+        p["currency"], payload, sel_country)
+    meta_out = _p15_meta(p, meta, METHODOLOGY_P15, "p15")
+    if warning:
+        meta_out["warning"] = warning
+    return {"cards": cards, "headcount": headcount, "cards_by_department": departments,
+            "dept_trends": trends, "charts": [], "tables": tables, "meta": meta_out}
+
+
+async def _dashboard_p16(p: dict, meta: dict) -> dict:
+    """Вкладка P16 «Отделы: анализ по подразделениям»: лист 8 деки — карточки
+    остальных отделов и баннеры «Лучшая тенденция»/«Второй приоритет»."""
+    sql, sql_params = _p15_sql(p)
+    async with acquire() as pg:
+        payload = json.loads(await pg.fetchval(sql, *sql_params))
+    sel_country = p["countries"][0] if len(p["countries"]) == 1 else None
+    cards, headcount, departments, _tables, _trends, banners, warning = _p15_assemble(
+        p["currency"], payload, sel_country)
+    meta_out = _p15_meta(p, meta, METHODOLOGY_P16, "p16")
+    if warning:
+        meta_out["warning"] = warning
+    return {"cards": cards, "headcount": headcount, "cards_by_department": departments,
+            "dept_banners": banners, "charts": [], "tables": [], "meta": meta_out}
+
+
 async def dashboard(tab: str, params: dict) -> dict:
-    """Собирает одну вкладку P9–P14; чужой tab — ValueError (в роутах → 400).
+    """Собирает одну вкладку P9–P16; чужой tab — ValueError (в роутах → 400).
 
     P9 — полный сборщик _dashboard_p9; P10/P11 — сводные вкладки фиксированных
     полугодий (_dashboard_p10/_dashboard_p11); P12 — численность план/факт
     (_dashboard_p12), P13 — HR-бюджет и отделы (_dashboard_p13), P14 — лист
-    «ФОТ по направлениям бизнеса» (_dashboard_p14), все на тех же срезах
-    панели и фиксированных полугодиях.
+    «ФОТ по направлениям бизнеса» (_dashboard_p14), P15/P16 — листы «Отделы»
+    (_dashboard_p15/_dashboard_p16), все на тех же срезах панели и фиксированных
+    полугодиях.
     """
     if tab not in _FOT_TABS:
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
@@ -2930,7 +3353,7 @@ async def dashboard(tab: str, params: dict) -> dict:
     if tab == "p9":
         p = _parse_p9_params(params, meta)
         return await _dashboard_p9(p, meta)
-    if tab in ("p10", "p11", "p12", "p13", "p14"):
+    if tab in ("p10", "p11", "p12", "p13", "p14", "p15", "p16"):
         p = _parse_halfyear_params(params)
         if tab == "p10":
             return await _dashboard_p10(p, meta)
@@ -2940,6 +3363,10 @@ async def dashboard(tab: str, params: dict) -> dict:
             return await _dashboard_p12(p, meta)
         if tab == "p13":
             return await _dashboard_p13(p, meta)
+        if tab == "p15":
+            return await _dashboard_p15(p, meta)
+        if tab == "p16":
+            return await _dashboard_p16(p, meta)
         return await _dashboard_p14(p, meta)
     raise ValueError("fot: неизвестная вкладка %r" % (tab,))
 
@@ -2961,6 +3388,8 @@ __all__ = [
     "METHODOLOGY_P12",
     "METHODOLOGY_P13",
     "METHODOLOGY_P14",
+    "METHODOLOGY_P15",
+    "METHODOLOGY_P16",
     "METHODOLOGY_P9",
     "P11_CHANNEL_LEVELS",
     "P11_MATRIX_LEVELS",
