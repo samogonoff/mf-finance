@@ -321,13 +321,34 @@ func (s *mssqlRetailSource) ApprovedTactic(ctx context.Context, country string, 
 	return s.planScenario(ctx, table, country, year)
 }
 
+// retailNewStrategyFinPL — витрина, где «НовСтрат» лежит по ЦФО магазинов
+// (Scenario = 'НовСтрат', GroupPL = 'ПРОДАЖИ', Amount — национальная валюта).
+// Сверка 16.10.2026: за 11.2026 сумма Amount совпадает со значениями
+// VFORMTOLOADTAKTTARGET по тем же странам, то есть читается тот же разрез.
+const retailNewStrategyFinPL = "FinDWH.dbo.Table_Fin_PL"
+
+// retailNewStrategyFinPLQuery — запрос НовСтрат из Table_Fin_PL; параметры
+// @p1 группа ЦФО, @p2 год, @p3 страна (пусто — все).
+func retailNewStrategyFinPLQuery(table string) string {
+	return fmt.Sprintf(`
+		SELECT TRY_CONVERT(int, [CodeCFO]) AS cfo, YEAR([Month]) AS y, MONTH([Month]) AS m, SUM([Amount]) AS amt
+		  FROM %s
+		 WHERE [Scenario] = N'НовСтрат'
+		   AND [GroupPL] = N'ПРОДАЖИ'
+		   AND [GroupCFO1] = @p1
+		   AND YEAR([Month]) = @p2
+		   AND (@p3 = '' OR [Country] = @p3)
+		 GROUP BY TRY_CONVERT(int, [CodeCFO]), YEAR([Month]), MONTH([Month])`, table)
+}
+
 func (s *mssqlRetailSource) NewStrategy(ctx context.Context, country string, year int) ([]RetailFactCell, error) {
 	if s.tbl.NewStrategyTable == "" {
-		return nil, errors.New("источник сценария «Новая стратегия» не настроен")
+		// Плоские таблицы Budgeting (VFORMTOLOADPLAN и др.) колонки Scenario не
+		// имеют и здесь не используются — сценарий берётся из Table_Fin_PL.
+		return s.scanCells(ctx, retailNewStrategyFinPLQuery(retailNewStrategyFinPL), s.tbl.StrategyGroup, year, country)
 	}
-	// This adapter is for a separately configured flat table with the localized
-	// plan columns and Scenario. Verified VFORMTOLOADPLAN has no Scenario and is
-	// never used here. Once BI identifies the source, configure its exact table.
+	// Отдельно настроенная плоская таблица с локализованными колонками плана и
+	// Scenario (PLANS_RETAIL_NEW_STRATEGY_TABLE) — по-прежнему поддерживается.
 	q := fmt.Sprintf(`
 		SELECT TRY_CONVERT(int, [КодЦФО]) AS cfo, YEAR([Дата]) AS y, MONTH([Дата]) AS m, SUM([Значение]) AS amt
 		  FROM %s
