@@ -63,16 +63,20 @@
 
 ## 3. Целевая схема ClickHouse
 
-Отдельная БД **`findwh`** — сырая реплика «как в источнике», без бизнес-логики
-(отчётные витрины ВГО остаются в `finance`). Аналитикам — read-only роль на `findwh`.
+Таблицы **`finance.findwh_*`** — сырая реплика «как в источнике», без бизнес-логики,
+рядом с отчётными витринами ВГО. Аналитикам — read-only роль на эти таблицы (§9).
+
+Отдельная БД `findwh` была в первой версии, но прод-пользователь CH имеет права
+только на `finance.*`: `CREATE DATABASE findwh` падал с `ACCESS_DENIED`, и CI-джоб
+`migrations` ронял деплой. Префикс в общей БД не требует от админов ничего.
 
 | Таблица CH | Движок / партиции | ORDER BY |
 |---|---|---|
-| `findwh.glmf` | `MergeTree`, `PARTITION BY (company, toYYYYMM(date))` | `(company, date, dr_acc, cr_acc)` |
-| `findwh.glmf_day_fp` | `ReplacingMergeTree(checked_at)` — отпечатки дней | `(company, date)` |
-| `findwh.table_fin_pl` | `MergeTree`, без партиций | `(scenario, month, country, code_pl)` |
-| `findwh.ex_rates` | `MergeTree`, колонка `country` ('', RU, KZ, UZ, TR) | `(country, valuta_id, data)` |
-| `findwh.etl_runs` | журнал прогонов (таблица, строк, длительность, статус) | `(table, started_at)` |
+| `finance.findwh_glmf` | `MergeTree`, `PARTITION BY (company, toYYYYMM(date))` | `(company, date, dr_acc, cr_acc)` |
+| `finance.findwh_glmf_day_fp` | `ReplacingMergeTree(checked_at)` — отпечатки дней | `(company, date)` |
+| `finance.findwh_table_fin_pl` | `MergeTree`, без партиций | `(scenario, month, country, code_pl)` |
+| `finance.findwh_ex_rates` | `MergeTree`, колонка `country` ('', RU, KZ, UZ, TR) | `(country, valuta_id, data)` |
+| `finance.findwh_etl_runs` | журнал прогонов (таблица, строк, длительность, статус) | `(table, started_at)` |
 
 - Колонки GLMF — все 48, snake_case, `LowCardinality(String)` для справочных
   (счета, коды, группы, страна, ответственные), `Decimal(18,2)` для сумм,
@@ -86,8 +90,8 @@
 
 ### 4.1 ExRates и Table_Fin_PL — полный снимок
 
-1. Залить в `findwh.<t>_new` (CREATE AS `<t>`), сверить `count()` и `sum(...)` с источником.
-2. `EXCHANGE TABLES findwh.<t>_new AND findwh.<t>` — атомарная подмена,
+1. Залить в `finance.findwh_<t>__new` (CREATE AS `<t>`), сверить `count()` и `sum(...)` с источником.
+2. `EXCHANGE TABLES finance.findwh_<t>__new AND finance.findwh_<t>` — атомарная подмена,
    аналитики не видят пустую/полузалитую таблицу. Старую версию дропнуть.
 
 Table_Fin_PL — 2,9 млн строк, ExRates — ~20 тыс.; раз в день после 09:00.
@@ -195,7 +199,7 @@ SELECT * … WHERE Company=@c                  для каждой затрон�
 
 ## 8. Задачи (сделано в MR !142, кроме 7–8)
 
-1. CH-миграция `012_findwh.up.sql`: БД `findwh`, 5 таблиц (§3).
+1. CH-миграция `012_findwh.up.sql`: 5 таблиц `finance.findwh_*` (§3).
 2. `etl/findwh_snapshot.go`: полный снимок через `EXCHANGE TABLES` (ExRates, Table_Fin_PL) + тесты маппинга колонок.
 3. `etl/findwh_glmf_fp.go`: отпечатки дней (MSSQL) + diff с `glmf_day_fp` + тесты diff'а.
 4. `etl/findwh_glmf_load.go`: перегрузка грязных дней + сборка партиции в staging + `REPLACE PARTITION`.
@@ -220,13 +224,13 @@ docker exec -e MODE=findwh -e FINDWH_FORCE=1 -e FINDWH_GLMF_FULL=1 -e FINDWH_TAB
 ```
 
 (на проде креды в `/etc/api.env` — сорсить, см. память про `docker exec`).
-Не запускать CLI параллельно с воркером: оба пишут в `findwh.glmf_stage`.
+Не запускать CLI параллельно с воркером: оба пишут в `finance.findwh_glmf_stage`.
 
 **Свежесть данных** (для дашборда/алерта):
 
 ```sql
 SELECT table_name, max(source_date) AS loaded_for, argMax(status, started_at) AS last_status
-FROM findwh.etl_runs GROUP BY table_name
+FROM finance.findwh_etl_runs GROUP BY table_name
 ```
 
 **Роль аналитиков** (руками, под пользователем с правом управления доступом —
@@ -234,12 +238,15 @@ FROM findwh.etl_runs GROUP BY table_name
 
 ```sql
 CREATE ROLE IF NOT EXISTS findwh_reader;
-GRANT SELECT ON findwh.* TO findwh_reader;
+GRANT SELECT ON finance.findwh_glmf TO findwh_reader;
+GRANT SELECT ON finance.findwh_table_fin_pl TO findwh_reader;
+GRANT SELECT ON finance.findwh_ex_rates TO findwh_reader;
+GRANT SELECT ON finance.findwh_etl_runs TO findwh_reader;
 GRANT findwh_reader TO <пользователь Superset/аналитика>;
 ```
 
 **Сверка с источником** (раз после начальной загрузки, §8.7): по компании×месяцу
-`count()` и `sum(amount_with_vat_byn_fact)` в `findwh.glmf` против того же
+`count()` и `sum(amount_with_vat_byn_fact)` в `finance.findwh_glmf` против того же
 в MSSQL (`GROUP BY Company, Month`, `Date >= '20250101'`).
 
 **Если секция не сходится** (`stage не сходится с источником` в логе): секции не
