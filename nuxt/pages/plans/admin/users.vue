@@ -335,7 +335,14 @@ const setDeputy = async (principal: number, stage: string, deputyId: string) => 
 };
 
 
-const openAssign = (p: Position) => { assignModal.value = p; Object.assign(aForm, { user_id: 0, user_name: "", stage_code: "", country: "", legal_entity: "", codesArr: [] }); };
+// Единственный этап роли подставляется сразу: согласующим шага формы по срезу
+// считается только назначение с явным этапом (step_owner.go). «Все этапы
+// должности» даёт доступ, но, например, контролёром шага fin не делает.
+const openAssign = (p: Position) => {
+  assignModal.value = p;
+  const stage = p.stage_codes.length === 1 ? p.stage_codes[0] : "";
+  Object.assign(aForm, { user_id: 0, user_name: "", stage_code: stage, country: "", legal_entity: "", codesArr: [] });
+};
 const saveAssign = async () => {
   if (!assignModal.value || !aForm.user_id) return;
   try {
