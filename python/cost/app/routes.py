@@ -10,11 +10,13 @@ import json
 from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from app import articul_replace, commercial, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
-from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED)
+from app import articul_replace, commercial, fot, fot_insights, fot_pptx, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
+from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED, row_comments_for, set_row_comment)
 from app.logship import log
 from app.db import get_source_change_flags
 from app.middleware import require_perm
@@ -463,6 +465,12 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     select_parts.append("MIN(cd.manual_source_sign) AS manual_source_sign")
     select_parts.append("MIN(cd.manual_created_by) AS manual_created_by")
     select_parts.append("MIN(cd.manual_batch_id) AS manual_batch_id")
+    # Фактически раскроено штук по карте кроя задания (миграция 0063). На
+    # октябрьских данных источник дублирует в поле «выпуск шт» построчно
+    # (проверено: в каждой строке значения равны), поэтому агрегируем как
+    # «выпуск шт» в витрине — MAX, не SUM: SUM размножил бы значение по числу
+    # строк-материалов.
+    select_parts.append('MAX(cd."Раскрой, ШТ") AS "Раскроено шт"')
     select_parts.append(
         "CASE WHEN BOOL_AND(ca.status = 'approved') THEN 'approved'"
         "     WHEN BOOL_OR(ca.status = 'rejected') THEN 'rejected'"
@@ -1011,6 +1019,13 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                                 "price_uz": rec.get("price_uz"),
                                 "comment": str(rec.get("comment") or ""),
                             }
+            # 4. ЖИВЫЕ КОММЕНТАРИИ (задача 664394) — приоритетнее заявки и
+            # истории: это то, что пользователь видит и правит прямо сейчас.
+            # Наличие записи (даже пустой) перекрывает снимок комментария из
+            # pending/DWH: пустота здесь — осознанное «стёрли текст», а не «не
+            # нашли». Заявка и дальше носит свой снимок в согласование.
+            live_comments = await row_comments_for(keys)
+
             # Apply overrides to ALL rows
             for row in data:
                 m = str(row.get("Модель", "") or "").strip()
@@ -1018,6 +1033,9 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 cs = str(row.get("Признак калькуляции", "") or "").strip()
                 pi = str(row.get("PLAN_ID", "") or "").strip()
                 ky = (m, a, cs, pi)
+                live = live_comments.get(ky)
+                if live is not None:
+                    row["comment"] = live
                 rec = override_map.get(ky)
                 if not rec:
                     continue
@@ -1043,7 +1061,9 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                     row["price_kz"] = rec["price_kz"]
                 if rec.get("price_uz") is not None:
                     row["price_uz"] = rec["price_uz"]
-                if rec.get("comment"):
+                # Живой комментарий (live) уже стоит строкой выше и главнее;
+                # сюда попадаем только при его отсутствии.
+                if rec.get("comment") and live is None:
                     row["comment"] = rec["comment"]
     except Exception:
         # Падение здесь означает, что НИ ОДНА утверждённая цена не наложится на
@@ -1602,6 +1622,137 @@ async def margin_material_lines(
     if _is_mock():
         return {"pair": None, "rows": [], "totals": {}}
     return await material_compare.material_lines(model, articul, plan_id, zadanie, calc_date or None)
+
+
+# ── ФОТ-дашборд «ФОТ и численность» (P9–P13, витрины fot_*) ──────────────────
+
+
+@router.get("/fot/filters")
+async def fot_filters(
+    request: Request, year: int | None = None, _: str = Depends(_require_perm("cost:fot"))
+) -> dict:
+    """Каскадные опции фильтров ФОТ-дашборда (сборка app/fot.py).
+
+    year ограничивает все списки годом с данными (порт меры «_ЦФО активно»
+    из PBI). Повторяющиеся параметры country/legal_entity/direction/
+    cfo_group/cfo_subgroup/cfo — выбранные срезы: опции каждого измерения
+    сужаются остальными выборами (кросс-фильтрация), свой выбор список не
+    сужает. В mock-режиме опции статичны и каскад выключен.
+    """
+    if fot.fot_mock_enabled():
+        return mocks.fot_filter_options()
+    slices = {
+        key: request.query_params.getlist(key)
+        for key in ("country", "legal_entity", "direction", "cfo_group", "cfo_subgroup", "cfo")
+    }
+    try:
+        return await fot.filter_options(year, slices)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/fot/dashboard")
+async def fot_dashboard(
+    request: Request, _: str = Depends(_require_perm("cost:fot"))
+) -> dict:
+    """Вкладка ФОТ-дашборда (?tab=p9 плюс срезы) — сборка app/fot.py.
+
+    tab — вкладка p9…p13 (по умолчанию p9). Срезы иерархии ЦФО, юрлица,
+    страны и пути проваливания (матрица подразделений — matrix_path, каналы
+    сбыта P11 — channel_path) — повторяющимися параметрами
+    (?cfo=101&cfo=102&matrix_path=Розничная сеть), одиночные срезы —
+    scenario_plan/intercompany/year/month/currency. Неизвестная вкладка
+    или значение вне белого списка — 400 (ValueError из fot.dashboard).
+    """
+    qp = request.query_params
+    tab = (qp.get("tab") or "p9").strip()
+    params: dict = {
+        key: qp.getlist(key)
+        for key in ("direction", "cfo_group", "cfo_subgroup", "cfo",
+                    "legal_entity", "country", "matrix_path", "channel_path")
+        if qp.getlist(key)
+    }
+    for key in ("scenario_plan", "intercompany", "year", "month", "currency"):
+        params[key] = qp.get(key, "")
+    try:
+        if fot.fot_mock_enabled():
+            return mocks.fot_dashboard(tab, params)
+        return await fot.dashboard(tab, params)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+# Ссылка на фоновую задачу обновления витрин ФОТ — по той же причине, что и
+# _refresh_task ниже: asyncio держит задачи слабой ссылкой, и без модульного
+# поля GC может собрать задачу посреди загрузки.
+_fot_refresh_task: asyncio.Task | None = None
+
+
+@router.post("/fot/refresh")
+async def fot_refresh(
+    payload: dict | None = Body(None),
+    _: str = Depends(_require_perm("cost:fot")),
+) -> JSONResponse:
+    """Запускает обновление витрин ФОТ в фоне, не дожидаясь его (202 + fot_meta).
+
+    Полная загрузка из MSSQL идёт минуты, а прокси рвёт длинные ответы, поэтому
+    загрузку не ждём: refresh_fot() захватывает гард в fot_meta.refreshing_since,
+    прогресс виден по fot_meta — он же приезжает в meta фильтров и вкладок.
+    force=true в теле снимает чужой застрявший гард безусловно.
+    """
+    if fot.fot_mock_enabled():
+        return JSONResponse(status_code=202, content={"skipped": True, "reason": "mock"})
+    global _fot_refresh_task
+    _fot_refresh_task = asyncio.ensure_future(
+        fot.refresh_fot(force=bool((payload or {}).get("force")))
+    )
+    return JSONResponse(status_code=202, content=await fot.fot_meta())
+
+
+@router.post("/fot/export/pptx")
+async def fot_export_pptx(
+    payload: dict | None = Body(None),
+    _: str = Depends(_require_perm("cost:fot")),
+) -> StreamingResponse:
+    """Выгрузка ФОТ-дашборда презентацией PowerPoint (сборка app/fot_pptx.py).
+
+    Тело: {mode: "full"|"short", filters: {…те же срезы, что у /fot/dashboard…},
+    observations: ["текст наблюдения ИИ", …]}. LLM внутри не вызывается —
+    наблюдения приезжают готовыми из «Разбора ИИ» дашборда. Ответ — pptx-файл
+    ФОТ_2026_{mode}_{ГГГГММДД}.pptx.
+    """
+    body = payload or {}
+    mode = str(body.get("mode") or "full").strip().lower()
+    if mode not in ("full", "short"):
+        raise HTTPException(400, "mode должен быть full или short")
+    filters = body.get("filters") or {}
+    if not isinstance(filters, dict):
+        raise HTTPException(400, "filters должен быть объектом")
+    observations = body.get("observations") or []
+    if not isinstance(observations, list):
+        raise HTTPException(400, "observations должен быть списком строк")
+    if fot_pptx.Presentation is None:
+        # python-pptx — опциональная зависимость образа: без неё работает весь
+        # раздел, выгрузка деки — нет (503 с внятной причиной, а не падение API).
+        raise HTTPException(
+            503,
+            "Выгрузка презентации недоступна: в образе python-cost нет python-pptx"
+            + (f" ({fot_pptx.PPTX_IMPORT_ERROR})" if fot_pptx.PPTX_IMPORT_ERROR else "")
+            + ". Пересоберите образ python-cost — раздел ФОТ работает и без неё.")
+    blob = await fot_pptx.export_pptx(mode, filters, observations)
+    fname = "ФОТ_2026_%s_%s.pptx" % (mode, date.today().strftime("%Y%m%d"))
+    return StreamingResponse(
+        iter([blob]),
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={
+            # Кириллица в имени файла — только в RFC 5987 (filename*=UTF-8''),
+            # плоский filename оставляем ascii-фолбэком для старых клиентов.
+            "Content-Disposition": (
+                'attachment; filename="fot_export.pptx"; '
+                "filename*=UTF-8''" + quote(fname)
+            ),
+        },
+    )
 
 
 @router.get("/price-levels")
@@ -2173,6 +2324,40 @@ async def save_batch_changes(payload: dict, user_email: str | None = Depends(_re
             + (" …" if len(failed) > 3 else "")
         )
     return result
+
+
+@router.post("/row-comment")
+async def save_row_comment(
+    payload: dict, user_email: str | None = Depends(_require_perm("cost:edit_price"))
+) -> dict:
+    """Сохранить комментарий строки сразу при вводе (задача Б24 664394).
+
+    Комментарий больше не ждёт кнопки «Сохранить изменения» и не зависит от
+    того, введена ли цена: раньше строка без розничной цены заявкой не
+    становилась и комментарий молча отбрасывался. Тело: model, articul,
+    plan_id, calc_sign, comment. Пустой комментарий — осознанная пустота
+    (запись-маркер перекрывает комментарий заявки и истории).
+    """
+    model = str(payload.get("model") or "").strip()
+    articul = str(payload.get("articul") or "").strip()
+    raw_plan = payload.get("plan_id")
+    plan_id = str(raw_plan if raw_plan is not None else "").strip()
+    calc_sign = str(payload.get("calc_sign") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "Не заданы модель и/или артикул строки")
+    if calc_sign == "ФКСС":
+        raise HTTPException(400, "ФКСС — история себестоимости: комментарий не редактируется")
+
+    comment = await set_row_comment(
+        model, articul, plan_id, calc_sign,
+        str(payload.get("comment") or ""), user_email or "",
+    )
+    log(
+        logging.INFO, "комментарий строки калькуляции",
+        model=model, articul=articul, calc_sign=calc_sign, plan_id=plan_id,
+        length=len(comment), user=user_email,
+    )
+    return {"success": True, "comment": comment}
 
 
 # ── Price approval workflow ────────────────────────────────────────────────────
@@ -3542,8 +3727,14 @@ async def multipack_usage(
     return {"data": await multipack.packs_using(model, articul)}
 
 
+# Чтение цен по плану: право cost:plan_prices_view даёт Бренд-менеджеру
+# модалку в режиме просмотра (задача 663794). Мутации наборов ниже гейтятся
+# строже — edit_materials/admin.
+_PLAN_PRICES_READ = _require_any_perm("cost:edit_materials", "cost:plan_prices_view", "cost:admin")
+
+
 @router.get("/plan-materials")
-async def plan_materials_endpoint(request: Request, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:
+async def plan_materials_endpoint(request: Request, _: str = Depends(_PLAN_PRICES_READ)) -> dict:
     """Материалы плана, агрегированные по ключу из пяти полей источника.
 
     Отдаёт средние цены и курс, разброс внутри группы и сколько строк уже
@@ -3563,7 +3754,7 @@ async def plan_materials_endpoint(request: Request, _: str = Depends(_require_an
 
 
 @router.get("/plan-price-sets")
-async def plan_price_sets_endpoint(request: Request, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:
+async def plan_price_sets_endpoint(request: Request, _: str = Depends(_PLAN_PRICES_READ)) -> dict:
     """Список наборов. plan_id опционален — без него отдаём все, чтобы в UI
     работал фильтр по номеру плана."""
     if _is_mock():
@@ -3573,7 +3764,7 @@ async def plan_price_sets_endpoint(request: Request, _: str = Depends(_require_a
 
 
 @router.get("/plan-price-sets/{set_id}")
-async def plan_price_set_endpoint(set_id: int, _: str = Depends(_require_any_perm("cost:edit_materials", "cost:admin"))) -> dict:
+async def plan_price_set_endpoint(set_id: int, _: str = Depends(_PLAN_PRICES_READ)) -> dict:
     if _is_mock():
         raise HTTPException(404, "not available in mock mode")
     data = await get_plan_price_set(set_id)
@@ -3697,6 +3888,16 @@ async def analyze_block(
     block_title = str(payload.get("block_title") or "").strip()
     if not block:
         raise HTTPException(400, "Не указан ключ блока (block)")
+
+    # Вкладки ФОТ-дашборда (fot_p9..fot_p13) серии с фронта не присылают —
+    # данные вкладки бэкенд собирает сам (app/fot_insights.py). Их разбор
+    # уходит в свой модуль ДО validate_charts, которая требует charts.
+    # Право то же (cost:insights), чужие блоки не затронуты.
+    if block.startswith("fot_"):
+        try:
+            return await fot_insights.analyze_block(payload, email)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     try:
         charts = insights.validate_charts(payload.get("charts"))

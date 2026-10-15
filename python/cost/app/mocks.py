@@ -1103,3 +1103,681 @@ def models_catalog(payload: dict, limit: int, offset: int, all_columns: bool) ->
         "offset": offset,
         "columns": [{"key": k, "label": MODELI_COLUMN_LABELS.get(k, k)} for k in keys],
     }
+
+
+# ── ФОТ-дашборд «ФОТ и численность» (P9–P13) ──────────────────────────────────
+
+# Контрольные числа шага 1 (сверка с PBI CFO_ALL_AGG на живом MSSQL, 13.10.2026).
+# Мок отдаёт их в meta, чтобы фронт и шаги 2b/2c сверяли сборку с эталоном без VPN.
+_FOT_MOCK_META = {
+    "fot_2026": 217260.0,          # тыс BYN: ФОТ «Ожидание 2026» (факт 1ПГ + тактика 2ПГ)
+    "fot_share_2026": 15.57,       # % к «Продажам без НДС», тот же срез
+    "fot_share_2025": 15.97,       # % за факт 2025
+    "headcount_2026_06_01": 7203.16,   # ставки, факт на 01.06.2026
+    "headcount_plan_approved": 7353.2, # ставки, план «утверждено» (PlanChisl)
+    "closed_period": "2026-08-31",
+}
+
+# Состояние fot_meta для моков; счётчики — с витрин шага 1 (13.10.2026).
+_FOT_MOCK_STATE = {
+    "closed_period": "2026-08-31",
+    "fallback_closed": "2026-12-01",
+    "refreshed_at": "2026-10-13T17:36:52+00:00",
+    "refreshing_since": None,
+    "source_counts": {
+        "fot_monthly": 297962, "fot_headcount": 10660,
+        "fot_headcount_plan": 492, "fot_cfo": 691,
+    },
+    "stale": False,
+}
+
+
+def fot_filter_options() -> dict:
+    """Мок каскадных фильтров ФОТ-дашборда — ключи 1:1 с app.fot.filter_options().
+
+    Статические списки (страны, сценарии, ВГО, месяцы) берём из модуля
+    дашборда, а не переписываем сюда — копия расходилась бы при первой же
+    правке набора.
+    """
+    from app import fot
+
+    return {
+        "directions": [
+            {"id": "Магазины", "text": "Магазины"},
+            {"id": "Производство", "text": "Производство"},
+            {"id": "Складская логистика", "text": "Складская логистика"},
+            {"id": "Отделы", "text": "Отделы"},
+            {"id": "Розница РБ", "text": "Розница РБ"},
+            {"id": "Розница РФ", "text": "Розница РФ"},
+            {"id": "Розница КЗ", "text": "Розница КЗ"},
+            {"id": "Маркетплейсы РФ", "text": "Маркетплейсы РФ"},
+        ],
+        "cfo_groups": [
+            {"id": "Розничная сеть", "text": "Розничная сеть"},
+            {"id": "Производство и логистика", "text": "Производство и логистика"},
+        ],
+        "cfo_subgroups": [
+            {"id": "Магазины Минск", "text": "Магазины Минск"},
+            {"id": "Магазины регионы РБ", "text": "Магазины регионы РБ"},
+        ],
+        "cfos": [
+            {"id": "101", "text": "101 — Магазин Минск, Немига"},
+            {"id": "2001", "text": "2001 — Цех пошива 1"},
+        ],
+        "legal_entities": [
+            {"id": "ЧТУП «Марк Формэль»", "text": "ЧТУП «Марк Формэль»"},
+            {"id": "ООО «Марк Формэль Рус»", "text": "ООО «Марк Формэль Рус»"},
+        ],
+        "countries": [{"id": c, "text": t} for c, t in fot.COUNTRY_OPTIONS],
+        "scenarios": [{"id": s, "text": t} for s, t in fot.SCENARIO_OPTIONS],
+        "intercompany": [{"id": i, "text": t} for i, t in fot.IC_OPTIONS],
+        "years": [{"id": "2025", "text": "2025"}, {"id": "2026", "text": "2026"}],
+        "months": [{"id": str(m), "text": str(m)} for m in range(1, 13)],
+        "meta": dict(_FOT_MOCK_STATE),
+    }
+
+
+# ── P10/P11 «фиксированные полугодия»: зерно под контрольные числа ────────────
+
+# Строки-«ЦФО» зерна: (страна, группа, подгруппа, направление, ЦФО, канал,
+# код ЦФО, Факт 1ПГ26 в тыс.). Вес строки = её Факт 1ПГ26 / итог — все периоды
+# масштабируются одинаково, поэтому итоги P10/P11 остаются контрольными, а
+# направления блока «Отделы» P13 сходятся к контрольным числам слайдов 28–46:
+# «Магазины» BY = 13 174, «Производство» BY = 32 123, «Складская логистика»
+# BY = 6 064, «Отделы» (все страны) = 26 642 тыс факт 1ПГ26.
+_FOT_HALF_SPECS = (
+    ("BY", "Производство", "Производство Брест", "Производство",
+     "2001 — Цех пошива 1", "Производство", "2001", 32123.00),
+    ("BY", "Производство", "Логистика Брест", "Складская логистика",
+     "2101 — Склад готовой продукции", "Отдел", "2101", 6064.00),
+    ("BY", "Магазины", "Магазины Минск", "Магазины",
+     "101 — Магазин Минск, Немига", "Розница РБ", "101", 13174.00),
+    ("BY", "Отдел", "Отдел", "Отделы", "611 — Отдел планирования",
+     "Отдел", "611", 5976.90),
+    ("RU", "Отдел", "Отдел РФ", "Отделы", "612 — Отдел кадров РФ",
+     "Отдел", "612", 8690.40),
+    ("RU", "Отдел", "Отдел РФ", "Отделы", "613 — Отдел ИТ РФ",
+     "Отдел", "613", 4888.35),
+    ("RU", "Отдел", "Отдел РФ", "Отделы", "614 — Отдел логистики РФ",
+     "Отдел", "614", 3258.90),
+    ("KZ", "Отдел", "Отдел KZ", "Отделы", "615 — Отдел кадров KZ",
+     "Отдел", "615", 2172.60),
+    ("UZ", "Отдел", "Отдел UZ", "Отделы", "616 — Отдел кадров UZ",
+     "Отдел", "616", 1654.85),
+    ("RU", "Магазины", "Магазины РФ", "Розница РФ",
+     "301 — Магазин Москва", "Розница РФ", "301", 9985.80),
+    ("RU", "Маркетплейсы", "Маркетплейсы РФ", "Маркетплейсы РФ",
+     "305 — Озон РФ", "Маркетплейсы", "305", 15209.70),
+    ("KZ", "Магазины", "Магазины KZ", "Розница КЗ",
+     "401 — Магазин Алматы", "Розница КЗ", "401", 3258.90),
+    ("UZ", "Производство", "Пошив UZ", "Пошив, раскрой, печать",
+     "501 — Цех Наманган", "Производство", "501", 2172.60),
+)
+
+# Контрольные итоги PBI в тыс. (факт 1ПГ25 = 87 000 + 2ПГ25 = 112 306 → 199 306;
+# выручка 590 000 + 658 000 = 1 248 000): доли 15,57/15,97 % и Ожидание
+# 217 260 тыс (108 630 факт 1ПГ26 + 108 630 тактика 2ПГ26). f25/rv_f25 в зерно
+# не пишем — это суммы полугодий, как SUM FILTER за 12 месяцев в _halfyear_sql.
+_FOT_HALF_TOTALS = {
+    "f25_h1": 87000, "f25_h2": 112306,
+    "b26_h1": 105000, "f26_h1": 108630, "b26_h2": 104000, "t26_h2": 108630,
+    "rv_f25_h1": 590000, "rv_f25_h2": 658000,
+    "rv_f26_h1": 745000, "rv_t26_h2": 650000,
+}
+
+# f25 у KZ и UZ занижен вдвое (срез компенсируется первой строкой BY — итоги
+# остаются контрольными): динамика обеих стран улетает за +10 %, KZ получает
+# жёлтый светофор (доля падает), UZ — красный (доля растёт): в моке видны все
+# три цвета Δ-колонок, а не только зелёный.
+_FOT_HALF_F25_CUT = {"401 — Магазин Алматы", "501 — Цех Наманган"}
+
+# Знаменатели долей в тыс., ключи как в den из _halfyear_sql: группа — из
+# контрольных долей; KZ — выручка по кодам 1006/1012; UZ — вся выручка UZ.
+_FOT_HALF_DEN = {
+    "dn_grp_rv_f25_h1": 590000, "dn_grp_rv_f25_h2": 658000, "dn_grp_rv_f25": 1248000,
+    "dn_grp_rv_f26_h1": 745000, "dn_grp_rv_t26_h2": 650000,
+    "dn_kz_rv_f25_h1": 38000, "dn_kz_rv_f25_h2": 42000, "dn_kz_rv_f25": 80000,
+    "dn_kz_rv_f26_h1": 95000, "dn_kz_rv_t26_h2": 90000,
+    "dn_uz_rv_f25_h1": 21000, "dn_uz_rv_f25_h2": 24000, "dn_uz_rv_f25": 45000,
+    "dn_uz_rv_f26_h1": 30000, "dn_uz_rv_t26_h2": 25000,
+}
+
+
+def _fot_half_mock() -> tuple[list[dict], dict]:
+    """Зерно P10/P11/P13 и знаменатели долей.
+
+    Итоги заданы в тыс. (как в PBI) и умножаются на 1000 до сырых сумм
+    витрины — сборщики app.fot (_t/_ms) дают те же контрольные числа. Вес
+    строки выводится из её Факта 1ПГ26 (см. _FOT_HALF_SPECS), поэтому все
+    периоды масштабируются одинаково и контрольные числа P13 по направлениям
+    сходятся точно.
+    """
+    f26_total = _FOT_HALF_TOTALS["f26_h1"]
+    grain = []
+    for ctry, g1, g2, direction, cfon, chan, code, f26_t in _FOT_HALF_SPECS:
+        w = f26_t / f26_total
+        row = {"g1": g1, "g2": g2, "dir": direction, "cfon": cfon, "cfol": cfon,
+               "chan": chan, "ctry": ctry, "cfo": code}
+        for key, total in _FOT_HALF_TOTALS.items():
+            row[key] = round(total * 1000.0 * w, 2)
+        if cfon in _FOT_HALF_F25_CUT:
+            for key in ("f25_h1", "f25_h2"):
+                row[key] = round(row[key] * 0.5, 2)
+        grain.append(row)
+    # Срезанный f25 KZ/UZ компенсируем в первую строку: «Итого» остаётся ровно
+    # контрольным (199 306 тыс за 2025), светофор стран при этом не весь зелёный.
+    for key in ("f25_h1", "f25_h2"):
+        deficit = round(_FOT_HALF_TOTALS[key] * 1000.0 - sum(r[key] for r in grain), 2)
+        grain[0][key] = round(grain[0][key] + deficit, 2)
+    for r in grain:
+        r["f25"] = round(r["f25_h1"] + r["f25_h2"], 2)
+        r["rv_f25"] = round(r["rv_f25_h1"] + r["rv_f25_h2"], 2)
+    den = {k: v * 1000.0 for k, v in _FOT_HALF_DEN.items()}
+    return grain, den
+
+
+def _fot_half_mock_dashboard(tab: str, params: dict) -> dict:
+    """Сборка P10/P11 мока теми же функциями, что и боевой ответ.
+
+    app.fot._p10_assemble/_p11_assemble получают мок-зерно — формулы (доли,
+    Δ, светофор) и форма ответа не могут разойтись с боем. P11 берёт и мок
+    численности P12 (_fot_hc_mock) для панели и карточек стран. Срезы на
+    числа не влияют (это мок): страна карточек — None, пути дрилла берутся
+    из запроса.
+    """
+    from app import fot
+
+    def _first(value, default: str) -> str:
+        if isinstance(value, (list, tuple)):
+            return str(value[0]) if value else default
+        return str(value) if value not in (None, "") else default
+
+    currency = _first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+    grain, den = _fot_half_mock()
+    headcount = cards_by_country = None
+    if tab == "p10":
+        cards, tables, warning = fot._p10_assemble(currency, grain, den, None)
+        methodology = fot.METHODOLOGY_P10
+    else:
+        cards, headcount, cards_by_country, tables, warning = fot._p11_assemble(
+            currency, grain, den, _fot_hc_mock(), None,
+            fot._parse_str_list(params.get("matrix_path")),
+            fot._parse_str_list(params.get("channel_path")),
+        )
+        methodology = fot.METHODOLOGY_P11
+    meta = {
+        "tab": tab,
+        "params": dict(params),
+        "currency": currency,
+        "periods": fot._periods_meta(),
+        "closed_period": _FOT_MOCK_STATE["closed_period"],
+        "stale": False,
+        "refreshed_at": _FOT_MOCK_STATE["refreshed_at"],
+        "methodology": methodology,
+    }
+    meta.update(_FOT_MOCK_META)
+    if warning:
+        meta["warning"] = warning
+    out = {"cards": cards, "charts": [], "tables": tables, "meta": meta}
+    if tab == "p11":
+        out["headcount"] = headcount
+        out["cards_by_country"] = cards_by_country
+    return out
+
+
+# ── P12 «Численность план и факт»: зерно под контрольные числа ────────────────
+
+# Группа ЦФО × страна (ставки): суммы по столбцам — контрольные числа PBI
+# (сверка 13.10.2026): план утв. = 7 353,2; факт 30.06.2025 = 7 205,9;
+# факт 30.06.2026 = 7 203,16. Укомплектованность стран даёт все три цвета
+# светофора: BY 98,8 % (зелёный), RU 93,2 % (жёлтый), UZ 45,6 % (красный).
+_FOT_HC_MOCK = (
+    # ctry, группа ЦФО, факт 1ПГ25, факт 1ПГ26, план утв., план тактика
+    ("BY", "Магазины", 2455.10, 2450.30, 2480.00, 2500.00),
+    ("BY", "Производство", 2975.30, 2980.45, 3050.00, 3070.00),
+    ("BY", "Складская логистика", 638.40, 640.20, 645.00, 650.00),
+    ("BY", "Отделы", 415.60, 412.55, 385.00, 420.00),
+    ("RU", "Магазины", 385.20, 380.00, 395.00, 398.00),
+    ("RU", "Производство", 122.10, 120.00, 125.00, 126.00),
+    ("RU", "Отделы", 97.60, 96.40, 120.00, 94.00),
+    ("KZ", "Магазины", 79.10, 78.60, 80.00, 81.00),
+    ("KZ", "Отделы", 21.80, 21.30, 22.00, 22.00),
+    ("UZ", "Магазины", 12.30, 19.86, 45.00, 45.50),
+    ("UZ", "Производство", 3.40, 3.50, 6.20, 6.00),
+)
+
+
+def _fot_hc_mock() -> list[dict]:
+    """Зерно P12: факт 2025/2026 + план по группа ЦФО × страна (ставки)."""
+    return [
+        {"g1": g1, "ctry": ctry, "q25": q25, "q26": q26, "pa": pa, "pt": pt}
+        for ctry, g1, q25, q26, pa, pt in _FOT_HC_MOCK
+    ]
+
+
+# ── P13 «HR-бюджет и отделы»: статьи HR-ЦФО под контрольные числа ─────────────
+
+# Факт 1ПГ26 по (код ЦФО, статья) в тыс. — контрольные числа PBI (13.10.2026):
+# 224 — ЗП 592,29 / все статьи 727,3; шесть HR-ЦФО вместе — ЗП 990,5 / все
+# статьи 1 132,7. Остальные периоды — фиксированные коэффициенты к Факту
+# 1ПГ26 (в моке важна форма и Δ-светофор, а не бюджеты).
+_FOT_HR_F26 = {
+    ("224", "Заработная плата"): 592.29,
+    ("224", "Прочие расходы на персонал"): 105.01,
+    ("224", "Амортизация"): 30.00,
+    ("604", "Заработная плата"): 180.00,
+    ("604", "Прочие расходы на персонал"): 4.19,
+    ("324", "Заработная плата"): 95.50,
+    ("346", "Заработная плата"): 60.00,
+    ("208", "Заработная плата"): 40.20,
+    ("444", "Заработная плата"): 22.51,
+    ("444", "Амортизация"): 3.00,
+}
+
+# (f25_h1, f25_h2, b26_h1, b26_h2) — доли Факта 1ПГ26; тактика 2ПГ26 — по коду,
+# чтобы Δ год к 2025 дал и зелёные (604/208/346), и жёлтые (224/324/444)
+# светофоры: красный у HR-таблицы не бывает (доли ФОТ нет).
+_FOT_HR_SCALE = {"f25_h1": 0.88, "f25_h2": 0.94, "b26_h1": 0.97, "b26_h2": 1.03}
+_FOT_HR_T26 = {"224": 1.05, "604": 1.00, "324": 1.02, "346": 0.95, "208": 1.00, "444": 1.08}
+
+
+def _fot_hr_mock() -> list[dict]:
+    """Строки HR-бюджета P13 (код ЦФО × статья) в сырых суммах витрины."""
+    from app import fot
+
+    hr_by_code = {code: ctry for ctry, codes in fot.HR_CFO_CODES.items() for code in codes}
+    rows = []
+    for (code, tmpl), f26 in _FOT_HR_F26.items():
+        row = {"ctry": hr_by_code[code], "cfo": code, "tmpl": tmpl,
+               "f26_h1": round(f26 * 1000.0, 2)}
+        for key, k in _FOT_HR_SCALE.items():
+            row[key] = round(f26 * k * 1000.0, 2)
+        row["t26_h2"] = round(f26 * _FOT_HR_T26[code] * 1000.0, 2)
+        rows.append(row)
+    return rows
+
+
+def _fot_first(value, default: str) -> str:
+    """Первое значение repeated-параметра или дефолт (срезы мок игнорирует)."""
+    if isinstance(value, (list, tuple)):
+        return str(value[0]) if value else default
+    return str(value) if value not in (None, "") else default
+
+
+def _fot_mock_meta(tab: str, params: dict, currency: str, methodology: str) -> dict:
+    """Общая meta вкладок P10–P13 мока: состояние витрин — из _FOT_MOCK_STATE,
+    контрольные числа шага 1 — в meta (см. _FOT_MOCK_META)."""
+    from app import fot
+
+    meta = {
+        "tab": tab,
+        "params": dict(params),
+        "currency": currency,
+        "periods": fot._periods_meta(),
+        "closed_period": _FOT_MOCK_STATE["closed_period"],
+        "stale": False,
+        "refreshed_at": _FOT_MOCK_STATE["refreshed_at"],
+        "methodology": methodology,
+    }
+    meta.update(_FOT_MOCK_META)
+    return meta
+
+
+def _fot_p12_mock_dashboard(params: dict) -> dict:
+    """P12 моком: боевой сборщик app.fot._p12_assemble на мок-зерне численности
+    (контрольные суммы — в комментарии к _FOT_HC_MOCK). Срезы на числа не
+    влияют (это мок)."""
+    from app import fot
+
+    currency = _fot_first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+    cards, tables, warning = fot._p12_assemble(_fot_hc_mock())
+    meta = _fot_mock_meta("p12", params, currency, fot.METHODOLOGY_P12)
+    if warning:
+        meta["warning"] = warning
+    return {"cards": cards, "charts": [], "tables": tables, "meta": meta}
+
+
+def _fot_p13_mock_dashboard(params: dict) -> dict:
+    """P13 моком: боевой сборщик app.fot._p13_assemble. HR-статьи — свой мок
+    под контрольные числа PBI, ФОТ отделов — зерно P10/P11 (его направления
+    «Магазины/Производство/Складская логистика/Отделы» дают контрольные числа
+    слайдов: ?direction=Магазины → BY 13 174 тыс факт 1ПГ26 и т.д.), численность
+    карточек — суммы зерна P12. Из срезов мок применяет только направление —
+    к зерну отделов; остальные на числа не влияют (это мок)."""
+    from app import fot
+
+    currency = _fot_first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+    grain, _den = _fot_half_mock()
+    directions = set(fot._parse_str_list(params.get("direction")))
+    if directions:
+        grain = [r for r in grain if r.get("dir") in directions]
+    hc_rows = _fot_hc_mock()
+    cards, tables, warning = fot._p13_assemble(
+        currency, _fot_hr_mock(), grain,
+        {"q": round(sum(r["q26"] for r in hc_rows), 2)},
+        {"pt": round(sum(r["pt"] for r in hc_rows), 2)})
+    meta = _fot_mock_meta("p13", params, currency, fot.METHODOLOGY_P13)
+    if warning:
+        meta["warning"] = warning
+    return {"cards": cards, "charts": [], "tables": tables, "meta": meta}
+
+
+# ── P14 «ФОТ по направлениям бизнеса»: зерно под числа листа 4 деки ──────────
+
+# Направления BY (тыс. BYN; выручка — в тех же тыс., ставки): ФОТ-периоды и
+# численность сняты с листа 4 деки v16, выручка — собственная по ЦФО
+# направлений (живые пропорции: розница РБ ~116 млн 1ПГ25, опт/прочее ~140,
+# ИМ ~8, картонаж ~0,8; у производства своих продаж почти нет). Знаменатель
+# «беспродажных» направлений (производство, отделы) — вся выручка среза —
+# досчитывает боевой сборщик (fot._P14_OWN_REVENUE), поэтому их доли здесь
+# получаются «как в деке» (~12 % / ~9 %), а не от собственной выручки.
+# «Ожидание» — факт+тактика (формула витрины), с декой расходится на единицы
+# тыс: у деки слагаемые из разных кэшей.
+_FOT_P14_MOCK = (
+    # direction, f25_h1, f25_h2, b26_h1, f26_h1, b26_h2, t26_h2,
+    # rv_f25_h1, rv_f25_h2, rv_f25, rv_f26_h1, rv_t26_h2, pa, q26, q25
+    ("Производство", 30880, 31817, 31130, 32123, 32202, 33210,
+     2218, 2200, 4418, 2300, 2400, 2441.9, 2342.2, 2283.9),
+    ("Производство картонажное", 101, 144, 190, 188, 193, 193,
+     802, 900, 1702, 979, 1100, 11.0, 12.0, 11.0),
+    ("Отделы", 23604, 26013, 25585, 26644, 25866, 27651,
+     140300, 155000, 295300, 170000, 190000, 821.2, 792.3, 815.8),
+    ("Магазины", 10929, 12237, 11440, 13174, 11725, 13191,
+     115529, 128000, 243529, 131740, 155179, 1159.8, 1136.0, 1084.0),
+    ("Интернет-магазин", 253, 267, 310, 260, 310, 259,
+     8161, 9000, 17161, 10000, 12745, 12.0, 12.0, 10.0),
+)
+
+
+def _fot_p14_mock_payload() -> dict:
+    """Ответ _p14_sql моком: зерно/выручка/численность по направлениям BY.
+
+    ФОТ и выручка константы держат в тыс (как на листе деки), сюда приезжают
+    сырыми суммами витрины (×1000) — те же единицы, что у SQL и боевых
+    сборщиков; численность — ставки, без множителя."""
+    grain, rev, h25, h26, plan = [], [], [], [], []
+    for (label, f25_h1, f25_h2, b26_h1, f26_h1, b26_h2, t26_h2,
+         rv1, rv2, rv3, rv4, rv5, pa, q26, q25) in _FOT_P14_MOCK:
+        grain.append({"dir": label, "f25_h1": f25_h1 * 1000.0,
+                      "f25_h2": f25_h2 * 1000.0,
+                      "f25": (f25_h1 + f25_h2) * 1000.0, "b26_h1": b26_h1 * 1000.0,
+                      "f26_h1": f26_h1 * 1000.0, "b26_h2": b26_h2 * 1000.0,
+                      "t26_h2": t26_h2 * 1000.0})
+        rev.append({"dir": label, "rv_f25_h1": rv1 * 1000.0, "rv_f25_h2": rv2 * 1000.0,
+                    "rv_f25": rv3 * 1000.0, "rv_f26_h1": rv4 * 1000.0,
+                    "rv_t26_h2": rv5 * 1000.0})
+        h25.append({"dir": label, "q25": q25})
+        h26.append({"dir": label, "q26": q26})
+        plan.append({"dir": label, "pa": pa})
+    return {"grain": grain, "rev": rev, "h25": h25, "h26": h26, "plan": plan}
+
+
+def _fot_p14_mock_dashboard(params: dict) -> dict:
+    """P14 моком: боевой сборщик app.fot._p14_assemble на зерне листа 4 деки
+    (контрольные числа — в комментарии к _FOT_P14_MOCK). Срезы на числа не
+    влияют (это мок): шапка листа — Беларусь BY."""
+    from app import fot
+
+    currency = _fot_first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+    cards, headcount, directions, tables, warning = fot._p14_assemble(
+        currency, _fot_p14_mock_payload(), "BY")
+    meta = _fot_mock_meta("p14", params, currency, fot.METHODOLOGY_P14)
+    meta["slide"] = {"cc": "BY", "label": "Беларусь"}
+    if warning:
+        meta["warning"] = warning
+    return {"cards": cards, "headcount": headcount, "directions": directions,
+            "charts": [], "tables": tables, "meta": meta}
+
+
+# ── P15/P16 «Отделы»: зерно под числа листов 7–8 деки ─────────────────────────
+
+# Направления группы ЦФО «Отдел» среза BY (тыс. BYN, ставки) — колонки
+# таблицы листа 7 декы v16. «Складская логистика» декы разложена на пару
+# Складская + Транспортная (живая пропорция бюджета 5654/1322), боевой
+# сборщик объединяет их (_P15_DEPT_MERGE) — контрольные 7300/7344/6976
+# сохраняются. «Ожидание» декы — из CFO-свода и не равно факт+тактика
+# (у Складской 14 731 против 14 644 у формулы витрины): мок держит факт и
+# тактику декы, «Ожидание» собирается формулой витрины, как у P14.
+_FOT_P15_MOCK = (
+    # dir, f25_h1, f25_h2, b26_h1, f26_h1, b26_h2, t26_h2, pa, q26, q25
+    ("Складская логистика", 5353, 5727, 5654, 6064, 5654, 6122, 328.0, 304.9, 332.2),
+    ("Транспортная логистика", 1340, 1376, 1322, 1236, 1322, 1222, 44.4, 44.0, 48.2),
+    ("HR", 522, 572, 579, 592, 585, 590, 24.5, 24.5, 25.0),
+    ("Аналитики", 267, 393, 448, 480, 464, 377, 9.0, 9.0, 9.0),
+    ("Аналитики BI", 0, 17, 46, 47, 46, 46, 1.0, 1.0, None),
+    ("Генеральная администрация", 790, 879, 836, 1010, 836, 962, 14.3, 13.3, 13.0),
+    ("Дизайнеры", 1274, 1247, 1388, 1230, 1388, 1261, 28.5, 26.0, 30.0),
+    ("Закупки", 713, 705, 750, 709, 750, 703, 16.5, 17.5, 18.5),
+    ("КБ", 816, 907, 1016, 916, 1016, 958, 25.5, 26.0, 23.0),
+    ("КРУ", 524, 450, 472, 510, 472, 512, 24.5, 24.5, 22.5),
+    ("Маркетинг", 1267, 1270, 1025, 1015, 1025, 1015, 29.0, 28.0, 28.3),
+    ("ОКК", 0, 126, 139, 132, 152, 134, 7.0, 7.0, 6.0),
+    ("Отдел IT", 1362, 1557, 1390, 1608, 1436, 2020, 30.5, 31.5, 28.5),
+    ("Отдел ОТ", 147, 98, 106, 110, 106, 103, 4.0, 4.0, 3.3),
+    ("Отдел планирования ЧНП", 292, 733, 556, 609, 556, 568, 12.0, 13.0, 10.0),
+    ("Отдел подготовки производства", 336, 356, 351, 342, 351, 351, 11.0, 10.0, 11.0),
+    ("ОУиР", 648, 721, 770, 628, 770, 770, 15.0, 13.0, 16.0),
+    ("ОУиР ЧНП", 0, 0, 231, 198, 231, 201, 5.0, 5.0, 4.0),
+    ("Строители", 2466, 2756, 1917, 2860, 1917, 2848, 94.5, 91.0, 92.5),
+    ("Товародвижение", 456, 530, 548, 500, 541, 538, 14.0, 14.3, 13.0),
+    ("УКК", 421, 391, 411, 401, 405, 409, 14.0, 16.3, 13.3),
+    ("ФЭО и Бухгалтерия", 1685, 1776, 1812, 1964, 1812, 2073, 69.0, 68.5, 68.5),
+    # у «Группы аудита…» строк численности нет — как на листе декы
+    ("Группа аудита производственного качества", 0, 0, 0, 127, 0, 153, 0.0, None, None),
+)
+
+# Выручка среза BY (тыс.) — живые пропорции витрины (округлено): знаменатель
+# кругов «доля ФОТ в выручке, п.п.» на карточках.
+_FOT_P15_RV_MOCK = {
+    "rv_f25_h1": 267400, "rv_f25_h2": 281000, "rv_f25": 548400,
+    "rv_f26_h1": 274800, "rv_t26_h2": 322900,
+}
+
+
+def _fot_p15_mock_payload() -> dict:
+    """Ответ _p15_sql моком: ФОТ/численность отделов и выручка среза.
+
+    ФОТ константы держат в тыс (как на листе декы), сюда приезжают сырыми
+    суммами витрины (×1000); численность — ставки, без множителя."""
+    fot_rows, h25, h26, plan = [], [], [], []
+    for (label, f25_h1, f25_h2, b26_h1, f26_h1, b26_h2, t26_h2,
+         pa, q26, q25) in _FOT_P15_MOCK:
+        fot_rows.append({"dir": label, "f25_h1": f25_h1 * 1000.0,
+                         "f25_h2": f25_h2 * 1000.0,
+                         "f25": (f25_h1 + f25_h2) * 1000.0,
+                         "b26_h1": b26_h1 * 1000.0, "f26_h1": f26_h1 * 1000.0,
+                         "b26_h2": b26_h2 * 1000.0, "t26_h2": t26_h2 * 1000.0})
+        if q25 is not None:
+            h25.append({"dir": label, "v": q25})
+        if q26 is not None:
+            h26.append({"dir": label, "v": q26})
+        if pa:
+            plan.append({"dir": label, "v": pa})
+    return {"fot": fot_rows, "rev": {k: v * 1000.0 for k, v in _FOT_P15_RV_MOCK.items()},
+            "h25": h25, "h26": h26, "plan": plan}
+
+
+def _fot_p15_mock_dashboard(params: dict, tab: str) -> dict:
+    """P15/P16 моком: боевые сборщики на общем зерне _p15_assemble (контрольные
+    числа — в комментарии к _FOT_P15_MOCK). Срезы на числа не влияют (это
+    мок): шапка листа — Беларусь BY."""
+    from app import fot
+
+    currency = _fot_first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+    (cards, headcount, departments, tables, trends, banners,
+     warning) = fot._p15_assemble(currency, _fot_p15_mock_payload(), "BY")
+    methodology = fot.METHODOLOGY_P15 if tab == "p15" else fot.METHODOLOGY_P16
+    meta = _fot_mock_meta(tab, params, currency, methodology)
+    meta["slide"] = {"cc": "BY", "label": "Беларусь"}
+    if warning:
+        meta["warning"] = warning
+    out: dict = {"cards": cards, "headcount": headcount,
+                 "cards_by_department": departments, "charts": [], "meta": meta}
+    if tab == "p15":
+        out["dept_trends"] = trends
+        out["tables"] = tables
+    else:
+        out["dept_banners"] = banners
+        out["tables"] = []
+    return out
+
+
+def fot_dashboard(tab: str, params: dict) -> dict:
+    """Мок вкладки ФОТ-дашборда — форма ответа 1:1 с app.fot.dashboard().
+
+    P9 всегда отдаёт один контрольный срез (июнь 2025, BYN): числа сняты с
+    витрин шага 1 и PBI, чтобы фронт сверял рендер на них. Срезы из запроса
+    приезжают в meta.params, на числа не влияют — это мок. P10–P16 собираются
+    боевыми сборщиками app.fot на выдуманном зерне, подобранном под контрольные
+    числа PBI и презентации (см. _fot_half_mock, _FOT_HC_MOCK, _FOT_HR_F26,
+    _FOT_P14_MOCK, _FOT_P15_MOCK).
+    """
+    from app import fot
+
+    if tab not in ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16"):
+        raise ValueError("fot: неизвестная вкладка %r" % (tab,))
+    if tab in ("p10", "p11"):
+        return _fot_half_mock_dashboard(tab, params)
+    if tab == "p12":
+        return _fot_p12_mock_dashboard(params)
+    if tab == "p13":
+        return _fot_p13_mock_dashboard(params)
+    if tab == "p14":
+        return _fot_p14_mock_dashboard(params)
+    if tab in ("p15", "p16"):
+        return _fot_p15_mock_dashboard(params, tab)
+
+    def _first(value, default: str) -> str:
+        if isinstance(value, (list, tuple)):
+            return str(value[0]) if value else default
+        return str(value) if value not in (None, "") else default
+
+    scenario = _first(params.get("scenario_plan"), "тактика")
+    scenario_label = dict(fot.SCENARIO_OPTIONS).get(scenario, scenario)
+    currency = _first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+
+    # Контрольные числа июня-2025 (BYN): ФОТ/численность/выручка сняты с витрин
+    # шага 1 и PBI, лимит — иллюстративный (якоря на лимит июня-2025 нет);
+    # производные считаем здесь же, чтобы карточки, матрица и график не
+    # расходились между собой.
+    fot_fact = 16818034.73
+    fot_limit = 17250000.00
+    rev_fact = 104838622.76
+    headcount = 6995.91
+
+    cards = [
+        {"key": "fot_fact", "label": "ФОТ факт за месяц",
+         "value": round(fot_fact, 2), "unit": currency},
+        {"key": "fot_limit", "label": "ФОТ лимит (%s)" % scenario_label,
+         "value": round(fot_limit, 2), "unit": currency},
+        {"key": "fot_share", "label": "ФОТ, % от выручки",
+         "value": round(fot_fact / rev_fact * 100, 2), "unit": "%"},
+        {"key": "headcount", "label": "Численность",
+         "value": round(headcount, 2), "unit": "ставок"},
+        {"key": "fot_per_head", "label": "ФОТ на сотрудника",
+         "value": round(fot_fact / headcount, 2), "unit": currency},
+    ]
+
+    # Серия июня предшествующих месяцев подобрана так, что сумма ФОТ за
+    # 2025-01..2025-06 равна контрольной карточке месяца.
+    fot_by_month = [2700000.0, 2750000.0, 2800000.0, 2850000.0, 2900000.0, 2818034.73]
+    hc_by_month = [6800.0, 6850.0, 6900.0, 6950.0, 6970.0, 6995.91]
+    labels = ["2025-%02d" % m for m in range(1, len(fot_by_month) + 1)]
+    charts = [{
+        "key": "monthly",
+        "label": "ФОТ и численность по месяцам",
+        "type": "bar_line",
+        "labels": labels,
+        "series": [
+            {"key": "fot_fact", "label": "ФОТ факт", "type": "bar",
+             "unit": currency, "values": [round(v, 2) for v in fot_by_month]},
+            {"key": "headcount", "label": "Численность", "type": "line", "axis": "y2",
+             "unit": "ставок", "values": [round(v, 2) for v in hc_by_month]},
+        ],
+    }]
+
+    def _row(label, hc, plan, fot_f, fot_l, rev):
+        return {
+            "label": label,
+            "drill_value": label,
+            "headcount": round(hc, 2),
+            "headcount_plan": round(plan, 2),
+            "headcount_dev": round(hc - plan, 2),
+            "fot_fact": round(fot_f, 2),
+            "fot_limit": round(fot_l, 2),
+            "fot_share_pct": round(fot_f / rev_fact * 100, 2),
+            "limit_share_pct": round(fot_l / rev_fact * 100, 2),
+            "country_share_pct": round(fot_f / rev_fact * 100, 2),
+            "fot_per_head": round(fot_f / hc, 2) if hc else None,
+            "revenue_per_head": round(rev / hc, 2) if hc else None,
+        }
+
+    # Строки суммируются в карточные значения: розница+производство+логистика
+    # + управление = ФОТ/численность/выручка месяца.
+    rows = [
+        _row("Розничная сеть", 3000.00, 3050.00, 7200000.00, 7400000.00, 45000000.00),
+        _row("Производство", 2200.00, 2250.00, 5100000.00, 5250000.00, 33000000.00),
+        _row("Логистика", 1000.00, 1010.00, 2300000.00, 2360000.00, 15000000.00),
+        _row("Управление", 795.91, 800.00, 2218034.73, 2240000.00, 11838622.76),
+    ]
+    columns = [
+        {"key": "label", "label": "Группа ЦФО"},
+        {"key": "headcount", "label": "Численность", "unit": "ставок"},
+        {"key": "headcount_plan", "label": "Числ. план (тактика)", "unit": "ставок"},
+        {"key": "headcount_dev", "label": "Откл. от плана", "unit": "ставок"},
+        {"key": "fot_fact", "label": "ФОТ факт", "unit": currency},
+        {"key": "fot_limit", "label": "ФОТ лимит", "unit": currency},
+        {"key": "fot_share_pct", "label": "ФОТ, % от выручки", "unit": "%"},
+        {"key": "limit_share_pct", "label": "Лимит, % от выручки", "unit": "%"},
+        {"key": "country_share_pct", "label": "% от выручки своей страны", "unit": "%"},
+        {"key": "fot_per_head", "label": "ФОТ на сотрудника", "unit": currency},
+        {"key": "revenue_per_head", "label": "Выручка на сотрудника", "unit": currency},
+    ]
+    tables = [{
+        "key": "by_department",
+        "label": "По подразделениям",
+        "columns": columns,
+        "rows": rows,
+        "meta": {
+            "dim": "group_cfo1",
+            "level_label": "Группа ЦФО",
+            "path": [],
+            "can_drill": True,
+            "truncated": False,
+            "row_limit": fot.MATRIX_ROW_LIMIT,
+        },
+    }]
+
+    meta = {
+        "tab": "p9",
+        "params": dict(params),
+        "period": {"year": 2025, "month": 6, "month_date": "2025-06-01"},
+        "currency": currency,
+        "scenario_plan": scenario,
+        "scenario_plan_label": scenario_label,
+        "closed_period": _FOT_MOCK_STATE["closed_period"],
+        "stale": False,
+        "refreshed_at": _FOT_MOCK_STATE["refreshed_at"],
+        "matrix": {
+            "dim": "group_cfo1",
+            "label": "Группа ЦФО",
+            "path": [],
+            "can_drill": True,
+            "levels": [{"key": k, "label": lbl} for k, lbl in fot.MATRIX_LEVELS],
+        },
+        "methodology": fot.METHODOLOGY_P9,
+    }
+    meta.update(_FOT_MOCK_META)
+    return {"cards": cards, "charts": charts, "tables": tables, "meta": meta}

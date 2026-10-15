@@ -251,10 +251,12 @@
         <button class="btn btn-ghost" @click="openMpConstantsModal">
           <Icon name="lucide:percent" /> Константы МП
         </button>
-        <!-- Только Калькулятор, ПЭО и админ: cost:edit_materials есть ровно у этих
-             ролей (у Бренд-менеджера и Просмотра его нет), а функционал правит
-             материалы плана. Бэкенд гейтит те же эндпоинты, кнопка — лишь UI. -->
-        <button v-if="can('cost:edit_materials') || can('cost:admin')" class="btn btn-ghost" @click="openPlanPricesModal">
+        <!-- Калькулятор, ПЭО и админ (cost:edit_materials) правят наборы, а
+             Бренд-менеджеру модалка открыта в режиме просмотра правом
+             cost:plan_prices_view (задача 663794): кнопки правки скрыты,
+             GET-эндпоинты бэкенд открывает тем же правом, мутации — нет. -->
+        <button v-if="can('cost:edit_materials') || can('cost:admin') || can('cost:plan_prices_view')"
+                class="btn btn-ghost" @click="openPlanPricesModal">
           <Icon name="lucide:layers" /> Цены материалов по плану
         </button>
         <button v-if="can('cost:approve')" class="btn btn-ghost" @click="openApprovalModal">
@@ -589,6 +591,12 @@
                 Раскрой ($)<span v-if="sortField === 'sum_Раскрой, USD.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
+              <!-- Фактически выкроено штук по карте кроя задания (задача Б24 663722).
+                   Источник заполняет с октября 2026, до этого пусто — «—». -->
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'cut_qty' && isVisible('cut_qty')" class="col-num" :class="{ sorted: sortField === 'Раскроено шт' }" @click="toggleSort('Раскроено шт')" title="Сколько единиц фактически выкроено по карте кроя задания">
+                Раскроено, шт<span v-if="sortField === 'Раскроено шт'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
+              </th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'sum_decors' && isVisible('sum_decors') && !showUSD" class="col-num" :class="{ sorted: sortField === 'sum_Декоры, руб.' }" @click="toggleSort('sum_Декоры, руб.')">
                 Декоры (руб)<span v-if="sortField === 'sum_Декоры, руб.'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
@@ -812,7 +820,7 @@
                 <input class="comment-input" type="text"
                   :value="comments[calcRowKey(row)] ?? ''"
                   placeholder="..."
-                  :disabled="isFkssRow(row) || isRowLocked(row)"
+                  :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
                   :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
                   @input="onCommentInput(row, ($event.target as HTMLInputElement).value)"
@@ -869,6 +877,7 @@
               <td v-if="ck === 'avg_cutting_min' && isVisible('avg_cutting_min')" class="col-num num">{{ fmt(row['avg_Раскрой, минуты']) }}</td>
               <td v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && !showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, руб.']) }}</td>
               <td v-if="ck === 'sum_cutting' && isVisible('sum_cutting') && showUSD" class="col-num num">{{ fmt(row['sum_Раскрой, USD.']) }}</td>
+              <td v-if="ck === 'cut_qty' && isVisible('cut_qty')" class="col-num num">{{ fmt(row['Раскроено шт']) }}</td>
               <td v-if="ck === 'sum_decors' && isVisible('sum_decors') && !showUSD" class="col-num num">{{ fmt(row['sum_Декоры, руб.']) }}</td>
               <td v-if="ck === 'sum_decors' && isVisible('sum_decors') && showUSD" class="col-num num">{{ fmt(row['sum_Декоры, USD.']) }}</td>
               <td v-if="ck === 'sum_knitting' && isVisible('sum_knitting') && !showUSD" class="col-num num">{{ fmt(row['sum_Вязание, руб.']) }}</td>
@@ -1341,7 +1350,11 @@
           <button class="modal-close" @click="showPlanPricesModal = false">×</button>
         </div>
         <div style="padding:var(--sp-4) var(--sp-5);overflow:auto;flex:1">
-          <p class="muted" style="margin-bottom:var(--sp-3)">
+          <p v-if="planPricesReadOnly" class="muted" style="margin-bottom:var(--sp-3)">
+            Цены материалов и декоров на весь план с признаком КПСС — то, что участвует в расчёте
+            себестоимости сейчас. Режим просмотра: менять наборы может калькулятор, ПЭО или админ.
+          </p>
+          <p v-else class="muted" style="margin-bottom:var(--sp-3)">
             Массовая правка цен материалов по номеру плана целиком, без привязки к модели, артикулу
             и заданию. Только калькуляции с признаком КПСС. Приоритет в расчёте себестоимости:
             версия калькуляции → применённый набор цен → исходные данные.
@@ -1405,50 +1418,60 @@
                   <td>{{ s.applied_by || '—' }}</td>
                   <td style="white-space:nowrap">
                     <button class="btn btn-ghost btn-sm" @click="openPlanPriceSet(s.id)">Открыть</button>
-                    <button v-if="s.status !== 'applied'" class="btn btn-primary btn-sm"
+                    <button v-if="!planPricesReadOnly && s.status !== 'applied'" class="btn btn-primary btn-sm"
                             :disabled="planPricesSaving" @click="applyPlanPriceSet(s.id)">Применить</button>
-                    <button v-else class="btn btn-ghost btn-sm"
+                    <button v-else-if="!planPricesReadOnly" class="btn btn-ghost btn-sm"
                             :disabled="planPricesSaving" @click="unapplyPlanPriceSet(s.id)">Снять</button>
-                    <button v-if="s.status !== 'applied'" class="btn btn-ghost btn-sm"
+                    <button v-if="!planPricesReadOnly && s.status !== 'applied'" class="btn btn-ghost btn-sm"
                             :disabled="planPricesSaving" @click="deletePlanPriceSet(s.id)">Удалить</button>
                   </td>
                 </tr>
               </tbody>
             </table>
 
-            <!-- Редактор набора -->
-            <div style="display:flex;gap:var(--sp-3);align-items:flex-end;margin-bottom:var(--sp-3)">
-              <label style="display:flex;flex-direction:column;gap:4px">
-                <span style="font-size:var(--fs-xs);color:var(--text-muted)">Название набора</span>
-                <input v-model="planPriceForm.title" class="editor-input" style="width:240px"
-                       :disabled="planPriceFormLocked" placeholder="например «пересчёт по курсу 3.2»" />
-              </label>
-              <label style="display:flex;flex-direction:column;gap:4px">
-                <span style="font-size:var(--fs-xs);color:var(--text-muted)">Курс (на весь набор)</span>
-                <input v-model.number="planPriceForm.rate" type="number" step="0.0001"
-                       class="editor-input col-num" style="width:120px"
-                       :disabled="planPriceFormLocked"
-                       @input="onPlanRateChange(($event.target as HTMLInputElement).value)" />
-              </label>
-              <button class="btn btn-primary btn-sm" :disabled="planPricesSaving || planPriceFormLocked"
-                      :title="`В набор уйдут только строки с ценой, отличной от источника: ${planPriceOverriddenCount}`"
-                      @click="savePlanPriceSet">
-                <template v-if="planPricesSaving">Сохранение…</template>
-                <template v-else>
-                  {{ planPriceForm.set_id ? 'Сохранить набор' : 'Создать набор' }}
-                  <template v-if="planPriceOverriddenCount"> ({{ planPriceOverriddenCount }})</template>
-                </template>
-              </button>
-              <button v-if="planPriceForm.set_id" class="btn btn-ghost btn-sm"
-                      :disabled="planPricesSaving" @click="resetPlanPriceForm">Новый набор</button>
+            <!-- Редактор набора (контролы правки — только не в режиме просмотра) -->
+            <div style="display:flex;gap:var(--sp-3);align-items:flex-end;margin-bottom:var(--sp-3);flex-wrap:wrap">
+              <template v-if="!planPricesReadOnly">
+                <label style="display:flex;flex-direction:column;gap:4px">
+                  <span style="font-size:var(--fs-xs);color:var(--text-muted)">Название набора</span>
+                  <input v-model="planPriceForm.title" class="editor-input" style="width:240px"
+                         :disabled="planPriceFormLocked" placeholder="например «пересчёт по курсу 3.2»" />
+                </label>
+                <label style="display:flex;flex-direction:column;gap:4px">
+                  <span style="font-size:var(--fs-xs);color:var(--text-muted)">Курс (на весь набор)</span>
+                  <input v-model.number="planPriceForm.rate" type="number" step="0.0001"
+                         class="editor-input col-num" style="width:120px"
+                         :disabled="planPriceFormLocked"
+                         @input="onPlanRateChange(($event.target as HTMLInputElement).value)" />
+                </label>
+                <button class="btn btn-primary btn-sm" :disabled="planPricesSaving || planPriceFormLocked"
+                        :title="`В набор уйдут только строки с ценой, отличной от источника: ${planPriceOverriddenCount}`"
+                        @click="savePlanPriceSet">
+                  <template v-if="planPricesSaving">Сохранение…</template>
+                  <template v-else>
+                    {{ planPriceForm.set_id ? 'Сохранить набор' : 'Создать набор' }}
+                    <template v-if="planPriceOverriddenCount"> ({{ planPriceOverriddenCount }})</template>
+                  </template>
+                </button>
+                <button v-if="planPriceForm.set_id" class="btn btn-ghost btn-sm"
+                        :disabled="planPricesSaving" @click="resetPlanPriceForm">Новый набор</button>
+              </template>
               <button class="btn btn-ghost btn-sm"
                       :disabled="!planPriceRows.length && !planDecorRows.length"
                       title="Выгрузить материалы и декоры плана с ценами текущего набора"
                       @click="exportPlanPricesToExcel">
                 <Icon name="lucide:download" /> Экспорт в Excel
               </button>
+              <button class="btn btn-ghost btn-sm"
+                      :disabled="!planPriceAppliedSet || planPricesLoading"
+                      :title="planPriceAppliedSet
+                        ? `Выгрузить набор «${planPriceAppliedSet.title || planPriceAppliedSet.id}», применённый к расчёту`
+                        : 'Нет набора, применённого к расчёту'"
+                      @click="exportAppliedPlanPricesToExcel">
+                <Icon name="lucide:download" /> Экспорт применённого набора
+              </button>
             </div>
-            <p v-if="planPriceFormLocked" class="muted" style="margin-bottom:var(--sp-3)">
+            <p v-if="planPriceFormLocked && !planPricesReadOnly" class="muted" style="margin-bottom:var(--sp-3)">
               Набор применён к расчёту — чтобы менять цены, сначала снимите применение.
             </p>
 
@@ -1502,12 +1525,12 @@
                   </td>
                   <td class="col-num">
                     <input v-model.number="r.price_rub" type="number" step="0.0001"
-                           class="editor-input col-num" :disabled="planPriceFormLocked"
+                           class="editor-input col-num" :disabled="planPriceFormLocked || planPricesReadOnly"
                            @input="onPlanPriceEdit(r, 'rub')" />
                   </td>
                   <td class="col-num">
                     <input v-model.number="r.price_usd" type="number" step="0.0001"
-                           class="editor-input col-num" :disabled="planPriceFormLocked"
+                           class="editor-input col-num" :disabled="planPriceFormLocked || planPricesReadOnly"
                            @input="onPlanPriceEdit(r, 'usd')" />
                   </td>
                   <td>
@@ -1565,12 +1588,12 @@
                   </td>
                   <td class="col-num">
                     <input v-model.number="r.price_rub" type="number" step="0.0001"
-                           class="editor-input col-num" :disabled="planPriceFormLocked"
+                           class="editor-input col-num" :disabled="planPriceFormLocked || planPricesReadOnly"
                            @input="onPlanPriceEdit(r, 'rub')" />
                   </td>
                   <td class="col-num">
                     <input v-model.number="r.price_usd" type="number" step="0.0001"
-                           class="editor-input col-num" :disabled="planPriceFormLocked"
+                           class="editor-input col-num" :disabled="planPriceFormLocked || planPricesReadOnly"
                            @input="onPlanPriceEdit(r, 'usd')" />
                   </td>
                   <td>
@@ -2872,6 +2895,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'sum_sewing', label: 'Пошив' },
   { key: 'avg_cutting_min', label: 'Раскрой (мин)' },
   { key: 'sum_cutting', label: 'Раскрой' },
+  { key: 'cut_qty', label: 'Раскроено, шт' },
   { key: 'sum_decors', label: 'Декоры' },
   { key: 'sum_knitting', label: 'Вязание' },
   { key: 'sum_cost', label: 'Себестоимость' },
@@ -2888,7 +2912,7 @@ const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','
 const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
-const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation'];
+const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','cut_qty','sum_decors','sum_knitting','sum_cost','cost_deviation'];
 const calcColumnKeys = ['calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 
 const mainColumns = computed(() => COLUMNS_CONFIG.filter(c => mainColumnKeys.includes(c.key)));
@@ -2919,6 +2943,7 @@ const COL_DEFAULT_WIDTHS: Record<string, number> = {
   // валютные и себестоимость
   avg_retail_usd: 92, sum_materials: 92, sum_aux_materials: 92,
   avg_sewing_min: 80, sum_sewing: 88, avg_cutting_min: 80, sum_cutting: 88,
+  cut_qty: 88,
   sum_decors: 88, sum_knitting: 88, sum_cost: 92, cost_deviation: 92,
   // расчётные метрики
   calc_markup: 92, calc_markup_pct: 116, calc_margin_pct: 96,
@@ -2943,7 +2968,7 @@ const STORAGE_KEY = 'cost_column_visibility';
  *
  * Порядок хранится списком ключей, а не индексами: список ключей переживает
  * добавление и удаление колонок в коде, а индексы — нет. */
-const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
+const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','cut_qty','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 const ORDER_STORAGE_KEY = 'cost_column_order';
 /** Все колонки таблицы: закреплённые слева плюс переносимые. */
 const ALL_COL_KEYS = [...STICKY_COL_KEYS, ...MOVABLE_COL_KEYS];
@@ -3971,6 +3996,47 @@ async function clearMyPendingChanges() {
   } catch { /* best-effort */ }
 }
 
+// ── Живые комментарии (задача Б24 664394) ───────────────────────────────────
+// Комментарий — самостоятельная сущность: сохраняется сразу при вводе в
+// cost_row_comments через POST /api/cost/row-comment, а не только вместе с
+// заявкой на цену. Раньше строка без розничной цены («прочерк») заявкой не
+// становилась — и комментарий молча умирал при перезагрузке. Объявлены до
+// loadData: она на них ссылается, а её watch — immediate.
+// Отправка — дебаунсом по вводу (700 мс тишины); таймер переживает исчезновение
+// строки из выдачи (смена фильтра без blur): замыкание держит ключ и текст.
+const commentSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const lastCommentSaved = new Map<string, string>();
+
+const scheduleCommentSave = (row: any, key: string, value: string) => {
+  const prev = commentSaveTimers.get(key);
+  if (prev) clearTimeout(prev);
+  commentSaveTimers.set(key, setTimeout(() => {
+    commentSaveTimers.delete(key);
+    if (lastCommentSaved.get(key) === value) return;
+    flushCommentSave(row, key, value);
+  }, 700));
+};
+
+const flushCommentSave = async (row: any, key: string, value: string) => {
+  try {
+    await $fetch(`${apiBase.value}/api/cost/row-comment`, {
+      method: "POST",
+      headers: fetchHeaders.value,
+      body: {
+        model: row["Модель"],
+        articul: row["Артикул"],
+        plan_id: row["PLAN_ID"],
+        calc_sign: row["Признак калькуляции"],
+        comment: value,
+      },
+    });
+    lastCommentSaved.set(key, value);
+  } catch (e: any) {
+    console.warn("[cost] живой комментарий не сохранён (текст виден до перезагрузки)", e);
+    lastError.value = `Комментарий не сохранён: ${e?.data?.detail || e?.message || "нет связи с API"}`;
+  }
+};
+
 async function loadData() {
   loading.value = true;
   try {
@@ -4014,7 +4080,11 @@ async function loadData() {
       if (r.price_rf != null) priceRF[k] = r.price_rf; else delete priceRF[k];
       if (r.price_kz != null) priceKZ[k] = r.price_kz; else delete priceKZ[k];
       if (r.price_uz != null) priceUZ[k] = r.price_uz; else delete priceUZ[k];
-      if (r.comment != null) comments[k] = r.comment; else delete comments[k];
+      // Живой комментарий в полёте (дебаунс) не затираем серверным значением —
+      // иначе перезагрузка выдачи откатывала бы недопечатанный текст.
+      if (commentSaveTimers.has(k)) {
+        // локальный ввод важнее, ждём отправки
+      } else if (r.comment != null) comments[k] = r.comment; else delete comments[k];
       // Авто-вычисляем наценку из розничной и оптовой цен строки
       const markup = computeMarkupFromRow(r);
       if (markup) markupSelections[k] = markup; else delete markupSelections[k];
@@ -4026,6 +4096,9 @@ async function loadData() {
     const liveKeys = new Set(allAggregated.value.map(calcRowKey));
     for (const store of [priceRF, priceKZ, priceUZ, comments, markupSelections] as Record<string, any>[]) {
       for (const k of Object.keys(store)) {
+        // Комментарий в полёте не выбрасываем: сервер его ещё не видел, а
+        // таймер дошлёт текст даже когда строка ушла из выдачи.
+        if (store === comments && commentSaveTimers.has(k)) continue;
         if (!liveKeys.has(k) && !changedRows.has(k)) delete store[k];
       }
     }
@@ -4243,6 +4316,16 @@ const planPriceForm = ref<{ set_id: number | null; title: string; rate: number |
  * рассинхронизировала бы кэш с набором (бэкенд это тоже запрещает). */
 const planPriceFormLocked = computed(() => planPriceForm.value.status === 'applied');
 
+/** Режим просмотра (задача 663794): право cost:plan_prices_view открывает
+ * модалку без cost:edit_materials/admin. Кнопки правки скрыты, поля ввода
+ * погашены; мутации при этом гейтятся на бэке отдельным правом, так что
+ * сокрытие кнопок — не защита, а UX. */
+const planPricesReadOnly = computed(() => !(can('cost:edit_materials') || can('cost:admin')));
+
+/** Набор, применённый к расчёту сейчас, — цель кнопки «Экспорт применённого
+ * набора». */
+const planPriceAppliedSet = computed(() => planPriceSets.value.find(s => s.status === 'applied') || null);
+
 function planRowProps(r: PlanPriceRow): string {
   return [r['свойство1'], r['свойство2'], r['свойство3']].filter(Boolean).join(' / ') || '—';
 }
@@ -4331,6 +4414,53 @@ function resetPlanPriceForm() {
   }
 }
 
+/** Накладывает строки набора на КОПИИ строк грида: цена набора поверх исходной,
+ * материалы, которых в наборе нет, остаются с исходной ценой.
+ *
+ * Копии, а не правка на месте, — так выгрузка применённого набора (задача
+ * 663794) не затирает несохранённые правки черновика, открытого в редакторе.
+ *
+ * Исходную цену берём из СТРОКИ НАБОРА, а не из кэша. После «Применить» в кэше
+ * уже лежат цены набора, и «исходная» из /plan-materials равна правленой —
+ * фильтр planPriceOverridden считал правку неизменённой, строка не попадала в
+ * сохранение, а в расчёт уходила старая цена (жалоба от 28.08, план 9528,
+ * наборы 145/147). Набор хранит исходник с момента создания — он и есть точка
+ * отсчёта.
+ *
+ * Доллар в наборе может быть пустым: производную от курса считает сервер, и
+ * фронт её не сохраняет. В гриде показываем то же значение, что ляжет в
+ * расчёт, — иначе колонка «Цена, $» выглядела бы пустой. */
+function applySetToRowCopies(setRows: any[], setRate: number): { rows: any[]; decors: any[] } {
+  const byKey = new Map<string, any>();
+  const byDecor = new Map<string, any>();
+  for (const r of setRows || []) {
+    if (r.row_kind === 'decor') byDecor.set(String(r['Наименование'] ?? '').trim(), r);
+    else byKey.set(planRowKey(r), r);
+  }
+  const showUsd = (saved: any, fallback: any) => {
+    if (saved.price_usd !== null && saved.price_usd !== undefined) return saved.price_usd;
+    const rub = Number(saved.price_rub);
+    if (setRate > 0 && Number.isFinite(rub)) return Number((rub / setRate).toFixed(4));
+    return fallback;
+  };
+  const overlay = (r: any, saved: any): any => {
+    const copy: any = { ...r };
+    if (saved && saved.source_price_rub !== null && saved.source_price_rub !== undefined) {
+      copy.source_price_rub = saved.source_price_rub;
+      if (saved.source_price_usd !== null && saved.source_price_usd !== undefined) copy.source_price_usd = saved.source_price_usd;
+    }
+    copy.price_rub = saved ? saved.price_rub : copy.source_price_rub;
+    copy.price_usd = saved ? showUsd(saved, copy.source_price_usd) : copy.source_price_usd;
+    // доллар в наборе задан явно — значит его правили вручную
+    copy._usdManual = !!(saved && saved.price_usd !== null && saved.price_usd !== undefined);
+    return copy;
+  };
+  return {
+    rows: planPriceRows.value.map(r => overlay(r, byKey.get(planRowKey(r)))),
+    decors: planDecorRows.value.map(r => overlay(r, byDecor.get(String(r['Декоры, наименование'] ?? '').trim()))),
+  };
+}
+
 async function openPlanPriceSet(setId: number) {
   planPricesLoading.value = true;
   try {
@@ -4344,49 +4474,9 @@ async function openPlanPriceSet(setId: number) {
     };
     // Накладываем цены набора на грид по ключу материала; материалы, которых в
     // наборе нет, остаются с исходной ценой.
-    const byKey = new Map<string, any>();
-    const byDecor = new Map<string, any>();
-    for (const r of data.rows || []) {
-      if (r.row_kind === 'decor') byDecor.set(String(r['Наименование'] ?? '').trim(), r);
-      else byKey.set(planRowKey(r), r);
-    }
-    // Доллар в наборе может быть пустым: производную от курса считает сервер, и
-    // фронт её не сохраняет. В гриде показываем то же значение, что ляжет в
-    // расчёт, — иначе колонка «Цена, $» выглядела бы пустой.
-    const setRate = Number(data.set.rate || 0);
-    const showUsd = (saved: any, fallback: any) => {
-      if (saved.price_usd !== null && saved.price_usd !== undefined) return saved.price_usd;
-      const rub = Number(saved.price_rub);
-      if (setRate > 0 && Number.isFinite(rub)) return Number((rub / setRate).toFixed(4));
-      return fallback;
-    };
-    for (const r of planPriceRows.value) {
-      const saved = byKey.get(planRowKey(r));
-      // Исходную цену берём из СТРОКИ НАБОРА, а не из кэша. После «Применить»
-      // в кэше уже лежат цены набора, и «исходная» из /plan-materials равна
-      // правленой — фильтр planPriceOverridden считал правку неизменённой,
-      // строка не попадала в сохранение, а в расчёт уходила старая цена
-      // (жалоба от 28.08, план 9528, наборы 145/147). Набор хранит исходник
-      // с момента создания — он и есть точка отсчёта.
-      if (saved && saved.source_price_rub !== null && saved.source_price_rub !== undefined) {
-        r.source_price_rub = saved.source_price_rub;
-        if (saved.source_price_usd !== null && saved.source_price_usd !== undefined) r.source_price_usd = saved.source_price_usd;
-      }
-      r.price_rub = saved ? saved.price_rub : r.source_price_rub;
-      r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
-      // доллар в наборе задан явно — значит его правили вручную
-      (r as any)._usdManual = !!(saved && saved.price_usd !== null && saved.price_usd !== undefined);
-    }
-    for (const r of planDecorRows.value) {
-      const saved = byDecor.get(String(r['Декоры, наименование'] ?? '').trim());
-      if (saved && saved.source_price_rub !== null && saved.source_price_rub !== undefined) {
-        r.source_price_rub = saved.source_price_rub;
-        if (saved.source_price_usd !== null && saved.source_price_usd !== undefined) r.source_price_usd = saved.source_price_usd;
-      }
-      r.price_rub = saved ? saved.price_rub : r.source_price_rub;
-      r.price_usd = saved ? showUsd(saved, r.source_price_usd) : r.source_price_usd;
-      (r as any)._usdManual = !!(saved && saved.price_usd !== null && saved.price_usd !== undefined);
-    }
+    const overlaid = applySetToRowCopies(data.rows || [], Number(data.set.rate || 0));
+    planPriceRows.value = overlaid.rows;
+    planDecorRows.value = overlaid.decors;
     planPricesStatus.value = `Открыт набор «${data.set.title || data.set.id}» (${data.set.status})`;
   } catch (e: any) {
     console.error('[cost] open plan price set failed', e);
@@ -4429,13 +4519,16 @@ function planUsdIsManual(r: any): boolean {
  * (см. `_apply_plan_price_set_to_cache`). Иначе ввод курса менял бы price_usd во
  * всех строках плана, все они выглядели бы переопределёнными, и тело запроса
  * снова разрасталось бы до сотен килобайт. */
-function planUsdIsDerived(r: any): boolean {
-  return Number(planPriceForm.value.rate || 0) > 0 && !planUsdIsManual(r);
+function planUsdIsDerived(r: any, rate: number | null = null): boolean {
+  // rate=null — курс открытой в редакторе формы; явный курс передаёт выгрузка
+  // применённого набора, когда в редакторе может быть открыт другой.
+  const eff = rate === null ? Number(planPriceForm.value.rate || 0) : Number(rate || 0);
+  return eff > 0 && !planUsdIsManual(r);
 }
 
-function planPriceOverridden(r: any): boolean {
+function planPriceOverridden(r: any, rate: number | null = null): boolean {
   if (planPriceNorm(r.price_rub) !== planPriceNorm(r.source_price_rub)) return true;
-  if (planUsdIsDerived(r)) return false;
+  if (planUsdIsDerived(r, rate)) return false;
   return planPriceNorm(r.price_usd) !== planPriceNorm(r.source_price_usd);
 }
 
@@ -5950,10 +6043,17 @@ const onPriceUZInput = (row: any, value: string) => {
   changedRows.set(calcRowKey(row), row);
 };
 
+// Комментарий — самостоятельная сущность (задача 664394): сохраняется сразу
+// при вводе в cost_row_comments, а не только вместе с заявкой на цену. Раньше
+// строка без розничной цены («прочерк») заявкой не становилась — и комментарий
+// молча умирал при перезагрузке. Здесь changedRows не трогаем: комментарий
+// больше не «придерживает» строку в несохранённых, своё сохранение у него своё.
+// Сама отправка — дебаунсом, см. блок «Живые комментарии» рядом с loadData.
 const onCommentInput = (row: any, value: string) => {
   if (!row || isRowLocked(row)) return;
-  comments[calcRowKey(row)] = value || "";
-  changedRows.set(calcRowKey(row), row);
+  const k = calcRowKey(row);
+  comments[k] = value || "";
+  scheduleCommentSave(row, k, value || "");
 };
 
 // ── Мультипаки ──────────────────────────────────────────────────────────────
@@ -9339,16 +9439,22 @@ const exportToExcel = () => {
   URL.revokeObjectURL(url);
 };
 
-/** Выгрузка таблицы цен по плану — материалы и декоры вместе с ценами текущего
- * набора. Формат тот же, что у экспорта главной таблицы: HTML-таблица под
+/** Выгрузка таблицы цен по плану — материалы и декоры вместе с ценами набора.
+ * Формат тот же, что у экспорта главной таблицы: HTML-таблица под
  * `application/vnd.ms-excel` (настоящий .xlsx в разделе не собирается нигде).
  *
- * Выгружается ровно то, что видно в модалке: цены открытого набора, исходная
- * цена источника, разброс внутри группы и перекрытие версиями — по ним видно,
- * почему цена набора могла не доехать до расчёта. */
-function exportPlanPricesToExcel() {
+ * Данные передаются параметрами, а не берутся из состояния модалки: файл можно
+ * собрать и по применённому набору, пока в редакторе открыт другой. Выгружаются
+ * цены набора, исходная цена источника, разброс внутри группы и перекрытие
+ * версиями — по ним видно, почему цена набора могла не доехать до расчёта. */
+function downloadPlanPricesExcel(
+  rows: PlanPriceRow[],
+  decors: any[],
+  form: { set_id: number | null; title: string; rate: number | null; status: string },
+  filenameSuffix = '',
+) {
   const plan = planPricesPlanId.value.trim();
-  if (!plan || (!planPriceRows.value.length && !planDecorRows.value.length)) return;
+  if (!plan || (!rows.length && !decors.length)) return;
 
   const esc = (v: any) => String(v ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -9356,14 +9462,18 @@ function exportPlanPricesToExcel() {
   const numCell = (v: any) => `<td>${v === null || v === undefined || v === '' ? '' : esc(fmtPrice4(v))}</td>`;
   const head = (cols: string[]) => '<tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>';
 
-  const setTitle = planPriceForm.value.set_id
-    ? `${planPriceForm.value.title || planPriceForm.value.set_id} (${planPriceForm.value.status})`
+  const setTitle = form.set_id
+    ? `${form.title || form.set_id} (${form.status})`
     : 'новый набор (не сохранён)';
+  // Курс и признак «переопределена» — по курсу ПЕРЕДАННОГО набора, а не открытой
+  // в редакторе формы.
+  const overriddenCount = rows.filter(r => planPriceOverridden(r, form.rate)).length
+    + decors.filter(r => planPriceOverridden(r, form.rate)).length;
 
   let html = '<table border="1">';
   html += `<tr><td colspan="10"><b>Цены материалов по плану ${esc(plan)}</b></td></tr>`;
-  html += `<tr><td colspan="10">Набор: ${esc(setTitle)}; курс: ${esc(planPriceForm.value.rate ?? '—')}; `
-    + `строк с переопределённой ценой: ${planPriceOverriddenCount.value}</td></tr>`;
+  html += `<tr><td colspan="10">Набор: ${esc(setTitle)}; курс: ${esc(form.rate ?? '—')}; `
+    + `строк с переопределённой ценой: ${overriddenCount}</td></tr>`;
   html += '<tr><td colspan="10"></td></tr>';
 
   html += '<tr><td colspan="10"><b>Материалы</b></td></tr>';
@@ -9373,7 +9483,7 @@ function exportPlanPricesToExcel() {
     'Разных цен в группе', 'Мин. цена, руб', 'Макс. цена, руб',
     'Перекрыто версией', 'Цена переопределена',
   ]);
-  for (const r of planPriceRows.value) {
+  for (const r of rows) {
     html += '<tr>'
       + cell(r['Наименование']) + cell(r['артикул материала'])
       + cell(r['свойство1']) + cell(r['свойство2']) + cell(r['свойство3'])
@@ -9381,7 +9491,7 @@ function exportPlanPricesToExcel() {
       + numCell(r.source_price_rub) + numCell(r.price_rub) + numCell(r.price_usd)
       + cell(r.distinct_prices ?? '') + numCell(r.min_price_rub) + numCell(r.max_price_rub)
       + cell(r.overridden_rows ? `${r.overridden_rows} из ${r.rows_count}` : '')
-      + cell(planPriceOverridden(r) ? 'да' : '')
+      + cell(planPriceOverridden(r, form.rate) ? 'да' : '')
       + '</tr>';
   }
 
@@ -9391,13 +9501,13 @@ function exportPlanPricesToExcel() {
     'Наименование декора', 'Строк', 'Исх. сумма, руб', 'Сумма, руб', 'Сумма, $',
     'Перекрыто версией', 'Цена переопределена',
   ]);
-  for (const r of planDecorRows.value) {
+  for (const r of decors) {
     html += '<tr>'
       + cell(r['Декоры, наименование'])
       + cell(r.rows_count)
       + numCell(r.source_price_rub) + numCell(r.price_rub) + numCell(r.price_usd)
       + cell(r.overridden_rows ? `${r.overridden_rows} из ${r.rows_count}` : '')
-      + cell(planPriceOverridden(r) ? 'да' : '')
+      + cell(planPriceOverridden(r, form.rate) ? 'да' : '')
       + '</tr>';
   }
   html += '</table>';
@@ -9406,9 +9516,44 @@ function exportPlanPricesToExcel() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `PlanPrices_${plan}_${new Date().toISOString().slice(0, 10)}.xls`;
+  a.download = `PlanPrices_${plan}${filenameSuffix ? '_' + filenameSuffix : ''}_${new Date().toISOString().slice(0, 10)}.xls`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/** Выгрузка того, что видно в модалке: цены открытого набора (или текущего
+ * расчёта, если набор не открыт). */
+function exportPlanPricesToExcel() {
+  downloadPlanPricesExcel(planPriceRows.value, planDecorRows.value, planPriceForm.value);
+}
+
+/** Выгрузка ПРИМЕНЁННОГО к расчёту набора (задача 663794) — независимо от того,
+ * какой набор открыт в редакторе: цифры берём из самого набора, чтобы открытый
+ * черновик с несохранёнными правками не попадал в файл. Если применённый набор
+ * как раз открыт, в гриде уже его цены — лишний запрос не нужен. */
+async function exportAppliedPlanPricesToExcel() {
+  const applied = planPriceAppliedSet.value;
+  if (!applied) return;
+  try {
+    let rows: PlanPriceRow[] = planPriceRows.value;
+    let decors: any[] = planDecorRows.value;
+    if (planPriceForm.value.set_id !== applied.id) {
+      const data = await $fetch<{ set: PlanPriceSet; rows: any[] }>(
+        `${apiBase.value}/api/cost/plan-price-sets/${applied.id}`, { headers: fetchHeaders.value });
+      const overlaid = applySetToRowCopies(data.rows || [], Number(data.set.rate || 0));
+      rows = overlaid.rows;
+      decors = overlaid.decors;
+    }
+    downloadPlanPricesExcel(rows, decors, {
+      set_id: applied.id,
+      title: applied.title || '',
+      rate: applied.rate != null ? Number(applied.rate) : null,
+      status: applied.status,
+    }, 'applied');
+  } catch (e: any) {
+    console.error('[cost] export applied plan price set failed', e);
+    planPricesError.value = e?.data?.detail || e?.message || String(e);
+  }
 }
 
 // Ctrl+C при пустом выделении — копируем всю таблицу как TSV

@@ -347,14 +347,20 @@ def _deviation_ctes(where_sql: str, limit: int) -> str:
                 c.volume_pcs * c.wholesale_price_byn  AS rev,
                 c.volume_pcs * c.cost_byn             AS cost_norm,
                 c.volume_pcs * ({_FACT_B})            AS cost_fact,
-                -- Ранние этапы ТОГО ЖЕ задания. Ключ сопоставления — модель +
-                -- артикул + план + задание, как у get_prev_stage_prices в db.py:
-                -- у КПСС и ПФКСС калькуляция привязана к заданию, а не к модели.
+                -- Ранние этапы. КПСС — ТОГО ЖЕ задания: ключ модель + артикул +
+                -- план + задание, как у get_prev_stage_prices в db.py, калькуляция
+                -- КПСС привязана к заданию. ПФКСС — ПОСЛЕДНЯЯ рассчитанная на
+                -- модель + артикул, план и задание любые (задача Б24 663795,
+                -- решение 15.10.2026: этап часто ведут на другом задании, чем
+                -- выпуск, — подставляем на все планы и задания, задание-источник
+                -- не показываем; план/задание в ORDER BY — tie-break при равных
+                -- датах расчёта).
                 --
                 -- Этапов в источнике мало (КПСС 1 584 калькуляции, ПФКСС 1 026
                 -- против 88 456 ФКСС — их ведут не для всего ассортимента),
-                -- поэтому у большинства строк оба поля пусты. Это не пропуск
-                -- данных, а отсутствие предварительного расчёта.
+                -- поэтому у большинства строк поля пусты и после подстановки
+                -- ПФКСС по артикулу: это отсутствие предварительного расчёта,
+                -- а не пропуск данных.
                 c.volume_pcs * kp.cost_byn            AS cost_kpss,
                 CASE WHEN kp.cost_byn IS NOT NULL THEN c.volume_pcs END AS vol_kpss,
                 c.volume_pcs * pf.cost_byn            AS cost_pfkss,
@@ -373,10 +379,9 @@ def _deviation_ctes(where_sql: str, limit: int) -> str:
             LEFT JOIN LATERAL (
                 SELECT s.cost_byn FROM cost_calc_mv s
                 WHERE s.calc_sign = 'ПФКСС' AND s.model = c.model AND s.articul = c.articul
-                  AND coalesce(s.plan_id, '') = coalesce(c.plan_id, '')
-                  AND coalesce(s.zadanie, '') = coalesce(c.zadanie, '')
                   AND s.cost_byn > 0
-                ORDER BY s.calc_date DESC LIMIT 1
+                ORDER BY s.calc_date DESC, s.plan_id DESC, s.zadanie DESC
+                LIMIT 1
             ) pf ON TRUE
         ),
         -- Три себестоимости единицы на одной строке.
