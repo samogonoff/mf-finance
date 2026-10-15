@@ -319,6 +319,17 @@
           <Icon name="lucide:info" />
           Строк с прочерком в розничной цене: {{ heldNoPriceCount }} — не сохраняются
         </span>
+        <!-- Серверный черновик: сколько правок восстановлено после перезагрузки.
+             Отдельная плашка, чтобы «восстановлено» не читалось как «сохранено». -->
+        <span v-if="draftRestoredCount && !draftNoticeHidden" class="draft-restored" :title="DRAFT_RESTORED_HINT">
+          <Icon name="lucide:history" />
+          Восстановлено из вашего черновика: {{ draftRestoredCount }} — не отправлено ПЭО
+          <button class="draft-restored__close" aria-label="Скрыть" @click="draftNoticeHidden = true">×</button>
+        </span>
+        <span v-if="draftError" class="draft-error">
+          <Icon name="lucide:triangle-alert" />
+          {{ draftError }}
+        </span>
       </div>
     </div>
 
@@ -4122,6 +4133,9 @@ async function loadData() {
       if (usdW <= 0 && rubW > 0) r['avg_Отпускная цена по уровню, USD.'] = r2(rubW / rate);
       if (usdR <= 0 && rubR > 0) r['avg_Розничная цена по уровню, USD.'] = r2(rubR / rate);
     }
+    // Первая успешная выдача — момент наложить серверный черновик (если он
+    // уже пришёл; если черновик придёт позже — попытку повторит loadPriceDraft).
+    tryApplyDraft();
   } catch (e: any) {
     console.error("[cost] aggregated load failed", e);
     lastError.value = e?.data?.detail || e?.message || String(e);
@@ -5883,6 +5897,9 @@ const HELD_NO_PRICE_HINT =
 
 function discardChanges() {
   changedRows.clear();
+  // Сброс — единственная операция, которая ещё и удаляет черновик: человек
+  // явно отказался от ввода, на сервере от него ничего не должно остаться.
+  void draftDeleteAll();
   loadData();
 }
 
@@ -5935,6 +5952,202 @@ const editingTypeCell = ref<number>(-1);
 
 /** Комментарий по строке (ключ калькуляции → текст). */
 const comments = reactive<Record<string, string>>({});
+
+// ── Серверный черновик несохранённых цен (просьба Б24 14.10.2026) ────────────
+//
+// Несохранённый ввод жил только в памяти вкладки: перезагрузка браузера стирала
+// цены бренд-менеджера, который расценивает по частям и сохраняет в конце
+// («ни одной цены нету» — Сапега). Черновик добавляет серверное хранилище того
+// же ввода (миграция 0068): запись ТОЛЬКО дополняет свои ключи, в выдачу,
+// фильтры, pending и блокировки черновик не входит — это личная копия, не
+// заявка. Кнопку «Сохранить изменения» он не заменяет.
+
+const DRAFT_SYNC_DEBOUNCE_MS = 1500;
+/** Совпадает с PRICE_DRAFT_MAX_ROWS в app/db.py. */
+const DRAFT_MAX_KEYS = 500;
+
+const DRAFT_RESTORED_HINT =
+  'Это тот же несохранённый ввод, что висит с отметкой ✱: он переживает '
+  + 'перезагрузку и закрытие браузера. На согласование ПЭО не отправлен — '
+  + 'нужно нажать «Сохранить изменения».';
+
+/** Черновик с сервера: row_key → {snapshot, updated_at}. Прочитан один раз. */
+const draftServer = ref<Record<string, any> | null>(null);
+const draftReady = ref(false);
+const draftApplied = ref(false);
+const draftRestoredCount = ref(0);
+const draftNoticeHidden = ref(false);
+const draftError = ref('');
+let draftSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let draftFetchStarted = false;
+/** Что уже лежит на сервере: ключ → сериализованный снимок. Отправляем диффу. */
+const draftSent = new Map<string, string>();
+
+const draftCanEdit = computed(() => !permLoading.value && can('cost:edit_price'));
+
+/** Снимок правки: полный клон строки выдачи (для строк под фильтром из него
+ *  потом собирается payload save-batch — как и сейчас для скрытых строк) плюс
+ *  значения из отдельных словарей. Комментарий не включаем: он живёт своей
+ *  записью /row-comment (задача 664394) и сервер уже знает его. */
+function draftSnapshotOf(key: string, row: any) {
+  return {
+    row: JSON.parse(JSON.stringify(row ?? {})),
+    markup: markupSelections[key],
+    rf: priceRF[key],
+    kz: priceKZ[key],
+    uz: priceUZ[key],
+  };
+}
+
+/** Плановая отправка диффа — вызывать из каждого обработчика правки. */
+function scheduleDraftSync() {
+  if (!draftCanEdit.value) return;
+  if (draftSyncTimer) clearTimeout(draftSyncTimer);
+  draftSyncTimer = setTimeout(() => {
+    draftSyncTimer = null;
+    void pushDraftDiff();
+  }, DRAFT_SYNC_DEBOUNCE_MS);
+}
+
+/** Отправить новые и изменённые ключи. MERGE: чужие не трогает; удаления здесь
+ *  нет — ключ снимается только явным сохранением или сбросом. */
+async function pushDraftDiff(opts: { keepalive?: boolean } = {}) {
+  if (!draftCanEdit.value) return;
+  const prepared: { key: string; snapshot: any; ser: string }[] = [];
+  for (const [key, row] of changedRows.entries()) {
+    try {
+      const snapshot = draftSnapshotOf(key, row);
+      const ser = JSON.stringify(snapshot);
+      if (draftSent.get(key) !== ser) prepared.push({ key, snapshot, ser });
+    } catch { /* не сериализуется — не отправляем */ }
+  }
+  if (!prepared.length) return;
+  const overflow = Math.max(0, prepared.length - DRAFT_MAX_KEYS);
+  const batch = overflow ? prepared.slice(overflow) : prepared;
+  if (overflow) draftError.value = `Черновик: ${overflow} старых строк не отправлено (лимит ${DRAFT_MAX_KEYS})`;
+  const body = JSON.stringify({ items: batch.map((b) => ({ key: b.key, snapshot: b.snapshot })) });
+  try {
+    const resp = await fetch(`${apiBase.value}/api/cost/price-draft/upsert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+      body,
+      keepalive: !!opts.keepalive,
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    for (const it of batch) draftSent.set(it.key, it.ser);
+    if (!overflow) draftError.value = '';
+  } catch (e: any) {
+    // Черновик — удобство, а не данных источник: правка остаётся на экране,
+    // попробуем отправить при следующем изменении.
+    console.warn('[cost] черновик не отправлен', e);
+  }
+}
+
+/** Явное удаление сохранённых ключей (после успешного save-batch). */
+async function draftDeleteKeys(keys: string[]) {
+  for (const k of keys) draftSent.delete(k);
+  if (!keys.length || !draftCanEdit.value) return;
+  try {
+    await $fetch(`${apiBase.value}/api/cost/price-draft/delete`, {
+      method: 'POST', body: { keys }, headers: fetchHeaders.value,
+    });
+  } catch (e) {
+    console.warn('[cost] удалить строки черновика не удалось', e);
+  }
+}
+
+/** Явное удаление всего черновика («Сбросить введённые значения»). */
+async function draftDeleteAll() {
+  const had = draftSent.size > 0;
+  draftSent.clear();
+  draftRestoredCount.value = 0;
+  draftNoticeHidden.value = false;
+  if (!had || !draftCanEdit.value) return;
+  try {
+    await $fetch(`${apiBase.value}/api/cost/price-draft/delete`, {
+      method: 'POST', body: { all: true }, headers: fetchHeaders.value,
+    });
+  } catch (e) {
+    console.warn('[cost] очистить черновик не удалось', e);
+  }
+}
+
+/** Наложить черновик на загруженную выдачу. changedRows.set здесь — прямой,
+ *  БЕЗ scheduleDraftSync: серверный документ мы не меняли, отправлять нечего. */
+function applyDraftToTable() {
+  draftApplied.value = true;
+  const doc = draftServer.value;
+  if (!doc || !draftCanEdit.value) return;
+  const byKey = new Map<string, any>();
+  for (const r of allAggregated.value) byKey.set(calcRowKey(r), r);
+  let n = 0;
+  for (const [key, entry] of Object.entries(doc)) {
+    const snap: any = (entry as any)?.snapshot || {};
+    const srow: any = snap.row || {};
+    const live = byKey.get(key);
+    if (live) {
+      // С тех пор по калькуляции появилась заявка или блокировка — ввод дожил
+      // до назначения (или его ведёт другой процесс), черновик не накладываем.
+      if (isRowLocked(live) || live._has_pending) continue;
+      for (const f of PRICE_DRAFT_FIELDS) if (srow[f] !== undefined) live[f] = srow[f];
+      changedRows.set(key, live);
+    } else {
+      // Строки сейчас нет в выдаче — ровно то состояние, которое механизм
+      // changedRows уже поддерживает для скрытых фильтром правок.
+      changedRows.set(key, srow);
+    }
+    if (snap.markup !== undefined) markupSelections[key] = snap.markup;
+    if (snap.rf !== undefined) priceRF[key] = snap.rf;
+    if (snap.kz !== undefined) priceKZ[key] = snap.kz;
+    if (snap.uz !== undefined) priceUZ[key] = snap.uz;
+    try { draftSent.set(key, JSON.stringify(snap)); } catch { /* noop */ }
+    n++;
+  }
+  draftRestoredCount.value = n;
+  draftNoticeHidden.value = false;
+}
+
+/** Черновик готов и выдача загружена — применить ровно один раз. */
+function tryApplyDraft() {
+  if (draftApplied.value || !draftReady.value) return;
+  if (!allAggregated.value.length) return;
+  applyDraftToTable();
+}
+
+async function loadPriceDraft() {
+  try {
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/price-draft`, {
+      headers: fetchHeaders.value,
+    });
+    draftServer.value = resp?.items || {};
+  } catch (e) {
+    console.warn('[cost] черновик с сервера не получен, работаем без него', e);
+    draftServer.value = {};
+  } finally {
+    draftReady.value = true;
+    tryApplyDraft();
+  }
+}
+
+watch(draftCanEdit, (ok) => {
+  // Только на клиенте: на SSR относительный URL до API не дойдёт, а черновик
+  // нужен ровно в браузере, где человек печатает цены.
+  if (ok && process.client && !draftFetchStarted) {
+    draftFetchStarted = true;
+    void loadPriceDraft();
+  }
+}, { immediate: true });
+
+onMounted(() => {
+  // Закрыли вкладку раньше дебаунса — дописать черновик успевшим запросом.
+  window.addEventListener('pagehide', () => {
+    if (draftSyncTimer !== null) {
+      clearTimeout(draftSyncTimer);
+      draftSyncTimer = null;
+      void pushDraftDiff({ keepalive: true });
+    }
+  });
+});
 
 async function loadPriceLevels() {
   try {
@@ -6029,18 +6242,21 @@ const onPriceRFInput = (row: any, value: string) => {
   const v = parseFloat(value);
   priceRF[calcRowKey(row)] = isNaN(v) ? 0 : v;
   changedRows.set(calcRowKey(row), row);
+  scheduleDraftSync();
 };
 const onPriceKZInput = (row: any, value: string) => {
   if (!row || isRowLocked(row)) return;
   const v = parseFloat(value);
   priceKZ[calcRowKey(row)] = isNaN(v) ? 0 : v;
   changedRows.set(calcRowKey(row), row);
+  scheduleDraftSync();
 };
 const onPriceUZInput = (row: any, value: string) => {
   if (!row || isRowLocked(row)) return;
   const v = parseFloat(value);
   priceUZ[calcRowKey(row)] = isNaN(v) ? 0 : v;
   changedRows.set(calcRowKey(row), row);
+  scheduleDraftSync();
 };
 
 // Комментарий — самостоятельная сущность (задача 664394): сохраняется сразу
@@ -7612,9 +7828,11 @@ const onRetailPriceSelect = (row: any, value: string) => {
 
   if (isNaN(numVal) || numVal <= 0) {
     targets.forEach(clearRow);
+    scheduleDraftSync();
     return;
   }
   targets.forEach(r => updateRow(r, numVal));
+  scheduleDraftSync();
 
   // Автовыбор наценки по category level01 (только для текущей строки, onMarkupSelect синхронизирует сам)
   const options = getMarkupOptions(row);
@@ -7683,6 +7901,7 @@ const onMarkupSelect = async (row: any, markupValue: string) => {
     markupSelections[k] = markupValue;
     changedRows.set(k, r);
   }
+  scheduleDraftSync();
 };
 
 /** Курс RUB→USD строки: из калькуляции, иначе из её цен, иначе из любой строки
@@ -7920,6 +8139,7 @@ function applyManualPrice() {
     changedRows.set(k, r);
   }
   manualPrice.value = null;
+  scheduleDraftSync();
 }
 
 const saveAllChanges = async () => {
@@ -8001,9 +8221,16 @@ const saveAllChanges = async () => {
     // changedRows, иначе loadData вычистит введённые по ним цены РФ/КЗ/УЗ и
     // комментарий при первой же смене фильтра.
     const sentKeys = new Set(sent.map(([key]) => key));
+    const droppedKeys: string[] = [];
     for (const [key, row] of Array.from(changedRows.entries())) {
-      if (sentKeys.has(key) && !failedKeys.has(calcRowKey(row))) changedRows.delete(key);
+      if (sentKeys.has(key) && !failedKeys.has(calcRowKey(row))) {
+        changedRows.delete(key);
+        droppedKeys.push(key);
+      }
     }
+    // Сохранённое черновику больше не нужно: ключи снимаем явным удалением,
+    // иначе «несуществующая» правка вернулась бы после перезагрузки.
+    void draftDeleteKeys(droppedKeys);
     // Формулировка — СОСТОЯНИЕ, а не итог попытки: придержанные строки остаются
     // отмеченными и после сохранения, поэтому «не отправлено N» повторялось бы
     // из раза в раз и читалось как новая потеря.
@@ -11460,6 +11687,17 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
    кнопкой сохранения, видима и когда кнопка неактивна. */
 .held-no-price { display:inline-flex; align-items:center; gap:6px; font-size: var(--fs-xs);
   color: var(--text-muted); cursor: help; white-space: nowrap; }
+/* Плашка восстановленного черновика — цвет «несохранённого» (акцент), как
+   полоса строки row-unsaved: то же состояние, просто дожившее до перезагрузки. */
+.draft-restored { display:inline-flex; align-items:center; gap:6px; font-size: var(--fs-xs);
+  color: var(--text-secondary); cursor: help; white-space: nowrap;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 6px; padding: 2px 8px; }
+.draft-restored__close { border: none; background: transparent; color: inherit; cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px; margin-left: 2px; }
+.draft-error { display:inline-flex; align-items:center; gap:6px; font-size: var(--fs-xs);
+  color: var(--warn, #b76e00); white-space: nowrap; cursor: help; }
 .stage-legend-item { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
 .stage-legend .stage-badge { min-width:18px; height:18px; font-size:11px; }
 /* «Источник изменился» (миграция 0057) — второй значок в колонке этапа,

@@ -4038,6 +4038,99 @@ async def save_user_table_prefs(email: str, prefs: dict) -> None:
             key, json.dumps(prefs, ensure_ascii=False),
         )
 
+
+# ── Черновик несохранённых цен (миграция 0068) ───────────────────────────────
+#
+# Личная рабочая копия ввода бренд-менеджера между нажатиями «Сохранить
+# изменения». Границы зафиксированы в комментарии миграции: черновик НИКОГДА
+# не смешивать с cost_price_pending — ни по записи, ни по чтению. Никаких
+# уведомлений отсюда тоже не шлём: это не заявка, никто её не ждёт.
+
+PRICE_DRAFT_MAX_ROWS = 500
+PRICE_DRAFT_TTL_DAYS = 30
+
+
+async def get_price_draft(email: str) -> dict:
+    """Черновик пользователя: row_key → {snapshot, updated_at}. Пусто — {}."""
+    key = (email or "").strip()
+    if not key:
+        return {}
+    async with acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT row_key, snapshot, updated_at FROM cost_price_draft WHERE email = $1",
+            key,
+        )
+    out: dict = {}
+    for r in rows:
+        raw = r["snapshot"]
+        out[r["row_key"]] = {
+            "snapshot": json.loads(raw) if isinstance(raw, str) else dict(raw),
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        }
+    return out
+
+
+async def upsert_price_draft_items(email: str, items: list[dict]) -> int:
+    """Дописать/обновить ключи черновика. Только MERGE: чужие ключи не трогаем,
+    удаление — отдельная явная операция (см. delete_price_draft)."""
+    key = (email or "").strip()
+    if not key:
+        raise ValueError("email обязателен")
+    if not items:
+        return 0
+    async with acquire() as conn:
+        stale = await conn.execute(
+            "DELETE FROM cost_price_draft WHERE email = $1"
+            " AND updated_at < now() - interval '1 day' * $2",
+            key, PRICE_DRAFT_TTL_DAYS,
+        )
+        if stale and stale.startswith("DELETE"):
+            print(f"[cost] price-draft: почистлено просроченных {stale.split()[-1]}", flush=True)
+        held = await conn.fetchval(
+            "SELECT count(*) FROM cost_price_draft WHERE email = $1", key
+        )
+        new_keys = {str(it.get("key") or "").strip() for it in items}
+        if (held or 0) + len(new_keys) > PRICE_DRAFT_MAX_ROWS:
+            raise ValueError(
+                f"Черновик переполнен (лимит {PRICE_DRAFT_MAX_ROWS} строк) — "
+                "сохраните часть правок кнопкой «Сохранить изменения» "
+                "или отмените лишние «Сбросить введённые значения»"
+            )
+        for it in items:
+            row_key = str(it.get("key") or "").strip()
+            snapshot = it.get("snapshot")
+            if not row_key or not isinstance(snapshot, dict):
+                raise ValueError("каждый элемент items: непустой key и объект snapshot")
+            await conn.execute(
+                """INSERT INTO cost_price_draft (email, row_key, snapshot, updated_at)
+                   VALUES ($1, $2, $3::jsonb, now())
+                   ON CONFLICT (email, row_key) DO UPDATE
+                       SET snapshot = EXCLUDED.snapshot, updated_at = now()""",
+                key, row_key, json.dumps(snapshot, ensure_ascii=False),
+            )
+        return len(items)
+
+
+async def delete_price_draft(email: str, keys: list[str] | None, all_rows: bool) -> int:
+    """Явное удаление черновика: конкретные ключи (успешно сохранённые) или всё
+    («Сбросить введённые значения»). Возвращает число удалённых строк."""
+    key = (email or "").strip()
+    if not key:
+        return 0
+    async with acquire() as conn:
+        if all_rows:
+            res = await conn.execute("DELETE FROM cost_price_draft WHERE email = $1", key)
+        else:
+            clean = [str(k).strip() for k in (keys or []) if str(k).strip()]
+            if not clean:
+                return 0
+            res = await conn.execute(
+                "DELETE FROM cost_price_draft WHERE email = $1 AND row_key = ANY($2::text[])",
+                key, clean,
+            )
+    return int(res.split()[-1]) if res and res.split()[-1].isdigit() else 0
+
+
 # ── Наборы цен на материалы для плана (миграция 0033) ─────────────────────────
 #
 # Массовая правка цен материалов по PLAN_ID целиком, без привязки к модели,

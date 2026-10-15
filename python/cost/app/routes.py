@@ -16,7 +16,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app import articul_replace, commercial, fot, fot_insights, fot_pptx, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
-from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED, row_comments_for, set_row_comment)
+from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_price_draft, upsert_price_draft_items, delete_price_draft, PRICE_DRAFT_MAX_ROWS, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED, row_comments_for, set_row_comment)
 from app.logship import log
 from app.db import get_source_change_flags
 from app.middleware import require_perm
@@ -3507,6 +3507,62 @@ async def put_table_prefs(payload: dict, user_email: str = Depends(_require_perm
         return {"success": True, "mock": True}
     await save_user_table_prefs(user_email or "", prefs)
     return {"success": True, "bytes": size}
+
+
+# ── Черновик несохранённых цен (миграция 0068, просьба Б24 14.10.2026) ───────
+#
+# Личная рабочая копия ввода между нажатиями «Сохранить изменения». Эндпоинты
+# ничем не помогают ПЭО и не пишут ни в какие рабочие таблицы: GET отдаёт
+# черновик владельца, upsert дополняет только его собственные ключи, delete —
+# только явное (сохранённое/сброшенное). Границы — в комментарии миграции.
+
+PRICE_DRAFT_MAX_ITEM_BYTES = 64 * 1024  # снимок одной строки
+
+
+@router.get("/price-draft")
+async def get_price_draft_ep(user_email: str = Depends(_require_perm("cost:edit_price"))) -> dict:
+    if _is_mock():
+        return {"items": {}, "mock": True}
+    return {"items": await get_price_draft(user_email or "")}
+
+
+@router.post("/price-draft/upsert")
+async def price_draft_upsert_ep(
+    payload: dict, user_email: str = Depends(_require_perm("cost:edit_price"))
+) -> dict:
+    if _is_mock():
+        return {"success": True, "mock": True}
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise HTTPException(400, "items должен быть списком")
+    if len(items) > PRICE_DRAFT_MAX_ROWS:
+        raise HTTPException(413, f"Одно сохранение не может быть больше {PRICE_DRAFT_MAX_ROWS} строк")
+    for it in items:
+        snap = (it or {}).get("snapshot") if isinstance(it, dict) else None
+        if snap is not None:
+            size = len(json.dumps(snap, ensure_ascii=False).encode())
+            if size > PRICE_DRAFT_MAX_ITEM_BYTES:
+                raise HTTPException(413, f"Снимок строки слишком большой: {size} Б > {PRICE_DRAFT_MAX_ITEM_BYTES} Б")
+    try:
+        count = await upsert_price_draft_items(user_email or "", items)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True, "count": count}
+
+
+@router.post("/price-draft/delete")
+async def price_draft_delete_ep(
+    payload: dict, user_email: str = Depends(_require_perm("cost:edit_price"))
+) -> dict:
+    if _is_mock():
+        return {"success": True, "mock": True}
+    all_rows = bool(payload.get("all"))
+    keys = payload.get("keys") or []
+    if not isinstance(keys, list):
+        raise HTTPException(400, "keys должен быть списком")
+    deleted = await delete_price_draft(user_email or "", [str(k) for k in keys], all_rows)
+    return {"success": True, "deleted": deleted}
+
 
 @router.post("/calc-sign-copy")
 async def create_calc_sign_copy(
