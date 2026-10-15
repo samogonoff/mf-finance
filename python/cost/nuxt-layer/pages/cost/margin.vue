@@ -296,7 +296,8 @@
             <strong>Норматив</strong> и <strong>факт</strong> — один и тот же расчёт ФКСС по
             нормативной и фактической стоимости минуты. <strong>Плановая</strong> — КПСС того же
             задания, если он есть, иначе значение из карточки модели в Лисе (источник в отдельной
-            колонке). <strong>ПФКСС</strong> — себестоимость на этапе расценки.
+            колонке). <strong>ПФКСС</strong> — себестоимость на этапе расценки: последняя
+            рассчитанная по артикулу, подставляется на все задания (Б24 663795).
             Отклонение — «что сравниваем / база − 1».
             <span v-if="meta.deviations_truncated" class="warn">
               Показаны {{ meta.deviations_row_limit }} артикулов с наибольшим выпуском — сузьте фильтры.</span>
@@ -902,7 +903,7 @@ const devColumns = computed<Col[]>(() => {
       { key: 'unit_fact_byn', label: 'Факт (ФКСС)', title: 'тот же расчёт ФКСС по фактической стоимости минуты',
         fmt: r => fmtMoney(r.unit_fact_byn) },
       { key: 'unit_pfkss_byn', label: 'Фактическая себестоимость расценки (ПФКСС)',
-        title: 'себестоимость единицы на этапе ПФКСС того же задания; этот этап ведут не для всего ассортимента',
+        title: 'последняя рассчитанная ПФКСС на модель/артикул — подставляется на все планы и задания (Б24 663795); этот этап ведут не для всего ассортимента',
         fmt: r => fmtMoney(r.unit_pfkss_byn) },
       { key: 'unit_plan_byn', label: 'Плановая с/с (КПСС)',
         title: 'КПСС того же задания, если он есть; иначе PLAN_PRICE из карточки модели в Лисе',
@@ -922,7 +923,7 @@ const devColumns = computed<Col[]>(() => {
     { key: 'dev_fact_norm_pct', label: 'Отклонение факт / норматив, %', title: 'факт / норматив − 1; выше нуля — факт дороже',
       fmt: r => fmtSignedPct(r.dev_fact_norm_pct), cls: r => devCls(r.dev_fact_norm_pct, false) },
     { key: 'unit_pfkss_byn', label: 'Фактическая себестоимость расценки (ПФКСС)',
-      title: 'себестоимость единицы на этапе ПФКСС того же задания', fmt: r => fmtMoney(r.unit_pfkss_byn) },
+      title: 'последняя рассчитанная ПФКСС на модель/артикул — подставляется на все планы и задания (Б24 663795)', fmt: r => fmtMoney(r.unit_pfkss_byn) },
     { key: 'fact_coverage_pct', label: 'Факт годен, % выпуска', title: 'у остальных строк артикула фактическая ставка минуты не заведена',
       fmt: r => fmtPct(r.fact_coverage_pct, 0), cls: r => (isNum(r.fact_coverage_pct) && r.fact_coverage_pct < 100 ? 'neg' : '') },
     { key: 'unit_price_byn', label: 'Отпускная цена', fmt: r => fmtMoney(r.unit_price_byn) },
