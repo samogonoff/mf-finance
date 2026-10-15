@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Реплика FinDWH → ClickHouse (БД findwh) для аналитиков: GLMF, Table_Fin_PL,
+// Реплика FinDWH → ClickHouse (таблицы finance.findwh_*) для аналитиков: GLMF, Table_Fin_PL,
 // ExRates. Дизайн и замеры — docs/bi/findwh-etl.md, схема —
 // clickhouse/migrations/012_findwh.up.sql.
 //
@@ -23,7 +23,7 @@ import (
 // Даты в SQL — только 'YYYYMMDD' (CONVERT(..., 112)): логин работает с
 // DATEFORMAT dmy, и ISO-литерал '2026-09-01' для datetime читается как 9 января.
 
-// Таблицы реплики (значения FINDWH_TABLES и findwh.etl_runs.table_name).
+// Таблицы реплики (значения FINDWH_TABLES и finance.findwh_etl_runs.table_name).
 const (
 	FinDWHGLMF       = "glmf"
 	FinDWHTableFinPL = "table_fin_pl"
@@ -222,7 +222,7 @@ func chQuote(s string) string {
 
 // --- журнал и готовность ------------------------------------------------------
 
-// finDWHRun — строка findwh.etl_runs.
+// finDWHRun — строка finance.findwh_etl_runs.
 type finDWHRun struct {
 	TableName   string `json:"table_name"`
 	SourceDate  string `json:"source_date"`
@@ -240,7 +240,7 @@ func writeFinDWHRun(ctx context.Context, ch *chClient, r finDWHRun) {
 		log.Printf("findwh: etl_runs encode: %v", err)
 		return
 	}
-	if err := ch.insertJSON(ctx, "findwh.etl_runs", &buf); err != nil {
+	if err := ch.insertJSON(ctx, "finance.findwh_etl_runs", &buf); err != nil {
 		log.Printf("findwh: etl_runs insert: %v", err)
 	}
 }
@@ -295,7 +295,7 @@ func sourceReady(ctx context.Context, db *sql.DB, opts FinDWHOpts, table string,
 // loadedToday — есть ли успешный прогон таблицы за дату источника.
 func loadedToday(ctx context.Context, ch *chClient, table, sourceDate string) (bool, error) {
 	s, err := ch.queryString(ctx, fmt.Sprintf(
-		"SELECT count() FROM findwh.etl_runs WHERE table_name = %s AND status = 'ok' AND source_date = toDate(%s)",
+		"SELECT count() FROM finance.findwh_etl_runs WHERE table_name = %s AND status = 'ok' AND source_date = toDate(%s)",
 		chQuote(table), chQuote(sourceDate)))
 	if err != nil {
 		return false, err

@@ -1,4 +1,10 @@
--- 012 — БД findwh: сырая реплика FinDWH для аналитиков (GLMF, Table_Fin_PL, ExRates).
+-- 012 — сырая реплика FinDWH для аналитиков (GLMF, Table_Fin_PL, ExRates):
+-- таблицы finance.findwh_* в общей БД finance.
+--
+-- Почему не отдельная БД findwh: прод-пользователь CH имеет права только на
+-- finance.* (GRANT ALL ON finance.*), CREATE DATABASE findwh падает с
+-- ACCESS_DENIED (так упал первый деплой этой миграции). Префикс findwh_ отделяет
+-- реплику от отчётных витрин ВГО; аналитикам права выдаются на эти таблицы.
 --
 -- Дизайн и замеры: docs/bi/findwh-etl.md. Наполняет go-api (воркер
 -- FINDWH_SYNC_INTERVAL) или cmd/findebt-etl MODE=findwh, код internal/etl/findwh*.go.
@@ -8,14 +14,14 @@
 -- сохранена, чтобы колонку находили по имени из FinDWH). Строки NOT NULL: NULL
 -- источника приходит пустой строкой. Числа и даты, где NULL осмыслен, — Nullable.
 
-CREATE DATABASE IF NOT EXISTS findwh;
+CREATE DATABASE IF NOT EXISTS finance;
 
 -- GLMF (= Premaster1C + классификация), с FINDWH_GLMF_FROM (дефолт 2025-01-01).
 -- Ключа строки в источнике нет: GLMF.Num — identity, новый при каждой ночной
 -- пересборке, поэтому в реплику не переносится. Обновление — заменой секций:
--- секция (company, месяц) собирается в findwh.glmf_stage и ставится через
+-- секция (company, месяц) собирается в finance.findwh_glmf_stage и ставится через
 -- REPLACE PARTITION, см. glmf_day_fp.
-CREATE TABLE IF NOT EXISTS findwh.glmf
+CREATE TABLE IF NOT EXISTS finance.findwh_glmf
 (
     base_doc_id                         String,
     doc_id                              String,                   -- 1С-ссылка {"#",...}
@@ -71,10 +77,10 @@ PARTITION BY (company, toYYYYMM(date))
 ORDER BY (company, date, dr_acc, cr_acc)
 SETTINGS index_granularity = 8192;
 
--- Отпечатки дней GLMF, которые сейчас лежат в findwh.glmf. ETL считает такие же
+-- Отпечатки дней GLMF, которые сейчас лежат в finance.findwh_glmf. ETL считает такие же
 -- на стороне MSSQL и перегружает только разошедшиеся дни. is_deleted=1 — день
 -- пропал из источника (и из реплики). Читать с FINAL.
-CREATE TABLE IF NOT EXISTS findwh.glmf_day_fp
+CREATE TABLE IF NOT EXISTS finance.findwh_glmf_day_fp
 (
     company     String,
     date        Date,
@@ -93,7 +99,7 @@ ORDER BY (company, date);
 -- Компания→company, Корр-ка→counterparty, ВГО→vgo, Блок→block_name,
 -- Метод.нюансы→method_nuances, КлючСвязи→link_key,
 -- Для отчета_скрипт→for_report_script, Для отчета→for_report.
-CREATE TABLE IF NOT EXISTS findwh.table_fin_pl
+CREATE TABLE IF NOT EXISTS finance.findwh_table_fin_pl
 (
     block_num                Nullable(Int32),
     dr_cr                    LowCardinality(String),
@@ -138,7 +144,7 @@ SETTINGS index_granularity = 8192;
 
 -- ExRates* (курс USD из Gpartner.valuta1): все страновые таблицы в одной.
 -- country: '' = dbo.ExRates, иначе суффикс таблицы (BY, RU, KZ, UZ, TR).
-CREATE TABLE IF NOT EXISTS findwh.ex_rates
+CREATE TABLE IF NOT EXISTS finance.findwh_ex_rates
 (
     country     LowCardinality(String),
     data        Date,
@@ -151,7 +157,7 @@ ORDER BY (country, valuta_id, data);
 
 -- Журнал прогонов ETL: по нему воркер понимает, что сегодняшняя загрузка уже
 -- прошла (source_date = дата на сервере MSSQL), а аналитик — насколько свежи данные.
-CREATE TABLE IF NOT EXISTS findwh.etl_runs
+CREATE TABLE IF NOT EXISTS finance.findwh_etl_runs
 (
     table_name    LowCardinality(String),
     source_date   Date,

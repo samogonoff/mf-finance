@@ -79,13 +79,24 @@ for f in "$MIGRATIONS_DIR"/*.up.sql; do
 
   for s in "$tmpd"/*.sql; do
     [ -e "$s" ] || continue
-    if ! curl -sS -f \
+    # Без curl -f: при ошибке CH отдаёт текст исключения в теле ответа (код,
+    # ACCESS_DENIED и т.п.) — печатаем его, иначе в логе CI только «500».
+    code="$(curl -sS -o "$tmpd/resp" -w '%{http_code}' \
           --user "$CH_USER:$CH_PASS" \
           --data-binary @"$s" \
-          "$URL/"; then
-      echo "[clickhouse] FAILED на statement $(basename "$s") из $(basename "$f")" >&2
-      exit 1
-    fi
+          "$URL/")" || code="curl-error"
+    case "$code" in
+      2??) ;;
+      *)
+        echo "[clickhouse] FAILED на statement $(basename "$s") из $(basename "$f"): HTTP $code" >&2
+        head -c 2000 "$tmpd/resp" >&2 2>/dev/null || true
+        echo >&2
+        echo "[clickhouse] statement:" >&2
+        head -c 500 "$s" >&2
+        echo >&2
+        exit 1
+        ;;
+    esac
   done
 done
 

@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// GLMF → findwh.glmf: сверка по отпечаткам дней и замена секций.
+// GLMF → finance.findwh_glmf: сверка по отпечаткам дней и замена секций.
 //
 // Почему не инкремент: GLMF_exec каждую ночь пересобирает таблицу целиком
 // (GLMF_load + SWITCH), GLMF.Num — identity и после пересборки другой, а Premaster
@@ -26,18 +26,18 @@ import (
 //  1. MSSQL сам считает отпечаток каждого дня (компания × дата): COUNT, SUM суммы
 //     BYN и две контрольные суммы BINARY_CHECKSUM по всем колонкам, кроме Num.
 //     По сети — ~8 тыс. строк; скан GLMF остаётся на сервере (~5 мин).
-//  2. Сравниваем с findwh.glmf_day_fp — отпечатками того, что лежит в реплике.
+//  2. Сравниваем с finance.findwh_glmf_day_fp — отпечатками того, что лежит в реплике.
 //     Разошедшийся, новый или пропавший день — «грязный».
 //  3. Грязные дни компании берём пачками по ChunkMonths месяцев (seek в GLMF
 //     возможен только по Company — кластерный индекс Company,DrAcc,CrAcc,Date).
-//     Секция (company, месяц) собирается в findwh.glmf_stage из чистых дней,
+//     Секция (company, месяц) собирается в finance.findwh_glmf_stage из чистых дней,
 //     уже лежащих в CH, плюс свежих строк грязных дней, сверяется с отпечатками
 //     источника и ставится REPLACE PARTITION — атомарно для читателя. Секция,
 //     оставшаяся пустой, при REPLACE просто исчезает.
 //  4. Отпечатки грязных дней пишутся после замены — прерванная загрузка
 //     продолжится со следующей пачки, а не с начала.
 
-// glmfCols — dbo.GLMF → findwh.glmf (все колонки, кроме Num).
+// glmfCols — dbo.GLMF → finance.findwh_glmf (все колонки, кроме Num).
 var glmfCols = []colSpec{
 	{"BaseDocID", "base_doc_id", kStr},
 	{"DocID", "doc_id", kStr},
@@ -88,7 +88,7 @@ var glmfCols = []colSpec{
 	{"CrSubconto4Id", "cr_subconto4_id", kInt},
 }
 
-const glmfStage = "findwh.glmf_stage"
+const glmfStage = "finance.findwh_glmf_stage"
 
 // dirtyWarnShare — доля грязных дней, выше которой пишем warn: так выглядит
 // глобальная смена маппинга в DWH (по сути полная перезагрузка — делаем, но видно в логе).
@@ -181,17 +181,17 @@ func srcFingerprints(ctx context.Context, db *sql.DB, opts FinDWHOpts) (map[dayK
 
 func chFingerprints(ctx context.Context, ch *chClient) (map[dayKey]dayFP, error) {
 	body, err := ch.queryString(ctx, `SELECT company, toString(date), n, toString(sum_byn), fp_xor, fp_sum
-FROM findwh.glmf_day_fp FINAL WHERE is_deleted = 0 FORMAT TabSeparated`)
+FROM finance.findwh_glmf_day_fp FINAL WHERE is_deleted = 0 FORMAT TabSeparated`)
 	if err != nil {
 		return nil, err
 	}
 	return parseCHFingerprints(body)
 }
 
-// chDataDays — дни, за которые в findwh.glmf реально есть строки.
+// chDataDays — дни, за которые в finance.findwh_glmf реально есть строки.
 func chDataDays(ctx context.Context, ch *chClient) (map[dayKey]struct{}, error) {
 	body, err := ch.queryString(ctx,
-		"SELECT DISTINCT company, toString(toDate(date)) FROM findwh.glmf FORMAT TabSeparated")
+		"SELECT DISTINCT company, toString(toDate(date)) FROM finance.findwh_glmf FORMAT TabSeparated")
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +202,7 @@ func chDataDays(ctx context.Context, ch *chClient) (map[dayKey]struct{}, error) 
 	for _, line := range strings.Split(body, "\n") {
 		f := strings.Split(line, "\t")
 		if len(f) != 2 {
-			return nil, fmt.Errorf("findwh.glmf: строка %q", line)
+			return nil, fmt.Errorf("finance.findwh_glmf: строка %q", line)
 		}
 		out[dayKey{Company: f[0], Date: f[1]}] = struct{}{}
 	}
@@ -307,7 +307,7 @@ func glmfExtractSQL(opts FinDWHOpts, company string, days []string) string {
 		"\n  AND CONVERT(char(8), [Date], 112) IN (" + strings.Join(lits, ", ") + ")"
 }
 
-// GLMFSyncStats — итог прогона GLMF (уходит в лог и findwh.etl_runs.details).
+// GLMFSyncStats — итог прогона GLMF (уходит в лог и finance.findwh_etl_runs.details).
 type GLMFSyncStats struct {
 	SourceDays  int   // дней в источнике с GLMFFrom
 	DirtyDays   int   // перегружено дней (включая удалённые)
@@ -385,7 +385,7 @@ func RunFinDWHGLMF(ctx context.Context, deps Deps, opts FinDWHOpts) (GLMFSyncSta
 	if err := ch.exec(ctx, "DROP TABLE IF EXISTS "+glmfStage); err != nil {
 		return st, fmt.Errorf("drop stage: %w", err)
 	}
-	if err := ch.exec(ctx, "CREATE TABLE "+glmfStage+" AS findwh.glmf"); err != nil {
+	if err := ch.exec(ctx, "CREATE TABLE "+glmfStage+" AS finance.findwh_glmf"); err != nil {
 		return st, fmt.Errorf("create stage: %w", err)
 	}
 	defer func() { _ = ch.exec(context.WithoutCancel(ctx), "DROP TABLE IF EXISTS "+glmfStage) }()
@@ -429,7 +429,7 @@ func syncGLMFChunk(ctx context.Context, deps Deps, ch *chClient, opts FinDWHOpts
 	}
 	if !opts.GLMFFull {
 		if _, err := ch.queryString(ctx, fmt.Sprintf(
-			"INSERT INTO %s SELECT * FROM findwh.glmf WHERE company = %s AND toYYYYMM(date) IN (%s) AND toDate(date) NOT IN (%s)",
+			"INSERT INTO %s SELECT * FROM finance.findwh_glmf WHERE company = %s AND toYYYYMM(date) IN (%s) AND toDate(date) NOT IN (%s)",
 			glmfStage, chQuote(c.Company), strings.Join(months, ", "), strings.Join(dirtyDates, ", "))); err != nil {
 			return 0, fmt.Errorf("копия чистых дней: %w", err)
 		}
@@ -466,7 +466,7 @@ func syncGLMFChunk(ctx context.Context, deps Deps, ch *chClient, opts FinDWHOpts
 
 	// 4. Замена секций. Месяц, где не осталось строк, REPLACE из пустой stage удалит.
 	for _, m := range c.Months {
-		if err := ch.exec(ctx, fmt.Sprintf("ALTER TABLE findwh.glmf REPLACE PARTITION tuple(%s, %d) FROM %s",
+		if err := ch.exec(ctx, fmt.Sprintf("ALTER TABLE finance.findwh_glmf REPLACE PARTITION tuple(%s, %d) FROM %s",
 			chQuote(c.Company), m, glmfStage)); err != nil {
 			return n, fmt.Errorf("replace partition %d: %w", m, err)
 		}
@@ -532,7 +532,7 @@ func compareStage(c glmfChunk, src map[dayKey]dayFP, got map[string]dayFP) error
 	return fmt.Errorf("stage не сходится с источником (stage/источник): %s", strings.Join(problems, "; "))
 }
 
-// glmfFPRow — строка findwh.glmf_day_fp.
+// glmfFPRow — строка finance.findwh_glmf_day_fp.
 type glmfFPRow struct {
 	Company   string `json:"company"`
 	Date      string `json:"date"`
@@ -557,7 +557,7 @@ func writeGLMFFingerprints(ctx context.Context, ch *chClient, days []dayKey, src
 			return err
 		}
 	}
-	if err := ch.insertJSON(ctx, "findwh.glmf_day_fp", &buf); err != nil {
+	if err := ch.insertJSON(ctx, "finance.findwh_glmf_day_fp", &buf); err != nil {
 		return fmt.Errorf("glmf_day_fp: %w", err)
 	}
 	return nil

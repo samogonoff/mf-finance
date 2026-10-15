@@ -9,7 +9,7 @@ import (
 // FinDWHWorker — фоновая реплика FinDWH → findwh. Тикает раз в interval; сама
 // загрузка — раз в сутки на таблицу (RunFinDWHDaily пропускает уже загруженное
 // и ещё не собранное в DWH), поэтому interval задаёт лишь, как быстро после
-// готовности источника данные доедут до CH. Состояние — в findwh.etl_runs, так
+// готовности источника данные доедут до CH. Состояние — в finance.findwh_etl_runs, так
 // что перезапуск go-api не вызывает повторной загрузки.
 type FinDWHWorker struct {
 	deps Deps

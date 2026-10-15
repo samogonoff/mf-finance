@@ -155,9 +155,9 @@ func TestFinDWHColumnsMatchMigration(t *testing.T) {
 			t.Errorf("%s:\n go:  %v\n sql: %v", table, got, want)
 		}
 	}
-	check("findwh.glmf", glmfCols)
-	check("findwh.table_fin_pl", tableFinPLCols)
-	check("findwh.ex_rates", exRatesCols)
+	check("finance.findwh_glmf", glmfCols)
+	check("finance.findwh_table_fin_pl", tableFinPLCols)
+	check("finance.findwh_ex_rates", exRatesCols)
 }
 
 // migrationColumns — колонки CREATE TABLE (кроме служебной loaded_at).

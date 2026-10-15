@@ -13,12 +13,12 @@ import (
 
 // finDWHSnapshot — что и куда снимать.
 type finDWHSnapshot struct {
-	Target string    // findwh.<таблица>
+	Target string    // finance.findwh_<таблица>
 	Cols   []colSpec // колонки в порядке SELECT
 	Query  string    // SELECT из MSSQL, отдаёт Cols в том же порядке
 }
 
-// tableFinPLCols — dbo.Table_Fin_PL → findwh.table_fin_pl.
+// tableFinPLCols — dbo.Table_Fin_PL → finance.findwh_table_fin_pl.
 var tableFinPLCols = []colSpec{
 	{"BlockNum", "block_num", kInt},
 	{"Dr_Cr", "dr_cr", kStr},
@@ -59,7 +59,7 @@ var tableFinPLCols = []colSpec{
 
 func tableFinPLSnapshot(opts FinDWHOpts) finDWHSnapshot {
 	return finDWHSnapshot{
-		Target: "findwh.table_fin_pl",
+		Target: "finance.findwh_table_fin_pl",
 		Cols:   tableFinPLCols,
 		Query:  "SELECT " + selectList(tableFinPLCols) + " FROM " + opts.fqn("Table_Fin_PL"),
 	}
@@ -85,7 +85,7 @@ func exRatesSnapshot(opts FinDWHOpts) finDWHSnapshot {
 			" FROM " + opts.fqn("ExRates"+sfx)
 	}
 	return finDWHSnapshot{
-		Target: "findwh.ex_rates",
+		Target: "finance.findwh_ex_rates",
 		Cols:   exRatesCols,
 		Query:  strings.Join(parts, "\nUNION ALL\n"),
 	}
