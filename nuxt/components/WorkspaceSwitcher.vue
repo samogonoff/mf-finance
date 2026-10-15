@@ -51,7 +51,7 @@ const pick = (w: Workspace) => {
   go(w);
 };
 
-// click-outside: та же минимальная директива, что в EntitySwitcher.vue —
+// click-outside: минимальная директива —
 // общего плагина директив в проекте нет.
 const vClickOutside = {
   mounted(el: HTMLElement, binding: any) {

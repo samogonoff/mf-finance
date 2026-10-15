@@ -32,6 +32,8 @@ export default defineNuxtConfig({
       // Пусто → пункт в переключателе разделов скрыт: пока контур не поднят,
       // переход давал бы только 502.
       budgetEnabled: process.env.NUXT_PUBLIC_BUDGET_ENABLED === "1",
+      // Список сервисов компании: «Все сервисы» в сайдбаре ведут сюда.
+      portalListUrl: process.env.NUXT_PUBLIC_PORTAL_LIST_URL || "https://portal.markformelle.ru/list",
       b24AuthUrl:
         process.env.NUXT_PUBLIC_B24_AUTH_URL ||
         "https://mfportal.by/oauth/authorize/",
