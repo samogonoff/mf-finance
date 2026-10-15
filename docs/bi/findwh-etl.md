@@ -1,6 +1,8 @@
 # SPEC — реплика FinDWH → ClickHouse для аналитиков (GLMF, Table_Fin_PL, ExRates)
 
-> Статус: проект, разведка 13–15.10.2026. Код не начат.
+> Статус: реализовано (MR !142): миграция `clickhouse/migrations/012_findwh`,
+> код `go/internal/etl/findwh*.go`, воркер go-api (`FINDWH_SYNC_INTERVAL`),
+> CLI `cmd/findebt-etl MODE=findwh`. Эксплуатация — §9.
 > Зачем: аналитикам нужен быстрый доступ к факту/плану FinDWH из Superset,
 > не нагружая OLAP-сервер `10.10.6.15` и не завися от VPN.
 
@@ -129,11 +131,17 @@ SELECT * … WHERE Company=@c                  для каждой затрон�
 
 ### 4.3 Где живёт код
 
-Воркер в go-api по образцу `internal/etl/worker_currency.go` +
-standalone-режим в `cmd/findebt-etl` (`MODE=findwh`) для ручного прогона и
-начальной загрузки. CH — существующий `chClient` (HTTP, JSONEachRow).
-Расписание: ежедневно, проверка готовности по `msdb` с 09:00, повтор каждые
-30 мин до успеха; алерт в лог, если к 12:00 данные не обновлены.
+- `findwh.go` — колонки, потоковая запись в CH, журнал `etl_runs`, готовность
+  источника, `RunFinDWHDaily`;
+- `findwh_snapshot.go` — Table_Fin_PL и ExRates (снимок + `EXCHANGE TABLES`);
+- `findwh_glmf.go` — отпечатки, грязные дни, пачки, сборка секций, сверка;
+- `findwh_worker.go` — воркер go-api, свой MSSQL-пул на 2 соединения (поток
+  GLMF держит соединение часами и не должен занимать общий OLAP-пул на 4).
+
+Воркер тикает раз в `FINDWH_SYNC_INTERVAL`; на каждом тике для каждой таблицы:
+есть успешный прогон за сегодняшнюю дату сервера MSSQL → пропуск; шаг SQL Agent
+за сегодня ещё не прошёл → пропуск; иначе загрузка и строка в `etl_runs`.
+Упавшая таблица повторится на следующем тике.
 
 ## 5. Объёмы и сроки
 
@@ -185,7 +193,7 @@ standalone-режим в `cmd/findebt-etl` (`MODE=findwh`) для ручного
    отпечатков в конце `GLMF_exec` — тогда наш ежедневный 5-минутный скан не нужен.
 6. **Доступ Superset** к `findwh` и роль аналитиков в CH.
 
-## 8. Задачи
+## 8. Задачи (сделано в MR !142, кроме 7–8)
 
 1. CH-миграция `012_findwh.up.sql`: БД `findwh`, 5 таблиц (§3).
 2. `etl/findwh_snapshot.go`: полный снимок через `EXCHANGE TABLES` (ExRates, Table_Fin_PL) + тесты маппинга колонок.
@@ -195,3 +203,46 @@ standalone-режим в `cmd/findebt-etl` (`MODE=findwh`) для ручного
 6. ENV (`FINDWH_SYNC_ENABLED`, `FINDWH_GLMF_FROM=20250101`, `FINDWH_READY_AFTER=09:00`, …) — в `.env.example`.
 7. Начальная загрузка на проде, сверка `count/sum` по компании×месяцу с MSSQL.
 8. Датасеты в Superset + роль аналитиков.
+
+## 9. Эксплуатация
+
+**Включить на проде:** накатить CH-миграции (CI-джоб `migrations` делает сам),
+выдать учётке MSSQL права из §7.2, в env go-api `FINDWH_SYNC_INTERVAL=1800`.
+Первый тик после ~08:30 сам сделает начальную загрузку GLMF (пустая реплика =
+все дни грязные), прогресс — в логе `findwh: glmf <компания> [месяцы]`.
+
+**Руками / начальная загрузка отдельно от go-api:**
+
+```bash
+docker exec -e MODE=findwh finance-go-api-1 /findebt-etl          # как воркер
+docker exec -e MODE=findwh -e FINDWH_FORCE=1 -e FINDWH_TABLES=table_fin_pl finance-go-api-1 /findebt-etl
+docker exec -e MODE=findwh -e FINDWH_FORCE=1 -e FINDWH_GLMF_FULL=1 -e FINDWH_TABLES=glmf finance-go-api-1 /findebt-etl
+```
+
+(на проде креды в `/etc/api.env` — сорсить, см. память про `docker exec`).
+Не запускать CLI параллельно с воркером: оба пишут в `findwh.glmf_stage`.
+
+**Свежесть данных** (для дашборда/алерта):
+
+```sql
+SELECT table_name, max(source_date) AS loaded_for, argMax(status, started_at) AS last_status
+FROM findwh.etl_runs GROUP BY table_name
+```
+
+**Роль аналитиков** (руками, под пользователем с правом управления доступом —
+в миграцию не вынесено, у мигратора прав может не быть):
+
+```sql
+CREATE ROLE IF NOT EXISTS findwh_reader;
+GRANT SELECT ON findwh.* TO findwh_reader;
+GRANT findwh_reader TO <пользователь Superset/аналитика>;
+```
+
+**Сверка с источником** (раз после начальной загрузки, §8.7): по компании×месяцу
+`count()` и `sum(amount_with_vat_byn_fact)` в `findwh.glmf` против того же
+в MSSQL (`GROUP BY Company, Month`, `Date >= '20250101'`).
+
+**Если секция не сходится** (`stage не сходится с источником` в логе): секции не
+трогаются, отпечатки не пишутся — на следующем тике попытка повторится. Если
+расхождение стабильное (реплику правили руками), перегрузить:
+`FINDWH_FORCE=1 FINDWH_GLMF_FULL=1 FINDWH_TABLES=glmf`.
