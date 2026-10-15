@@ -117,8 +117,8 @@ func TestStageSync_NoCardsKeepsStages(t *testing.T) {
 	}
 }
 
-// Шаг «Финансист» внутри формы своего этапа не имеет: карточка на шаге fin уже
-// прошла 1.1, но до 1.2 не дошла.
+// Шаг «Финансист» внутри формы своего этапа не имеет и входит в этап 1.2:
+// карточка на шаге fin уже прошла 1.1 и руководителя, но этап 1.2 не закрыт.
 func TestStageSync_FinStepBelongsBetweenFillAndApproval(t *testing.T) {
 	cards := []Card{{Title: "Розница BY", Status: CardOnApproval, StepCode: "fin"}}
 	got := StageStatusFromCards(syncStages(), cards)
@@ -149,6 +149,39 @@ func TestScopeFilter_ExplicitFinStep(t *testing.T) {
 	other := NewScopeFilter(false, []UserScope{{Country: "BY", StageCode: "1.2"}})
 	if other.HasExplicitStep(StepFinCode) {
 		t.Fatal("правило на другой шаг роль финансиста не даёт")
+	}
+}
+
+// Маршрут 0072: розница 1.1 → 1.2 → fin → 1.3, МП 1.1 → 1.2 → 1.3. Этап периода
+// 1.2 закрывается, когда ВСЕ карточки прошли и руководителя, и (где он есть)
+// контролёра; карточка МП на 1.3 контролёра не ждёт.
+func TestStageSync_Stage12CoversManagerAndController(t *testing.T) {
+	if !cardPassedStep(Card{Status: CardOnApproval, StepCode: StepFinCode}, "1.2") {
+		t.Fatal("карточка на fin уже прошла шаг руководителя 1.2")
+	}
+	cases := []struct {
+		name  string
+		cards []Card
+		want  string
+	}{
+		{"розница у руководителя", []Card{{FormCode: TemplateRetail, Status: CardOnApproval, StepCode: "1.2"}}, "in_progress"},
+		{"розница у контролёра", []Card{{FormCode: TemplateRetail, Status: CardOnApproval, StepCode: StepFinCode}}, "in_progress"},
+		{"розница у директора", []Card{{FormCode: TemplateRetail, Status: CardOnApproval, StepCode: "1.3"}}, "completed"},
+		{"МП без контролёра у директора", []Card{{FormCode: TemplateMP, Status: CardOnApproval, StepCode: "1.3"}}, "completed"},
+		{"МП у директора, розница у контролёра", []Card{
+			{FormCode: TemplateMP, Status: CardOnApproval, StepCode: "1.3"},
+			{FormCode: TemplateRetail, Status: CardOnApproval, StepCode: StepFinCode},
+		}, "in_progress"},
+		{"возврат руководителю", []Card{{FormCode: TemplateMP, Status: CardReturned, StepCode: "1.2"}}, "returned"},
+	}
+	for _, tc := range cases {
+		got := StageStatusFromCards(syncStages(), tc.cards)
+		if s := statusByCode(got, "1.2"); s != tc.want {
+			t.Fatalf("%s: этап 1.2 = %q, want %q", tc.name, s, tc.want)
+		}
+		if s := statusByCode(got, "1.1"); s != "completed" {
+			t.Fatalf("%s: этап 1.1 = %q, want completed", tc.name, s)
+		}
 	}
 }
 

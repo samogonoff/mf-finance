@@ -507,7 +507,7 @@ const routeOnlySteps = computed<StageState[]>(() => {
   const out: StageState[] = [];
   for (const steps of Object.values(routes.value)) {
     for (const st of steps) {
-      // Calendar step 1.2 is the financial controller for sales cards.
+      // Этап периода 1.2 у форм продаж включает и шаг контролёра fin (stage_sync.go).
       if (!st.enabled || st.step_code === "fin" && ["TPL-MP", "TPL-TO-RETAIL"].includes(st.form_code) ||
           byCode.value[st.step_code] || seen.has(st.step_code)) continue;
       seen.add(st.step_code);

@@ -46,9 +46,11 @@ func TestScopedStepOwners_PG(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Exec(ctx, `DELETE FROM plans_directory_row WHERE id=$1`, rowID)
+	// Маршрут МП после 0072: 1.1 → 1.2 → 1.3 → 1.4, шаг fin выключен.
 	for _, a := range []UserScope{
-		{UserID: ru, Role: "controller", StageCode: "fin", Country: "RU", CodeCFO: []int{335}},
-		{UserID: by, Role: "controller", StageCode: "fin", Country: "BY", CodeCFO: []int{335}},
+		{UserID: ru, Role: "dept_head", StageCode: "1.2", Country: "RU", CodeCFO: []int{335}},
+		{UserID: by, Role: "dept_head", StageCode: "1.2", Country: "BY", CodeCFO: []int{335}},
+		{UserID: ru, Role: "fin_controller", StageCode: "fin", Country: "RU", CodeCFO: []int{335}},
 		{UserID: ru, Role: "unrelated", StageCode: "2.3"}, {UserID: by, Role: "unrelated", StageCode: "2.3"},
 	} {
 		if err := NewPgScopeStore(pool).UpsertScope(ctx, a); err != nil {
@@ -59,8 +61,11 @@ func TestScopedStepOwners_PG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["fin"] != ru {
-		t.Fatalf("controller=%d want=%d owners=%v", got["fin"], ru, got)
+	if got["1.2"] != ru {
+		t.Fatalf("manager=%d want=%d owners=%v", got["1.2"], ru, got)
+	}
+	if got["fin"] != 0 {
+		t.Fatalf("выключенный шаг fin не должен получать владельца у МП: %v", got)
 	}
 	if got["2.3"] != 0 {
 		t.Fatal("an unrelated route step participates in card ownership")
