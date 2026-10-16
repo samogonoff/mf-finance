@@ -39,6 +39,22 @@ func TestLoad_FinDebtOverride(t *testing.T) {
 	}
 }
 
+// История плана розницы (Checks.dbo.plan_saler_st*) лежит на SRV-SQL, а не на
+// OLAP: без префикса linked server запрос с OLAP падает и KLIENT_ID пуст.
+func TestLoad_RetailPlanHistoryViaLinkedServer(t *testing.T) {
+	for _, k := range []string{"PLANS_RETAIL_PLAN_HISTORY_TABLE", "PLANS_RETAIL_PLAN_HISTORY_NEW_TABLE"} {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
+	cfg := Load()
+	if cfg.PlansRetailPlanHistTable != "[SRV-SQL].Checks.dbo.plan_saler_st" {
+		t.Errorf("PlansRetailPlanHistTable default = %q", cfg.PlansRetailPlanHistTable)
+	}
+	if cfg.PlansRetailPlanHistNew != "[SRV-SQL].Checks.dbo.plan_saler_st_new_stores" {
+		t.Errorf("PlansRetailPlanHistNew default = %q", cfg.PlansRetailPlanHistNew)
+	}
+}
+
 func TestLoad_RetailCountryGate(t *testing.T) {
 	for _, tc := range []struct {
 		value string

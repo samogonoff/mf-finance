@@ -166,8 +166,8 @@ type Config struct {
 	PlansRetailApprovedTable       string // утверждённая тактика, национальная валюта
 	PlansRetailStrategyTable       string // стратегия в нац. валюте: Budgeting.dbo.VFORMTOLOADPLAN
 	PlansRetailStrategyGroup       string // ГруппыЦФО1 таблицы плана ('3.Магазины' — НЕ равно группе справочника)
-	PlansRetailPlanHistTable       string // история плана: Checks.dbo.plan_saler_st
-	PlansRetailPlanHistNew         string // история плана новых магазинов: Checks.dbo.plan_saler_st_new_stores
+	PlansRetailPlanHistTable       string // история плана: [SRV-SQL].Checks.dbo.plan_saler_st (Checks — на SRV-SQL, не на OLAP)
+	PlansRetailPlanHistNew         string // история плана новых магазинов: [SRV-SQL].Checks.dbo.plan_saler_st_new_stores
 	// PlansRetailValueLimits — верхняя граница значения ячейки по стране (V-02),
 	// формат «BY=5000000,RU=50000000». Страна без записи → границы нет.
 	PlansRetailValueLimits map[string]float64
@@ -280,8 +280,8 @@ func Load() Config {
 		PlansRetailApprovedTable:       env("PLANS_RETAIL_APPROVED_TABLE", "Budgeting.dbo.VFORMTOLOADTAKTTARGET"),
 		PlansRetailStrategyTable:       env("PLANS_RETAIL_STRATEGY_TABLE", "Budgeting.dbo.VFORMTOLOADPLAN"),
 		PlansRetailStrategyGroup:       env("PLANS_RETAIL_STRATEGY_GROUP", "3.Магазины"),
-		PlansRetailPlanHistTable:       env("PLANS_RETAIL_PLAN_HISTORY_TABLE", "Checks.dbo.plan_saler_st"),
-		PlansRetailPlanHistNew:         env("PLANS_RETAIL_PLAN_HISTORY_NEW_TABLE", "Checks.dbo.plan_saler_st_new_stores"),
+		PlansRetailPlanHistTable:       env("PLANS_RETAIL_PLAN_HISTORY_TABLE", "[SRV-SQL].Checks.dbo.plan_saler_st"),
+		PlansRetailPlanHistNew:         env("PLANS_RETAIL_PLAN_HISTORY_NEW_TABLE", "[SRV-SQL].Checks.dbo.plan_saler_st_new_stores"),
 		PlansRetailValueLimits:         parseCountryLimits(env("PLANS_RETAIL_VALUE_LIMITS", "")),
 		PlansRetailReconBlocking:       env("PLANS_RETAIL_RECON_BLOCKING", "") == "1",
 
