@@ -334,6 +334,7 @@ func RunFinDWHGLMF(ctx context.Context, deps Deps, opts FinDWHOpts) (GLMFSyncSta
 	}
 
 	t0 := time.Now()
+	opts.report(FinDWHGLMF, "отпечатки дней в MSSQL")
 	src, err := srcFingerprints(ctx, deps.MSSQL, opts)
 	if err != nil {
 		return st, fmt.Errorf("отпечатки MSSQL: %w", err)
@@ -391,10 +392,13 @@ func RunFinDWHGLMF(ctx context.Context, deps Deps, opts FinDWHOpts) (GLMFSyncSta
 	defer func() { _ = ch.exec(context.WithoutCancel(ctx), "DROP TABLE IF EXISTS "+glmfStage) }()
 
 	var firstErr error
-	for _, c := range planChunks(dirty, opts.ChunkMonths) {
+	chunks := planChunks(dirty, opts.ChunkMonths)
+	for i, c := range chunks {
 		if err := ctx.Err(); err != nil {
 			return st, err
 		}
+		opts.report(FinDWHGLMF, fmt.Sprintf("пачка %d из %d: %s %v, грязных дней всего %d",
+			i+1, len(chunks), c.Company, c.Months, st.DirtyDays))
 		n, err := syncGLMFChunk(ctx, deps, ch, opts, c, src)
 		st.Rows += n
 		if err != nil {

@@ -46,6 +46,17 @@ type FinDWHOpts struct {
 	Force          bool      // игнорировать «уже загружено сегодня» и готовность источника
 	GLMFFull       bool      // GLMF: игнорировать отпечатки реплики и перегрузить всё
 	TriggeredBy    string    // cron | cli
+
+	// progress — куда сообщать, что сейчас грузится (воркер показывает это на
+	// странице статуса). note == "" — таблица только начата. nil → никуда.
+	progress func(table, note string)
+}
+
+// report — сообщить о ходе загрузки, если кто-то слушает.
+func (o FinDWHOpts) report(table, note string) {
+	if o.progress != nil {
+		o.progress(table, note)
+	}
 }
 
 func (o *FinDWHOpts) normalize() {
@@ -342,6 +353,7 @@ func RunFinDWHDaily(ctx context.Context, deps Deps, opts FinDWHOpts) (int64, err
 		}
 
 		startedAt := time.Now()
+		opts.report(table, "")
 		var (
 			n       int64
 			details string
