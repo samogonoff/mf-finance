@@ -48,7 +48,8 @@ type FinDWHOpts struct {
 	TriggeredBy    string    // cron | cli
 
 	// progress — куда сообщать, что сейчас грузится (воркер показывает это на
-	// странице статуса). note == "" — таблица только начата. nil → никуда.
+	// странице статуса). note == "" — таблица только начата, table == "" —
+	// таблица закончена. nil → никуда.
 	progress func(table, note string)
 }
 
@@ -391,6 +392,7 @@ func RunFinDWHDaily(ctx context.Context, deps Deps, opts FinDWHOpts) (int64, err
 			log.Printf("findwh: %s загружена: rows=%d %s за %.0fs", table, n, details, time.Since(startedAt).Seconds())
 		}
 		writeFinDWHRun(ctx, ch, run)
+		opts.report("", "")
 		total += n
 	}
 	return total, firstErr

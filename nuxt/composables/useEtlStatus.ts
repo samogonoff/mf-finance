@@ -50,7 +50,8 @@ export interface EtlWorkerState {
   enabled: boolean;
   disabled_reason?: string;
   interval_sec: number;
-  last_tick_at?: string;
+  tick_started_at?: string; // тик идёт сейчас
+  last_tick_end_at?: string;
   last_tick_error?: string;
   next_tick_at?: string;
   running?: string;
@@ -61,7 +62,7 @@ export interface EtlWorkerState {
 export interface EtlStatusReport {
   checked_at: string;
   overall: EtlSeverity;
-  settings: { env: string; value: string; hint: string }[];
+  settings: { env: string; value: string; hint: string; error?: string }[];
   worker: EtlWorkerState;
   source: { checked: boolean; today: string; hour: number; error?: string };
   ch_error?: string;
@@ -76,7 +77,7 @@ export const ETL_SEVERITY_BADGE: Record<EtlSeverity, string> = {
 export const ETL_STATE_LABELS: Record<string, string> = {
   ok: "Загружено", running: "Загружается", waiting: "Ждём DWH", queued: "В очереди",
   late: "DWH опаздывает", error: "Ошибка", stale: "Устарело", off: "Воркер выключен",
-  unknown: "Нет связи с MSSQL", never: "Не загружалась"
+  source_unknown: "Источник не проверен", ch_down: "ClickHouse недоступен", never: "Не загружалась"
 };
 
 const authHeader = (): Record<string, string> => {

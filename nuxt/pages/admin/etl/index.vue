@@ -6,10 +6,10 @@
         <p class="page-subtitle">
           <span>Реплика FinDWH → ClickHouse (<code>finance.findwh_*</code>) для аналитиков</span>
           <template v-if="report">
-            <span class="ctx-sep">·</span>
+            <span class="sep">·</span>
             <span>проверено {{ fmtTime(report.checked_at) }}</span>
           </template>
-          <span v-if="loading" class="ctx-sep">·</span>
+          <span v-if="loading" class="sep">·</span>
           <span v-if="loading">обновляю…</span>
         </p>
       </div>
@@ -62,16 +62,19 @@
               <template v-if="report.worker.running">
                 грузит <b>{{ titleOf(report.worker.running) }}</b> с {{ fmtTime(report.worker.running_since) }}
               </template>
+              <template v-else-if="report.worker.tick_started_at">
+                проверяет готовность с {{ fmtTime(report.worker.tick_started_at) }}
+              </template>
               <template v-else>простаивает</template>
             </div>
           </div>
           <div class="fact">
-            <div class="fact-label">Последний тик</div>
-            <div class="fact-value num">{{ fmtDateTime(report.worker.last_tick_at) }}</div>
+            <div class="fact-label">Последний тик закончен</div>
+            <div class="fact-value num">{{ fmtDateTime(report.worker.last_tick_end_at) }}</div>
           </div>
           <div class="fact">
             <div class="fact-label">Следующий тик</div>
-            <div class="fact-value num">{{ report.worker.running ? "после загрузки" : fmtDateTime(report.worker.next_tick_at) }}</div>
+            <div class="fact-value num">{{ report.worker.tick_started_at ? "после текущего" : fmtDateTime(report.worker.next_tick_at) }}</div>
           </div>
           <div class="fact">
             <div class="fact-label">Часы MSSQL</div>
@@ -150,7 +153,7 @@
                 <span v-if="t.data.error" class="txt-neg">{{ t.data.error }}</span>
               </dd>
 
-              <dt>{{ t.table === "glmf" ? "Сверено" : "Залито" }}</dt>
+              <dt>{{ t.table === "glmf" ? "Последнее изменение" : "Залито" }}</dt>
               <dd class="num">{{ fmtDateTime(t.data.loaded_at) }}</dd>
 
               <dt>Источник готов</dt>
@@ -189,7 +192,10 @@
           <tbody>
             <tr v-for="s in report.settings" :key="s.env">
               <td><code>{{ s.env }}</code></td>
-              <td class="num value-cell">{{ s.value }}</td>
+              <td class="num value-cell">
+                {{ s.value }}
+                <div v-if="s.error" class="txt-warn hint-err">{{ s.error }}</div>
+              </td>
               <td class="muted">{{ s.hint }}</td>
             </tr>
           </tbody>
@@ -290,7 +296,7 @@ const fmtTime = (iso?: string) =>
   iso ? new Date(iso).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
 const dur = (sec: number) => {
   if (sec < 60) return `${sec} с`;
-  if (sec < 3600) return `${Math.round(sec / 60)} мин`;
+  if (sec < 3600) return `${Math.floor(sec / 60)} мин`;
   return `${Math.floor(sec / 3600)} ч ${String(Math.floor((sec % 3600) / 60)).padStart(2, "0")} мин`;
 };
 
@@ -298,7 +304,7 @@ const dur = (sec: number) => {
 const tick = () => {
   if (autoRefresh.value && document.visibilityState === "visible" && !loading.value) reload();
 };
-watch(autoRefresh, (on) => { if (on) reload(); });
+watch(autoRefresh, (on) => { if (on && !loading.value) reload(); });
 
 onMounted(() => {
   reload();
@@ -311,6 +317,8 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
 .page-etl { display: flex; flex-direction: column; gap: var(--sp-7); }
 .page-etl .page-header { margin-bottom: 0; }
 .page-actions { display: flex; align-items: center; gap: var(--sp-5); }
+.sep { margin: 0 var(--sp-3); color: var(--text-muted); }
+.hint-err { font-family: var(--font-sans); font-size: var(--fs-xs); white-space: normal; }
 .check { display: inline-flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-sm); color: var(--text-secondary); }
 
 .banner { padding: var(--sp-4) var(--sp-5); border-radius: var(--rd-3); font-size: var(--fs-sm); }

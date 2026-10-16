@@ -255,8 +255,6 @@ func main() {
 	// Реплика FinDWH → ClickHouse findwh (GLMF, Table_Fin_PL, ExRates) для
 	// аналитиков, docs/bi/findwh-etl.md. Свой пул на 2 соединения: поток GLMF
 	// держит соединение часами и не должен отнимать его у общего OLAP-пула (4).
-	// Пул открывается и при выключенном воркере (sql.Open ленивый): по нему
-	// страница статуса проверяет часы и готовность источника.
 	fwFrom, ferr := etl.ParseFinDWHDate(cfg.FinDWHGLMFFrom)
 	if ferr != nil && cfg.FinDWHSyncInterval > 0 {
 		log.Fatalf("findwh: FINDWH_GLMF_FROM: %v", ferr)
@@ -275,34 +273,52 @@ func main() {
 		ReadyAfterHour: cfg.FinDWHReadyAfterHour,
 	}
 	var (
-		fwWorker *etl.FinDWHWorker
-		fwOff    string
+		fwWorker   *etl.FinDWHWorker
+		fwStatusDB *sql.DB
+		fwOff      string
 	)
-	if cfg.DebtMock {
+	switch {
+	case cfg.DebtMock:
 		fwOff = "DEBT_MOCK=1 — живого MSSQL нет"
-	} else {
-		fwDB, ferr := debt.NewOLAPPool(cfg.PremasterServer, cfg.PremasterPort, cfg.FinDWHDB, cfg.PremasterUser, cfg.PremasterPassword)
-		switch {
-		case ferr != nil:
-			log.Fatalf("findwh: mssql open: %v", ferr)
-		case fwDB == nil:
-			fwOff = "MSSQL_PREMASTER_* не заданы"
-		default:
+	case cfg.PremasterServer == "" || cfg.PremasterUser == "" || cfg.PremasterPassword == "":
+		fwOff = "MSSQL_PREMASTER_* не заданы"
+	default:
+		if cfg.FinDWHSyncInterval > 0 {
+			fwDB, err := debt.NewOLAPPool(cfg.PremasterServer, cfg.PremasterPort, cfg.FinDWHDB, cfg.PremasterUser, cfg.PremasterPassword)
+			if err != nil {
+				log.Fatalf("findwh: mssql open: %v", err)
+			}
 			defer fwDB.Close()
 			fwDB.SetMaxOpenConns(2)
-			fwDeps.MSSQL = fwDB
-			if cfg.FinDWHSyncInterval > 0 {
-				fwWorker = etl.NewFinDWHWorker(fwDeps, fwOpts)
-				fwWorker.Start(context.Background(), time.Duration(cfg.FinDWHSyncInterval)*time.Second)
-			} else {
-				fwOff = "FINDWH_SYNC_INTERVAL=0"
-			}
+			wDeps := fwDeps
+			wDeps.MSSQL = fwDB
+			fwWorker = etl.NewFinDWHWorker(wDeps, fwOpts)
+			fwWorker.Start(context.Background(), time.Duration(cfg.FinDWHSyncInterval)*time.Second)
+		} else {
+			fwOff = "FINDWH_SYNC_INTERVAL=0"
 		}
+		// Страница статуса ходит в MSSQL своим пулом на одно соединение и с
+		// таймаутами подключения: она не должна отнимать слоты у воркера, а
+		// повисший TDS-логин (10.10.6.15 так умеет) — держать соединение вечно.
+		fwStatusDB, err = debt.NewOLAPPoolDSN(cfg.PremasterServer, cfg.PremasterPort, cfg.FinDWHDB,
+			cfg.PremasterUser, cfg.PremasterPassword, "dial+timeout=5&connection+timeout=15")
+		if err != nil {
+			log.Fatalf("findwh: mssql open (status): %v", err)
+		}
+		defer fwStatusDB.Close()
+		fwStatusDB.SetMaxOpenConns(1)
+		fwStatusDB.SetMaxIdleConns(1)
+		fwStatusDB.SetConnMaxIdleTime(5 * time.Minute)
 	}
 	if fwWorker == nil {
 		log.Printf("findwh-worker: disabled (%s)", fwOff)
 	}
-	fwStatus := etl.NewFinDWHStatus(fwDeps, fwOpts, cfg.FinDWHSyncInterval, fwWorker, fwOff)
+	stDeps := fwDeps
+	stDeps.MSSQL = fwStatusDB
+	fwStatus := etl.NewFinDWHStatus(stDeps, fwOpts, cfg.FinDWHSyncInterval, fwWorker, fwOff)
+	if ferr != nil {
+		fwStatus.NoteSettingError("FINDWH_GLMF_FROM", "не разобрано «"+cfg.FinDWHGLMFFrom+"», взят дефолт")
+	}
 	mux.HandleFunc("GET /api/admin/etl/findwh", auth.RequireRole(authSvc, auth.RoleAdmin, fwStatus.ServeHTTP))
 
 	// Тактические планы (VS0 каркас + VS1 справочники + VS2 факт МП).

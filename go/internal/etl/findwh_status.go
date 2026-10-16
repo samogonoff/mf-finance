@@ -3,12 +3,15 @@ package etl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +24,20 @@ import (
 // finDWHLateHour — час по часам MSSQL, после которого несобранная в DWH таблица
 // уже повод разбираться: по расписанию (docs/bi/findwh-etl.md §2) всё готово к ≈08:30.
 const finDWHLateHour = 12
+
+// Бюджеты ручки. Общий заметно меньше WriteTimeout сервера (30 с): иначе при
+// медленном источнике ответ дописывался бы после дедлайна записи и браузер
+// получил бы обрыв вместо частичного отчёта. Ветки MSSQL и CH идут параллельно.
+const (
+	finDWHStatusBudget = 20 * time.Second
+	finDWHMSSQLBudget  = 10 * time.Second // часы + все проверки готовности
+	finDWHCHQueryLimit = 5 * time.Second  // на каждый запрос к CH
+)
+
+// finDWHSourceTZ — пояс сервера MSSQL (Минск, UTC+3, без перехода на летнее
+// время). Нужен, только когда MSSQL не ответил и «сегодня» считаем сами: контейнер
+// go-api живёт в UTC, и с 00:00 до 03:00 вчерашняя загрузка сошла бы за сегодняшнюю.
+var finDWHSourceTZ = time.FixedZone("UTC+3", 3*3600)
 
 // finDWHTableMeta — подписи таблицы для страницы.
 type finDWHTableMeta struct {
@@ -51,21 +68,30 @@ var finDWHMeta = map[string]finDWHTableMeta{
 	},
 }
 
-// FinDWHStatus — сборщик статуса. deps.MSSQL может быть nil (креды не заданы,
-// mock) — тогда готовность источника не проверяется. worker nil — воркер не
-// запущен, причина в workerOff.
+// FinDWHStatus — сборщик статуса. deps.MSSQL — отдельный маленький пул (не пул
+// воркера), может быть nil (креды не заданы, mock) — тогда готовность источника
+// не проверяется. worker nil — воркер не запущен, причина в workerOff.
 type FinDWHStatus struct {
 	deps        Deps
 	opts        FinDWHOpts
 	intervalSec int
 	worker      *FinDWHWorker
 	workerOff   string
+	settingErr  map[string]string // env → ошибка разбора (значение подменено дефолтом)
 }
 
 // NewFinDWHStatus — конструктор.
 func NewFinDWHStatus(deps Deps, opts FinDWHOpts, intervalSec int, worker *FinDWHWorker, workerOff string) *FinDWHStatus {
 	opts.normalize()
-	return &FinDWHStatus{deps: deps, opts: opts, intervalSec: intervalSec, worker: worker, workerOff: workerOff}
+	return &FinDWHStatus{deps: deps, opts: opts, intervalSec: intervalSec, worker: worker, workerOff: workerOff,
+		settingErr: map[string]string{}}
+}
+
+// NoteSettingError — значение env не разобрано и подменено дефолтом; страница
+// покажет это рядом с действующим значением, а не выдаст дефолт за настройку.
+// Звать до регистрации ручки.
+func (s *FinDWHStatus) NoteSettingError(env, msg string) {
+	s.settingErr[env] = msg
 }
 
 // FinDWHStatusReport — ответ ручки статуса.
@@ -85,12 +111,13 @@ type FinDWHSetting struct {
 	Env   string `json:"env"`
 	Value string `json:"value"`
 	Hint  string `json:"hint"`
+	Error string `json:"error,omitempty"`
 }
 
 // FinDWHSourceState — часы сервера MSSQL: по ним живёт расписание DWH.
 type FinDWHSourceState struct {
 	Checked bool   `json:"checked"`         // удалось спросить MSSQL
-	Today   string `json:"today"`           // YYYY-MM-DD по MSSQL (без него — по часам go-api)
+	Today   string `json:"today"`           // YYYY-MM-DD по MSSQL (без него — по UTC+3)
 	Hour    int    `json:"hour"`            // час по MSSQL
 	Error   string `json:"error,omitempty"` // почему не спросили / не ответил
 }
@@ -110,10 +137,13 @@ type FinDWHRunView struct {
 
 // FinDWHDataStats — что сейчас лежит в реплике.
 type FinDWHDataStats struct {
-	Rows     *int64     `json:"rows,omitempty"`
-	From     string     `json:"from,omitempty"` // диапазон дат данных
-	To       string     `json:"to,omitempty"`
-	LoadedAt *time.Time `json:"loaded_at,omitempty"` // GLMF — последняя сверка отпечатков
+	Rows *int64 `json:"rows,omitempty"`
+	From string `json:"from,omitempty"` // диапазон дат данных
+	To   string `json:"to,omitempty"`
+	// LoadedAt — когда данные последний раз менялись: снимки — время заливки,
+	// GLMF — последняя запись отпечатков (пишутся только для перегруженных дней,
+	// так что это не время последней сверки — его даёт last_ok.finished_at).
+	LoadedAt *time.Time `json:"loaded_at,omitempty"`
 	Error    string     `json:"error,omitempty"`
 	// Только GLMF: сколько строк, дней и компаний по отпечаткам. FPRows ≠ Rows —
 	// секции заменили, а отпечатки не записали (или правили руками).
@@ -130,7 +160,7 @@ type FinDWHTableStatus struct {
 	Target             string          `json:"target"`
 	Method             string          `json:"method"`
 	ReadyRule          string          `json:"ready_rule"`
-	State              string          `json:"state"`    // ok | running | waiting | queued | late | error | stale | off | unknown | never
+	State              string          `json:"state"`    // ok | running | waiting | queued | late | error | stale | off | source_unknown | ch_down | never
 	Severity           string          `json:"severity"` // ok | info | warn | error
 	StateText          string          `json:"state_text"`
 	SourceReady        *bool           `json:"source_ready,omitempty"`
@@ -145,13 +175,28 @@ type FinDWHTableStatus struct {
 
 // ServeHTTP — GET /api/admin/etl/findwh.
 func (s *FinDWHStatus) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), finDWHStatusBudget)
 	defer cancel()
 	rep := s.Report(ctx)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if err := json.NewEncoder(w).Encode(rep); err != nil {
 		log.Printf("findwh-status: encode: %v", err)
 	}
+}
+
+// finDWHMSSQLView — что узнали у MSSQL.
+type finDWHMSSQLView struct {
+	src      FinDWHSourceState
+	ready    map[string]*bool
+	readyErr map[string]string
+}
+
+// finDWHCHView — что прочитали из CH.
+type finDWHCHView struct {
+	err     string
+	recent  []finDWHRun
+	journal []finDWHRun
+	data    map[string]FinDWHDataStats
 }
 
 // Report собирает статус. Ошибки источников не валят ответ, а попадают в поля
@@ -165,57 +210,31 @@ func (s *FinDWHStatus) Report(ctx context.Context) FinDWHStatusReport {
 		rep.Worker = FinDWHWorkerState{DisabledReason: s.workerOff, IntervalSec: s.intervalSec}
 	}
 
-	// Часы MSSQL: «сегодня» и час для расписания DWH.
-	rep.Source.Today = now.Format("2006-01-02")
-	if s.deps.MSSQL == nil {
-		rep.Source.Error = "MSSQL не подключён: " + s.workerOff
-	} else {
-		mctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		date, hour, err := sourceClock(mctx, s.deps.MSSQL)
-		cancel()
-		if err != nil {
-			rep.Source.Error = err.Error()
-		} else {
-			rep.Source.Checked, rep.Source.Today, rep.Source.Hour = true, date, hour
-		}
-	}
-
 	var (
-		recent  []finDWHRun
-		journal []finDWHRun
+		wg sync.WaitGroup
+		ms finDWHMSSQLView
+		cv finDWHCHView
 	)
-	ch, err := newCHClient(s.deps.CHURL, s.deps.CHUser, s.deps.CHPass)
-	if err == nil {
-		// Последние 7 успешных и 7 упавших на таблицу: из них последний прогон,
-		// последний успешный и типичная длительность. Журнал — отдельно, по времени.
-		recent, err = chQueryJSON[finDWHRun](ctx, ch, `SELECT table_name, toString(source_date) AS source_date,
-  toUnixTimestamp(started_at) AS started_at, toUnixTimestamp(finished_at) AS finished_at,
-  status, rows, details, triggered_by
-FROM finance.findwh_etl_runs ORDER BY started_at DESC LIMIT 7 BY table_name, status`)
-	}
-	if err == nil {
-		journal, err = chQueryJSON[finDWHRun](ctx, ch, `SELECT table_name, toString(source_date) AS source_date,
-  toUnixTimestamp(started_at) AS started_at, toUnixTimestamp(finished_at) AS finished_at,
-  status, rows, details, triggered_by
-FROM finance.findwh_etl_runs ORDER BY started_at DESC LIMIT 40`)
-	}
-	if err != nil {
-		rep.CHError = err.Error()
-		ch = nil
-	}
-	for _, r := range journal {
+	wg.Add(2)
+	go func() { defer wg.Done(); ms = s.readMSSQL(ctx, now) }()
+	go func() { defer wg.Done(); cv = s.readCH(ctx) }()
+	wg.Wait()
+
+	rep.Source, rep.CHError = ms.src, cv.err
+	for _, r := range cv.journal {
 		rep.Runs = append(rep.Runs, r.view())
 	}
-
 	for _, table := range s.opts.Tables {
-		rep.Tables = append(rep.Tables, s.tableStatus(ctx, ch, table, recent, rep.Source, rep.Worker, now))
+		rep.Tables = append(rep.Tables, s.tableStatus(table, ms, cv, rep.Worker, now))
 	}
 
 	rep.Overall = "ok"
 	if rep.CHError != "" {
 		rep.Overall = "error"
 	}
-	if !rep.Worker.Enabled {
+	// Выключенный воркер и упавший тик (например, не ответили часы MSSQL — до
+	// журнала дело не дошло, и таблицы выглядят как «ждём») — повод посмотреть.
+	if !rep.Worker.Enabled || rep.Worker.LastTickError != "" {
 		rep.Overall = worseSeverity(rep.Overall, "warn")
 	}
 	for _, t := range rep.Tables {
@@ -223,6 +242,77 @@ FROM finance.findwh_etl_runs ORDER BY started_at DESC LIMIT 40`)
 	}
 	return rep
 }
+
+// readMSSQL — часы источника и готовность всех таблиц, общий бюджет
+// finDWHMSSQLBudget. Проверки готовности запускаются параллельно, но пул статуса
+// — на одно соединение, так что сервер они не нагружают.
+func (s *FinDWHStatus) readMSSQL(ctx context.Context, now time.Time) finDWHMSSQLView {
+	v := finDWHMSSQLView{
+		src:      FinDWHSourceState{Today: now.In(finDWHSourceTZ).Format("2006-01-02")},
+		ready:    map[string]*bool{},
+		readyErr: map[string]string{},
+	}
+	if s.deps.MSSQL == nil {
+		v.src.Error = "MSSQL не подключён: " + s.workerOff
+		return v
+	}
+	ctx, cancel := context.WithTimeout(ctx, finDWHMSSQLBudget)
+	defer cancel()
+	date, hour, err := sourceClock(ctx, s.deps.MSSQL)
+	if err != nil {
+		v.src.Error = cleanErr(err)
+		return v
+	}
+	v.src.Checked, v.src.Today, v.src.Hour = true, date, hour
+
+	var (
+		mu sync.Mutex
+		wg sync.WaitGroup
+	)
+	for _, table := range s.opts.Tables {
+		wg.Add(1)
+		go func(table string) {
+			defer wg.Done()
+			ready, err := sourceReady(ctx, s.deps.MSSQL, s.opts, table, hour)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				v.readyErr[table] = cleanErr(err)
+				return
+			}
+			v.ready[table] = &ready
+		}(table)
+	}
+	wg.Wait()
+	return v
+}
+
+// readCH — журнал прогонов и объём реплики, каждый запрос не дольше finDWHCHQueryLimit.
+func (s *FinDWHStatus) readCH(ctx context.Context) finDWHCHView {
+	v := finDWHCHView{data: map[string]FinDWHDataStats{}}
+	ch, err := newCHClient(s.deps.CHURL, s.deps.CHUser, s.deps.CHPass)
+	if err == nil {
+		// Последние 7 успешных и 7 упавших на таблицу: из них последний прогон,
+		// последний успешный и типичная длительность. Журнал — отдельно, по времени.
+		v.recent, err = chQueryJSON[finDWHRun](ctx, ch, finDWHRunsSQL+" LIMIT 7 BY table_name, status")
+	}
+	if err == nil {
+		v.journal, err = chQueryJSON[finDWHRun](ctx, ch, finDWHRunsSQL+" LIMIT 40")
+	}
+	if err != nil {
+		v.err = cleanErr(err)
+		return v
+	}
+	for _, table := range s.opts.Tables {
+		v.data[table] = finDWHDataStats(ctx, ch, table)
+	}
+	return v
+}
+
+const finDWHRunsSQL = `SELECT table_name, toString(source_date) AS source_date,
+  toUnixTimestamp(started_at) AS started_at, toUnixTimestamp(finished_at) AS finished_at,
+  status, rows, details, triggered_by
+FROM finance.findwh_etl_runs ORDER BY started_at DESC`
 
 func (s *FinDWHStatus) settings() []FinDWHSetting {
 	interval := strconv.Itoa(s.intervalSec)
@@ -233,15 +323,19 @@ func (s *FinDWHStatus) settings() []FinDWHSetting {
 	if !s.opts.ReadyCheck {
 		readyHint = "без msdb: грузить по часам MSSQL после FINDWH_READY_AFTER_HOUR"
 	}
-	return []FinDWHSetting{
-		{"FINDWH_SYNC_INTERVAL", interval, "как часто воркер проверяет, не пора ли грузить, сек; 0 — воркер выключен"},
-		{"FINDWH_DB", s.opts.DB, "БД источника на сервере MSSQL_PREMASTER_SERVER"},
-		{"FINDWH_GLMF_FROM", s.opts.GLMFFrom.Format("2006-01-02"), "нижняя граница GLMF.Date в реплике"},
-		{"FINDWH_GLMF_CHUNK_MONTHS", strconv.Itoa(s.opts.ChunkMonths), "месяцев одной компании за один запрос к MSSQL"},
-		{"FINDWH_BATCH", strconv.Itoa(s.opts.BatchSize), "строк в одном INSERT в ClickHouse"},
-		{"FINDWH_READY_CHECK", boolEnv(s.opts.ReadyCheck), readyHint},
-		{"FINDWH_READY_AFTER_HOUR", strconv.Itoa(s.opts.ReadyAfterHour), "час по MSSQL, раньше которого не грузим (только при FINDWH_READY_CHECK=0)"},
+	out := []FinDWHSetting{
+		{Env: "FINDWH_SYNC_INTERVAL", Value: interval, Hint: "как часто воркер проверяет, не пора ли грузить, сек; 0 — воркер выключен"},
+		{Env: "FINDWH_DB", Value: s.opts.DB, Hint: "БД источника на сервере MSSQL_PREMASTER_SERVER"},
+		{Env: "FINDWH_GLMF_FROM", Value: s.opts.GLMFFrom.Format("2006-01-02"), Hint: "нижняя граница GLMF.Date в реплике"},
+		{Env: "FINDWH_GLMF_CHUNK_MONTHS", Value: strconv.Itoa(s.opts.ChunkMonths), Hint: "месяцев одной компании за один запрос к MSSQL"},
+		{Env: "FINDWH_BATCH", Value: strconv.Itoa(s.opts.BatchSize), Hint: "строк в одном INSERT в ClickHouse"},
+		{Env: "FINDWH_READY_CHECK", Value: boolEnv(s.opts.ReadyCheck), Hint: readyHint},
+		{Env: "FINDWH_READY_AFTER_HOUR", Value: strconv.Itoa(s.opts.ReadyAfterHour), Hint: "час по MSSQL, раньше которого не грузим (только при FINDWH_READY_CHECK=0)"},
 	}
+	for i := range out {
+		out[i].Error = s.settingErr[out[i].Env]
+	}
+	return out
 }
 
 func boolEnv(b bool) string {
@@ -261,8 +355,8 @@ func (s *FinDWHStatus) readyRule(table string) string {
 	return ""
 }
 
-func (s *FinDWHStatus) tableStatus(ctx context.Context, ch *chClient, table string, recent []finDWHRun,
-	src FinDWHSourceState, ws FinDWHWorkerState, now time.Time) FinDWHTableStatus {
+func (s *FinDWHStatus) tableStatus(table string, ms finDWHMSSQLView, cv finDWHCHView,
+	ws FinDWHWorkerState, now time.Time) FinDWHTableStatus {
 	meta := finDWHMeta[table]
 	ts := FinDWHTableStatus{
 		Table: table, Title: meta.Title, Source: meta.Source, Target: meta.Target,
@@ -273,7 +367,7 @@ func (s *FinDWHStatus) tableStatus(ctx context.Context, ch *chClient, table stri
 	}
 
 	var okDur []int64
-	for _, r := range recent { // recent отсортированы по started_at DESC
+	for _, r := range cv.recent { // recent отсортированы по started_at DESC
 		if r.TableName != table {
 			continue
 		}
@@ -292,36 +386,30 @@ func (s *FinDWHStatus) tableStatus(ctx context.Context, ch *chClient, table stri
 	ts.TypicalDurationSec = median(okDur)
 	if ts.LastOK != nil {
 		ts.LoadedFor = ts.LastOK.SourceDate
-		if lag, ok := daysBetween(ts.LastOK.SourceDate, src.Today); ok {
+		if lag, ok := daysBetween(ts.LastOK.SourceDate, ms.src.Today); ok {
 			ts.LagDays = &lag
 		}
 	}
 
-	if src.Checked {
-		mctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		ready, err := sourceReady(mctx, s.deps.MSSQL, s.opts, table, src.Hour)
-		cancel()
-		if err != nil {
-			ts.SourceReadyError = err.Error()
-		} else {
-			ts.SourceReady = &ready
-		}
-	} else {
-		ts.SourceReadyError = src.Error
+	ts.SourceReady = ms.ready[table]
+	ts.SourceReadyError = ms.readyErr[table]
+	if !ms.src.Checked {
+		ts.SourceReadyError = ms.src.Error
 	}
 
-	if ch != nil {
-		ts.Data = finDWHDataStats(ctx, ch, table)
-	} else {
+	if cv.err != "" {
 		ts.Data.Error = "ClickHouse недоступен"
+	} else {
+		ts.Data = cv.data[table]
 	}
 
 	ts.State, ts.Severity, ts.StateText = classifyFinDWH(finDWHClassifyIn{
-		CHDown:        ch == nil,
-		Today:         src.Today,
-		Hour:          src.Hour,
-		SourceChecked: src.Checked,
+		CHDown:        cv.err != "",
+		Today:         ms.src.Today,
+		Hour:          ms.src.Hour,
+		SourceChecked: ms.src.Checked,
 		SourceReady:   ts.SourceReady,
+		ReadyCheck:    s.opts.ReadyCheck,
 		LastRun:       ts.LastRun,
 		LastOK:        ts.LastOK,
 		WorkerOn:      ws.Enabled,
@@ -338,7 +426,8 @@ func (s *FinDWHStatus) tableStatus(ctx context.Context, ch *chClient, table stri
 		*ts.Data.Rows != *ts.Data.FPRows {
 		ts.Severity = worseSeverity(ts.Severity, "warn")
 		ts.StateText += fmt.Sprintf(". Строк в реплике %d, а по отпечаткам %d — реплику правили мимо ETL или "+
-			"не записались отпечатки; лечится полной перегрузкой (FINDWH_GLMF_FULL=1)", *ts.Data.Rows, *ts.Data.FPRows)
+			"не записались отпечатки; лечится полной перегрузкой (FINDWH_GLMF_FULL=1). Если GLMF прямо сейчас "+
+			"грузится из CLI — это нормально до конца прогона", *ts.Data.Rows, *ts.Data.FPRows)
 	}
 	return ts
 }
@@ -350,6 +439,7 @@ type finDWHClassifyIn struct {
 	Hour          int
 	SourceChecked bool
 	SourceReady   *bool
+	ReadyCheck    bool // готовность — по SQL Agent (иначе по часам)
 	LastRun       *FinDWHRunView
 	LastOK        *FinDWHRunView
 	WorkerOn      bool
@@ -382,7 +472,7 @@ func classifyFinDWH(in finDWHClassifyIn) (state, severity, text string) {
 		return "running", sev, text
 	}
 	if in.CHDown {
-		return "unknown", "error", "Журнал прогонов не прочитан: ClickHouse недоступен"
+		return "ch_down", "error", "Журнал прогонов не прочитан: ClickHouse недоступен"
 	}
 	if in.LastRun == nil {
 		text = "Ещё ни разу не загружалась"
@@ -427,10 +517,15 @@ func classifyFinDWH(in finDWHClassifyIn) (state, severity, text string) {
 		return "off", "warn", "Сегодня не загружалась: воркер выключен"
 	}
 	if !in.SourceChecked || in.SourceReady == nil {
-		return "unknown", "warn", "Сегодня ещё не загружалась; готовность источника проверить не удалось"
+		return "source_unknown", "warn", "Сегодня ещё не загружалась; готовность источника проверить не удалось"
 	}
 	if *in.SourceReady {
-		return "queued", "info", "DWH собрал таблицу — загрузка на ближайшем тике воркера"
+		return "queued", "info", "Источник готов — загрузка на ближайшем тике воркера"
+	}
+	// Без ReadyCheck «не готов» значит лишь «ещё не FINDWH_READY_AFTER_HOUR»:
+	// про сборку DWH мы ничего не знаем, и советовать смотреть джоб нечестно.
+	if !in.ReadyCheck {
+		return "waiting", "info", "Ждём часа загрузки (FINDWH_READY_AFTER_HOUR); вчерашние данные на месте"
 	}
 	if in.Hour >= finDWHLateHour {
 		return "late", "warn", "DWH до сих пор не собрал таблицу (обычно к ≈08:30) — проверьте джоб SQL Agent"
@@ -445,6 +540,7 @@ func finDWHDataStats(ctx context.Context, ch *chClient, table string) FinDWHData
 		DateFrom  string `json:"date_from"`
 		DateTo    string `json:"date_to"`
 		Loaded    int64  `json:"loaded"`
+		LoadedUTC string `json:"loaded_utc"`
 		FPRows    int64  `json:"fp_rows"`
 		Days      int64  `json:"days"`
 		Companies int64  `json:"companies"`
@@ -453,19 +549,13 @@ func finDWHDataStats(ctx context.Context, ch *chClient, table string) FinDWHData
 	one := func(q string) (row, bool) {
 		rs, err := chQueryJSON[row](ctx, ch, q)
 		if err != nil {
-			st.Error = err.Error()
+			st.Error = cleanErr(err)
 			return row{}, false
 		}
 		if len(rs) == 0 {
 			return row{}, true
 		}
 		return rs[0], true
-	}
-	setLoaded := func(sec int64) {
-		if sec > 0 {
-			t := time.Unix(sec, 0)
-			st.LoadedAt = &t
-		}
 	}
 
 	switch table {
@@ -475,15 +565,20 @@ func finDWHDataStats(ctx context.Context, ch *chClient, table string) FinDWHData
 		if r, ok := one("SELECT count() AS rows FROM finance.findwh_glmf"); ok {
 			st.Rows = &r.Rows
 		}
+		// checked_at — DateTime64 без пояса, ETL пишет туда время UTC строкой;
+		// toUnixTimestamp прочитал бы его в поясе сервера CH, поэтому берём
+		// настенное время как есть и разбираем в Go как UTC.
 		if r, ok := one(`SELECT sum(n) AS fp_rows, count() AS days, uniqExact(company) AS companies,
   toString(min(date)) AS date_from, toString(max(date)) AS date_to,
-  toUnixTimestamp(max(checked_at)) AS loaded
+  formatDateTime(max(checked_at), '%Y-%m-%d %H:%i:%S') AS loaded_utc
 FROM finance.findwh_glmf_day_fp FINAL WHERE is_deleted = 0`); ok {
 			st.FPRows = &r.FPRows
 			st.Days, st.Companies = r.Days, r.Companies
 			if r.Days > 0 {
 				st.From, st.To = r.DateFrom, r.DateTo
-				setLoaded(r.Loaded)
+				if t, err := time.Parse("2006-01-02 15:04:05", r.LoadedUTC); err == nil {
+					st.LoadedAt = &t
+				}
 			}
 		}
 	case FinDWHTableFinPL, FinDWHExRates:
@@ -497,16 +592,21 @@ FROM %[2]s`, col, finDWHMeta[table].Target)); ok {
 			st.Rows = &r.Rows
 			if r.Rows > 0 {
 				st.From, st.To = r.DateFrom, r.DateTo
-				setLoaded(r.Loaded)
+				if r.Loaded > 0 {
+					t := time.Unix(r.Loaded, 0)
+					st.LoadedAt = &t
+				}
 			}
 		}
 	}
 	return st
 }
 
-// chQueryJSON — SELECT в JSONEachRow, построчно в T. 64-битные числа без кавычек,
-// иначе count()/rows пришли бы строками.
+// chQueryJSON — SELECT в JSONEachRow, построчно в T, не дольше finDWHCHQueryLimit.
+// 64-битные числа без кавычек, иначе count()/rows пришли бы строками.
 func chQueryJSON[T any](ctx context.Context, ch *chClient, q string) ([]T, error) {
+	ctx, cancel := context.WithTimeout(ctx, finDWHCHQueryLimit)
+	defer cancel()
 	body, err := ch.queryString(ctx, q+"\nSETTINGS output_format_json_quote_64bit_integers = 0\nFORMAT JSONEachRow")
 	if err != nil {
 		return nil, err
@@ -523,6 +623,19 @@ func chQueryJSON[T any](ctx context.Context, ch *chClient, q string) ([]T, error
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// cleanErr — текст ошибки для страницы без URL запроса: в *url.Error он
+// целиком, вместе с логином CH (пароль http.Client маскирует, логин — нет), а
+// ошибка разбора CLICKHOUSE_HTTP_URL показала бы адрес дословно. Обёртки
+// («findwh glmf: …») сохраняются, вырезается только URL.
+func cleanErr(err error) string {
+	msg := err.Error()
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		msg = strings.Replace(msg, ue.Error(), ue.Op+": "+ue.Err.Error(), 1)
+	}
+	return msg
 }
 
 func (r finDWHRun) view() FinDWHRunView {

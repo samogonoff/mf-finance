@@ -28,7 +28,8 @@ type FinDWHWorkerState struct {
 	Enabled        bool       `json:"enabled"`
 	DisabledReason string     `json:"disabled_reason,omitempty"`
 	IntervalSec    int        `json:"interval_sec"`
-	LastTickAt     *time.Time `json:"last_tick_at,omitempty"`
+	TickStartedAt  *time.Time `json:"tick_started_at,omitempty"` // тик идёт сейчас (с этого момента)
+	LastTickEndAt  *time.Time `json:"last_tick_end_at,omitempty"`
 	LastTickError  string     `json:"last_tick_error,omitempty"`
 	NextTickAt     *time.Time `json:"next_tick_at,omitempty"`
 	Running        string     `json:"running,omitempty"` // таблица, которая грузится сейчас
@@ -55,7 +56,10 @@ func (w *FinDWHWorker) State() FinDWHWorkerState {
 func (w *FinDWHWorker) onProgress(table, note string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.state.Running != table {
+	switch {
+	case table == "":
+		w.state.Running, w.state.RunningSince = "", nil
+	case w.state.Running != table:
 		now := time.Now()
 		w.state.Running, w.state.RunningSince = table, &now
 	}
@@ -84,6 +88,10 @@ func (w *FinDWHWorker) Start(ctx context.Context, interval time.Duration) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				started := time.Now()
+				w.mu.Lock()
+				w.state.TickStartedAt = &started
+				w.mu.Unlock()
 				_, err := RunFinDWHDaily(ctx, w.deps, w.opts)
 				if err != nil {
 					log.Printf("findwh-worker: %v", err)
@@ -91,10 +99,10 @@ func (w *FinDWHWorker) Start(ctx context.Context, interval time.Duration) {
 				now := time.Now()
 				next := now.Add(interval)
 				w.mu.Lock()
-				w.state.LastTickAt, w.state.NextTickAt = &now, &next
+				w.state.TickStartedAt, w.state.LastTickEndAt, w.state.NextTickAt = nil, &now, &next
 				w.state.LastTickError = ""
 				if err != nil {
-					w.state.LastTickError = err.Error()
+					w.state.LastTickError = cleanErr(err)
 				}
 				w.state.Running, w.state.RunningSince, w.state.Progress = "", nil, ""
 				w.mu.Unlock()
