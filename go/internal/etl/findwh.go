@@ -383,7 +383,7 @@ func RunFinDWHDaily(ctx context.Context, deps Deps, opts FinDWHOpts) (int64, err
 			TriggeredBy: opts.TriggeredBy,
 		}
 		if err != nil {
-			run.Status, run.Details = "error", err.Error()
+			run.Status, run.Details = "error", cleanErr(err)
 			log.Printf("findwh: %s: %v", table, err)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("findwh %s: %w", table, err)

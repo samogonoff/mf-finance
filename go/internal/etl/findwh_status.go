@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -638,7 +639,12 @@ func cleanErr(err error) string {
 	return msg
 }
 
+// chUserInURL — логин в URL ошибки HTTP-клиента («http://finance:***@host»):
+// строки журнала, записанные до cleanErr в RunFinDWHDaily, несут его в details.
+var chUserInURL = regexp.MustCompile(`://[^/@\s:]+(:[^/@\s]*)?@`)
+
 func (r finDWHRun) view() FinDWHRunView {
+	r.Details = chUserInURL.ReplaceAllString(r.Details, "://")
 	return FinDWHRunView{
 		Table:       r.TableName,
 		SourceDate:  r.SourceDate,

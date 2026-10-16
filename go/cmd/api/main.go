@@ -290,6 +290,7 @@ func main() {
 			}
 			defer fwDB.Close()
 			fwDB.SetMaxOpenConns(2)
+			fwDB.SetConnMaxIdleTime(5 * time.Minute)
 			wDeps := fwDeps
 			wDeps.MSSQL = fwDB
 			fwWorker = etl.NewFinDWHWorker(wDeps, fwOpts)
@@ -301,7 +302,7 @@ func main() {
 		// таймаутами подключения: она не должна отнимать слоты у воркера, а
 		// повисший TDS-логин (10.10.6.15 так умеет) — держать соединение вечно.
 		fwStatusDB, err = debt.NewOLAPPoolDSN(cfg.PremasterServer, cfg.PremasterPort, cfg.FinDWHDB,
-			cfg.PremasterUser, cfg.PremasterPassword, "dial+timeout=5&connection+timeout=15")
+			cfg.PremasterUser, cfg.PremasterPassword, "dial+timeout=5&connection+timeout=8")
 		if err != nil {
 			log.Fatalf("findwh: mssql open (status): %v", err)
 		}

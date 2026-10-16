@@ -218,6 +218,13 @@ func TestFinDWHFallbackToday(t *testing.T) {
 	}
 }
 
+func TestRunViewHidesCHUser(t *testing.T) {
+	v := finDWHRun{Details: `findwh glmf: Post "http://finance:***@10.0.0.5:8123/?query=x": EOF`}.view()
+	if strings.Contains(v.Details, "finance") || !strings.Contains(v.Details, "http://10.0.0.5:8123/") {
+		t.Errorf("details: %q", v.Details)
+	}
+}
+
 func TestCleanErrHidesURL(t *testing.T) {
 	_, err := http.Post("http://finance:secret@127.0.0.1:1/", "text/plain", nil)
 	if err == nil {
