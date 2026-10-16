@@ -32,7 +32,7 @@ export const WORKSPACES: Workspace[] = [
   {
     key: "finance",
     label: "Кабинет финансиста",
-    hint: "Отчёты, операции, тактические планы",
+    hint: "Задолженность ВГО, тактические планы",
     icon: "lucide:wallet",
     home: "/",
     external: false,

@@ -3,50 +3,53 @@
     <!-- Боковая навигация (десктоп) -->
     <aside v-if="userValue" class="app-sidebar" :class="{ 'collapsed': sidebarCollapsed }">
       <div class="sidebar-brand">
-        <div class="brand-mark">F</div>
+        <div class="brand-mark" aria-hidden="true">MF</div>
         <div v-if="!sidebarCollapsed" class="brand-name">
-          <span class="brand-name-strong">Finance</span>
-          <span class="brand-name-sub">Cabinet</span>
+          <span class="brand-name-strong">MARK FORMELLE</span>
+          <span class="brand-name-sub">Финансы</span>
         </div>
       </div>
 
+      <!-- Переход между сервисами компании — через список портала. -->
+      <div class="sidebar-service">
+        <a :href="portalListUrl" class="nav-item service-back" :title="sidebarCollapsed ? 'Все сервисы' : undefined">
+          <Icon name="lucide:layout-grid" class="nav-item-icon" />
+          <span v-if="!sidebarCollapsed">Все сервисы</span>
+          <Icon v-if="!sidebarCollapsed" name="lucide:chevron-left" class="service-back-caret" />
+        </a>
+      </div>
+
       <nav class="nav-list">
+        <!-- К запуску в меню — только разделы на живых данных (моковые Операции,
+             Контрагенты и Аналитика убраны). Порядок: ВГО, тактика, бюджет. -->
         <NuxtLink v-if="!isCostOnly" to="/" class="nav-item" exact-active-class="router-link-active">
-          <Icon name="lucide:layout-dashboard" class="nav-item-icon" />
-          <span v-if="!sidebarCollapsed">Дашборд</span>
+          <Icon name="lucide:layout-grid" class="nav-item-icon" />
+          <span v-if="!sidebarCollapsed">Обзор</span>
         </NuxtLink>
-        <NuxtLink v-if="!isCostOnly" to="/operations" class="nav-item">
-          <Icon name="lucide:arrow-right-left" class="nav-item-icon" />
-          <span v-if="!sidebarCollapsed">Операции</span>
-        </NuxtLink>
-        <NuxtLink v-if="!isCostOnly" to="/reports" class="nav-item">
+        <NuxtLink v-if="!isCostOnly && hasScope('finance')" to="/reports" class="nav-item" active-class="" :class="{ 'router-link-active': isVgoActive }">
           <Icon name="lucide:file-bar-chart-2" class="nav-item-icon" />
-          <span v-if="!sidebarCollapsed">Отчёты</span>
-        </NuxtLink>
-        <NuxtLink v-if="!isCostOnly" to="/reports/fot" class="nav-item">
-          <Icon name="lucide:users" class="nav-item-icon" />
-          <span v-if="!sidebarCollapsed">ФОТ и численность</span>
+          <span v-if="!sidebarCollapsed">Задолженность ВГО</span>
         </NuxtLink>
         <NuxtLink v-if="!isCostOnly && hasScope('plans')" to="/plans" class="nav-item">
           <Icon name="lucide:clipboard-list" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Тактические планы</span>
         </NuxtLink>
-        <!-- ТЗ доработок п. 5.1: «Стратегические планы» на одном уровне с тактическими. -->
+        <a v-if="!isCostOnly && budgetVisible" href="/budget/" class="nav-item">
+          <Icon name="lucide:landmark" class="nav-item-icon" />
+          <span v-if="!sidebarCollapsed">Бюджетирование</span>
+        </a>
+        <!-- ТЗ доработок п. 5.1: «Стратегические планы» рядом с тактическими. -->
         <NuxtLink v-if="!isCostOnly && hasScope('plans')" to="/strategy" class="nav-item">
           <Icon name="lucide:target" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Стратегические планы</span>
         </NuxtLink>
-        <NuxtLink v-if="!isCostOnly" to="/counterparties" class="nav-item">
-          <Icon name="lucide:users" class="nav-item-icon" />
-          <span v-if="!sidebarCollapsed">Контрагенты</span>
-        </NuxtLink>
-        <NuxtLink v-if="!isCostOnly" to="/analytics" class="nav-item">
-          <Icon name="lucide:line-chart" class="nav-item-icon" />
-          <span v-if="!sidebarCollapsed">Аналитика</span>
-        </NuxtLink>
         <NuxtLink to="/cost" class="nav-item">
           <Icon name="lucide:package" class="nav-item-icon" />
           <span v-if="!sidebarCollapsed">Себестоимость</span>
+        </NuxtLink>
+        <NuxtLink v-if="!isCostOnly" to="/reports/fot" class="nav-item">
+          <Icon name="lucide:users" class="nav-item-icon" />
+          <span v-if="!sidebarCollapsed">ФОТ и численность</span>
         </NuxtLink>
 
         <template v-if="isAdmin">
@@ -85,7 +88,7 @@
         <WorkspaceSwitcher />
 
         <div class="topbar-breadcrumbs">
-          <span class="crumb-muted">Finance</span>
+          <span class="crumb-muted">Финансы</span>
           <span class="crumb-sep">/</span>
           <span class="crumb-strong">{{ currentPageTitle }}</span>
         </div>
@@ -112,39 +115,43 @@
         <div v-if="showMobileMenu" class="mobile-drawer" @click.self="closeMobileMenu">
           <div class="mobile-drawer-panel">
             <div class="mobile-drawer-header">
-              <span class="brand-name-strong">Finance</span>
+              <span class="brand-name-strong">MARK FORMELLE</span>
               <button class="btn btn-ghost btn-icon" @click="closeMobileMenu" aria-label="Закрыть">
                 <Icon name="lucide:x" />
               </button>
             </div>
             <nav class="nav-list">
-              <NuxtLink to="/" exact-active-class="router-link-active" class="nav-item" @click="closeMobileMenu">
-                <Icon name="lucide:layout-dashboard" class="nav-item-icon" />
-                <span>Дашборд</span>
+              <a :href="portalListUrl" class="nav-item">
+                <Icon name="lucide:layout-grid" class="nav-item-icon" />
+                <span>Все сервисы</span>
+              </a>
+              <NuxtLink v-if="!isCostOnly" to="/" exact-active-class="router-link-active" class="nav-item" @click="closeMobileMenu">
+                <Icon name="lucide:layout-grid" class="nav-item-icon" />
+                <span>Обзор</span>
               </NuxtLink>
-              <NuxtLink to="/operations" class="nav-item" @click="closeMobileMenu">
-                <Icon name="lucide:arrow-right-left" class="nav-item-icon" />
-                <span>Операции</span>
-              </NuxtLink>
-              <NuxtLink to="/reports" class="nav-item" @click="closeMobileMenu">
+              <NuxtLink v-if="!isCostOnly && hasScope('finance')" to="/reports" class="nav-item" @click="closeMobileMenu">
                 <Icon name="lucide:file-bar-chart-2" class="nav-item-icon" />
-                <span>Отчёты</span>
+                <span>Задолженность ВГО</span>
               </NuxtLink>
-              <NuxtLink to="/reports/fot" class="nav-item" @click="closeMobileMenu">
-                <Icon name="lucide:users" class="nav-item-icon" />
-                <span>ФОТ и численность</span>
+              <NuxtLink v-if="!isCostOnly && hasScope('plans')" to="/plans" class="nav-item" @click="closeMobileMenu">
+                <Icon name="lucide:clipboard-list" class="nav-item-icon" />
+                <span>Тактические планы</span>
               </NuxtLink>
-              <NuxtLink to="/counterparties" class="nav-item" @click="closeMobileMenu">
-                <Icon name="lucide:users" class="nav-item-icon" />
-                <span>Контрагенты</span>
-              </NuxtLink>
-              <NuxtLink to="/analytics" class="nav-item" @click="closeMobileMenu">
-                <Icon name="lucide:line-chart" class="nav-item-icon" />
-                <span>Аналитика</span>
+              <a v-if="!isCostOnly && budgetVisible" href="/budget/" class="nav-item">
+                <Icon name="lucide:landmark" class="nav-item-icon" />
+                <span>Бюджетирование</span>
+              </a>
+              <NuxtLink v-if="!isCostOnly && hasScope('plans')" to="/strategy" class="nav-item" @click="closeMobileMenu">
+                <Icon name="lucide:target" class="nav-item-icon" />
+                <span>Стратегические планы</span>
               </NuxtLink>
               <NuxtLink to="/cost" class="nav-item" @click="closeMobileMenu">
                 <Icon name="lucide:package" class="nav-item-icon" />
                 <span>Себестоимость</span>
+              </NuxtLink>
+              <NuxtLink v-if="!isCostOnly" to="/reports/fot" class="nav-item" @click="closeMobileMenu">
+                <Icon name="lucide:users" class="nav-item-icon" />
+                <span>ФОТ и численность</span>
               </NuxtLink>
               <div class="nav-section">Сервис</div>
               <NuxtLink to="/account" class="nav-item" @click="closeMobileMenu">
@@ -224,6 +231,13 @@ const errorValue = computed(() => error.value);
 // плагином cost-bypass.client.ts (см. python/cost/nuxt-layer/plugins).
 const isCostOnly = computed(() => !!config.public.costOnly);
 
+// Список сервисов компании на портале: «Все сервисы» в сайдбаре ведут туда.
+const portalListUrl = computed(() => (config.public.portalListUrl as string) || "https://portal.markformelle.ru/list");
+// Бюджетирование — отдельный контур за /budget/: пока не поднят, пункт прятать (иначе 502).
+const budgetVisible = computed(() => !!config.public.budgetEnabled && hasScope("budget"));
+// «/reports/fot» — страница Себестоимости, «Задолженность ВГО» на ней гореть не должна.
+const isVgoActive = computed(() => route.path === "/reports" || (route.path.startsWith("/reports/") && !route.path.startsWith("/reports/fot")));
+
 const hasToken = computed(() => {
   if (typeof window === "undefined") return false;
   return !!localStorage.getItem("auth_token");
@@ -237,12 +251,11 @@ const toggleMobileMenu = () => { showMobileMenu.value = !showMobileMenu.value; }
 const closeMobileMenu = () => { showMobileMenu.value = false; };
 
 const titleByPath: Record<string, string> = {
-  "/": "Дашборд",
-  "/operations": "Операции",
-  "/reports": "Отчёты",
+  "/": "Обзор",
+  "/reports": "Задолженность ВГО",
   "/reports/fot": "ФОТ и численность",
-  "/counterparties": "Контрагенты",
-  "/analytics": "Аналитика",
+  "/plans": "Тактические планы",
+  "/strategy": "Стратегические планы",
   "/account": "Профиль",
   "/admin/users": "Пользователи",
   "/cost": "Себестоимость"
@@ -251,7 +264,7 @@ const currentPageTitle = computed(() => {
   const path = route.path;
   if (titleByPath[path]) return titleByPath[path];
   const parts = path.split("/").filter(Boolean);
-  return parts[0] ? parts[0][0].toUpperCase() + parts[0].slice(1) : "Дашборд";
+  return parts[0] ? parts[0][0].toUpperCase() + parts[0].slice(1) : "Обзор";
 });
 
 const handleLogout = async () => { await logout(); };
@@ -331,15 +344,16 @@ onMounted(async () => {
   width: 28px;
   height: 28px;
   border-radius: var(--rd-3);
-  background: var(--accent);
-  color: var(--accent-fg);
+  /* Чёрно-белый знак компании; в тёмной теме инвертируется токенами. */
+  background: var(--text-strong);
+  color: var(--bg-surface);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-weight: var(--fw-bold);
-  font-size: 14px;
+  font-size: 11px;
   flex-shrink: 0;
-  letter-spacing: -0.02em;
+  letter-spacing: 0.02em;
 }
 .brand-name {
   display: flex;
@@ -348,10 +362,18 @@ onMounted(async () => {
   min-width: 0;
 }
 .brand-name-strong {
-  font-size: var(--fs-md);
-  font-weight: var(--fw-semibold);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.12em;
+  white-space: nowrap;
   color: var(--text-strong);
 }
+.sidebar-service {
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+.service-back { color: var(--text-secondary); }
+.service-back-caret { margin-left: auto; width: 14px; height: 14px; }
 .brand-name-sub {
   font-size: var(--fs-2xs);
   font-weight: var(--fw-medium);

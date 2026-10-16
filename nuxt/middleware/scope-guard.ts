@@ -37,10 +37,6 @@ export default defineNuxtRouteMiddleware(async (to) => {
     if (!hasScope("finance")) return navigateTo("/", { replace: true });
     return;
   }
-  if (path.startsWith("/analytics")) {
-    if (!hasScope("analytics")) return navigateTo("/", { replace: true });
-    return;
-  }
   if (path.startsWith("/cost")) {
     if (!hasScope("cost")) return navigateTo("/", { replace: true });
     return;
