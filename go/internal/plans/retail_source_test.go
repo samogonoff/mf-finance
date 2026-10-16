@@ -30,6 +30,36 @@ func TestNewStrategyFinPLQuery(t *testing.T) {
 	}
 }
 
+// Курсы розницы читают только существующие колонки источников (проверено на
+// OLAP 16.10.2026): в факте нет NetsalesCurrency*, в ExRateFactTarget нет
+// ExRate/Date — там Country, Month, KURS_BANK.
+func TestRetailFxRateQueries(t *testing.T) {
+	fact := retailFactFxRateQuery("FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail")
+	for _, want := range []string{"SUM([AmountWithVATBelRubFact])", "SUM([AmountWithVATCurrencyFact])", "[PLDescrBK] = @p1", "YEAR([Month]) = @p2"} {
+		if !strings.Contains(fact, want) {
+			t.Errorf("в запросе курса факта нет %q:\n%s", want, fact)
+		}
+	}
+	if strings.Contains(fact, "Netsales") {
+		t.Errorf("колонок NetsalesCurrency* в факте нет:\n%s", fact)
+	}
+	for _, toUSD := range []bool{false, true} {
+		table, q := retailTacticFxRateQuery(toUSD)
+		want := map[bool]string{false: "Budgeting.dbo.ExRateFactTarget", true: "Budgeting.dbo.ExRateToUSDFactTarget"}[toUSD]
+		if table != want || !strings.Contains(q, want) {
+			t.Errorf("toUSD=%v: таблица %q, want %q", toUSD, table, want)
+		}
+		for _, col := range []string{"[KURS_BANK]", "YEAR([Month]) = @p1", "MONTH([Month]) = @p2", "[Country] = @p3"} {
+			if !strings.Contains(q, col) {
+				t.Errorf("toUSD=%v: в запросе курса тактики нет %q:\n%s", toUSD, col, q)
+			}
+		}
+		if strings.Contains(q, "[ExRate]") || strings.Contains(q, "[Date]") {
+			t.Errorf("toUSD=%v: колонок ExRate/Date в таблице курсов нет:\n%s", toUSD, q)
+		}
+	}
+}
+
 // В справочнике [001 CodeCFO] есть технические коды вроде «40RUBK» (валютные
 // разрезы). Раньше синк читал CodeCFO как int64 и падал на первой такой строке —
 // вместе с ним пропадал ВЕСЬ справочник магазинов, а не одна запись.

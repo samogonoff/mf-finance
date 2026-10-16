@@ -36,7 +36,7 @@ type RetailDataSource interface {
 	// строках жёстко равен 1, валютной аналитики по себестоимости нет).
 	Cogs(ctx context.Context, country string, years []int) ([]RetailFactCell, error)
 	// FactFxRate — курс нац. валюты к BYN из факта (правка ТЗ §7):
-	// SUM(NetsalesCurrencyBelRubFact)/SUM(NetsalesCurrencyFact).
+	// Σ выручки в BYN ÷ Σ выручки в валюте.
 	FactFxRate(ctx context.Context, country string, year, month int) (float64, bool, error)
 	// TacticFxRate — курс сценария «Тактика» из Budgeting.dbo.ExRateFactTarget
 	// (правка ТЗ §8). Нет месяца — ошибка заполнения, а не подстановка дефолта.
@@ -244,9 +244,9 @@ func (s *mssqlRetailSource) Cogs(ctx context.Context, country string, years []in
 }
 
 // FactFxRate — курс нац. валюты к BYN, посчитанный ИЗ ФАКТА (правка ТЗ §7):
-// SUM(NetsalesCurrencyBelRubFact) / SUM(NetsalesCurrencyFact) по строкам выручки.
-// Из справочника его брать нельзя: в факте лежит тот курс, по которому суммы
-// уже пересчитаны, и любой другой даст расхождение с отчётами.
+// Σ выручки в BYN ÷ Σ выручки в валюте по строкам выручки. Из справочника его
+// брать нельзя: в факте лежит тот курс, по которому суммы уже пересчитаны, и
+// любой другой даст расхождение с отчётами.
 //
 // Второй результат — найден ли курс: ноль в знаменателе (нет выручки за период)
 // это «нет данных», а не «курс 0».
@@ -254,13 +254,7 @@ func (s *mssqlRetailSource) FactFxRate(ctx context.Context, country string, year
 	if s.tbl.FactTable == "" {
 		return 0, false, nil
 	}
-	q := fmt.Sprintf(`
-		SELECT SUM([NetsalesCurrencyBelRubFact]) AS byn, SUM([NetsalesCurrencyFact]) AS cur
-		  FROM %s
-		 WHERE [PLDescrBK] = @p1
-		   AND YEAR([Month]) = @p2 AND MONTH([Month]) = @p3
-		   AND (@p4 = '' OR [Country] = @p4)%s`,
-		s.tbl.FactTable, allViewGuards(s.tbl.FactTable))
+	q := retailFactFxRateQuery(s.tbl.FactTable)
 	var byn, cur sql.NullFloat64
 	if err := s.db.QueryRowContext(ctx, q, retailPLRevenue, year, month, country).Scan(&byn, &cur); err != nil {
 		return 0, false, err
@@ -283,14 +277,7 @@ func (s *mssqlRetailSource) TacticFxRate(ctx context.Context, country string, ye
 	if eqCountry(country, "BY") && !toUSD {
 		return 1, nil // по BY курс к белорусскому рублю равен 1 по определению
 	}
-	table := "Budgeting.dbo.ExRateFactTarget"
-	if toUSD {
-		table = "Budgeting.dbo.ExRateToUSDFactTarget"
-	}
-	q := fmt.Sprintf(`
-		SELECT TOP 1 [ExRate] FROM %s
-		 WHERE YEAR([Date]) = @p1 AND MONTH([Date]) = @p2
-		   AND (@p3 = '' OR [Country] = @p3)`, table)
+	table, q := retailTacticFxRateQuery(toUSD)
 	var rate sql.NullFloat64
 	if err := s.db.QueryRowContext(ctx, q, year, month, country).Scan(&rate); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -302,6 +289,38 @@ func (s *mssqlRetailSource) TacticFxRate(ctx context.Context, country string, ye
 		return 0, fmt.Errorf("курс тактики за %04d-%02d (%s) в %s пустой или нулевой", year, month, country, table)
 	}
 	return rate.Float64, nil
+}
+
+// retailFactFxRateQuery — запрос курса из факта; параметры @p1 PLDescrBK,
+// @p2 год, @p3 месяц, @p4 страна. Колонок NetsalesCurrency* в представлении
+// факта нет (проверено 16.10.2026): курс считается по суммам выручки с НДС в
+// BYN и в валюте — за 09.2026 он совпадает с Budgeting.dbo.ExRateFact до
+// четвёртого знака (KZ 0,006764 / 0,006763, RU 0,03584 / 0,03585).
+func retailFactFxRateQuery(table string) string {
+	return fmt.Sprintf(`
+		SELECT SUM([%s]) AS byn, SUM([%s]) AS cur
+		  FROM %s
+		 WHERE [PLDescrBK] = @p1
+		   AND YEAR([Month]) = @p2 AND MONTH([Month]) = @p3
+		   AND (@p4 = '' OR [Country] = @p4)%s`,
+		retailAmtWithVATBYN, retailAmtWithVATCur, table, allViewGuards(table))
+}
+
+// retailTacticFxRateQuery — таблица и запрос курса тактики; параметры @p1 год,
+// @p2 месяц, @p3 страна. В Budgeting.dbo.ExRateFactTarget и
+// ExRateToUSDFactTarget колонки Country, Month, KURS_BANK (колонок ExRate и
+// Date нет). Направление курсов разное: в ExRateFactTarget — BYN за единицу
+// нац. валюты (BY 1, RU 0,0375 на 11.2026), в ExRateToUSDFactTarget — единиц
+// нац. валюты за 1 USD (RU 80). Вызывающий код должен это учитывать.
+func retailTacticFxRateQuery(toUSD bool) (table, query string) {
+	table = "Budgeting.dbo.ExRateFactTarget"
+	if toUSD {
+		table = "Budgeting.dbo.ExRateToUSDFactTarget"
+	}
+	return table, fmt.Sprintf(`
+		SELECT TOP 1 [KURS_BANK] FROM %s
+		 WHERE YEAR([Month]) = @p1 AND MONTH([Month]) = @p2
+		   AND (@p3 = '' OR [Country] = @p3)`, table)
 }
 
 // Strategy — стратегия года (ТЗ §11). Читаем нац. валюту (VFORMTOLOADPLAN) и
