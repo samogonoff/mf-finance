@@ -63,6 +63,10 @@
             <Icon name="lucide:bug" class="nav-item-icon" />
             <span v-if="!sidebarCollapsed">Баг-трекер</span>
           </NuxtLink>
+          <NuxtLink to="/admin/etl" class="nav-item">
+            <Icon name="lucide:database" class="nav-item-icon" />
+            <span v-if="!sidebarCollapsed">Загрузки данных</span>
+          </NuxtLink>
         </template>
       </nav>
 

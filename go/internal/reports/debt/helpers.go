@@ -24,6 +24,14 @@ var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // port — числовая строка ("1433" дефолт); если в server уже есть ":port",
 // передавайте port="".
 func NewOLAPPool(server, port, database, user, password string) (*sql.DB, error) {
+	return NewOLAPPoolDSN(server, port, database, user, password, "")
+}
+
+// NewOLAPPoolDSN — то же с доп. параметрами DSN go-mssqldb (через &, без
+// ведущего &), например "dial+timeout=5&connection+timeout=15". Осторожно:
+// connection timeout в go-mssqldb — это ещё и дедлайн чтения, для долгих
+// выгрузок не годится.
+func NewOLAPPoolDSN(server, port, database, user, password, extra string) (*sql.DB, error) {
 	if server == "" || user == "" || password == "" {
 		return nil, nil
 	}
@@ -35,6 +43,9 @@ func NewOLAPPool(server, port, database, user, password string) (*sql.DB, error)
 		"sqlserver://%s:%s@%s?database=%s&encrypt=true&trustservercertificate=true&app+name=finance-api",
 		user, password, host, database,
 	)
+	if extra != "" {
+		dsn += "&" + extra
+	}
 	db, err := sql.Open("sqlserver", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("debt: open mssql: %w", err)
