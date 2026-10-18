@@ -4003,7 +4003,8 @@ _UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 
 
 async def _run_investigation(job_id: str, question: str, context: dict,
-                             history: list[dict] | None = None) -> None:
+                             history: list[dict] | None = None,
+                             domain: str = "", block: str = "") -> None:
     """Фоновое исследование: считает и дописывает результат в свою задачу."""
 
     async def progress(step: int, tool: str, sql_calls: int) -> None:
@@ -4012,7 +4013,8 @@ async def _run_investigation(job_id: str, question: str, context: dict,
     try:
         result = await insight_agent.investigate(question, context,
                                                  on_progress=progress,
-                                                 history=history)
+                                                 history=history,
+                                                 domain=domain, block=block)
     except Exception as exc:
         # Любое необработанное исключение обязано закрыть задачу: иначе она
         # останется running до уборки, а пользователь будет ждать вечно.
@@ -4069,8 +4071,16 @@ async def ask_insight(
     if thread_id and not _UUID_RE.match(thread_id):
         raise HTTPException(400, "Некорректный thread_id")
 
+    # Домен подсказывает блок с фронта: fot_p9..fot_p14 — вкладки ФОТ-дашборда,
+    # у которых свой системный промпт и свои инструменты (см. insight_agent);
+    # всё остальное — прежнее исследование себестоимости. В БД домен не пишем:
+    # он живёт только в цепочке вызовов и в хеше (иначе отличать ветки некому).
+    block = str(payload.get("block") or "").strip()[:80]
+    domain = "fot" if block.startswith("fot_") else ""
+
     who = email if isinstance(email, str) and email else "mock"
-    req_hash = await insight_agent.request_hash(question, context, thread_id)
+    req_hash = await insight_agent.request_hash(question, context, thread_id,
+                                                block=block)
 
     # Кэш отдаём сразу готовым результатом — опрашивать нечего.
     if not payload.get("force"):
@@ -4093,13 +4103,15 @@ async def ask_insight(
     job_id, thread_id = await insight_agent.create_job(
         req_hash, who, question, context, thread_id=thread_id, seq=seq)
     task = asyncio.ensure_future(
-        _run_investigation(job_id, question, context, history))
+        _run_investigation(job_id, question, context, history,
+                           domain=domain, block=block))
     _ask_tasks.add(task)
     task.add_done_callback(_ask_tasks.discard)
 
     log(logging.INFO, "insights.ask: запуск", job_id=job_id, user=who,
         thread_id=thread_id, seq=seq, history_rounds=len(history),
-        model=insights._model())
+        model=insights._model(), domain=domain,
+        **({"block": block} if block else {}))
     return {"status": "running", "job_id": job_id, "thread_id": thread_id,
             "seq": seq, "question": question}
 

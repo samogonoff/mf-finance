@@ -642,6 +642,174 @@ SYSTEM_PROMPT = """Ты аналитик производственной себ
 хуже длинного."""
 
 
+# ─── Домен ФОТ (/insights/ask с блоком fot_*) ────────────────────────────────
+
+# Подписи вкладок ФОТ-дашборда — как на фронте (fot.vue TABS). P15/P16 «Отделы»
+# в список не входят: агентских фактов для них нет (fot.dashboard кидает
+# ValueError), и модель получит ошибку текстом — так же, как и чужой вкладке.
+_FOT_TAB_TITLES = {
+    "p9": "ФОТ и численность",
+    "p10": "ФОТ свод по группе",
+    "p11": "Направления и подразделения",
+    "p12": "Численность план и факт",
+    "p13": "HR-бюджет и отделы",
+    "p14": "ФОТ по направлениям бизнеса",
+}
+
+FOT_SYSTEM_PROMPT = """Ты аналитик фонда оплаты труда (ФОТ) и численности на швейном
+предприятии. Пользователь смотрит вкладку ФОТ-дашборда и задаёт вопрос по
+открытому срезу. Твоя задача — ИССЛЕДОВАТЬ данные инструментами и ответить
+по существу, а не пересказывать общие слова.
+
+Разговор может продолжаться: уточняющие вопросы опираются на сводку прошлых
+раундов. Числа прошлых ответов могли устареть — при сомнении перепроверь
+инструментами и не выдавай старое за свежее.
+
+Как работать:
+1. Начни с `fot_facts` по вкладке, открытой у пользователя, — увидишь карточки
+   и своды, посчитанные кодом, с готовыми точками сравнения. В уточняющем
+   раунде первый вызов выбирай по смыслу вопроса.
+2. Дальше сужай. Другой `tab` — соседний разрез (группа ЦФО, страны,
+   направления бизнеса, HR-бюджет). Фильтры direction/cfo/legal_entity/country
+   в `fot_facts` уточняют срез внутри вкладки. `fot_table` — сырые строки
+   конкретной таблицы вкладки, когда детали в фактах не свёрнуты.
+3. Периоды вкладок ФИКСИРОВАННЫЕ: своды — полугодия и год (1ПГ — январь–июнь,
+   2ПГ — июль–декабрь), и от срезов дат панели они НЕ зависят. Число
+   привязывай к периоду вкладки, а не к «сейчас»: вопрос «в этом месяце» на
+   своде полугодия отвечает про полугодие, и это стоит проговорить в ответе.
+4. Делай 3–8 вызовов. Вывод строится на сравнении: соседний период, соседняя
+   страна/группа, план против факта. Одно число без базы — не вывод.
+5. Когда картина ясна и проверена сравнением — дай ответ.
+
+Правила вывода:
+- Пиши ТОЛЬКО по-русски.
+- Все числа — из результатов инструментов. Простую разность можешь посчитать
+  сам, помечая её словом «разница»; больше никакой арифметики.
+- НАПРАВЛЕНИЕ ИЗМЕНЕНИЯ СВЕРЯЙ С ЧИСЛАМИ ИЗ ИНСТРУМЕНТОВ, а не с ожиданиями
+  из вопроса. Если вопрос предполагает «выросло», а данные говорят «упало» —
+  прямо скажи об этом.
+- «млн» и «тыс» — разные единицы: 217,26 млн = 217 260 тыс. Перепутать —
+  ошибка в 1000 раз.
+- Проценты не складывай; разницу процентов называй в процентных пунктах (пп).
+- Причину называй только если её подтвердил инструмент. Иначе — гипотеза в
+  next_steps, не в answer.
+- Если в фактах есть пометка о незакрытом периоде — по этой точке вывода о
+  падении делать нельзя (там меньше дней), строй сравнение по закрытым.
+- Если срез пустой или фактов нет — так и скажи, не выдумывай числа.
+
+Финальный ответ — СТРОГО один JSON-объект без markdown и без текста вокруг:
+{"answer": "3–6 предложений: главный вывод и насколько он объясняет вопрос",
+ "findings": [{"text": "наблюдение с числами",
+               "evidence": "чем подтверждено",
+               "kind": "neutral|attention|risk"}],
+ "data_quality": "что с качеством данных среза, или пустая строка",
+ "next_steps": ["что проверить дальше, вне дашборда"],
+ "confidence": "high|medium|low"}
+
+ГЛУБИНА ОТВЕТА. Отвечай развёрнуто: заказчик просит разбор, а не сводку.
+- answer — 3–6 предложений: что происходит и где именно;
+- 3–6 findings, в каждом — число и база сравнения (соседний период, соседняя
+  страна/группа, план);
+- evidence — инструмент, вкладка/срез и ключевые числа;
+- data_quality — пустые ли срезы, закрывался ли период;
+- 2–4 next_steps.
+
+Единственный жёсткий лимит: весь JSON целиком не длиннее 6000 символов —
+за этим он обрывается и теряется целиком."""
+
+FOT_TOOL_SPECS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "fot_facts",
+            "description": (
+                "Собрать вкладку ФОТ-дашборда и вернуть посчитанные кодом "
+                "факты: карточки, своды по странам/группам/направлениям, "
+                "динамика, укомплектованность. Начинай исследование им."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tab": {
+                        "type": "string",
+                        "enum": list(_FOT_TAB_TITLES),
+                        "description": (
+                            "Вкладка: p9 — месяц и матрица ЦФО, p10 — свод по "
+                            "группе, p11 — направления и подразделения, "
+                            "p12 — численность план/факт, p13 — HR-бюджет и "
+                            "отделы, p14 — ФОТ по направлениям бизнеса."
+                        ),
+                    },
+                    "direction": {"type": "string",
+                                  "description": "уточнить срез направления"},
+                    "cfo": {"type": "string",
+                            "description": "уточнить срез ЦФО"},
+                    "legal_entity": {"type": "string",
+                                     "description": "уточнить срез юрлица"},
+                    "country": {"type": "string",
+                                "description": "уточнить срез страны"},
+                },
+                "required": ["tab"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fot_table",
+            "description": (
+                "Сырые строки одной таблицы вкладки ФОТ-дашборда. Список "
+                "доступных ключей таблиц возвращается вместе с фактами "
+                "(fot_facts). Для деталей, которых в фактах нет."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tab": {
+                        "type": "string",
+                        "enum": list(_FOT_TAB_TITLES),
+                        "description": "вкладка, как в fot_facts",
+                    },
+                    "table_key": {
+                        "type": "string",
+                        "description": "ключ таблицы (например by_country); "
+                                       "незнакомый ключ вернёт список доступных",
+                    },
+                },
+                "required": ["tab", "table_key"],
+            },
+        },
+    },
+]
+
+
+def _fot_tools(context: dict) -> dict:
+    """FOT-инструменты, замкнутые на срез запроса.
+
+    Диспетчер investigate зовёт обработчик как handler(cache, args); кэш
+    себестоимости FOT-инструментам не нужен — вкладку они собирают через
+    fot_insights, поэтому параметр принимается и игнорируется. Импорт
+    fot_insights ленивый, внутри обработчика: модуль тянет insights, и на
+    уровне файла он не нужен никому, кроме FOT-домена.
+    """
+
+    _FILTER_KEYS = ("direction", "cfo", "legal_entity", "country")
+
+    async def _tool_fot_facts(cache: "_Cache", args: dict) -> dict:
+        from app import fot_insights
+        return await fot_insights.agent_facts(
+            str(args.get("tab") or ""), context,
+            {key: str(args.get(key) or "").strip() for key in _FILTER_KEYS})
+
+    async def _tool_fot_table(cache: "_Cache", args: dict) -> dict:
+        from app import fot_insights
+        return await fot_insights.agent_table(
+            str(args.get("tab") or ""), context,
+            str(args.get("table_key") or ""))
+
+    return {"fot_facts": _tool_fot_facts, "fot_table": _tool_fot_table}
+
+
 def build_user_prompt(question: str, context: dict,
                       history: list[dict] | None = None) -> str:
     ctx = "\n".join(f"- {k}: {v}" for k, v in (context or {}).items()
@@ -683,8 +851,13 @@ class AgentError(RuntimeError):
     """Исследование не удалось довести до ответа."""
 
 
-async def _chat(messages: list[dict], with_tools: bool) -> dict:
-    """Один вызов модели. Возвращает message из ответа."""
+async def _chat(messages: list[dict], with_tools: bool,
+                tool_specs: list[dict] | None = None) -> dict:
+    """Один вызов модели. Возвращает message из ответа.
+
+    *tool_specs* — свой набор инструментов домена (ФОТ); None — общий
+    себестоимостной, история которого длиннее самих вызовов.
+    """
     payload: dict[str, Any] = {
         "model": insights._model(),
         "messages": messages,
@@ -707,7 +880,7 @@ async def _chat(messages: list[dict], with_tools: bool) -> dict:
         payload["thinking"] = thinking
 
     if with_tools:
-        payload["tools"] = TOOL_SPECS
+        payload["tools"] = tool_specs if tool_specs is not None else TOOL_SPECS
         payload["tool_choice"] = "auto"
 
     try:
@@ -734,7 +907,8 @@ async def _chat(messages: list[dict], with_tools: bool) -> dict:
         raise AgentError("неожиданная структура ответа модели") from exc
 
 
-async def _rescue_answer(messages: list[dict], trace: list[dict]) -> dict | None:
+async def _rescue_answer(messages: list[dict], trace: list[dict],
+                         system_prompt: str = SYSTEM_PROMPT) -> dict | None:
     """Попытка вытащить вывод из УЖЕ собранных данных после сбоя вызова.
 
     Зачем. 02.09.2026 агент собрал семь наборов данных за 86 секунд, после чего
@@ -744,6 +918,8 @@ async def _rescue_answer(messages: list[dict], trace: list[dict]) -> dict | None
     Как. Один короткий вызов БЕЗ описаний инструментов (они занимают львиную
     долю промпта) и с урезанной историей: спрашиваем только вывод по собранному.
     Не получилось — возвращаем None, вызывающий отдаст degraded как раньше.
+    Системный промпт подставляем доменный: спасение ФОТ-исследования с
+    себестоимостной персоной заставит модель оправдывать отсутствие маржи.
     """
     if not trace:
         return None
@@ -775,7 +951,7 @@ async def _rescue_answer(messages: list[dict], trace: list[dict]) -> dict | None
     question_msg = next((m.get("content") for m in messages
                          if m.get("role") == "user"), "")
     rescue = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": question_msg},
         {"role": "user", "content":
             "Связь с моделью прервалась, продолжать исследование нельзя.\n\n"
@@ -954,7 +1130,8 @@ def _parse_final(content: str) -> dict | None:
 # ─── Кэш и журнал (cost_insight_questions, миграция 0046) ───────────────────
 
 async def request_hash(question: str, context: dict,
-                       thread_id: str | None = None) -> str:
+                       thread_id: str | None = None,
+                       block: str = "") -> str:
     """Ключ кэша: вопрос + срез + модель + момент обновления витрины.
 
     Метка обновления обязательна. В обзорном блоке в хеш входят сами серии,
@@ -977,11 +1154,13 @@ async def request_hash(question: str, context: dict,
             error=str(exc)[:200])
 
     # Ветка входит в ключ: одинаковый уточняющий вопрос («а почему?») в двух
-    # разных разговорах означает разное, и кэш отдавал бы чужой ответ.
+    # разных разговорах означает разное, и кэш отдавал бы чужой ответ. Блок —
+    # тоже: один и тот же вопрос на вкладке ФОТ и на витрине себестоимости —
+    # два разных исследования.
     blob = json.dumps(
         {"q": question.strip().lower(), "ctx": context,
          "model": insights._model(), "data": refreshed,
-         "thread": thread_id or ""},
+         "thread": thread_id or "", "block": block},
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -1284,7 +1463,8 @@ async def get_job(job_id: str) -> dict | None:
 # ─── Агентный цикл ───────────────────────────────────────────────────────────
 
 async def investigate(question: str, context: dict, on_progress: Any = None,
-                      history: list[dict] | None = None) -> dict:
+                      history: list[dict] | None = None,
+                      domain: str = "", block: str = "") -> dict:
     """Многошаговое исследование вопроса по данным раздела.
 
     Возвращает ответ, наблюдения и ТРАССУ шагов: какой инструмент с какими
@@ -1295,6 +1475,12 @@ async def investigate(question: str, context: dict, on_progress: Any = None,
     *on_progress* — необязательная корутина `(step, tool, sql_calls)`, которую
     зовут после каждого обращения к данным. Нужна асинхронному запуску, чтобы
     показывать в интерфейсе, чем агент занят прямо сейчас.
+
+    *domain*/*block* — домен исследования, подсказанный блоком с фронта:
+    domain="fot" (блоки fot_p9..fot_p14) переключает системный промпт и набор
+    инструментов на ФОТ-дашборд. Без подмены себестоимостной промпт объяснял
+    модели про маржу и витрину выпуска, и вопрос про ФОТ получал ответ не по
+    делу.
     """
     from app import llm_settings
 
@@ -1308,9 +1494,23 @@ async def investigate(question: str, context: dict, on_progress: Any = None,
     usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
     costs: list[str] = []
 
+    fot = domain == "fot"
+    system_prompt = FOT_SYSTEM_PROMPT if fot else SYSTEM_PROMPT
+    tools = _fot_tools(context) if fot else _TOOLS
+    specs = FOT_TOOL_SPECS if fot else TOOL_SPECS
+
+    user_prompt = build_user_prompt(question, context, history)
+    if fot:
+        # Вкладку, открытую у пользователя, называем словами — иначе модель
+        # гадает, что такое «p11», и может начать с не той вкладки.
+        tab = block[len("fot_"):].strip().lower()
+        title = _FOT_TAB_TITLES.get(tab, tab or "?")
+        user_prompt += (f"\n\nВкладка ФОТ-дашборда, открытая у пользователя: "
+                        f"{title} (fot_{tab}).")
+
     messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_user_prompt(question, context, history)},
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
     ]
 
     result: dict[str, Any] = {
@@ -1361,14 +1561,15 @@ async def investigate(question: str, context: dict, on_progress: Any = None,
 
         _trim_history(messages)
         try:
-            out = await _chat(messages, with_tools=not last)
+            out = await _chat(messages, with_tools=not last, tool_specs=specs)
         except AgentError as exc:
             log(logging.WARNING, "insights.ask: шаг не удался", step=step,
                 error=str(exc)[:200], model=insights._model(),
                 collected=len(trace))
             # Данные уже собраны — пробуем получить вывод по ним, вместо того
             # чтобы выбросить минуту работы из-за одного сбойного вызова.
-            rescued = await _rescue_answer(messages, trace)
+            rescued = await _rescue_answer(messages, trace,
+                                           system_prompt=system_prompt)
             if rescued is not None:
                 log(logging.INFO, "insights.ask: ответ восстановлен после сбоя",
                     collected=len(trace), error=str(exc)[:120])
@@ -1453,7 +1654,7 @@ async def investigate(question: str, context: dict, on_progress: Any = None,
                 continue
 
             tool_calls_made += 1
-            handler = _TOOLS.get(name)
+            handler = tools.get(name)
             if handler is None:
                 payload = {"ошибка": f"инструмента «{name}» нет"}
             else:
