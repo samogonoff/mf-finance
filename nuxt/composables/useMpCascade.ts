@@ -85,6 +85,8 @@ export interface MpConditions {
   vat_rate?: number | null;
   /** Ручные доли (реестр). */
   shares?: Record<string, number>;
+  /** Откуда ручная доля: пусто — введена вручную, «strategy:YYYY-MM» — подставлена из стратегии за месяц и не правилась. */
+  share_sources?: Record<string, string>;
   /** Доли по умолчанию из стратегии на месяц тактики (ТЗ доработок п. 2.1) — в реестр не пишутся. */
   default_shares?: Record<string, number>;
   /** Подпись источника умолчаний: «стратегия «НовСтрат» 11.2026». */

@@ -155,3 +155,18 @@ func TestDiffConditions_ChangedByAndAt(t *testing.T) {
 		t.Fatalf("нулевое время не должно отдаваться: %+v", d[0].ChangedAt)
 	}
 }
+
+func TestMpShareSource(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                  "",
+		"strategy:2026-10":  "strategy:2026-10",
+		"strategy:2026-13":  "",
+		"strategy:2026-1":   "",
+		"manual":            "",
+		"strategy:2026-10;": "",
+	} {
+		if got := mpShareSource(in); got != want {
+			t.Errorf("mpShareSource(%q) = %q, ожидалось %q", in, got, want)
+		}
+	}
+}

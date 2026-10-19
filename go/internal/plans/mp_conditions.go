@@ -44,6 +44,9 @@ type MpConditions struct {
 	VatRate        *float64           `json:"vat_rate,omitempty"` // nil → из справочника dir_vat
 	Currency       string             `json:"currency"`
 	Shares         map[string]float64 `json:"shares"` // block_type → доля статьи
+	// ShareSources — откуда доля: пусто = введена вручную, «strategy:YYYY-MM» =
+	// подставлена из раздела «Стратегические планы» за этот месяц и не правилась.
+	ShareSources map[string]string `json:"share_sources,omitempty"`
 	// DefaultShares — доли по умолчанию из стратегии на месяц тактики (ТЗ
 	// доработок п. 2.1, mp_share_defaults.go). В реестр не пишутся: Shares —
 	// только ручные значения, поэтому «по умолчанию / вручную» различимо.
@@ -174,7 +177,7 @@ func (s *pgMpConditions) Conditions(ctx context.Context, plID int64, year, month
 	}
 	// Доли статей — отдельной выборкой (набор статей у площадок разный).
 	itemRows, err := s.pool.Query(ctx, `
-		SELECT i.conditions_id, i.block_type, i.share_pct
+		SELECT i.conditions_id, i.block_type, i.share_pct, i.source
 		  FROM mp_condition_item i
 		  JOIN mp_conditions c ON c.id = i.conditions_id
 		 WHERE c.id = ANY($1)`, conditionIDs(out))
@@ -184,13 +187,19 @@ func (s *pgMpConditions) Conditions(ctx context.Context, plID int64, year, month
 	defer itemRows.Close()
 	for itemRows.Next() {
 		var id int64
-		var block string
+		var block, source string
 		var share float64
-		if err := itemRows.Scan(&id, &block, &share); err != nil {
+		if err := itemRows.Scan(&id, &block, &share, &source); err != nil {
 			return nil, err
 		}
 		if idx, ok := byID[id]; ok {
 			out[idx].Shares[block] = share
+			if source != "" {
+				if out[idx].ShareSources == nil {
+					out[idx].ShareSources = map[string]string{}
+				}
+				out[idx].ShareSources[block] = source
+			}
 		}
 	}
 	// Атрибуты площадки — из справочника.
@@ -268,10 +277,10 @@ func (s *pgMpConditions) SaveConditions(ctx context.Context, c MpConditions) (Mp
 	plOf := blockToPL()
 	for block, share := range c.Shares {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO mp_condition_item (conditions_id, block_type, code_pl, share_pct)
-			VALUES ($1,$2,$3,$4)
-			ON CONFLICT (conditions_id, block_type) DO UPDATE SET share_pct = EXCLUDED.share_pct`,
-			id, block, plOf[block], share); err != nil {
+			INSERT INTO mp_condition_item (conditions_id, block_type, code_pl, share_pct, source)
+			VALUES ($1,$2,$3,$4,$5)
+			ON CONFLICT (conditions_id, block_type) DO UPDATE SET share_pct = EXCLUDED.share_pct, source = EXCLUDED.source`,
+			id, block, plOf[block], share, mpShareSource(c.ShareSources[block])); err != nil {
 			return MpConditions{}, err
 		}
 	}
@@ -339,8 +348,8 @@ func (s *pgMpConditions) CopyConditions(ctx context.Context, cardID, fromPlID, t
 			return 0, err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO mp_condition_item (conditions_id, block_type, code_pl, share_pct)
-			SELECT $1, block_type, code_pl, share_pct FROM mp_condition_item WHERE conditions_id = $2`,
+			INSERT INTO mp_condition_item (conditions_id, block_type, code_pl, share_pct, source)
+			SELECT $1, block_type, code_pl, share_pct, source FROM mp_condition_item WHERE conditions_id = $2`,
 			p.dst, p.src); err != nil {
 			return 0, err
 		}
