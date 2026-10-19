@@ -192,6 +192,10 @@ func (s *TaskStore) taskBrief(ctx context.Context, taskID int64) (Task, int, int
 // (одна строка на всё задание). Сегмент из taskBrief для этого не годится: на
 // стенде он приходил пустым (19.10.2026), и итоговые строки крупных и мелких МП
 // попадали под один ключ pl_metric и затирали друг друга.
+//
+// Код ЦФО, которого нет в справочнике (segmentOf[c] == ""), сегмента не даёт: если он
+// попал в задание вместе с известными, итог считается смешанным (""), а у задания
+// только из таких кодов итог остаётся общим — как до разделения по сегментам.
 func mpTotalsSegment(segmentOf map[int]string, cfos []int) string {
 	seg := ""
 	for i, c := range cfos {
@@ -814,6 +818,19 @@ func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdm
 		}
 		if mc.card.ID != 0 && !cardEditable(mc.card) {
 			return fmt.Errorf("карточка %s закрыта на ввод тактики", rowSegment)
+		}
+		// Итог смешанного задания (крупные + мелкие) лежит под пустым сегментом, своей
+		// карточки у него нет: закрытость проверяем по карточкам всех сегментов задания,
+		// иначе скидки можно записать в утверждённый период.
+		if rowSegment == "" && line.Scope == ScopeTotal {
+			for seg, other := range modeBySegment {
+				if seg != "" && other.card.ID != 0 {
+					if !cardEditable(other.card) {
+						return fmt.Errorf("карточка %s закрыта на ввод тактики", seg)
+					}
+					touchedCards[other.card.ID] = true
+				}
+			}
 		}
 		if mc.card.ID != 0 {
 			touchedCards[mc.card.ID] = true

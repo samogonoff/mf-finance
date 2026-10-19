@@ -167,7 +167,7 @@
               <td class="col-num">
                 <NumberField
                   :model-value="row.spp_pct_view"
-                  class="cell-input pct" :disabled="!editable" placeholder="%"
+                  class="cell-input pct" :disabled="!editable" placeholder="%" :digits="4"
                   @update:model-value="row.spp_pct_view = $event ?? 0"
                 />
                 <span v-if="hint(row, 'spp_pct') !== null" class="cell-hint">факт: {{ pct(hint(row, "spp_pct")!) }}</span>
@@ -175,7 +175,7 @@
               <td class="col-num">
                 <NumberField
                   :model-value="row.markup_pct_view"
-                  class="cell-input pct" :disabled="!editable" placeholder="%"
+                  class="cell-input pct" :disabled="!editable" placeholder="%" :digits="4"
                   @update:model-value="row.markup_pct_view = $event ?? 0"
                 />
                 <span v-if="hint(row, 'markup_pct') !== null" class="cell-hint">факт: {{ pct(hint(row, "markup_pct")!) }}</span>
@@ -183,7 +183,7 @@
               <td class="col-num">
                 <NumberField
                   :model-value="row.markup_total_pct_view"
-                  class="cell-input pct" :disabled="!editable" placeholder="%"
+                  class="cell-input pct" :disabled="!editable" placeholder="%" :digits="4"
                   @update:model-value="row.markup_total_pct_view = $event ?? 0"
                 />
               </td>
@@ -196,7 +196,7 @@
                 <NumberField
 				  :model-value="row.shares_view[b.block] ?? null"
                   class="cell-input pct" :disabled="!editable"
-                  :placeholder="defaultView(row, b.block) ?? '%'"
+                  :placeholder="defaultView(row, b.block) ?? '%'" :digits="4"
 				  @update:model-value="onShareEdit(row, b.block, $event)"
                 />
                 <!-- Пустое поле = доля по умолчанию из стратегии (ТЗ доработок п. 2.1);
@@ -427,6 +427,9 @@ const defaultView = (r: EditableRow, b: string): string | null => {
 // но в реестр не переносим — иначе производные значения станут условиями.
 // Правка доли в сетке руками снимает признак «из стратегии»: дальше это «вручную».
 const onShareEdit = (r: EditableRow, block: string, value: number | null) => {
+  const prev = r.shares_view[block];
+  // Щелчок в поле и выход без правки не должен менять подпись: сравниваем значения, а не факт события.
+  if (prev != null && value != null && Math.abs(Number(prev) - Number(value)) < 1e-6) return;
   r.shares_view[block] = value;
   r.share_src[block] = "";
 };
