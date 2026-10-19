@@ -42,6 +42,9 @@
         <a class="btn btn-sm btn-ghost" :href="exportHref" target="_blank" rel="noopener">
           <Icon name="lucide:download" /> Экспорт
         </a>
+        <button v-if="editable" class="btn btn-sm btn-ghost" :disabled="syncRunning" title="Перечитать состав строк и факт из источника затрат (OLAP). Процедура работает несколько минут." @click="runSync">
+          <Icon name="lucide:refresh-cw" :class="{ spin: syncRunning }" /> Обновить из источника
+        </button>
         <button class="btn btn-sm btn-ghost" :disabled="!editable" @click="importInput?.click()">
           <Icon name="lucide:upload" /> Импорт
         </button>
@@ -58,6 +61,19 @@
 
     <p v-if="error" class="banner banner-neg">{{ error }}</p>
     <p v-if="note" class="banner banner-pos">{{ note }}</p>
+    <p v-if="syncRunning" class="banner banner-info">
+      <Icon name="lucide:loader-circle" class="spin" />
+      Идёт загрузка состава строк и факта из источника затрат. Процедура работает несколько минут —
+      форму можно не закрывать, она обновится сама{{ rows.length ? " (введённое не потеряется)" : "" }}.
+    </p>
+    <p v-else-if="form?.sync?.state === 'error'" class="banner banner-neg">
+      Источник затрат не прочитан: {{ form.sync.error || "причина неизвестна" }}.
+      Повторить — кнопка «Обновить из источника».
+    </p>
+    <p v-else-if="syncDoneNew" class="banner banner-pos">
+      Загрузка из источника завершена.
+      <button class="btn btn-sm btn-ghost" @click="reload({ keepFilter: true })">Показать новые строки</button>
+    </p>
     <p v-if="loaded && !editable" class="banner banner-warn">
       Только просмотр: карточка не в работе или период закрыт. Изменение утверждённых сумм —
       через возврат или переоткрытие периода с причиной.
@@ -299,9 +315,15 @@
 
     <SkeletonTable v-if="loading" :rows="16" :cols="13" label="Загружаю строки формы" />
 
-    <p v-else-if="!rows.length" class="banner banner-info">
-      Строк нет. Состав строк приходит из источника затрат по факту прошлого года — если источник
-      недоступен (нет VPN или пустой срез), форма откроется пустой.
+    <p v-else-if="!rows.length && !syncRunning" class="banner banner-info">
+      <template v-if="form?.sync?.state === 'ok' && !form.sync.source_cells">
+        Источник затрат ответил, но по этой форме (страна, группа ЦФО, 2025–{{ planYear }}) строк не вернул.
+      </template>
+      <template v-else-if="form?.sync?.state === 'error'">Строк нет: источник затрат не прочитан (причина выше).</template>
+      <template v-else>
+        Строк нет. Состав строк приходит из источника затрат по факту прошлого года;
+        загрузка запускается при открытии формы или кнопкой «Обновить из источника».
+      </template>
     </p>
 
     <!-- ===== Сетка ===== -->
@@ -913,6 +935,46 @@ const query = (offset: number) => ({
   dir: sort.value?.desc ? ("desc" as const) : undefined
 });
 
+const syncRunning = computed(() => form.value?.sync?.state === "running");
+// Загрузка закончилась, пока на экране уже есть строки: подменять их самим нельзя
+// (там может быть несохранённый ввод), поэтому предлагаем обновить вручную.
+const syncDoneNew = ref(false);
+let syncTimer: ReturnType<typeof setInterval> | null = null;
+const stopSyncPoll = () => {
+  if (syncTimer) clearInterval(syncTimer);
+  syncTimer = null;
+};
+const pollSync = async () => {
+  try {
+    const f = await api.form(cardId, { limit: 1 });
+    const wasRunning = form.value?.sync?.state === "running";
+    if (form.value) form.value = { ...form.value, sync: f.sync };
+    if (f.sync?.state !== "running") {
+      stopSyncPoll();
+      if (wasRunning && f.sync?.state === "ok") {
+        if (rows.value.length === 0) await reload({ keepFilter: true });
+        else syncDoneNew.value = true;
+      }
+    }
+  } catch {
+    // Сеть моргнула — следующий опрос повторит.
+  }
+};
+const startSyncPoll = () => {
+  if (!syncTimer) syncTimer = setInterval(() => void pollSync(), 10_000);
+};
+const runSync = async () => {
+  error.value = "";
+  syncDoneNew.value = false;
+  try {
+    const st = await api.syncNow(cardId);
+    if (form.value) form.value = { ...form.value, sync: st };
+    startSyncPoll();
+  } catch (e) {
+    error.value = apiError(e, "Не удалось запустить загрузку из источника");
+  }
+};
+
 const reload = async (opts: { keepFilter?: boolean } = {}) => {
   if (!opts.keepFilter) collapsed.value = new Set();
   loading.value = rows.value.length === 0;
@@ -922,6 +984,8 @@ const reload = async (opts: { keepFilter?: boolean } = {}) => {
     form.value = f;
     rows.value = f.rows;
     loaded.value = true;
+    syncDoneNew.value = false;
+    if (f.sync?.state === "running") startSyncPoll();
   } catch (e) {
     error.value = apiError(e, "Не удалось загрузить форму");
   } finally {
@@ -969,7 +1033,10 @@ onMounted(async () => {
   }
   void reload();
 });
-onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
+onBeforeUnmount(() => {
+  window.removeEventListener("beforeunload", beforeUnload);
+  stopSyncPoll();
+});
 onBeforeRouteLeave(() => {
   if (!dirty.value) return true;
   return window.confirm("Есть несохранённые изменения. Уйти со страницы и потерять их?");

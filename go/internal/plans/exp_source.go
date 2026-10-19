@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -138,6 +139,9 @@ const expCutoffYear = 2024
 // память процесса. Превышение видно в логе — это сигнал вернуться к источнику.
 const expRowCap = 400000
 
+// expProcMu — одна выгрузка процедуры затрат за раз.
+var expProcMu sync.Mutex
+
 type expSource struct {
 	mock   bool
 	db     *sql.DB
@@ -179,9 +183,14 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 	}
 	group := expKindGroup(kind)
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	// Процедура без параметров отдаёт весь бюджет (~1 млн строк, около 4 минут на
+	// OLAP). Параллельные выгрузки по разным странам и видам форм не нужны: идут по
+	// одной, чтобы не класть источник.
+	expProcMu.Lock()
+	defer expProcMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
-	rows, err := s.db.QueryContext(ctx, "EXEC "+proc)
+	rows, err := s.db.QueryContext(ctx, "SET NOCOUNT ON; EXEC "+proc)
 	if err != nil {
 		return nil, err
 	}
@@ -198,8 +207,12 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 	for i, c := range cols {
 		idx[strings.ToLower(strings.TrimSpace(c))] = i
 	}
+	// Обязательны только колонки, без которых строку не собрать. «country_company» и
+	// «company» процедура сейчас не отдаёт вовсе (проверено 19.10.2026): раньше из-за
+	// них источник считался сломанным, ошибка уходила в лог, и форма открывалась
+	// пустой. Юрлицо и страна компании берутся из справочника ЦФО (Cfo), если их нет.
 	need := []string{"scenario", "month", "codepl", "grouppl", "expense", "codecfo",
-		"cfo", "groupcfo1", "groupcfo2", "country", "country_company", "company"}
+		"cfo", "groupcfo1", "groupcfo2", "country"}
 	for _, n := range need {
 		if _, ok := idx[n]; !ok {
 			return nil, fmt.Errorf("в выдаче процедуры %s нет колонки %q", proc, n)
@@ -212,6 +225,8 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 	}
 
 	out := make([]ExpCostCell, 0, 4096)
+	var payments []ExpCostCell // платёжный факт — запасной вариант (см. ниже)
+	hasAccrual := false
 	capped := false
 	raw := make([]any, len(cols))
 	ptrs := make([]any, len(cols))
@@ -297,7 +312,7 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 		if country != "" && c.Country != country {
 			continue
 		}
-		c.Projects, c.SpecialAccess = str("projects"), str("specialaccess")
+		c.Projects, c.SpecialAccess = str(expProjectsCol(idx)), str("specialaccess")
 		// Фильтр страницы эталона (ответ 5.4): Projects обязателен, иначе
 		// источник задвоит строки по проектам.
 		if c.Projects != "" && c.Projects != expProjectsNone {
@@ -306,8 +321,17 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 		// 3. Сценарий — как пришёл из источника. Legacy forms omit payment
 		// facts; code-based CFO forms retain the exact scenarios from ТЗ v2.
 		c.Scenario = str("scenario")
+		paymentsFact := false
 		if !expScenarioForKind(kind, c.Scenario) {
-			continue
+			// «Факт по платежам» в форму не идёт, пока в источнике есть «Факт по
+			// начислениям» (ответ 44). Сейчас начислений в выдаче нет вовсе, и без
+			// запасного варианта колонка факта и база расчётов остались бы пустыми:
+			// запоминаем платёжный факт отдельно и подставляем только в таком случае.
+			if _, legacy := CfoExpCodeFromKind(kind); !legacy && c.Scenario == ExpSrcFactPayments {
+				paymentsFact = true
+			} else {
+				continue
+			}
 		}
 		c.GroupPL, c.Expense = str("grouppl"), str("expense")
 		c.CFO = str("cfo")
@@ -316,6 +340,13 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 			c.Amount = num("amount")
 		} else {
 			c.Amount = num("amountbyn")
+		}
+		if paymentsFact {
+			payments = append(payments, c)
+			continue
+		}
+		if c.Scenario == ExpSrcFact {
+			hasAccrual = true
 		}
 		out = append(out, c)
 		if len(out) >= expRowCap {
@@ -329,7 +360,23 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 	if capped {
 		log.Printf("plans/exp: выборка затрат обрезана на %d строк — источник отдал больше «быстрого» среза", expRowCap)
 	}
+	if !hasAccrual && len(payments) > 0 {
+		log.Printf("plans/exp: в источнике нет «%s», факт взят из «%s» (%d строк)", ExpSrcFact, ExpSrcFactPayments, len(payments))
+		for i := range payments {
+			payments[i].Scenario = ExpSrcFact
+		}
+		out = append(out, payments...)
+	}
 	return out, nil
+}
+
+// expProjectsCol — колонка проекта в выдаче процедуры: в ТЗ она «Projects», в
+// действующей выдаче — «ProjectName». Значение «Нет проектов!» и пусто проходят отбор.
+func expProjectsCol(idx map[string]int) string {
+	if _, ok := idx["projects"]; ok {
+		return "projects"
+	}
+	return "projectname"
 }
 
 // expScenarioForKind keeps legacy source filtering for retail/marketplace forms
@@ -349,13 +396,17 @@ func (s *expSource) Cfo(ctx context.Context, kind, country string) (map[int]ExpC
 	if table == "" {
 		return map[int]ExpCfoAttrs{}, nil
 	}
+	// В процедуре затрат группа называется «3.Магазины», в справочнике ЦФО — «Магазины»
+	// (без номера, проверено 19.10.2026): по одному написанию справочник не находился,
+	// и у строк не было города, типа магазина и регионального менеджера.
+	group := expKindGroup(kind)
 	q := `SELECT [CodeCFO], [CFO], [GroupCFO1], [GroupCFO2], [Country],
 	             [CompanyMF], [TypeOfStore], [RegManager]
 	        FROM ` + table + `
-	       WHERE [GroupCFO1] = @p1`
-	args := []any{expKindGroup(kind)}
+	       WHERE [GroupCFO1] IN (@p1, @p2)`
+	args := []any{group, expGroupWithoutNumber(group)}
 	if country != "" {
-		q += ` AND [Country] = @p2`
+		q += ` AND [Country] = @p3`
 		args = append(args, country)
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
@@ -425,4 +476,15 @@ func (s *expSource) SalesPlan(ctx context.Context, country string, year int) (ma
 		out[c][int(date.Month())] += v.Float64
 	}
 	return out, rows.Err()
+}
+
+// expGroupWithoutNumber — «3.Магазины» → «Магазины»: название группы ЦФО без
+// порядкового номера. Строка без номера возвращается как есть.
+func expGroupWithoutNumber(group string) string {
+	if i := strings.Index(group, "."); i > 0 && i <= 2 {
+		if _, err := strconv.Atoi(group[:i]); err == nil {
+			return group[i+1:]
+		}
+	}
+	return group
 }

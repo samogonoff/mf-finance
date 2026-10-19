@@ -620,6 +620,7 @@ func main() {
 	// требуют финансиста и проверяются в сервисе, а не ролью на маршруте.
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormGet))
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormSave))
+	mux.HandleFunc("POST /api/plans/exp/{cardId}/sync", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.SyncPost))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.BulkApply))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/totals", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.TotalsGet))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/export", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.Export))

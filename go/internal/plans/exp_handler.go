@@ -91,6 +91,21 @@ func (h *ExpHandler) FormGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, form)
 }
 
+// SyncPost — POST /api/plans/exp/{cardId}/sync. Перечитать состав строк из источника
+// затрат сейчас. Загрузка идёт в фоне, ответ — её состояние; ход смотреть в Form.Sync.
+func (h *ExpHandler) SyncPost(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "cardId")
+	if !ok {
+		return
+	}
+	st, err := h.svc.SyncNow(r.Context(), h.principal(r), id)
+	if err != nil {
+		expErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, st)
+}
+
 // FormSave — PUT /api/plans/exp/{cardId}/form
 // Тело: {cells: [{code_cfo, code_pl, month, amount, source, note}], comments: [...]}.
 func (h *ExpHandler) FormSave(w http.ResponseWriter, r *http.Request) {
