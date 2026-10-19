@@ -19,6 +19,7 @@ export interface MpConditionsRow extends MpConditions {
   change_reason: string;
   status: string;
   updated_at?: string;
+  author_name?: string;
 }
 
 export interface MpConditionsDiff {
@@ -30,6 +31,9 @@ export interface MpConditionsDiff {
   now: number;
   delta: number;
   needs_why: boolean;
+  /** Кто и когда сохранил текущие условия площадки. */
+  changed_by?: string;
+  changed_at?: string;
 }
 
 export interface MpConditionsView {

@@ -3,6 +3,7 @@ package plans
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 func draftsBase() (map[int]MpConditions, []MarketplaceRow) {
@@ -135,5 +136,20 @@ func TestMpMissingShare(t *testing.T) {
 	}
 	if mpMissingShare(MpLine{BlockType: BShipments}, cond) {
 		t.Error("не статья затрат не может быть «без доли»")
+	}
+}
+
+// В diff попадает, кто и когда сохранил текущие условия площадки.
+func TestDiffConditions_ChangedByAndAt(t *testing.T) {
+	at := time.Date(2026, 10, 19, 12, 30, 0, 0, time.UTC)
+	prev := []MpConditions{{CodeCFO: 335, SppPct: .10}}
+	next := []MpConditions{{CodeCFO: 335, SppPct: .20, AuthorName: "Иван Петров", UpdatedAt: at}}
+	d := diffConditions(prev, next, DefaultMpThresholds())
+	if len(d) != 1 || d[0].ChangedBy != "Иван Петров" || d[0].ChangedAt == nil || !d[0].ChangedAt.Equal(at) {
+		t.Fatalf("автор и время изменения не попали в diff: %+v", d)
+	}
+	next[0].UpdatedAt = time.Time{}
+	if d := diffConditions(prev, next, DefaultMpThresholds()); d[0].ChangedAt != nil {
+		t.Fatalf("нулевое время не должно отдаваться: %+v", d[0].ChangedAt)
 	}
 }
