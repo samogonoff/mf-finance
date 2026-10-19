@@ -638,11 +638,12 @@
                   </span>
                 </header>
 
-                <!-- Селектор страны -->
+                <!-- Селектор страны (мультивыбор) -->
                 <div class="p17-country-sel">
-                  <button v-for="c in p17CountryOptions" :key="c.key" class="p17-cc-btn"
-                          :class="{ active: p17Country === c.key }"
-                          @click="p17Country = c.key">{{ c.label }}</button>
+                  <label v-for="c in p17CountryOptions" :key="c.key" class="p17-cc-chk">
+                    <input type="checkbox" :value="c.key" v-model="p17Countries" />
+                    {{ c.label }}
+                  </label>
                 </div>
 
                 <!-- KPI-лента страны -->
@@ -1124,8 +1125,8 @@ const slideTable15 = computed<any>(() =>
 /** Таблица численности ГК рендерится в слайде; в общем списке таблиц её нет. */
 const slideTable17 = computed<any>(() =>
   isP17.value ? tables.value.find((t: any) => t.key === 'hc_countries') || null : null)
-/** Слайд 4.2: выбранная страна для детализации численности. */
-const p17Country = ref<string>('BY')
+/** Слайд 4.2: мультивыбор стран для детализации численности. */
+const p17Countries = ref<string[]>(['BY'])
 const p17CountryOptions = [
   { key: 'BY', label: 'Беларусь' },
   { key: 'RU', label: 'Россия' },
@@ -1135,14 +1136,52 @@ const p17CountryOptions = [
 const p17CountryDetails = computed<any>(() => {
   if (!isP17.value) return null
   const details = dash.value?.country_details || {}
-  return details[p17Country.value] || null
+  const selected = p17Countries.value.filter(c => details[c])
+  if (!selected.length) return null
+  // Агрегация карточек: суммы по всем выбранным странам
+  const allCards = selected.flatMap(cc => details[cc].cards || [])
+  const merged: Record<string, any> = {}
+  for (const c of allCards) {
+    const existing = merged[c.key]
+    if (!existing) {
+      merged[c.key] = { ...c }
+    } else if (c.value !== null && existing.value !== null) {
+      existing.value = Number(c.value) + Number(existing.value)
+    }
+  }
+  // Агрегация таблиц: объединение строк
+  const allRows = selected.flatMap(cc => (details[cc].table?.rows || []))
+  const mergedRows: any[] = []
+  const seen = new Set<string>()
+  for (const row of allRows) {
+    if (row.total) continue // пропускаем итоги отдельных стран
+    if (!seen.has(row.label)) {
+      seen.add(row.label)
+      mergedRows.push({ ...row })
+    }
+  }
+  // Итоговая строка
+  if (mergedRows.length) {
+    const total: any = { label: 'Итого', total: true }
+    for (const row of mergedRows) {
+      for (const [k, v] of Object.entries(row)) {
+        if (k === 'label' || k === 'total') continue
+        if (typeof v === 'number') total[k] = (total[k] || 0) + v
+      }
+    }
+    mergedRows.push(total)
+  }
+  const firstTable = details[selected[0]]?.table
+  const label = selected.map(cc => p17CountryOptions.find(o => o.key === cc)?.label || cc).join(', ')
+  return {
+    cards: Object.values(merged),
+    table: firstTable ? { ...firstTable, label: `Численность — ${label} (по подразделениям)`, rows: mergedRows } : null,
+    label,
+  }
 })
 const p17CountryCards = computed<any[]>(() => p17CountryDetails.value?.cards || [])
 const p17CountryTable = computed<any>(() => p17CountryDetails.value?.table || null)
-const p17CountryLabel = computed(() => {
-  const opt = p17CountryOptions.find(o => o.key === p17Country.value)
-  return opt?.label || p17Country.value
-})
+const p17CountryLabel = computed(() => p17CountryDetails.value?.label || '')
 /** Баннеры-выводы: P15 — «Тенденции и прогноз», P16 — пара листа 8. */
 const deptTrends = computed<string[]>(() => dash.value?.dept_trends || [])
 const deptBanners = computed<any>(() => dash.value?.dept_banners || null)
@@ -2103,14 +2142,9 @@ const fmtDateTime = (iso: any) => {
 
 /* P17 — разделитель слайдов и селектор страны */
 .p17-divider { height: 1px; background: var(--border, #e2e8f0); margin: 16px 0; }
-.p17-country-sel { display: flex; gap: 6px; margin-bottom: 8px; }
-.p17-cc-btn {
-  font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 6px;
-  border: 1px solid var(--border, #e2e8f0); background: transparent;
-  color: var(--text-muted, #64748b); cursor: pointer; transition: all 0.15s;
-}
-.p17-cc-btn.active { background: var(--accent, #4338ca); color: #fff; border-color: var(--accent, #4338ca); }
-.p17-cc-btn:hover:not(.active) { border-color: var(--accent, #4338ca); color: var(--text, #1e293b); }
+.p17-country-sel { display: flex; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+.p17-cc-chk { font: inherit; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+.p17-cc-chk input { accent-color: var(--accent, #4338ca); }
 
 /* P18 — подтабы разрезов */
 .p18-tabs { display: flex; gap: 6px; margin: 8px 0 4px; }
