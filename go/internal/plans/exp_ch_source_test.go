@@ -78,9 +78,13 @@ func TestExpCHSource_ReadsSnapshot(t *testing.T) {
 	stub := &chStub{count: "960595\n", rows: chRowRetail + "\n" + chRowRetail + "\n", asOf: "1792400000\n"}
 	fb := &fallbackSource{}
 	src := newCHTest(t, stub, fb)
-	cells, err := src.Costs(context.Background(), ExpKindRetail, "BY", []int{2025, 2026})
+	ctx, trace := WithExpSourceTrace(context.Background())
+	cells, err := src.Costs(ctx, ExpKindRetail, "BY", []int{2025, 2026})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if trace.Kind != ExpSourceKindCH {
+		t.Fatalf("источник чтения: %q", trace.Kind)
 	}
 	if fb.calls != 0 {
 		t.Fatal("при наполненном снимке процедуру звать нельзя")
@@ -93,9 +97,8 @@ func TestExpCHSource_ReadsSnapshot(t *testing.T) {
 		c.GroupCFO1 != "3.Магазины" || c.GroupCFO2 != "Минск" || c.Country != "BY" || c.Amount != 1234.5 || c.Expense != "Заработная плата" {
 		t.Fatalf("ячейка разобрана неверно: %+v", c)
 	}
-	kind, asOf, ok := src.(ExpSourceInfo).SourceInfo(context.Background())
-	if kind != ExpSourceKindCH || !ok || asOf.Unix() != 1792400000 {
-		t.Fatalf("SourceInfo: %q %v %v", kind, asOf, ok)
+	if asOf, ok := src.(ExpSourceInfo).SnapshotAsOf(context.Background()); !ok || asOf.Unix() != 1792400000 {
+		t.Fatalf("SnapshotAsOf: %v %v", asOf, ok)
 	}
 	// Справочник ЦФО идёт из процедуры/справочника, не из снимка.
 	if m, _ := src.Cfo(context.Background(), ExpKindRetail, "BY"); m[7].CodeCFO != 7 {
@@ -112,12 +115,13 @@ func TestExpCHSource_FallsBackToProcedure(t *testing.T) {
 	} {
 		fb := &fallbackSource{cells: want}
 		src := newCHTest(t, stub, fb)
-		cells, err := src.Costs(context.Background(), ExpKindRetail, "BY", []int{2026})
+		ctx, trace := WithExpSourceTrace(context.Background())
+		cells, err := src.Costs(ctx, ExpKindRetail, "BY", []int{2026})
 		if err != nil || fb.calls != 1 || len(cells) != 1 || cells[0].CodeCFO != 5 {
 			t.Fatalf("%s: err=%v calls=%d cells=%v", name, err, fb.calls, cells)
 		}
-		if kind, _, ok := src.(ExpSourceInfo).SourceInfo(context.Background()); kind != ExpSourceKindOLAP || ok {
-			t.Fatalf("%s: источник должен быть помечен как olap, got %q ok=%v", name, kind, ok)
+		if trace.Kind != ExpSourceKindOLAP {
+			t.Fatalf("%s: источник должен быть помечен как olap, got %q", name, trace.Kind)
 		}
 	}
 }

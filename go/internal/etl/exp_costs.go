@@ -9,7 +9,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -64,28 +63,29 @@ func (o *ExpCostsOpts) normalize() {
 // учёта регистра: процедура без параметров, порядок и регистр колонок нам не подчиняются.
 var expCostsCols = []struct {
 	Src      string
+	Alt      string // запасное имя колонки в выдаче процедуры (в ТЗ — «Projects», в действующей выдаче — «ProjectName»)
 	Name     string
 	Kind     colKind
 	Required bool
 }{
-	{"Scenario", "scenario", kStr, true},
-	{"Country", "country", kStr, true},
-	{"Month", "month", kDate, true},
-	{"CodePL", "code_pl", kInt, true},
-	{"GroupPL", "group_pl", kStr, false},
-	{"GroupPL_new", "group_pl_new", kStr, false},
-	{"Expense", "expense", kStr, false},
-	{"CF_item", "cf_item", kStr, false},
-	{"SpecialAccess", "special_access", kStr, false},
-	{"CodeCFO", "code_cfo", kInt, true},
-	{"CFO", "cfo", kStr, false},
-	{"GroupCFO1", "group_cfo1", kStr, true},
-	{"GroupCFO2", "group_cfo2", kStr, false},
-	{"GroupCFO3", "group_cfo3", kStr, false},
-	{"ProjectName", "project_name", kStr, false},
-	{"Amount", "amount", kDec, true},
-	{"AmountBYN", "amount_byn", kDec, false},
-	{"AmountUSD", "amount_usd", kDec, false},
+	{"Scenario", "", "scenario", kStr, true},
+	{"Country", "", "country", kStr, true},
+	{"Month", "", "month", kDate, true},
+	{"CodePL", "", "code_pl", kInt, true},
+	{"GroupPL", "", "group_pl", kStr, false},
+	{"GroupPL_new", "", "group_pl_new", kStr, false},
+	{"Expense", "", "expense", kStr, false},
+	{"CF_item", "", "cf_item", kStr, false},
+	{"SpecialAccess", "", "special_access", kStr, false},
+	{"CodeCFO", "", "code_cfo", kInt, true},
+	{"CFO", "", "cfo", kStr, false},
+	{"GroupCFO1", "", "group_cfo1", kStr, true},
+	{"GroupCFO2", "", "group_cfo2", kStr, false},
+	{"GroupCFO3", "", "group_cfo3", kStr, false},
+	{"ProjectName", "Projects", "project_name", kStr, false},
+	{"Amount", "", "amount", kDec, true},
+	{"AmountBYN", "", "amount_byn", kDec, false},
+	{"AmountUSD", "", "amount_usd", kDec, false},
 }
 
 // expCostsValue — значение ячейки выдачи процедуры как текст для JSONEachRow.
@@ -154,6 +154,9 @@ func expCostsLayout(cols []string) (idx []int, err error) {
 	var missing []string
 	for i, c := range expCostsCols {
 		j, ok := byName[strings.ToLower(c.Src)]
+		if !ok && c.Alt != "" {
+			j, ok = byName[strings.ToLower(c.Alt)]
+		}
 		if !ok {
 			idx[i] = -1
 			if c.Required {
@@ -169,7 +172,9 @@ func expCostsLayout(cols []string) (idx []int, err error) {
 	return idx, nil
 }
 
-var expCostsRunMu sync.Mutex // одна заливка за раз на процесс
+// expCostsRunSem — одна заливка за раз на процесс (канал: ожидание чужой заливки
+// прерывается по контексту).
+var expCostsRunSem = make(chan struct{}, 1)
 
 // RunExpCostsDaily — ежедневная заливка. Безопасно звать часто (воркер раз в
 // интервал): без Force заливка идёт только если за сегодня её ещё не было и сейчас
@@ -181,10 +186,12 @@ func RunExpCostsDaily(ctx context.Context, deps Deps, opts ExpCostsOpts) (rows i
 	if err != nil {
 		return 0, false, fmt.Errorf("expcosts: ch client: %w", err)
 	}
-	if !expCostsRunMu.TryLock() {
-		return 0, false, nil
+	select {
+	case expCostsRunSem <- struct{}{}:
+		defer func() { <-expCostsRunSem }()
+	default:
+		return 0, false, nil // уже идёт другая заливка
 	}
-	defer expCostsRunMu.Unlock()
 
 	sourceDate, hour, err := sourceClock(ctx, deps.MSSQL)
 	if err != nil {
@@ -450,7 +457,14 @@ func (w *ExpCostsWorker) RefreshNow(ctx context.Context) error {
 	o.Force, o.TriggeredBy = true, "api"
 	_, ran, err := RunExpCostsDaily(ctx, w.deps, o)
 	if err == nil && !ran {
-		return fmt.Errorf("заливка уже идёт")
+		// Заливка уже идёт (ночной воркер или кнопка на другой форме): дожидаемся её
+		// окончания, а не отвечаем ошибкой — свежий снимок нужен и этому пользователю.
+		select {
+		case expCostsRunSem <- struct{}{}:
+			<-expCostsRunSem
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return err
 }

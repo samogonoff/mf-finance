@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -23,9 +22,28 @@ import (
 // секунды. Если таблица пуста (до первой заливки) или CH недоступен — читаем процедуру
 // напрямую, как раньше (медленно, но форма не остаётся без строк).
 
-// ExpSourceInfo — источник умеет сказать, откуда данные и на какой момент.
+// ExpSourceInfo — источник умеет сказать, на какой момент залит ночной снимок.
 type ExpSourceInfo interface {
-	SourceInfo(ctx context.Context) (kind string, asOf time.Time, ok bool)
+	SnapshotAsOf(ctx context.Context) (asOf time.Time, ok bool)
+}
+
+// ExpSourceTrace — «след» одного чтения: источник пишет сюда, откуда реально прочитал
+// данные. Передаётся в контексте вызова Costs, поэтому параллельные загрузки разных форм
+// не путают друг друга (общего состояния на процесс нет).
+type ExpSourceTrace struct{ Kind string }
+
+type expTraceKey struct{}
+
+// WithExpSourceTrace кладёт след в контекст.
+func WithExpSourceTrace(ctx context.Context) (context.Context, *ExpSourceTrace) {
+	tr := &ExpSourceTrace{}
+	return context.WithValue(ctx, expTraceKey{}, tr), tr
+}
+
+func noteExpSource(ctx context.Context, kind string) {
+	if tr, ok := ctx.Value(expTraceKey{}).(*ExpSourceTrace); ok {
+		tr.Kind = kind
+	}
 }
 
 // ExpSourceRefresher — источник умеет перечитать данные у первоисточника по кнопке
@@ -41,7 +59,6 @@ const (
 )
 
 type chExpSource struct {
-	lastKind atomic.Value  // string: откуда прочитано в последний раз (clickhouse | olap)
 	base     ExpDataSource // процедура на OLAP: запасной путь; справочник ЦФО и план продаж
 	url     string
 	client  *http.Client
@@ -76,24 +93,17 @@ func (s *chExpSource) RefreshSource(ctx context.Context) error {
 	return s.refresh(ctx)
 }
 
-// SourceInfo — время последней успешной заливки.
-func (s *chExpSource) SourceInfo(ctx context.Context) (string, time.Time, bool) {
-	kind, _ := s.lastKind.Load().(string)
-	if kind == "" {
-		kind = ExpSourceKindCH
-	}
-	if kind != ExpSourceKindCH {
-		return kind, time.Time{}, false // прочитано из процедуры: у данных нет «даты снимка»
-	}
+// SnapshotAsOf — время последней успешной заливки снимка.
+func (s *chExpSource) SnapshotAsOf(ctx context.Context) (time.Time, bool) {
 	out, err := s.query(ctx, "SELECT toUnixTimestamp(max(finished_at)) FROM finance.exp_costs_etl_runs WHERE status = 'ok'", "TSV")
 	if err != nil {
-		return kind, time.Time{}, false
+		return time.Time{}, false
 	}
 	sec, _ := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
 	if sec <= 0 {
-		return kind, time.Time{}, false
+		return time.Time{}, false
 	}
-	return kind, time.Unix(sec, 0), true
+	return time.Unix(sec, 0), true
 }
 
 func (s *chExpSource) query(ctx context.Context, sql, format string) ([]byte, error) {
@@ -181,21 +191,21 @@ func (s *chExpSource) Costs(ctx context.Context, kind, country string, years []i
 	have, err := s.query(ctx, "SELECT count() FROM finance.exp_costs", "TSV")
 	if err != nil {
 		log.Printf("plans/exp: ClickHouse недоступен, читаем процедуру напрямую: %v", err)
-		s.lastKind.Store(ExpSourceKindOLAP)
+		noteExpSource(ctx, ExpSourceKindOLAP)
 		return s.base.Costs(ctx, kind, country, years)
 	}
 	if n, _ := strconv.ParseInt(strings.TrimSpace(string(have)), 10, 64); n == 0 {
 		log.Printf("plans/exp: finance.exp_costs пуста (заливка ещё не выполнялась), читаем процедуру напрямую")
-		s.lastKind.Store(ExpSourceKindOLAP)
+		noteExpSource(ctx, ExpSourceKindOLAP)
 		return s.base.Costs(ctx, kind, country, years)
 	}
 	body, err := s.query(ctx, expCostsSQL(kind, country, years), "JSONEachRow")
 	if err != nil {
 		log.Printf("plans/exp: чтение finance.exp_costs: %v — читаем процедуру напрямую", err)
-		s.lastKind.Store(ExpSourceKindOLAP)
+		noteExpSource(ctx, ExpSourceKindOLAP)
 		return s.base.Costs(ctx, kind, country, years)
 	}
-	s.lastKind.Store(ExpSourceKindCH)
+	noteExpSource(ctx, ExpSourceKindCH)
 	out := make([]ExpCostCell, 0, 4096)
 	sc := bufio.NewScanner(strings.NewReader(string(body)))
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)

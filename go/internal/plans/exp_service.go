@@ -170,27 +170,24 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 		defer cancel()
 		// Кнопка «Обновить из источника»: сначала перезалить ночной снимок (минуты),
 		// затем прочитать его. Без снимка (источник напрямую) шаг пропускается.
-		var err error
+		// Не удалась перезаливка (миграция ClickHouse не применена, нет EXEC, сбой MSSQL) —
+		// не повод оставить форму без данных: пишем в журнал и читаем текущий снимок или,
+		// если его нет, процедуру напрямую.
 		if r, ok := s.source.(ExpSourceRefresher); ok && force {
 			if rerr := r.RefreshSource(ctx); rerr != nil {
-				err = fmt.Errorf("обновление снимка затрат: %w", rerr)
+				log.Printf("plans/exp: обновление снимка затрат не удалось, читаем то, что есть: %v", rerr)
 			}
 		}
-		n := 0
-		if err == nil {
-			n, err = s.syncFromSource(ctx, c, in, force)
-		}
+		// След чтения: откуда реально взяты данные именно в этой загрузке.
+		ctx, trace := WithExpSourceTrace(ctx)
+		n, err := s.syncFromSource(ctx, c, in, force)
 		fin := time.Now()
 		// Откуда прочитано — до блокировки: это сетевой вызов, а под syncMu читают
 		// состояние при каждом открытии формы.
-		var (
-			srcKind string
-			srcAsOf *time.Time
-		)
-		if info, ok := s.source.(ExpSourceInfo); ok {
-			kind, asOf, has := info.SourceInfo(ctx)
-			srcKind = kind
-			if has {
+		srcKind := trace.Kind
+		var srcAsOf *time.Time
+		if info, ok := s.source.(ExpSourceInfo); ok && srcKind == ExpSourceKindCH {
+			if asOf, has := info.SnapshotAsOf(ctx); has {
 				srcAsOf = &asOf
 			}
 		}

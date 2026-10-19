@@ -1,6 +1,7 @@
 package etl
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 	"time"
@@ -82,5 +83,57 @@ func TestExpCostsSwapAllowed(t *testing.T) {
 		if err := expCostsSwapAllowed(c.rows, c.have); (err == nil) != c.ok {
 			t.Errorf("rows=%d have=%d: err=%v, want ok=%v", c.rows, c.have, err, c.ok)
 		}
+	}
+}
+
+// Колонка проекта: и ProjectName (действующая выдача), и Projects (как в ТЗ) попадают в
+// project_name — иначе фильтр проектов молча пропустил бы всё и суммы задвоились бы.
+func TestExpCostsLayout_ProjectColumnAlternatives(t *testing.T) {
+	base := []string{"Scenario", "Country", "Month", "CodePL", "CodeCFO", "GroupCFO1", "Amount"}
+	for _, name := range []string{"ProjectName", "Projects"} {
+		idx, err := expCostsLayout(append(append([]string{}, base...), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for i, c := range expCostsCols {
+			if c.Name == "project_name" && idx[i] == len(base) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("колонка %s не сопоставлена project_name", name)
+		}
+	}
+}
+
+// Кнопка «Обновить из источника», пока идёт чужая заливка, ждёт её окончания (и свежий снимок
+// получает), а не отвечает ошибкой «заливка уже идёт»; ожидание прерывается по контексту.
+func TestExpCostsRefreshNow_WaitsForRunningLoad(t *testing.T) {
+	w := NewExpCostsWorker(Deps{CHURL: "http://localhost:1"}, ExpCostsOpts{})
+	expCostsRunSem <- struct{}{} // чужая заливка идёт
+	done := make(chan error, 1)
+	go func() { done <- w.RefreshNow(context.Background()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("RefreshNow не дождался окончания чужой заливки: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	<-expCostsRunSem // чужая заливка закончилась
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ждали nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RefreshNow не вернулся после окончания чужой заливки")
+	}
+
+	expCostsRunSem <- struct{}{}
+	defer func() { <-expCostsRunSem }()
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	if err := w.RefreshNow(ctx); err == nil {
+		t.Fatal("ожидание должно прерываться по контексту")
 	}
 }
