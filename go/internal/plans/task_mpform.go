@@ -437,9 +437,8 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 			}
 			k := layerKey(p.CodeCFO, l.BlockType)
 			cell := MpFormCell{CodeCFO: p.CodeCFO, BlockType: l.BlockType}
-			if mode == CalcInverse && l.CostLine {
-				_, hasShare := condByCfo[p.CodeCFO].EffectiveShares()[l.BlockType]
-				cell.MissingShare = !hasShare
+			if mode == CalcInverse {
+				cell.MissingShare = mpMissingShare(l, condByCfo[p.CodeCFO])
 			}
 			if l.Scope == ScopeTotal {
 				cell.Value = totalInputs[l.BlockType]

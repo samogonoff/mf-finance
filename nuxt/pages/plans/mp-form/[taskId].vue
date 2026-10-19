@@ -297,7 +297,8 @@
 					<span class="calc-val" :class="{ neg: cellValue(line, p.code_cfo) < 0 }">{{ missingShare(line, p.code_cfo) ? '—' : fmt(line, cellValue(line, p.code_cfo)) }}</span>
                     <!-- Доля статьи: в inverse она ЗАДАНА условиями площадки, поэтому
                          показываем её из реестра, а не считаем обратно от суммы. -->
-					<span v-if="line.cost_line" class="share">доля {{ missingShare(line, p.code_cfo) ? 'не задана' : fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}<template v-if="isInverse && !missingShare(line, p.code_cfo)"><span v-if="shareOrigin(line, p.code_cfo) === 'default'" class="share-origin default" :title="condOf(p.code_cfo)?.default_source || 'стратегия'"> · стратегия</span><span v-else-if="shareOrigin(line, p.code_cfo) === 'manual'" class="share-origin manual" title="переопределено в условиях площадки"> · вручную</span></template></span>
+					<span v-if="line.block_type === B.commission" class="share">= % СПП</span>
+					<span v-else-if="line.cost_line" class="share">доля {{ missingShare(line, p.code_cfo) ? 'не задана' : fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}<template v-if="isInverse && !missingShare(line, p.code_cfo)"><span v-if="shareOrigin(line, p.code_cfo) === 'default'" class="share-origin default" :title="condOf(p.code_cfo)?.default_source || 'стратегия'"> · стратегия</span><span v-else-if="shareOrigin(line, p.code_cfo) === 'manual'" class="share-origin manual" title="переопределено в условиях площадки"> · вручную</span></template></span>
 					<span v-if="line.block_type === B.salesManagerGross" class="fbs-hint">ФБС, справочно: источник ФБС не подключён</span>
                   </template>
                 </td>
@@ -644,7 +645,10 @@ const backLink = computed(() => (form.value ? `/plans/process/${form.value.task.
 const condOf = (cfo: number): MpConditions | null => form.value?.conditions?.[cfo] ?? null;
 // Доля статьи из условий — она ЗАДАНА, а не выведена из суммы.
 const condShare = (line: MpLine, cfo: number): number => effectiveShares(condOf(cfo))[line.block_type] ?? 0;
-const missingShare = (line: MpLine, cfo: number): boolean => isInverse.value && line.cost_line && !(line.block_type in effectiveShares(condOf(cfo)));
+// Комиссия площадки — не доля, а продажи менеджера без НДС × %СПП: «доля не задана»
+// к ней не относится (зеркало go: mpMissingShare).
+const missingShare = (line: MpLine, cfo: number): boolean =>
+  isInverse.value && line.cost_line && line.block_type !== B.commission && !(line.block_type in effectiveShares(condOf(cfo)));
 // Откуда доля (ТЗ доработок п. 2.1: различать умолчание и ручное значение).
 const shareOrigin = (line: MpLine, cfo: number): "manual" | "default" | "" => {
   const c = condOf(cfo);

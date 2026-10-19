@@ -36,6 +36,18 @@ func applyConditionDrafts(base map[int]MpConditions, drafts []MpConditions, plat
 	return out, nil
 }
 
+// mpMissingShare — у статьи формы нет доли в условиях площадки (ни ручной, ни из
+// стратегии). Комиссия площадки исключена: это не доля, а продажи менеджера без
+// НДС × %СПП (computeMpPlatformInverse), поэтому «доля не задана» к ней не
+// относится — иначе форма прятала бы посчитанную комиссию за «—».
+func mpMissingShare(l MpLine, cond MpConditions) bool {
+	if !l.CostLine || l.BlockType == BCommission {
+		return false
+	}
+	_, has := cond.EffectiveShares()[l.BlockType]
+	return !has
+}
+
 // conditionsWithFormSpp — условия для проверок формы с эффективным %СПП. В расчёте
 // СПП площадки берётся из формы (ввод исполнителя, ФЗ 02.10 п. 3) и перекрывает
 // значение реестра; проверка МП-01 «не задан %СПП» обязана смотреть на то же

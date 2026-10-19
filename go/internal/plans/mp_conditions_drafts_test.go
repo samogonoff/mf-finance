@@ -118,3 +118,22 @@ func TestDraftChangesCostPart(t *testing.T) {
 		t.Fatalf("доля ×2 должна дать статью ×2: было %v, стало %v", before, after)
 	}
 }
+
+// Комиссия площадки не доля: «доля не задана» к ней не относится, остальные
+// статьи без доли в условиях помечаются как раньше.
+func TestMpMissingShare(t *testing.T) {
+	cond := MpConditions{CodeCFO: 335, Shares: map[string]float64{BCostAgent: .05}}
+	commission := MpLine{BlockType: BCommission, CostLine: true}
+	if mpMissingShare(commission, MpConditions{CodeCFO: 335}) {
+		t.Error("комиссия площадки не должна считаться статьёй без доли")
+	}
+	if mpMissingShare(MpLine{BlockType: BCostAgent, CostLine: true}, cond) {
+		t.Error("статья с заданной долей помечена как без доли")
+	}
+	if !mpMissingShare(MpLine{BlockType: BCostFreight, CostLine: true}, cond) {
+		t.Error("статья без доли должна помечаться «доля не задана»")
+	}
+	if mpMissingShare(MpLine{BlockType: BShipments}, cond) {
+		t.Error("не статья затрат не может быть «без доли»")
+	}
+}
