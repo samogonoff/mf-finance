@@ -335,12 +335,20 @@ const setDeputy = async (principal: number, stage: string, deputyId: string) => 
 };
 
 
-// Единственный этап роли подставляется сразу: согласующим шага формы по срезу
-// считается только назначение с явным этапом (step_owner.go). «Все этапы
-// должности» даёт доступ, но, например, контролёром шага fin не делает.
+// Шаги маршрута форм продаж, которые выдаются назначением с явным этапом.
+const ROUTE_STEPS = ["fin", "1.2", "1.3", "1.4"];
+
+// Единственный этап роли подставляется сразу, но только если это шаг маршрута
+// формы: согласующим шага по срезу считается лишь назначение с явным этапом
+// (step_owner.go), «все этапы должности» даёт доступ, но, например, контролёром
+// шага fin не делает. Для остальных ролей (coordinator — 1.5, le_approver — 3,
+// final_approver — 4, filler — 1.1) явный этап сузил бы права: ScopeFilter.AllowsStep
+// пускает к действию на карточке только при пустом этапе или совпадении с шагом,
+// поэтому там остаётся «все этапы» (пусто), как было раньше.
 const openAssign = (p: Position) => {
   assignModal.value = p;
-  const stage = p.stage_codes.length === 1 ? p.stage_codes[0] : "";
+  const only = p.stage_codes.length === 1 ? p.stage_codes[0] : "";
+  const stage = ROUTE_STEPS.includes(only) ? only : "";
   Object.assign(aForm, { user_id: 0, user_name: "", stage_code: stage, country: "", legal_entity: "", codesArr: [] });
 };
 const saveAssign = async () => {
