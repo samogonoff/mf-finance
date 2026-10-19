@@ -187,6 +187,26 @@ func (s *TaskStore) taskBrief(ctx context.Context, taskID int64) (Task, int, int
 	return t, year, month, segment, nil
 }
 
+// mpTotalsSegment — сегмент итоговых строк задания (скидки и уценки по всем
+// площадкам): общий сегмент всех площадок задания. У задания на обе группы — ""
+// (одна строка на всё задание). Сегмент из taskBrief для этого не годится: на
+// стенде он приходил пустым (19.10.2026), и итоговые строки крупных и мелких МП
+// попадали под один ключ pl_metric и затирали друг друга.
+func mpTotalsSegment(segmentOf map[int]string, cfos []int) string {
+	seg := ""
+	for i, c := range cfos {
+		s := segmentOf[c]
+		if i == 0 {
+			seg = s
+			continue
+		}
+		if s != seg {
+			return ""
+		}
+	}
+	return seg
+}
+
 // factSeed — сумма из источника для input-строки (block) по площадке (cfo).
 func factSeed(factIdx map[[2]int]float64, block string, cfo int) (float64, bool) {
 	switch block {
@@ -294,6 +314,9 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 		leOf[m.CodeCFO] = m.LegalEntity
 	}
 	segmentOf := s.segmentsByCfo(ctx, t.CfoCodes)
+	// Сегмент, под которым SaveMpForm пишет итоговые строки задания (скидки,
+	// уценки): по нему же они и читаются, независимо от выбранного разреза экрана.
+	taskSegment := mpTotalsSegment(segmentOf, t.CfoCodes)
 	// Разрез карточки сужает состав площадок: форма «Крупные МП» показывает
 	// только крупные, даже если задание сгенерировано на обе группы.
 	cfoCodes := t.CfoCodes
@@ -375,7 +398,13 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 	if len(cfoCodes) > 0 {
 		if rows, e := s.pool.Query(ctx, `
 			SELECT profit_center, block_type, amount, is_manual, amount_strategy
-			FROM pl_metric WHERE pl_id=$1 AND template_code='TPL-MP' AND profit_center = ANY($2)`, t.PlID, append(cfoCodes, 0)); e == nil {
+			FROM pl_metric WHERE pl_id=$1 AND template_code='TPL-MP' AND profit_center = ANY($2)
+			 -- Итоговые строки (скидки, уценки) хранятся под profit_center=0 и сегментом
+			 -- задания (SaveMpForm): у крупных и мелких МП они свои, чужие не читаем.
+			 -- Строки, сохранённые до разделения (segment = ''), читаются, только если
+			 -- своей строки нет: она идёт последней и перекрывает их.
+			 AND (profit_center <> 0 OR segment IN ($3, ''))
+			 ORDER BY (profit_center = 0 AND segment = $3)`, t.PlID, append(cfoCodes, 0), taskSegment); e == nil {
 			for rows.Next() {
 				var pc int
 				var bt string
@@ -764,6 +793,9 @@ func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdm
 		rowSegment := segment
 		if line.Scope == ScopeTotal {
 			pc = 0 // тотал-строки (скидка/уценка) — по всему заданию
+			// Свои у крупных и мелких МП: под общим сегментом площадок задания
+			// (раньше сегмент был пустым, и мелкие затирали скидки крупных).
+			rowSegment = mpTotalsSegment(segmentOf, t.CfoCodes)
 		} else if !allowed[pc] {
 			return fmt.Errorf("ЦФО %d вне задания", pc)
 		} else {

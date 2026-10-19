@@ -630,7 +630,11 @@ const segmentGroups = computed(() => {
   return out;
 });
 
-const editableCell = (line: MpLine) => canEdit.value && line.editable && (!isInverse.value || line.block_type === B.salesManagerGross || line.block_type === B.spp);
+// Вводимые строки режима «от условий» — зеркало mpEditableSetFor (Go): продажи,
+// %СПП и итоговые скидки/уценки по всем площадкам.
+const INVERSE_INPUTS: string[] = [B.salesManagerGross, B.spp, B.discount, B.markdown];
+const inverseInput = (line: MpLine) => INVERSE_INPUTS.includes(line.block_type);
+const editableCell = (line: MpLine) => canEdit.value && line.editable && (!isInverse.value || inverseInput(line));
 const canEdit = computed(() => {
   if (readonly.value) return false;
 	if (form.value?.editable === false) return false;
@@ -916,7 +920,7 @@ const save = async () => {
   saving.value = true; error.value = ""; note.value = "";
   const rows: MpSaveRow[] = [];
   for (const line of form.value.lines) {
-    if (!line.editable || (isInverse.value && line.block_type !== B.salesManagerGross && line.block_type !== B.spp)) continue;
+    if (!line.editable || (isInverse.value && !inverseInput(line))) continue;
     if (line.scope === "total") {
       const v = totals[line.block_type];
       if (v != null && !Number.isNaN(v)) rows.push({ code_cfo: 0, block_type: line.block_type, code_pl: line.code_pl, amount: Number(v), is_manual: false, comment: "" });
