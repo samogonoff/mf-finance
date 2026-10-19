@@ -1500,7 +1500,9 @@ def _fot_p18_mock_dashboard(params: dict) -> dict:
         {"dim": "ЦФО-501", "f25_h1": 3000, "f26_h1": 3700, "t26_h2": 3800, "b26_h2": 3500},
     ]
 
-    cards, tables, warning = fot._p18_assemble(_MOCK_DIRS, _MOCK_G1, _MOCK_CFO)
+    cards, tables, warning = fot._p18_assemble(
+        _MOCK_DIRS, _MOCK_G1, _MOCK_CFO,
+        params.get("p18_year", 2026) - 1, params.get("p18_year", 2026), params.get("p18_half", 0))
     meta = _fot_mock_meta("p18", params, currency, fot.METHODOLOGY_P18)
     if warning:
         meta["warning"] = warning

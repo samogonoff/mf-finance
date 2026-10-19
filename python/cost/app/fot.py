@@ -1348,6 +1348,9 @@ def _parse_halfyear_params(params: dict) -> dict:
         p["intercompany"] = "все"
     if p["intercompany"] not in ("все", "0", "1"):
         raise ValueError("fot: intercompany — ожидалось все | 0 | 1")
+    # P18: динамические периоды
+    p["p18_year"] = _parse_int(params.get("p18_year"), "p18_year", YEAR_PLAN, 2020, 2100)
+    p["p18_half"] = _parse_int(params.get("p18_half"), "p18_half", 0, 0, 2)
     return p
 
 
@@ -1742,15 +1745,19 @@ METHODOLOGY_P18 = (
 )
 
 
-def _p18_sql(dim_col: str, col: str = "amount_byn") -> str:
-    """ФОТ за 4 периода, агрегированный по указанной размерности.
+def _p18_sql(dim_col: str, col: str, yr_prev: int, yr_plan: int, half: int) -> str:
+    """ФОТ за периоды, агрегированный по указанной размерности.
 
-    dim_col = l.dir | l.g1 | l.cfo  (направление / группа ЦФО / подразделение).
-    col — колонка суммы (зависит от валюты панели, дефолт amount_byn).
-    dim_col = dir | g1 | cfo  (колонка внутри CTE dim, без префикса l.).
-    Возвращает строки: dim, f25_h1, f26_h1, t26_h2, b26_h2.
+    dim_col = direction | group_cfo1 | code_cfo (колонка внутри CTE dim).
+    col — колонка суммы (amount_byn/usd/rub).
+    yr_prev — год сравнения (2025), yr_plan — отчётный год (2026).
+    half: 1=1ПГ, 2=2ПГ, 0=год.
     """
     fam = _SQL_FOT_FAMILY
+    # Какие месяцы показываем в разрезе «полугодие»:
+    # half=1 → 1-6, half=2 → 7-12, half=0 → 1-12
+    h1_start, h1_end = (1, 6) if half in (0, 1) else (1, 12)
+    h2_start, h2_end = (7, 12) if half in (0, 2) else (1, 12)
     return f"""
 WITH dim AS (
     SELECT code_cfo, cfo_label, group_cfo1, direction
@@ -1758,10 +1765,10 @@ WITH dim AS (
 )
 SELECT
     coalesce(dim.{dim_col}, '') AS dim,
-    sum(m.{col}) FILTER (WHERE m.scenario_src = 'факт' AND date_part('year', m.month_date) = {YEAR_PREV} AND date_part('month', m.month_date) BETWEEN 1 AND 6 AND {fam}) AS f25_h1,
-    sum(m.{col}) FILTER (WHERE m.scenario_src = 'факт' AND date_part('year', m.month_date) = {YEAR_PLAN} AND date_part('month', m.month_date) BETWEEN 1 AND 6 AND {fam}) AS f26_h1,
-    sum(m.{col}) FILTER (WHERE m.scenario_src = 'тактика' AND date_part('year', m.month_date) = {YEAR_PLAN} AND date_part('month', m.month_date) BETWEEN 7 AND 12 AND {fam}) AS t26_h2,
-    sum(m.{col}) FILTER (WHERE m.scenario_src = 'бюджет' AND date_part('year', m.month_date) = {YEAR_PLAN} AND date_part('month', m.month_date) BETWEEN 7 AND 12 AND {fam}) AS b26_h2
+    sum(m.{col}) FILTER (WHERE m.scenario_src = 'факт' AND date_part('year', m.month_date) = {yr_prev} AND date_part('month', m.month_date) BETWEEN {h1_start} AND {h1_end} AND {fam}) AS f25_h1,
+    sum(m.{col}) FILTER (WHERE m.scenario_src = 'факт' AND date_part('year', m.month_date) = {yr_plan} AND date_part('month', m.month_date) BETWEEN {h1_start} AND {h1_end} AND {fam}) AS f26_h1,
+    sum(m.{col}) FILTER (WHERE m.scenario_src = 'тактика' AND date_part('year', m.month_date) = {yr_plan} AND date_part('month', m.month_date) BETWEEN {h2_start} AND {h2_end} AND {fam}) AS t26_h2,
+    sum(m.{col}) FILTER (WHERE m.scenario_src = 'бюджет' AND date_part('year', m.month_date) = {yr_plan} AND date_part('month', m.month_date) BETWEEN {h2_start} AND {h2_end} AND {fam}) AS b26_h2
 FROM fot_monthly m
 LEFT JOIN dim ON dim.code_cfo = m.code_cfo
 GROUP BY 1
@@ -1805,17 +1812,18 @@ def _p18_columns() -> list[dict]:
     ]
 
 
-def _p18_cards(by_year: list[dict]) -> list[dict]:
-    s = {k: _nsum([r.get(k) for r in by_year]) for k in ("f25_h1", "f26_h1", "t26_h2", "b26_h2")}
-    exp26 = s["f26_h1"] + s["t26_h2"]
-    dev = _div(_diff(exp26, s["f25_h1"]), s["f25_h1"])
-    dev_t = _div(_diff(exp26, s["b26_h2"]), s["b26_h2"])
+def _p18_cards(by_year: list[dict], yr_plan: int, half_label: str) -> list[dict]:
+    s = {k: (_nsum([r.get(k) for r in by_year]) or 0.0) for k in ("f25_h1", "f26_h1", "t26_h2", "b26_h2")}
+    exp = s["f26_h1"] + s["t26_h2"]
+    dev = _div(_diff(exp, s["f25_h1"]), s["f25_h1"])
+    dev_t = _div(_diff(exp, s["b26_h2"]), s["b26_h2"]) if s["b26_h2"] else None
+    y2 = str(yr_plan)[-2:]
     return [
-        {"key": "fot_fact_1h26", "label": "ФОТ факт 1ПГ26", "value": _r2(s["f26_h1"]), "unit": ""},
-        {"key": "fot_exp_2026", "label": "Ожидание 2026", "value": _r2(exp26), "unit": ""},
-        {"key": "dev_year", "label": "Δ год к 2025", "value": _r1(_pct(dev)), "unit": "%"},
-        {"key": "exec_tact", "label": "ФОТ исп. такт. 1ПГ26", "value": _r1(_pct(_div(s["f26_h1"], s["t26_h2"]))), "unit": "%"},
-        {"key": "exec_budg", "label": "ФОТ исп. бюдж. 1ПГ26", "value": _r1(_pct(_div(s["f26_h1"], s["b26_h2"]))), "unit": "%"},
+        {"key": "fot_fact", "label": f"ФОТ факт{half_label}{y2}", "value": _r2(s["f26_h1"]), "unit": ""},
+        {"key": "fot_exp", "label": f"Ожидание {yr_plan}", "value": _r2(exp), "unit": ""},
+        {"key": "dev_year", "label": f"Δ год к {yr_plan - 1}", "value": _r1(_pct(dev)), "unit": "%"},
+        {"key": "exec_tact", "label": f"ФОТ исп. такт.{half_label}{y2}", "value": _r1(_pct(_div(s["f26_h1"], s["t26_h2"]))) if s["t26_h2"] else None, "unit": "%"},
+        {"key": "exec_budg", "label": f"ФОТ исп. бюдж.{half_label}{y2}", "value": _r1(_pct(_div(s["f26_h1"], s["b26_h2"]))) if s["b26_h2"] else None, "unit": "%"},
     ]
 
 
@@ -1829,8 +1837,12 @@ def _p18_table(key: str, label: str, col_label: str, rows: list, meta_dim: str) 
     }
 
 
-def _p18_assemble(by_dir: list[dict], by_g1: list[dict], by_cfo: list[dict]) -> tuple:
-    cards = _p18_cards(by_dir)
+def _p18_assemble(by_dir: list[dict], by_g1: list[dict], by_cfo: list[dict],
+                  yr_prev: int, yr_plan: int, half: int) -> tuple:
+    yr2p = str(yr_plan)[-2:]
+    yr2v = str(yr_prev)[-2:]
+    half_label = {0: '', 1: ' 1ПГ', 2: ' 2ПГ'}[half]
+    cards = _p18_cards(by_dir, yr_plan, half_label)
 
     def _rows(src, key_fn, label_fn):
         entries = sorted(
@@ -1858,11 +1870,15 @@ def _p18_assemble(by_dir: list[dict], by_g1: list[dict], by_cfo: list[dict]) -> 
 
 
 async def _dashboard_p18(p: dict, meta: dict) -> dict:
+    """P18 «Исполнение бюджета»: год и полугодие — параметры запроса."""
     col = FOT_CURRENCIES[p["currency"]]
+    yr_plan = p.get("p18_year", YEAR_PLAN)
+    yr_prev = yr_plan - 1
+    half = p.get("p18_half", 0)  # 0=год, 1=1ПГ, 2=2ПГ
     async with acquire() as pg:
-        by_dir = await pg.fetch(_p18_sql("direction", col), timeout=FOT_QUERY_TIMEOUT)
-        by_g1 = await pg.fetch(_p18_sql("group_cfo1", col), timeout=FOT_QUERY_TIMEOUT)
-        by_cfo = await pg.fetch(_p18_sql("code_cfo", col), timeout=FOT_QUERY_TIMEOUT)
+        by_dir = await pg.fetch(_p18_sql("direction", col, yr_prev, yr_plan, half), timeout=FOT_QUERY_TIMEOUT)
+        by_g1 = await pg.fetch(_p18_sql("group_cfo1", col, yr_prev, yr_plan, half), timeout=FOT_QUERY_TIMEOUT)
+        by_cfo = await pg.fetch(_p18_sql("code_cfo", col, yr_prev, yr_plan, half), timeout=FOT_QUERY_TIMEOUT)
 
     def _to_dicts(rows):
         """asyncpg возвращает Decimal — конвертируем в float для _t/_r2/_pct."""
@@ -1876,7 +1892,8 @@ async def _dashboard_p18(p: dict, meta: dict) -> dict:
         return result
 
     cards, tables, warning = _p18_assemble(
-        _to_dicts(by_dir), _to_dicts(by_g1), _to_dicts(by_cfo))
+        _to_dicts(by_dir), _to_dicts(by_g1), _to_dicts(by_cfo),
+        yr_prev, yr_plan, half)
     closed = _closed_from_meta(meta)
     meta_out = {
         "tab": "p18", "params": p, "currency": p["currency"],

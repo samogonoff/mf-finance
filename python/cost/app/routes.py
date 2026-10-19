@@ -1672,7 +1672,7 @@ async def fot_dashboard(
                     "legal_entity", "country", "matrix_path", "channel_path")
         if qp.getlist(key)
     }
-    for key in ("scenario_plan", "intercompany", "year", "month", "currency"):
+    for key in ("scenario_plan", "intercompany", "year", "month", "currency", "p18_year", "p18_half"):
         params[key] = qp.get(key, "")
     try:
         if fot.fot_mock_enabled():

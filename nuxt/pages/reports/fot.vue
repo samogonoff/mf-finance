@@ -702,6 +702,20 @@
                 </article>
               </section>
 
+              <!-- Селекторы: год + полугодие -->
+              <div class="p18-periods">
+                <label class="p18-period-label">Год
+                  <select v-model="p18Year" class="select select-sm" @change="loadDash">
+                    <option v-for="y in p18YearOptions" :key="y" :value="y">{{ y }}</option>
+                  </select>
+                </label>
+                <div class="p18-half-sel">
+                  <button v-for="h in p18HalfOptions" :key="h.key" class="p18-half-btn"
+                          :class="{ active: p18Half === h.key }"
+                          @click="p18Half = h.key; loadDash()">{{ h.label }}</button>
+                </div>
+              </div>
+
               <!-- Переключатель разрезов -->
               <div class="p18-tabs">
                 <button v-for="t in p18SubTabs" :key="t.key" class="p18-tab"
@@ -1043,6 +1057,10 @@ function buildQuery(): string {
   if (year.value) p.set('year', year.value)
   if (month.value) p.set('month', month.value)
   if (currency.value) p.set('currency', currency.value)
+  if (isP18.value) {
+    p.set('p18_year', String(p18Year.value))
+    p.set('p18_half', String(p18Half.value))
+  }
   return p.toString()
 }
 
@@ -1092,6 +1110,14 @@ const isP15 = computed(() => tab.value === 'p15')
 const isP16 = computed(() => tab.value === 'p16')
 const isP17 = computed(() => tab.value === 'p17')
 const isP18 = computed(() => tab.value === 'p18')
+const p18Year = ref<number>(2026)
+const p18Half = ref<number>(0)
+const p18YearOptions = [2024, 2025, 2026, 2027]
+const p18HalfOptions = [
+  { key: 0, label: 'Год' },
+  { key: 1, label: '1ПГ' },
+  { key: 2, label: '2ПГ' },
+]
 const p18SubTab = ref<string>('direction')
 const p18SubTabs = [
   { key: 'direction', label: 'Направление' },
@@ -2146,7 +2172,17 @@ const fmtDateTime = (iso: any) => {
 .p17-cc-chk { font: inherit; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 4px; }
 .p17-cc-chk input { accent-color: var(--accent, #4338ca); }
 
-/* P18 — подтабы разрезов */
+/* P18 — периоды и подтабы разрезов */
+.p18-periods { display: flex; gap: 12px; align-items: center; margin: 8px 0 4px; flex-wrap: wrap; }
+.p18-period-label { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.p18-half-sel { display: flex; gap: 4px; }
+.p18-half-btn {
+  font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 4px;
+  border: 1px solid var(--border, #e2e8f0); background: transparent;
+  color: var(--text-muted, #64748b); cursor: pointer; transition: all 0.15s;
+}
+.p18-half-btn.active { background: var(--accent, #4338ca); color: #fff; border-color: var(--accent, #4338ca); }
+.p18-half-btn:hover:not(.active) { border-color: var(--accent, #4338ca); color: var(--text, #1e293b); }
 .p18-tabs { display: flex; gap: 6px; margin: 8px 0 4px; }
 .p18-tab {
   font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 6px;
