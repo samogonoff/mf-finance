@@ -584,6 +584,7 @@
 
           <!-- P17 «Численность ГК»: свод по группе компаний -->
           <template v-if="isP17">
+            <!-- Слайд 4.1: ГК свод по странам -->
             <section class="slide" aria-label="Численность ГК">
               <header class="slide-hdr">
                 <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
@@ -601,7 +602,7 @@
                 </article>
               </section>
 
-              <!-- Таблица «Численность ГК по странам»: светофор Δ, итог — тёмной строкой -->
+              <!-- Таблица «Численность ГК по странам» -->
               <section v-if="slideTable17" class="card">
                 <div class="card-head">
                   <h3 class="card-title">{{ slideTable17.label }}</h3>
@@ -626,59 +627,84 @@
                   </table>
                 </div>
               </section>
+            </section>
 
-              <!-- Слайд 4.2: численность по выбранной стране -->
-              <div class="p17-divider" aria-hidden="true"></div>
-              <section class="slide" aria-label="Численность по стране">
-                <header class="slide-hdr">
-                  <h2 class="slide-title">{{ p17CountryLabel }} — численность по подразделениям</h2>
-                  <span class="slide-subtitle">На конец 1 ПГ {{ yearPlan }}</span>
-                  <span class="slide-year p15-badge" aria-hidden="true">
-                    <span>{{ p17CountryLabel }}</span><span>ПОДРАЗДЕЛЕНИЯ</span>
-                  </span>
-                </header>
-
-                <!-- Селектор страны (мультивыбор) -->
-                <div class="p17-country-sel">
-                  <label v-for="c in p17CountryOptions" :key="c.key" class="p17-cc-chk">
-                    <input type="checkbox" :value="c.key" v-model="p17Countries" />
-                    {{ c.label }}
-                  </label>
+            <!-- Слайд 4.2: численность по выбранной стране -->
+            <section class="slide" aria-label="Численность по стране">
+              <header class="slide-hdr">
+                <h2 class="slide-title">{{ p17CountryLabel }} — численность по подразделениям</h2>
+                <span class="slide-subtitle">На конец 1 ПГ {{ yearPlan }}</span>
+                <span v-if="p17CountryTotal" class="slide-note">
+                  ПЧ/ФЧ 1ПГ{{ yr2(yearPlan) }}:
+                  <b>{{ fmt1(p17CountryTotal.plan_approved) }}/{{ fmt1(p17CountryTotal.q26) }}</b>,
+                  {{ fmt0(p17CountryTotal.staff_pct) }}% укомпл.
+                </span>
+                <!-- Сегмент выбора страны (как валюта в P11) -->
+                <div class="seg" role="group" aria-label="Страна">
+                  <button v-for="c in p17CountryOptions" :key="c.key"
+                          class="btn btn-sm"
+                          :class="c.key === p17Country ? 'btn-primary' : 'btn-ghost'"
+                          :disabled="!countryDetails[c.key]"
+                          @click="p17Country = c.key">{{ c.label }}</button>
                 </div>
+                <span class="slide-year p15-badge" aria-hidden="true">
+                  <span>{{ p17CountryCc }}</span><span>ПОДРАЗДЕЛЕНИЯ</span>
+                </span>
+              </header>
 
-                <!-- KPI-лента страны -->
-                <section class="fot-kpis">
-                  <article v-for="c in p17CountryCards" :key="c.key" class="fot-kpi">
-                    <span class="fot-kpi-label">{{ c.label }}</span>
-                    <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
-                  </article>
-                </section>
+              <!-- Карточки подразделений (паттерн P16) -->
+              <section v-if="p17DeptRows.length" class="dpc-grid dp16-grid">
+                <article v-for="d in p17DeptRows" :key="d.label" class="dpcard dp16">
+                  <div class="dpc-title" :title="d.label">{{ d.label }}</div>
+                  <div class="dpc-block">
+                    <span class="dpc-label">ПЛАН УТВ. {{ yearPlan }}</span>
+                    <span class="dpc-value">{{ fmt1(d.plan_approved) }}<span class="dpc-unit">ставок</span></span>
+                    <span class="dpc-delta">тактика {{ fmt1(d.plan_tactic) }}</span>
+                  </div>
+                  <div class="dpc-block">
+                    <span class="dpc-label">ФАКТ 1ПГ {{ yearPlan }}</span>
+                    <span class="dpc-ppwrap" v-if="isNum(d.plan_approved)">
+                      <span class="dpc-pp" :class="cmpCf(d.q26, d.plan_approved)">
+                        <span class="pp-val">{{ fmtSigned(d.dev_appr) }}</span><span class="pp-unit">%</span>
+                      </span>
+                      <span class="dpc-ppcap">к утв.</span>
+                    </span>
+                    <span class="dpc-value">{{ fmt1(d.q26) }}<span class="dpc-unit">ставок</span></span>
+                  </div>
+                  <div class="dpc-block">
+                    <span class="dpc-label">ФАКТ 1ПГ {{ yearPrev }}</span>
+                    <span class="dpc-value">{{ fmt1(d.q25) }}<span class="dpc-unit">ставок</span></span>
+                    <span class="dpc-delta" :class="signCf(d.dev_2625)">{{ fmtSigned(d.dev_2625) }}% к 1ПГ{{ yr2(yearPrev) }}</span>
+                  </div>
+                  <hr class="cc-sep" />
+                  <p class="cc-hc">Укомплектованность: <b>{{ fmt0(d.staff_pct) }}%</b></p>
+                </article>
+              </section>
 
-                <!-- Таблица подразделений -->
-                <section v-if="p17CountryTable" class="card">
-                  <div class="card-head">
-                    <h3 class="card-title">{{ p17CountryTable.label }}</h3>
-                  </div>
-                  <div class="table-wrap">
-                    <table class="stable">
-                      <thead>
-                        <tr>
-                          <th v-for="col in p17CountryTable.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
-                            {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr v-for="(row, i) in (p17CountryTable.rows || [])" :key="i" :class="{ total: row.total }">
-                          <td v-for="col in p17CountryTable.columns" :key="col.key"
-                              :class="[col.key === 'label' ? 'col-name' : 'num', cellDeltaClass(row, col)]">
-                            {{ cellText(p17CountryTable, row, col) }}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
+              <!-- Таблица подразделений -->
+              <section v-if="p17CountryTable" class="card">
+                <div class="card-head">
+                  <h3 class="card-title">{{ p17CountryTable.label }}</h3>
+                </div>
+                <div class="table-wrap">
+                  <table class="stable">
+                    <thead>
+                      <tr>
+                        <th v-for="col in p17CountryTable.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
+                          {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(row, i) in (p17CountryTable.rows || [])" :key="i" :class="{ total: row.total }">
+                        <td v-for="col in p17CountryTable.columns" :key="col.key"
+                            :class="[col.key === 'label' ? 'col-name' : 'num', cellDeltaClass(row, col)]">
+                          {{ cellText(p17CountryTable, row, col) }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </section>
             </section>
           </template>
@@ -1151,63 +1177,32 @@ const slideTable15 = computed<any>(() =>
 /** Таблица численности ГК рендерится в слайде; в общем списке таблиц её нет. */
 const slideTable17 = computed<any>(() =>
   isP17.value ? tables.value.find((t: any) => t.key === 'hc_countries') || null : null)
-/** Слайд 4.2: мультивыбор стран для детализации численности. */
-const p17Countries = ref<string[]>(['BY'])
+/** Слайд 4.2: выбор страны для детализации численности. */
+const p17Country = ref<string>('BY')
 const p17CountryOptions = [
   { key: 'BY', label: 'Беларусь' },
   { key: 'RU', label: 'Россия' },
   { key: 'KZ', label: 'Казахстан' },
   { key: 'UZ', label: 'Узбекистан' },
 ]
+const countryDetails = computed<any>(() => dash.value?.country_details || {})
+const p17CountryCc = computed(() => {
+  const d = countryDetails.value
+  if (d[p17Country.value]) return p17Country.value
+  const first = p17CountryOptions.find(o => d[o.key])
+  return first?.key || ''
+})
 const p17CountryDetails = computed<any>(() => {
   if (!isP17.value) return null
-  const details = dash.value?.country_details || {}
-  const selected = p17Countries.value.filter(c => details[c])
-  if (!selected.length) return null
-  // Агрегация карточек: суммы по всем выбранным странам
-  const allCards = selected.flatMap(cc => details[cc].cards || [])
-  const merged: Record<string, any> = {}
-  for (const c of allCards) {
-    const existing = merged[c.key]
-    if (!existing) {
-      merged[c.key] = { ...c }
-    } else if (c.value !== null && existing.value !== null) {
-      existing.value = Number(c.value) + Number(existing.value)
-    }
-  }
-  // Агрегация таблиц: объединение строк
-  const allRows = selected.flatMap(cc => (details[cc].table?.rows || []))
-  const mergedRows: any[] = []
-  const seen = new Set<string>()
-  for (const row of allRows) {
-    if (row.total) continue // пропускаем итоги отдельных стран
-    if (!seen.has(row.label)) {
-      seen.add(row.label)
-      mergedRows.push({ ...row })
-    }
-  }
-  // Итоговая строка
-  if (mergedRows.length) {
-    const total: any = { label: 'Итого', total: true }
-    for (const row of mergedRows) {
-      for (const [k, v] of Object.entries(row)) {
-        if (k === 'label' || k === 'total') continue
-        if (typeof v === 'number') total[k] = (total[k] || 0) + v
-      }
-    }
-    mergedRows.push(total)
-  }
-  const firstTable = details[selected[0]]?.table
-  const label = selected.map(cc => p17CountryOptions.find(o => o.key === cc)?.label || cc).join(', ')
-  return {
-    cards: Object.values(merged),
-    table: firstTable ? { ...firstTable, label: `Численность — ${label} (по подразделениям)`, rows: mergedRows } : null,
-    label,
-  }
+  const d = countryDetails.value[p17CountryCc.value]
+  if (!d) return null
+  const label = p17CountryOptions.find(o => o.key === p17CountryCc.value)?.label || p17CountryCc.value
+  return { table: d.table || null, label }
 })
-const p17CountryCards = computed<any[]>(() => p17CountryDetails.value?.cards || [])
 const p17CountryTable = computed<any>(() => p17CountryDetails.value?.table || null)
 const p17CountryLabel = computed(() => p17CountryDetails.value?.label || '')
+const p17CountryTotal = computed<any>(() => (p17CountryTable.value?.rows || []).find((r: any) => r.total) || null)
+const p17DeptRows = computed<any[]>(() => (p17CountryTable.value?.rows || []).filter((r: any) => !r.total))
 /** Баннеры-выводы: P15 — «Тенденции и прогноз», P16 — пара листа 8. */
 const deptTrends = computed<string[]>(() => dash.value?.dept_trends || [])
 const deptBanners = computed<any>(() => dash.value?.dept_banners || null)
@@ -1267,7 +1262,7 @@ const shownTables = computed<any[]>(() => {
   if (isP11.value) return tables.value.filter((t: any) => t.key !== 'by_country')
   if (isP14.value) return tables.value.filter((t: any) => t.key !== 'by_direction')
   if (isP15.value) return tables.value.filter((t: any) => t.key !== 'departments')
-  if (isP17.value) return tables.value.filter((t: any) => t.key !== 'hc_countries')
+  if (isP17.value) return tables.value.filter((t: any) => t.key !== 'hc_countries' && t.key !== 'hc_country_detail')
   if (isP18.value) return tables.value.filter((t: any) => !t.key.startsWith('p18_'))
   return tables.value
 })
@@ -2165,12 +2160,6 @@ const fmtDateTime = (iso: any) => {
 @media (max-width: 720px) {
   .fot-kpi-value { font-size: 18px; }
 }
-
-/* P17 — разделитель слайдов и селектор страны */
-.p17-divider { height: 1px; background: var(--border, #e2e8f0); margin: 16px 0; }
-.p17-country-sel { display: flex; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
-.p17-cc-chk { font: inherit; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 4px; }
-.p17-cc-chk input { accent-color: var(--accent, #4338ca); }
 
 /* P18 — периоды и подтабы разрезов */
 .p18-periods { display: flex; gap: 12px; align-items: center; margin: 8px 0 4px; flex-wrap: wrap; }
