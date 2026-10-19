@@ -168,8 +168,32 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 		// (expProcSem); здесь — только предохранитель от вечного зависания.
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
 		defer cancel()
-		n, err := s.syncFromSource(ctx, c, in, force)
+		// Кнопка «Обновить из источника»: сначала перезалить ночной снимок (минуты),
+		// затем прочитать его. Без снимка (источник напрямую) шаг пропускается.
+		var err error
+		if r, ok := s.source.(ExpSourceRefresher); ok && force {
+			if rerr := r.RefreshSource(ctx); rerr != nil {
+				err = fmt.Errorf("обновление снимка затрат: %w", rerr)
+			}
+		}
+		n := 0
+		if err == nil {
+			n, err = s.syncFromSource(ctx, c, in, force)
+		}
 		fin := time.Now()
+		// Откуда прочитано — до блокировки: это сетевой вызов, а под syncMu читают
+		// состояние при каждом открытии формы.
+		var (
+			srcKind string
+			srcAsOf *time.Time
+		)
+		if info, ok := s.source.(ExpSourceInfo); ok {
+			kind, asOf, has := info.SourceInfo(ctx)
+			srcKind = kind
+			if has {
+				srcAsOf = &asOf
+			}
+		}
 		s.syncMu.Lock()
 		run.status.FinishedAt = &fin
 		run.status.SourceCells = n
@@ -179,6 +203,7 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 		} else {
 			run.status.State = ExpSyncOK
 		}
+		run.status.SourceKind, run.status.SourceAsOf = srcKind, srcAsOf
 		s.syncMu.Unlock()
 		close(run.done)
 	}()

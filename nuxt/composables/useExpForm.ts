@@ -79,6 +79,8 @@ export interface ExpSync {
   source_cells: number;
   started_at?: string;
   finished_at?: string;
+  source_kind?: "clickhouse" | "olap";
+  source_as_of?: string; // когда залит ночной снимок затрат (только clickhouse)
 }
 
 export interface ExpCell {

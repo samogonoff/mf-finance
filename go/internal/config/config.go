@@ -79,6 +79,17 @@ type Config struct {
 	FinDWHReadyCheck     bool
 	FinDWHReadyAfterHour int
 
+	// Ночной снимок затрат формы 1.5 в ClickHouse (finance.exp_costs): результат
+	// процедуры Budgeting за 4–5 минут, раз в сутки в окне AfterHour–BeforeHour по часам
+	// MSSQL. ExpCostsSyncInterval (сек) — как часто воркер проверяет, не пора ли; 0 — выкл.
+	ExpCostsSyncInterval int
+	ExpCostsProc         string
+	ExpCostsAfterHour    int
+	ExpCostsBeforeHour   int
+	// PlansExpCostsFromCH — форма 1.5 читает затраты из finance.exp_costs (а при пустой
+	// таблице или недоступном CH — из процедуры напрямую, медленно).
+	PlansExpCostsFromCH bool
+
 	// Модуль «Тактические планы» (docs/reports/plans/SPEC.md §10).
 	// PlansMock=1 → факт МП из фикстур (sources/mock_mp.go), как DEBT_MOCK.
 	// Онлайн-источник — тот же сервер FinDWH (переиспользуем MSSQL_PREMASTER_*).
@@ -234,6 +245,12 @@ func Load() Config {
 		FinDWHBatch:          atoiDef(env("FINDWH_BATCH", "20000"), 20000),
 		FinDWHReadyCheck:     env("FINDWH_READY_CHECK", "1") == "1",
 		FinDWHReadyAfterHour: atoiDef(env("FINDWH_READY_AFTER_HOUR", "9"), 9),
+
+		ExpCostsSyncInterval: atoiDef(env("EXP_COSTS_SYNC_INTERVAL", "0"), 0),
+		ExpCostsProc:         env("EXP_COSTS_PROC", "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]"),
+		ExpCostsAfterHour:    atoiDef(env("EXP_COSTS_AFTER_HOUR", "5"), 5),
+		ExpCostsBeforeHour:   atoiDef(env("EXP_COSTS_BEFORE_HOUR", "9"), 9),
+		PlansExpCostsFromCH:  env("PLANS_EXP_COSTS_FROM_CH", "1") == "1",
 
 		DebtValutaFQN:        env("MSSQL_VALUTA_FQN", "[SRV-SQL].Gpartner.dbo.valuta"),
 		DebtCurrencyDailyFQN: env("MSSQL_CURRENCY_DAILY_FQN", "[SRV-SQL].Checks.dbo.CurrencyDaily"),
