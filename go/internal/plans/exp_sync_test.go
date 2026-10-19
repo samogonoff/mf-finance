@@ -237,6 +237,11 @@ func TestExpSync_RefreshFailureStillReadsSource(t *testing.T) {
 	if st.Warning == "" || strings.Contains(st.Warning, "exp_costs") {
 		t.Fatalf("ждали предупреждение о неудавшейся перезаливке без внутренних имён: %q", st.Warning)
 	}
+	// Хвост предупреждения не противоречит шапке: источник у заглушки не помечен как olap,
+	// значит данные — снимок прошлой заливки.
+	if !strings.Contains(st.Warning, "прошлой заливки") {
+		t.Fatalf("хвост предупреждения: %q", st.Warning)
+	}
 	if src.refreshes != 1 || src.callCount() != 1 {
 		t.Fatalf("перезаливок %d, чтений %d", src.refreshes, src.callCount())
 	}

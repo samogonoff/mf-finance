@@ -3,6 +3,7 @@ package etl
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -211,4 +212,38 @@ func TestExpCostsQueueNotHeldByNeedCheck(t *testing.T) {
 	}
 	close(releaseCheck)
 	<-done
+}
+
+// Кнопка, дождавшаяся чужой заливки, узнаёт, что та упала, и сообщает об этом.
+func TestExpCostsRefreshNow_ReportsFailureOfAwaitedLoad(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	stubExpCostsHooks(t, func() (bool, error) { return true, nil }, func(ctx context.Context) (int64, int64, error) {
+		once.Do(func() { close(started) })
+		<-release
+		return 0, 0, errors.New("процедура вернула 0 строк")
+	})
+	w := NewExpCostsWorker(Deps{CHURL: "http://localhost:1"}, ExpCostsOpts{})
+	nightly := make(chan error, 1)
+	go func() { // «ночная» заливка: берёт очередь первой и падает
+		o := w.opts
+		o.Force = true
+		_, _, err := RunExpCostsDaily(context.Background(), w.deps, o)
+		nightly <- err
+	}()
+	<-started
+	button := make(chan error, 1)
+	go func() { button <- w.RefreshNow(context.Background()) }()
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	<-nightly
+	select {
+	case err := <-button:
+		if err == nil {
+			t.Fatal("сбой чужой заливки должен дойти до кнопки")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("кнопка не вернулась")
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -179,6 +180,27 @@ var (
 	expCostsLoad        = runExpCosts
 )
 
+// expCostsLast — итог последней законченной заливки в этом процессе: кнопка, дождавшаяся
+// чужой заливки, должна узнать, чем та закончилась.
+var expCostsLast struct {
+	sync.Mutex
+	seq int
+	err error
+}
+
+func expCostsNoteResult(err error) {
+	expCostsLast.Lock()
+	expCostsLast.seq++
+	expCostsLast.err = err
+	expCostsLast.Unlock()
+}
+
+func expCostsResult() (int, error) {
+	expCostsLast.Lock()
+	defer expCostsLast.Unlock()
+	return expCostsLast.seq, expCostsLast.err
+}
+
 // expCostsRunSem — одна заливка за раз на процесс (канал: ожидание чужой заливки
 // прерывается по контексту).
 var expCostsRunSem = make(chan struct{}, 1)
@@ -229,6 +251,7 @@ func RunExpCostsDaily(ctx context.Context, deps Deps, opts ExpCostsOpts) (rows i
 		log.Printf("expcosts: загружено %d строк (отброшено старше %d года: %d) за %.0fs", n, opts.MinYear, skipped, time.Since(started).Seconds())
 	}
 	writeExpCostsRun(ctx, ch, run)
+	expCostsNoteResult(err)
 	return n, true, err
 }
 
@@ -464,6 +487,7 @@ func (w *ExpCostsWorker) Start(ctx context.Context, interval time.Duration) {
 func (w *ExpCostsWorker) RefreshNow(ctx context.Context) error {
 	o := w.opts
 	o.Force, o.TriggeredBy = true, "api"
+	seqBefore, _ := expCostsResult()
 	_, ran, err := RunExpCostsDaily(ctx, w.deps, o)
 	if err == nil && !ran {
 		// Заливка уже идёт (ночной воркер или кнопка на другой форме): дожидаемся её
@@ -473,6 +497,11 @@ func (w *ExpCostsWorker) RefreshNow(ctx context.Context) error {
 			<-expCostsRunSem
 		case <-ctx.Done():
 			return ctx.Err()
+		}
+		// Чужая заливка могла упасть: пользователь должен об этом узнать, а не увидеть
+		// вчерашний снимок без объяснения.
+		if seq, lastErr := expCostsResult(); seq != seqBefore && lastErr != nil {
+			return fmt.Errorf("заливка, которую дождались, закончилась ошибкой: %w", lastErr)
 		}
 	}
 	return err

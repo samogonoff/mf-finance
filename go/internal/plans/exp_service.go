@@ -177,7 +177,7 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 		if r, ok := s.source.(ExpSourceRefresher); ok && force {
 			if rerr := r.RefreshSource(ctx); rerr != nil {
 				log.Printf("plans/exp: обновление снимка затрат не удалось, читаем то, что есть: %v", rerr)
-				refreshWarn = "Обновить снимок затрат не удалось: " + expSyncErrText(rerr) + ". Показаны данные прошлой заливки."
+				refreshWarn = "Обновить снимок затрат не удалось: " + expSyncErrText(rerr) + "."
 			}
 		}
 		// След чтения: откуда реально взяты данные именно в этой загрузке.
@@ -203,6 +203,15 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 			run.status.State = ExpSyncOK
 		}
 		run.status.SourceKind, run.status.SourceAsOf = srcKind, srcAsOf
+		// Хвост предупреждения — по тому, откуда реально прочитано (после чтения): снимок
+		// прошлой заливки или процедура напрямую; иначе плашка противоречила бы шапке.
+		if refreshWarn != "" {
+			if srcKind == ExpSourceKindOLAP {
+				refreshWarn += " Данные прочитаны напрямую из источника."
+			} else {
+				refreshWarn += " Показаны данные прошлой заливки."
+			}
+		}
 		run.status.Warning = refreshWarn
 		s.syncMu.Unlock()
 		close(run.done)
