@@ -1,6 +1,21 @@
 package plans
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+)
+
+var mpShareSourceRe = regexp.MustCompile(`^strategy:\d{4}-(0[1-9]|1[0-2])$`)
+
+// mpShareSource — допустимый признак источника доли: пусто (вручную) или
+// «strategy:YYYY-MM». Всё остальное (в т.ч. присланное клиентом) сбрасывается в
+// «вручную»: источник не должен превращаться в произвольный текст в БД.
+func mpShareSource(s string) string {
+	if mpShareSourceRe.MatchString(s) {
+		return s
+	}
+	return ""
+}
 
 // Несохранённые правки реестра условий и эффективный %СПП для проверок.
 

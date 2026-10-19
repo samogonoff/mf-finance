@@ -123,7 +123,7 @@ func (s *TaskStore) MpFormImport(ctx context.Context, taskID, actorID int64, isA
 	if len(out) == 0 {
 		return 0, fmt.Errorf("не найдено строк с тактикой")
 	}
-	if err := s.SaveMpForm(ctx, taskID, actorID, isAdmin, out, nil, "RUB"); err != nil {
+	if err := s.SaveMpForm(ctx, taskID, actorID, isAdmin, out, nil, "RUB", ""); err != nil {
 		return 0, err
 	}
 	return len(out), nil

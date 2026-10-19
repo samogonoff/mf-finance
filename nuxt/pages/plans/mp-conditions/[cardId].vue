@@ -96,7 +96,7 @@
             <tr>
               <th>Площадка</th><th>Показатель</th>
               <th class="col-num">Было</th><th class="col-num">Стало</th><th class="col-num">Δ</th>
-              <th>Кто изменил</th><th>Когда</th>
+              <th title="Автор и время последнего сохранения условий площадки; это не обязательно автор изменения именно этого показателя">Последнее сохранение</th><th>Сохранено</th>
             </tr>
           </thead>
           <tbody>
@@ -167,7 +167,7 @@
               <td class="col-num">
                 <NumberField
                   :model-value="row.spp_pct_view"
-                  class="cell-input pct" :disabled="!editable" placeholder="%"
+                  class="cell-input pct" :disabled="!editable" placeholder="%" :digits="4"
                   @update:model-value="row.spp_pct_view = $event ?? 0"
                 />
                 <span v-if="hint(row, 'spp_pct') !== null" class="cell-hint">факт: {{ pct(hint(row, "spp_pct")!) }}</span>
@@ -175,7 +175,7 @@
               <td class="col-num">
                 <NumberField
                   :model-value="row.markup_pct_view"
-                  class="cell-input pct" :disabled="!editable" placeholder="%"
+                  class="cell-input pct" :disabled="!editable" placeholder="%" :digits="4"
                   @update:model-value="row.markup_pct_view = $event ?? 0"
                 />
                 <span v-if="hint(row, 'markup_pct') !== null" class="cell-hint">факт: {{ pct(hint(row, "markup_pct")!) }}</span>
@@ -183,7 +183,7 @@
               <td class="col-num">
                 <NumberField
                   :model-value="row.markup_total_pct_view"
-                  class="cell-input pct" :disabled="!editable" placeholder="%"
+                  class="cell-input pct" :disabled="!editable" placeholder="%" :digits="4"
                   @update:model-value="row.markup_total_pct_view = $event ?? 0"
                 />
               </td>
@@ -196,17 +196,21 @@
                 <NumberField
 				  :model-value="row.shares_view[b.block] ?? null"
                   class="cell-input pct" :disabled="!editable"
-                  :placeholder="defaultView(row, b.block) ?? '%'"
-				  @update:model-value="row.shares_view[b.block] = $event"
+                  :placeholder="defaultView(row, b.block) ?? '%'" :digits="4"
+				  @update:model-value="onShareEdit(row, b.block, $event)"
                 />
                 <!-- Пустое поле = доля по умолчанию из стратегии (ТЗ доработок п. 2.1);
                      введённое значение — переопределение, только оно пишется в реестр. -->
                 <span v-if="row.shares_view[b.block] == null && defaultView(row, b.block) != null" class="cell-hint default" :title="row.default_source">
-                  стратегия
+                  из стратегии
+                </span>
+                <span v-else-if="row.shares_view[b.block] != null && row.share_src[b.block]" class="cell-hint default" title="подставлено из раздела «Стратегические планы», пока не правилось">
+                  из стратегии {{ srcMonth(row.share_src[b.block]) }}
                 </span>
                 <span v-else-if="row.shares_view[b.block] != null && defaultView(row, b.block) != null" class="cell-hint manual" :title="row.default_source">
                   вручную · страт. {{ defaultView(row, b.block) }} %
                 </span>
+                <span v-else-if="row.shares_view[b.block] != null" class="cell-hint manual">вручную</span>
                 <span v-if="hint(row, 'share:' + b.block) !== null" class="cell-hint">
                   факт: {{ pct(hint(row, "share:" + b.block)!) }}
                 </span>
@@ -341,6 +345,8 @@ interface EditableRow extends MpConditionsRow {
   markup_pct_view: number;
   markup_total_pct_view: number;
   shares_view: Record<string, number | null>;
+  /** Источник каждой доли: пусто — вручную, «strategy:YYYY-MM» — из стратегии (до правки). */
+  share_src: Record<string, string>;
   _origin: string;
 }
 
@@ -395,6 +401,7 @@ const toRow = (r: MpConditionsRow): EditableRow => {
     markup_pct_view: Number(((r.markup_pct || 0) * 100).toFixed(4)),
     markup_total_pct_view: Number(((r.markup_total_pct || 0) * 100).toFixed(4)),
     shares_view: shares,
+    share_src: { ...(r.share_sources || {}) },
     _origin: ""
   };
   row._origin = signature(row);
@@ -402,7 +409,7 @@ const toRow = (r: MpConditionsRow): EditableRow => {
 };
 
 const signature = (r: EditableRow): string =>
-  JSON.stringify([r.valid_from, r.valid_to, r.spp_pct_view, r.markup_pct_view, r.markup_total_pct_view, r.shares_view, r.change_reason]);
+  JSON.stringify([r.valid_from, r.valid_to, r.spp_pct_view, r.markup_pct_view, r.markup_total_pct_view, r.shares_view, r.share_src, r.change_reason]);
 
 const isDirty = (r: EditableRow): boolean => signature(r) !== r._origin;
 // Сумма считается по ЭФФЕКТИВНЫМ долям — тем, от которых считается форма:
@@ -418,6 +425,20 @@ const defaultView = (r: EditableRow, b: string): string | null => {
 
 // Подсказка «в прошлом месяце фактическая доля была такой» (ТЗ §3.1): показываем,
 // но в реестр не переносим — иначе производные значения станут условиями.
+// Правка доли в сетке руками снимает признак «из стратегии»: дальше это «вручную».
+const onShareEdit = (r: EditableRow, block: string, value: number | null) => {
+  const prev = r.shares_view[block];
+  // Щелчок в поле и выход без правки не должен менять подпись: сравниваем значения, а не факт события.
+  if (prev != null && value != null && Math.abs(Number(prev) - Number(value)) < 1e-6) return;
+  r.shares_view[block] = value;
+  r.share_src[block] = "";
+};
+// «strategy:2026-09» → «09.2026» для подписи.
+const srcMonth = (src?: string): string => {
+  const m = /^strategy:(\d{4})-(\d{2})$/.exec(src || "");
+  return m ? `${m[2]}.${m[1]}` : "";
+};
+
 const hint = (r: EditableRow, field: string): number | null => {
   const h = view.value?.hints?.[String(r.code_cfo)];
   if (!h || h[field] === undefined) return null;
@@ -452,9 +473,13 @@ const load = async () => {
 // сохранения, и для черновика предпросмотра.
 const rowPayload = (r: EditableRow) => {
   const shares: Record<string, number> = {};
+  const sources: Record<string, string> = {};
   for (const b of COST_BLOCKS) {
     const v = r.shares_view[b];
-    if (v != null && !Number.isNaN(v)) shares[b] = v / 100;
+    if (v != null && !Number.isNaN(v)) {
+      shares[b] = v / 100;
+      if (r.share_src[b]) sources[b] = r.share_src[b];
+    }
   }
   return {
     code_cfo: r.code_cfo,
@@ -465,7 +490,8 @@ const rowPayload = (r: EditableRow) => {
     valid_from: r.valid_from,
     valid_to: r.valid_to,
     change_reason: r.change_reason,
-    shares
+    shares,
+    share_sources: sources
   };
 };
 
@@ -525,13 +551,18 @@ const doLoadStrategy = async () => {
     for (const r of rows.value) {
       const sh = monthData.shares[String(r.code_cfo)];
       if (!sh) continue;
+      const src = `strategy:${strategyYear.value}-${String(strategyMonth.value).padStart(2, "0")}`;
+      // Перезаписываем ТОЛЬКО статьи, пришедшие из стратегии: ручная доля статьи,
+      // которой в стратегии нет (например, ИТ), остаётся как была (замечание ревью).
       for (const b of COST_BLOCKS) {
-        r.shares_view[b] = b in sh ? Number((sh[b] * 100).toFixed(4)) : null;
+        if (!(b in sh)) continue;
+        r.shares_view[b] = Number((sh[b] * 100).toFixed(4));
+        r.share_src[b] = src;
       }
       filled++;
     }
     note.value = filled
-      ? `Доли из стратегии за ${monthName(strategyMonth.value)} ${strategyYear.value} подставлены для площадок: ${filled}. Проверьте и нажмите «Сохранить условия».`
+      ? `Доли из стратегии за ${monthName(strategyMonth.value)} ${strategyYear.value} подставлены для площадок: ${filled}. Статьи, которых нет в стратегии, не менялись. Проверьте и нажмите «Сохранить условия».`
       : "В стратегии нет данных по площадкам этой карточки.";
   } catch (e: unknown) {
     error.value = apiError(e, "Не удалось загрузить стратегию");
@@ -733,7 +764,14 @@ onMounted(load);
 .toolbar-card { padding: var(--sp-4); }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-4); }
 .toolbar-group { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
-.toolbar-label { color: var(--text-secondary); font-size: var(--fs-sm); }
+.toolbar-label { color: var(--text-secondary); font-size: var(--fs-sm); white-space: nowrap; }
+/* Списки и кнопки в панели не растягиваются на всю ширину: всё в одну строку, перенос — только на узком экране. */
+.toolbar-group .select { width: auto; min-width: 96px; flex: 0 0 auto; }
+.toolbar-group .btn { flex: 0 0 auto; white-space: nowrap; }
+@media (max-width: 900px) {
+  .toolbar { flex-direction: column; align-items: stretch; }
+  .toolbar-group .select { flex: 1 1 140px; }
+}
 .dirty-note { color: var(--warn, var(--text-secondary)); font-size: var(--fs-sm); }
 /* Блок изменений: сворачивается, а при большом числе строк прокручивается внутри. */
 .diff-header { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }

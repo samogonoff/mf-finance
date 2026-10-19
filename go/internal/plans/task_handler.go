@@ -174,13 +174,14 @@ func (h *Handler) MpTaskFormSave(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Rows     []MpSaveRow `json:"rows"`
 		Currency string      `json:"currency"`
+		Scope    string      `json:"scope"` // разрез карточки формы (large|small|пусто)
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	prin := h.prin(r)
-	if err := h.tasks.SaveMpForm(r.Context(), parseInt64(r.PathValue("taskId")), prin.UserID, prin.PlansAdmin, body.Rows, raw, body.Currency); err != nil {
+	if err := h.tasks.SaveMpForm(r.Context(), parseInt64(r.PathValue("taskId")), prin.UserID, prin.PlansAdmin, body.Rows, raw, body.Currency, body.Scope); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

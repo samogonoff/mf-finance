@@ -155,3 +155,41 @@ func TestDiffConditions_ChangedByAndAt(t *testing.T) {
 		t.Fatalf("нулевое время не должно отдаваться: %+v", d[0].ChangedAt)
 	}
 }
+
+func TestMpShareSource(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                  "",
+		"strategy:2026-10":  "strategy:2026-10",
+		"strategy:2026-13":  "",
+		"strategy:2026-1":   "",
+		"manual":            "",
+		"strategy:2026-10;": "",
+	} {
+		if got := mpShareSource(in); got != want {
+			t.Errorf("mpShareSource(%q) = %q, ожидалось %q", in, got, want)
+		}
+	}
+}
+
+// Итоговые строки задания (скидки, уценки) хранятся под одним сегментом на задание:
+// у задания на одну группу — её сегмент, на обе группы — общая строка. Раньше
+// сегмент приходил пустым и итоги крупных и мелких МП затирали друг друга.
+func TestMpTotalsSegment(t *testing.T) {
+	segs := map[int]string{335: "large", 336: "large", 953: "small", 955: "small"}
+	cases := []struct {
+		name string
+		cfos []int
+		want string
+	}{
+		{"только крупные", []int{335, 336}, "large"},
+		{"только мелкие", []int{953, 955}, "small"},
+		{"обе группы", []int{335, 953}, ""},
+		{"пустое задание", nil, ""},
+		{"одна площадка", []int{953}, "small"},
+	}
+	for _, c := range cases {
+		if got := mpTotalsSegment(segs, c.cfos); got != c.want {
+			t.Errorf("%s: %q, ожидалось %q", c.name, got, c.want)
+		}
+	}
+}

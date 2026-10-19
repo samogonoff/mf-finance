@@ -139,4 +139,35 @@ func TestMpConditionsRecalcAndPeriodPG(t *testing.T) {
 	if _, ok := stored(nov, 11); ok {
 		t.Fatal("суммы ноября не должны появляться без пересчёта карточки ноября")
 	}
+
+	// 5. Источник доли («из стратегии» / «вручную») хранится, читается и
+	// копируется в следующий месяц; произвольный текст сбрасывается в «вручную».
+	if _, err := svc.SaveConditions(ctx, card.ID, MpConditions{
+		CodeCFO: 335, SppPct: .10, MarkupPct: .50, MarkupTotalPct: .20,
+		Shares:       map[string]float64{BCostAgent: .10, BCostFreight: .01},
+		ShareSources: map[string]string{BCostAgent: "strategy:2098-09", BCostFreight: "что-угодно"},
+	}, admin); err != nil {
+		t.Fatal(err)
+	}
+	withSrc, err := store.Conditions(ctx, oct, year, 10)
+	if err != nil || len(withSrc) != 1 {
+		t.Fatalf("условия октября: %v %+v", err, withSrc)
+	}
+	if withSrc[0].ShareSources[BCostAgent] != "strategy:2098-09" {
+		t.Fatalf("источник «из стратегии» не сохранился: %+v", withSrc[0].ShareSources)
+	}
+	if _, ok := withSrc[0].ShareSources[BCostFreight]; ok {
+		t.Fatalf("произвольный источник должен сбрасываться в «вручную»: %+v", withSrc[0].ShareSources)
+	}
+	novCard, err := cards.EnsureCard(ctx, Card{PlID: nov, FormCode: TemplateMP, ScopeKey: "large", Title: "test nov", Currency: "RUB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := svc.CopyConditionsFromPrev(ctx, novCard.ID, admin); err != nil || n == 0 {
+		t.Fatalf("копирование условий в ноябрь: %d %v", n, err)
+	}
+	novList, err := store.Conditions(ctx, nov, year, 11)
+	if err != nil || len(novList) != 1 || novList[0].ShareSources[BCostAgent] != "strategy:2098-09" {
+		t.Fatalf("источник доли потерялся при копировании: %v %+v", err, novList)
+	}
 }

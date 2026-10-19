@@ -111,24 +111,35 @@ func boardUniverse(f BoardFilter, allowed map[int]bool) (all, filtered []BoardPl
 
 // boardTactic читает сохранённую тактику карточки (RUB) и приводит к валюте свода;
 // проценты валютой не пересчитываются. Возвращает также причины корректировок.
-func (s *TaskStore) boardTactic(ctx context.Context, plID int64, currency string) (tactic map[string]float64, manual map[string]bool, reason map[string]string) {
+func (s *TaskStore) boardTactic(ctx context.Context, plID int64, currency string) (tactic map[string]float64, totals map[string]map[string]float64, manual map[string]bool, reason map[string]string) {
 	tactic, manual, reason = map[string]float64{}, map[string]bool{}, map[string]string{}
+	// totals — итоговые строки (profit_center=0: скидки, уценки): блок → сегмент → сумма.
+	// Строк несколько (у крупных и мелких МП свои), «последняя победила» было бы случайным.
+	totals = map[string]map[string]float64{}
 	spec := mpLineByBlock()
 	rows, err := s.pool.Query(ctx, `
-		SELECT profit_center, block_type, amount, is_manual
+		SELECT profit_center, block_type, segment, amount, is_manual
 		FROM pl_metric WHERE pl_id=$1 AND template_code='TPL-MP' AND amount IS NOT NULL`, plID)
 	if err != nil {
 		return
 	}
 	for rows.Next() {
 		var pc int
-		var bt string
+		var bt, seg string
 		var amt *float64
 		var im bool
-		if rows.Scan(&pc, &bt, &amt, &im) == nil && amt != nil {
+		if rows.Scan(&pc, &bt, &seg, &amt, &im) == nil && amt != nil {
 			v := *amt
 			if spec[bt].ValueKind != ValuePct {
 				v = convertAmount(v, "RUB", currency)
+			}
+			if pc == 0 {
+				if totals[bt] == nil {
+					totals[bt] = map[string]float64{}
+				}
+				totals[bt][seg] = v
+				manual[layerKey(0, bt)] = manual[layerKey(0, bt)] || im
+				continue
 			}
 			tactic[layerKey(pc, bt)] = v
 			manual[layerKey(pc, bt)] = im
@@ -256,7 +267,7 @@ func (s *TaskStore) BoardData(ctx context.Context, plID int64, f BoardFilter, al
 		layersBySegment[seg] = s.mpSourceLayers(ctx, b.Year, b.Month, seg, inScope, f.Currency)
 	}
 
-	tactic, manual, reason := s.boardTactic(ctx, plID, f.Currency)
+	tactic, totals, manual, reason := s.boardTactic(ctx, plID, f.Currency)
 	tasksByCfo := s.boardTasksByCfo(ctx, plID)
 
 	// Каскад по каждой площадке — ровно как в форме ввода, включая базис НДС:
@@ -300,8 +311,9 @@ func (s *TaskStore) BoardData(ctx context.Context, plID int64, f BoardFilter, al
 		}
 		row := BoardRow{Line: line}
 		if line.Scope == ScopeTotal {
-			// Тотал-строки (скидки/уценки) ведутся одним значением на весь сегмент.
-			if v, ok := tactic[layerKey(0, line.BlockType)]; ok {
+			// Тотал-строки (скидки/уценки) ведутся по сегментам: в своде — сумма по
+			// сегментам выборки, а если своих строк нет — общая строка без сегмента.
+			if v, ok := mpTotalFor(totals[line.BlockType], segments); ok {
 				vv := v
 				row.Total = BoardValues{Calc: v, Tactic: &vv}
 			}
@@ -373,4 +385,26 @@ func (s *TaskStore) BoardData(ctx context.Context, plID int64, f BoardFilter, al
 		b.Rows = append(b.Rows, row)
 	}
 	return b, nil
+}
+
+// mpTotalFor — значение итоговой строки для выбранных сегментов: сумма строк этих
+// сегментов; строка без сегмента (сохранена до разделения или у смешанного задания)
+// берётся, только если своих строк нет, чтобы не считать её дважды.
+func mpTotalFor(bySeg map[string]float64, segs map[string]bool) (float64, bool) {
+	var sum float64
+	found := false
+	for seg := range segs {
+		if seg == "" {
+			continue
+		}
+		if v, ok := bySeg[seg]; ok {
+			sum += v
+			found = true
+		}
+	}
+	if found {
+		return sum, true
+	}
+	v, ok := bySeg[""]
+	return v, ok
 }

@@ -28,8 +28,12 @@ func TestMpFormSpecFor_InverseChangesEditableSet(t *testing.T) {
 			}
 		}
 	}
-	if inverse[BDiscount] || inverse[BMarkdown] {
-		t.Fatal("в форме вводятся только продажи и %СПП")
+	// Скидки и уценки по всем площадкам вводятся руками (Excel-формы large/small).
+	if !inverse[BDiscount] || !inverse[BMarkdown] {
+		t.Fatal("скидки и уценки по всем площадкам вводятся в форме и в inverse-режиме")
+	}
+	if !legacy[BDiscount] || !legacy[BMarkdown] {
+		t.Fatal("скидки и уценки вводятся и в legacy-режиме")
 	}
 }
 

@@ -287,7 +287,7 @@
                     <!-- Доля статьи под каждой суммой — главное замечание заказчика
                          (07.09.2026): раньше доля была одна, итоговая по площадке.
                          В inverse она ЗАДАНА условиями, в legacy считается от суммы. -->
-                    <span v-if="line.cost_line" class="share">доля {{ fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}<template v-if="isInverse"><span v-if="shareOrigin(line, p.code_cfo) === 'default'" class="share-origin default" :title="condOf(p.code_cfo)?.default_source || 'стратегия'"> · стратегия</span><span v-else-if="shareOrigin(line, p.code_cfo) === 'manual'" class="share-origin manual" title="переопределено в условиях площадки"> · вручную</span></template></span>
+                    <span v-if="line.cost_line" class="share">доля {{ fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}<template v-if="isInverse"><span v-if="shareOrigin(line, p.code_cfo) === 'default'" class="share-origin default" :title="condOf(p.code_cfo)?.default_source || 'стратегия'"> · из стратегии</span><span v-else-if="shareOrigin(line, p.code_cfo) === 'saved_strategy'" class="share-origin default" title="доля подставлена из раздела «Стратегические планы» и не правилась"> · из стратегии {{ shareSrcMonth(line, p.code_cfo) }}</span><span v-else-if="shareOrigin(line, p.code_cfo) === 'manual'" class="share-origin manual" title="переопределено в условиях площадки"> · вручную</span></template></span>
                     <span v-if="isInverse && line.cost_line && displayInput(line, p.code_cfo) == null" class="calc-hint">
                       по доле: {{ fmtMoney(cellValue(line, p.code_cfo)) }}
                     </span>
@@ -298,7 +298,7 @@
                     <!-- Доля статьи: в inverse она ЗАДАНА условиями площадки, поэтому
                          показываем её из реестра, а не считаем обратно от суммы. -->
 					<span v-if="line.block_type === B.commission" class="share">= % СПП</span>
-					<span v-else-if="line.cost_line" class="share">доля {{ missingShare(line, p.code_cfo) ? 'не задана' : fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}<template v-if="isInverse && !missingShare(line, p.code_cfo)"><span v-if="shareOrigin(line, p.code_cfo) === 'default'" class="share-origin default" :title="condOf(p.code_cfo)?.default_source || 'стратегия'"> · стратегия</span><span v-else-if="shareOrigin(line, p.code_cfo) === 'manual'" class="share-origin manual" title="переопределено в условиях площадки"> · вручную</span></template></span>
+					<span v-else-if="line.cost_line" class="share">доля {{ missingShare(line, p.code_cfo) ? 'не задана' : fmtPct(isInverse ? condShare(line, p.code_cfo) : shareOf(line, p.code_cfo)) }}<template v-if="isInverse && !missingShare(line, p.code_cfo)"><span v-if="shareOrigin(line, p.code_cfo) === 'default'" class="share-origin default" :title="condOf(p.code_cfo)?.default_source || 'стратегия'"> · из стратегии</span><span v-else-if="shareOrigin(line, p.code_cfo) === 'saved_strategy'" class="share-origin default" title="доля подставлена из раздела «Стратегические планы» и не правилась"> · из стратегии {{ shareSrcMonth(line, p.code_cfo) }}</span><span v-else-if="shareOrigin(line, p.code_cfo) === 'manual'" class="share-origin manual" title="переопределено в условиях площадки"> · вручную</span></template></span>
 					<span v-if="line.block_type === B.salesManagerGross" class="fbs-hint">ФБС, справочно: источник ФБС не подключён</span>
                   </template>
                 </td>
@@ -630,7 +630,11 @@ const segmentGroups = computed(() => {
   return out;
 });
 
-const editableCell = (line: MpLine) => canEdit.value && line.editable && (!isInverse.value || line.block_type === B.salesManagerGross || line.block_type === B.spp);
+// Вводимые строки режима «от условий» — зеркало mpEditableSetFor (Go): продажи,
+// %СПП и итоговые скидки/уценки по всем площадкам.
+const INVERSE_INPUTS: string[] = [B.salesManagerGross, B.spp, B.discount, B.markdown];
+const inverseInput = (line: MpLine) => INVERSE_INPUTS.includes(line.block_type);
+const editableCell = (line: MpLine) => canEdit.value && line.editable && (!isInverse.value || inverseInput(line));
 const canEdit = computed(() => {
   if (readonly.value) return false;
 	if (form.value?.editable === false) return false;
@@ -649,10 +653,14 @@ const condShare = (line: MpLine, cfo: number): number => effectiveShares(condOf(
 // к ней не относится (зеркало go: mpMissingShare).
 const missingShare = (line: MpLine, cfo: number): boolean =>
   isInverse.value && line.cost_line && line.block_type !== B.commission && !(line.block_type in effectiveShares(condOf(cfo)));
-// Откуда доля (ТЗ доработок п. 2.1: различать умолчание и ручное значение).
-const shareOrigin = (line: MpLine, cfo: number): "manual" | "default" | "" => {
+// Месяц стратегии, из которого сохранена доля: «strategy:2026-09» → «09.2026».
+const shareSrcMonth = (line: MpLine, cfo: number): string => {
+  const m = /^strategy:(\d{4})-(\d{2})$/.exec(condOf(cfo)?.share_sources?.[line.block_type] || "");
+  return m ? `${m[2]}.${m[1]}` : "";
+};// Откуда доля (ТЗ доработок п. 2.1: различать умолчание и ручное значение).
+const shareOrigin = (line: MpLine, cfo: number): "manual" | "saved_strategy" | "default" | "" => {
   const c = condOf(cfo);
-  if (line.block_type in (c?.shares || {})) return "manual";
+  if (line.block_type in (c?.shares || {})) return c?.share_sources?.[line.block_type]?.startsWith("strategy:") ? "saved_strategy" : "manual";
   if (line.block_type in (c?.default_shares || {})) return "default";
   return "";
 };
@@ -912,7 +920,7 @@ const save = async () => {
   saving.value = true; error.value = ""; note.value = "";
   const rows: MpSaveRow[] = [];
   for (const line of form.value.lines) {
-    if (!line.editable || (isInverse.value && line.block_type !== B.salesManagerGross && line.block_type !== B.spp)) continue;
+    if (!line.editable || (isInverse.value && !inverseInput(line))) continue;
     if (line.scope === "total") {
       const v = totals[line.block_type];
       if (v != null && !Number.isNaN(v)) rows.push({ code_cfo: 0, block_type: line.block_type, code_pl: line.code_pl, amount: Number(v), is_manual: false, comment: "" });
@@ -928,7 +936,7 @@ const save = async () => {
     }
   }
   try {
-    await api.saveMpForm(taskId, rows, currency.value);
+    await api.saveMpForm(taskId, rows, currency.value, viewScope.value);
     note.value = `Сохранено ${rows.length} значений`;
     dirty.value = false;
   } catch (e) { error.value = apiError(e, "Ошибка сохранения"); }
