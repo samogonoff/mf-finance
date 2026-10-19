@@ -351,27 +351,35 @@ const load = async () => {
   }
 };
 
+// Строка экрана → тело условий для API (проценты → доли). Один формат и для
+// сохранения, и для черновика предпросмотра.
+const rowPayload = (r: EditableRow) => {
+  const shares: Record<string, number> = {};
+  for (const b of COST_BLOCKS) {
+    const v = r.shares_view[b];
+    if (v != null && !Number.isNaN(v)) shares[b] = v / 100;
+  }
+  return {
+    code_cfo: r.code_cfo,
+    spp_pct: toNum(r.spp_pct_view) / 100,
+    markup_pct: toNum(r.markup_pct_view) / 100,
+    markup_total_pct: toNum(r.markup_total_pct_view) / 100,
+    currency: r.currency,
+    valid_from: r.valid_from,
+    valid_to: r.valid_to,
+    change_reason: r.change_reason,
+    shares
+  };
+};
+
+const dirtyRows = computed(() => rows.value.filter(isDirty));
+
 const saveRow = async (r: EditableRow) => {
   busy.value = true;
   error.value = "";
   note.value = "";
   try {
-    const shares: Record<string, number> = {};
-    for (const b of COST_BLOCKS) {
-      const v = r.shares_view[b];
-      if (v != null && !Number.isNaN(v)) shares[b] = v / 100;
-    }
-    const saved = await api.saveConditions(cardId, {
-      code_cfo: r.code_cfo,
-      spp_pct: toNum(r.spp_pct_view) / 100,
-      markup_pct: toNum(r.markup_pct_view) / 100,
-      markup_total_pct: toNum(r.markup_total_pct_view) / 100,
-      currency: r.currency,
-	  valid_from: r.valid_from,
-	  valid_to: r.valid_to,
-      change_reason: r.change_reason,
-      shares
-    });
+    const saved = await api.saveConditions(cardId, rowPayload(r));
     note.value = `Условия «${r.name_cfo || r.code_cfo}» сохранены (версия ${saved.version}).`;
     await load();
   } catch (e: unknown) {
@@ -400,13 +408,40 @@ const doCopy = async () => {
 const doPreview = () => runRecalc(true);
 const doRecalc = () => runRecalc(false);
 
+// Расчёт идёт по СОХРАНЁННЫМ условиям. Поэтому «Пересчитать» сначала сохраняет
+// изменённые строки (при ошибке — например, не указано обоснование — пересчёта
+// не будет и в тактике останутся прежние суммы), а «Предпросмотр» отправляет
+// несохранённые правки как черновик и ничего не пишет.
 const runRecalc = async (preview: boolean) => {
   busy.value = true;
   error.value = "";
   note.value = "";
   try {
-    recalcResult.value = await api.recalc(cardId, preview);
-    if (!preview) note.value = "Расходная часть пересчитана и сохранена в тактике.";
+    const pending = [...dirtyRows.value];
+    let saved = 0;
+    if (!preview && pending.length) {
+      for (const r of pending) {
+        try {
+          await api.saveConditions(cardId, rowPayload(r));
+          saved++;
+        } catch (e: unknown) {
+          // Пересчёт по частично сохранённым условиям запутал бы: останавливаемся.
+          if (saved) await load();
+          error.value = `«${r.name_cfo || r.code_cfo}»: ${apiError(e, "не удалось сохранить условия")}. Пересчёт не выполнен.`;
+          return;
+        }
+      }
+      await load();
+    }
+    const drafts = preview ? pending.map(rowPayload) : [];
+    recalcResult.value = await api.recalc(cardId, preview, drafts);
+    if (preview) {
+      note.value = drafts.length
+        ? `Предпросмотр учитывает несохранённые правки (${drafts.length}) и ничего не записывает.`
+        : "";
+    } else {
+      note.value = `${saved ? `Сохранено строк условий: ${saved}. ` : ""}Расходная часть пересчитана и сохранена в тактике за ${periodLabel.value}.`;
+    }
   } catch (e: unknown) {
     error.value = apiError(e, "Пересчёт не выполнен");
   } finally {

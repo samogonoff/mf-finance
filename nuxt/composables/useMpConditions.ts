@@ -278,10 +278,13 @@ export function useMpConditions() {
     });
 
   // ── Пересчёт и валидации ──
-  const recalc = (cardId: number, preview = false): Promise<MpRecalcResult> =>
+  // drafts — несохранённые правки экрана: учитываются только в предпросмотре и
+  // ничего не пишут. Пересчёт с записью идёт по сохранённым условиям.
+  const recalc = (cardId: number, preview = false, drafts: Partial<MpConditionsRow>[] = []): Promise<MpRecalcResult> =>
     $fetch<MpRecalcResult>(`${base}/api/plans/mp/cards/${cardId}/recalc`, {
       method: "POST",
       params: preview ? { preview: 1 } : {},
+      body: preview && drafts.length ? { conditions: drafts } : undefined,
       headers: authHeader()
     });
 
