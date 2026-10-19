@@ -331,6 +331,15 @@ func TestRetailLFLStatus(t *testing.T) {
 		"закрыт":  LFLClosed,
 		"Closed":  LFLClosed,
 		"":        "",
+		// Значения справочника [001 CodeCFO] на 16.10.2026, которых нет среди
+		// разрезов формы: остаются как есть и попадают в «прочие».
+		"реконструкция": LFLReconstruction,
+		"n/a":           "n/a",
+		"пока открытие под вопросом": "пока открытие под вопросом",
+		// «ххх» встречается латиницей, кириллицей и вперемешку (правки ТЗ ч. 6).
+		"хxх": LFLNoID,
+		"xхx": LFLNoID,
+		"ХХХ": LFLNoID,
 	}
 	for raw, want := range cases {
 		if got := retailLFLStatus(raw); got != want {

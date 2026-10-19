@@ -27,7 +27,9 @@ func stageDefs() []StageDef {
 		{Code: "2.1", Track: "production", Name: "Минуты и объёмы производства", DuePrev25: true},
 		{Code: "2.2", Track: "production", Name: "Согласование планов производства", DuePrev25: true, DependsOn: []string{"2.1"}, IsApproval: true},
 		{Code: "1.1", Track: "sales", Name: "Заполнение бюджетов продаж ЦП", DueRD: 2},
-		{Code: "1.2", Track: "sales", Name: "Согласование финансовым контролёром", DueRD: 3, DependsOn: []string{"1.1"}, IsApproval: true},
+		// 1.2 — руководитель подразделения; шаг формы «fin» (контролёр, у розницы)
+		// своего этапа не имеет и входит сюда же (stage_sync.go).
+		{Code: "1.2", Track: "sales", Name: "Согласование руководителем и финансовым контролёром", DueRD: 3, DependsOn: []string{"1.1"}, IsApproval: true},
 		{Code: "1.3", Track: "sales", Name: "Согласование директором направления", DueRD: 3, DependsOn: []string{"1.2"}, IsApproval: true},
 		{Code: "2.3", Track: "production", Name: "Обновление бюджетов ЦЗ", DueRD: 3, DependsOn: []string{"2.2"}},
 		// 1.4 — именно УТВЕРЖДЕНИЕ: оно закрывает период на запись для всех,

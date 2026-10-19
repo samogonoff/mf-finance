@@ -454,8 +454,9 @@ func retailPlanMonths(month int) []int {
 }
 
 // retailLFLStatus — приведение LfLStatus источника к каноническому коду.
-// Источник пишет статусы по-русски и непоследовательно («ххх» — латиницей и
-// кириллицей), поэтому сравнение по подстроке, а не по равенству.
+// Источник пишет статусы по-русски и непоследовательно («ххх» — латиницей,
+// кириллицей и вперемешку, правки ТЗ ч. 6), поэтому сравнение по подстроке, а
+// «ххх» сверяется после замены кириллической «х» на латинскую.
 func retailLFLStatus(raw string) string {
 	s := strings.ToLower(strings.TrimSpace(raw))
 	switch {
@@ -465,7 +466,7 @@ func retailLFLStatus(raw string) string {
 		return LFLClosed
 	case strings.Contains(s, "рекон") || strings.Contains(s, "reconstruct"):
 		return LFLReconstruction
-	case s == "ххх" || s == "xxx" || strings.Contains(s, "ххх") || strings.Contains(s, "xxx"):
+	case strings.Contains(strings.ReplaceAll(s, "х", "x"), "xxx"): // первый аргумент — кириллическая «х»
 		return LFLNoID
 	case strings.Contains(s, "нов") || strings.Contains(s, "new"):
 		return LFLNew
