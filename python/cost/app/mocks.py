@@ -1456,6 +1456,40 @@ def _fot_p17_mock_dashboard(params: dict) -> dict:
     return {"cards": cards, "charts": [], "tables": tables, "meta": meta}
 
 
+def _fot_p18_mock_dashboard(params: dict) -> dict:
+    """P18 моком: исполнение ФОТ по 3 разрезам (год/1ПГ/2ПГ)."""
+    from app import fot
+
+    currency = _fot_first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+
+    _MOCK_DIRS = [
+        {"dim": "Магазины", "f25_h1": 6000, "f26_h1": 7500, "t26_h2": 7800, "b26_h2": 7200},
+        {"dim": "Производство", "f25_h1": 4500, "f26_h1": 5200, "t26_h2": 5500, "b26_h2": 5000},
+        {"dim": "Складская логистика", "f25_h1": 1800, "f26_h1": 2100, "t26_h2": 2200, "b26_h2": 2000},
+        {"dim": "Отделы", "f25_h1": 2200, "f26_h1": 2600, "t26_h2": 2700, "b26_h2": 2500},
+    ]
+    _MOCK_G1 = [
+        {"dim": "Ритейл", "f25_h1": 8500, "f26_h1": 10200, "t26_h2": 10800, "b26_h2": 9800},
+        {"dim": "Опт", "f25_h1": 3200, "f26_h1": 3800, "t26_h2": 4000, "b26_h2": 3600},
+        {"dim": "Управление", "f25_h1": 2800, "f26_h1": 3400, "t26_h2": 3400, "b26_h2": 3300},
+    ]
+    _MOCK_CFO = [
+        {"dim": "ЦФО-101", "f25_h1": 3000, "f26_h1": 3500, "t26_h2": 3700, "b26_h2": 3400},
+        {"dim": "ЦФО-201", "f25_h1": 2500, "f26_h1": 3000, "t26_h2": 3200, "b26_h2": 2900},
+        {"dim": "ЦФО-301", "f25_h1": 4000, "f26_h1": 4800, "t26_h2": 5000, "b26_h2": 4600},
+        {"dim": "ЦФО-401", "f25_h1": 2000, "f26_h1": 2400, "t26_h2": 2500, "b26_h2": 2300},
+        {"dim": "ЦФО-501", "f25_h1": 3000, "f26_h1": 3700, "t26_h2": 3800, "b26_h2": 3500},
+    ]
+
+    cards, tables, warning = fot._p18_assemble(_MOCK_DIRS, _MOCK_G1, _MOCK_CFO)
+    meta = _fot_mock_meta("p18", params, currency, fot.METHODOLOGY_P18)
+    if warning:
+        meta["warning"] = warning
+    return {"cards": cards, "charts": [], "tables": tables, "meta": meta}
+
+
 def _fot_p13_mock_dashboard(params: dict) -> dict:
     """P13 моком: боевой сборщик app.fot._p13_assemble. HR-статьи — свой мок
     под контрольные числа PBI, ФОТ отделов — зерно P10/P11 (его направления
@@ -1659,7 +1693,7 @@ def fot_dashboard(tab: str, params: dict) -> dict:
     """
     from app import fot
 
-    if tab not in ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17"):
+    if tab not in ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18"):
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
     if tab in ("p10", "p11"):
         return _fot_half_mock_dashboard(tab, params)
@@ -1667,6 +1701,8 @@ def fot_dashboard(tab: str, params: dict) -> dict:
         return _fot_p12_mock_dashboard(params)
     if tab == "p17":
         return _fot_p17_mock_dashboard(params)
+    if tab == "p18":
+        return _fot_p18_mock_dashboard(params)
     if tab == "p13":
         return _fot_p13_mock_dashboard(params)
     if tab == "p14":

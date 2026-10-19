@@ -46,7 +46,7 @@ FOT_DATABASE = os.environ.get("FOT_DATABASE", "FinDWH")
 YEAR_PREV = 2025
 YEAR_PLAN = 2026
 
-_FOT_TABS = ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17")
+_FOT_TABS = ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18")
 
 
 def fot_mock_enabled() -> bool:
@@ -1729,6 +1729,157 @@ def _p12_assemble(grain: list[dict]) -> tuple:
     elif not s["pa"]:
         warning = "План численности (PlanChisl) пуст: укомплектованность и Δ к утвержд. не считаются."
     return cards, tables, warning
+
+
+# ── P18 «Исполнение бюджета»: 3 разреза по периодам ───────────────────────────
+
+METHODOLOGY_P18 = (
+    "Исполнение ФОТ по ГК: фактические расходы на персонал сравниваются "
+    "с тактическим и стратегическим планами. Δ = факт − план; % исп. = факт / план × 100. "
+    "Динамика к прошлому году: (факт 1ПГ26 − факт 1ПГ25) / факт 1ПГ25 × 100. "
+    "Светофор исполнения ФОТ: ≤ 95 % зелёный, 95–105 % жёлтый, > 105 % красный. "
+    "Разрезы: год с прогнозом / 1ПГ / 2ПГ."
+)
+
+
+def _p18_sql(dim_col: str) -> str:
+    """ФОТ за 4 периода, агрегированный по указанной размерности.
+
+    dim_col = l.dir | l.g1 | l.cfo  (направление / группа ЦФО / подразделение).
+    Возвращает строки: dim, f25_h1, f26_h1, t26_h2, b26_h2.
+    """
+    return f"""
+WITH dim AS (
+    SELECT code_cfo, cfo_label, group_cfo1, direction
+    FROM fot_cfo WHERE TRUE
+)
+SELECT
+    coalesce({dim_col}, '') AS dim,
+    sum(m.amount_byn) FILTER (WHERE m.month_date >= DATE '{YEAR_PREV}-01-01' AND m.month_date < DATE '{YEAR_PREV}-07-01' AND m.scenario_src = 'факт') AS f25_h1,
+    sum(m.amount_byn) FILTER (WHERE m.month_date >= DATE '{YEAR_PLAN}-01-01' AND m.month_date < DATE '{YEAR_PLAN}-07-01' AND m.scenario_src = 'факт') AS f26_h1,
+    sum(m.amount_byn) FILTER (WHERE m.month_date >= DATE '{YEAR_PLAN}-07-01' AND m.month_date < DATE '{YEAR_PLAN + 1}-01-01' AND m.scenario_src = 'тактика') AS t26_h2,
+    sum(m.amount_byn) FILTER (WHERE m.month_date >= DATE '{YEAR_PLAN}-07-01' AND m.month_date < DATE '{YEAR_PLAN + 1}-01-01' AND m.scenario_src = 'бюджет') AS b26_h2
+FROM fot_monthly m
+LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+WHERE m.row_template = 'Заработная плата' AND m.kontur IN ('P&L', 'Производство (BS)')
+  AND m.month_date >= DATE '{YEAR_PREV}-01-01' AND m.month_date < DATE '{YEAR_PLAN + 1}-01-01'
+GROUP BY 1
+"""
+
+
+def _p18_row(label: str, r: dict) -> dict:
+    """Строка таблицы P18: ФОТ по периодам, Δ и светофор."""
+    f25_h1 = _t(r.get("f25_h1"))
+    f26_h1 = _t(r.get("f26_h1"))
+    t26_h2 = _t(r.get("t26_h2"))
+    b26_h2 = _t(r.get("b26_h2"))
+    exp26 = f26_h1 + t26_h2
+    dev_26_25 = _div(_diff(exp26, f25_h1), f25_h1)
+    dev_t = _div(_diff(exp26, b26_h2), b26_h2)
+    return {
+        "label": label,
+        "f25_h1": _r2(f25_h1),
+        "exp26": _r2(exp26),
+        "dev_26_25": _r1(_pct(dev_26_25)),
+        "dev_26_25_color": _pct_color(dev_26_25),
+        "f26_h1": _r2(f26_h1),
+        "t26_h2": _r2(t26_h2),
+        "t26_h2_pct": _r1(_pct(_div(f26_h1, t26_h2))),
+        "b26_h2": _r2(b26_h2),
+        "b26_h2_pct": _r1(_pct(_div(f26_h1, b26_h2))),
+        "dev_t": _r1(_pct(dev_t)),
+        "dev_t_color": _pct_color(dev_t),
+    }
+
+
+def _p18_columns() -> list[dict]:
+    return [
+        {"key": "label", "label": "Направление"},
+        {"key": "f25_h1", "label": "Факт 1ПГ25"},
+        {"key": "exp26", "label": "Ожидание 2026", "unit": "%" if False else ""},
+        {"key": "dev_26_25", "label": "Δ год к 2025", "unit": "%"},
+        {"key": "f26_h1", "label": "Факт 1ПГ26"},
+        {"key": "t26_h2", "label": "Тактика 2ПГ26"},
+        {"key": "t26_h2_pct", "label": "ФОТ исп. такт.", "unit": "%"},
+        {"key": "b26_h2", "label": "Бюджет 2ПГ26"},
+        {"key": "b26_h2_pct", "label": "ФОТ исп. бюдж.", "unit": "%"},
+    ]
+
+
+def _p18_cards(by_year: list[dict]) -> list[dict]:
+    s = {k: _nsum([r.get(k) for r in by_year]) for k in ("f25_h1", "f26_h1", "t26_h2", "b26_h2")}
+    exp26 = s["f26_h1"] + s["t26_h2"]
+    dev = _div(_diff(exp26, s["f25_h1"]), s["f25_h1"])
+    dev_t = _div(_diff(exp26, s["b26_h2"]), s["b26_h2"])
+    return [
+        {"key": "fot_fact_1h26", "label": "ФОТ факт 1ПГ26", "value": _r2(s["f26_h1"]), "unit": ""},
+        {"key": "fot_exp_2026", "label": "Ожидание 2026", "value": _r2(exp26), "unit": ""},
+        {"key": "dev_year", "label": "Δ год к 2025", "value": _r1(_pct(dev)), "unit": "%"},
+        {"key": "exec_tact", "label": "ФОТ исп. такт. 1ПГ26", "value": _r1(_pct(_div(s["f26_h1"], s["t26_h2"]))), "unit": "%"},
+        {"key": "exec_budg", "label": "ФОТ исп. бюдж. 1ПГ26", "value": _r1(_pct(_div(s["f26_h1"], s["b26_h2"]))), "unit": "%"},
+    ]
+
+
+def _p18_table(key: str, label: str, col_label: str, rows: list, meta_dim: str) -> dict:
+    cols = _p18_columns()
+    cols[0]["label"] = col_label
+    return {
+        "key": key, "label": label, "columns": cols, "rows": rows,
+        "meta": {"dim": meta_dim, "level_label": col_label, "path": [],
+                 "can_drill": False, "truncated": False, "row_limit": MATRIX_ROW_LIMIT},
+    }
+
+
+def _p18_assemble(by_dir: list[dict], by_g1: list[dict], by_cfo: list[dict]) -> tuple:
+    cards = _p18_cards(by_dir)
+
+    def _rows(src, key_fn, label_fn):
+        entries = sorted(
+            ((_nsum([r.get("f26_h1") for r in src if key_fn(r) == k]) or 0.0, k,
+              [r for r in src if key_fn(r) == k])
+             for k in {key_fn(r) for r in src}),
+            key=lambda t: t[0], reverse=True,
+        )
+        result = []
+        for _, k, parts in entries[:MATRIX_ROW_LIMIT]:
+            agg = {c: _nsum([r.get(c) for r in parts]) for c in ("f25_h1", "f26_h1", "t26_h2", "b26_h2")}
+            result.append(_p18_row(label_fn(k), agg))
+        return result
+
+    dir_rows = _rows(by_dir, lambda r: r["dim"], lambda d: d)
+    g1_rows = _rows(by_g1, lambda r: r["dim"], lambda d: d)
+    cfo_rows = _rows(by_cfo, lambda r: r["dim"], lambda d: d)
+
+    tables = [
+        _p18_table("p18_by_direction", "ФОТ по направлениям", "Направление", dir_rows, "direction"),
+        _p18_table("p18_by_group", "ФОТ по группам ЦФО", "Группа ЦФО", g1_rows, "group_cfo1"),
+        _p18_table("p18_by_dept", "ФОТ по подразделениям", "Подразделение", cfo_rows, "code_cfo"),
+    ]
+    return cards, tables, None
+
+
+async def _dashboard_p18(p: dict, meta: dict) -> dict:
+    async with acquire() as pg:
+        by_dir = await pg.fetch(_p18_sql("l.dir"), timeout=FOT_QUERY_TIMEOUT)
+        by_g1 = await pg.fetch(_p18_sql("l.g1"), timeout=FOT_QUERY_TIMEOUT)
+        by_cfo = await pg.fetch(_p18_sql("l.cfo"), timeout=FOT_QUERY_TIMEOUT)
+
+    def _to_dicts(rows):
+        return [dict(r) for r in rows] if rows else []
+
+    cards, tables, warning = _p18_assemble(
+        _to_dicts(by_dir), _to_dicts(by_g1), _to_dicts(by_cfo))
+    closed = _closed_from_meta(meta)
+    meta_out = {
+        "tab": "p18", "params": p, "currency": p["currency"],
+        "periods": _periods_meta(),
+        "closed_period": closed.isoformat() if closed else None,
+        "stale": meta.get("stale"), "refreshed_at": meta.get("refreshed_at"),
+        "methodology": METHODOLOGY_P18,
+    }
+    if warning:
+        meta_out["warning"] = warning
+    return {"cards": cards, "charts": [], "tables": tables, "meta": meta_out}
 
 
 def _p17_assemble(grain: list[dict]) -> tuple:
@@ -3430,7 +3581,7 @@ async def dashboard(tab: str, params: dict) -> dict:
     if tab == "p9":
         p = _parse_p9_params(params, meta)
         return await _dashboard_p9(p, meta)
-    if tab in ("p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17"):
+    if tab in ("p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18"):
         p = _parse_halfyear_params(params)
         if tab == "p10":
             return await _dashboard_p10(p, meta)
@@ -3440,6 +3591,8 @@ async def dashboard(tab: str, params: dict) -> dict:
             return await _dashboard_p12(p, meta)
         if tab == "p17":
             return await _dashboard_p17(p, meta)
+        if tab == "p18":
+            return await _dashboard_p18(p, meta)
         if tab == "p13":
             return await _dashboard_p13(p, meta)
         if tab == "p15":
@@ -3470,6 +3623,7 @@ __all__ = [
     "METHODOLOGY_P15",
     "METHODOLOGY_P16",
     "METHODOLOGY_P17",
+    "METHODOLOGY_P18",
     "METHODOLOGY_P9",
     "P11_CHANNEL_LEVELS",
     "P11_MATRIX_LEVELS",

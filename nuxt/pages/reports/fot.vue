@@ -629,8 +629,62 @@
             </section>
           </template>
 
-          <!-- KPI-карточки вкладки: у P10 пять; у P11/P14–P16/P17 — слайд выше -->
-          <section v-if="!isP11 && !isP14 && !isDeptTab && !isP17" class="fot-kpis">
+          <!-- P18 «Исполнение бюджета»: ФОТ vs план, 3 разреза -->
+          <template v-if="isP18">
+            <section class="slide" aria-label="Исполнение бюджета">
+              <header class="slide-hdr">
+                <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
+                <span class="slide-subtitle">Исполнение ФОТ — факт vs тактика/бюджет</span>
+                <span class="slide-year p15-badge" aria-hidden="true">
+                  <span>ГК</span><span>ИСПОЛНЕНИЕ</span>
+                </span>
+              </header>
+
+              <!-- KPI-лента: 5 карточек исполнения -->
+              <section class="fot-kpis">
+                <article v-for="c in cards" :key="c.key" class="fot-kpi">
+                  <span class="fot-kpi-label">{{ c.label }}</span>
+                  <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
+                </article>
+              </section>
+
+              <!-- Переключатель разрезов -->
+              <div class="p18-tabs">
+                <button v-for="t in p18SubTabs" :key="t.key" class="p18-tab"
+                        :class="{ active: p18SubTab === t.key }"
+                        @click="p18SubTab = t.key">{{ t.label }}</button>
+              </div>
+
+              <!-- Таблица выбранного разреза: светофор Δ, без итога -->
+              <section v-if="p18ActiveTable" class="card">
+                <div class="card-head">
+                  <h3 class="card-title">{{ p18ActiveTable.label }}</h3>
+                </div>
+                <div class="table-wrap">
+                  <table class="stable">
+                    <thead>
+                      <tr>
+                        <th v-for="col in p18ActiveTable.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
+                          {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(row, i) in (p18ActiveTable.rows || [])" :key="i">
+                        <td v-for="col in p18ActiveTable.columns" :key="col.key"
+                            :class="[col.key === 'label' ? 'col-name' : 'num', col.key.endsWith('_color') ? undefined : cellDeltaClass(row, col)]">
+                          {{ cellText(p18ActiveTable, row, col) }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </section>
+          </template>
+
+          <!-- KPI-карточки вкладки: у P10 пять; у P11/P14–P18 — слайд выше -->
+          <section v-if="!isP11 && !isP14 && !isDeptTab && !isP17 && !isP18" class="fot-kpis">
             <article v-for="c in cards" :key="c.key" class="fot-kpi">
               <span class="fot-kpi-label">{{ c.label }}</span>
               <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
@@ -787,6 +841,7 @@ const TABS = [
   { key: 'p15', label: 'Отделы: свод' },
   { key: 'p16', label: 'Отделы: анализ по подразделениям' },
   { key: 'p17', label: 'Численность ГК' },
+  { key: 'p18', label: 'Исполнение бюджета' },
 ] as const
 const tab = ref<string>('p9')
 
@@ -982,6 +1037,18 @@ const isP14 = computed(() => tab.value === 'p14')
 const isP15 = computed(() => tab.value === 'p15')
 const isP16 = computed(() => tab.value === 'p16')
 const isP17 = computed(() => tab.value === 'p17')
+const isP18 = computed(() => tab.value === 'p18')
+const p18SubTab = ref<string>('direction')
+const p18SubTabs = [
+  { key: 'direction', label: 'Направление' },
+  { key: 'group', label: 'Группа ЦФО' },
+  { key: 'dept', label: 'Подразделение' },
+]
+const p18ActiveTable = computed<any>(() => {
+  if (!isP18.value) return null
+  const keyMap: Record<string, string> = { direction: 'p18_by_direction', group: 'p18_by_group', dept: 'p18_by_dept' }
+  return tables.value.find((t: any) => t.key === keyMap[p18SubTab.value]) || null
+})
 /** Обе вкладки «Отделы» живут на одном слайде: KPI-лента и блок ИИ скрыты. */
 const isDeptTab = computed(() => isP15.value || isP16.value)
 /** Направления листа и шапка страны — отдельные блоки ответа p14. */
@@ -1064,6 +1131,7 @@ const shownTables = computed<any[]>(() => {
   if (isP14.value) return tables.value.filter((t: any) => t.key !== 'by_direction')
   if (isP15.value) return tables.value.filter((t: any) => t.key !== 'departments')
   if (isP17.value) return tables.value.filter((t: any) => t.key !== 'hc_countries')
+  if (isP18.value) return tables.value.filter((t: any) => !t.key.startsWith('p18_'))
   return tables.value
 })
 /** Значение карточки по ключу — для KPI-ленты слайда. */
@@ -1072,7 +1140,7 @@ const kpiNum = (key: string): number | null => {
   return c && isNum(c.value) ? Number(c.value) : null
 }
 /** P10–P16 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
-const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13', 'p14', 'p15', 'p16', 'p17'].includes(tab.value))
+const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13', 'p14', 'p15', 'p16', 'p17', 'p18'].includes(tab.value))
 /** Метка активной вкладки — заголовок блока ИИ и нотификации. */
 const tabLabel = computed(() => TABS.find((t) => t.key === tab.value)?.label || tab.value)
 
@@ -1960,4 +2028,20 @@ const fmtDateTime = (iso: any) => {
 @media (max-width: 720px) {
   .fot-kpi-value { font-size: 18px; }
 }
+
+/* P18 — подтабы разрезов */
+.p18-tabs { display: flex; gap: 6px; margin: 8px 0 4px; }
+.p18-tab {
+  font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 6px;
+  border: 1px solid var(--border, #e2e8f0); background: transparent;
+  color: var(--text-muted, #64748b); cursor: pointer; transition: all 0.15s;
+}
+.p18-tab.active { background: var(--accent, #4338ca); color: #fff; border-color: var(--accent, #4338ca); }
+.p18-tab:hover:not(.active) { border-color: var(--accent, #4338ca); color: var(--text, #1e293b); }
+
+@media (max-width: 720px) {
+  .p18-tabs { flex-wrap: wrap; }
+  .p18-tab { font-size: 12px; padding: 3px 8px; }
+}
+
 </style>
