@@ -1450,10 +1450,27 @@ def _fot_p17_mock_dashboard(params: dict) -> dict:
     if currency not in fot.FOT_CURRENCIES:
         currency = "BYN"
     cards, tables, warning = fot._p17_assemble(_fot_hc_mock())
+
+    # Детали по каждой стране (слайд 4.2)
+    grain = _fot_hc_mock()
+    by_cc: dict = {}
+    for r in grain:
+        by_cc.setdefault(r.get("ctry") or "", []).append(r)
+    country_details: dict = {}
+    for cc, label in fot.COUNTRY_OPTIONS:
+        parts = by_cc.get(cc)
+        if not parts:
+            continue
+        country_details[cc] = {
+            "cards": fot._p17_country_cards(parts),
+            "table": fot._p17_country_detail_table(parts, label),
+        }
+
     meta = _fot_mock_meta("p17", params, currency, fot.METHODOLOGY_P17)
     if warning:
         meta["warning"] = warning
-    return {"cards": cards, "charts": [], "tables": tables, "meta": meta}
+    return {"cards": cards, "charts": [], "tables": tables,
+            "country_details": country_details, "meta": meta}
 
 
 def _fot_p18_mock_dashboard(params: dict) -> dict:

@@ -1742,12 +1742,14 @@ METHODOLOGY_P18 = (
 )
 
 
-def _p18_sql(dim_col: str) -> str:
+def _p18_sql(dim_col: str, col: str = "amount_byn") -> str:
     """ФОТ за 4 периода, агрегированный по указанной размерности.
 
     dim_col = l.dir | l.g1 | l.cfo  (направление / группа ЦФО / подразделение).
+    col — колонка суммы (зависит от валюты панели, дефолт amount_byn).
     Возвращает строки: dim, f25_h1, f26_h1, t26_h2, b26_h2.
     """
+    fam = _SQL_FOT_FAMILY
     return f"""
 WITH dim AS (
     SELECT code_cfo, cfo_label, group_cfo1, direction
@@ -1755,14 +1757,12 @@ WITH dim AS (
 )
 SELECT
     coalesce({dim_col}, '') AS dim,
-    sum(m.amount_byn) FILTER (WHERE m.month_date >= DATE '{YEAR_PREV}-01-01' AND m.month_date < DATE '{YEAR_PREV}-07-01' AND m.scenario_src = 'факт') AS f25_h1,
-    sum(m.amount_byn) FILTER (WHERE m.month_date >= DATE '{YEAR_PLAN}-01-01' AND m.month_date < DATE '{YEAR_PLAN}-07-01' AND m.scenario_src = 'факт') AS f26_h1,
-    sum(m.amount_byn) FILTER (WHERE m.month_date >= DATE '{YEAR_PLAN}-07-01' AND m.month_date < DATE '{YEAR_PLAN + 1}-01-01' AND m.scenario_src = 'тактика') AS t26_h2,
-    sum(m.amount_byn) FILTER (WHERE m.month_date >= DATE '{YEAR_PLAN}-07-01' AND m.month_date < DATE '{YEAR_PLAN + 1}-01-01' AND m.scenario_src = 'бюджет') AS b26_h2
+    sum(m.{col}) FILTER (WHERE m.scenario_src = 'факт' AND date_part('year', m.month_date) = {YEAR_PREV} AND date_part('month', m.month_date) BETWEEN 1 AND 6 AND {fam}) AS f25_h1,
+    sum(m.{col}) FILTER (WHERE m.scenario_src = 'факт' AND date_part('year', m.month_date) = {YEAR_PLAN} AND date_part('month', m.month_date) BETWEEN 1 AND 6 AND {fam}) AS f26_h1,
+    sum(m.{col}) FILTER (WHERE m.scenario_src = 'тактика' AND date_part('year', m.month_date) = {YEAR_PLAN} AND date_part('month', m.month_date) BETWEEN 7 AND 12 AND {fam}) AS t26_h2,
+    sum(m.{col}) FILTER (WHERE m.scenario_src = 'бюджет' AND date_part('year', m.month_date) = {YEAR_PLAN} AND date_part('month', m.month_date) BETWEEN 7 AND 12 AND {fam}) AS b26_h2
 FROM fot_monthly m
 LEFT JOIN dim c ON c.code_cfo = m.code_cfo
-WHERE m.row_template = 'Заработная плата' AND m.kontur IN ('P&L', 'Производство (BS)')
-  AND m.month_date >= DATE '{YEAR_PREV}-01-01' AND m.month_date < DATE '{YEAR_PLAN + 1}-01-01'
 GROUP BY 1
 """
 
@@ -1859,10 +1859,11 @@ def _p18_assemble(by_dir: list[dict], by_g1: list[dict], by_cfo: list[dict]) -> 
 
 
 async def _dashboard_p18(p: dict, meta: dict) -> dict:
+    col = FOT_CURRENCIES[p["currency"]]
     async with acquire() as pg:
-        by_dir = await pg.fetch(_p18_sql("l.dir"), timeout=FOT_QUERY_TIMEOUT)
-        by_g1 = await pg.fetch(_p18_sql("l.g1"), timeout=FOT_QUERY_TIMEOUT)
-        by_cfo = await pg.fetch(_p18_sql("l.cfo"), timeout=FOT_QUERY_TIMEOUT)
+        by_dir = await pg.fetch(_p18_sql("l.dir", col), timeout=FOT_QUERY_TIMEOUT)
+        by_g1 = await pg.fetch(_p18_sql("l.g1", col), timeout=FOT_QUERY_TIMEOUT)
+        by_cfo = await pg.fetch(_p18_sql("l.cfo", col), timeout=FOT_QUERY_TIMEOUT)
 
     def _to_dicts(rows):
         return [dict(r) for r in rows] if rows else []
@@ -1927,6 +1928,52 @@ def _p17_assemble(grain: list[dict]) -> tuple:
     elif not s["pa"]:
         warning = "План численности (PlanChisl) пуст: укомплектованность и Δ к утвержд. не считаются."
     return cards, tables, warning
+
+
+def _p17_country_cards(country_grain: list[dict]) -> list[dict]:
+    """5 карточек численности для выбранной страны (слайд 4.2)."""
+    s = {k: _nsum([r.get(k) for r in country_grain]) for k in ("q25", "q26", "pa", "pt")}
+    staff = _pct(_div(s["q26"], s["pa"]))
+    dev_25 = _pct(_div(_diff(s["q26"], s["q25"]), s["q25"])) if s["q25"] else None
+    dev_appr = _pct(_div(_diff(s["q26"], s["pa"]), s["pa"])) if s["pa"] else None
+    return [
+        {"key": "plan_approved", "label": "План утв. 2026 (стратегия)", "value": _r2(s["pa"]), "unit": "ставок"},
+        {"key": "fact_2025", "label": "Факт 30.06.2025", "value": _r2(s["q25"]), "unit": "ставок"},
+        {"key": "fact_2026", "label": "Факт 30.06.2026", "value": _r2(s["q26"]), "unit": "ставок"},
+        {"key": "dev_2025", "label": "Отклонение к 2025", "value": _r1(dev_25), "unit": "%"},
+        {"key": "dev_approved", "label": "Отклонение к утвержд.", "value": _r1(dev_appr), "unit": "%"},
+    ]
+
+
+def _p17_country_detail_table(country_grain: list[dict], country_label: str) -> dict:
+    """Таблица подразделений выбранной страны (слайд 4.2)."""
+    by_group: dict = {}
+    for r in country_grain:
+        by_group.setdefault(r.get("g1") or "", []).append(r)
+    entries = sorted(
+        ((_nsum([p.get("q26") for p in parts]) or 0.0, key, parts)
+         for key, parts in by_group.items()),
+        key=lambda t: t[0], reverse=True,
+    )
+    rows: list = []
+    total_parts: list = []
+    for _, gkey, parts in entries[:MATRIX_ROW_LIMIT]:
+        total_parts.extend(parts)
+        rows.append(_p12_row(str(gkey) or "(не указано)", gkey, parts))
+    if total_parts:
+        total = _p12_row("Итого", "", total_parts)
+        total["total"] = True
+        rows.append(total)
+    cols = _p12_columns()
+    cols[0]["label"] = "Подразделение"
+    return {
+        "key": "hc_country_detail",
+        "label": f"Численность — {country_label} (по подразделениям)",
+        "columns": cols, "rows": rows,
+        "meta": {"dim": "group_cfo1", "level_label": "Подразделение", "path": [],
+                 "can_drill": False, "truncated": len(entries) > MATRIX_ROW_LIMIT,
+                 "row_limit": MATRIX_ROW_LIMIT},
+    }
 
 
 def _p12_merge(payload: dict) -> list[dict]:
@@ -2234,12 +2281,26 @@ async def _dashboard_p12(p: dict, meta: dict) -> dict:
 
 
 async def _dashboard_p17(p: dict, meta: dict) -> dict:
-    """Вкладка P17 «Численность ГК»: свод по всей группе компаний."""
+    """Вкладка P17 «Численность ГК»: свод по всей группе компаний + детали по странам."""
     sql, sql_params = _p12_sql(p)
     async with acquire() as pg:
         payload = json.loads(await pg.fetchval(sql, *sql_params))
     grain = _p12_merge(payload)
     cards, tables, warning = _p17_assemble(grain)
+
+    # Детали по каждой стране (слайд 4.2): карточки + таблица подразделений.
+    by_country: dict = {}
+    for r in grain:
+        by_country.setdefault(r.get("ctry") or "", []).append(r)
+    country_details: dict = {}
+    for cc, label in COUNTRY_OPTIONS:
+        parts = by_country.get(cc)
+        if not parts:
+            continue
+        detail_cards = _p17_country_cards(parts)
+        detail_table = _p17_country_detail_table(parts, label)
+        country_details[cc] = {"cards": detail_cards, "table": detail_table}
+
     closed = _closed_from_meta(meta)
     meta_out = {
         "tab": "p17", "params": p, "currency": p["currency"],
@@ -2250,7 +2311,8 @@ async def _dashboard_p17(p: dict, meta: dict) -> dict:
     }
     if warning:
         meta_out["warning"] = warning
-    return {"cards": cards, "charts": [], "tables": tables, "meta": meta_out}
+    return {"cards": cards, "charts": [], "tables": tables,
+            "country_details": country_details, "meta": meta_out}
 
 
 async def _dashboard_p13(p: dict, meta: dict) -> dict:

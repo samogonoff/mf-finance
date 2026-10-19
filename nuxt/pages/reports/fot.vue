@@ -626,6 +626,59 @@
                   </table>
                 </div>
               </section>
+
+              <!-- Слайд 4.2: численность по выбранной стране -->
+              <div class="p17-divider" aria-hidden="true"></div>
+              <section class="slide" aria-label="Численность по стране">
+                <header class="slide-hdr">
+                  <h2 class="slide-title">{{ p17CountryLabel }} — численность по подразделениям</h2>
+                  <span class="slide-subtitle">На конец 1 ПГ {{ yearPlan }}</span>
+                  <span class="slide-year p15-badge" aria-hidden="true">
+                    <span>{{ p17CountryLabel }}</span><span>ПОДРАЗДЕЛЕНИЯ</span>
+                  </span>
+                </header>
+
+                <!-- Селектор страны -->
+                <div class="p17-country-sel">
+                  <button v-for="c in p17CountryOptions" :key="c.key" class="p17-cc-btn"
+                          :class="{ active: p17Country === c.key }"
+                          @click="p17Country = c.key">{{ c.label }}</button>
+                </div>
+
+                <!-- KPI-лента страны -->
+                <section class="fot-kpis">
+                  <article v-for="c in p17CountryCards" :key="c.key" class="fot-kpi">
+                    <span class="fot-kpi-label">{{ c.label }}</span>
+                    <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
+                  </article>
+                </section>
+
+                <!-- Таблица подразделений -->
+                <section v-if="p17CountryTable" class="card">
+                  <div class="card-head">
+                    <h3 class="card-title">{{ p17CountryTable.label }}</h3>
+                  </div>
+                  <div class="table-wrap">
+                    <table class="stable">
+                      <thead>
+                        <tr>
+                          <th v-for="col in p17CountryTable.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
+                            {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(row, i) in (p17CountryTable.rows || [])" :key="i" :class="{ total: row.total }">
+                          <td v-for="col in p17CountryTable.columns" :key="col.key"
+                              :class="[col.key === 'label' ? 'col-name' : 'num', cellDeltaClass(row, col)]">
+                            {{ cellText(p17CountryTable, row, col) }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </section>
             </section>
           </template>
 
@@ -1071,6 +1124,25 @@ const slideTable15 = computed<any>(() =>
 /** Таблица численности ГК рендерится в слайде; в общем списке таблиц её нет. */
 const slideTable17 = computed<any>(() =>
   isP17.value ? tables.value.find((t: any) => t.key === 'hc_countries') || null : null)
+/** Слайд 4.2: выбранная страна для детализации численности. */
+const p17Country = ref<string>('BY')
+const p17CountryOptions = [
+  { key: 'BY', label: 'Беларусь' },
+  { key: 'RU', label: 'Россия' },
+  { key: 'KZ', label: 'Казахстан' },
+  { key: 'UZ', label: 'Узбекистан' },
+]
+const p17CountryDetails = computed<any>(() => {
+  if (!isP17.value) return null
+  const details = dash.value?.country_details || {}
+  return details[p17Country.value] || null
+})
+const p17CountryCards = computed<any[]>(() => p17CountryDetails.value?.cards || [])
+const p17CountryTable = computed<any>(() => p17CountryDetails.value?.table || null)
+const p17CountryLabel = computed(() => {
+  const opt = p17CountryOptions.find(o => o.key === p17Country.value)
+  return opt?.label || p17Country.value
+})
 /** Баннеры-выводы: P15 — «Тенденции и прогноз», P16 — пара листа 8. */
 const deptTrends = computed<string[]>(() => dash.value?.dept_trends || [])
 const deptBanners = computed<any>(() => dash.value?.dept_banners || null)
@@ -2028,6 +2100,17 @@ const fmtDateTime = (iso: any) => {
 @media (max-width: 720px) {
   .fot-kpi-value { font-size: 18px; }
 }
+
+/* P17 — разделитель слайдов и селектор страны */
+.p17-divider { height: 1px; background: var(--border, #e2e8f0); margin: 16px 0; }
+.p17-country-sel { display: flex; gap: 6px; margin-bottom: 8px; }
+.p17-cc-btn {
+  font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 6px;
+  border: 1px solid var(--border, #e2e8f0); background: transparent;
+  color: var(--text-muted, #64748b); cursor: pointer; transition: all 0.15s;
+}
+.p17-cc-btn.active { background: var(--accent, #4338ca); color: #fff; border-color: var(--accent, #4338ca); }
+.p17-cc-btn:hover:not(.active) { border-color: var(--accent, #4338ca); color: var(--text, #1e293b); }
 
 /* P18 — подтабы разрезов */
 .p18-tabs { display: flex; gap: 6px; margin: 8px 0 4px; }
