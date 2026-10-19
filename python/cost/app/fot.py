@@ -1747,6 +1747,7 @@ def _p18_sql(dim_col: str, col: str = "amount_byn") -> str:
 
     dim_col = l.dir | l.g1 | l.cfo  (направление / группа ЦФО / подразделение).
     col — колонка суммы (зависит от валюты панели, дефолт amount_byn).
+    dim_col = dir | g1 | cfo  (колонка внутри CTE dim, без префикса l.).
     Возвращает строки: dim, f25_h1, f26_h1, t26_h2, b26_h2.
     """
     fam = _SQL_FOT_FAMILY
@@ -1756,23 +1757,23 @@ WITH dim AS (
     FROM fot_cfo WHERE TRUE
 )
 SELECT
-    coalesce({dim_col}, '') AS dim,
+    coalesce(dim.{dim_col}, '') AS dim,
     sum(m.{col}) FILTER (WHERE m.scenario_src = 'факт' AND date_part('year', m.month_date) = {YEAR_PREV} AND date_part('month', m.month_date) BETWEEN 1 AND 6 AND {fam}) AS f25_h1,
     sum(m.{col}) FILTER (WHERE m.scenario_src = 'факт' AND date_part('year', m.month_date) = {YEAR_PLAN} AND date_part('month', m.month_date) BETWEEN 1 AND 6 AND {fam}) AS f26_h1,
     sum(m.{col}) FILTER (WHERE m.scenario_src = 'тактика' AND date_part('year', m.month_date) = {YEAR_PLAN} AND date_part('month', m.month_date) BETWEEN 7 AND 12 AND {fam}) AS t26_h2,
     sum(m.{col}) FILTER (WHERE m.scenario_src = 'бюджет' AND date_part('year', m.month_date) = {YEAR_PLAN} AND date_part('month', m.month_date) BETWEEN 7 AND 12 AND {fam}) AS b26_h2
 FROM fot_monthly m
-LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+LEFT JOIN dim ON dim.code_cfo = m.code_cfo
 GROUP BY 1
 """
 
 
 def _p18_row(label: str, r: dict) -> dict:
     """Строка таблицы P18: ФОТ по периодам, Δ и светофор."""
-    f25_h1 = _t(r.get("f25_h1"))
-    f26_h1 = _t(r.get("f26_h1"))
-    t26_h2 = _t(r.get("t26_h2"))
-    b26_h2 = _t(r.get("b26_h2"))
+    f25_h1 = _t(r.get("f25_h1")) or 0.0
+    f26_h1 = _t(r.get("f26_h1")) or 0.0
+    t26_h2 = _t(r.get("t26_h2")) or 0.0
+    b26_h2 = _t(r.get("b26_h2")) or 0.0
     exp26 = f26_h1 + t26_h2
     dev_26_25 = _div(_diff(exp26, f25_h1), f25_h1)
     dev_t = _div(_diff(exp26, b26_h2), b26_h2)
@@ -1781,14 +1782,12 @@ def _p18_row(label: str, r: dict) -> dict:
         "f25_h1": _r2(f25_h1),
         "exp26": _r2(exp26),
         "dev_26_25": _r1(_pct(dev_26_25)),
-        "dev_26_25_color": _pct_color(dev_26_25),
         "f26_h1": _r2(f26_h1),
         "t26_h2": _r2(t26_h2),
         "t26_h2_pct": _r1(_pct(_div(f26_h1, t26_h2))),
         "b26_h2": _r2(b26_h2),
         "b26_h2_pct": _r1(_pct(_div(f26_h1, b26_h2))),
         "dev_t": _r1(_pct(dev_t)),
-        "dev_t_color": _pct_color(dev_t),
     }
 
 
@@ -1861,12 +1860,20 @@ def _p18_assemble(by_dir: list[dict], by_g1: list[dict], by_cfo: list[dict]) -> 
 async def _dashboard_p18(p: dict, meta: dict) -> dict:
     col = FOT_CURRENCIES[p["currency"]]
     async with acquire() as pg:
-        by_dir = await pg.fetch(_p18_sql("l.dir", col), timeout=FOT_QUERY_TIMEOUT)
-        by_g1 = await pg.fetch(_p18_sql("l.g1", col), timeout=FOT_QUERY_TIMEOUT)
-        by_cfo = await pg.fetch(_p18_sql("l.cfo", col), timeout=FOT_QUERY_TIMEOUT)
+        by_dir = await pg.fetch(_p18_sql("direction", col), timeout=FOT_QUERY_TIMEOUT)
+        by_g1 = await pg.fetch(_p18_sql("group_cfo1", col), timeout=FOT_QUERY_TIMEOUT)
+        by_cfo = await pg.fetch(_p18_sql("code_cfo", col), timeout=FOT_QUERY_TIMEOUT)
 
     def _to_dicts(rows):
-        return [dict(r) for r in rows] if rows else []
+        """asyncpg возвращает Decimal — конвертируем в float для _t/_r2/_pct."""
+        result = []
+        for r in rows:
+            d = dict(r)
+            for k, v in d.items():
+                if v is not None and not isinstance(v, (int, float, str, bool, list, dict)):
+                    d[k] = float(v)
+            result.append(d)
+        return result
 
     cards, tables, warning = _p18_assemble(
         _to_dicts(by_dir), _to_dicts(by_g1), _to_dicts(by_cfo))
