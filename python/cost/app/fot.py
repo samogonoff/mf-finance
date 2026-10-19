@@ -1629,16 +1629,15 @@ def _staff_color(pct) -> str | None:
 
 def _p12_columns() -> list[dict]:
     """Колонки таблиц P12: ставки и три процента (укомплектованность со
-    светофором и два Δ)."""
+    светофором и два Δ). Порядок — как на слайде 24 деки."""
     return [
-        {"key": "label", "label": "Разрез"},
-        {"key": "plan_approved", "label": "План утв. 2026", "unit": "ставок"},
-        {"key": "plan_tactic", "label": "План тактика", "unit": "ставок"},
-        {"key": "q25", "label": "Факт 1ПГ25", "unit": "ставок"},
-        {"key": "q26", "label": "Факт 1ПГ26", "unit": "ставок"},
-        {"key": "staff_pct", "label": "Укомплектованность", "unit": "%"},
-        {"key": "dev_2625", "label": "Δ 1ПГ26 к 1ПГ25", "unit": "%"},
-        {"key": "dev_appr", "label": "Δ факт к утвержд.", "unit": "%"},
+        {"key": "label", "label": "Направление"},
+        {"key": "plan_approved", "label": "Утв. страт.", "unit": "чел."},
+        {"key": "q25", "label": "Факт 1П25", "unit": "чел."},
+        {"key": "q26", "label": "Факт 1П26", "unit": "чел."},
+        {"key": "staff_pct", "label": "% ук.", "unit": "%"},
+        {"key": "dev_2625", "label": "Δ к 1П25", "unit": "%"},
+        {"key": "dev_appr", "label": "Δ к утв.", "unit": "%"},
     ]
 
 
@@ -1970,7 +1969,7 @@ def _p17_country_cards(country_grain: list[dict]) -> list[dict]:
 
 
 def _p17_country_detail_table(country_grain: list[dict], country_label: str) -> dict:
-    """Таблица подразделений выбранной страны (слайд 4.2)."""
+    """Таблица направлений выбранной страны (слайд 4.2)."""
     by_group: dict = {}
     for r in country_grain:
         by_group.setdefault(r.get("g1") or "", []).append(r)
@@ -1989,12 +1988,11 @@ def _p17_country_detail_table(country_grain: list[dict], country_label: str) -> 
         total["total"] = True
         rows.append(total)
     cols = _p12_columns()
-    cols[0]["label"] = "Подразделение"
     return {
         "key": "hc_country_detail",
-        "label": f"Численность — {country_label} (по подразделениям)",
+        "label": f"Численность — {country_label} (по направлениям)",
         "columns": cols, "rows": rows,
-        "meta": {"dim": "group_cfo1", "level_label": "Подразделение", "path": [],
+        "meta": {"dim": "group_cfo1", "level_label": "Направление", "path": [],
                  "can_drill": False, "truncated": len(entries) > MATRIX_ROW_LIMIT,
                  "row_limit": MATRIX_ROW_LIMIT},
     }

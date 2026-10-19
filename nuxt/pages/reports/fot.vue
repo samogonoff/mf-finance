@@ -652,32 +652,31 @@
                 </span>
               </header>
 
-              <!-- Карточки подразделений (паттерн P16) -->
+              <!-- Карточки направлений (паттерн P16) -->
               <section v-if="p17DeptRows.length" class="dpc-grid dp16-grid">
                 <article v-for="d in p17DeptRows" :key="d.label" class="dpcard dp16">
                   <div class="dpc-title" :title="d.label">{{ d.label }}</div>
                   <div class="dpc-block">
-                    <span class="dpc-label">ПЛАН УТВ. {{ yearPlan }}</span>
-                    <span class="dpc-value">{{ fmt1(d.plan_approved) }}<span class="dpc-unit">ставок</span></span>
-                    <span class="dpc-delta">тактика {{ fmt1(d.plan_tactic) }}</span>
+                    <span class="dpc-label">УТВ. СТРАТ. {{ yearPlan }}</span>
+                    <span class="dpc-value">{{ fmt1(d.plan_approved) }}<span class="dpc-unit"> чел.</span></span>
                   </div>
                   <div class="dpc-block">
-                    <span class="dpc-label">ФАКТ 1ПГ {{ yearPlan }}</span>
+                    <span class="dpc-label">ФАКТ 1П {{ yearPlan }}</span>
                     <span class="dpc-ppwrap" v-if="isNum(d.plan_approved)">
                       <span class="dpc-pp" :class="cmpCf(d.q26, d.plan_approved)">
                         <span class="pp-val">{{ fmtSigned(d.dev_appr) }}</span><span class="pp-unit">%</span>
                       </span>
                       <span class="dpc-ppcap">к утв.</span>
                     </span>
-                    <span class="dpc-value">{{ fmt1(d.q26) }}<span class="dpc-unit">ставок</span></span>
+                    <span class="dpc-value">{{ fmt1(d.q26) }}<span class="dpc-unit"> чел.</span></span>
                   </div>
                   <div class="dpc-block">
-                    <span class="dpc-label">ФАКТ 1ПГ {{ yearPrev }}</span>
-                    <span class="dpc-value">{{ fmt1(d.q25) }}<span class="dpc-unit">ставок</span></span>
-                    <span class="dpc-delta" :class="signCf(d.dev_2625)">{{ fmtSigned(d.dev_2625) }}% к 1ПГ{{ yr2(yearPrev) }}</span>
+                    <span class="dpc-label">ФАКТ 1П {{ yearPrev }}</span>
+                    <span class="dpc-value">{{ fmt1(d.q25) }}<span class="dpc-unit"> чел.</span></span>
+                    <span class="dpc-delta" :class="signCf(d.dev_2625)">{{ fmtSigned(d.dev_2625) }}% к 1П{{ yr2(yearPrev) }}</span>
                   </div>
                   <hr class="cc-sep" />
-                  <p class="cc-hc">Укомплектованность: <b>{{ fmt0(d.staff_pct) }}%</b></p>
+                  <p class="cc-hc">Укомплектованность: <b :class="cellDeltaClass(d, {key:'staff_pct'})">{{ fmt0(d.staff_pct) }}%</b></p>
                 </article>
               </section>
 
