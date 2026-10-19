@@ -272,7 +272,12 @@ type MpRecalcResult struct {
 // Recalc — пересчитать расходную часть карточки из условий и продаж.
 // Порядок расчёта — как в ТЗ §7.2: справочники (НДС, курсы) → условия площадок →
 // продажи → прямые затраты → маржа и PL по площадкам → общие затраты → PL формы.
-func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview bool, actor Principal) (MpRecalcResult, error) {
+//
+// Условия берутся из БД (сохранённый реестр). drafts — несохранённые правки с
+// экрана; учитываются ТОЛЬКО в предпросмотре и ничего не записывают, чтобы
+// предпросмотр показывал эффект правок до сохранения (ТЗ §7.2). Пересчёт с
+// записью работает по сохранённым условиям: экран перед ним сохраняет строки.
+func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview bool, actor Principal, drafts ...MpConditions) (MpRecalcResult, error) {
 	card, err := s.cards.Card(ctx, cardID)
 	if err != nil {
 		return MpRecalcResult{}, err
@@ -329,6 +334,12 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 	condByCfo := map[int]MpConditions{}
 	for _, c := range conds {
 		condByCfo[c.CodeCFO] = c
+	}
+	if preview && len(drafts) > 0 {
+		condByCfo, err = applyConditionDrafts(condByCfo, drafts, platformsInfo)
+		if err != nil {
+			return MpRecalcResult{}, err
+		}
 	}
 	condByCfo = s.shareDefaults.Attach(ctx, condByCfo, platformsInfo, card.Year, card.Month)
 	// Базис НДС — тот же, что в форме: отношение плановых сумм площадки, ставка
@@ -393,7 +404,7 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 		Platforms: values, Totals: computeMpFormTotalsMode(values, commonSum, mpPLWithCommon(card)),
 		CommonCost: commonSum, Preview: preview,
 	}
-	res.Issues = s.validate(ctx, card, platformsInfo, condByCfo, values, basisByCfo, normByCfo)
+	res.Issues = s.validate(ctx, card, platformsInfo, conditionsWithFormSpp(condByCfo, spp), values, basisByCfo, normByCfo)
 	res.Blocking = HasBlocking(res.Issues)
 
 	if !preview {

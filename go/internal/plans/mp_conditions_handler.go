@@ -2,6 +2,8 @@ package plans
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 )
 
@@ -120,7 +122,20 @@ func (h *MpConditionsHandler) Recalc(w http.ResponseWriter, r *http.Request) {
 	}
 	preview := r.URL.Query().Get("preview") == "1"
 	p := h.principal(r)
-	res, err := h.svc.Recalc(r.Context(), id, preview, p)
+	// Предпросмотр принимает несохранённые правки экрана: {"conditions":[…]}.
+	// Для пересчёта с записью тело игнорируется — он идёт по сохранённым условиям.
+	var drafts []MpConditions
+	if preview && r.Body != nil {
+		var body struct {
+			Conditions []MpConditions `json:"conditions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeErr(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		drafts = body.Conditions
+	}
+	res, err := h.svc.Recalc(r.Context(), id, preview, p, drafts...)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

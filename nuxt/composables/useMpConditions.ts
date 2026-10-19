@@ -19,6 +19,7 @@ export interface MpConditionsRow extends MpConditions {
   change_reason: string;
   status: string;
   updated_at?: string;
+  author_name?: string;
 }
 
 export interface MpConditionsDiff {
@@ -30,6 +31,9 @@ export interface MpConditionsDiff {
   now: number;
   delta: number;
   needs_why: boolean;
+  /** Кто и когда сохранил текущие условия площадки. */
+  changed_by?: string;
+  changed_at?: string;
 }
 
 export interface MpConditionsView {
@@ -278,10 +282,13 @@ export function useMpConditions() {
     });
 
   // ── Пересчёт и валидации ──
-  const recalc = (cardId: number, preview = false): Promise<MpRecalcResult> =>
+  // drafts — несохранённые правки экрана: учитываются только в предпросмотре и
+  // ничего не пишут. Пересчёт с записью идёт по сохранённым условиям.
+  const recalc = (cardId: number, preview = false, drafts: Partial<MpConditionsRow>[] = []): Promise<MpRecalcResult> =>
     $fetch<MpRecalcResult>(`${base}/api/plans/mp/cards/${cardId}/recalc`, {
       method: "POST",
       params: preview ? { preview: 1 } : {},
+      body: preview && drafts.length ? { conditions: drafts } : undefined,
       headers: authHeader()
     });
 

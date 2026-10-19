@@ -34,7 +34,13 @@ export const B = {
   plPlatformTotalCost: "pl_platform_total_cost",
   plPlatformTotalCostPct: "pl_platform_total_cost_pct",
   directShareTurnover: "direct_share_turnover",
+  normShare: "norm_share",
+  normControl: "norm_control",
 } as const;
+
+// Доли вне норматива удержаний площадки (зеркало mpform_inverse.go, контроль
+// норматива: норматив + эти доли − доля прямых затрат = 0).
+const NORM_OUTSIDE_BLOCKS = ["cost_freight", "cost_ads", "cost_ads_social", "cost_packaging", "cost_acquiring", "cost_it"];
 
 // Статьи прямых затрат (кроме комиссии) — входят в «Итого прямые затраты».
 export const COST_BLOCKS = [
@@ -171,7 +177,10 @@ export function computePlatform(input: Record<string, number | null | undefined>
 export function computePlatformInverse(
   input: Record<string, number | null | undefined>,
   cond: MpConditions,
-  vatBasis: MpVatBasis
+  vatBasis: MpVatBasis,
+  // Норматив удержаний площадки из справочника (form.norm_by_cfo), в базе цены
+  // менеджера без НДС; 0 — не задан, строки норматива не считаются (как в Go).
+  norm = 0
 ): Record<string, number> {
   const out: Record<string, number> = {};
   // Ставка, заданная руками в условиях площадки, старше отношения из плана —
@@ -206,6 +215,11 @@ export function computePlatformInverse(
   const commission = managerNet * spp;
   out[B.commission] = commission;
 
+  // Норматив приведён к базе долей: в справочнике он задан к цене менеджера без
+  // НДС, а доли считаются от цены площадки (зеркало computeMpPlatformInverse).
+  const normBase = norm > 0 && spp < 1 ? norm / (1 - spp) : 0;
+  if (normBase > 0) out[B.normShare] = normBase;
+
   let direct = commission;
   for (const b of COST_BLOCKS) {
     if (!Object.prototype.hasOwnProperty.call(shares, b)) continue;
@@ -229,6 +243,11 @@ export function computePlatformInverse(
   out[B.plPlatformTotalCost] = platNet - out[B.cogsTotal] - (direct - commission);
   out[B.plPlatformTotalCostPct] = div(out[B.plPlatformTotalCost], platNet);
   out[B.directShareTurnover] = div(direct - commission, platNet);
+  // Контроль норматива: норматив + доли статей вне норматива − доля прямых затрат.
+  if (normBase > 0) {
+    const outside = NORM_OUTSIDE_BLOCKS.reduce((s, b) => s + n(shares[b]), 0);
+    out[B.normControl] = normBase + outside - out[B.directShare];
+  }
   return out;
 }
 

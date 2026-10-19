@@ -67,8 +67,13 @@ type MpTaskForm struct {
 	// VatByCfo — базис перевода «с НДС → без НДС» каждой площадки. Клиент считает
 	// каскад по нему же: пока он делил на свою константу 0,20, форма показывала
 	// одно, а сервер считал другое.
-	VatByCfo    map[int]MpVatBasis `json:"vat_by_cfo,omitempty"`
-	VatMixed    bool               `json:"vat_mixed"`
+	VatByCfo map[int]MpVatBasis `json:"vat_by_cfo,omitempty"`
+	// NormByCfo — норматив удержаний площадки на месяц формы (dir_mp_norm, сид —
+	// фолбэк), в базе цены менеджера без НДС. Клиентский каскад приводит его к
+	// базе долей и считает контроль норматива так же, как сервер: без этого поля
+	// строки «Норматив удержаний» и «Контроль норматива» на экране были нулями.
+	NormByCfo   map[int]float64 `json:"norm_by_cfo,omitempty"`
+	VatMixed    bool            `json:"vat_mixed"`
 	VatFromPlan bool               `json:"vat_from_plan"`
 	// VatMissing — площадки, по которым плана нет ни за месяц формы, ни за
 	// предыдущий: суммы посчитаны по аварийной ставке справочника, отправка на
@@ -425,7 +430,14 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 		// Слои берутся по сегменту КАЖДОЙ площадки: в объединённой форме
 		// large и small приходят из разных срезов источника.
 		pl := layerSet.forCfo(p.CodeCFO)
-		values := s.platformValues(mode, f.VatByCfo[p.CodeCFO], s.normShareOf(ctx, p.CodeCFO, year, month),
+		norm := s.normShareOf(ctx, p.CodeCFO, year, month)
+		if norm > 0 {
+			if f.NormByCfo == nil {
+				f.NormByCfo = map[int]float64{}
+			}
+			f.NormByCfo[p.CodeCFO] = norm
+		}
+		values := s.platformValues(mode, f.VatByCfo[p.CodeCFO], norm,
 			condByCfo[p.CodeCFO], tacByKey, pl, p.CodeCFO)
 		if snapshotValues[p.CodeCFO] != nil {
 			values = snapshotValues[p.CodeCFO]
@@ -437,9 +449,8 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 			}
 			k := layerKey(p.CodeCFO, l.BlockType)
 			cell := MpFormCell{CodeCFO: p.CodeCFO, BlockType: l.BlockType}
-			if mode == CalcInverse && l.CostLine {
-				_, hasShare := condByCfo[p.CodeCFO].EffectiveShares()[l.BlockType]
-				cell.MissingShare = !hasShare
+			if mode == CalcInverse {
+				cell.MissingShare = mpMissingShare(l, condByCfo[p.CodeCFO])
 			}
 			if l.Scope == ScopeTotal {
 				cell.Value = totalInputs[l.BlockType]

@@ -53,6 +53,7 @@ type MpConditions struct {
 	ChangeReason  string             `json:"change_reason"`
 	Status        string             `json:"status"`
 	AuthorID      int64              `json:"author_id"`
+	AuthorName    string             `json:"author_name,omitempty"` // кто сохранил текущую версию
 	UpdatedAt     time.Time          `json:"updated_at"`
 }
 
@@ -66,6 +67,9 @@ type MpConditionsDiff struct {
 	Now       float64 `json:"now"`
 	Delta     float64 `json:"delta"`
 	NeedsWhy  bool    `json:"needs_why"` // отклонение сверх порога → обязательно обоснование
+	// Кто и когда сохранил текущие условия площадки (версию, от которой считается diff).
+	ChangedBy string     `json:"changed_by,omitempty"`
+	ChangedAt *time.Time `json:"changed_at,omitempty"`
 }
 
 // MpConditionsStore — хранилище условий и общих затрат.
@@ -136,8 +140,10 @@ func (s *pgMpConditions) Conditions(ctx context.Context, plID int64, year, month
 		SELECT DISTINCT ON (c.code_cfo) c.id, c.pl_id, c.code_cfo, c.period_year, c.period_month, c.spp_pct,
 		       c.markup_pct, c.markup_total_pct, c.vat_rate, c.currency, c.version,
 		       c.change_reason, c.status, COALESCE(c.author_id,0), c.updated_at,
-		       COALESCE(to_char(c.valid_from,'YYYY-MM-DD'),''), COALESCE(to_char(c.valid_to,'YYYY-MM-DD'),'')
+		       COALESCE(to_char(c.valid_from,'YYYY-MM-DD'),''), COALESCE(to_char(c.valid_to,'YYYY-MM-DD'),''),
+		       TRIM(COALESCE(u.name,'') || ' ' || COALESCE(u.last_name,''))
 		  FROM mp_conditions c
+		  LEFT JOIN users u ON u.id = c.author_id
 		 WHERE ((c.valid_from IS NOT NULL AND c.valid_from <= make_date($2,$3,1)
 		        AND (c.valid_to IS NULL OR c.valid_to >= make_date($2,$3,1)))
 		    OR (c.valid_from IS NULL AND c.pl_id = $1 AND c.period_year = $2 AND c.period_month = $3))
@@ -153,7 +159,7 @@ func (s *pgMpConditions) Conditions(ctx context.Context, plID int64, year, month
 		var c MpConditions
 		if err := rows.Scan(&c.ID, &c.PlID, &c.CodeCFO, &c.Year, &c.Month, &c.SppPct,
 			&c.MarkupPct, &c.MarkupTotalPct, &c.VatRate, &c.Currency, &c.Version,
-			&c.ChangeReason, &c.Status, &c.AuthorID, &c.UpdatedAt, &c.ValidFrom, &c.ValidTo); err != nil {
+			&c.ChangeReason, &c.Status, &c.AuthorID, &c.UpdatedAt, &c.ValidFrom, &c.ValidTo, &c.AuthorName); err != nil {
 			return nil, err
 		}
 		c.Shares = map[string]float64{}
@@ -490,11 +496,17 @@ func diffConditions(prev, next []MpConditions, th MpDiffThresholds) []MpConditio
 			if math.Abs(now-was) < 1e-9 {
 				return
 			}
-			out = append(out, MpConditionsDiff{
+			d := MpConditionsDiff{
 				CodeCFO: c.CodeCFO, NameCFO: c.NameCFO, Field: field, FieldName: fieldName,
 				Was: was, Now: now, Delta: now - was,
-				NeedsWhy: math.Abs(now-was) > limit,
-			})
+				NeedsWhy:  math.Abs(now-was) > limit,
+				ChangedBy: c.AuthorName,
+			}
+			if !c.UpdatedAt.IsZero() {
+				at := c.UpdatedAt
+				d.ChangedAt = &at
+			}
+			out = append(out, d)
 		}
 		add("spp_pct", "% СПП", p.SppPct, c.SppPct, th.SppPct)
 		add("markup_pct", "Наценка, %", p.MarkupPct, c.MarkupPct, th.MarkupPct)
