@@ -22,6 +22,16 @@ type PnlRow struct {
 	PrevTactic  *float64 `json:"prev_tactic"` // тактика прошлого периода (сравнение)
 }
 
+// pnlNotDuplicateTotal — условие для запросов к pl_metric с алиасом m: итоговые строки
+// (profit_center=0: скидки, уценки) у крупных и мелких МП свои, и в сводке они
+// суммируются; строка без сегмента (сохранена до разделения или у смешанного
+// задания) учитывается, только если своих строк по этой статье нет — иначе была бы
+// посчитана дважды.
+const pnlNotDuplicateTotal = `NOT (m.profit_center = 0 AND m.segment = '' AND EXISTS (
+	SELECT 1 FROM pl_metric s
+	 WHERE s.pl_id = m.pl_id AND s.template_code = m.template_code
+	   AND s.profit_center = 0 AND s.line_code = m.line_code AND s.block_type = m.block_type
+	   AND s.segment <> '' AND s.amount IS NOT NULL))`
 // PnlSummary — сводное окно карточки.
 type PnlSummary struct {
 	Year      int     `json:"year"`
@@ -50,8 +60,11 @@ func (s *TaskStore) Pnl(ctx context.Context, plID int64) (PnlSummary, error) {
 	prevTac := map[[2]any]float64{}
 	if prevID != 0 {
 		pr, err := s.pool.Query(ctx, `
-			SELECT profit_center, block_type, MAX(amount) FROM pl_metric
-			WHERE pl_id=$1 AND amount IS NOT NULL GROUP BY profit_center, block_type`, prevID)
+			SELECT m.profit_center, m.block_type,
+			       CASE WHEN m.profit_center = 0 THEN SUM(m.amount) ELSE MAX(m.amount) END
+			  FROM pl_metric m
+			 WHERE m.pl_id=$1 AND m.amount IS NOT NULL AND `+pnlNotDuplicateTotal+`
+			 GROUP BY m.profit_center, m.block_type`, prevID)
 		if err == nil {
 			for pr.Next() {
 				var pc int
@@ -79,11 +92,13 @@ func (s *TaskStore) Pnl(ctx context.Context, plID int64) (PnlSummary, error) {
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT profit_center, line_code, block_type,
-		       MAX(amount_fact), MAX(amount_strategy), MAX(amount), MAX(amount_calc), bool_or(is_manual)
-		FROM pl_metric WHERE pl_id=$1
-		GROUP BY profit_center, line_code, block_type
-		ORDER BY profit_center, line_code, block_type`, plID)
+		SELECT m.profit_center, m.line_code, m.block_type,
+		       MAX(m.amount_fact), MAX(m.amount_strategy),
+		       CASE WHEN m.profit_center = 0 THEN SUM(m.amount) ELSE MAX(m.amount) END,
+		       MAX(m.amount_calc), bool_or(m.is_manual)
+		FROM pl_metric m WHERE m.pl_id=$1 AND `+pnlNotDuplicateTotal+`
+		GROUP BY m.profit_center, m.line_code, m.block_type
+		ORDER BY m.profit_center, m.line_code, m.block_type`, plID)
 	if err != nil {
 		return out, err
 	}

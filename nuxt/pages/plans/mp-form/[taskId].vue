@@ -936,7 +936,7 @@ const save = async () => {
     }
   }
   try {
-    await api.saveMpForm(taskId, rows, currency.value);
+    await api.saveMpForm(taskId, rows, currency.value, viewScope.value);
     note.value = `Сохранено ${rows.length} значений`;
     dirty.value = false;
   } catch (e) { error.value = apiError(e, "Ошибка сохранения"); }

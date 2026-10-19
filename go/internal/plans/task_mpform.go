@@ -196,6 +196,15 @@ func (s *TaskStore) taskBrief(ctx context.Context, taskID int64) (Task, int, int
 // Код ЦФО, которого нет в справочнике (segmentOf[c] == ""), сегмента не даёт: если он
 // попал в задание вместе с известными, итог считается смешанным (""), а у задания
 // только из таких кодов итог остаётся общим — как до разделения по сегментам.
+func mpTotalsSegmentFor(scope string, segmentOf map[int]string, cfos []int) string {
+	// Форма «Крупные МП» / «Мелкие МП» задания на обе группы — свои итоги: иначе обе
+	// карточки писали бы одну строку скидок, а закрытость карточки не проверялась.
+	if scope == "large" || scope == "small" {
+		return scope
+	}
+	return mpTotalsSegment(segmentOf, cfos)
+}
+
 func mpTotalsSegment(segmentOf map[int]string, cfos []int) string {
 	seg := ""
 	for i, c := range cfos {
@@ -320,7 +329,7 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 	segmentOf := s.segmentsByCfo(ctx, t.CfoCodes)
 	// Сегмент, под которым SaveMpForm пишет итоговые строки задания (скидки,
 	// уценки): по нему же они и читаются, независимо от выбранного разреза экрана.
-	taskSegment := mpTotalsSegment(segmentOf, t.CfoCodes)
+	taskSegment := mpTotalsSegmentFor(scope, segmentOf, t.CfoCodes)
 	// Разрез карточки сужает состав площадок: форма «Крупные МП» показывает
 	// только крупные, даже если задание сгенерировано на обе группы.
 	cfoCodes := t.CfoCodes
@@ -702,7 +711,7 @@ func mpSaveScopeAllows(scope ScopeFilter, stage string, cfo int) bool {
 // pl_metric + снимок form_submission. Права: assignee/delegate/admin.
 // currency — валюта, в которой пользователь ВВОДИЛ суммы; хранение всегда в RUB,
 // поэтому денежные строки пересчитываются обратно (проценты — как есть).
-func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdmin bool, rows []MpSaveRow, payload []byte, currency string) error {
+func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdmin bool, rows []MpSaveRow, payload []byte, currency, formScope string) error {
 	t, year, month, segment, err := s.taskBrief(ctx, taskID)
 	if err != nil {
 		return err
@@ -799,7 +808,7 @@ func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdm
 			pc = 0 // тотал-строки (скидка/уценка) — по всему заданию
 			// Свои у крупных и мелких МП: под общим сегментом площадок задания
 			// (раньше сегмент был пустым, и мелкие затирали скидки крупных).
-			rowSegment = mpTotalsSegment(segmentOf, t.CfoCodes)
+			rowSegment = mpTotalsSegmentFor(formScope, segmentOf, t.CfoCodes)
 		} else if !allowed[pc] {
 			return fmt.Errorf("ЦФО %d вне задания", pc)
 		} else {
