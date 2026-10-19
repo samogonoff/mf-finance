@@ -1351,6 +1351,9 @@ def _parse_halfyear_params(params: dict) -> dict:
     # P18: динамические периоды
     p["p18_year"] = _parse_int(params.get("p18_year"), "p18_year", YEAR_PLAN, 2020, 2100)
     p["p18_half"] = _parse_int(params.get("p18_half"), "p18_half", 0, 0, 2)
+    # P17: динамические периоды численности
+    p["p17_year"] = _parse_int(params.get("p17_year"), "p17_year", YEAR_PLAN, 2020, 2100)
+    p["p17_half"] = _parse_int(params.get("p17_half"), "p17_half", 1, 0, 2)
     return p
 
 
@@ -1550,6 +1553,61 @@ async def _dashboard_p11(p: dict, meta: dict) -> dict:
 # (постановка), от срезов дат и «Плана» вкладки не зависят.
 HC_DATE_PREV = date(YEAR_PREV, 6, 1)
 HC_DATE_CURR = date(YEAR_PLAN, 6, 1)
+
+# Месяцы срезов для переключателя периодов P17: 1ПГ → июнь, 2ПГ/год → декабрь.
+_HC_MONTH = {0: 12, 1: 6, 2: 12}
+
+
+def _p17_sql(p: dict, yr_prev: int, yr_plan: int, half: int) -> tuple[str, list]:
+    """Запрос численности с динамическими периодами.
+
+    half: 0=год, 1=1ПГ, 2=2ПГ. Факт берётся за последний месяц периода
+    (июнь для 1ПГ, декабрь для 2ПГ/год), план — всегда из fot_headcount_plan.
+    """
+    sql_params: list = []
+    dim_conds = _dim_conds(p, sql_params)
+    hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
+    h_legal = _legal_cond(p, sql_params, "h.legal_entity")
+    m_prev = _HC_MONTH.get(half, 12)
+    m_plan = _HC_MONTH.get(half, 12)
+    sql = f"""
+WITH dim AS (
+    SELECT code_cfo, group_cfo1, country_code
+    FROM fot_cfo
+    WHERE TRUE{dim_conds}
+),
+h25 AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1, coalesce(c.country_code, '') AS ctry,
+           sum(h.quantity) AS q
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = DATE '{yr_prev}-{m_prev:02d}-01'{h_legal}{hier_gate}
+    GROUP BY 1, 2
+),
+h26 AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1, coalesce(c.country_code, '') AS ctry,
+           sum(h.quantity) AS q
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = DATE '{yr_plan}-{m_plan:02d}-01'{h_legal}{hier_gate}
+    GROUP BY 1, 2
+),
+plan AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1, coalesce(c.country_code, '') AS ctry,
+           sum(p.plan_approved) AS pa, sum(p.plan_tactic) AS pt
+    FROM fot_headcount_plan p
+    LEFT JOIN dim c ON c.code_cfo = p.code_cfo
+    WHERE TRUE{hier_gate}
+    GROUP BY 1, 2
+)
+SELECT jsonb_build_object(
+    'h25', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h25 x), '[]'::jsonb),
+    'h26', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h26 x), '[]'::jsonb),
+    'plan', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM plan x), '[]'::jsonb)
+)::text AS payload
+"""
+    return sql, sql_params
+
 
 METHODOLOGY_P12 = (
     "Численность на фиксированных срезах 30.06.2025 и 30.06.2026 — от срезов дат и «Плана» "
@@ -1988,11 +2046,12 @@ def _p17_country_detail_table(country_grain: list[dict], country_label: str) -> 
         total["total"] = True
         rows.append(total)
     cols = _p12_columns()
+    cols[0]["label"] = "Группа ЦФО"
     return {
         "key": "hc_country_detail",
-        "label": f"Численность — {country_label} (по направлениям)",
+        "label": f"Численность — {country_label} (по группам ЦФО)",
         "columns": cols, "rows": rows,
-        "meta": {"dim": "group_cfo1", "level_label": "Направление", "path": [],
+        "meta": {"dim": "group_cfo1", "level_label": "Группа ЦФО", "path": [],
                  "can_drill": False, "truncated": len(entries) > MATRIX_ROW_LIMIT,
                  "row_limit": MATRIX_ROW_LIMIT},
     }
@@ -2303,8 +2362,12 @@ async def _dashboard_p12(p: dict, meta: dict) -> dict:
 
 
 async def _dashboard_p17(p: dict, meta: dict) -> dict:
-    """Вкладка P17 «Численность ГК»: свод по всей группе компаний + детали по странам."""
-    sql, sql_params = _p12_sql(p)
+    """Вкладка P17 «Численность ГК»: свод по всей группе компаний + детали по странам.
+    Период: год/1ПГ/2ПГ — параметры p17_year и p18_half."""
+    yr_plan = p.get("p17_year", YEAR_PLAN)
+    yr_prev = yr_plan - 1
+    half = p.get("p17_half", 1)
+    sql, sql_params = _p17_sql(p, yr_prev, yr_plan, half)
     async with acquire() as pg:
         payload = json.loads(await pg.fetchval(sql, *sql_params))
     grain = _p12_merge(payload)

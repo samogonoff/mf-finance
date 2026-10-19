@@ -602,6 +602,20 @@
                 </article>
               </section>
 
+              <!-- Селекторы: год + полугодие -->
+              <div class="p18-periods">
+                <label class="p18-period-label">Год
+                  <select v-model="p17Year" class="select select-sm" @change="loadDash">
+                    <option v-for="y in p17YearOptions" :key="y" :value="y">{{ y }}</option>
+                  </select>
+                </label>
+                <div class="p18-half-sel">
+                  <button v-for="h in p17HalfOptions" :key="h.key" class="p18-half-btn"
+                          :class="{ active: p17Half === h.key }"
+                          @click="p17Half = h.key; loadDash()">{{ h.label }}</button>
+                </div>
+              </div>
+
               <!-- Таблица «Численность ГК по странам» -->
               <section v-if="slideTable17" class="card">
                 <div class="card-head">
@@ -1094,6 +1108,10 @@ function buildQuery(): string {
     p.set('p18_year', String(p18Year.value))
     p.set('p18_half', String(p18Half.value))
   }
+  if (isP17.value) {
+    p.set('p17_year', String(p17Year.value))
+    p.set('p17_half', String(p17Half.value))
+  }
   return p.toString()
 }
 
@@ -1184,6 +1202,15 @@ const slideTable15 = computed<any>(() =>
 /** Таблица численности ГК рендерится в слайде; в общем списке таблиц её нет. */
 const slideTable17 = computed<any>(() =>
   isP17.value ? tables.value.find((t: any) => t.key === 'hc_countries') || null : null)
+/** Периоды P17: год и полугодие. */
+const p17Year = ref<number>(2026)
+const p17Half = ref<number>(1)
+const p17YearOptions = [2024, 2025, 2026, 2027]
+const p17HalfOptions = [
+  { key: 0, label: 'Год' },
+  { key: 1, label: '1ПГ' },
+  { key: 2, label: '2ПГ' },
+]
 /** Слайд 4.2: выбор страны для детализации численности. */
 const p17Country = ref<string>('BY')
 const p17CountryOptions = [
