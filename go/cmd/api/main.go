@@ -528,6 +528,32 @@ func main() {
 		CfoTable:   cfg.PlansExpCfoTable,
 		SalesTable: cfg.PlansRetailStrategyTable,
 	})
+	// Затраты формы читаются из ночного снимка в ClickHouse (finance.exp_costs): процедура
+	// на OLAP работает 4–5 минут. Снимок заливает воркер раз в сутки (по умолчанию в окне
+	// 5:00–9:00 по часам MSSQL); при пустой таблице или недоступном CH форма читает процедуру
+	// напрямую, как раньше. Кнопка «Обновить из источника» запускает внеплановую заливку.
+	var expCostsRefresh func(context.Context) error
+	if !cfg.PlansMock && !cfg.DebtMock && cfg.PremasterServer != "" && cfg.PremasterUser != "" && cfg.PremasterPassword != "" {
+		expDB, err := debt.NewOLAPPool(cfg.PremasterServer, cfg.PremasterPort, cfg.FinDWHDB, cfg.PremasterUser, cfg.PremasterPassword)
+		if err != nil {
+			log.Fatalf("expcosts: mssql open: %v", err)
+		}
+		defer expDB.Close()
+		expDB.SetMaxOpenConns(2)
+		expDB.SetConnMaxIdleTime(5 * time.Minute)
+		expWorker := etl.NewExpCostsWorker(etl.Deps{
+			MSSQL: expDB, CHURL: cfg.ClickHouseHTTPURL, CHUser: cfg.ClickHouseUser, CHPass: cfg.ClickHousePass,
+		}, etl.ExpCostsOpts{
+			Proc: cfg.ExpCostsProc, AfterHour: cfg.ExpCostsAfterHour, BeforeHour: cfg.ExpCostsBeforeHour, BatchSize: cfg.FinDWHBatch,
+		})
+		expWorker.Start(context.Background(), time.Duration(cfg.ExpCostsSyncInterval)*time.Second)
+		expCostsRefresh = expWorker.RefreshNow
+	} else {
+		log.Printf("expcosts-worker: disabled (PLANS_MOCK/DEBT_MOCK или MSSQL_PREMASTER_* не заданы)")
+	}
+	if cfg.PlansExpCostsFromCH && !cfg.PlansMock {
+		plansExpSource = plans.NewExpCHSource(plansExpSource, cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass, expCostsRefresh)
+	}
 	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource).
 		WithRegistries(plans.NewExpRegRepo(pool)).
 		WithTravelNorms(plans.NewExpTravelNorms(pool, plansRates)).

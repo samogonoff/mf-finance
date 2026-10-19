@@ -145,6 +145,13 @@ type ExpSyncStatus struct {
 	SourceCells int        `json:"source_cells"` // ячеек в выдаче источника после отбора
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+	// SourceKind — откуда прочитаны данные: clickhouse (ночной снимок) | olap (процедура
+	// напрямую); SourceAsOf — когда снимок залит (только для clickhouse).
+	// Warning — загрузка прошла, но что-то не удалось (перезаливка снимка по кнопке): форма
+	// показана по тому, что есть, а причина видна на экране.
+	Warning    string     `json:"warning,omitempty"`
+	SourceKind string     `json:"source_kind,omitempty"`
+	SourceAsOf *time.Time `json:"source_as_of,omitempty"`
 }
 
 // ExpCell — правка одной ячейки (вход сохранения).

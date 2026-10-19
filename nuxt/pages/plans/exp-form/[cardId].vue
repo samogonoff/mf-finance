@@ -23,6 +23,7 @@
         <p class="page-subtitle">
           {{ form?.total ?? 0 }} строк · ввод в {{ card?.currency || "—" }} ·
           план за год {{ money(shownPlanTotal) }}
+          <span v-if="sourceNote" class="src-note" :title="sourceNoteTitle"> · {{ sourceNote }}</span>
           <span v-if="card?.locked" class="lock-note"><Icon name="lucide:lock" /> период закрыт на запись</span>
         </p>
       </div>
@@ -74,6 +75,7 @@
       Загрузка из источника завершена.
       <button class="btn btn-sm btn-ghost" @click="reload({ keepFilter: true })">Показать новые строки</button>
     </p>
+    <p v-if="!syncRunning && form?.sync?.warning" class="banner banner-warn">{{ form.sync.warning }}</p>
     <p v-if="loaded && !editable" class="banner banner-warn">
       Только просмотр: карточка не в работе или период закрыт. Изменение утверждённых сумм —
       через возврат или переоткрытие периода с причиной.
@@ -936,6 +938,20 @@ const query = (offset: number) => ({
 });
 
 const syncRunning = computed(() => form.value?.sync?.state === "running");
+// Откуда данные: ночной снимок в ClickHouse (с датой) или процедура напрямую (свежо, но долго).
+const sourceNote = computed(() => {
+  const s = form.value?.sync;
+  if (!s || s.state === "idle" || s.state === "running") return "";
+  if (s.source_kind === "clickhouse" && s.source_as_of) {
+    const d = new Date(s.source_as_of);
+    return `затраты на ${d.toLocaleDateString("ru-RU")} ${d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  return s.source_kind === "olap" ? "затраты напрямую из источника" : "";
+});
+const sourceNoteTitle = computed(() =>
+  form.value?.sync?.source_kind === "clickhouse"
+    ? "Ночной снимок процедуры затрат (ClickHouse). Свежее — кнопка «Обновить из источника»."
+    : "Снимка в ClickHouse ещё нет — строки прочитаны из процедуры на OLAP.");
 // Загрузка закончилась, пока на экране уже есть строки: подменять их самим нельзя
 // (там может быть несохранённый ввод), поэтому предлагаем обновить вручную.
 const syncDoneNew = ref(false);

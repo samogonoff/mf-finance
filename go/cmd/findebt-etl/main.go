@@ -16,7 +16,9 @@
 // ============================================================================
 // ENV:
 //
-//	MODE                  — bootstrap | incremental | currency | debtarh | findwh (дефолт bootstrap).
+//	MODE                  — bootstrap | incremental | currency | debtarh | findwh | expcosts (дефолт bootstrap).
+//	                        expcosts — снимок затрат формы 1.5: процедура Budgeting → CH finance.exp_costs
+//	                        (EXP_COSTS_PROC, EXP_COSTS_AFTER_HOUR/BEFORE_HOUR, EXP_COSTS_FORCE=1).
 //	                        currency — справочники курса (dim_valuta, currency_daily).
 //	                        debtarh  — сырые факты метода аналитика (debt_facts,
 //	                        turnover_facts) из Debt_arh/Wholesales_arh. Оба — для
@@ -129,6 +131,12 @@ func main() {
 		}, opts.MinDate)
 	case "findwh":
 		n, err = etl.RunFinDWHDaily(ctx, deps, finDWHOptsFromEnv())
+	case "expcosts":
+		var ran bool
+		n, ran, err = etl.RunExpCostsDaily(ctx, deps, expCostsOptsFromEnv())
+		if err == nil && !ran {
+			log.Printf("expcosts: заливка не нужна (уже загружено сегодня / вне окна; EXP_COSTS_FORCE=1 — принудительно)")
+		}
 	default:
 		n, err = etl.RunBootstrapFinDebt(ctx, deps, opts)
 	}
@@ -192,5 +200,20 @@ func finDWHOptsFromEnv() etl.FinDWHOpts {
 		Force:          os.Getenv("FINDWH_FORCE") == "1",
 		GLMFFull:       os.Getenv("FINDWH_GLMF_FULL") == "1",
 		TriggeredBy:    "cli",
+	}
+}
+
+// expCostsOptsFromEnv — параметры MODE=expcosts (те же переменные, что у воркера go-api).
+func expCostsOptsFromEnv() etl.ExpCostsOpts {
+	after, _ := strconv.Atoi(envOr("EXP_COSTS_AFTER_HOUR", "5"))
+	before, _ := strconv.Atoi(envOr("EXP_COSTS_BEFORE_HOUR", "9"))
+	batch, _ := strconv.Atoi(envOr("FINDWH_BATCH", "20000"))
+	return etl.ExpCostsOpts{
+		Proc:        envOr("EXP_COSTS_PROC", ""),
+		AfterHour:   after,
+		BeforeHour:  before,
+		BatchSize:   batch,
+		Force:       os.Getenv("EXP_COSTS_FORCE") == "1",
+		TriggeredBy: "cli",
 	}
 }

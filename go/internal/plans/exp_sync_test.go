@@ -203,3 +203,57 @@ func TestExpSyncErrText_HidesDriverDetails(t *testing.T) {
 		t.Errorf("обрезка разрезала символ: %q", got)
 	}
 }
+
+// refreshingSource — источник с ночным снимком: умеет перезаливку, которая может падать.
+type refreshingSource struct {
+	stubExpSource
+	refreshErr error
+	refreshes  int
+}
+
+func (r *refreshingSource) RefreshSource(context.Context) error {
+	r.mu.Lock()
+	r.refreshes++
+	r.mu.Unlock()
+	return r.refreshErr
+}
+
+func (r *refreshingSource) SnapshotAsOf(context.Context) (time.Time, bool) {
+	return time.Unix(1792400000, 0), true
+}
+
+// Не удалась перезаливка снимка (миграция не применена, заливка у другого пользователя, сбой
+// MSSQL) — форма всё равно перечитывается из того, что есть, а не уходит в ошибку.
+func TestExpSync_RefreshFailureStillReadsSource(t *testing.T) {
+	src := &refreshingSource{refreshErr: errors.New("create stage: table finance.exp_costs doesn't exist")}
+	src.cells = []ExpCostCell{{Scenario: ExpSrcFact, Year: 2025, Month: 1, CodePL: 10, CodeCFO: 100, Amount: 5}}
+	svc, in := newSyncTestService(src)
+	svc.ensureSync(Card{ID: 1}, in, true)
+	st := waitSyncState(t, svc, in.ID, ExpSyncOK)
+	if st.SourceCells != 1 || st.Error != "" {
+		t.Fatalf("ошибка перезаливки не должна ломать загрузку: %+v", st)
+	}
+	// Пользователь должен узнать, что перезаливка не удалась (без деталей драйвера).
+	if st.Warning == "" || strings.Contains(st.Warning, "exp_costs") {
+		t.Fatalf("ждали предупреждение о неудавшейся перезаливке без внутренних имён: %q", st.Warning)
+	}
+	// Хвост предупреждения не противоречит шапке: источник у заглушки не помечен как olap,
+	// значит данные — снимок прошлой заливки.
+	if !strings.Contains(st.Warning, "прошлой заливки") {
+		t.Fatalf("хвост предупреждения: %q", st.Warning)
+	}
+	if src.refreshes != 1 || src.callCount() != 1 {
+		t.Fatalf("перезаливок %d, чтений %d", src.refreshes, src.callCount())
+	}
+}
+
+// Параллельные загрузки не путают источник: след чтения у каждого вызова свой.
+func TestExpSourceTrace_IsPerCall(t *testing.T) {
+	c1, t1 := WithExpSourceTrace(context.Background())
+	c2, t2 := WithExpSourceTrace(context.Background())
+	noteExpSource(c1, ExpSourceKindCH)
+	noteExpSource(c2, ExpSourceKindOLAP)
+	if t1.Kind != ExpSourceKindCH || t2.Kind != ExpSourceKindOLAP {
+		t.Fatalf("следы смешались: %q %q", t1.Kind, t2.Kind)
+	}
+}

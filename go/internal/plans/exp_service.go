@@ -168,8 +168,31 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 		// (expProcSem); здесь — только предохранитель от вечного зависания.
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
 		defer cancel()
+		// Кнопка «Обновить из источника»: сначала перезалить ночной снимок (минуты),
+		// затем прочитать его. Без снимка (источник напрямую) шаг пропускается.
+		// Не удалась перезаливка (миграция ClickHouse не применена, нет EXEC, сбой MSSQL) —
+		// не повод оставить форму без данных: пишем в журнал и читаем текущий снимок или,
+		// если его нет, процедуру напрямую.
+		var refreshWarn string
+		if r, ok := s.source.(ExpSourceRefresher); ok && force {
+			if rerr := r.RefreshSource(ctx); rerr != nil {
+				log.Printf("plans/exp: обновление снимка затрат не удалось, читаем то, что есть: %v", rerr)
+				refreshWarn = "Обновить снимок затрат не удалось: " + expSyncErrText(rerr) + "."
+			}
+		}
+		// След чтения: откуда реально взяты данные именно в этой загрузке.
+		ctx, trace := WithExpSourceTrace(ctx)
 		n, err := s.syncFromSource(ctx, c, in, force)
 		fin := time.Now()
+		// Откуда прочитано — до блокировки: это сетевой вызов, а под syncMu читают
+		// состояние при каждом открытии формы.
+		srcKind := trace.Kind
+		var srcAsOf *time.Time
+		if info, ok := s.source.(ExpSourceInfo); ok && srcKind == ExpSourceKindCH {
+			if asOf, has := info.SnapshotAsOf(ctx); has {
+				srcAsOf = &asOf
+			}
+		}
 		s.syncMu.Lock()
 		run.status.FinishedAt = &fin
 		run.status.SourceCells = n
@@ -179,6 +202,17 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 		} else {
 			run.status.State = ExpSyncOK
 		}
+		run.status.SourceKind, run.status.SourceAsOf = srcKind, srcAsOf
+		// Хвост предупреждения — по тому, откуда реально прочитано (после чтения): снимок
+		// прошлой заливки или процедура напрямую; иначе плашка противоречила бы шапке.
+		if refreshWarn != "" {
+			if srcKind == ExpSourceKindOLAP {
+				refreshWarn += " Данные прочитаны напрямую из источника."
+			} else {
+				refreshWarn += " Показаны данные прошлой заливки."
+			}
+		}
+		run.status.Warning = refreshWarn
 		s.syncMu.Unlock()
 		close(run.done)
 	}()

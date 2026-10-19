@@ -79,6 +79,9 @@ export interface ExpSync {
   source_cells: number;
   started_at?: string;
   finished_at?: string;
+  warning?: string; // загрузка прошла, но перезаливка снимка не удалась
+  source_kind?: "clickhouse" | "olap";
+  source_as_of?: string; // когда залит ночной снимок затрат (только clickhouse)
 }
 
 export interface ExpCell {
