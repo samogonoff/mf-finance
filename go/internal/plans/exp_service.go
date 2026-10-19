@@ -32,6 +32,12 @@ type ExpService struct {
 	factTTL  time.Duration
 	factMu   sync.Mutex
 	factSeen map[int64]time.Time
+	// syncState — состояние фоновой загрузки по экземпляру; syncWait — сколько
+	// Form готов ждать её окончания, прежде чем отдать форму как есть (быстрые
+	// источники и фикстуры успевают, процедура на OLAP — нет).
+	syncMu    sync.Mutex
+	syncState map[int64]*expSyncRun
+	syncWait  time.Duration
 	// reg — реестры формы (ТЗ §5). nil — форма работает без них, как до Ф4.
 	reg ExpRegRepo
 	// norms — справочники командировок: суточные, нормативы перелёта, курс.
@@ -43,7 +49,8 @@ type ExpService struct {
 // NewExpService — конструктор.
 func NewExpService(repo ExpRepo, cards *CardService, source ExpDataSource) *ExpService {
 	return &ExpService{repo: repo, cards: cards, source: source,
-		factTTL: 6 * time.Hour, factSeen: map[int64]time.Time{}}
+		factTTL: 6 * time.Hour, factSeen: map[int64]time.Time{},
+		syncState: map[int64]*expSyncRun{}, syncWait: 3 * time.Second}
 }
 
 // expKindOf — вид формы по области карточки. Область задаётся реестром форм
@@ -96,11 +103,10 @@ func (s *ExpService) Form(ctx context.Context, p Principal, cardID int64, f ExpF
 	// закрытой карточке состав не трогаем: утверждённая форма обязана остаться
 	// той, какой её согласовали (ТЗ §1.1, снимок версии).
 	if cardEditable(c) {
-		if err := s.syncFromSource(ctx, c, in); err != nil {
-			// Недоступный источник не должен закрывать форму: введённое уже
-			// лежит в БД и должно открываться без OLAP.
-			log.Printf("plans/exp: источник карточки %d не прочитан: %v", cardID, err)
-		}
+		// Загрузка идёт в фоне: процедура затрат работает минуты и дольше таймаута
+		// веб-запроса. Недоступный источник не закрывает форму: введённое уже лежит в
+		// БД, а причина видна в Sync.
+		s.ensureSync(c, in, false)
 	}
 	rows, total, err := s.repo.Rows(ctx, in.ID, f)
 	if err != nil {
@@ -110,8 +116,131 @@ func (s *ExpService) Form(ctx context.Context, p Principal, cardID int64, f ExpF
 	SortExpRowsBy(groups, rows)
 	return ExpForm{
 		Instance: in, Card: c, Rows: rows, Total: total, Offset: f.Offset,
-		Groups: groups, ReadOnly: !cardEditable(c),
+		Groups: groups, ReadOnly: !cardEditable(c), Sync: s.syncStatus(in.ID),
 	}, nil
+}
+
+// expSyncRun — одна фоновая загрузка; done закрывается по её окончании.
+type expSyncRun struct {
+	status ExpSyncStatus
+	done   chan struct{}
+}
+
+// expSyncRetryAfter — после ошибки автоматически не повторяем: открытие формы и
+// опрос состояния не должны запускать четырёхминутную выгрузку снова и снова.
+// Повторить сразу можно кнопкой «Обновить из источника».
+const expSyncRetryAfter = 10 * time.Minute
+
+// ensureSync запускает загрузку из источника в фоне (не больше одной на экземпляр)
+// и ждёт её не дольше syncWait. force — запуск по кнопке: игнорирует TTL и паузу
+// после ошибки.
+func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
+	if s.source == nil {
+		return
+	}
+	s.syncMu.Lock()
+	run := s.syncState[in.ID]
+	if run != nil && run.status.State == ExpSyncRunning {
+		s.syncMu.Unlock()
+		s.waitSync(run)
+		return
+	}
+	if !force {
+		if s.factFresh(in.ID) {
+			s.syncMu.Unlock()
+			return
+		}
+		if run != nil && run.status.State == ExpSyncError && run.status.FinishedAt != nil &&
+			time.Since(*run.status.FinishedAt) < expSyncRetryAfter {
+			s.syncMu.Unlock()
+			return
+		}
+	}
+	now := time.Now()
+	run = &expSyncRun{status: ExpSyncStatus{State: ExpSyncRunning, StartedAt: &now}, done: make(chan struct{})}
+	s.syncState[in.ID] = run
+	s.syncMu.Unlock()
+
+	go func() {
+		// Контекст запроса здесь не годится: он умирает вместе с ответом, а загрузка
+		// должна дойти до конца и лечь в БД.
+		// Таймаут самой выгрузки отсчитывается внутри источника после получения очереди
+		// (expProcSem); здесь — только предохранитель от вечного зависания.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
+		defer cancel()
+		n, err := s.syncFromSource(ctx, c, in, force)
+		fin := time.Now()
+		s.syncMu.Lock()
+		run.status.FinishedAt = &fin
+		run.status.SourceCells = n
+		if err != nil {
+			run.status.State, run.status.Error = ExpSyncError, expSyncErrText(err)
+			log.Printf("plans/exp: источник карточки %d не прочитан: %v", c.ID, err)
+		} else {
+			run.status.State = ExpSyncOK
+		}
+		s.syncMu.Unlock()
+		close(run.done)
+	}()
+	s.waitSync(run)
+}
+
+func (s *ExpService) waitSync(run *expSyncRun) {
+	if s.syncWait <= 0 {
+		return
+	}
+	select {
+	case <-run.done:
+	case <-time.After(s.syncWait):
+	}
+}
+
+// syncStatus — состояние загрузки по экземпляру (idle, если её не было).
+func (s *ExpService) syncStatus(instanceID int64) ExpSyncStatus {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	if run := s.syncState[instanceID]; run != nil {
+		return run.status
+	}
+	return ExpSyncStatus{State: ExpSyncIdle}
+}
+
+// expSyncErrText — причина для экрана. Текст драйвера (адрес сервера, порт, имя логина)
+// пользователю не отдаём: обобщённая причина, подробности — в журнале сервера. Свои
+// ошибки загрузки (нет колонки в выдаче процедуры) безопасны и показываются как есть,
+// обрезка — по символам, а не по байтам.
+func expSyncErrText(err error) string {
+	msg := err.Error()
+	low := strings.ToLower(msg)
+	switch {
+	case strings.Contains(low, "deadline exceeded") || strings.Contains(low, "timeout") || strings.Contains(low, "timed out"):
+		return "источник затрат не ответил вовремя (подробности в журнале сервера)"
+	case strings.Contains(low, "нет колонки") || strings.Contains(low, "нет обязательных колонок"):
+		r := []rune(msg)
+		if len(r) > 300 {
+			return string(r[:300]) + "…"
+		}
+		return msg
+	case strings.Contains(low, "login") || strings.Contains(low, "tcp") || strings.Contains(low, "dial") ||
+		strings.Contains(low, "connection") || strings.Contains(low, "refused") || strings.Contains(low, "no such host"):
+		return "нет соединения с источником затрат (проверьте доступ к OLAP; подробности в журнале сервера)"
+	default:
+		return "источник затрат вернул ошибку (подробности в журнале сервера)"
+	}
+}
+
+// SyncNow — POST /api/plans/exp/{cardId}/sync: перечитать состав строк из источника
+// сейчас (игнорируя TTL). Возвращает состояние; загрузка идёт в фоне.
+func (s *ExpService) SyncNow(ctx context.Context, p Principal, cardID int64) (ExpSyncStatus, error) {
+	c, in, err := s.access(ctx, cardID)
+	if err != nil {
+		return ExpSyncStatus{}, err
+	}
+	if !cardEditable(c) {
+		return ExpSyncStatus{}, errors.New("период закрыт: состав строк не меняется")
+	}
+	s.ensureSync(c, in, true)
+	return s.syncStatus(in.ID), nil
 }
 
 // syncFromSource — состав строк и снимок факта из источника (ТЗ §2).
@@ -119,12 +248,12 @@ func (s *ExpService) Form(ctx context.Context, p Principal, cardID int64, f ExpF
 // Строки собираются по ФАКТУ ПРОШЛОГО ГОДА: план на год заводится по тем парам
 // «ЦФО × статья», по которым расход был. Так же устроен эталон — в нём строки
 // приходят из выгрузки, а не заводятся руками.
-func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance) error {
+func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance, force bool) (int, error) {
 	if s.source == nil {
-		return nil
+		return 0, nil
 	}
-	if s.factFresh(in.ID) {
-		return nil
+	if !force && s.factFresh(in.ID) {
+		return 0, nil
 	}
 	// Прошлый год даёт состав строк и факт, плановый — стратегию как ориентир
 	// (ответ Н1: сценариев три, форма заполняет тактику и обязана показывать
@@ -132,10 +261,14 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance)
 	prev := in.PlanYear - 1
 	cells, err := s.source.Costs(ctx, in.FormKind, in.Country, []int{prev, in.PlanYear})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(cells) == 0 {
-		return nil
+		// Источник ответил, но по этой форме строк нет. Это тоже «прочитано»: без отметки
+		// каждое открытие формы запускало бы выгрузку заново (минуты), а фронт —
+		// перезагружал форму по кругу.
+		s.factSynced(in.ID)
+		return 0, nil
 	}
 	attrs, err := s.source.Cfo(ctx, in.FormKind, in.Country)
 	if err != nil {
@@ -186,7 +319,7 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance)
 		rows = append(rows, r)
 	}
 	if _, err := s.repo.SyncRows(ctx, in.ID, rows); err != nil {
-		return err
+		return len(cells), err
 	}
 	// Справочник статей пополняется из того же среза (ответ И-12): перечень ТЗ
 	// неполон, а новый код PL не должен требовать релиза. Второй уровень
@@ -206,13 +339,13 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance)
 		log.Printf("plans/exp: в справочник статей добавлено кодов PL: %d", n)
 	}
 	if err := s.repo.SaveReadOnly(ctx, in.ID, ExpScenarioFact, fact); err != nil {
-		return err
+		return len(cells), err
 	}
 	if err := s.repo.SaveReadOnly(ctx, in.ID, ExpScenarioStrategy, strategy); err != nil {
-		return err
+		return len(cells), err
 	}
 	s.factSynced(in.ID)
-	return nil
+	return len(cells), nil
 }
 
 // factFresh — факт по экземпляру перечитан недавно.

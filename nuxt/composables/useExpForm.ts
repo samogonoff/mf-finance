@@ -69,6 +69,16 @@ export interface ExpForm {
   offset: number;
   groups: string[];
   read_only: boolean;
+  sync?: ExpSync;
+}
+
+// Загрузка состава строк из источника затрат идёт в фоне (процедура работает минуты).
+export interface ExpSync {
+  state: "idle" | "running" | "ok" | "error";
+  error?: string;
+  source_cells: number;
+  started_at?: string;
+  finished_at?: string;
 }
 
 export interface ExpCell {
@@ -280,6 +290,9 @@ export const useExpForm = () => {
     });
   };
 
+  const syncNow = (cardId: number): Promise<ExpSync> =>
+    $fetch<ExpSync>(`${base}/api/plans/exp/${cardId}/sync`, { method: "POST", headers: authHeader() });
+
   const save = (cardId: number, cells: ExpCell[], comments: { code_cfo: number; code_pl: number; comment: string }[] = []) =>
     $fetch<{ changed: number }>(`${base}/api/plans/exp/${cardId}/form`, {
       method: "PUT",
@@ -376,6 +389,6 @@ export const useExpForm = () => {
   return {
     form, save, bulk, totals, cards, validate, summary, params, saveParam, calc,
     registry, saveRegRow, copyRegRow, deleteRegRow,
-    presets, savePreset, exportUrl, importFile
+    presets, savePreset, exportUrl, importFile, syncNow
   };
 };

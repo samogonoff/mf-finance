@@ -1,6 +1,9 @@
 package plans
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 // Форма этапа 1.5 «Расходы центров прибыли» (TPL-CFO-EXP).
 // ТЗ: docs/reports/plans/tz-stage-1.5-2026-09-09.md, план реализации:
@@ -121,6 +124,27 @@ type ExpForm struct {
 	Offset   int      `json:"offset"`
 	Groups   []string `json:"groups"` // порядок групп PL (ТЗ §7.3)
 	ReadOnly bool     `json:"read_only"`
+	// Sync — состояние загрузки состава строк из источника затрат. Процедура
+	// отдаёт ~1 млн строк и работает минуты, поэтому загрузка идёт в фоне, а форма
+	// открывается сразу с тем, что уже лежит в БД.
+	Sync ExpSyncStatus `json:"sync"`
+}
+
+// Состояния загрузки из источника.
+const (
+	ExpSyncIdle    = "idle"    // не запускалась в этом процессе (или источник не подключён)
+	ExpSyncRunning = "running" // идёт
+	ExpSyncOK      = "ok"      // завершилась; SourceCells == 0 — источник ничего не вернул
+	ExpSyncError   = "error"   // источник не прочитан, Error — причина
+)
+
+// ExpSyncStatus — состояние загрузки по экземпляру формы.
+type ExpSyncStatus struct {
+	State       string     `json:"state"`
+	Error       string     `json:"error,omitempty"`
+	SourceCells int        `json:"source_cells"` // ячеек в выдаче источника после отбора
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 }
 
 // ExpCell — правка одной ячейки (вход сохранения).
