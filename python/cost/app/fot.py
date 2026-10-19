@@ -1955,15 +1955,14 @@ def _p17_assemble(grain: list[dict]) -> tuple:
 
 
 def _p17_country_cards(country_grain: list[dict]) -> list[dict]:
-    """5 карточек численности для выбранной страны (слайд 4.2)."""
+    """5 карточек численности для выбранной страны (слайд 4.2, как pptx слайд 24)."""
     s = {k: _nsum([r.get(k) for r in country_grain]) for k in ("q25", "q26", "pa", "pt")}
-    staff = _pct(_div(s["q26"], s["pa"]))
     dev_25 = _pct(_div(_diff(s["q26"], s["q25"]), s["q25"])) if s["q25"] else None
     dev_appr = _pct(_div(_diff(s["q26"], s["pa"]), s["pa"])) if s["pa"] else None
     return [
-        {"key": "plan_approved", "label": "План утв. 2026 (стратегия)", "value": _r2(s["pa"]), "unit": "ставок"},
-        {"key": "fact_2025", "label": "Факт 30.06.2025", "value": _r2(s["q25"]), "unit": "ставок"},
-        {"key": "fact_2026", "label": "Факт 30.06.2026", "value": _r2(s["q26"]), "unit": "ставок"},
+        {"key": "plan_approved", "label": "Утвержд. числ., страт. 2026", "value": _r2(s["pa"]), "unit": "чел."},
+        {"key": "fact_2025", "label": "Факт числ., 1 ПГ 2025", "value": _r2(s["q25"]), "unit": "чел."},
+        {"key": "fact_2026", "label": "Факт числ., 1 ПГ 2026", "value": _r2(s["q26"]), "unit": "чел."},
         {"key": "dev_2025", "label": "Отклонение к 2025", "value": _r1(dev_25), "unit": "%"},
         {"key": "dev_approved", "label": "Отклонение к утвержд.", "value": _r1(dev_appr), "unit": "%"},
     ]
