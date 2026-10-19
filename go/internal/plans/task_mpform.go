@@ -199,8 +199,15 @@ func (s *TaskStore) taskBrief(ctx context.Context, taskID int64) (Task, int, int
 func mpTotalsSegmentFor(scope string, segmentOf map[int]string, cfos []int) string {
 	// Форма «Крупные МП» / «Мелкие МП» задания на обе группы — свои итоги: иначе обе
 	// карточки писали бы одну строку скидок, а закрытость карточки не проверялась.
+	// Разрез приходит от клиента: принимаем его, только если у задания есть площадки
+	// этого сегмента. Иначе итог попал бы под чужой сегмент того же pl_id, мимо блокировки
+	// и проверки закрытости карточки (SaveMpForm отвергает такой разрез ошибкой раньше).
 	if scope == "large" || scope == "small" {
-		return scope
+		for _, c := range cfos {
+			if segmentOf[c] == scope {
+				return scope
+			}
+		}
 	}
 	return mpTotalsSegment(segmentOf, cfos)
 }
@@ -770,6 +777,9 @@ func (s *TaskStore) SaveMpForm(ctx context.Context, taskID, actorID int64, isAdm
 	segmentList := make([]string, 0, len(segments))
 	for seg := range segments {
 		segmentList = append(segmentList, seg)
+	}
+	if (formScope == "large" || formScope == "small") && !segments[formScope] {
+		return fmt.Errorf("разрез %s вне задания", formScope)
 	}
 	lockedRows, err := tx.Query(ctx, `
 		SELECT id, scope_key, status, step_code, locked, calc_mode

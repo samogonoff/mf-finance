@@ -39,6 +39,10 @@ func TestMpTotalsSegmentFor(t *testing.T) {
 	if got := mpTotalsSegmentFor("small", segOf, []int{335, 953}); got != "small" {
 		t.Errorf("разрез small у смешанного задания: %q", got)
 	}
+	// Чужой разрез (у задания нет площадок мелких МП) не принимается: итог остаётся в своём сегменте.
+	if got := mpTotalsSegmentFor("small", segOf, []int{335}); got != "large" {
+		t.Errorf("чужой разрез small у задания на крупные: %q, want large", got)
+	}
 	if got := mpTotalsSegmentFor("", segOf, []int{335, 953}); got != "" {
 		t.Errorf("без разреза смешанное задание — общий итог, got %q", got)
 	}
