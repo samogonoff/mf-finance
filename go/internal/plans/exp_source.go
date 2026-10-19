@@ -225,8 +225,6 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 	}
 
 	out := make([]ExpCostCell, 0, 4096)
-	var payments []ExpCostCell // платёжный факт — запасной вариант (см. ниже)
-	hasAccrual := false
 	capped := false
 	raw := make([]any, len(cols))
 	ptrs := make([]any, len(cols))
@@ -321,17 +319,8 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 		// 3. Сценарий — как пришёл из источника. Legacy forms omit payment
 		// facts; code-based CFO forms retain the exact scenarios from ТЗ v2.
 		c.Scenario = str("scenario")
-		paymentsFact := false
 		if !expScenarioForKind(kind, c.Scenario) {
-			// «Факт по платежам» в форму не идёт, пока в источнике есть «Факт по
-			// начислениям» (ответ 44). Сейчас начислений в выдаче нет вовсе, и без
-			// запасного варианта колонка факта и база расчётов остались бы пустыми:
-			// запоминаем платёжный факт отдельно и подставляем только в таком случае.
-			if _, legacy := CfoExpCodeFromKind(kind); !legacy && c.Scenario == ExpSrcFactPayments {
-				paymentsFact = true
-			} else {
-				continue
-			}
+			continue
 		}
 		c.GroupPL, c.Expense = str("grouppl"), str("expense")
 		c.CFO = str("cfo")
@@ -340,13 +329,6 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 			c.Amount = num("amount")
 		} else {
 			c.Amount = num("amountbyn")
-		}
-		if paymentsFact {
-			payments = append(payments, c)
-			continue
-		}
-		if c.Scenario == ExpSrcFact {
-			hasAccrual = true
 		}
 		out = append(out, c)
 		if len(out) >= expRowCap {
@@ -359,13 +341,6 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 	}
 	if capped {
 		log.Printf("plans/exp: выборка затрат обрезана на %d строк — источник отдал больше «быстрого» среза", expRowCap)
-	}
-	if !hasAccrual && len(payments) > 0 {
-		log.Printf("plans/exp: в источнике нет «%s», факт взят из «%s» (%d строк)", ExpSrcFact, ExpSrcFactPayments, len(payments))
-		for i := range payments {
-			payments[i].Scenario = ExpSrcFact
-		}
-		out = append(out, payments...)
 	}
 	return out, nil
 }

@@ -122,10 +122,9 @@ func TestExpSync_EmptySourceIsReported(t *testing.T) {
 	}
 }
 
-// Источник без «Факта по начислениям» (так сейчас отдаёт процедура): платёжный факт
-// подставляется как факт, иначе колонка факта и база расчётов остаются пустыми.
-// Если начисления есть — платёжный факт по-прежнему не используется (ответ 44).
-func TestExpScenarioPaymentsFallbackRules(t *testing.T) {
+// Отбор сценариев: платёжный факт в форму не идёт (ответ 44), начисления и стратегия идут.
+// Колонка проекта в выдаче процедуры — ProjectName, а не Projects.
+func TestExpScenarioSelectionAndProjectColumn(t *testing.T) {
 	if expScenarioForKind(ExpKindRetail, ExpSrcFactPayments) {
 		t.Fatal("платёжный факт не должен проходить отбор напрямую")
 	}
