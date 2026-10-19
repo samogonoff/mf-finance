@@ -1914,13 +1914,14 @@ def _p17_assemble(grain: list[dict]) -> tuple:
     страны вне COUNTRY_OPTIONS).
     """
     s = {key: _nsum([r.get(key) for r in grain]) for key in ("q25", "q26", "pa", "pt")}
-    staff = _pct(_div(s["q26"], s["pa"]))
+    dev_25 = _pct(_div(_diff(s["q26"], s["q25"]), s["q25"])) if s["q25"] else None
+    dev_appr = _pct(_div(_diff(s["q26"], s["pa"]), s["pa"])) if s["pa"] else None
     cards = [
-        {"key": "plan_approved", "label": "План утв. 2026 (стратегия)", "value": _r2(s["pa"]), "unit": "ставок"},
-        {"key": "plan_tactic", "label": "План тактика 2026", "value": _r2(s["pt"]), "unit": "ставок"},
-        {"key": "fact_2025", "label": "Факт 30.06.2025", "value": _r2(s["q25"]), "unit": "ставок"},
-        {"key": "fact_2026", "label": "Факт 30.06.2026", "value": _r2(s["q26"]), "unit": "ставок"},
-        {"key": "staffing", "label": "Укомплектованность (факт 1ПГ26 / план утв.)", "value": _r2(staff), "unit": "%"},
+        {"key": "plan_approved", "label": "Утвержд. числ., страт. 2026", "value": _r2(s["pa"]), "unit": "чел."},
+        {"key": "fact_2025", "label": "Факт числ., 1 ПГ 2025", "value": _r2(s["q25"]), "unit": "чел."},
+        {"key": "fact_2026", "label": "Факт числ., 1 ПГ 2026", "value": _r2(s["q26"]), "unit": "чел."},
+        {"key": "dev_2025", "label": "Отклонение к 2025", "value": _r1(dev_25), "unit": "чел."},
+        {"key": "dev_approved", "label": "Отклонение к утвержд.", "value": _r1(dev_appr), "unit": "чел."},
     ]
     by_country: dict = {}
     for r in grain:
@@ -1932,7 +1933,7 @@ def _p17_assemble(grain: list[dict]) -> tuple:
             continue
         rows.append(_p12_row(label, cc, parts))
     if grain:
-        total = _p12_row("ГК", "", grain)
+        total = _p12_row("Общий итог", "", grain)
         total["total"] = True
         rows.append(total)
     columns = _p12_columns()

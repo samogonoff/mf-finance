@@ -630,27 +630,35 @@
             </section>
 
             <!-- Слайд 4.2: численность по выбранной стране -->
-            <section class="slide" aria-label="Численность по стране">
+            <section class="slide" aria-label="Численность по стране" v-if="p17CountryCc">
               <header class="slide-hdr">
-                <h2 class="slide-title">{{ p17CountryLabel }} — численность по подразделениям</h2>
+                <h2 class="slide-title">{{ p17CountryLabel }} — численность по направлениям</h2>
                 <span class="slide-subtitle">На конец 1 ПГ {{ yearPlan }}</span>
                 <span v-if="p17CountryTotal" class="slide-note">
                   ПЧ/ФЧ 1ПГ{{ yr2(yearPlan) }}:
                   <b>{{ fmt1(p17CountryTotal.plan_approved) }}/{{ fmt1(p17CountryTotal.q26) }}</b>,
                   {{ fmt0(p17CountryTotal.staff_pct) }}% укомпл.
                 </span>
-                <!-- Сегмент выбора страны (как валюта в P11) -->
+                <!-- Сегмент выбора страны -->
                 <div class="seg" role="group" aria-label="Страна">
                   <button v-for="c in p17CountryOptions" :key="c.key"
                           class="btn btn-sm"
-                          :class="c.key === p17Country ? 'btn-primary' : 'btn-ghost'"
+                          :class="c.key === p17CountryCc ? 'btn-primary' : 'btn-ghost'"
                           :disabled="!countryDetails[c.key]"
                           @click="p17Country = c.key">{{ c.label }}</button>
                 </div>
                 <span class="slide-year p15-badge" aria-hidden="true">
-                  <span>{{ p17CountryCc }}</span><span>ПОДРАЗДЕЛЕНИЯ</span>
+                  <span>{{ p17CountryCc }}</span><span>НАПРАВЛЕНИЯ</span>
                 </span>
               </header>
+
+              <!-- KPI-лента: 5 карточек страны -->
+              <section v-if="p17CountryCardsKpi.length" class="fot-kpis">
+                <article v-for="c in p17CountryCardsKpi" :key="c.key" class="fot-kpi">
+                  <span class="fot-kpi-label">{{ c.label }}</span>
+                  <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
+                </article>
+              </section>
 
               <!-- Карточки направлений (паттерн P16) -->
               <section v-if="p17DeptRows.length" class="dpc-grid dp16-grid">
@@ -1196,8 +1204,9 @@ const p17CountryDetails = computed<any>(() => {
   const d = countryDetails.value[p17CountryCc.value]
   if (!d) return null
   const label = p17CountryOptions.find(o => o.key === p17CountryCc.value)?.label || p17CountryCc.value
-  return { table: d.table || null, label }
+  return { cards: d.cards || [], table: d.table || null, label }
 })
+const p17CountryCardsKpi = computed<any[]>(() => p17CountryDetails.value?.cards || [])
 const p17CountryTable = computed<any>(() => p17CountryDetails.value?.table || null)
 const p17CountryLabel = computed(() => p17CountryDetails.value?.label || '')
 const p17CountryTotal = computed<any>(() => (p17CountryTable.value?.rows || []).find((r: any) => r.total) || null)
