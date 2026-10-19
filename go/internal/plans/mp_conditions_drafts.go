@@ -52,13 +52,17 @@ func mpMissingShare(l MpLine, cond MpConditions) bool {
 // СПП площадки берётся из формы (ввод исполнителя, ФЗ 02.10 п. 3) и перекрывает
 // значение реестра; проверка МП-01 «не задан %СПП» обязана смотреть на то же
 // значение, иначе форма с введённым СПП блокировалась бы нулём в реестре.
+//
+// Правило то же, что в расчёте (Recalc, MpFormData): если СПП в форме есть —
+// берётся он, в том числе ноль. Иначе нулевой СПП формы считался бы комиссией 0,
+// а проверка смотрела бы на СПП реестра и пропускала форму с неверными суммами.
 func conditionsWithFormSpp(conds map[int]MpConditions, spp map[int]float64) map[int]MpConditions {
 	out := make(map[int]MpConditions, len(conds))
 	for k, v := range conds {
 		out[k] = v
 	}
 	for cfo, v := range spp {
-		if c, ok := out[cfo]; ok && v > 0 {
+		if c, ok := out[cfo]; ok {
 			c.SppPct = v
 			out[cfo] = c
 		}

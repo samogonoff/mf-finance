@@ -70,7 +70,7 @@ func TestApplyConditionDrafts_Rejects(t *testing.T) {
 }
 
 // Проверка МП-01 «не задан %СПП» смотрит на тот же СПП, что и расчёт: введённый
-// в форме перекрывает реестр; нулевой СПП формы реестр не затирает.
+// в форме перекрывает реестр, в том числе нулём — расчёт тоже возьмёт ноль.
 func TestConditionsWithFormSpp(t *testing.T) {
 	base, _ := draftsBase()
 	base[336] = MpConditions{CodeCFO: 336} // условия есть, СПП в реестре не задан
@@ -87,9 +87,11 @@ func TestConditionsWithFormSpp(t *testing.T) {
 	if base[335].SppPct != .10 {
 		t.Error("исходные условия изменены")
 	}
+	// Ноль в форме расчёт берёт как есть (комиссия 0) — проверка обязана видеть
+	// тот же ноль и сказать «не задан %СПП», а не пропустить форму по реестру.
 	zero := conditionsWithFormSpp(base, map[int]float64{335: 0})
-	if zero[335].SppPct != .10 {
-		t.Errorf("нулевой СПП формы затёр СПП реестра: %v", zero[335].SppPct)
+	if zero[335].SppPct != 0 {
+		t.Errorf("нулевой СПП формы должен перекрывать реестр, как в расчёте: %v", zero[335].SppPct)
 	}
 }
 
