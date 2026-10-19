@@ -582,8 +582,55 @@
             </section>
           </template>
 
-          <!-- KPI-карточки вкладки: у P10 пять; у P11/P14–P16 — слайд выше -->
-          <section v-if="!isP11 && !isP14 && !isDeptTab" class="fot-kpis">
+          <!-- P17 «Численность ГК»: свод по группе компаний -->
+          <template v-if="isP17">
+            <section class="slide" aria-label="Численность ГК">
+              <header class="slide-hdr">
+                <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
+                <span class="slide-subtitle">Численность — свод по странам</span>
+                <span class="slide-year p15-badge" aria-hidden="true">
+                  <span>ГК</span><span>ЧИСЛЕННОСТЬ</span>
+                </span>
+              </header>
+
+              <!-- KPI-лента: 5 карточек укомплектованности -->
+              <section class="fot-kpis">
+                <article v-for="c in cards" :key="c.key" class="fot-kpi">
+                  <span class="fot-kpi-label">{{ c.label }}</span>
+                  <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
+                </article>
+              </section>
+
+              <!-- Таблица «Численность ГК по странам»: светофор Δ, итог — тёмной строкой -->
+              <section v-if="slideTable17" class="card">
+                <div class="card-head">
+                  <h3 class="card-title">{{ slideTable17.label }}</h3>
+                </div>
+                <div class="table-wrap">
+                  <table class="stable">
+                    <thead>
+                      <tr>
+                        <th v-for="col in slideTable17.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
+                          {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(row, i) in (slideTable17.rows || [])" :key="i" :class="{ total: row.total }">
+                        <td v-for="col in slideTable17.columns" :key="col.key"
+                            :class="[col.key === 'label' ? 'col-name' : 'num', cellDeltaClass(row, col)]">
+                          {{ cellText(slideTable17, row, col) }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </section>
+          </template>
+
+          <!-- KPI-карточки вкладки: у P10 пять; у P11/P14–P16/P17 — слайд выше -->
+          <section v-if="!isP11 && !isP14 && !isDeptTab && !isP17" class="fot-kpis">
             <article v-for="c in cards" :key="c.key" class="fot-kpi">
               <span class="fot-kpi-label">{{ c.label }}</span>
               <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
@@ -739,6 +786,7 @@ const TABS = [
   { key: 'p14', label: 'ФОТ по направлениям бизнеса' },
   { key: 'p15', label: 'Отделы: свод' },
   { key: 'p16', label: 'Отделы: анализ по подразделениям' },
+  { key: 'p17', label: 'Численность ГК' },
 ] as const
 const tab = ref<string>('p9')
 
@@ -933,6 +981,7 @@ const isP14 = computed(() => tab.value === 'p14')
 
 const isP15 = computed(() => tab.value === 'p15')
 const isP16 = computed(() => tab.value === 'p16')
+const isP17 = computed(() => tab.value === 'p17')
 /** Обе вкладки «Отделы» живут на одном слайде: KPI-лента и блок ИИ скрыты. */
 const isDeptTab = computed(() => isP15.value || isP16.value)
 /** Направления листа и шапка страны — отдельные блоки ответа p14. */
@@ -952,6 +1001,9 @@ const deptRest = computed<any[]>(() => deptCards.value.filter((d: any) => !d.att
 /** Таблица отделов рендерится в слайде P15; в общем списке таблиц её нет. */
 const slideTable15 = computed<any>(() =>
   isP15.value ? tables.value.find((t: any) => t.key === 'departments') || null : null)
+/** Таблица численности ГК рендерится в слайде; в общем списке таблиц её нет. */
+const slideTable17 = computed<any>(() =>
+  isP17.value ? tables.value.find((t: any) => t.key === 'hc_countries') || null : null)
 /** Баннеры-выводы: P15 — «Тенденции и прогноз», P16 — пара листа 8. */
 const deptTrends = computed<string[]>(() => dash.value?.dept_trends || [])
 const deptBanners = computed<any>(() => dash.value?.dept_banners || null)
@@ -1011,6 +1063,7 @@ const shownTables = computed<any[]>(() => {
   if (isP11.value) return tables.value.filter((t: any) => t.key !== 'by_country')
   if (isP14.value) return tables.value.filter((t: any) => t.key !== 'by_direction')
   if (isP15.value) return tables.value.filter((t: any) => t.key !== 'departments')
+  if (isP17.value) return tables.value.filter((t: any) => t.key !== 'hc_countries')
   return tables.value
 })
 /** Значение карточки по ключу — для KPI-ленты слайда. */
@@ -1019,7 +1072,7 @@ const kpiNum = (key: string): number | null => {
   return c && isNum(c.value) ? Number(c.value) : null
 }
 /** P10–P16 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
-const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13', 'p14', 'p15', 'p16'].includes(tab.value))
+const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13', 'p14', 'p15', 'p16', 'p17'].includes(tab.value))
 /** Метка активной вкладки — заголовок блока ИИ и нотификации. */
 const tabLabel = computed(() => TABS.find((t) => t.key === tab.value)?.label || tab.value)
 

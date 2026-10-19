@@ -46,7 +46,7 @@ FOT_DATABASE = os.environ.get("FOT_DATABASE", "FinDWH")
 YEAR_PREV = 2025
 YEAR_PLAN = 2026
 
-_FOT_TABS = ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16")
+_FOT_TABS = ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17")
 
 
 def fot_mock_enabled() -> bool:
@@ -1560,6 +1560,16 @@ METHODOLOGY_P12 = (
     "не влияет. Числа — ставки, проценты округляются до одного знака."
 )
 
+METHODOLOGY_P17 = (
+    "Свод численности по группе компаний на фиксированных срезах 30.06.2025 и 30.06.2026 — "
+    "от срезов дат и «Плана» вкладка не зависит, всегда вся ГК. План — PlanChisl: «утв.» — "
+    "утверждённая численность (стратегия), «тактика» — численность тактики. Факт — ставки "
+    "fot_headcount на 1-е число июня. Укомплектованность = факт 1ПГ26 / план утв.; светофор: "
+    "≥95 % зелёный, 85–95 % жёлтый, <85 % красный (правило слайда 23). Δ — относительные "
+    "изменения: 1ПГ26 к 1ПГ25 и факт к утвержд. плану. Детализация по подразделениям "
+    "выбранной страны — на вкладке P12. Числа — ставки, проценты округляются до одного знака."
+)
+
 METHODOLOGY_P13 = (
     "HR-бюджет — ЦФО HR-служб по фиксированному списку кодов (BY 224, RU 604+324+346, "
     "KZ 208, UZ 444) и трём статьям шаблона строк (Заработная плата, Прочие расходы на "
@@ -1716,6 +1726,53 @@ def _p12_assemble(grain: list[dict]) -> tuple:
     warning = None
     if not grain:
         warning = "Нет данных численности/плана по выбранным срезам."
+    elif not s["pa"]:
+        warning = "План численности (PlanChisl) пуст: укомплектованность и Δ к утвержд. не считаются."
+    return cards, tables, warning
+
+
+def _p17_assemble(grain: list[dict]) -> tuple:
+    """P17 «Численность ГК»: свод по всей группе компаний.
+
+    От срезов панели не зависит — зерно _p12_merge берётся целиком; единственная
+    таблица — по странам, итоговая строка считается по всему зерну (включая
+    страны вне COUNTRY_OPTIONS).
+    """
+    s = {key: _nsum([r.get(key) for r in grain]) for key in ("q25", "q26", "pa", "pt")}
+    staff = _pct(_div(s["q26"], s["pa"]))
+    cards = [
+        {"key": "plan_approved", "label": "План утв. 2026 (стратегия)", "value": _r2(s["pa"]), "unit": "ставок"},
+        {"key": "plan_tactic", "label": "План тактика 2026", "value": _r2(s["pt"]), "unit": "ставок"},
+        {"key": "fact_2025", "label": "Факт 30.06.2025", "value": _r2(s["q25"]), "unit": "ставок"},
+        {"key": "fact_2026", "label": "Факт 30.06.2026", "value": _r2(s["q26"]), "unit": "ставок"},
+        {"key": "staffing", "label": "Укомплектованность (факт 1ПГ26 / план утв.)", "value": _r2(staff), "unit": "%"},
+    ]
+    by_country: dict = {}
+    for r in grain:
+        by_country.setdefault(r.get("ctry") or "", []).append(r)
+    rows: list = []
+    for cc, label in COUNTRY_OPTIONS:
+        parts = by_country.get(cc)
+        if not parts:
+            continue
+        rows.append(_p12_row(label, cc, parts))
+    if grain:
+        total = _p12_row("ГК", "", grain)
+        total["total"] = True
+        rows.append(total)
+    columns = _p12_columns()
+    columns[0]["label"] = "Страна"
+    tables = [{
+        "key": "hc_countries",
+        "label": "Численность ГК по странам",
+        "columns": columns,
+        "rows": rows,
+        "meta": {"dim": "country_code", "level_label": "Страна", "path": [],
+                 "can_drill": False, "truncated": False, "row_limit": MATRIX_ROW_LIMIT},
+    }]
+    warning = None
+    if not grain:
+        warning = "Нет данных численности/плана по группе компаний."
     elif not s["pa"]:
         warning = "План численности (PlanChisl) пуст: укомплектованность и Δ к утвержд. не считаются."
     return cards, tables, warning
@@ -2019,6 +2076,26 @@ async def _dashboard_p12(p: dict, meta: dict) -> dict:
         "stale": meta.get("stale"),
         "refreshed_at": meta.get("refreshed_at"),
         "methodology": METHODOLOGY_P12,
+    }
+    if warning:
+        meta_out["warning"] = warning
+    return {"cards": cards, "charts": [], "tables": tables, "meta": meta_out}
+
+
+async def _dashboard_p17(p: dict, meta: dict) -> dict:
+    """Вкладка P17 «Численность ГК»: свод по всей группе компаний."""
+    sql, sql_params = _p12_sql(p)
+    async with acquire() as pg:
+        payload = json.loads(await pg.fetchval(sql, *sql_params))
+    grain = _p12_merge(payload)
+    cards, tables, warning = _p17_assemble(grain)
+    closed = _closed_from_meta(meta)
+    meta_out = {
+        "tab": "p17", "params": p, "currency": p["currency"],
+        "periods": _periods_meta(),
+        "closed_period": closed.isoformat() if closed else None,
+        "stale": meta.get("stale"), "refreshed_at": meta.get("refreshed_at"),
+        "methodology": METHODOLOGY_P17,
     }
     if warning:
         meta_out["warning"] = warning
@@ -3344,8 +3421,8 @@ async def dashboard(tab: str, params: dict) -> dict:
     полугодий (_dashboard_p10/_dashboard_p11); P12 — численность план/факт
     (_dashboard_p12), P13 — HR-бюджет и отделы (_dashboard_p13), P14 — лист
     «ФОТ по направлениям бизнеса» (_dashboard_p14), P15/P16 — листы «Отделы»
-    (_dashboard_p15/_dashboard_p16), все на тех же срезах панели и фиксированных
-    полугодиях.
+    (_dashboard_p15/_dashboard_p16), P17 — численность ГК (_dashboard_p17),
+    все на тех же срезах панели и фиксированных полугодиях.
     """
     if tab not in _FOT_TABS:
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
@@ -3353,7 +3430,7 @@ async def dashboard(tab: str, params: dict) -> dict:
     if tab == "p9":
         p = _parse_p9_params(params, meta)
         return await _dashboard_p9(p, meta)
-    if tab in ("p10", "p11", "p12", "p13", "p14", "p15", "p16"):
+    if tab in ("p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17"):
         p = _parse_halfyear_params(params)
         if tab == "p10":
             return await _dashboard_p10(p, meta)
@@ -3361,6 +3438,8 @@ async def dashboard(tab: str, params: dict) -> dict:
             return await _dashboard_p11(p, meta)
         if tab == "p12":
             return await _dashboard_p12(p, meta)
+        if tab == "p17":
+            return await _dashboard_p17(p, meta)
         if tab == "p13":
             return await _dashboard_p13(p, meta)
         if tab == "p15":
@@ -3390,6 +3469,7 @@ __all__ = [
     "METHODOLOGY_P14",
     "METHODOLOGY_P15",
     "METHODOLOGY_P16",
+    "METHODOLOGY_P17",
     "METHODOLOGY_P9",
     "P11_CHANNEL_LEVELS",
     "P11_MATRIX_LEVELS",

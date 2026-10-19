@@ -1441,6 +1441,21 @@ def _fot_p12_mock_dashboard(params: dict) -> dict:
     return {"cards": cards, "charts": [], "tables": tables, "meta": meta}
 
 
+def _fot_p17_mock_dashboard(params: dict) -> dict:
+    """P17 моком: боевой сборщик app.fot._p17_assemble на мок-зерне численности
+    (то же зерно, что у P12 — свод по всей группе компаний)."""
+    from app import fot
+
+    currency = _fot_first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+    cards, tables, warning = fot._p17_assemble(_fot_hc_mock())
+    meta = _fot_mock_meta("p17", params, currency, fot.METHODOLOGY_P17)
+    if warning:
+        meta["warning"] = warning
+    return {"cards": cards, "charts": [], "tables": tables, "meta": meta}
+
+
 def _fot_p13_mock_dashboard(params: dict) -> dict:
     """P13 моком: боевой сборщик app.fot._p13_assemble. HR-статьи — свой мок
     под контрольные числа PBI, ФОТ отделов — зерно P10/P11 (его направления
@@ -1644,12 +1659,14 @@ def fot_dashboard(tab: str, params: dict) -> dict:
     """
     from app import fot
 
-    if tab not in ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16"):
+    if tab not in ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17"):
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
     if tab in ("p10", "p11"):
         return _fot_half_mock_dashboard(tab, params)
     if tab == "p12":
         return _fot_p12_mock_dashboard(params)
+    if tab == "p17":
+        return _fot_p17_mock_dashboard(params)
     if tab == "p13":
         return _fot_p13_mock_dashboard(params)
     if tab == "p14":
