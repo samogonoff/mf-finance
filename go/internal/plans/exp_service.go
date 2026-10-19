@@ -173,9 +173,11 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 		// Не удалась перезаливка (миграция ClickHouse не применена, нет EXEC, сбой MSSQL) —
 		// не повод оставить форму без данных: пишем в журнал и читаем текущий снимок или,
 		// если его нет, процедуру напрямую.
+		var refreshWarn string
 		if r, ok := s.source.(ExpSourceRefresher); ok && force {
 			if rerr := r.RefreshSource(ctx); rerr != nil {
 				log.Printf("plans/exp: обновление снимка затрат не удалось, читаем то, что есть: %v", rerr)
+				refreshWarn = "Обновить снимок затрат не удалось: " + expSyncErrText(rerr) + ". Показаны данные прошлой заливки."
 			}
 		}
 		// След чтения: откуда реально взяты данные именно в этой загрузке.
@@ -201,6 +203,7 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 			run.status.State = ExpSyncOK
 		}
 		run.status.SourceKind, run.status.SourceAsOf = srcKind, srcAsOf
+		run.status.Warning = refreshWarn
 		s.syncMu.Unlock()
 		close(run.done)
 	}()

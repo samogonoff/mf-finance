@@ -75,6 +75,7 @@
       Загрузка из источника завершена.
       <button class="btn btn-sm btn-ghost" @click="reload({ keepFilter: true })">Показать новые строки</button>
     </p>
+    <p v-if="!syncRunning && form?.sync?.warning" class="banner banner-warn">{{ form.sync.warning }}</p>
     <p v-if="loaded && !editable" class="banner banner-warn">
       Только просмотр: карточка не в работе или период закрыт. Изменение утверждённых сумм —
       через возврат или переоткрытие периода с причиной.

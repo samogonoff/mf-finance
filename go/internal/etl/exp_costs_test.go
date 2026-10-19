@@ -3,6 +3,7 @@ package etl
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"testing"
 	"time"
 )
@@ -107,33 +108,107 @@ func TestExpCostsLayout_ProjectColumnAlternatives(t *testing.T) {
 	}
 }
 
+// stubExpCostsHooks подменяет часы источника, проверку «нужна ли заливка» и саму заливку;
+// load вызывается вместо настоящей, need — вместо проверки журнала.
+func stubExpCostsHooks(t *testing.T, need func() (bool, error), load func(ctx context.Context) (int64, int64, error)) {
+	t.Helper()
+	oc, on, ol := expCostsSourceClock, expCostsNeededFn, expCostsLoad
+	expCostsSourceClock = func(context.Context, *sql.DB) (string, int, error) { return "2026-10-19", 6, nil }
+	expCostsNeededFn = func(context.Context, *chClient, string, int, ExpCostsOpts) (bool, error) { return need() }
+	expCostsLoad = func(ctx context.Context, _ Deps, _ *chClient, _ ExpCostsOpts) (int64, int64, error) { return load(ctx) }
+	t.Cleanup(func() { expCostsSourceClock, expCostsNeededFn, expCostsLoad = oc, on, ol })
+}
+
 // Кнопка «Обновить из источника», пока идёт чужая заливка, ждёт её окончания (и свежий снимок
-// получает), а не отвечает ошибкой «заливка уже идёт»; ожидание прерывается по контексту.
+// получает), а не отвечает ошибкой «заливка уже идёт» и не перезаливает второй раз; ожидание
+// прерывается по контексту.
 func TestExpCostsRefreshNow_WaitsForRunningLoad(t *testing.T) {
-	w := NewExpCostsWorker(Deps{CHURL: "http://localhost:1"}, ExpCostsOpts{})
-	expCostsRunSem <- struct{}{} // чужая заливка идёт
-	done := make(chan error, 1)
-	go func() { done <- w.RefreshNow(context.Background()) }()
-	select {
-	case err := <-done:
-		t.Fatalf("RefreshNow не дождался окончания чужой заливки: %v", err)
-	case <-time.After(150 * time.Millisecond):
-	}
-	<-expCostsRunSem // чужая заливка закончилась
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("ждали nil, got %v", err)
+	release := make(chan struct{})
+	var mu sync.Mutex
+	loads := 0
+	stubExpCostsHooks(t, func() (bool, error) { return true, nil }, func(ctx context.Context) (int64, int64, error) {
+		mu.Lock()
+		loads++
+		mu.Unlock()
+		select {
+		case <-release:
+		case <-ctx.Done():
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("RefreshNow не вернулся после окончания чужой заливки")
+		return 10, 0, nil
+	})
+	w := NewExpCostsWorker(Deps{CHURL: "http://localhost:1"}, ExpCostsOpts{})
+
+	first := make(chan error, 1)
+	go func() { first <- w.RefreshNow(context.Background()) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := loads
+		mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("первая заливка не началась")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
-	expCostsRunSem <- struct{}{}
-	defer func() { <-expCostsRunSem }()
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
-	defer cancel()
+	second := make(chan error, 1)
+	go func() { second <- w.RefreshNow(context.Background()) }()
+	select {
+	case err := <-second:
+		t.Fatalf("вторая кнопка не дождалась окончания чужой заливки: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	// Ожидание прерывается по контексту.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	if err := w.RefreshNow(ctx); err == nil {
 		t.Fatal("ожидание должно прерываться по контексту")
 	}
+	cancel()
+
+	close(release)
+	for _, ch := range []chan error{first, second} {
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Fatalf("ждали nil, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("кнопка не вернулась после окончания заливки")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if loads != 1 {
+		t.Fatalf("заливок %d, ждали 1 (вторая кнопка только дожидается первой)", loads)
+	}
+}
+
+// Короткая проверка воркера «нужна ли заливка?» не занимает очередь заливок: кнопка в это
+// время не принимает её за чужую заливку.
+func TestExpCostsQueueNotHeldByNeedCheck(t *testing.T) {
+	inCheck := make(chan struct{})
+	releaseCheck := make(chan struct{})
+	stubExpCostsHooks(t, func() (bool, error) {
+		close(inCheck)
+		<-releaseCheck
+		return false, nil // заливка не нужна
+	}, func(context.Context) (int64, int64, error) { return 0, 0, nil })
+	w := NewExpCostsWorker(Deps{CHURL: "http://localhost:1"}, ExpCostsOpts{})
+	done := make(chan struct{})
+	go func() {
+		_, _, _ = RunExpCostsDaily(context.Background(), w.deps, w.opts)
+		close(done)
+	}()
+	<-inCheck
+	select {
+	case expCostsRunSem <- struct{}{}:
+		<-expCostsRunSem
+	default:
+		t.Fatal("очередь заливок занята во время проверки «нужна ли заливка»")
+	}
+	close(releaseCheck)
+	<-done
 }

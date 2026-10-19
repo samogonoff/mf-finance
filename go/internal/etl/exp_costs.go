@@ -172,6 +172,13 @@ func expCostsLayout(cols []string) (idx []int, err error) {
 	return idx, nil
 }
 
+// Точки подмены для тестов: часы источника, решение «нужна ли заливка» и сама заливка.
+var (
+	expCostsSourceClock = sourceClock
+	expCostsNeededFn    = expCostsNeeded
+	expCostsLoad        = runExpCosts
+)
+
 // expCostsRunSem — одна заливка за раз на процесс (канал: ожидание чужой заливки
 // прерывается по контексту).
 var expCostsRunSem = make(chan struct{}, 1)
@@ -186,19 +193,12 @@ func RunExpCostsDaily(ctx context.Context, deps Deps, opts ExpCostsOpts) (rows i
 	if err != nil {
 		return 0, false, fmt.Errorf("expcosts: ch client: %w", err)
 	}
-	select {
-	case expCostsRunSem <- struct{}{}:
-		defer func() { <-expCostsRunSem }()
-	default:
-		return 0, false, nil // уже идёт другая заливка
-	}
-
-	sourceDate, hour, err := sourceClock(ctx, deps.MSSQL)
+	sourceDate, hour, err := expCostsSourceClock(ctx, deps.MSSQL)
 	if err != nil {
 		return 0, false, fmt.Errorf("expcosts: часы MSSQL: %w", err)
 	}
 	if !opts.Force {
-		need, err := expCostsNeeded(ctx, ch, sourceDate, hour, opts)
+		need, err := expCostsNeededFn(ctx, ch, sourceDate, hour, opts)
 		if err != nil {
 			return 0, false, fmt.Errorf("expcosts: журнал: %w", err)
 		}
@@ -207,8 +207,17 @@ func RunExpCostsDaily(ctx context.Context, deps Deps, opts ExpCostsOpts) (rows i
 		}
 	}
 
+	// Очередь занимаем только на саму заливку, а не на проверку «нужна ли она»: короткая
+	// проверка воркера не должна принимать кнопку за «чужую заливку».
+	select {
+	case expCostsRunSem <- struct{}{}:
+		defer func() { <-expCostsRunSem }()
+	default:
+		return 0, false, nil // уже идёт другая заливка
+	}
+
 	started := time.Now()
-	n, skipped, err := runExpCosts(ctx, deps, ch, opts)
+	n, skipped, err := expCostsLoad(ctx, deps, ch, opts)
 	run := expCostsRun{
 		SourceDate: sourceDate, StartedAt: started.Unix(), FinishedAt: time.Now().Unix(),
 		Status: "ok", Rows: n, Skipped: skipped, TriggeredBy: opts.TriggeredBy,

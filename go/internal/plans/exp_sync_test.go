@@ -233,6 +233,10 @@ func TestExpSync_RefreshFailureStillReadsSource(t *testing.T) {
 	if st.SourceCells != 1 || st.Error != "" {
 		t.Fatalf("ошибка перезаливки не должна ломать загрузку: %+v", st)
 	}
+	// Пользователь должен узнать, что перезаливка не удалась (без деталей драйвера).
+	if st.Warning == "" || strings.Contains(st.Warning, "exp_costs") {
+		t.Fatalf("ждали предупреждение о неудавшейся перезаливке без внутренних имён: %q", st.Warning)
+	}
 	if src.refreshes != 1 || src.callCount() != 1 {
 		t.Fatalf("перезаливок %d, чтений %d", src.refreshes, src.callCount())
 	}
