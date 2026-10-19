@@ -678,7 +678,8 @@ const platformValues = computed<Record<number, Record<string, number>>>(() => {
     const vat = form.value?.vat_by_cfo?.[p.code_cfo] ?? vatBasisFromRate(vatByCountry(p.country));
     const cond = condOf(p.code_cfo);
 	map[p.code_cfo] = isInverse.value
-	  ? computePlatformInverse(inp, cond ?? { code_cfo: p.code_cfo, spp_pct: 0, markup_pct: 0, markup_total_pct: 0, shares: {} }, vat)
+	  ? computePlatformInverse(inp, cond ?? { code_cfo: p.code_cfo, spp_pct: 0, markup_pct: 0, markup_total_pct: 0, shares: {} }, vat,
+		  form.value?.norm_by_cfo?.[p.code_cfo] ?? 0)
 	  : computePlatform(inp, vat);
   }
   return map;
