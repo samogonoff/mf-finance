@@ -164,7 +164,9 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 	go func() {
 		// Контекст запроса здесь не годится: он умирает вместе с ответом, а загрузка
 		// должна дойти до конца и лечь в БД.
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		// Таймаут самой выгрузки отсчитывается внутри источника после получения очереди
+		// (expProcSem); здесь — только предохранитель от вечного зависания.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
 		defer cancel()
 		n, err := s.syncFromSource(ctx, c, in, force)
 		fin := time.Now()
@@ -203,13 +205,28 @@ func (s *ExpService) syncStatus(instanceID int64) ExpSyncStatus {
 	return ExpSyncStatus{State: ExpSyncIdle}
 }
 
-// expSyncErrText — причина для экрана: без адресов и логинов из текста драйвера.
+// expSyncErrText — причина для экрана. Текст драйвера (адрес сервера, порт, имя логина)
+// пользователю не отдаём: обобщённая причина, подробности — в журнале сервера. Свои
+// ошибки загрузки (нет колонки в выдаче процедуры) безопасны и показываются как есть,
+// обрезка — по символам, а не по байтам.
 func expSyncErrText(err error) string {
 	msg := err.Error()
-	if len(msg) > 300 {
-		msg = msg[:300] + "…"
+	low := strings.ToLower(msg)
+	switch {
+	case strings.Contains(low, "deadline exceeded") || strings.Contains(low, "timeout") || strings.Contains(low, "timed out"):
+		return "источник затрат не ответил вовремя (подробности в журнале сервера)"
+	case strings.Contains(low, "нет колонки") || strings.Contains(low, "нет обязательных колонок"):
+		r := []rune(msg)
+		if len(r) > 300 {
+			return string(r[:300]) + "…"
+		}
+		return msg
+	case strings.Contains(low, "login") || strings.Contains(low, "tcp") || strings.Contains(low, "dial") ||
+		strings.Contains(low, "connection") || strings.Contains(low, "refused") || strings.Contains(low, "no such host"):
+		return "нет соединения с источником затрат (проверьте доступ к OLAP; подробности в журнале сервера)"
+	default:
+		return "источник затрат вернул ошибку (подробности в журнале сервера)"
 	}
-	return msg
 }
 
 // SyncNow — POST /api/plans/exp/{cardId}/sync: перечитать состав строк из источника
@@ -247,6 +264,10 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 		return 0, err
 	}
 	if len(cells) == 0 {
+		// Источник ответил, но по этой форме строк нет. Это тоже «прочитано»: без отметки
+		// каждое открытие формы запускало бы выгрузку заново (минуты), а фронт —
+		// перезагружал форму по кругу.
+		s.factSynced(in.ID)
 		return 0, nil
 	}
 	attrs, err := s.source.Cfo(ctx, in.FormKind, in.Country)

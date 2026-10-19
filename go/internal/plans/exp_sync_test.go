@@ -3,9 +3,11 @@ package plans
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // stubExpSource — источник затрат с управляемой скоростью и ответом.
@@ -144,5 +146,60 @@ func TestExpGroupWithoutNumber(t *testing.T) {
 		if got := expGroupWithoutNumber(in); got != want {
 			t.Errorf("%q → %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Пустая выдача источника — тоже «прочитано»: форма не запускает выгрузку заново при
+// каждом открытии (раньше это зацикливало фронт: reload → новая выгрузка → reload).
+func TestExpSync_EmptySourceIsNotRestartedOnEveryOpen(t *testing.T) {
+	src := &stubExpSource{}
+	svc, in := newSyncTestService(src)
+	svc.ensureSync(Card{ID: 1}, in, false)
+	waitSyncState(t, svc, in.ID, ExpSyncOK)
+	for i := 0; i < 3; i++ {
+		svc.ensureSync(Card{ID: 1}, in, false)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if src.callCount() != 1 {
+		t.Fatalf("пустой ответ источника запускает выгрузку заново: вызовов %d", src.callCount())
+	}
+	if st := svc.syncStatus(in.ID); st.State != ExpSyncOK || st.SourceCells != 0 {
+		t.Fatalf("статус: %+v", st)
+	}
+}
+
+// Ожидание очереди процедуры прерывается по контексту, а не ждёт чужую выгрузку вечно.
+func TestExpProcQueue_WaitIsCancellable(t *testing.T) {
+	expProcSem <- struct{}{} // очередь занята «чужой» выгрузкой
+	defer func() { <-expProcSem }()
+	src := &expSource{db: nil, tables: ExpTables{CostsProc: "X"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := src.Costs(ctx, ExpKindRetail, "BY", []int{2026})
+	if err == nil || time.Since(start) > 2*time.Second {
+		t.Fatalf("ожидание очереди не прервано: err=%v за %v", err, time.Since(start))
+	}
+}
+
+// На экран — обобщённая причина, без адреса сервера, порта и логина из текста драйвера.
+func TestExpSyncErrText_HidesDriverDetails(t *testing.T) {
+	for _, raw := range []string{
+		"unable to open tcp connection with host '10.10.6.15:1433': dial tcp 10.10.6.15:1433: i/o timeout",
+		"mssql proc: Login failed for user 'someone'.",
+		"context deadline exceeded",
+		"что-то совсем неожиданное с адресом 10.10.6.15",
+	} {
+		got := expSyncErrText(errors.New(raw))
+		for _, leak := range []string{"10.10.6.15", "1433", "someone"} {
+			if strings.Contains(got, leak) {
+				t.Errorf("утечка %q в %q", leak, got)
+			}
+		}
+	}
+	// Свои ошибки про колонки показываются, обрезка — по символам (русский текст не рвётся).
+	long := errors.New("в выдаче процедуры нет колонки " + strings.Repeat("ё", 400))
+	if got := expSyncErrText(long); !utf8.ValidString(got) {
+		t.Errorf("обрезка разрезала символ: %q", got)
 	}
 }

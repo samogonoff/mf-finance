@@ -7,7 +7,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -139,8 +138,9 @@ const expCutoffYear = 2024
 // память процесса. Превышение видно в логе — это сигнал вернуться к источнику.
 const expRowCap = 400000
 
-// expProcMu — одна выгрузка процедуры затрат за раз.
-var expProcMu sync.Mutex
+// expProcSem — одна выгрузка процедуры затрат за раз (канал, а не мьютекс: ожидание
+// очереди прерывается по контексту).
+var expProcSem = make(chan struct{}, 1)
 
 type expSource struct {
 	mock   bool
@@ -186,8 +186,15 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 	// Процедура без параметров отдаёт весь бюджет (~1 млн строк, около 4 минут на
 	// OLAP). Параллельные выгрузки по разным странам и видам форм не нужны: идут по
 	// одной, чтобы не класть источник.
-	expProcMu.Lock()
-	defer expProcMu.Unlock()
+	// Очередь ждём с учётом контекста, а таймаут самой выгрузки отсчитываем после
+	// получения очереди: иначе формы в хвосте очереди «просыпались» бы с уже
+	// истёкшим временем и падали, хотя до них ещё не дошли.
+	select {
+	case expProcSem <- struct{}{}:
+		defer func() { <-expProcSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, "SET NOCOUNT ON; EXEC "+proc)
