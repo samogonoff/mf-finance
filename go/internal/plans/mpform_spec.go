@@ -246,6 +246,13 @@ func mpFormSpecFor(mode string) []MpLine {
 			spec[i].Kind = KindCalc
 			spec[i].Editable = false
 			spec[i].Formula = "= цена площадки без НДС / (1 + наценка)"
+		case BDiscount, BMarkdown:
+			// Как в Excel-формах large/small: «Скидки и уценки по всем площадкам МП» —
+			// итоговые суммы на группу, вводятся руками (в small вписаны числами; в
+			// large тактика = план скидок / план продаж × тактические продажи, но
+			// источника плана скидок в хранилище нет). Раньше строки в inverse-режиме
+			// не вводились и не считались: форма показывала «—» и 0,00.
+			spec[i].Editable = true
 		default:
 			if spec[i].CostLine {
 				spec[i].Kind = KindCalc
@@ -264,7 +271,8 @@ func mpFormSpecFor(mode string) []MpLine {
 func mpEditableSetFor(mode string) map[string]bool {
 	out := map[string]bool{}
 	for _, l := range mpFormSpecFor(mode) {
-		if l.Editable && (mode != CalcInverse || l.BlockType == BSalesManagerGross || l.BlockType == BSPP) {
+		if l.Editable && (mode != CalcInverse || l.BlockType == BSalesManagerGross || l.BlockType == BSPP ||
+			l.BlockType == BDiscount || l.BlockType == BMarkdown) {
 			out[l.BlockType] = true
 		}
 	}
