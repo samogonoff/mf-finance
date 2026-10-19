@@ -31,6 +31,16 @@ export interface DebtFilterOptions {
 // LensDefault на бэке (go/internal/reports/debt/lens.go).
 export const DEBT_LENS_DEFAULT = "В валюте договора";
 
+// Глубина задолженности на конец периода: просрочка по корзинам; current — остаток
+// без просрочки (Closing − Σ корзин). Значения положительные.
+export interface DebtAging {
+  current: number;
+  lt30: number;
+  d30_60: number;
+  d60_90: number;
+  gt90: number;
+}
+
 export interface DebtRow {
   country: Country;
   company: string;
@@ -54,6 +64,9 @@ export interface DebtRow {
   turnover_kz: number;
   closing_dz: number;
   closing_kz: number;
+
+  aging_dz?: DebtAging;
+  aging_kz?: DebtAging;
 
   revenue_period: number;
   revenue_last_month: number;

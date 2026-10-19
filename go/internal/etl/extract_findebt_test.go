@@ -49,3 +49,45 @@ func TestFinDebtConstants(t *testing.T) {
 		t.Errorf("VGO folder = %q", finDebtVGOFolder)
 	}
 }
+
+// Корзины просрочки FinDebt3 тянутся в extract тем же GROUP BY (суммой).
+func TestExtractFinDebtSQL_AgingBuckets(t *testing.T) {
+	q := extractFinDebtSQL(FinDebtTables{Fin3FQN: "[Payments].[report].[FinDebt3]"})
+	for _, col := range []string{"SUM30_D", "SUM60_D", "SUM90_D", "SUM999_D", "SUM30_K", "SUM60_K", "SUM90_K", "SUM999_K"} {
+		if !strings.Contains(q, "SUM(ISNULL(d."+col+", 0))") {
+			t.Errorf("extract не суммирует %s", col)
+		}
+	}
+	for _, alias := range []string{"AS sum30_d", "AS sum999_d", "AS sum30_k", "AS sum999_k"} {
+		if !strings.Contains(q, alias) {
+			t.Errorf("нет алиаса %q", alias)
+		}
+	}
+}
+
+// Оборотный extract: только ВГО-канал и служебный DEBT_FILTER, свёртка каналов в
+// зерно (снэпшот × ЮЛ × контрагент × счёт × линза × валюта), без пина линзы.
+func TestExtractFinDebtTurnoverSQL(t *testing.T) {
+	q := extractFinDebtTurnoverSQL(FinDebtTables{Fin1FQN: "[Payments].[report].[FinDebt1]"})
+	for _, want := range []string{
+		"[Payments].[report].[FinDebt1]",
+		"f.Channel = @grp",
+		"f.DEBT_FILTER = N'Отображать платежи и отгр.'",
+		"f.[Date] >= @min",
+		"SUM(ISNULL(f.D_Wholesales, 0))", "SUM(ISNULL(f.K_Wholesales, 0))",
+		"SUM(ISNULL(f.D_Payment, 0))", "SUM(ISNULL(f.K_Payment, 0))",
+		"LTRIM(RTRIM(f.CUR_FILTER))", "AS cur_filter", "AS acc_root", "AS date_from",
+		"GROUP BY",
+	} {
+		if !strings.Contains(q, want) {
+			t.Errorf("extractFinDebtTurnoverSQL не содержит %q", want)
+		}
+	}
+	if strings.Contains(q, "@cur") {
+		t.Errorf("линза не должна пиниться:\n%s", q)
+	}
+	// Channel/Employe не в ключе — каналы сворачиваются суммой.
+	if strings.Contains(q[strings.Index(q, "GROUP BY"):], "Channel") {
+		t.Errorf("Channel не должен быть в GROUP BY")
+	}
+}

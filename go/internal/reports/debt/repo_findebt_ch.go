@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -97,7 +98,15 @@ SELECT company_id,
        toString(sumIf(sum_d, snapshot_date = close_dt)) AS close_dz,
        toString(sumIf(sum_k, snapshot_date = close_dt)) AS close_kz,
        toString(sumIf(sum_d, snapshot_date = open_dt))  AS open_dz,
-       toString(sumIf(sum_k, snapshot_date = open_dt))  AS open_kz
+       toString(sumIf(sum_k, snapshot_date = open_dt))  AS open_kz,
+       toString(sumIf(sum30_d,  snapshot_date = close_dt)) AS dz30,
+       toString(sumIf(sum60_d,  snapshot_date = close_dt)) AS dz60,
+       toString(sumIf(sum90_d,  snapshot_date = close_dt)) AS dz90,
+       toString(sumIf(sum999_d, snapshot_date = close_dt)) AS dz999,
+       toString(sumIf(sum30_k,  snapshot_date = close_dt)) AS kz30,
+       toString(sumIf(sum60_k,  snapshot_date = close_dt)) AS kz60,
+       toString(sumIf(sum90_k,  snapshot_date = close_dt)) AS kz90,
+       toString(sumIf(sum999_k, snapshot_date = close_dt)) AS kz999
 FROM finance.fact_findebt_ccy FINAL
 WHERE snapshot_date IN (close_dt, open_dt)%[5]s%[3]s%[4]s
 GROUP BY company_id, counterparty_id, acc, acc_root, doc_number
@@ -122,7 +131,130 @@ func (r *findebtCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 	if err != nil {
 		return nil, err
 	}
-	return decodeFinDebtReport(body, lens)
+	rows, err := decodeFinDebtReport(body, lens)
+	if err != nil {
+		return nil, err
+	}
+	// Объём продаж — из оборотов FinDebt1 (fact_findebt_turnover). Деградируем мягко:
+	// если миграция 013 ещё не накатана / поток не залит, отчёт остаётся рабочим,
+	// только без выручки (в логе видно причину).
+	rev, err := r.revenueRows(ctx, f, lens)
+	if err != nil {
+		log.Printf("debt.findebt-ch: выручка недоступна (fact_findebt_turnover): %v", err)
+		return rows, nil
+	}
+	return append(rows, rev...), nil
+}
+
+// revenueAccCondition — счета выручки по странам (ТЗ): РБ/РФ — 90.x, КЗ — 6010,
+// УЗ — 9010. Привязка к ЮЛ обязательна: 6010 в узбекском плане — расчёты с
+// поставщиками, а не выручка.
+func revenueAccCondition() string {
+	byCountry := func(c Country) string {
+		inns := []string{}
+		for _, e := range entities {
+			if e.Country == c {
+				inns = append(inns, e.INN)
+			}
+		}
+		return quoteList(inns)
+	}
+	return "acc_root = '90'" +
+		" OR (company_id IN (" + byCountry(CountryKZ) + ") AND acc_root = '6010')" +
+		" OR (company_id IN (" + byCountry(CountryUZ) + ") AND acc_root = '9010')"
+}
+
+// findebtRevenueQuery — объём продаж (кредитовый оборот счетов выручки) из месячных
+// накоплений fact_findebt_turnover (значения накопительные с начала месяца).
+//
+//	period     = Σ по месяцам [from..to] накопления на последнем снэпшоте ≤ to, минус
+//	             накопление на снэпшоте < from в месяце from (с 1-го числа — минус 0)
+//	last_month = накопление на последнем снэпшоте календарного месяца перед месяцем to
+//	             (ТЗ: «за последний месяц» от даты формирования)
+//
+// Фильтр счетов отчёта на выручку НЕ действует: она определена счетами 90.x, а не
+// счетами долга (60/62/76). Фильтр по ЮЛ и линза — действуют.
+func findebtRevenueQuery(inns []string, from, to, lens string) string {
+	orgClause := ""
+	if len(inns) > 0 {
+		orgClause = " AND company_id IN (" + quoteList(inns) + ")"
+	}
+	base := `FROM finance.fact_findebt_turnover FINAL
+    WHERE (` + revenueAccCondition() + `) AND cur_filter = '` + strings.ReplaceAll(lens, "'", "''") + `'` + orgClause
+	branch := func(kind, cond string) string {
+		return `SELECT '` + kind + `' AS kind, company_id, any(company) AS company, counterparty_id,
+           any(counterparty) AS counterparty, acc, currency,
+           argMax(k_wholesales + d_wholesales, snapshot_date) AS v
+    ` + base + ` AND ` + cond + `
+    GROUP BY company_id, counterparty_id, acc, currency, toStartOfMonth(snapshot_date)`
+	}
+	return fmt.Sprintf(`
+SELECT company_id,
+       any(company)      AS company,
+       counterparty_id,
+       any(counterparty) AS counterparty,
+       acc,
+       currency,
+       toString(sumIf(v, kind = 'close') - sumIf(v, kind = 'open')) AS revenue_period,
+       toString(sumIf(v, kind = 'last'))                            AS revenue_last_month
+FROM (
+    %[1]s
+    UNION ALL
+    %[2]s
+    UNION ALL
+    %[3]s
+)
+GROUP BY company_id, counterparty_id, acc, currency
+HAVING abs(sumIf(v, kind = 'close') - sumIf(v, kind = 'open')) > 0.005 OR abs(sumIf(v, kind = 'last')) > 0.005
+ORDER BY company, counterparty, acc
+FORMAT JSONEachRow`,
+		branch("close", fmt.Sprintf("snapshot_date <= toDate('%[2]s') AND snapshot_date >= toStartOfMonth(toDate('%[1]s'))", from, to)),
+		branch("open", fmt.Sprintf("snapshot_date < toDate('%[1]s') AND snapshot_date >= toStartOfMonth(toDate('%[1]s'))", from)),
+		branch("last", fmt.Sprintf("snapshot_date >= addMonths(toStartOfMonth(toDate('%[1]s')), -1) AND snapshot_date < toStartOfMonth(toDate('%[1]s'))", to)))
+}
+
+// revenueRows — строки выручки (счёт 90.x, без договора) для слияния со сводом долга.
+func (r *findebtCHRepo) revenueRows(ctx context.Context, f Filters, lens string) ([]DebtRow, error) {
+	body, err := r.post(ctx, findebtRevenueQuery(f.EntityINNs, asDate(f.DateFrom), asDate(f.DateTo), lens))
+	if err != nil {
+		return nil, err
+	}
+	return decodeFinDebtRevenue(body, lens)
+}
+
+func decodeFinDebtRevenue(body []byte, lens string) ([]DebtRow, error) {
+	out := []DebtRow{}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	for dec.More() {
+		var jr struct {
+			CompanyID        string `json:"company_id"`
+			Company          string `json:"company"`
+			CounterpartyID   string `json:"counterparty_id"`
+			Counterparty     string `json:"counterparty"`
+			Acc              string `json:"acc"`
+			Currency         string `json:"currency"`
+			RevenuePeriod    string `json:"revenue_period"`
+			RevenueLastMonth string `json:"revenue_last_month"`
+		}
+		if err := dec.Decode(&jr); err != nil {
+			return nil, fmt.Errorf("debt.findebt-ch.Revenue: decode: %w", err)
+		}
+		country := countryOfINN(jr.CompanyID)
+		out = append(out, DebtRow{
+			Country:          country,
+			Company:          strings.TrimSpace(jr.Company),
+			CompanyINN:       jr.CompanyID,
+			Partner:          strings.TrimSpace(jr.Counterparty),
+			PartnerINN:       jr.CounterpartyID,
+			Account:          jr.Acc,
+			AccountName:      accountNameFor(country, AccountRoot(jr.Acc)),
+			Subaccount:       jr.Acc,
+			Currency:         lensCurrency(lens, jr.Currency),
+			RevenuePeriod:    parseF(jr.RevenuePeriod),
+			RevenueLastMonth: parseF(jr.RevenueLastMonth),
+		})
+	}
+	return out, nil
 }
 
 // decodeFinDebtReport разбирает JSONEachRow свода ДЗ/КЗ по договорам. Общий для
@@ -148,6 +280,14 @@ func decodeFinDebtReport(body []byte, lens string) ([]DebtRow, error) {
 			CloseKZ        string `json:"close_kz"`
 			OpenDZ         string `json:"open_dz"`
 			OpenKZ         string `json:"open_kz"`
+			DZ30           string `json:"dz30"`
+			DZ60           string `json:"dz60"`
+			DZ90           string `json:"dz90"`
+			DZ999          string `json:"dz999"`
+			KZ30           string `json:"kz30"`
+			KZ60           string `json:"kz60"`
+			KZ90           string `json:"kz90"`
+			KZ999          string `json:"kz999"`
 		}
 		if err := dec.Decode(&jr); err != nil {
 			return nil, fmt.Errorf("debt.findebt-ch.Report: decode: %w", err)
@@ -180,6 +320,9 @@ func decodeFinDebtReport(body []byte, lens string) ([]DebtRow, error) {
 			ClosingKZ:       -closeKZ,
 			TurnoverDZ:      closeDZ - openDZ,
 			TurnoverKZ:      (-closeKZ) - (-openKZ),
+			// Корзины КЗ во вьюхе отрицательны → в положительный долг, как и сальдо.
+			AgingDZ: Aging{Lt30: parseF(jr.DZ30), D30to60: parseF(jr.DZ60), D60to90: parseF(jr.DZ90), Gt90: parseF(jr.DZ999)}.withCurrent(closeDZ),
+			AgingKZ: Aging{Lt30: -parseF(jr.KZ30), D30to60: -parseF(jr.KZ60), D60to90: -parseF(jr.KZ90), Gt90: -parseF(jr.KZ999)}.withCurrent(-closeKZ),
 		}
 		out = append(out, row)
 	}

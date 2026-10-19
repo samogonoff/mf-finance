@@ -24,9 +24,10 @@ func sqlEscape(s string) string { return strings.ReplaceAll(s, "'", "''") }
 // схлопнуться, а любой SUM в отчёте обязан фильтровать одну линзу (иначе ×3).
 
 // FinDebtTables — трёхчастные имена вьюх FinDebt на OLAP (БД Payments, схема report).
-// Fin1FQN оставлен для совместимости конфигурации, extract использует только Fin3FQN.
+// Fin1FQN — источник оборотных строк (продажи/оплаты, extract_findebt_turnover.go);
+// пусто → поток оборотов пропускается, остальное работает.
 type FinDebtTables struct {
-	Fin1FQN string // [Payments].[report].[FinDebt1] (не используется extract'ом)
+	Fin1FQN string // [Payments].[report].[FinDebt1] — обороты (продажи/оплаты с начала месяца)
 	Fin3FQN string // [Payments].[report].[FinDebt3] — источник
 }
 
@@ -52,6 +53,15 @@ type factFinDebtRow struct {
 	Currency       string  `json:"currency"`
 	SumD           string  `json:"sum_d"`
 	SumK           string  `json:"sum_k"`
+	// Корзины просрочки (FinDebt3.SUM{30,60,90,999}_{D,K}): <30, 30–60, 60–90, >90 дн.
+	Sum30D  string `json:"sum30_d"`
+	Sum60D  string `json:"sum60_d"`
+	Sum90D  string `json:"sum90_d"`
+	Sum999D string `json:"sum999_d"`
+	Sum30K  string `json:"sum30_k"`
+	Sum60K  string `json:"sum60_k"`
+	Sum90K  string `json:"sum90_k"`
+	Sum999K string `json:"sum999_k"`
 }
 
 // extractFinDebtSQL — документная детализация по снэпшотам >= @min.
@@ -85,7 +95,15 @@ SELECT
     LTRIM(RTRIM(d.CUR_FILTER))                            AS cur_filter,
     LTRIM(RTRIM(ISNULL(d.Currency, '')))                 AS currency,
     CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM_D, 0)))        AS sum_d,
-    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM_K, 0)))        AS sum_k
+    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM_K, 0)))        AS sum_k,
+    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM30_D, 0)))      AS sum30_d,
+    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM60_D, 0)))      AS sum60_d,
+    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM90_D, 0)))      AS sum90_d,
+    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM999_D, 0)))     AS sum999_d,
+    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM30_K, 0)))      AS sum30_k,
+    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM60_K, 0)))      AS sum60_k,
+    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM90_K, 0)))      AS sum90_k,
+    CONVERT(VARCHAR(40), SUM(ISNULL(d.SUM999_K, 0)))     AS sum999_k
 FROM ` + t.Fin3FQN + ` d WITH (NOLOCK)
 WHERE d.Folder = @grp
   AND (d.SUM_D <> 0 OR d.SUM_K <> 0)
@@ -97,7 +115,7 @@ GROUP BY CONVERT(CHAR(10), d.[Date], 23), LTRIM(RTRIM(d.UNPOrg)),
          LTRIM(RTRIM(d.CUR_FILTER)), LTRIM(RTRIM(ISNULL(d.Currency, '')))`
 }
 
-// scanFinDebtRow — Scan строки extractFinDebtSQL (17 колонок).
+// scanFinDebtRow — Scan строки extractFinDebtSQL (25 колонок).
 func scanFinDebtRow(rows *sql.Rows) (factFinDebtRow, error) {
 	var r factFinDebtRow
 	var payDate sql.NullString
@@ -105,6 +123,7 @@ func scanFinDebtRow(rows *sql.Rows) (factFinDebtRow, error) {
 		&r.SnapshotDate, &r.CompanyID, &r.Company, &r.CounterpartyID, &r.Counterparty,
 		&r.Acc, &r.AccRoot, &r.DocNumber, &r.DocDate, &r.Description,
 		&r.Delay, &payDate, &r.DayDelay, &r.CurFilter, &r.Currency, &r.SumD, &r.SumK,
+		&r.Sum30D, &r.Sum60D, &r.Sum90D, &r.Sum999D, &r.Sum30K, &r.Sum60K, &r.Sum90K, &r.Sum999K,
 	); err != nil {
 		return r, fmt.Errorf("scan findebt: %w", err)
 	}

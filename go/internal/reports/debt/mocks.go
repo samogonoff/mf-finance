@@ -6,7 +6,7 @@ import "time"
 // Покрывает edge-case'ы UI: 4 страны, 3 валюты, 1 партнёр с двумя договорами,
 // смесь ДЗ/КЗ внутри одного субсчёта, строка с просрочкой и без.
 func mockRows() []DebtRow {
-	return []DebtRow{
+	rows := []DebtRow{
 		// ТД (РФ) ↔ Mark Formelle Kazakhstan — два договора, мульти-валюта
 		{
 			Country: CountryRF, Company: "ООО ТД «Марк Формэль»", CompanyINN: "6950135110",
@@ -90,6 +90,18 @@ func mockRows() []DebtRow {
 			RevenuePeriod: 0, RevenueLastMonth: 0,
 		},
 	}
+	for i := range rows {
+		rows[i].AgingDZ = mockAging(rows[i].ClosingDZ)
+		rows[i].AgingKZ = mockAging(rows[i].ClosingKZ)
+	}
+	return rows
+}
+
+// mockAging раскладывает остаток по корзинам просрочки в фиксированных долях
+// (<30: 25%, 30–60: 15%, 60–90: 10%, >90: 10%); остаток 40% — без просрочки.
+func mockAging(closing float64) Aging {
+	a := Aging{Lt30: closing * 0.25, D30to60: closing * 0.15, D60to90: closing * 0.10, Gt90: closing * 0.10}
+	return a.withCurrent(closing)
 }
 
 // applyLens перекрашивает валюту mock-строк под выбранную линзу: BYN/USD дают

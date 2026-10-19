@@ -20,6 +20,9 @@
           <th class="col-num group-th" colspan="2">На начало</th>
           <th class="col-num group-th" colspan="2">Обороты</th>
           <th class="col-num group-th" colspan="2">На конец</th>
+          <th class="col-num group-th" colspan="2">Продажи</th>
+          <th class="col-num group-th" colspan="5">Глубина ДЗ (просрочка, дн.)</th>
+          <th class="col-num group-th" colspan="5">Глубина КЗ (просрочка, дн.)</th>
         </tr>
         <tr>
           <th class="col-num">ДЗ</th>
@@ -28,6 +31,15 @@
           <th class="col-num">КЗ</th>
           <th class="col-num">ДЗ</th>
           <th class="col-num">КЗ</th>
+          <th class="col-num">За период</th>
+          <th class="col-num">За посл. месяц</th>
+          <template v-for="side in ['dz', 'kz']" :key="side">
+            <th class="col-num">Без просрочки</th>
+            <th class="col-num">&lt; 30</th>
+            <th class="col-num">30–60</th>
+            <th class="col-num">60–90</th>
+            <th class="col-num">&gt; 90</th>
+          </template>
         </tr>
       </thead>
       <tbody>
@@ -62,6 +74,10 @@
             <td class="col-num">{{ moneyAuto(node.sums.turnover_kz, node.currency) }}</td>
             <td class="col-num">{{ moneyAuto(node.sums.closing_dz, node.currency) }}</td>
             <td class="col-num">{{ moneyAuto(node.sums.closing_kz, node.currency) }}</td>
+            <td class="col-num">{{ moneyAuto(node.sums.revenue_period, node.currency) }}</td>
+            <td class="col-num">{{ moneyAuto(node.sums.revenue_last_month, node.currency) }}</td>
+            <td v-for="f in agingFields" :key="`dz-${f}`" class="col-num">{{ moneyAuto(node.sums[`dz_${f}`], node.currency) }}</td>
+            <td v-for="f in agingFields" :key="`kz-${f}`" class="col-num">{{ moneyAuto(node.sums[`kz_${f}`], node.currency) }}</td>
           </tr>
 
           <!-- Лист — строка-валюта -->
@@ -84,6 +100,10 @@
             <td class="col-num">{{ moneyFmt(node.row.turnover_kz, node.row.currency) }}</td>
             <td class="col-num">{{ moneyFmt(node.row.closing_dz, node.row.currency) }}</td>
             <td class="col-num">{{ moneyFmt(node.row.closing_kz, node.row.currency) }}</td>
+            <td class="col-num">{{ moneyFmt(node.row.revenue_period, node.row.currency) }}</td>
+            <td class="col-num">{{ moneyFmt(node.row.revenue_last_month, node.row.currency) }}</td>
+            <td v-for="f in agingFields" :key="`dz-${f}`" class="col-num">{{ moneyFmt(agingOf(node.row, 'dz', f), node.row.currency) }}</td>
+            <td v-for="f in agingFields" :key="`kz-${f}`" class="col-num">{{ moneyFmt(agingOf(node.row, 'kz', f), node.row.currency) }}</td>
           </tr>
 
           <!-- Подгруппа документов по типу операции -->
@@ -107,14 +127,15 @@
             <td class="col-num">—</td>
             <td class="col-num">—</td>
             <td class="col-num">—</td>
+            <td v-for="n in 12" :key="`pad-${n}`" class="col-num">—</td>
           </tr>
 
           <!-- Документы drilldown -->
           <tr v-else-if="node.kind === 'doc-loading'" class="row-leaf">
-            <td colspan="13" class="docs-loading">Загружаем документы…</td>
+            <td colspan="25" class="docs-loading">Загружаем документы…</td>
           </tr>
           <tr v-else-if="node.kind === 'doc-error'" class="row-leaf">
-            <td colspan="13" class="docs-error">{{ node.message }}</td>
+            <td colspan="25" class="docs-error">{{ node.message }}</td>
           </tr>
           <tr v-else-if="node.kind === 'doc'" class="row-leaf row-doc">
             <td class="col-sticky col-article">
@@ -139,11 +160,12 @@
             <!-- ДЗ/КЗ документа формируют сальдо на конец -->
             <td class="col-num">{{ node.doc.dz_change ? moneyFmt(node.doc.dz_change, node.currency) : "—" }}</td>
             <td class="col-num">{{ node.doc.kz_change ? moneyFmt(node.doc.kz_change, node.currency) : "—" }}</td>
+            <td v-for="n in 12" :key="`pad-${n}`" class="col-num">—</td>
           </tr>
         </template>
 
         <tr v-if="!rows.length" class="row-leaf">
-          <td colspan="13" class="empty-row">Нет данных по выбранным фильтрам.</td>
+          <td colspan="25" class="empty-row">Нет данных по выбранным фильтрам.</td>
         </tr>
       </tbody>
     </table>
@@ -183,6 +205,8 @@ interface RowSums {
   closing_kz: number;
   revenue_period: number;
   revenue_last_month: number;
+  // глубина ДЗ/КЗ: dz_current … kz_gt90 (см. agingFields)
+  [aging: `dz_${string}` | `kz_${string}`]: number;
 }
 
 interface GroupNode {
@@ -344,23 +368,45 @@ const ensureDocs = async (groupKey: string) => {
 };
 
 // ── построение группировки ────────────────────────────────────────────────
-const emptySums = (): RowSums => ({
-  opening_dz: 0, opening_kz: 0,
-  turnover_dz: 0, turnover_kz: 0,
-  closing_dz: 0, closing_kz: 0,
-  revenue_period: 0, revenue_last_month: 0
-});
+// Корзины глубины долга: порядок = порядок колонок. Ключи совпадают с DebtAging.
+const agingFields = ["current", "lt30", "d30_60", "d60_90", "gt90"] as const;
+type AgingField = (typeof agingFields)[number];
 
-const addSums = (a: RowSums, r: DebtRow): RowSums => ({
-  opening_dz: a.opening_dz + r.opening_dz,
-  opening_kz: a.opening_kz + r.opening_kz,
-  turnover_dz: a.turnover_dz + r.turnover_dz,
-  turnover_kz: a.turnover_kz + r.turnover_kz,
-  closing_dz: a.closing_dz + r.closing_dz,
-  closing_kz: a.closing_kz + r.closing_kz,
-  revenue_period: a.revenue_period + r.revenue_period,
-  revenue_last_month: a.revenue_last_month + r.revenue_last_month
-});
+// Значение корзины строки; бэкенд без корзин (старый/mock) → 0.
+const agingOf = (r: DebtRow, side: "dz" | "kz", f: AgingField): number =>
+  (side === "dz" ? r.aging_dz : r.aging_kz)?.[f] ?? 0;
+
+const emptySums = (): RowSums => {
+  const s: RowSums = {
+    opening_dz: 0, opening_kz: 0,
+    turnover_dz: 0, turnover_kz: 0,
+    closing_dz: 0, closing_kz: 0,
+    revenue_period: 0, revenue_last_month: 0
+  };
+  for (const f of agingFields) {
+    s[`dz_${f}`] = 0;
+    s[`kz_${f}`] = 0;
+  }
+  return s;
+};
+
+const addSums = (a: RowSums, r: DebtRow): RowSums => {
+  const s: RowSums = {
+    opening_dz: a.opening_dz + r.opening_dz,
+    opening_kz: a.opening_kz + r.opening_kz,
+    turnover_dz: a.turnover_dz + r.turnover_dz,
+    turnover_kz: a.turnover_kz + r.turnover_kz,
+    closing_dz: a.closing_dz + r.closing_dz,
+    closing_kz: a.closing_kz + r.closing_kz,
+    revenue_period: a.revenue_period + r.revenue_period,
+    revenue_last_month: a.revenue_last_month + r.revenue_last_month
+  };
+  for (const f of agingFields) {
+    s[`dz_${f}`] = (a[`dz_${f}`] ?? 0) + agingOf(r, "dz", f);
+    s[`kz_${f}`] = (a[`kz_${f}`] ?? 0) + agingOf(r, "kz", f);
+  }
+  return s;
+};
 
 const flat = computed<Node[]>(() => {
   if (!props.rows.length) return [];

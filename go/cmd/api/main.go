@@ -213,6 +213,7 @@ func main() {
 	// берёт watermark из CH; на findebt-live (без CH) воркер бессмысленен.
 	if mssqlDB != nil && cfg.DebtBackend != "findebt-live" {
 		fdTables := etl.FinDebtTables{
+			Fin1FQN: "[" + cfg.PremasterPaymentsDatabase + "].[" + cfg.DebtFinDebtSchema + "].[" + cfg.DebtFinDebt1Table + "]",
 			Fin3FQN: "[" + cfg.PremasterPaymentsDatabase + "].[" + cfg.DebtFinDebtSchema + "].[" + cfg.DebtFinDebt3Table + "]",
 		}
 		etl.NewFinDebtWorker(etl.Deps{
