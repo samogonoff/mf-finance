@@ -110,6 +110,23 @@ func expKindFilter(kind string) (group1 string, group3 []string) {
 // национальной валюте страны: у формы несколько стран с разными валютами (опт).
 func expKindInBYN(kind string) bool { return kind == ExpKindOpt }
 
+// expSalesGroupWords — части названия группы статьи (GroupPL), по которым строка источника — не расход: продажи,
+// себестоимость, маржа, отгрузки. Процедура затрат отдаёт их вместе с расходами по тем же ЦФО (проверка 21.10.2026:
+// у розницы РБ продажи, себестоимость и маржа — на сотни миллионов BYN против десятков миллионов расходов), а листы
+// Excel «Розница», «ОПТ», «ИМ» берут в блок расходов только расходные коды. В форму расходов такие строки не идут.
+var expSalesGroupWords = []string{"ПРОДАЖИ", "СЕБЕСТОИМОСТЬ", "МАРЖА", "ОТГРУЗК"}
+
+// expIsSalesGroupPL — группа статьи относится к продажам, себестоимости, марже или отгрузкам (не к расходам).
+func expIsSalesGroupPL(groupPL string) bool {
+	g := strings.ToUpper(strings.TrimSpace(groupPL))
+	for _, w := range expSalesGroupWords {
+		if strings.Contains(g, w) {
+			return true
+		}
+	}
+	return false
+}
+
 // expDropCodePL — служебные коды PL, которые ТЗ §2.1 велит отбросить.
 var expDropCodePL = map[int]bool{50: true, 93: true, 1: true}
 
@@ -385,6 +402,9 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 			}
 		}
 		c.GroupPL, c.Expense = str("grouppl"), str("expense")
+		if _, legacy := CfoExpCodeFromKind(kind); !legacy && expIsSalesGroupPL(c.GroupPL) {
+			continue // продажи, себестоимость, маржа — не расходы формы
+		}
 		c.CFO = str("cfo")
 		c.GroupCFO2, c.CountryCompany, c.Company = str("groupcfo2"), str("country_company"), str("company")
 		if _, ok := idx["amount"]; ok && !inBYN {
