@@ -391,6 +391,10 @@ export function useRetail() {
   const lflStatuses = (): Promise<{ source: string; statuses: RetailLFLStatusCount[] }> =>
     $fetch(`${base}/api/plans/retail/lfl-statuses`, { headers: authHeader() });
 
+  /** Обновление LFL-статусов магазинов из Лисы во всех периодах (только админ). dryRun — предпросмотр без записи. */
+  const lflRefresh = (dryRun: boolean): Promise<RetailLFLRefreshResult> =>
+    $fetch(`${base}/api/plans/retail/lfl-refresh${dryRun ? "?dry_run=1" : ""}`, { method: "POST", headers: authHeader() });
+
   /** Схема согласования карточек розницы и МП периода (ТЗ доработок п. 4.3). */
   const routeScheme = (plId: number): Promise<{ pl_id: number; cards: RouteSchemeCard[] }> =>
     $fetch(`${base}/api/plans/period/${plId}/route-scheme`, { headers: authHeader() });
@@ -448,7 +452,7 @@ export function useRetail() {
 
   return {
     form, saveForm, bulk, params, saveParams, lflOverride,
-    summary, consolidated, lflStatuses, routeScheme, strategyMpShares, validate, exportXlsx, importXlsx, importTemplateXlsx,
+    summary, consolidated, lflStatuses, lflRefresh, routeScheme, strategyMpShares, validate, exportXlsx, importXlsx, importTemplateXlsx,
     presets, savePreset, deletePreset
   };
 }
@@ -488,6 +492,20 @@ export interface RetailConsolidated {
   pending: string[];
   /** Шаги, на которые можно вернуть страну с 1.4. */
   return_steps: { code: string; name: string }[];
+}
+
+/** Итог обновления LFL-статусов по всем периодам (предпросмотр или применение). */
+export interface RetailLFLRefreshResult {
+  dry_run: boolean;
+  stores_in_lisa: number;
+  rows_scanned: number;
+  /** Статус Лисы отличается, но зависит от времени и в прошлые периоды не переносится. */
+  rows_skipped: number;
+  rows_changed: number;
+  cards_changed: number;
+  locked_cards: number;
+  transitions: { from: string; to: string; rows: number }[];
+  periods: { card_id: number; country: string; year: number; month: number; card_status: string; editable: boolean; changed: number }[];
 }
 
 export interface RetailLFLStatusCount {
