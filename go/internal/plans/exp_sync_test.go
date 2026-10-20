@@ -266,6 +266,8 @@ func TestExpQualifiedProc(t *testing.T) {
 		" [ZATRATY_DLYA_OKSANY_BYSTRYE] ":                 "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]",
 		"[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]": "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]",
 		"Other.dbo.Proc":                                  "Other.dbo.Proc",
+		"dbo.ZATRATY":                                     "[Budgeting].[dbo].[ZATRATY]",
+		"fin.[Proc]":                                      "[Budgeting].[fin].[Proc]",
 		"":                                                "",
 	} {
 		if got := expQualifiedProc(in); got != want {

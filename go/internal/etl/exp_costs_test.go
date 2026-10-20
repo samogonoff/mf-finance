@@ -73,6 +73,9 @@ func TestExpCostsOptsDefaults(t *testing.T) {
 	if o2.Proc != "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]" {
 		t.Fatalf("имя процедуры: %q", o2.Proc)
 	}
+	if got := qualifyBudgetingProc("fin.Proc"); got != "[Budgeting].[fin].[Proc]" {
+		t.Fatalf("схема.имя: %q", got)
+	}
 	o3 := ExpCostsOpts{Proc: "[Budgeting].[dbo].[X]"}
 	o3.normalize()
 	if o3.Proc != "[Budgeting].[dbo].[X]" {

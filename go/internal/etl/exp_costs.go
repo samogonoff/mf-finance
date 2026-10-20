@@ -40,10 +40,9 @@ func (o *ExpCostsOpts) normalize() {
 	if strings.TrimSpace(o.Proc) == "" {
 		o.Proc = "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]"
 	}
-	// Имя без базы (как в .env.example) из БД подключения (FinDWH) не находится.
-	if o.Proc = strings.TrimSpace(o.Proc); !strings.Contains(o.Proc, ".") {
-		o.Proc = "[Budgeting].[dbo].[" + strings.Trim(o.Proc, "[]") + "]"
-	}
+	// Имя без базы (как в .env.example) из БД подключения (FinDWH) не находится: недостающее
+	// дополняется до [Budgeting].[схема].[имя] (та же логика — plans.expQualifiedProc).
+	o.Proc = qualifyBudgetingProc(o.Proc)
 	if o.AfterHour <= 0 {
 		o.AfterHour = 5
 	}
@@ -528,4 +527,19 @@ func expCostsSwapAllowed(rows, have int64) error {
 		return fmt.Errorf("процедура вернула %d строк при %d в снимке — подмену не делаем", rows, have)
 	}
 	return nil
+}
+
+// qualifyBudgetingProc: «имя» → [Budgeting].[dbo].[имя], «схема.имя» → [Budgeting].[схема].[имя],
+// «база.схема.имя» — как есть.
+func qualifyBudgetingProc(name string) string {
+	name = strings.TrimSpace(name)
+	parts := strings.Split(name, ".")
+	switch len(parts) {
+	case 1:
+		return "[Budgeting].[dbo].[" + strings.Trim(parts[0], "[] ") + "]"
+	case 2:
+		return "[Budgeting].[" + strings.Trim(parts[0], "[] ") + "].[" + strings.Trim(parts[1], "[] ") + "]"
+	default:
+		return name
+	}
 }
