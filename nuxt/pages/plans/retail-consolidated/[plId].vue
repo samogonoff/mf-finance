@@ -105,14 +105,11 @@
       <p v-if="refreshError" class="banner banner-neg">{{ refreshError }}</p>
       <p v-if="refreshDone" class="banner banner-pos">{{ refreshDone }}</p>
       <div v-if="refresh" class="refresh-box">
-        <p v-if="!refresh.rows_changed" class="banner banner-info">
+        <template v-if="!refresh.rows_changed">
+        <p class="banner banner-info">
           Менять нечего: устаревшего «нового» у уже сравнимых магазинов не осталось (магазинов в Лисе: {{ refresh.stores_in_lisa }}).
         </p>
-        <p v-if="refresh.rows_skipped" class="muted">
-          Не переносится в прошлые периоды: {{ refresh.rows_skipped }} строк. Статусы «закрыт», «реконструкция», «до года» и «новый»
-          зависят от даты (магазин закрыли в сентябре — в январе он ещё работал), поэтому в прошлом исправляется только устаревшее
-          «новый» у магазинов, которые в периоде уже были сравнимыми (LFL). В редактируемых карточках статусы обновляются при открытии формы.
-        </p>
+        </template>
         <template v-else>
           <p class="banner banner-warn">
             Будет изменён статус у {{ refresh.rows_changed }} строк в {{ refresh.cards_changed }} карточках периодов, из них
@@ -132,6 +129,11 @@
             <button class="btn btn-sm btn-ghost" :disabled="refreshBusy" @click="refresh = null">Отмена</button>
           </div>
         </template>
+        <p v-if="refresh.rows_skipped" class="muted">
+          Не переносится в прошлые периоды: {{ refresh.rows_skipped }} строк. Статусы «закрыт», «реконструкция», «до года» и «новый»
+          зависят от даты (магазин закрыли в сентябре — в январе он ещё работал), поэтому в прошлом исправляется только устаревшее
+          «новый» у магазинов, которые в периоде уже были сравнимыми (LFL). В редактируемых карточках статусы обновляются при открытии формы.
+        </p>
       </div>
       <table class="data-table compact">
         <thead>
