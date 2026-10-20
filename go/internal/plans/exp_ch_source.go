@@ -193,6 +193,12 @@ func expCostsSQLScenario(kind, country string, years []int, scenario string) str
 		drop = append(drop, strconv.Itoa(c))
 	}
 	w = append(w, "code_pl NOT IN ("+strings.Join(drop, ",")+")")
+	if _, cfo := CfoExpCodeFromKind(kind); !cfo {
+		// Продажи, себестоимость, маржа, отгрузки — не расходы (см. expSalesGroupWords).
+		for _, word := range expSalesGroupWords {
+			w = append(w, "positionCaseInsensitiveUTF8(group_pl, "+chLit(word)+") = 0")
+		}
+	}
 	// Проект: пусто или «Нет проектов!» (ответ 5.4), иначе строки задвоятся по проектам.
 	w = append(w, "(project_name = '' OR project_name = "+chLit(expProjectsNone)+")")
 	if scenario != "" {
