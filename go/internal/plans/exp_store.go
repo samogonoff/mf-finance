@@ -21,8 +21,8 @@ type ExpRepo interface {
 	SaveReadOnly(ctx context.Context, instanceID int64, scenario string, cells []ExpCell) error
 	// FillPlanFromSource подставляет в план бюджет источника (ExpSourceBudget). Пустые ячейки заполняются,
 	// ячейки, ещё не тронутые человеком (source = budget), обновляются по источнику; введённое руками, из файла,
-	// расчётом или реестром не перезаписывается. Журнал изменений не ведётся: это не ввод человека.
-	FillPlanFromSource(ctx context.Context, instanceID int64, cells []ExpCell) error
+	// расчётом или реестром не перезаписывается. Ячейки source = budget в месяцах не раньше fromMonth, которых нет в\n	// cells (бюджет в источнике исчез), удаляются. Редактируемость карточки проверяется в той же транзакции, под\n	// блокировкой строки карточки. Журнал изменений не ведётся: это не ввод человека.
+	FillPlanFromSource(ctx context.Context, instanceID int64, fromMonth int, cells []ExpCell) error
 	// FactBasis — на чём построен сохранённый факт экземпляра: ExpFactBasisPayments, если в нём
 	// лежат платёжные значения, иначе пусто. Признак хранится вместе с данными и переживает рестарт.
 	FactBasis(ctx context.Context, instanceID int64) (string, error)
@@ -329,13 +329,36 @@ func (s *expRepo) SaveReadOnly(ctx context.Context, instanceID int64, scenario s
 }
 
 // FillPlanFromSource — см. ExpRepo.FillPlanFromSource.
-func (s *expRepo) FillPlanFromSource(ctx context.Context, instanceID int64, cells []ExpCell) error {
-	b := &pgx.Batch{}
+func (s *expRepo) FillPlanFromSource(ctx context.Context, instanceID int64, fromMonth int, cells []ExpCell) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Редактируемость карточки читаем СЕЙЧАС и под блокировкой строки: загрузка из источника идёт минуты,
+	// и за это время карточку могли отправить на согласование. FOR SHARE ждёт завершения такого перехода и не
+	// даёт ему начаться, пока мы пишем, — план утверждённой карточки не меняется.
+	var status string
+	var locked bool
+	if err := tx.QueryRow(ctx, `
+		SELECT c.status, c.locked
+		  FROM exp_instance i JOIN form_card c ON c.id = i.card_id
+		 WHERE i.id = $1
+		   FOR SHARE OF c`, instanceID).Scan(&status, &locked); err != nil {
+		return err
+	}
+	if !cardEditable(Card{FormCode: TemplateExp, Status: status, Locked: locked}) {
+		return nil
+	}
+
+	var cfos, pls, months []int32
 	for _, c := range cells {
 		if c.Amount == nil || c.Month < 1 || c.Month > 12 {
 			continue
 		}
-		b.Queue(`
+		cfos, pls, months = append(cfos, int32(c.CodeCFO)), append(pls, int32(c.CodePL)), append(months, int32(c.Month))
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO exp_value (row_id, scenario, month, amount, source)
 			SELECT r.id, 'plan', $3, $4, $6
 			  FROM exp_row r
@@ -343,21 +366,25 @@ func (s *expRepo) FillPlanFromSource(ctx context.Context, instanceID int64, cell
 			ON CONFLICT (row_id, scenario, month) DO UPDATE SET
 			    amount = EXCLUDED.amount, updated_at = NOW()
 			 WHERE exp_value.source = $6`,
-			instanceID, c.CodeCFO, c.Month, *c.Amount, c.CodePL, ExpSourceBudget)
-	}
-	if b.Len() == 0 {
-		return nil
-	}
-	br := s.pool.SendBatch(ctx, b)
-	defer br.Close()
-	for i := 0; i < b.Len(); i++ {
-		if _, err := br.Exec(); err != nil {
+			instanceID, c.CodeCFO, c.Month, *c.Amount, c.CodePL, ExpSourceBudget); err != nil {
 			return err
 		}
 	}
-	return nil
+	// Ячейки, подставленные из бюджета и ещё не тронутые человеком, зеркалят источник: если бюджет по ключу
+	// исчез (строку тактики удалили или обнулили), старая сумма не должна остаться «актуальным бюджетом».
+	// Прошедшие месяцы (раньше месяца карточки) закрыты и не трогаются; введённое руками не затрагивается.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM exp_value v USING exp_row r
+		 WHERE r.id = v.row_id AND r.instance_id = $1
+		   AND v.scenario = 'plan' AND v.source = $2 AND v.month >= $3
+		   AND NOT EXISTS (
+		       SELECT 1 FROM unnest($4::int[], $5::int[], $6::int[]) AS t(cfo, pl, m)
+		        WHERE t.cfo = r.code_cfo AND t.pl = r.code_pl AND t.m = v.month)`,
+		instanceID, ExpSourceBudget, fromMonth, cfos, pls, months); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
-
 // ClearPaymentsFact — см. ExpRepo.ClearPaymentsFact.
 func (s *expRepo) ClearPaymentsFact(ctx context.Context, instanceID int64) error {
 	_, err := s.pool.Exec(ctx, `

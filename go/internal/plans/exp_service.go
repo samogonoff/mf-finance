@@ -446,7 +446,7 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 	// Бюджет источника — в план, как колонка «бюджет» листов Excel. Только в открытой карточке: утверждённая
 	// форма остаётся такой, какой её согласовали.
 	if cardEditable(card) {
-		if err := s.repo.FillPlanFromSource(ctx, in.ID, budget); err != nil {
+		if err := s.repo.FillPlanFromSource(ctx, in.ID, card.Month, budget); err != nil {
 			return len(cells), err
 		}
 	}

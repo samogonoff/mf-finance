@@ -300,6 +300,7 @@ type recordingExpRepo struct {
 	paymentsWipe int // сколько раз очищался платёжный факт
 	budget       []ExpCell
 	budgetCalls  int
+	budgetFrom   int
 }
 
 // Бюджет источника («Тактика бюджет (таргеты)») подставляется в план автоматически, как колонка «бюджет» листов
@@ -317,6 +318,9 @@ func TestExpSync_BudgetFromSourceFillsOpenMonths(t *testing.T) {
 	card := Card{ID: 1, FormCode: TemplateExp, Status: CardDraft, Year: 2026, Month: 10}
 	if _, err := svc.syncFromSource(context.Background(), card, repo.inst, true); err != nil {
 		t.Fatal(err)
+	}
+	if repo.budgetFrom != 10 {
+		t.Errorf("удаление исчезнувшего бюджета должно идти с месяца карточки (10), получили %d", repo.budgetFrom)
 	}
 	if len(repo.budget) != 2 {
 		t.Fatalf("в план должны попасть октябрь и ноябрь 2026: %+v", repo.budget)
@@ -360,10 +364,11 @@ func (r *recordingExpRepo) ClearPaymentsFact(context.Context, int64) error {
 	return nil
 }
 
-func (r *recordingExpRepo) FillPlanFromSource(_ context.Context, _ int64, cells []ExpCell) error {
+func (r *recordingExpRepo) FillPlanFromSource(_ context.Context, _ int64, fromMonth int, cells []ExpCell) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.budget = append(r.budget, cells...)
+	r.budgetFrom = fromMonth
 	r.budgetCalls++
 	return nil
 }

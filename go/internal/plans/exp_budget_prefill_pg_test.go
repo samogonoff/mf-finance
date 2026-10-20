@@ -57,7 +57,7 @@ func TestExpRepo_FillPlanFromSource_PG(t *testing.T) {
 	}
 
 	// 1. Пустые ячейки заполняются.
-	if err := repo.FillPlanFromSource(ctx, inst.ID, []ExpCell{bud(24, 10, 1000), bud(24, 11, 1100), bud(54, 10, 500)}); err != nil {
+	if err := repo.FillPlanFromSource(ctx, inst.ID, 10, []ExpCell{bud(24, 10, 1000), bud(24, 11, 1100), bud(54, 10, 500)}); err != nil {
 		t.Fatal(err)
 	}
 	if v, src, ok := plan(24, 10); !ok || v != 1000 || src != ExpSourceBudget {
@@ -68,7 +68,7 @@ func TestExpRepo_FillPlanFromSource_PG(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 3. Источник обновился: «бюджетные» ячейки следуют за ним, ручная — нет.
-	if err := repo.FillPlanFromSource(ctx, inst.ID, []ExpCell{bud(24, 10, 2000), bud(24, 11, 2100), bud(54, 10, 600)}); err != nil {
+	if err := repo.FillPlanFromSource(ctx, inst.ID, 10, []ExpCell{bud(24, 10, 2000), bud(24, 11, 2100), bud(54, 10, 600)}); err != nil {
 		t.Fatal(err)
 	}
 	if v, src, _ := plan(24, 10); v != 1234 || src != ExpSourceManual {
@@ -80,14 +80,51 @@ func TestExpRepo_FillPlanFromSource_PG(t *testing.T) {
 	if v, _, _ := plan(54, 10); v != 600 {
 		t.Errorf("аренда за октябрь: %v", v)
 	}
-	// 4. Пустой набор и пустая сумма — не ошибка и ничего не пишут.
-	if err := repo.FillPlanFromSource(ctx, inst.ID, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.FillPlanFromSource(ctx, inst.ID, []ExpCell{{CodeCFO: 101, CodePL: 24, Month: 12}}); err != nil {
+	// 4. Ячейка без суммы не создаётся.
+	if err := repo.FillPlanFromSource(ctx, inst.ID, 10, []ExpCell{bud(24, 11, 2100), bud(54, 10, 600), {CodeCFO: 101, CodePL: 24, Month: 12}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, ok := plan(24, 12); ok {
 		t.Error("ячейка без суммы не должна создаваться")
+	}
+	// 5. Бюджет по ключу исчез из источника (24/ноябрь не пришёл): нетронутая «бюджетная» ячейка удаляется,
+	// введённое руками (24/октябрь) и пришедшие снова ячейки остаются.
+	if err := repo.FillPlanFromSource(ctx, inst.ID, 10, []ExpCell{bud(54, 10, 600)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := plan(24, 11); ok {
+		t.Error("исчезнувший из источника бюджет должен быть удалён из плана")
+	}
+	if v, src, ok := plan(24, 10); !ok || v != 1234 || src != ExpSourceManual {
+		t.Errorf("введённое руками удалено вместе с исчезнувшим бюджетом: %v %q %v", v, src, ok)
+	}
+	if v, _, ok := plan(54, 10); !ok || v != 600 {
+		t.Errorf("пришедший бюджет должен остаться: %v %v", v, ok)
+	}
+	// Месяцы раньше fromMonth (закрыты) удаление не затрагивает: карточка ноябрьская, октябрь не трогаем.
+	if err := repo.FillPlanFromSource(ctx, inst.ID, 11, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := plan(54, 10); !ok {
+		t.Error("месяц раньше fromMonth не должен удаляться")
+	}
+	// 6. Карточку отправили на согласование, пока шла загрузка: план не меняется — ни подстановки, ни удаления.
+	if _, err := pool.Exec(ctx, `UPDATE form_card SET status = $2 WHERE id = $1`, card.ID, CardOnApproval); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.FillPlanFromSource(ctx, inst.ID, 10, []ExpCell{bud(54, 10, 7777), bud(24, 12, 5)}); err != nil {
+		t.Fatal(err)
+	}
+	if v, _, _ := plan(54, 10); v != 600 {
+		t.Errorf("в карточке на согласовании бюджет перезаписан: %v", v)
+	}
+	if _, _, ok := plan(24, 12); ok {
+		t.Error("в карточку на согласовании подставлена новая ячейка")
+	}
+	if err := repo.FillPlanFromSource(ctx, inst.ID, 10, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := plan(54, 10); !ok {
+		t.Error("из карточки на согласовании удалён бюджет")
 	}
 }
