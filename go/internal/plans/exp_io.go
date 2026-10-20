@@ -241,7 +241,7 @@ type expNameRow struct {
 // — для листов без колонки CodeCFO (ответ И-8).
 func (s *ExpService) rowIndex(ctx context.Context, instanceID int64) (
 	map[[2]int]map[int]*float64, map[expNameKey]expNameRow, error) {
-	rows, _, err := s.repo.Rows(ctx, instanceID, ExpFilter{Limit: 5000})
+	rows, err := expAllRows(ctx, s.repo, instanceID)
 	if err != nil {
 		return nil, nil, err
 	}

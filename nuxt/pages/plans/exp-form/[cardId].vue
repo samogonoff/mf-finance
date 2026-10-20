@@ -416,7 +416,8 @@
                     :class="{ 'is-dirty': isDirty(item.row, mm) }"
                     :data-grid-cell="`${item.index}:${ci}`"
                     :value="cellText(item.row, mm)"
-                    :disabled="!editable"
+                    :disabled="!editable || monthLocked(mm)"
+                    :title="monthLocked(mm) ? `Месяц уже прошёл — по нему подтягивается факт, планировать его нельзя` : undefined"
                     inputmode="decimal"
                     @focus="nav.onFocusCell(item.index, ci)"
                     @keydown="nav.onKeydown($event, item.index, ci)"
@@ -436,7 +437,7 @@
                       v-if="viewMode !== 'month'"
                       class="btn btn-xs btn-ghost"
                       :disabled="!editable || busy"
-                      :title="viewMode === 'year' ? 'Размножить значение января на все двенадцать месяцев' : `Размножить значение месяца ${monthName} до декабря`"
+                      :title="viewMode === 'year' ? (cardMonth === 1 ? 'Размножить значение января на все двенадцать месяцев' : `Размножить значение месяца ${monthName} до декабря (прошедшие месяцы не меняются)`) : `Размножить значение месяца ${monthName} до декабря`"
                       @click="spread(item.row, viewMode === 'year' ? 'spread_year' : 'spread_to_end')"
                     >{{ viewMode === "year" ? "на год" : "до конца года" }}</button>
                     <button
@@ -746,6 +747,8 @@ const viewMode = ref<ViewMode>("tail");
 const showRef = ref(true);
 const cardMonth = computed(() => Math.min(12, Math.max(1, card.value?.month || 1)));
 const monthName = computed(() => MONTHS_SHORT[cardMonth.value - 1]);
+// Месяцы до месяца карточки прошли: по ним подтягивается факт, правке они не подлежат.
+const monthLocked = (m: number): boolean => m < cardMonth.value;
 const shownMonths = computed<number[]>(() => {
   if (viewMode.value === "year") return Array.from({ length: 12 }, (_, i) => i + 1);
   if (viewMode.value === "month") return [cardMonth.value];
@@ -1003,14 +1006,14 @@ const spread = async (row: ExpRow, action: ExpBulkAction) => {
   error.value = "";
   note.value = "";
   try {
-    // База размножения — первый показанный месяц (январь только в виде «весь год»).
-    const baseMonth = shownMonths.value[0];
+    // База размножения — первый показанный месяц; в виде «весь год» — месяц карточки (прошедшие месяцы не планируются).
+    const baseMonth = viewMode.value === "year" ? cardMonth.value : shownMonths.value[0];
     const amount = action === "clear_row" ? null : (draftOrSaved(row, baseMonth) ?? null);
     if (action !== "clear_row" && amount === null) {
       error.value = `Размножать нечего: сначала заполните ${MONTHS_SHORT[baseMonth - 1]} этой строки`;
       return;
     }
-    const win = viewMode.value === "year" ? {} : { month: baseMonth, month_to: shownMonths.value[shownMonths.value.length - 1] };
+    const win = viewMode.value === "year" && cardMonth.value === 1 ? {} : { month: baseMonth, month_to: shownMonths.value[shownMonths.value.length - 1] };
     await api.bulk(cardId, { action, code_cfo: row.code_cfo, code_pl: row.code_pl, amount, ...win });
     // Правки по этой строке уже не актуальны — их перезаписал сервер.
     const next = new Map(drafts.value);

@@ -37,7 +37,7 @@ func (s *ExpService) Validate(ctx context.Context, p Principal, cardID int64) (E
 	// Проверяем ВСЮ форму, а не видимый срез отправителя: иначе ответственный с
 	// узким срезом «проходил» бы проверку, потому что чужие незаполненные строки
 	// ему не видны (та же ошибка уже ловилась в рознице).
-	rows, _, err := s.repo.Rows(ctx, in.ID, ExpFilter{Limit: 5000})
+	rows, err := expAllRows(ctx, s.repo, in.ID)
 	if err != nil {
 		return ExpValidationReport{}, err
 	}

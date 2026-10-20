@@ -57,7 +57,7 @@ func (s *ExpService) Summary(ctx context.Context, p Principal, cardID int64) (Ex
 	if err != nil {
 		return ExpSummary{}, err
 	}
-	rows, _, err := s.repo.Rows(ctx, in.ID, ExpFilter{Limit: 5000})
+	rows, err := expAllRows(ctx, s.repo, in.ID)
 	if err != nil {
 		return ExpSummary{}, err
 	}

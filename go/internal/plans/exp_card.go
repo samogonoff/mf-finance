@@ -60,7 +60,7 @@ func (p *ExpCardProvider) FormSnapshot(ctx context.Context, c Card) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	rows, _, err := p.repo.Rows(ctx, in.ID, ExpFilter{Limit: 5000})
+	rows, err := expAllRows(ctx, p.repo, in.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func (p *ExpCardProvider) PublishRows(ctx context.Context, c Card) ([]PublishRow
 	if err != nil {
 		return nil, err
 	}
-	rows, _, err := p.repo.Rows(ctx, in.ID, ExpFilter{Limit: 5000})
+	rows, err := expAllRows(ctx, p.repo, in.ID)
 	if err != nil {
 		return nil, err
 	}

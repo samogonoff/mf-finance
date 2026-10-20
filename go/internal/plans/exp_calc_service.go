@@ -112,7 +112,7 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 		return res, errors.New("план продаж недоступен — расчёт §6.1 не выполняется")
 	}
 
-	rows, _, err := s.repo.Rows(ctx, in.ID, ExpFilter{Limit: 5000})
+	rows, err := expAllRows(ctx, s.repo, in.ID)
 	if err != nil {
 		return res, err
 	}

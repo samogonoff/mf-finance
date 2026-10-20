@@ -35,6 +35,8 @@ type ExpService struct {
 	// syncState — состояние фоновой загрузки по экземпляру; syncWait — сколько
 	// Form готов ждать её окончания, прежде чем отдать форму как есть (быстрые
 	// источники и фикстуры успевают, процедура на OLAP — нет).
+	// rates — курсы для пересчёта стран в BYN (свод расходов розницы); nil — без пересчёта.
+	rates *RateBook
 	syncMu    sync.Mutex
 	syncState map[int64]*expSyncRun
 	syncWait  time.Duration
@@ -418,7 +420,28 @@ func (s *ExpService) SaveCells(ctx context.Context, p Principal, cardID int64, c
 	if !cardEditable(c) {
 		return 0, errors.New("период закрыт на запись: изменения только после возврата или reopen")
 	}
+	cells = expDropPastMonths(c, cells)
+	if len(cells) == 0 {
+		return 0, nil
+	}
 	return s.repo.SaveValues(ctx, in.ID, cells, p.UserID, c.CurrentVersion)
+}
+
+// expDropPastMonths — месяцы плана до месяца карточки уже прошли: по ним подтягивается
+// факт, и планировать их нельзя. Скрытое от правки на форме закрывается и на сервере,
+// чтобы импорт Excel и массовые действия не перезаписали прошедшие месяцы.
+func expDropPastMonths(c Card, cells []ExpCell) []ExpCell {
+	if c.Month <= 1 {
+		return cells
+	}
+	out := cells[:0:0]
+	for _, x := range cells {
+		if x.Month >= 1 && x.Month < c.Month {
+			continue
+		}
+		out = append(out, x)
+	}
+	return out
 }
 
 // SaveComment — комментарий к строке.
@@ -464,6 +487,9 @@ func (s *ExpService) Bulk(ctx context.Context, p Principal, cardID int64, req Ex
 	cells, err := expBulkCells(req)
 	if err != nil {
 		return 0, err
+	}
+	if cells = expDropPastMonths(c, cells); len(cells) == 0 {
+		return 0, nil
 	}
 	return s.repo.SaveValues(ctx, in.ID, cells, p.UserID, c.CurrentVersion)
 }
