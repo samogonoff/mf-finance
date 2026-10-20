@@ -381,9 +381,6 @@
         </div>
       </div>
       <template #footer>
-        <NuxtLink v-if="cards.some((c) => c.form_code === 'TPL-CFO-EXP' && (c.scope_key || '').startsWith('R-'))" :to="`/plans/exp-consolidated/${id}`" class="btn btn-ghost">
-          <Icon name="lucide:wallet" /> Свод расходов розницы · 4 страны
-        </NuxtLink>
         <NuxtLink :to="`/plans/process/${id}`" class="btn btn-primary"><Icon name="lucide:list-checks" /> В кокпит процесса</NuxtLink>
       </template>
     </PlansModal>
