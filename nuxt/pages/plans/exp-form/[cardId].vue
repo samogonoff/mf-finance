@@ -552,7 +552,12 @@
 
 <script setup lang="ts">
 import { apiError } from "~/utils/apiError";
-import { money } from "~/utils/format";
+import { money as moneyBase, type MoneyOpts } from "~/utils/format";
+
+// Суммы формы — в национальной валюте карточки (BYN/RUB/KZT/UZS), а не всегда в рублях.
+function money(v: number | null | undefined, opts: MoneyOpts = {}): string {
+  return moneyBase(v, { currency: card.value?.currency || undefined, ...opts });
+}
 import { useGridNav } from "~/composables/useGridNav";
 import {
   useExpForm, expCell, expRowTotal, MONTHS_SHORT,
