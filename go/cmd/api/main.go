@@ -560,7 +560,8 @@ func main() {
 		WithRegistries(plans.NewExpRegRepo(pool)).
 		WithTravelNorms(plans.NewExpTravelNorms(pool, plansRates)).
 		WithSalesPlan(plansExpSource).
-		WithRates(plansRates)
+		WithRates(plansRates).
+		WithScope(plansScope)
 	// Публикация формы 1.5 (ТЗ §10). Ответы 34 и 11 перенесли сюда публикацию
 	// общих затрат МП и статей 51/52/54 под ЦФО 250 — из формы продаж они убраны
 	// в этом же релизе, иначе приёмник получил бы двойные затраты.

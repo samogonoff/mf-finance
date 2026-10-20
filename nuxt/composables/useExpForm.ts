@@ -116,7 +116,9 @@ export interface ExpConsGroup extends ExpConsAmounts {
   unassigned?: boolean;
   lines: ExpConsLine[];
 }
+export type ExpConsChannel = "retail" | "im" | "opt";
 export interface ExpConsolidated {
+  channel?: ExpConsChannel;
   pl_id: number;
   year: number;
   month: number;
@@ -354,8 +356,8 @@ export const useExpForm = () => {
     });
   };
 
-  const consolidated = (plId: number, window: ExpConsWindow = "tail"): Promise<ExpConsolidated> =>
-    $fetch<ExpConsolidated>(`${base}/api/plans/exp-consolidated/${plId}?window=${window}`, { headers: authHeader() });
+  const consolidated = (plId: number, window: ExpConsWindow = "tail", channel: ExpConsChannel = "retail"): Promise<ExpConsolidated> =>
+    $fetch<ExpConsolidated>(`${base}/api/plans/exp-consolidated/${plId}?window=${window}&channel=${channel}`, { headers: authHeader() });
 
   const syncNow = (cardId: number): Promise<ExpSync> =>
     $fetch<ExpSync>(`${base}/api/plans/exp/${cardId}/sync`, { method: "POST", headers: authHeader() });

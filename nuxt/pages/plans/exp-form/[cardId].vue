@@ -53,6 +53,14 @@
         >
           <Icon name="lucide:wallet" /> Свод 4 страны
         </NuxtLink>
+        <NuxtLink
+          v-if="card && (card.scope_key === 'IM-BY' || card.scope_key === 'OPT')"
+          :to="`/plans/exp-consolidated/${card.pl_id}?channel=${card.scope_key === 'OPT' ? 'opt' : 'im'}`"
+          class="btn btn-ghost"
+          :title="card.scope_key === 'OPT' ? 'Расходы опта по странам РБ, РФ, УЗ в BYN: группы PL, факт для сравнения' : 'Расходы интернет-магазина в BYN: группы PL, факт для сравнения'"
+        >
+          <Icon name="lucide:wallet" /> {{ card.scope_key === "OPT" ? "Свод опта" : "Свод ИМ" }}
+        </NuxtLink>
         <button class="btn btn-sm btn-ghost" @click="columnsOpen = !columnsOpen">
           <Icon name="lucide:columns-3" /> Колонки
         </button>
