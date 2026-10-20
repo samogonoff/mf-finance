@@ -290,12 +290,12 @@
     <section class="card view-card">
       <div class="f-row view-row">
         <span class="view-lbl">Период формы</span>
-        <div class="seg" role="group" aria-label="Период формы">
-          <button type="button" class="seg-btn" :class="{ on: viewMode === 'month' }" @click="setViewMode('month')">{{ monthName }} {{ planYear }}</button>
-          <button type="button" class="seg-btn" :class="{ on: viewMode === 'tail' }" @click="setViewMode('tail')">{{ monthName }}–дек</button>
-          <button type="button" class="seg-btn" :class="{ on: viewMode === 'year' }" @click="setViewMode('year')">весь год</button>
+        <div class="segmented" role="group" aria-label="Период формы">
+          <button type="button" :aria-pressed="viewMode === 'month'" @click="setViewMode('month')">{{ monthName }} {{ planYear }}</button>
+          <button type="button" :aria-pressed="viewMode === 'tail'" @click="setViewMode('tail')">{{ monthName }}–дек</button>
+          <button type="button" :aria-pressed="viewMode === 'year'" @click="setViewMode('year')">весь год</button>
         </div>
-        <label class="view-chk" title="Факт того же месяца прошлого года, прошлого месяца и текущего месяца рядом с вводом (только чтение)">
+        <label class="checkbox" title="Факт того же месяца прошлого года, прошлого месяца и текущего месяца рядом с вводом (только чтение)">
           <input v-model="showRef" type="checkbox" @change="saveViewPrefs" />
           Сравнение с фактом
         </label>
@@ -1165,16 +1165,11 @@ onBeforeRouteLeave(() => {
 .f-sel { flex: 0 1 180px; min-width: 140px; }
 
 .grid-card { padding: 0; overflow: hidden; }
-.view-card { padding: var(--space-2, 8px) var(--space-3, 12px); }
-.view-row { display: flex; align-items: center; gap: var(--space-3, 12px); flex-wrap: wrap; }
-.view-lbl { color: var(--text-secondary); font-size: var(--fs-sm, 13px); }
-.seg { display: inline-flex; border: 1px solid var(--border, #d8dce6); border-radius: 8px; overflow: hidden; }
-.seg-btn { background: transparent; border: 0; padding: 6px 12px; font: inherit; cursor: pointer; color: var(--text-primary); }
-.seg-btn + .seg-btn { border-left: 1px solid var(--border, #d8dce6); }
-.seg-btn.on { background: var(--brand, #4f46e5); color: #fff; }
-.view-chk { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: var(--fs-sm, 13px); }
-.view-hint { color: var(--text-secondary); font-size: var(--fs-xs, 12px); }
-.c-ref { min-width: 96px; color: var(--text-secondary); }
+.view-card { padding: var(--sp-4) var(--sp-5); }
+.view-row { display: flex; align-items: center; gap: var(--sp-5); flex-wrap: wrap; }
+.view-lbl { color: var(--text-muted); font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.03em; }
+.view-hint { color: var(--text-muted); font-size: var(--fs-xs); }
+.c-ref { min-width: 96px; color: var(--text-secondary); background: var(--bg-surface-2); }
 
 /* Сетка шире экрана всегда: 12 месяцев плюс атрибуты. Прокрутка живёт внутри
    карточки, страница по горизонтали не едет. */
