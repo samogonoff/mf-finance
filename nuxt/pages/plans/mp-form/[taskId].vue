@@ -313,7 +313,7 @@
                 </td>
 
                 <!-- Итого -->
-                <td class="cell total-cell" :class="{ 'has-ref': showRef }">
+                <td class="cell total-cell">
                   <template v-if="line.scope === 'total' && editableCell(line)">
                     <NumberField
                       :model-value="totals[line.block_type] ?? null"
@@ -1032,7 +1032,7 @@ onMounted(() => {
 
 <style scoped>
 .ref-toggle { margin-left: auto; font-size: var(--fs-xs); }
-.ref-col { background: var(--bg-surface-2); min-width: 120px; }
+.col-total.ref-col { background: var(--bg-surface-2); min-width: 120px; }
 .ref-cell { background: var(--bg-surface-2); text-align: right; }
 .sticky-period { position: sticky; top: 0; z-index: 15; background: var(--bg, #fff); padding-bottom: var(--sp-2); }
 .tactic-month { margin: 2px 0; font-size: 1.35rem; font-weight: 750; }
