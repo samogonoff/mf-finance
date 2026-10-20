@@ -558,7 +558,8 @@ func main() {
 	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource).
 		WithRegistries(plans.NewExpRegRepo(pool)).
 		WithTravelNorms(plans.NewExpTravelNorms(pool, plansRates)).
-		WithSalesPlan(plansExpSource)
+		WithSalesPlan(plansExpSource).
+		WithRates(plansRates)
 	// Публикация формы 1.5 (ТЗ §10). Ответы 34 и 11 перенесли сюда публикацию
 	// общих затрат МП и статей 51/52/54 под ЦФО 250 — из формы продаж они убраны
 	// в этом же релизе, иначе приёмник получил бы двойные затраты.
@@ -647,6 +648,7 @@ func main() {
 	// требуют финансиста и проверяются в сервисе, а не ролью на маршруте.
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormGet))
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormSave))
+	mux.HandleFunc("GET /api/plans/exp-consolidated/{plId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ConsolidatedGet))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/sync", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.SyncPost))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.BulkApply))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/totals", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.TotalsGet))

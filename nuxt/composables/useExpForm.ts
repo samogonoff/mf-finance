@@ -86,6 +86,50 @@ export interface ExpSync {
   source_as_of?: string; // когда залит ночной снимок затрат (только clickhouse)
 }
 
+// Свод расходов розницы по четырём странам (всё в BYN).
+export type ExpConsWindow = "month" | "tail" | "year";
+export interface ExpConsCountry {
+  country: string;
+  card_id?: number;
+  title?: string;
+  status?: string;
+  nat_currency?: string;
+  rows: number;
+  rate: number;
+  plan: number;
+  error?: string;
+}
+export interface ExpConsAmounts {
+  plan: Record<string, number>;
+  plan_total: number;
+  fact_ly: number;
+  fact_prev: number;
+  fact_cur: number;
+}
+export interface ExpConsLine extends ExpConsAmounts {
+  code_pl: number;
+  expense: string;
+}
+export interface ExpConsGroup extends ExpConsAmounts {
+  group: string;
+  unassigned?: boolean;
+  lines: ExpConsLine[];
+}
+export interface ExpConsolidated {
+  pl_id: number;
+  year: number;
+  month: number;
+  window: ExpConsWindow;
+  from_month: number;
+  to_month: number;
+  currency: string;
+  countries: ExpConsCountry[];
+  groups: ExpConsGroup[];
+  total: ExpConsAmounts;
+  fact_basis?: "payments";
+  missing?: string[];
+}
+
 export interface ExpCell {
   code_cfo: number;
   code_pl: number;
@@ -295,6 +339,9 @@ export const useExpForm = () => {
     });
   };
 
+  const consolidated = (plId: number, window: ExpConsWindow = "tail"): Promise<ExpConsolidated> =>
+    $fetch<ExpConsolidated>(`${base}/api/plans/exp-consolidated/${plId}?window=${window}`, { headers: authHeader() });
+
   const syncNow = (cardId: number): Promise<ExpSync> =>
     $fetch<ExpSync>(`${base}/api/plans/exp/${cardId}/sync`, { method: "POST", headers: authHeader() });
 
@@ -394,6 +441,6 @@ export const useExpForm = () => {
   return {
     form, save, bulk, totals, cards, validate, summary, params, saveParam, calc,
     registry, saveRegRow, copyRegRow, deleteRegRow,
-    presets, savePreset, exportUrl, importFile, syncNow
+    presets, savePreset, exportUrl, importFile, syncNow, consolidated
   };
 };
