@@ -1,5 +1,10 @@
 package plans
 
+import (
+	"strings"
+	"sync/atomic"
+)
+
 // Реестр форм комплекта: какие карточки существуют в периоде и с какими
 // атрибутами. Данные из ТЗ:
 //   - МП (ТЗ §2.2): крупные и мелкие — независимые подзадачи одного периода;
@@ -10,6 +15,25 @@ package plans
 //     страны свой перечень магазинов, свой набор статей, своя национальная валюта
 //     и своё единственное юридическое лицо». Соответствие страна→ЮЛ подтверждено
 //     запросом B1: BY→F, RU→TDMF, KZ→MFKaz, UZ→MFUz.
+
+// Формы отделов (CFO-31-BY … CFO-962-RU) ещё не доведены до выкладки. Код и данные
+// остаются, но по умолчанию такие карточки не создаются в новых периодах и не
+// показываются в списках: включает PLANS_CFO_DEPT_FORMS=1. Скрытие обратимо —
+// уже созданные карточки не удаляются.
+var cfoDeptFormsOn atomic.Bool
+
+// SetCfoDeptFormsEnabled включает (true) или скрывает (false) формы отделов.
+func SetCfoDeptFormsEnabled(on bool) { cfoDeptFormsOn.Store(on) }
+
+// isCfoDeptScope — ключ области формы отдела («CFO-31-BY»).
+func isCfoDeptScope(formCode, scopeKey string) bool {
+	return formCode == TemplateExp && strings.HasPrefix(strings.ToUpper(scopeKey), "CFO-")
+}
+
+// cfoDeptHidden — карточку не показываем и не создаём.
+func cfoDeptHidden(formCode, scopeKey string) bool {
+	return !cfoDeptFormsOn.Load() && isCfoDeptScope(formCode, scopeKey)
+}
 
 // TemplateRetail — код формы «Тактический план продаж, Розница».
 const TemplateRetail = "TPL-TO-RETAIL"
@@ -30,8 +54,23 @@ type FormDef struct {
 	Scopes []FormScope `json:"scopes"`
 }
 
-// FormRegistry — формы, у которых есть карточка процесса.
+// FormRegistry — формы, у которых есть карточка процесса (без скрытых флагом).
 func FormRegistry() []FormDef {
+	all := formRegistryAll()
+	for i := range all {
+		kept := all[i].Scopes[:0:0]
+		for _, sc := range all[i].Scopes {
+			if !cfoDeptHidden(all[i].Code, sc.Key) {
+				kept = append(kept, sc)
+			}
+		}
+		all[i].Scopes = kept
+	}
+	return all
+}
+
+// formRegistryAll — реестр целиком, включая скрытые области.
+func formRegistryAll() []FormDef {
 	return []FormDef{
 		{
 			Code: TemplateMP, Name: "Маркетплейсы",
@@ -86,7 +125,7 @@ func FormRegistry() []FormDef {
 
 // formDef — описание формы по коду.
 func formDef(code string) (FormDef, bool) {
-	for _, f := range FormRegistry() {
+	for _, f := range formRegistryAll() {
 		if f.Code == code {
 			return f, true
 		}
