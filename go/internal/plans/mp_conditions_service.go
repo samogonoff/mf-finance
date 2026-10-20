@@ -132,20 +132,29 @@ func (s *MpConditionsService) Conditions(ctx context.Context, cardID int64, acto
 	// Доли по умолчанию из стратегии (ТЗ доработок п. 2.1). Подмешиваются ПОСЛЕ
 	// diff: diff сравнивает введённое руками, а не стратегию. Площадка без строки
 	// реестра появляется в списке сразу — заполнять её можно с первого открытия.
+	platforms := make([]MarketplaceRow, 0, len(visible))
+	for _, mp := range MarketplaceSeed() {
+		if visible[mp.CodeCFO] {
+			platforms = append(platforms, mp)
+		}
+	}
+	byCfo := map[int]MpConditions{}
+	for _, c := range filtered {
+		byCfo[c.CodeCFO] = c
+	}
+	rebuild := s.shareDefaults != nil
 	if s.shareDefaults != nil {
-		platforms := make([]MarketplaceRow, 0, len(visible))
-		for _, mp := range MarketplaceSeed() {
-			if visible[mp.CodeCFO] {
-				platforms = append(platforms, mp)
-			}
-		}
-		byCfo := map[int]MpConditions{}
-		for _, c := range filtered {
-			byCfo[c.CodeCFO] = c
-		}
 		byCfo = s.shareDefaults.Attach(ctx, byCfo, platforms, card.Year, card.Month)
-		// %СПП и наценки несохранённых условий — из стратегии: реестр показывает то же, что считает форма.
+	}
+	// %СПП и наценки несохранённых условий — из стратегии: реестр показывает то же, что считает форма.
+	// В закрытой карточке реестр показывает только сохранённое: форма читает снимок и подстановки не получает.
+	if cardEditable(card) {
 		byCfo = mpApplyStrategyDefaultsAll(ctx, s.fact, card.Year, card.Month, platforms, byCfo)
+		for _, c := range byCfo {
+			rebuild = rebuild || len(c.StrategyDefaults) > 0
+		}
+	}
+	if rebuild {
 		list := make([]MpConditions, 0, len(byCfo))
 		for _, mp := range platforms {
 			if c, ok := byCfo[mp.CodeCFO]; ok {
@@ -344,6 +353,9 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 		}
 	}
 	condByCfo = s.shareDefaults.Attach(ctx, condByCfo, platformsInfo, card.Year, card.Month)
+	// МП-01 проверяет ТО, ЧТО СОХРАНЕНО в реестре: значения из стратегии подставляются только в расчёт, а
+	// проверка должна по-прежнему требовать «Условия площадок» (иначе форму можно отправить без них).
+	condForValidation := condByCfo
 	// %СПП и наценки несохранённых условий — из стратегии, как в форме (иначе пересчёт записал бы нули).
 	condByCfo = mpApplyStrategyDefaultsAll(ctx, s.fact, card.Year, card.Month, platformsInfo, condByCfo)
 	// Базис НДС — тот же, что в форме: отношение плановых сумм площадки, ставка
@@ -408,7 +420,7 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 		Platforms: values, Totals: computeMpFormTotalsMode(values, commonSum, mpPLWithCommon(card)),
 		CommonCost: commonSum, Preview: preview,
 	}
-	res.Issues = s.validate(ctx, card, platformsInfo, conditionsWithFormSpp(condByCfo, spp), values, basisByCfo, normByCfo)
+	res.Issues = s.validate(ctx, card, platformsInfo, conditionsWithFormSpp(condForValidation, spp), values, basisByCfo, normByCfo)
 	res.Blocking = HasBlocking(res.Issues)
 
 	if !preview {
