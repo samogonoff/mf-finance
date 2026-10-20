@@ -21,7 +21,9 @@ type ExpRepo interface {
 	SaveReadOnly(ctx context.Context, instanceID int64, scenario string, cells []ExpCell) error
 	// FillPlanFromSource подставляет в план бюджет источника (ExpSourceBudget). Пустые ячейки заполняются,
 	// ячейки, ещё не тронутые человеком (source = budget), обновляются по источнику; введённое руками, из файла,
-	// расчётом или реестром не перезаписывается. Ячейки source = budget в месяцах не раньше fromMonth, которых нет в\n	// cells (бюджет в источнике исчез), удаляются. Редактируемость карточки проверяется в той же транзакции, под\n	// блокировкой строки карточки. Журнал изменений не ведётся: это не ввод человека.
+	// расчётом или реестром не перезаписывается. Ячейки source = budget в месяцах не раньше fromMonth, которых нет в
+	// cells (бюджет в источнике исчез), удаляются. Редактируемость карточки проверяется в той же транзакции, под
+	// блокировкой строки карточки. Журнал изменений не ведётся: это не ввод человека.
 	FillPlanFromSource(ctx context.Context, instanceID int64, fromMonth int, cells []ExpCell) error
 	// FactBasis — на чём построен сохранённый факт экземпляра: ExpFactBasisPayments, если в нём
 	// лежат платёжные значения, иначе пусто. Признак хранится вместе с данными и переживает рестарт.
@@ -352,25 +354,41 @@ func (s *expRepo) FillPlanFromSource(ctx context.Context, instanceID int64, from
 		return nil
 	}
 
-	var cfos, pls, months []int32
+	// Дубли ключа (ЦФО, статья, месяц) в одной выдаче схлопываем — последнее значение побеждает, как при записи
+	// по одной ячейке: иначе один INSERT … ON CONFLICT упал бы на «строка затрагивается дважды».
+	type key struct{ cfo, pl, month int32 }
+	last := map[key]float64{}
+	var order []key
 	for _, c := range cells {
 		if c.Amount == nil || c.Month < 1 || c.Month > 12 {
 			continue
 		}
-		cfos, pls, months = append(cfos, int32(c.CodeCFO)), append(pls, int32(c.CodePL)), append(months, int32(c.Month))
+		k := key{int32(c.CodeCFO), int32(c.CodePL), int32(c.Month)}
+		if _, seen := last[k]; !seen {
+			order = append(order, k)
+		}
+		last[k] = *c.Amount
+	}
+	cfos, pls, months := make([]int32, 0, len(order)), make([]int32, 0, len(order)), make([]int32, 0, len(order))
+	amounts := make([]float64, 0, len(order))
+	for _, k := range order {
+		cfos, pls, months, amounts = append(cfos, k.cfo), append(pls, k.pl), append(months, k.month), append(amounts, last[k])
+	}
+	// Одним запросом, пока держится блокировка карточки: тысячи пар «ЦФО × статья» × месяцы по одной ячейке
+	// держали бы FOR SHARE десятки секунд и подвешивали бы переходы карточки.
+	if len(order) > 0 {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO exp_value (row_id, scenario, month, amount, source)
-			SELECT r.id, 'plan', $3, $4, $6
-			  FROM exp_row r
-			 WHERE r.instance_id = $1 AND r.code_cfo = $2 AND r.code_pl = $5
+			SELECT r.id, 'plan', t.m, t.amount, $2
+			  FROM unnest($3::int[], $4::int[], $5::int[], $6::numeric[]) AS t(cfo, pl, m, amount)
+			  JOIN exp_row r ON r.instance_id = $1 AND r.code_cfo = t.cfo AND r.code_pl = t.pl
 			ON CONFLICT (row_id, scenario, month) DO UPDATE SET
 			    amount = EXCLUDED.amount, updated_at = NOW()
-			 WHERE exp_value.source = $6`,
-			instanceID, c.CodeCFO, c.Month, *c.Amount, c.CodePL, ExpSourceBudget); err != nil {
+			 WHERE exp_value.source = $2`,
+			instanceID, ExpSourceBudget, cfos, pls, months, amounts); err != nil {
 			return err
 		}
-	}
-	// Ячейки, подставленные из бюджета и ещё не тронутые человеком, зеркалят источник: если бюджет по ключу
+	}	// Ячейки, подставленные из бюджета и ещё не тронутые человеком, зеркалят источник: если бюджет по ключу
 	// исчез (строку тактики удалили или обнулили), старая сумма не должна остаться «актуальным бюджетом».
 	// Прошедшие месяцы (раньше месяца карточки) закрыты и не трогаются; введённое руками не затрагивается.
 	if _, err := tx.Exec(ctx, `

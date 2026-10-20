@@ -108,17 +108,47 @@ func TestExpRepo_FillPlanFromSource_PG(t *testing.T) {
 	if _, _, ok := plan(54, 10); !ok {
 		t.Error("месяц раньше fromMonth не должен удаляться")
 	}
+	// 5б. Дубли ключа в одной выдаче (одно и то же ЦФО/статья/месяц дважды) не роняют запись: побеждает последнее.
+	if err := repo.FillPlanFromSource(ctx, inst.ID, 10, []ExpCell{bud(54, 10, 600), bud(24, 12, 1), bud(24, 12, 2)}); err != nil {
+		t.Fatalf("дубли ключа в выдаче: %v", err)
+	}
+	if v, _, ok := plan(24, 12); !ok || v != 2 {
+		t.Errorf("при дубле ключа должно победить последнее значение: %v %v", v, ok)
+	}
+	// 5в. Много ячеек одним запросом (как у розницы: тысячи пар × месяцы).
+	rows := make([]ExpRow, 0, 300)
+	for i := 0; i < 300; i++ {
+		rows = append(rows, ExpRow{CodeCFO: 1000 + i, CodePL: 24, Expense: "ЗП"})
+	}
+	if _, err := repo.SyncRows(ctx, inst.ID, rows); err != nil {
+		t.Fatal(err)
+	}
+	var many []ExpCell
+	for _, r := range rows {
+		for m := 10; m <= 12; m++ {
+			many = append(many, ExpCell{CodeCFO: r.CodeCFO, CodePL: 24, Month: m, Amount: amt(float64(m)), Source: ExpSourceBudget})
+		}
+	}
+	many = append(many, bud(54, 10, 600), bud(24, 12, 2))
+	if err := repo.FillPlanFromSource(ctx, inst.ID, 10, many); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM exp_value v JOIN exp_row r ON r.id = v.row_id
+		 WHERE r.instance_id = $1 AND v.scenario = 'plan' AND v.source = $2 AND r.code_cfo >= 1000`, inst.ID, ExpSourceBudget).Scan(&n); err != nil || n != 900 {
+		t.Fatalf("подставлено ячеек %d (ожидали 900): %v", n, err)
+	}
 	// 6. Карточку отправили на согласование, пока шла загрузка: план не меняется — ни подстановки, ни удаления.
 	if _, err := pool.Exec(ctx, `UPDATE form_card SET status = $2 WHERE id = $1`, card.ID, CardOnApproval); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.FillPlanFromSource(ctx, inst.ID, 10, []ExpCell{bud(54, 10, 7777), bud(24, 12, 5)}); err != nil {
+	if err := repo.FillPlanFromSource(ctx, inst.ID, 10, []ExpCell{bud(54, 10, 7777), bud(54, 11, 5)}); err != nil {
 		t.Fatal(err)
 	}
 	if v, _, _ := plan(54, 10); v != 600 {
 		t.Errorf("в карточке на согласовании бюджет перезаписан: %v", v)
 	}
-	if _, _, ok := plan(24, 12); ok {
+	if _, _, ok := plan(54, 11); ok {
 		t.Error("в карточку на согласовании подставлена новая ячейка")
 	}
 	if err := repo.FillPlanFromSource(ctx, inst.ID, 10, nil); err != nil {
