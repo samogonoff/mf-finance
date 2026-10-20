@@ -233,6 +233,7 @@ func main() {
 		fdTables := etl.FinDebtTables{
 			Fin1FQN: "[" + cfg.PremasterPaymentsDatabase + "].[" + cfg.DebtFinDebtSchema + "].[" + cfg.DebtFinDebt1Table + "]",
 			Fin3FQN: "[" + cfg.PremasterPaymentsDatabase + "].[" + cfg.DebtFinDebtSchema + "].[" + cfg.DebtFinDebt3Table + "]",
+			Orgs:    entityINNs(),
 		}
 		etl.NewFinDebtWorker(etl.Deps{
 			MSSQL:  mssqlDB,
@@ -291,12 +292,15 @@ func main() {
 		ReadyCheck:     cfg.FinDWHReadyCheck,
 		ReadyAfterHour: cfg.FinDWHReadyAfterHour,
 	}
+	if cfg.DebtBackend == "arh" && !cfg.ArhSync {
+		log.Printf("debt: DEBT_BACKEND=arh, но ARH_SYNC=0 — fact_arh_* не заливаются воркером, отчёт будет пустым, пока их не зальют вручную (MODE=arh /findebt-etl)")
+	}
+	if cfg.ArhSync && cfg.FinDWHSyncInterval <= 0 {
+		log.Printf("debt: ARH_SYNC=1, но FINDWH_SYNC_INTERVAL=0 — воркер реплики выключен, arh_debt/arh_sales не загрузятся (отчёт DEBT_BACKEND=arh будет пустым)")
+	}
 	if cfg.ArhSync {
 		// Потоки отчёта ВГО DEBT_BACKEND=arh (Debt_arh/Docs/Wholesales_arh) идут в этом же воркере.
-		orgs := make([]string, 0, len(debt.Entities()))
-		for _, e := range debt.Entities() {
-			orgs = append(orgs, e.INN)
-		}
+		orgs := entityINNs()
 		fwOpts.Arh = etl.ArhOpts{
 			Tables: etl.ArhTables{
 				DebtFQN: cfg.DebtArhFQN, DocsFQN: cfg.DocsFQN, WholesalesFQN: cfg.WholesalesArhFQN, Orgs: orgs,
@@ -867,4 +871,13 @@ func main() {
 	defer cancel()
 	_ = srv.Shutdown(ctx)
 	log.Println("finance-api stopped")
+}
+
+// entityINNs — УНП наших ЮЛ из seed отчёта: сужают выборки ETL до индекса по UNPOrg.
+func entityINNs() []string {
+	out := make([]string, 0, len(debt.Entities()))
+	for _, e := range debt.Entities() {
+		out = append(out, e.INN)
+	}
+	return out
 }

@@ -81,7 +81,7 @@ GROUP BY ` + arhDate("w.[Date]") + `, ` + org + `, ` + unp + `, ` + acc + `, ` +
 // фильтр как в основном extract'е, иначе отпечатки разойдутся.
 func extractArhSalesDatesSQL(t ArhTables) string {
 	return `
-SELECT ` + arhDate("w.[Date]") + ` AS d, CONVERT(CHAR(19), MAX(` + arhSalesChg + `), 120) AS changed_at
+SELECT ` + arhDate("w.[Date]") + ` AS d, CONVERT(CHAR(19), MAX(` + arhSalesChg + `), 120) AS changed_at, COUNT(*) AS n
 FROM ` + t.WholesalesFQN + ` w WITH (NOLOCK)
 WHERE ` + arhSpanRange("w.[Date]") + `
   AND ` + arhSalesCond(t.Orgs) + `

@@ -37,6 +37,15 @@ type factFinDebtTurnoverRow struct {
 	KPayment       string `json:"k_payment"`
 }
 
+// turnoverOrgClause — сужение оборотов до наших ЮЛ (по индексу UNPOrg), если список задан
+// (FinDebtTables.Orgs). Пустой список → без фильтра, как раньше.
+func turnoverOrgClause(t FinDebtTables) string {
+	if len(t.Orgs) == 0 {
+		return ""
+	}
+	return " AND " + arhOrgCond("f", t.Orgs)
+}
+
 // extractFinDebtTurnoverSQL — оборотные строки FinDebt1 по снэпшотам >= @min.
 // Имена берём MAX() (не в ключ), суммы схлопываем сложением по каналам/сотрудникам.
 // DATE_F тоже MAX: внутри снэпшота он одинаков для всех строк (начало месяца).
@@ -62,7 +71,7 @@ FROM ` + t.Fin1FQN + ` f WITH (NOLOCK)
 WHERE f.Channel = @grp
   AND f.DEBT_FILTER = N'` + strings.ReplaceAll(finDebtTurnoverFilter, "'", "''") + `'
   AND (f.D_Wholesales <> 0 OR f.K_Wholesales <> 0 OR f.D_Payment <> 0 OR f.K_Payment <> 0)
-  AND f.[Date] >= @min
+  AND f.[Date] >= CONVERT(date, @min, 112)` + turnoverOrgClause(t) + `
 GROUP BY CONVERT(CHAR(10), f.[Date], 23), LTRIM(RTRIM(f.UNPOrg)),
          LTRIM(RTRIM(f.UNP)), LTRIM(RTRIM(f.Acc)), ` + root + `,
          LTRIM(RTRIM(f.CUR_FILTER)), LTRIM(RTRIM(ISNULL(f.Currency, '')))`

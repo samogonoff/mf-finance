@@ -383,7 +383,7 @@ func RunFinDWHDaily(ctx context.Context, deps Deps, opts FinDWHOpts) (int64, err
 			st, err = RunFinDWHArh(ctx, deps, ch, opts, table, sourceDate)
 			n, details = st.Rows, st.String()
 		default:
-			err = fmt.Errorf("неизвестная таблица %q (допустимо: %s)", table, strings.Join(FinDWHAllTables, ", "))
+			err = fmt.Errorf("неизвестная таблица %q (допустимо: %s)", table, strings.Join(append(append([]string{}, FinDWHAllTables...), FinDWHArhTables...), ", "))
 		}
 
 		run := finDWHRun{

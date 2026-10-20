@@ -13,7 +13,7 @@ func TestExtractFinDebtSQL(t *testing.T) {
 	for _, want := range []string{
 		"[Payments].[report].[FinDebt3]",
 		"d.Folder = @grp",
-		"d.[Date] >= @min",
+		"d.[Date] >= CONVERT(date, @min, 112)",
 		"SUM(ISNULL(d.SUM_D, 0))",
 		"SUM(ISNULL(d.SUM_K, 0))",
 		"ISNULL(d.Doc_Number, '')",
@@ -73,7 +73,7 @@ func TestExtractFinDebtTurnoverSQL(t *testing.T) {
 		"[Payments].[report].[FinDebt1]",
 		"f.Channel = @grp",
 		"f.DEBT_FILTER = N'Отображать платежи и отгр.'",
-		"f.[Date] >= @min",
+		"f.[Date] >= CONVERT(date, @min, 112)",
 		"SUM(ISNULL(f.D_Wholesales, 0))", "SUM(ISNULL(f.K_Wholesales, 0))",
 		"SUM(ISNULL(f.D_Payment, 0))", "SUM(ISNULL(f.K_Payment, 0))",
 		"LTRIM(RTRIM(f.CUR_FILTER))", "AS cur_filter", "AS acc_root", "AS date_from",

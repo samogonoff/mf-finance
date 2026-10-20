@@ -29,6 +29,8 @@ func sqlEscape(s string) string { return strings.ReplaceAll(s, "'", "''") }
 type FinDebtTables struct {
 	Fin1FQN string // [Payments].[report].[FinDebt1] — обороты (продажи/оплаты с начала месяца)
 	Fin3FQN string // [Payments].[report].[FinDebt3] — источник
+	// Orgs — УНП наших ЮЛ: сужают выборку оборотов FinDebt1 (UNPOrg IN …). Пусто → без фильтра.
+	Orgs []string
 }
 
 const finDebtVGOFolder = "ГРУППА КОМПАНИЙ"
@@ -107,7 +109,7 @@ SELECT
 FROM ` + t.Fin3FQN + ` d WITH (NOLOCK)
 WHERE d.Folder = @grp
   AND (d.SUM_D <> 0 OR d.SUM_K <> 0)
-  AND d.[Date] >= @min
+  AND d.[Date] >= CONVERT(date, @min, 112)
 GROUP BY CONVERT(CHAR(10), d.[Date], 23), LTRIM(RTRIM(d.UNPOrg)),
          LTRIM(RTRIM(d.UNP)), LTRIM(RTRIM(d.Acc)), ` + root + `,
          ISNULL(d.Doc_Number, ''),

@@ -21,8 +21,18 @@
 -- (остатки) или дату события (продажи).
 --
 -- Движок: ReplacingMergeTree(inserted_at). 1С перезаписывает прошлые даты, поэтому
--- ЭТЛ перезагружает дату снэпшота/события ЦЕЛИКОМ (ALTER TABLE DELETE по дате + вставка).
--- src_changed_at = MAX(DateChange) источника: по нему инкремент находит изменившиеся даты.
+-- ЭТЛ перезагружает дату снэпшота/события ЦЕЛИКОМ и атомарно по смыслу: дата сначала
+-- грузится в stage-таблицу (fact_arh_*_stage, та же структура), и только после полной
+-- успешной загрузки в одной короткой операции заменяется в основной таблице
+-- (ALTER TABLE DELETE по дате + INSERT SELECT из stage). Оборванная загрузка основную
+-- таблицу не трогает.
+--
+-- fact_arh_day_fp — отпечатки дней: MAX(DateChange) и число строк источника ЗА ВЕСЬ день,
+-- пишутся отдельной строкой только после успешной замены (и «пустой» строкой с
+-- src_rows = 0 перед заменой — так оборванная замена перепланируется). По отпечатку
+-- инкремент находит изменившиеся даты. src_changed_at в строках фактов — справочно.
+-- Поле company в фактах не заполняется ЭТЛ (в сырых таблицах нет имени ЮЛ) — пустая
+-- строка, имя берёт отчёт из seed по УНП.
 
 CREATE DATABASE IF NOT EXISTS finance;
 
@@ -30,7 +40,7 @@ CREATE TABLE IF NOT EXISTS finance.fact_arh_debt
 (
     snapshot_date   Date,                       -- дата снэпшота (Debt_arh.Date без времени)
     company_id      LowCardinality(String),     -- УНП нашего ЮЛ (UNPOrg, trimmed)
-    company         String,                     -- Organisation (имя ЮЛ из 1С)
+    company         String,                     -- не заполняется (в сырых таблицах нет имени ЮЛ), '' — имя берёт отчёт из seed
     counterparty_id String,                     -- УНП контрагента (UNP, trimmed)
     counterparty    String,                     -- Contragent (имя)
     acc             LowCardinality(String),     -- полный субсчёт (напр. 62.01.1)
@@ -67,7 +77,7 @@ CREATE TABLE IF NOT EXISTS finance.fact_arh_sales
 (
     event_date      Date,                       -- Wholesales_arh.Date (календарный день события)
     company_id      LowCardinality(String),     -- УНП нашего ЮЛ (UNPOrg, trimmed)
-    company         String,                     -- Organisation
+    company         String,                     -- не заполняется, '' (см. fact_arh_debt)
     counterparty_id String,                     -- УНП контрагента (UNP, trimmed)
     counterparty    String,                     -- Contragent
     acc             LowCardinality(String),     -- CrAcc — счёт выручки (90.01.1, 6010, 9010)
@@ -83,4 +93,23 @@ CREATE TABLE IF NOT EXISTS finance.fact_arh_sales
 ENGINE = ReplacingMergeTree(inserted_at)
 PARTITION BY toYYYYMM(event_date)
 ORDER BY (company_id, event_date, counterparty_id, acc, doc_id, currency_kod, amount_sign)
+SETTINGS index_granularity = 8192;
+
+-- Stage-таблицы: одна загружаемая дата, очищаются до и после загрузки. Структура и
+-- ключ как у основных (CREATE TABLE AS копирует колонки, движок, партиции, ORDER BY).
+CREATE TABLE IF NOT EXISTS finance.fact_arh_debt_stage AS finance.fact_arh_debt;
+
+CREATE TABLE IF NOT EXISTS finance.fact_arh_sales_stage AS finance.fact_arh_sales;
+
+CREATE TABLE IF NOT EXISTS finance.fact_arh_day_fp
+(
+    stream          LowCardinality(String),     -- debt | sales
+    day             Date,                       -- дата снэпшота / события
+    src_changed_at  DateTime,                   -- MAX(DateChange) источника за день
+    src_rows        UInt64,                     -- число строк источника за день (0 = дата не загружена целиком)
+    loaded_rows     UInt64,                     -- сколько строк свёрнуто и залито в CH
+    ver             UInt64                      -- версия записи (unix-наносекунды), побеждает наибольшая
+)
+ENGINE = ReplacingMergeTree(ver)
+ORDER BY (stream, day)
 SETTINGS index_granularity = 8192;

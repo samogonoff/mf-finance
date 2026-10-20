@@ -81,8 +81,8 @@
             <td class="col-num">{{ moneyAuto(node.sums.revenue_last_month, node.currency) }}</td>
             <td class="col-num">{{ moneyAuto(node.sums.returns_period, node.currency) }}</td>
             <td class="col-num">{{ moneyAuto(node.sums.returns_last_month, node.currency) }}</td>
-            <td v-for="f in agingFields" :key="`dz-${f}`" class="col-num">{{ moneyAuto(node.sums[`dz_${f}`], node.currency) }}</td>
-            <td v-for="f in agingFields" :key="`kz-${f}`" class="col-num">{{ moneyAuto(node.sums[`kz_${f}`], node.currency) }}</td>
+            <td v-for="f in agingFields" :key="`dz-${f}`" class="col-num">{{ sumsAgingUnknown(node.sums, "dz") ? "—" : moneyAuto(node.sums[`dz_${f}`], node.currency) }}</td>
+            <td v-for="f in agingFields" :key="`kz-${f}`" class="col-num">{{ sumsAgingUnknown(node.sums, "kz") ? "—" : moneyAuto(node.sums[`kz_${f}`], node.currency) }}</td>
           </tr>
 
           <!-- Лист — строка-валюта -->
@@ -109,8 +109,8 @@
             <td class="col-num">{{ moneyFmt(node.row.revenue_last_month, node.row.currency) }}</td>
             <td class="col-num">{{ moneyFmt(node.row.returns_period ?? 0, node.row.currency) }}</td>
             <td class="col-num">{{ moneyFmt(node.row.returns_last_month ?? 0, node.row.currency) }}</td>
-            <td v-for="f in agingFields" :key="`dz-${f}`" class="col-num">{{ moneyFmt(agingOf(node.row, 'dz', f), node.row.currency) }}</td>
-            <td v-for="f in agingFields" :key="`kz-${f}`" class="col-num">{{ moneyFmt(agingOf(node.row, 'kz', f), node.row.currency) }}</td>
+            <td v-for="f in agingFields" :key="`dz-${f}`" class="col-num">{{ rowAgingUnknown(node.row, "dz") ? "—" : moneyFmt(agingOf(node.row, 'dz', f), node.row.currency) }}</td>
+            <td v-for="f in agingFields" :key="`kz-${f}`" class="col-num">{{ rowAgingUnknown(node.row, "kz") ? "—" : moneyFmt(agingOf(node.row, 'kz', f), node.row.currency) }}</td>
           </tr>
 
           <!-- Подгруппа документов по типу операции -->
@@ -384,6 +384,23 @@ type AgingField = (typeof agingFields)[number];
 // Значение корзины строки; бэкенд без корзин (старый/mock) → 0.
 const agingOf = (r: DebtRow, side: "dz" | "kz", f: AgingField): number =>
   (side === "dz" ? r.aging_dz : r.aging_kz)?.[f] ?? 0;
+
+// Глубина по стороне неизвестна, если остаток есть, а ВСЕ корзины просрочки нулевые: так выглядят
+// снэпшоты, залитые до миграции корзин и не перезалитые (MODE=bootstrap). Тогда «Без просрочки»
+// = весь остаток было бы ложью — показываем «—» по всем пяти колонкам стороны. Сервер данные
+// не скрывает (Aging.current = остаток − Σ корзин), решение принимает только фронт.
+const agingEps = 0.005;
+const rowAgingUnknown = (r: DebtRow, side: "dz" | "kz"): boolean => {
+  const closing = side === "dz" ? r.closing_dz : r.closing_kz;
+  const a = side === "dz" ? r.aging_dz : r.aging_kz;
+  if (!a) return false; // бэкенд без корзин (mock/старый) — как раньше
+  return Math.abs(closing) > agingEps && Math.abs(a.lt30 + a.d30_60 + a.d60_90 + a.gt90) <= agingEps;
+};
+const sumsAgingUnknown = (s: RowSums, side: "dz" | "kz"): boolean => {
+  const closing = side === "dz" ? s.closing_dz : s.closing_kz;
+  const buckets = (s[`${side}_lt30`] ?? 0) + (s[`${side}_d30_60`] ?? 0) + (s[`${side}_d60_90`] ?? 0) + (s[`${side}_gt90`] ?? 0);
+  return Math.abs(closing) > agingEps && Math.abs(buckets) <= agingEps;
+};
 
 const emptySums = (): RowSums => {
   const s: RowSums = {

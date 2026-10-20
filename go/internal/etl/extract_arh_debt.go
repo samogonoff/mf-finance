@@ -51,10 +51,10 @@ func arhOrgCond(alias string, orgs []string) string {
 }
 
 // arhVGOCond — ВГО-контур остатков Debt_arh: Chnl или Folder = 'ГРУППА КОМПАНИЙ'. У РФ/РБ
-// они совпадают (сверка с FinDebt1 до единицы), у ЮЛ УЗ/КЗ Chnl пуст, а Folder заполнен: без
-// Folder эти ЮЛ выпали бы целиком. ОТКРЫТЫЙ ВОПРОС: FinDebt1/3 берут из Folder-строк УЗ/КЗ
-// меньше (30.09.2026, BYN: ДЗ ЮЛ УЗ 42.44 против 38.83 млн, ДЗ ЮЛ КЗ 13.45 против 8.35 млн) —
-// какие именно строки FinDebt отсекает, по сырым таблицам не определить (docs/reports/debt/arh-runbook.md).
+// они совпадают, у ЮЛ УЗ/КЗ Chnl пуст, а Folder заполнен: без Folder эти ЮЛ выпали бы целиком.
+// Сверка с FinDebt1 30.09.2026 (BYN): ЮЛ УЗ 305554644 сходится до единицы (после нетто по
+// DocID в отчёте), ЮЛ КЗ 141240004842 — нет: FinDebt сворачивает документ и МЕЖДУ счетами
+// (1210 ДЗ против 3310 КЗ), мы — внутри счёта (ДЗ 13.42 против 8.35 млн) — открытый вопрос.
 func arhVGOCond(alias string) string {
 	return "(" + alias + ".Chnl = @grp OR " + alias + ".Folder = @grp)"
 }
@@ -219,7 +219,7 @@ GROUP BY ` + arhDate("d.[Date]") + `, ` + org + `, ` + unp + `, ` + acc + `, ` +
 // Фильтр строк тот же, что в extractArhDebtSQL, иначе отпечатки разойдутся.
 func extractArhDebtDatesSQL(t ArhTables) string {
 	return `
-SELECT ` + arhDate("d.[Date]") + ` AS d, CONVERT(CHAR(19), MAX(` + arhChg + `), 120) AS changed_at
+SELECT ` + arhDate("d.[Date]") + ` AS d, CONVERT(CHAR(19), MAX(` + arhChg + `), 120) AS changed_at, COUNT(*) AS n
 FROM ` + t.DebtFQN + ` d WITH (NOLOCK)
 WHERE ` + arhSpanRange("d.[Date]") + `
   AND ` + arhOrgCond("d", t.Orgs) + `

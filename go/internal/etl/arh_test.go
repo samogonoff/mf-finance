@@ -136,21 +136,35 @@ func TestArhChunks(t *testing.T) {
 	}
 }
 
-// Инкремент по DateChange: перезагружаются только расходящиеся/новые даты, исчезнувшие
+// Инкремент по отпечатку: перезагружаются только расходящиеся/новые даты, исчезнувшие
 // в источнике — сносятся; full — все даты источника.
 func TestPlanArhDates(t *testing.T) {
 	cand := []string{"2026-10-17", "2026-10-18", "2026-10-19", "2026-10-20"}
-	src := map[string]string{"2026-10-17": "2026-10-19 10:00:00", "2026-10-18": "2026-10-19 12:00:00", "2026-10-19": "2026-10-19 09:00:00"}
-	have := map[string]string{"2026-10-17": "2026-10-19 10:00:00", "2026-10-18": "2026-10-18 08:00:00", "2026-10-20": "2026-10-20 01:00:00"}
-	p := planArhDates(cand, src, have, false)
+	src := map[string]arhFP{
+		"2026-10-17": {"2026-10-19 10:00:00", 3}, "2026-10-18": {"2026-10-19 12:00:00", 3}, "2026-10-19": {"2026-10-19 09:00:00", 3},
+	}
+	have := map[string]string{
+		"2026-10-17": arhFP{"2026-10-19 10:00:00", 3}.key(), "2026-10-18": arhFP{"2026-10-18 08:00:00", 3}.key(),
+		"2026-10-20": arhFP{"2026-10-20 01:00:00", 1}.key(),
+	}
+	p := planArhDates(cand, src, have, nil, false)
 	if !reflect.DeepEqual(p.reload, []string{"2026-10-18", "2026-10-19"}) {
 		t.Errorf("reload = %v", p.reload)
 	}
 	if !reflect.DeepEqual(p.drop, []string{"2026-10-20"}) {
 		t.Errorf("drop = %v", p.drop)
 	}
-	if p := planArhDates(cand, src, have, true); len(p.reload) != 3 {
+	if p := planArhDates(cand, src, have, nil, true); len(p.reload) != 3 {
 		t.Errorf("full: reload = %v", p.reload)
+	}
+	// число строк источника изменилось при том же MAX(DateChange) — тоже перезагрузка
+	src["2026-10-17"] = arhFP{"2026-10-19 10:00:00", 4}
+	if p := planArhDates(cand, src, have, nil, false); len(p.reload) != 3 {
+		t.Errorf("изменилось число строк: reload = %v", p.reload)
+	}
+	// данные есть, отпечатка нет (оборванная замена), в источнике даты нет → drop
+	if p := planArhDates([]string{"2026-09-30"}, map[string]arhFP{}, map[string]string{}, map[string]bool{"2026-09-30": true}, false); len(p.drop) != 1 {
+		t.Errorf("drop по данным без отпечатка: %v", p.drop)
 	}
 }
 

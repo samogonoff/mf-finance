@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -22,6 +23,19 @@ type FinDebtOpts struct {
 	BatchSize   int    // дефолт 5000
 	TriggeredBy string // 'manual' | 'cli' | 'cron'
 }
+
+// chWatermark — max(snapshot_date) из CH → watermark: на ПУСТОЙ таблице max(Date) даёт
+// 1970-01-01, а не пустую строку, поэтому оба значения означают «CH пуст».
+func chWatermark(s string) string {
+	if s == "" || strings.HasPrefix(s, "1970-01-01") {
+		return ""
+	}
+	return s
+}
+
+// isoToYMD — 'YYYY-MM-DD' → 'YYYYMMDD' (стиль 112): логин MSSQL работает с DATEFORMAT dmy,
+// и ISO-литерал в сравнении с datetime читался бы неверно.
+func isoToYMD(s string) string { return strings.ReplaceAll(s, "-", "") }
 
 // RunBootstrapFinDebt — полная заливка документов FinDebt3 в finance.fact_findebt
 // начиная с MinDate. Чистит эти снэпшоты в CH и льёт заново. Возвращает (rows, error).
@@ -77,6 +91,7 @@ func RunIncrementalFinDebt(ctx context.Context, deps Deps, opts FinDebtOpts) (in
 	}
 	last, err := ch.queryString(ctx,
 		"SELECT ifNull(toString(max(snapshot_date)), '') FROM finance.fact_findebt_ccy")
+	last = chWatermark(last)
 	if err != nil {
 		return 0, fmt.Errorf("incremental-findebt: watermark: %w", err)
 	}
@@ -100,6 +115,7 @@ func RunIncrementalFinDebt(ctx context.Context, deps Deps, opts FinDebtOpts) (in
 	// позже). Пустая таблица → полный догон с 2021.
 	tlast, err := ch.queryString(ctx,
 		"SELECT ifNull(toString(max(snapshot_date)), '') FROM finance.fact_findebt_turnover")
+	tlast = chWatermark(tlast)
 	if err != nil {
 		return n, fmt.Errorf("incremental-findebt: turnover watermark: %w", err)
 	}
@@ -132,7 +148,7 @@ func syncFinDebtTurnover(ctx context.Context, deps Deps, ch *chClient, opts FinD
 // streamFinDebtTurnover — курсор FinDebt1 (оборотные строки) → батчи → fact_findebt_turnover.
 func streamFinDebtTurnover(ctx context.Context, deps Deps, ch *chClient, opts FinDebtOpts, min string) (int64, error) {
 	rows, err := deps.MSSQL.QueryContext(ctx, extractFinDebtTurnoverSQL(opts.Tables),
-		sql.Named("grp", finDebtVGOFolder), sql.Named("min", min))
+		sql.Named("grp", finDebtVGOFolder), sql.Named("min", isoToYMD(min)))
 	if err != nil {
 		return 0, fmt.Errorf("mssql query: %w", err)
 	}
@@ -182,7 +198,7 @@ func streamFinDebtTurnover(ctx context.Context, deps Deps, ch *chClient, opts Fi
 // streamFinDebt — курсор FinDebt3 → батчи → finance.fact_findebt.
 func streamFinDebt(ctx context.Context, deps Deps, ch *chClient, opts FinDebtOpts) (int64, error) {
 	rows, err := deps.MSSQL.QueryContext(ctx, extractFinDebtSQL(opts.Tables),
-		sql.Named("grp", finDebtVGOFolder), sql.Named("min", opts.MinDate))
+		sql.Named("grp", finDebtVGOFolder), sql.Named("min", isoToYMD(opts.MinDate)))
 	if err != nil {
 		return 0, fmt.Errorf("mssql query: %w", err)
 	}

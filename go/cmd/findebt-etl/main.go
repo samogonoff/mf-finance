@@ -97,6 +97,7 @@ func main() {
 	tables := etl.FinDebtTables{
 		Fin1FQN: "[" + db + "].[" + schema + "].[" + fin1 + "]",
 		Fin3FQN: "[" + db + "].[" + schema + "].[" + fin3 + "]",
+		Orgs:    entityINNsCLI(),
 	}
 
 	ctx := context.Background()
@@ -253,4 +254,13 @@ func expCostsOptsFromEnv() etl.ExpCostsOpts {
 		Force:       os.Getenv("EXP_COSTS_FORCE") == "1",
 		TriggeredBy: "cli",
 	}
+}
+
+// entityINNsCLI — УНП наших ЮЛ из seed отчёта (сужение выборок оборотов/ARH по UNPOrg).
+func entityINNsCLI() []string {
+	out := make([]string, 0)
+	for _, e := range debt.Entities() {
+		out = append(out, e.INN)
+	}
+	return out
 }

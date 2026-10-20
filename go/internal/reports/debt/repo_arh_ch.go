@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +23,9 @@ import (
 //     (продажи); BYN (933) — курс 1, USD = BYN / курс USD (840). Линза «В валюте
 //     договора» (дефолт) — родная сумма строки с подписью валюты по ISO-коду;
 //   - зерно свода — договор (Docs.ParentID; нет родителя — сам документ);
+//   - ДЗ/КЗ документа считаются как у FinDebt: сначала нетто (sum_d + sum_k) по непустому
+//     doc_id внутри (дата, ЮЛ, контрагент, счёт, валюта), затем делятся по знаку нетто;
+//     строки без doc_id не сворачиваются; корзины идут на сторону нетто;
 //   - продажи отдают и возвраты (отрицательные строки Wholesales_arh) отдельными полями.
 type arhCHRepo struct {
 	*findebtCHRepo
@@ -38,12 +42,42 @@ func NewArhCHRepo(baseURL, user, password string) (PremasterRepo, error) {
 
 const arhNoDate = "1970-01-01" // Date по умолчанию в CH: «снэпшота нет»
 
-// arhAmtCols — суммы fact_arh_debt: алиас внутри запроса → колонка таблицы.
-var arhAmtCols = [][2]string{
-	{"v_d", "sum_d"}, {"v_k", "sum_k"},
-	{"v30_d", "sum30_d"}, {"v60_d", "sum60_d"}, {"v90_d", "sum90_d"}, {"v999_d", "sum999_d"},
-	{"v30_k", "sum30_k"}, {"v60_k", "sum60_k"}, {"v90_k", "sum90_k"}, {"v999_k", "sum999_k"},
-}
+// arhNoContractRef — маркер группы «без договора» (пустой ключ договора) в DebtRow.ContractRef:
+// фронт передаёт contract_ref в drill-down как есть, а пустая строка там значит «без фильтра».
+const arhNoContractRef = "__none__"
+
+// arhMaxSnapshotGapDays — на сколько дней ближайший снэпшот может отстоять от даты отчёта.
+// Ежедневные снэпшоты есть только в окне ARH_WINDOW_DAYS, дальше — концы месяцев; без этого
+// порога дата молча подменялась бы концом месяца.
+const arhMaxSnapshotGapDays = 3
+
+// NoSnapshotError — на запрошенную дату нет снэпшота остатков (handler отдаёт 422).
+type NoSnapshotError struct{ Msg string }
+
+func (e *NoSnapshotError) Error() string { return e.Msg }
+
+// arhAmtCols — суммы fact_arh_debt в зерне свода: алиас (v_d, v30_d, …) → SQL-выражение суммы
+// по строкам fact_arh_debt. Одно правило для свода и drill-down (arhNetExpr):
+//   - doc_id пуст → строка как есть (знак строки: плюс ДЗ, минус КЗ);
+//   - doc_id задан → нетто документа net = sum_d + sum_k (строка fact_arh_debt — это уже
+//     дата × ЮЛ × контрагент × счёт × документ × валюта): net > 0 → ДЗ, net < 0 → КЗ,
+//     net = 0 → ни тут, ни там; корзины = нетто корзин (sumNN_d + sumNN_k) на стороне нетто.
+// Так считает FinDebt: пара «ДЗ и КЗ на один документ» (напр. УЗ 6315, 30.09.2026) не
+// раздувает обе стороны.
+var arhAmtCols = func() [][2]string {
+	const net = "(sum_d + sum_k)"
+	zero := "toDecimal64(0, 2)"
+	d := "sum(if(doc_id = '', sum_d, if(" + net + " > 0, " + net + ", " + zero + ")))"
+	k := "sum(if(doc_id = '', sum_k, if(" + net + " < 0, " + net + ", " + zero + ")))"
+	cols := [][2]string{{"v_d", d}, {"v_k", k}}
+	for _, b := range []string{"30", "60", "90", "999"} {
+		bn := "(sum" + b + "_d + sum" + b + "_k)"
+		cols = append(cols,
+			[2]string{"v" + b + "_d", "sum(if(doc_id = '', sum" + b + "_d, if(" + net + " >= 0, " + bn + ", " + zero + ")))"},
+			[2]string{"v" + b + "_k", "sum(if(doc_id = '', sum" + b + "_k, if(" + net + " < 0, " + bn + ", " + zero + ")))"})
+	}
+	return cols
+}()
 
 // arhRateK — множитель пересчёта суммы строки в линзу по ASOF-курсам (алиасы f/rSrc/rUsd,
 // см. arhRates). BYN-строка не ищет курс (курс 1). Нет курса → 0 (сумма обнулится, а не
@@ -67,14 +101,20 @@ const arhLabelExpr = `multiIf(contract_id != '' AND contract_title != '', contra
 
 // arhSnapshotDates — close_dt (последний снэпшот ≤ to) и open_dt (последний < from).
 // Пустая строка — такого снэпшота нет.
-func arhSnapshotDatesQuery(from, to string) string {
+// Снэпшоты ищутся С УЧЁТОМ выбранных ЮЛ (inns): если у выбранного ЮЛ на последнюю дату нет
+// данных, свод не должен молча стать нулевым.
+func arhSnapshotDatesQuery(inns []string, from, to string) string {
+	orgClause := ""
+	if len(inns) > 0 {
+		orgClause = " AND company_id IN (" + quoteList(inns) + ")"
+	}
 	return fmt.Sprintf(`SELECT toString(maxIf(snapshot_date, snapshot_date <= toDate('%[2]s'))),
        toString(maxIf(snapshot_date, snapshot_date < toDate('%[1]s')))
-FROM finance.fact_arh_debt WHERE snapshot_date <= toDate('%[2]s') FORMAT TSV`, from, to)
+FROM finance.fact_arh_debt WHERE snapshot_date <= toDate('%[2]s')%[3]s FORMAT TSV`, from, to, orgClause)
 }
 
-func (r *arhCHRepo) snapshotDates(ctx context.Context, from, to string) (closeDt, openDt string, err error) {
-	body, err := r.post(ctx, arhSnapshotDatesQuery(from, to))
+func (r *arhCHRepo) snapshotDates(ctx context.Context, inns []string, from, to string) (closeDt, openDt string, err error) {
+	body, err := r.post(ctx, arhSnapshotDatesQuery(inns, from, to))
 	if err != nil {
 		return "", "", err
 	}
@@ -91,9 +131,55 @@ func (r *arhCHRepo) snapshotDates(ctx context.Context, from, to string) (closeDt
 	return norm(parts[0]), norm(parts[1]), nil
 }
 
+func ruDay(iso string) string {
+	if t, err := time.Parse("2006-01-02", iso); err == nil {
+		return t.Format("02.01.2006")
+	}
+	return iso
+}
+
+func daysBetweenISO(from, to string) int {
+	a, err1 := time.Parse("2006-01-02", from)
+	b, err2 := time.Parse("2006-01-02", to)
+	if err1 != nil || err2 != nil {
+		return 0
+	}
+	return int(b.Sub(a).Hours() / 24)
+}
+
+// checkArhSnapshots — снэпшот на дату отчёта должен быть «свежим»: не дальше
+// arhMaxSnapshotGapDays от date_to (и open_dt — от date_from), иначе понятная ошибка вместо
+// молчаливой подмены даты концом месяца. Нет open_dt вовсе — период начинается с первого
+// загруженного снэпшота, остаток на начало нулевой (это не ошибка).
+func checkArhSnapshots(closeDt, openDt, from, to string) error {
+	if closeDt == "" {
+		return &NoSnapshotError{Msg: fmt.Sprintf("нет снэпшота на дату %s: в данных нет снэпшотов остатков ранее этой даты (загрузка arh не выполнялась?)", ruDay(to))}
+	}
+	if daysBetweenISO(closeDt, to) > arhMaxSnapshotGapDays {
+		return &NoSnapshotError{Msg: fmt.Sprintf("нет снэпшота на дату %s; ближайший: %s (ежедневные снэпшоты есть только за последние ARH_WINDOW_DAYS дней, раньше — концы месяцев)", ruDay(to), ruDay(closeDt))}
+	}
+	if openDt != "" && daysBetweenISO(openDt, from) > arhMaxSnapshotGapDays {
+		return &NoSnapshotError{Msg: fmt.Sprintf("нет снэпшота на начало периода (перед %s); ближайший: %s (ежедневные снэпшоты есть только за последние ARH_WINDOW_DAYS дней, раньше — концы месяцев)", ruDay(from), ruDay(openDt))}
+	}
+	return nil
+}
+
+// entityINNsByCountry — УНП наших ЮЛ страны c из seed.
+func entityINNsByCountry(c Country) []string {
+	out := []string{}
+	for _, e := range Entities() {
+		if e.Country == c {
+			out = append(out, e.INN)
+		}
+	}
+	return out
+}
+
 // arhReportQuery — свод ДЗ/КЗ на уровне договора: остатки на close_dt/open_dt, корзины
 // просрочки на close_dt. Для линз BYN/USD суммы пересчитываются на дату снэпшота и
 // схлопываются по всем валютам (cur_kod = 0); для «В валюте договора» валюта — измерение.
+// Строка не теряется при отсутствии курса: HAVING смотрит на РОДНЫЕ суммы (n_d/n_k), а
+// пересчитанные при этом остаются нулевыми (см. arhRateK).
 // Все значения в SQL — даты из CH, УНП/счета из seed (не пользовательский ввод).
 func arhReportQuery(inns, accRoots []string, closeDt, openDt, lens string) string {
 	if openDt == "" {
@@ -109,7 +195,7 @@ func arhReportQuery(inns, accRoots []string, closeDt, openDt, lens string) strin
 	// grain — свёртка до (снэпшот, ЮЛ, контрагент, счёт, договор, валюта).
 	var gb strings.Builder
 	for _, c := range arhAmtCols {
-		gb.WriteString(", sum(" + c[1] + ") AS " + c[0])
+		gb.WriteString(", " + c[1] + " AS " + c[0])
 	}
 	grain := `SELECT snapshot_date, company_id, any(company) AS company, counterparty_id, any(counterparty) AS counterparty,
            acc, acc_root, if(contract_id != '', contract_id, doc_id) AS contract_key,
@@ -127,7 +213,7 @@ func arhReportQuery(inns, accRoots []string, closeDt, openDt, lens string) strin
 			sb.WriteString(", " + c[0] + " AS s" + c[0][1:])
 		}
 		inner = `SELECT snapshot_date, company_id, company, counterparty_id, counterparty, acc, acc_root,
-           contract_key, contract_label, delay, currency_kod AS cur_kod` + sb.String() + `
+           contract_key, contract_label, delay, currency_kod AS cur_kod, v_d AS n_d, v_k AS n_k` + sb.String() + `
     FROM (` + grain + `)`
 	} else {
 		k := arhRateK(lens)
@@ -137,7 +223,8 @@ func arhReportQuery(inns, accRoots []string, closeDt, openDt, lens string) strin
 		}
 		inner = `SELECT f.snapshot_date AS snapshot_date, f.company_id AS company_id, f.company AS company,
            f.counterparty_id AS counterparty_id, f.counterparty AS counterparty, f.acc AS acc, f.acc_root AS acc_root,
-           f.contract_key AS contract_key, f.contract_label AS contract_label, f.delay AS delay, toUInt32(0) AS cur_kod` + sb.String() + `
+           f.contract_key AS contract_key, f.contract_label AS contract_label, f.delay AS delay, toUInt32(0) AS cur_kod,
+           f.v_d AS n_d, f.v_k AS n_k` + sb.String() + `
     FROM (` + grain + `) f` + arhRates
 	}
 	at := func(col, dt string) string {
@@ -170,10 +257,7 @@ FROM (
     ` + inner + `
 )
 GROUP BY company_id, counterparty_id, acc, acc_root, contract_key, cur_kod
-HAVING abs(sumIf(s_d, snapshot_date = toDate('` + closeDt + `'))) > 0.005
-    OR abs(sumIf(s_k, snapshot_date = toDate('` + closeDt + `'))) > 0.005
-    OR abs(sumIf(s_d, snapshot_date = toDate('` + openDt + `'))) > 0.005
-    OR abs(sumIf(s_k, snapshot_date = toDate('` + openDt + `'))) > 0.005
+HAVING sumIf(abs(n_d) + abs(n_k), snapshot_date IN (toDate('` + closeDt + `'), toDate('` + openDt + `'))) > 0.005
 ORDER BY company, counterparty, acc, contract_label
 FORMAT JSONEachRow`
 }
@@ -187,6 +271,12 @@ FORMAT JSONEachRow`
 // Счета выручки — revenueAccCondition() (90.x / КЗ-6010 / УЗ-9010; УЗ-6010 — расчёты с
 // поставщиками). Фильтр счетов отчёта на продажи НЕ действует; фильтр по ЮЛ и линза — да.
 // BYN/USD — по курсу на дату события.
+//
+// Знак по стране: у КЗ (141240004842) продажи Дт 1210/Кт 6010 в источнике идут со знаком МИНУС,
+// поэтому для ЮЛ КЗ знак инвертируется (продажа = минус в источнике). Это эмпирика из данных
+// сентября 2026 (2070 строк, −389.6 млн по всем каналам; по ВГО лишь 4 строки −266 тыс.),
+// ТРЕБУЕТ ПОДТВЕРЖДЕНИЯ аналитиком. Отгрузки КЗ по ВГО идут по Кт 3310 / Дт 1310 и 1330
+// (+206 млн) и в правило 6010 НЕ попадают — выручка КЗ по ВГО здесь фактически нулевая.
 func arhSalesQuery(inns []string, from, to, lens string) string {
 	orgClause := ""
 	if len(inns) > 0 {
@@ -194,28 +284,30 @@ func arhSalesQuery(inns []string, from, to, lens string) string {
 	}
 	period := fmt.Sprintf("event_date >= toDate('%[1]s') AND event_date <= toDate('%[2]s')", from, to)
 	last := fmt.Sprintf("event_date >= addMonths(toStartOfMonth(toDate('%[1]s')), -1) AND event_date < toStartOfMonth(toDate('%[1]s'))", to)
+	kz := "company_id IN (" + quoteList(entityINNsByCountry(CountryKZ)) + ")"
 	grain := `SELECT event_date, company_id, any(company) AS company, counterparty_id, any(counterparty) AS counterparty,
-           acc, currency_kod, amount_sign, sum(amount) AS v,
+           acc, currency_kod, if(` + kz + `, -amount_sign, amount_sign) AS eff_sign,
+           sum(if(` + kz + `, -amount, amount)) AS v,
            event_date AS rate_date, toInt32(840) AS usd_kod
     FROM finance.fact_arh_sales FINAL
     WHERE (` + revenueAccCondition() + `)
       AND ((` + period + `) OR (` + last + `))` + orgClause + `
-    GROUP BY event_date, company_id, counterparty_id, acc, currency_kod, amount_sign`
+    GROUP BY event_date, company_id, counterparty_id, acc, currency_kod, amount_sign, eff_sign`
 	var inner string
 	if lens == LensContract {
-		inner = `SELECT event_date, company_id, company, counterparty_id, counterparty, acc, currency_kod AS cur_kod, amount_sign, v AS s
+		inner = `SELECT event_date, company_id, company, counterparty_id, counterparty, acc, currency_kod AS cur_kod, eff_sign, v AS s, v AS n
     FROM (` + grain + `)`
 	} else {
 		inner = `SELECT f.event_date AS event_date, f.company_id AS company_id, f.company AS company,
            f.counterparty_id AS counterparty_id, f.counterparty AS counterparty, f.acc AS acc,
-           toUInt32(0) AS cur_kod, f.amount_sign AS amount_sign, toFloat64(f.v) * (` + arhRateK(lens) + `) AS s
+           toUInt32(0) AS cur_kod, f.eff_sign AS eff_sign, f.v AS n, toFloat64(f.v) * (` + arhRateK(lens) + `) AS s
     FROM (` + grain + `) f` + arhRates
 	}
 	sum := func(cond, sign string) string { return sign + "sumIf(s, " + cond + ")" }
-	sp := sum(period+" AND amount_sign > 0", "")
-	sl := sum(last+" AND amount_sign > 0", "")
-	rp := sum(period+" AND amount_sign < 0", "-")
-	rl := sum(last+" AND amount_sign < 0", "-")
+	sp := sum(period+" AND eff_sign > 0", "")
+	sl := sum(last+" AND eff_sign > 0", "")
+	rp := sum(period+" AND eff_sign < 0", "-")
+	rl := sum(last+" AND eff_sign < 0", "-")
 	return `
 SELECT company_id,
        any(company)      AS company,
@@ -231,7 +323,7 @@ FROM (
     ` + inner + `
 )
 GROUP BY company_id, counterparty_id, acc, cur_kod
-HAVING abs(` + sp + `) > 0.005 OR abs(` + sl + `) > 0.005 OR abs(` + rp + `) > 0.005 OR abs(` + rl + `) > 0.005
+HAVING sumIf(abs(n), ((` + period + `) OR (` + last + `)) AND eff_sign != 0) > 0.005
 ORDER BY company, counterparty, acc
 FORMAT JSONEachRow`
 }
@@ -246,20 +338,22 @@ func (r *arhCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error) {
 	if f.DateFrom.IsZero() {
 		from = to
 	}
-	closeDt, openDt, err := r.snapshotDates(ctx, from, to)
+	closeDt, openDt, err := r.snapshotDates(ctx, f.EntityINNs, from, to)
 	if err != nil {
 		return nil, err
 	}
-	rows := []DebtRow{}
-	if closeDt != "" {
-		body, err := r.post(ctx, arhReportQuery(f.EntityINNs, f.Accounts, closeDt, openDt, lens))
-		if err != nil {
-			return nil, err
-		}
-		if rows, err = decodeArhReport(body, lens); err != nil {
-			return nil, err
-		}
+	if err := checkArhSnapshots(closeDt, openDt, from, to); err != nil {
+		return nil, err
 	}
+	body, err := r.post(ctx, arhReportQuery(f.EntityINNs, f.Accounts, closeDt, openDt, lens))
+	if err != nil {
+		return nil, err
+	}
+	rows, err := decodeArhReport(body, lens)
+	if err != nil {
+		return nil, err
+	}
+	defer r.warnMissingRates(ctx, lens, closeDt, openDt, from, to)
 	// Продажи — отдельная таблица: нет миграции 015 / поток не залит → отчёт по долгу
 	// остаётся рабочим, только без продаж и возвратов (причина — в логе).
 	sales, err := r.salesRows(ctx, f, from, to, lens)
@@ -268,6 +362,59 @@ func (r *arhCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error) {
 		return rows, nil
 	}
 	return append(rows, sales...), nil
+}
+
+// arhMissingRatesQuery — пары «валюта@дата» без курса (и курса USD для линзы USD) по таблице.
+func arhMissingRatesQuery(table, dateCol, dateCond, lens string) string {
+	miss := "(f.currency_kod != 933 AND rSrc.curr_rate = 0)"
+	if lens == LensUSD {
+		miss += " OR rUsd.curr_rate = 0"
+	}
+	return `SELECT DISTINCT concat(toString(f.currency_kod), '@', toString(f.rate_date)) FROM (
+    SELECT currency_kod, ` + dateCol + ` AS rate_date, toInt32(840) AS usd_kod FROM ` + table + `
+    WHERE ` + dateCond + ` GROUP BY currency_kod, ` + dateCol + `
+) f` + arhRates + `
+WHERE ` + miss + ` ORDER BY 1 FORMAT TSV`
+}
+
+// warnMissingRates — одно сообщение в лог на запрос: для каких валют/дат нет курса (строки
+// при этом остаются, но пересчитанные суммы нулевые) и что currency_daily пуста. Только для
+// линз BYN/USD; ошибки самой проверки не мешают отчёту.
+func (r *arhCHRepo) warnMissingRates(ctx context.Context, lens, closeDt, openDt, from, to string) {
+	if lens == LensContract {
+		return
+	}
+	cnt, err := r.post(ctx, "SELECT count() FROM finance.currency_daily FORMAT TSV")
+	if err != nil {
+		return
+	}
+	if n, _ := strconv.Atoi(strings.TrimSpace(string(cnt))); n == 0 {
+		log.Printf("debt.arh: finance.currency_daily ПУСТА — суммы в линзе %q будут нулевыми; залейте курсы (MODE=currency /findebt-etl или CURRENCY_SYNC_INTERVAL)", lens)
+		return
+	}
+	if openDt == "" {
+		openDt = arhNoDate
+	}
+	missing := []string{}
+	queries := []string{
+		arhMissingRatesQuery("finance.fact_arh_debt", "snapshot_date", fmt.Sprintf("snapshot_date IN (toDate('%s'), toDate('%s'))", closeDt, openDt), lens),
+		arhMissingRatesQuery("finance.fact_arh_sales", "event_date", fmt.Sprintf("event_date >= toDate('%s') AND event_date <= toDate('%s')", from, to), lens),
+	}
+	for _, q := range queries {
+		body, err := r.post(ctx, q)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+			if parts := strings.SplitN(strings.TrimSpace(line), "@", 2); len(parts) == 2 {
+				kod, _ := strconv.Atoi(parts[0])
+				missing = append(missing, isoCurrencyName(kod)+"@"+parts[1])
+			}
+		}
+	}
+	if len(missing) > 0 {
+		log.Printf("debt.arh: нет курса для линзы %q (пересчитанная сумма этих строк = 0): %s", lens, strings.Join(missing, ", "))
+	}
 }
 
 func (r *arhCHRepo) salesRows(ctx context.Context, f Filters, from, to, lens string) ([]DebtRow, error) {
@@ -293,6 +440,14 @@ func arhCurrency(lens string, kod int) string {
 		return isoCurrencyName(kod)
 	}
 	return lensCurrency(lens, "")
+}
+
+// arhContractRef — ключ договора для DebtRow.ContractRef; пустой ключ → явный маркер.
+func arhContractRef(key string) string {
+	if key = strings.TrimSpace(key); key != "" {
+		return key
+	}
+	return arhNoContractRef
 }
 
 func decodeArhReport(body []byte, lens string) ([]DebtRow, error) {
@@ -339,7 +494,7 @@ func decodeArhReport(body []byte, lens string) ([]DebtRow, error) {
 			AccountName:     accountNameFor(country, jr.AccRoot),
 			Subaccount:      jr.Acc,
 			Contract:        strings.TrimSpace(jr.ContractLabel),
-			ContractRef:     strings.TrimSpace(jr.ContractKey),
+			ContractRef:     arhContractRef(jr.ContractKey),
 			PaymentTermDays: jr.Delay,
 			Currency:        arhCurrency(lens, jr.CurKod),
 			// КЗ в источнике отрицательна → в положительный долг.
@@ -402,15 +557,19 @@ func decodeArhSales(body []byte, lens string) ([]DebtRow, error) {
 func arhDrilldownQuery(companyINN, partnerINN, acc, contractRef, closeDt, lens string, curKod int) string {
 	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
 	cond := " AND company_id = '" + esc(companyINN) + "' AND counterparty_id = '" + esc(partnerINN) + "' AND acc = '" + esc(acc) + "'"
-	if strings.TrimSpace(contractRef) != "" {
-		cond += " AND if(contract_id != '', contract_id, doc_id) = '" + esc(contractRef) + "'"
+	switch ref := strings.TrimSpace(contractRef); ref {
+	case "": // без фильтра по договору
+	case arhNoContractRef: // группа «без договора»: пустой ключ
+		cond += " AND if(contract_id != '', contract_id, doc_id) = ''"
+	default:
+		cond += " AND if(contract_id != '', contract_id, doc_id) = '" + esc(ref) + "'"
 	}
 	if curKod != 0 && lens == LensContract {
 		cond += fmt.Sprintf(" AND currency_kod = %d", curKod)
 	}
 	grain := `SELECT doc_id, any(doc_number) AS doc_number, max(doc_date) AS doc_date, any(doc_type) AS doc_type,
            any(contract_title) AS contract_title, max(payment_date) AS payment_date, max(delay) AS delay, currency_kod,
-           sum(sum_d) AS v_d, sum(sum_k) AS v_k, toDate('` + esc(closeDt) + `') AS rate_date, toInt32(840) AS usd_kod
+           ` + arhAmtCols[0][1] + ` AS v_d, ` + arhAmtCols[1][1] + ` AS v_k, toDate('` + esc(closeDt) + `') AS rate_date, toInt32(840) AS usd_kod
     FROM finance.fact_arh_debt FINAL
     WHERE snapshot_date = toDate('` + esc(closeDt) + `')` + cond + `
     GROUP BY doc_id, currency_kod`
@@ -445,19 +604,20 @@ FORMAT JSONEachRow`
 // Drilldown — документы договора на снэпшот закрытия со сроком оплаты из Docs.PaymentDate
 // и просрочкой в днях = max(0, дата отчёта − срок оплаты).
 func (r *arhCHRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]DocumentRow, error) {
-	if q.CompanyINN == "" || q.PartnerINN == "" || q.Account == "" {
-		return nil, errors.New("debt.arh.Drilldown: company_inn/partner_inn/account required")
+	// partner_inn может быть пустым (контрагент без УНП) — тогда фильтр counterparty_id = ''.
+	if q.CompanyINN == "" || q.Account == "" {
+		return nil, errors.New("debt.arh.Drilldown: company_inn/account required")
 	}
 	if q.DateTo.IsZero() {
 		return nil, errors.New("debt.arh.Drilldown: date_to required")
 	}
 	to := asDate(q.DateTo)
-	closeDt, _, err := r.snapshotDates(ctx, to, to)
+	closeDt, _, err := r.snapshotDates(ctx, []string{strings.TrimSpace(q.CompanyINN)}, to, to)
 	if err != nil {
 		return nil, err
 	}
-	if closeDt == "" {
-		return []DocumentRow{}, nil
+	if err := checkArhSnapshots(closeDt, "", to, to); err != nil {
+		return nil, err
 	}
 	body, err := r.post(ctx, arhDrilldownQuery(
 		strings.TrimSpace(q.CompanyINN), strings.TrimSpace(q.PartnerINN), strings.TrimSpace(q.Account),

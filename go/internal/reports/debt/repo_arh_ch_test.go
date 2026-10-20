@@ -1,7 +1,11 @@
 package debt
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log"
+	"os"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +20,8 @@ func arhServer(t *testing.T, snap, debt, sales, drill string, salesStatus int) (
 		b := readBody(r)
 		seen = append(seen, b)
 		switch {
+		case strings.Contains(b, "FROM finance.currency_daily"):
+			_, _ = w.Write([]byte("42\n"))
 		case strings.Contains(b, "maxIf(snapshot_date"):
 			_, _ = w.Write([]byte(snap))
 		case strings.Contains(b, "FROM finance.fact_arh_sales"):
@@ -162,7 +168,7 @@ func TestArhSalesQuery(t *testing.T) {
 		"company_id IN ('6950135110')",
 		"event_date >= toDate('2026-09-01') AND event_date <= toDate('2026-09-30')",
 		"event_date >= addMonths(toStartOfMonth(toDate('2026-09-30')), -1) AND event_date < toStartOfMonth(toDate('2026-09-30'))",
-		"amount_sign > 0", "-sumIf(s,", "amount_sign < 0",
+		"eff_sign > 0", "-sumIf(s,", "eff_sign < 0",
 		"event_date AS rate_date", "ASOF LEFT JOIN finance.currency_daily rSrc",
 	} {
 		if !strings.Contains(q, want) {
@@ -214,9 +220,10 @@ func TestArhReport_SalesUnavailableDegrades(t *testing.T) {
 
 	empty, _ := arhServer(t, "1970-01-01\t1970-01-01\n", "", "", "", 0)
 	repo2, _ := NewArhCHRepo(empty.URL, "u", "p")
-	rows, err = repo2.Report(context.Background(), Filters{DateFrom: date(2026, 9, 1), DateTo: date(2026, 9, 30)})
-	if err != nil || len(rows) != 0 {
-		t.Errorf("без снэпшотов отчёт пуст: rows=%d err=%v", len(rows), err)
+	_, err = repo2.Report(context.Background(), Filters{DateFrom: date(2026, 9, 1), DateTo: date(2026, 9, 30)})
+	var ns *NoSnapshotError
+	if !errors.As(err, &ns) {
+		t.Errorf("без снэпшотов — понятная ошибка, а не пустой отчёт: %v", err)
 	}
 }
 
@@ -286,5 +293,184 @@ func TestIsoCurrency(t *testing.T) {
 	}
 	if isoCurrencyKod("rub") != 643 || isoCurrencyKod("XXX") != 0 {
 		t.Errorf("isoCurrencyKod")
+	}
+}
+
+// Нетто по DocID (как у FinDebt): для непустого doc_id ДЗ/КЗ делятся по знаку нетто
+// sum_d + sum_k, корзины — нетто корзин на стороне нетто; строки без doc_id как есть.
+func TestArhReportQuery_NetByDocID(t *testing.T) {
+	q := arhReportQuery(nil, nil, "2026-09-30", "2026-08-31", LensContract)
+	for _, want := range []string{
+		"sum(if(doc_id = '', sum_d, if((sum_d + sum_k) > 0, (sum_d + sum_k), toDecimal64(0, 2)))) AS v_d",
+		"sum(if(doc_id = '', sum_k, if((sum_d + sum_k) < 0, (sum_d + sum_k), toDecimal64(0, 2)))) AS v_k",
+		"sum(if(doc_id = '', sum999_d, if((sum_d + sum_k) >= 0, (sum999_d + sum999_k), toDecimal64(0, 2)))) AS v999_d",
+		"sum(if(doc_id = '', sum30_k, if((sum_d + sum_k) < 0, (sum30_d + sum30_k), toDecimal64(0, 2)))) AS v30_k",
+	} {
+		if !strings.Contains(q, want) {
+			t.Errorf("нет выражения нетто %q:\n%s", want, q)
+		}
+	}
+	// drill-down считает документ по тому же правилу
+	dq := arhDrilldownQuery("a", "b", "6315", "", "2026-09-30", LensContract, 0)
+	if !strings.Contains(dq, arhAmtCols[0][1]+" AS v_d") || !strings.Contains(dq, arhAmtCols[1][1]+" AS v_k") {
+		t.Errorf("drill-down обязан использовать то же нетто:\n%s", dq)
+	}
+}
+
+// Курс не найден: строка не теряется (HAVING по родным суммам), в лог — одно сообщение
+// со списком валют/дат; пустая currency_daily — отдельное явное сообщение.
+func TestArhReport_MissingRateKeepsRowAndLogs(t *testing.T) {
+	q := arhReportQuery(nil, nil, "2026-09-30", "2026-08-31", LensBYN)
+	if !strings.Contains(q, "HAVING sumIf(abs(n_d) + abs(n_k), snapshot_date IN (") {
+		t.Errorf("HAVING должен смотреть на родные суммы:\n%s", q)
+	}
+	if !strings.Contains(arhSalesQuery(nil, "2026-09-01", "2026-09-30", LensBYN), "HAVING sumIf(abs(n),") {
+		t.Errorf("продажи: HAVING по родным суммам")
+	}
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	debt := `{"company_id":"6950135110","company":"","counterparty_id":"1","counterparty":"К","acc":"62.1","acc_root":"62","contract_key":"c","contract_label":"Д","delay":0,"cur_kod":0,"close_dz":"0","close_kz":"0","open_dz":"0","open_kz":"0"}` + "\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := readBody(r)
+		switch {
+		case strings.Contains(b, "FROM finance.currency_daily"):
+			_, _ = w.Write([]byte("42\n"))
+		case strings.Contains(b, "maxIf(snapshot_date"):
+			_, _ = w.Write([]byte("2026-09-30\t2026-08-31\n"))
+		case strings.Contains(b, "SELECT DISTINCT concat") && strings.Contains(b, "fact_arh_debt"):
+			_, _ = w.Write([]byte("643@2026-09-30\n"))
+		case strings.Contains(b, "FROM finance.fact_arh_sales"):
+			http.Error(w, "no table", http.StatusNotFound)
+		default:
+			_, _ = w.Write([]byte(debt))
+		}
+	}))
+	defer srv.Close()
+	repo, _ := NewArhCHRepo(srv.URL, "u", "p")
+	rows, err := repo.Report(context.Background(), Filters{DateFrom: date(2026, 9, 1), DateTo: date(2026, 9, 30), Lens: LensBYN})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("строка без курса не должна теряться: rows=%d err=%v", len(rows), err)
+	}
+	if !strings.Contains(logBuf.String(), "нет курса") || !strings.Contains(logBuf.String(), "RUB@2026-09-30") {
+		t.Errorf("в логе нет списка валют без курса: %q", logBuf.String())
+	}
+
+	// пустая currency_daily — явное сообщение
+	logBuf.Reset()
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := readBody(r)
+		switch {
+		case strings.Contains(b, "FROM finance.currency_daily"):
+			_, _ = w.Write([]byte("0\n"))
+		case strings.Contains(b, "maxIf(snapshot_date"):
+			_, _ = w.Write([]byte("2026-09-30\t2026-08-31\n"))
+		case strings.Contains(b, "FROM finance.fact_arh_sales"):
+			http.Error(w, "no table", http.StatusNotFound)
+		default:
+			_, _ = w.Write([]byte(debt))
+		}
+	}))
+	defer empty.Close()
+	repo2, _ := NewArhCHRepo(empty.URL, "u", "p")
+	if _, err := repo2.Report(context.Background(), Filters{DateFrom: date(2026, 9, 1), DateTo: date(2026, 9, 30), Lens: LensUSD}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logBuf.String(), "currency_daily ПУСТА") {
+		t.Errorf("нет сообщения про пустую currency_daily: %q", logBuf.String())
+	}
+}
+
+// Дата вне окна ежедневных снэпшотов: ближайший снэпшот дальше 3 дней — ошибка 422 с
+// понятным текстом, а не молчаливая подмена концом месяца.
+func TestArhReport_SnapshotTooFarIsError(t *testing.T) {
+	srv, _ := arhServer(t, "2026-08-31\t2026-07-31\n", "", "", "", 0)
+	repo, _ := NewArhCHRepo(srv.URL, "u", "p")
+	_, err := repo.Report(context.Background(), Filters{DateFrom: date(2026, 9, 1), DateTo: date(2026, 9, 15)})
+	var ns *NoSnapshotError
+	if !errors.As(err, &ns) || !strings.Contains(err.Error(), "нет снэпшота на дату 15.09.2026; ближайший: 31.08.2026") {
+		t.Fatalf("ожидалась NoSnapshotError, получено: %v", err)
+	}
+	if errStatus(err) != http.StatusUnprocessableEntity || errStatus(errors.New("x")) != http.StatusBadRequest {
+		t.Errorf("errStatus")
+	}
+	// открытый снэпшот слишком далеко от date_from
+	srv2, _ := arhServer(t, "2026-09-30\t2026-07-31\n", "", "", "", 0)
+	repo2, _ := NewArhCHRepo(srv2.URL, "u", "p")
+	_, err = repo2.Report(context.Background(), Filters{DateFrom: date(2026, 9, 1), DateTo: date(2026, 9, 30)})
+	if !errors.As(err, &ns) || !strings.Contains(err.Error(), "на начало периода") {
+		t.Errorf("open_dt далеко от date_from: %v", err)
+	}
+	// 1–3 дня — нормально (выходные)
+	one := `{"company_id":"690591512","company":"МФ","counterparty_id":"1","counterparty":"К","acc":"62.1","acc_root":"62","contract_key":"","contract_label":"","delay":0,"cur_kod":933,"close_dz":"5","close_kz":"0","open_dz":"0","open_kz":"0"}` + "\n"
+	srv3, _ := arhServer(t, "2026-09-27\t2026-08-31\n", one, "", "", http.StatusNotFound)
+	repo3, _ := NewArhCHRepo(srv3.URL, "u", "p")
+	if rows, err := repo3.Report(context.Background(), Filters{DateFrom: date(2026, 9, 1), DateTo: date(2026, 9, 30)}); err != nil || len(rows) != 1 {
+		t.Errorf("снэпшот в пределах 3 дней: rows=%d err=%v", len(rows), err)
+	}
+}
+
+// Снэпшоты ищутся с учётом выбранных ЮЛ.
+func TestArhSnapshotDatesQuery_CompanyFilter(t *testing.T) {
+	q := arhSnapshotDatesQuery([]string{"305554644"}, "2026-09-01", "2026-09-30")
+	if !strings.Contains(q, "AND company_id IN ('305554644')") {
+		t.Errorf("нет фильтра по ЮЛ:\n%s", q)
+	}
+	if strings.Contains(arhSnapshotDatesQuery(nil, "2026-09-01", "2026-09-30"), "company_id") {
+		t.Errorf("без ЮЛ фильтра быть не должно")
+	}
+}
+
+// «(без договора)»: пустой ключ получает явный маркер, drill-down по маркеру фильтрует
+// contract_key = '', пустой contract — без фильтра (старые ссылки), пустой partner разрешён.
+func TestArhNoContractMarker(t *testing.T) {
+	debt := `{"company_id":"6950135110","company":"","counterparty_id":"","counterparty":"Без УНП","acc":"62.1","acc_root":"62","contract_key":"","contract_label":"","delay":0,"cur_kod":643,"close_dz":"7","close_kz":"0","open_dz":"0","open_kz":"0"}` + "\n"
+	srv, _ := arhServer(t, "2026-09-30\t2026-08-31\n", debt, "", "", http.StatusNotFound)
+	repo, _ := NewArhCHRepo(srv.URL, "u", "p")
+	rows, err := repo.Report(context.Background(), Filters{DateFrom: date(2026, 9, 1), DateTo: date(2026, 9, 30)})
+	if err != nil || len(rows) != 1 || rows[0].ContractRef != arhNoContractRef {
+		t.Fatalf("маркер пустого ключа: rows=%+v err=%v", rows, err)
+	}
+	q := arhDrilldownQuery("6950135110", "", "62.1", arhNoContractRef, "2026-09-30", LensContract, 0)
+	if !strings.Contains(q, "AND if(contract_id != '', contract_id, doc_id) = ''") || !strings.Contains(q, "counterparty_id = ''") {
+		t.Errorf("drill-down «без договора» / пустой партнёр:\n%s", q)
+	}
+	if strings.Contains(arhDrilldownQuery("a", "b", "62.1", "", "2026-09-30", LensContract, 0), "contract_id, doc_id) =") {
+		t.Errorf("пустой contract — без фильтра по договору")
+	}
+	drill := `{"doc_id":"d1","doc_number":"Н1","doc_date":"2026-09-01","doc_type":"","contract_title":"","payment_date":"","sum_d":"7","sum_k":"0"}` + "\n"
+	srv2, _ := arhServer(t, "2026-09-30\t1970-01-01\n", "", "", drill, 0)
+	repo2, _ := NewArhCHRepo(srv2.URL, "u", "p")
+	docs, err := repo2.Drilldown(context.Background(), DrilldownQuery{CompanyINN: "6950135110", PartnerINN: "", Account: "62.1", Contract: arhNoContractRef, DateTo: date(2026, 9, 30)})
+	if err != nil || len(docs) != 1 {
+		t.Errorf("пустой partner_inn не должен давать ошибку: docs=%d err=%v", len(docs), err)
+	}
+}
+
+// Знак продаж по стране: для КЗ продажа в источнике — минус, знак инвертируется.
+func TestArhSalesQuery_KZSignInverted(t *testing.T) {
+	q := arhSalesQuery(nil, "2026-09-01", "2026-09-30", LensContract)
+	kz := "company_id IN ('141240004842')"
+	for _, want := range []string{
+		"if(" + kz + ", -amount_sign, amount_sign) AS eff_sign",
+		"sum(if(" + kz + ", -amount, amount)) AS v",
+		"eff_sign > 0", "eff_sign < 0",
+	} {
+		if !strings.Contains(q, want) {
+			t.Errorf("нет %q:\n%s", want, q)
+		}
+	}
+}
+
+// Корзины нулевые, а остаток нет (снэпшоты findebt до повторного bootstrap / нет просрочки):
+// сервер данные не скрывает — «Без просрочки» = весь остаток, решение о показе — на фронте.
+func TestArhReport_ZeroBucketsKeepCurrent(t *testing.T) {
+	debt := `{"company_id":"690591512","company":"МФ","counterparty_id":"1","counterparty":"К","acc":"62.1","acc_root":"62","contract_key":"c","contract_label":"Д","delay":0,"cur_kod":933,"close_dz":"100","close_kz":"-40","open_dz":"0","open_kz":"0","dz30":"0","dz60":"0","dz90":"0","dz999":"0","kz30":"0","kz60":"0","kz90":"0","kz999":"0"}` + "\n"
+	srv, _ := arhServer(t, "2026-09-30\t2026-08-31\n", debt, "", "", http.StatusNotFound)
+	repo, _ := NewArhCHRepo(srv.URL, "u", "p")
+	rows, _ := repo.Report(context.Background(), Filters{DateFrom: date(2026, 9, 1), DateTo: date(2026, 9, 30)})
+	if len(rows) != 1 || !approx(rows[0].AgingDZ.Current, 100) || !approx(rows[0].AgingKZ.Current, 40) || rows[0].AgingDZ.Gt90 != 0 {
+		t.Errorf("корзины: %+v", rows)
 	}
 }
