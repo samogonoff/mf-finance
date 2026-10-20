@@ -184,6 +184,9 @@ type RetailStore struct {
 	RegManager string `json:"reg_manager"` // RegManager (права РМ, §9)
 	Manager    string `json:"manager"`     // Manager
 	PLAnalytic string `json:"pl_analytic"` // PLAnalyticCFO1
+	// LisaFound — карточка магазина найдена в Лисе: LFL-статус взят оттуда. Только для обновления статусов
+	// по прошлым периодам (по магазинам без карточки обновлять нечем).
+	LisaFound bool `json:"-"`
 }
 
 // RetailRow — строка формы: снапшот атрибутов магазина + ячейки по месяцам.

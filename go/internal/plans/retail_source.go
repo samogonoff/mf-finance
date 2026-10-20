@@ -162,6 +162,11 @@ func retailStoresQuery(storeTable, lflTable string) string {
 		   AND (@p2 = '' OR S.[Country] = @p2)`, lisaCols, storeTable, lisaJoin)
 }
 
+// RetailLisaStores — источник умеет отдать магазины со статусами строго из Лисы.
+type RetailLisaStores interface {
+	StoresFromLisa(ctx context.Context) ([]RetailStore, error)
+}
+
 // RetailStoresWithLFLSource — источник отдаёт магазины вместе с подписью, откуда взяты их LFL-статусы.
 type RetailStoresWithLFLSource interface {
 	StoresWithLFLSource(ctx context.Context, country string) ([]RetailStore, string, error)
@@ -199,13 +204,27 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 // StoresWithLFLSource — те же магазины и подпись источника LFL-статусов ИМЕННО ЭТОГО чтения (а не
 // общего состояния источника: параллельные вызовы не путают подпись друг другу).
 func (s *mssqlRetailSource) StoresWithLFLSource(ctx context.Context, country string) ([]RetailStore, string, error) {
+	return s.stores(ctx, country, true)
+}
+
+// StoresFromLisa — магазины с LFL-статусом из Лисы БЕЗ запасного пути: для обновления статусов в прошлых
+// периодах нельзя подменять статусы Лисы статусами справочника ЦФО. Нет Лисы или доступа — ошибка.
+func (s *mssqlRetailSource) StoresFromLisa(ctx context.Context) ([]RetailStore, error) {
+	if strings.TrimSpace(s.tbl.LFLTable) == "" {
+		return nil, errors.New("карточки Лисы не подключены (PLANS_RETAIL_LFL_TABLE пуст): обновлять статусы нечем")
+	}
+	out, _, err := s.stores(ctx, "", false)
+	return out, err
+}
+
+func (s *mssqlRetailSource) stores(ctx context.Context, country string, allowFallback bool) ([]RetailStore, string, error) {
 	lflTable := strings.TrimSpace(s.tbl.LFLTable)
 	lisaFailed := false
-	if lflTable != "" && time.Now().UnixNano() < s.lisaSkipUntil.Load() {
+	if allowFallback && lflTable != "" && time.Now().UnixNano() < s.lisaSkipUntil.Load() {
 		lflTable, lisaFailed = "", true // недавно отказали в правах — Лису не дёргаем
 	}
 	rows, err := s.db.QueryContext(ctx, retailStoresQuery(s.tbl.StoreTable, lflTable), s.tbl.StoreGroup, country)
-	if err != nil && lflTable != "" && ctx.Err() == nil && retailLisaUnavailable(err) {
+	if err != nil && allowFallback && lflTable != "" && ctx.Err() == nil && retailLisaUnavailable(err) {
 		// Лиса нужна только для уточнения статуса: нет прав на её таблицу — не должно ронять форму,
 		// синхронизацию и свод. Повторяем без присоединения, статусы — из справочника ЦФО. Любая
 		// другая ошибка (обрыв, таймаут, deadlock) возвращается как есть: подмена статусов Лисы
@@ -250,7 +269,7 @@ func (s *mssqlRetailSource) StoresWithLFLSource(ctx context.Context, country str
 			Country: ctry.String, CodeFOX: fox.String, Ploschad: plo.Float64, StoreType: typ.String,
 			DateOpen: retailDateOrEmpty(open.String), DateClose: retailDateOrEmpty(close_.String),
 			Stage: stage.String, CompanyMF: comp.String, Channel: ch.String, CFOold: old.String,
-			Category: cat.String, LFLStatus: retailLFLStatus(lflSrc), LFLRaw: strings.TrimSpace(lflSrc), RegManager: rm.String,
+			Category: cat.String, LFLStatus: retailLFLStatus(lflSrc), LFLRaw: strings.TrimSpace(lflSrc), LisaFound: lisaID.Valid, RegManager: rm.String,
 			Manager: mgr.String, PLAnalytic: pla.String,
 		}
 		out = append(out, st)
