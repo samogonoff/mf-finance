@@ -272,7 +272,9 @@ func expSyncErrText(err error) string {
 	switch {
 	case strings.Contains(low, "could not find stored procedure") || strings.Contains(low, "не удалось найти хранимую процедуру"):
 		return "процедура затрат не найдена в базе источника (проверьте PLANS_EXP_COSTS_PROC и доступ)"
-	case strings.Contains(low, "execute permission") || strings.Contains(low, "разрешение execute"):
+	case strings.Contains(low, "execute permission") ||
+		(strings.Contains(low, "отказано в разрешении") && strings.Contains(low, "execute")):
+		// Английский сервер: «The EXECUTE permission was denied…»; русский: «Отказано в разрешении "EXECUTE" на объект…».
 		return "нет права выполнить процедуру затрат (нужен EXECUTE у логина кабинета)"
 	case strings.Contains(low, "permission was denied") || strings.Contains(low, "отказано в разрешении") || strings.Contains(low, "отказано в доступе"):
 		// Права MSSQL бывают на процедуру и на её таблицы в Budgeting (цепочка владения между
