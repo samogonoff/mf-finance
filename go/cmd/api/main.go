@@ -685,6 +685,7 @@ func main() {
 	mux.HandleFunc("GET /api/plans/retail/{cardId}/summary", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.SummaryGet))
 	mux.HandleFunc("GET /api/plans/retail/period/{plId}/consolidated", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.ConsolidatedGet))
 	mux.HandleFunc("GET /api/plans/retail/lfl-statuses", auth.RequireRole(authSvc, auth.RolePlansUser, plansRetailH.LFLStatusesGet))
+	mux.HandleFunc("POST /api/plans/retail/lfl-refresh", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansRetailH.LFLRefresh))
 	// Раздел «Стратегические планы» (ТЗ доработок п. 5.1).
 	mux.HandleFunc("GET /api/plans/strategy/mp-shares", auth.RequireRole(authSvc, auth.RolePlansUser,
 		plans.NewStrategyHandler(plansMpShareDefaults).MpShares))

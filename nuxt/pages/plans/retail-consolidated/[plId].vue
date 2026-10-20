@@ -98,6 +98,42 @@
       <div class="card-header">
         <span class="card-title">Статусы LFL в справочнике магазинов</span>
         <span class="muted">источник: {{ lfl.source }}</span>
+        <button v-if="canAdmin" class="btn btn-sm btn-ghost" :disabled="refreshBusy" @click="refreshPreview">
+          <Icon name="lucide:refresh-cw" :class="{ spin: refreshBusy }" /> Обновить статусы во всех периодах
+        </button>
+      </div>
+      <p v-if="refreshError" class="banner banner-neg">{{ refreshError }}</p>
+      <p v-if="refreshDone" class="banner banner-pos">{{ refreshDone }}</p>
+      <div v-if="refresh" class="refresh-box">
+        <template v-if="!refresh.rows_changed">
+        <p class="banner banner-info">
+          Менять нечего: устаревшего «нового» у уже сравнимых магазинов не осталось (магазинов в Лисе: {{ refresh.stores_in_lisa }}).
+        </p>
+        </template>
+        <template v-else>
+          <p class="banner banner-warn">
+            Будет изменён статус у {{ refresh.rows_changed }} строк в {{ refresh.cards_changed }} карточках периодов, из них
+            {{ refresh.locked_cards }} уже закрыты для правок (утверждены или на согласовании). Значения плана и листы
+            согласования не меняются, но от статуса зависят LFL и % выполнения — они пересчитаются.
+          </p>
+          <table class="data-table compact">
+            <thead><tr><th>Было</th><th>Станет</th><th class="col-num">Строк</th></tr></thead>
+            <tbody>
+              <tr v-for="t in refresh.transitions" :key="`${t.from}>${t.to}`">
+                <td>{{ lflLabel(t.from) }}</td><td>{{ lflLabel(t.to) }}</td><td class="col-num">{{ t.rows }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="refresh-actions">
+            <button class="btn btn-sm btn-primary" :disabled="refreshBusy" @click="refreshApply">Применить ко всем периодам</button>
+            <button class="btn btn-sm btn-ghost" :disabled="refreshBusy" @click="refresh = null">Отмена</button>
+          </div>
+        </template>
+        <p v-if="refresh.rows_skipped" class="muted">
+          Не переносится в прошлые периоды: {{ refresh.rows_skipped }} строк. Статусы «закрыт», «реконструкция», «до года» и «новый»
+          зависят от даты (магазин закрыли в сентябре — в январе он ещё работал), поэтому в прошлом исправляется только устаревшее
+          «новый» у магазинов, которые в периоде уже были сравнимыми (LFL). В редактируемых карточках статусы обновляются при открытии формы.
+        </p>
       </div>
       <table class="data-table compact">
         <thead>
@@ -124,7 +160,7 @@
 <script setup lang="ts">
 import { defineComponent, h } from "vue";
 import SkeletonTable from "~/components/SkeletonTable.vue";
-import { retailErrText, useRetail, type RetailConsolidated, type RetailLFLStatusCount, type RetailSummaryMetrics } from "~/composables/useRetail";
+import { retailErrText, useRetail, type RetailConsolidated, type RetailLFLRefreshResult, type RetailLFLStatusCount, type RetailSummaryMetrics } from "~/composables/useRetail";
 import { num as fmtNum } from "~/utils/format";
 
 definePageMeta({ middleware: ["scope-guard"] });
@@ -138,6 +174,45 @@ const lfl = ref<{ source: string; statuses: RetailLFLStatusCount[] } | null>(nul
 const loading = ref(false);
 const error = ref("");
 const open = reactive(new Set<string>());
+
+// Обновление LFL-статусов во всех периодах — разовая операция администратора: сначала предпросмотр.
+const { hasRole, isAdmin } = useScope();
+const canAdmin = computed(() => isAdmin.value || hasRole("ROLE_PLANS_ADMIN"));
+const refresh = ref<RetailLFLRefreshResult | null>(null);
+const refreshBusy = ref(false);
+const refreshError = ref("");
+const refreshDone = ref("");
+const LFL_LABELS: Record<string, string> = {
+  lfl: "LFL", under1y: "до года", new: "новый", closed: "закрыт", xxx: "ххх", reconstruction: "реконструкция"
+};
+const lflLabel = (code: string): string => LFL_LABELS[code] || code || "—";
+const refreshPreview = async () => {
+  refreshBusy.value = true;
+  refreshError.value = "";
+  refreshDone.value = "";
+  try {
+    refresh.value = await api.lflRefresh(true);
+  } catch (e) {
+    refresh.value = null;
+    refreshError.value = retailErrText(e, "Не удалось посчитать обновление статусов");
+  } finally {
+    refreshBusy.value = false;
+  }
+};
+const refreshApply = async () => {
+  refreshBusy.value = true;
+  refreshError.value = "";
+  try {
+    const r = await api.lflRefresh(false);
+    refresh.value = null;
+    refreshDone.value = `Статусы обновлены: ${r.rows_changed} строк в ${r.cards_changed} карточках.`;
+    api.lflStatuses().then((x) => (lfl.value = x)).catch(() => undefined);
+  } catch (e) {
+    refreshError.value = retailErrText(e, "Не удалось обновить статусы");
+  } finally {
+    refreshBusy.value = false;
+  }
+};
 
 const monthName = (m: number): string =>
   new Intl.DateTimeFormat("ru-RU", { month: "long" }).format(new Date(2000, m - 1, 1));
@@ -202,6 +277,8 @@ onMounted(load);
 .muted { color: var(--text-muted); font-weight: 400; }
 .col-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .strong { font-weight: 600; }
+.refresh-box { padding: var(--sp-3) var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-3); }
+.refresh-actions { display: flex; gap: var(--sp-2); }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
