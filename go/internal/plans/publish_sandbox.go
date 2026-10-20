@@ -42,6 +42,10 @@ func NewSandboxPublisher(pool *pgxpool.Pool, targets []string) Publisher {
 			allowed[strings.ToLower(t)] = true
 		}
 	}
+	// Приёмники расходов разрешены в песочнице всегда: реальная запись в них невозможна (см. publishSandboxOnlyTargets).
+	for _, t := range publishSandboxOnlyTargets {
+		allowed[strings.ToLower(t)] = true
+	}
 	return &sandboxPublisher{pool: pool, allowed: allowed}
 }
 
