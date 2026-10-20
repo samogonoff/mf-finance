@@ -281,11 +281,52 @@ func TestExpService_AllChannels_OnlyRetail_PG(t *testing.T) {
 			t.Errorf("колонка %s не должна быть ошибочной: %s", c.Country, c.Error)
 		}
 	}
-	// Страны розницы без карточки (РФ, КЗ, УЗ) — в предупреждениях: итог розницы неполный.
+	// Страны розницы без карточки (РФ, КЗ, УЗ) — в предупреждениях: итог розницы неполный. По одному предупреждению на
+	// страну и без «не удалось прочитать форму»: отсутствие карточки — не сбой чтения.
+	if len(out.Warnings) != 3 {
+		t.Fatalf("ожидали ровно три предупреждения (РФ, КЗ, УЗ), получили %d: %v", len(out.Warnings), out.Warnings)
+	}
 	joined := strings.Join(out.Warnings, " | ")
+	if strings.Contains(joined, "не удалось прочитать") {
+		t.Errorf("страна без карточки не должна называться сбоем чтения: %s", joined)
+	}
 	for _, want := range []string{"Розница · RU", "Розница · KZ", "Розница · UZ"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("нет предупреждения %q: %s", want, joined)
 		}
+	}
+}
+
+// Страна розницы без карточки: в своде розницы она есть и в Missing, и строкой с служебным текстом в Error; в общем
+// своде — одно предупреждение «карточки нет», а не два и не «не удалось прочитать форму».
+func TestMergeExpConsolidatedChannels_MissingCountryIsOneWarning(t *testing.T) {
+	retail := consPart(expAllLabelRetail, 900, consGroup("Аренда", 54, 900))
+	retail.Cons.Missing = []string{"RU", "UZ"}
+	retail.Cons.Countries = []ExpConsCountry{
+		{Country: "BY", Rows: 5},
+		{Country: "RU", Error: "карточка расходов страны не заведена"},
+		{Country: "KZ", Error: "ошибка чтения"},
+		{Country: "UZ", Error: "карточка расходов страны не заведена"},
+	}
+	out := mergeExpConsolidatedChannels(7, []expAllPart{retail}, expRetailPnlOrder)
+	if len(out.Warnings) != 3 {
+		t.Fatalf("ожидали три предупреждения (РФ и УЗ — нет карточки, КЗ — сбой чтения): %v", out.Warnings)
+	}
+	count := func(sub string) (n int) {
+		for _, w := range out.Warnings {
+			if strings.Contains(w, sub) {
+				n++
+			}
+		}
+		return
+	}
+	if count("Розница · RU: карточки расходов нет") != 1 || count("Розница · UZ: карточки расходов нет") != 1 {
+		t.Errorf("страна без карточки — ровно одно предупреждение: %v", out.Warnings)
+	}
+	if count("Розница · KZ: не удалось прочитать форму (ошибка чтения)") != 1 {
+		t.Errorf("настоящий сбой чтения должен остаться предупреждением о чтении: %v", out.Warnings)
+	}
+	if count("RU: не удалось") != 0 || count("UZ: не удалось") != 0 {
+		t.Errorf("отсутствие карточки не должно называться сбоем чтения: %v", out.Warnings)
 	}
 }
