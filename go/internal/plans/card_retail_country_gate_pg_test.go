@@ -44,7 +44,7 @@ func TestRetailCountryGateTransaction_PG(t *testing.T) {
 		if c.FormCode != TemplateRetail {
 			continue
 		}
-		_, err = pool.Exec(ctx, `UPDATE form_card SET status='on_approval', step_code='1.3' WHERE id=$1`, c.ID)
+		_, err = pool.Exec(ctx, `UPDATE form_card SET status='on_approval', step_code='1.4' WHERE id=$1`, c.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,10 +69,10 @@ func TestRetailCountryGateTransaction_PG(t *testing.T) {
 	result := make(chan error, 1)
 	go func() {
 		_, saveErr := NewCardStore(pool).SaveTransition(ctx, current.ID, CardTransition{
-			Status: CardOnApproval, StepCode: "1.4", VersionBump: true,
-			ExpectedStatus: CardOnApproval, ExpectedStep: "1.3", ExpectedVersion: 0,
+			Status: CardApproved, StepCode: "1.4", VersionBump: true, Locked: true,
+			ExpectedStatus: CardOnApproval, ExpectedStep: "1.4", ExpectedVersion: 0,
 			RetailPlID: plID, RequireRetailCountryGate: true,
-			Approvals: []ApprovalWrite{{StepCode: "1.3", Decision: "approve"}},
+			Approvals: []ApprovalWrite{{StepCode: "1.4", Decision: "approve"}},
 		}, []byte(`{}`), 0)
 		result <- saveErr
 	}()
@@ -83,10 +83,10 @@ func TestRetailCountryGateTransaction_PG(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = <-result; err == nil || !strings.Contains(err.Error(), "KZ") {
-		t.Fatalf("concurrent return must block final transition: %v", err)
+		t.Fatalf("concurrent return must block the final decision: %v", err)
 	}
 	now, err := NewCardStore(pool).Card(ctx, current.ID)
-	if err != nil || now.StepCode != "1.3" {
+	if err != nil || now.StepCode != "1.4" || now.Status != CardOnApproval {
 		t.Fatalf("blocked card changed: %+v %v", now, err)
 	}
 	// A form save can change values without a route version bump. The card

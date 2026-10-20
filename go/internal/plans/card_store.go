@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -217,7 +215,7 @@ func (s *pgCardStore) SaveTransition(ctx context.Context, cardID int64, tr CardT
 			return Card{}, err
 		}
 		if missing := missingRetailCountries(peers, cardID, true); len(missing) > 0 {
-			return Card{}, fmt.Errorf("перед шагом Сипаровой нужны все четыре страны розницы; не готовы: %s", strings.Join(missing, ", "))
+			return Card{}, errors.New(retailFinalWaitError(missing))
 		}
 	}
 	var actor any

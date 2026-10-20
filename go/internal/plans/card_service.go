@@ -234,20 +234,22 @@ func (s *CardService) Action(ctx context.Context, cardID int64, in CardActionInp
 			return Card{}, fmt.Errorf("не назначен ответственный следующего шага %s карточки %s/%s", tr.StepCode, c.FormCode, c.ScopeKey)
 		}
 	}
-	if s.retailCountryGate && c.FormCode == TemplateRetail && in.Action == "approve" && tr.StepCode == "1.4" && tr.Status == CardOnApproval {
+	// Директор принимает свою страну независимо от остальных. Условие «все четыре страны» относится к
+	// решению шага 1.4: утвердить или вернуть розницу Сипарова может, когда страны собрались.
+	if s.retailCountryGate && retailFinalDecision(c, in.Action) {
 		cards, err := s.cards.Cards(ctx, c.PlID)
 		if err != nil {
 			return Card{}, err
 		}
 		if missing := missingRetailCountries(cards, c.ID, true); len(missing) > 0 {
-			return Card{}, fmt.Errorf("перед шагом Сипаровой нужны все четыре страны розницы; не готовы: %s", strings.Join(missing, ", "))
+			return Card{}, errors.New(retailFinalWaitError(missing))
 		}
 	}
 	tr.ExpectedStatus, tr.ExpectedStep, tr.ExpectedVersion = c.Status, c.StepCode, c.CurrentVersion
 	tr.ExpectedUpdatedAt = c.UpdatedAt
 	if c.FormCode == TemplateRetail {
 		tr.RetailPlID = c.PlID
-		tr.RequireRetailCountryGate = s.retailCountryGate && in.Action == "approve" && tr.StepCode == "1.4" && tr.Status == CardOnApproval
+		tr.RequireRetailCountryGate = s.retailCountryGate && retailFinalDecision(c, in.Action)
 	}
 
 	snapshot := []byte(`{}`)

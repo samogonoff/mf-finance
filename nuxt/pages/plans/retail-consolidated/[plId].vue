@@ -7,8 +7,10 @@
   сводом её карточки в блоке BYN. Страна раскрывается по клику — как и экран
   согласования, свод открывается свёрнутым.
 
-  Шлюз ФЗ 02.10 п. 18: на утверждение (1.4) розница уходит только когда все
-  четыре страны пройдены. Кого ждём — наверху, до чисел.
+  Шаг 1.4 (Сипарова) утверждает поток розницы целиком: директор принимает свою страну независимо
+  от остальных, а решение шага 1.4 доступно, когда все четыре страны до него дошли. Кого ждём —
+  наверху, до чисел. Свод видят все; кнопки «Утвердить» / «Вернуть» по каждой стране — только
+  согласующему шага 1.4 (и админу) и только когда страны собрались.
 -->
 <template>
   <div class="page-rcons">
@@ -35,10 +37,12 @@
     </header>
 
     <p v-if="error" class="banner banner-neg">{{ error }}</p>
+    <p v-if="actionError" class="banner banner-neg">{{ actionError }}</p>
+    <p v-if="actionNote" class="banner banner-pos">{{ actionNote }}</p>
     <p v-if="data && data.pending.length" class="banner banner-warn">
-      На утверждение розница уйдёт, когда пройдены все четыре страны. Ждём: {{ data.pending.join(", ") }}.
+      Сипарова утвердит розницу, когда все четыре страны пройдут директора. Ждём: {{ data.pending.join(", ") }}.
     </p>
-    <p v-else-if="data" class="banner banner-pos">Все четыре страны пройдены — розница может уходить на утверждение.</p>
+    <p v-else-if="data" class="banner banner-pos">Все четыре страны дошли до утверждения (шаг 1.4).</p>
 
     <SkeletonTable v-if="loading && !data" :rows="6" :cols="9" />
 
@@ -57,6 +61,7 @@
               <th class="col-num">LFL</th>
               <th class="col-num">Итого за период</th>
               <th class="col-num">Ожидание года</th>
+              <th v-if="hasFinal" class="col-act">Шаг 1.4</th>
             </tr>
           </thead>
           <tbody>
@@ -76,6 +81,37 @@
                 <td class="col-num">{{ c.error ? "—" : c.rows }}</td>
                 <MetricCells v-if="!c.error" :m="c.byn" />
                 <td v-else colspan="8" />
+                <td v-if="hasFinal" class="col-act" @click.stop>
+                  <template v-if="c.can_decide">
+                    <button class="btn btn-xs btn-primary" :disabled="actBusy" @click="approve(c)">Утвердить</button>
+                    <button class="btn btn-xs btn-ghost" :disabled="actBusy" @click="openReturn(c)">Вернуть</button>
+                  </template>
+                  <span v-else-if="c.at_final_step" class="muted" title="Решение доступно согласующему шага 1.4, когда все четыре страны дошли до него">
+                    {{ data.pending.length ? "ждём другие страны" : "ждёт решения" }}
+                  </span>
+                  <span v-else class="muted">—</span>
+                </td>
+              </tr>
+              <tr v-if="ret.country === c.country" class="row-return">
+                <td :colspan="hasFinal ? 11 : 10">
+                  <div class="return-box">
+                    <label class="fld">
+                      <span class="fld-lbl">Вернуть {{ c.country }} на шаг</span>
+                      <select v-model="ret.target" class="input">
+                        <option value="" disabled>выберите шаг</option>
+                        <option v-for="s in data.return_steps" :key="s.code" :value="s.code">{{ s.code }} · {{ s.name }}</option>
+                      </select>
+                    </label>
+                    <label class="fld return-comment">
+                      <span class="fld-lbl">Причина (обязательна)</span>
+                      <textarea v-model="ret.comment" class="textarea" rows="2" placeholder="что нужно исправить"></textarea>
+                    </label>
+                    <div class="return-actions">
+                      <button class="btn btn-sm btn-primary" :disabled="actBusy || !ret.target || !ret.comment.trim()" @click="submitReturn(c)">Вернуть</button>
+                      <button class="btn btn-sm btn-ghost" :disabled="actBusy" @click="ret.country = ''">Отмена</button>
+                    </div>
+                  </div>
+                </td>
               </tr>
               <template v-if="open.has(c.country)">
                 <tr v-for="s in c.stores" :key="`${c.country}:${s.code_cfo}`" class="row-store">
@@ -123,8 +159,10 @@
 
 <script setup lang="ts">
 import { defineComponent, h } from "vue";
+import { useMpConditions } from "~/composables/useMpConditions";
+import { apiError } from "~/utils/apiError";
 import SkeletonTable from "~/components/SkeletonTable.vue";
-import { retailErrText, useRetail, type RetailConsolidated, type RetailLFLStatusCount, type RetailSummaryMetrics } from "~/composables/useRetail";
+import { retailErrText, useRetail, type RetailConsolidated, type RetailConsolidatedCountry, type RetailLFLStatusCount, type RetailSummaryMetrics } from "~/composables/useRetail";
 import { num as fmtNum } from "~/utils/format";
 
 definePageMeta({ middleware: ["scope-guard"] });
@@ -141,6 +179,49 @@ const open = reactive(new Set<string>());
 
 const monthName = (m: number): string =>
   new Intl.DateTimeFormat("ru-RU", { month: "long" }).format(new Date(2000, m - 1, 1));
+// Решение шага 1.4 со свода: утвердить или вернуть страну. Права и «все четыре страны» проверяет сервер,
+// кнопки показываются только тому, у кого они сработают.
+const cardsApi = useMpConditions();
+const hasFinal = computed(() => !!data.value?.countries.some((c) => c.at_final_step));
+const actBusy = ref(false);
+const actionError = ref("");
+const actionNote = ref("");
+const ret = reactive({ country: "", target: "", comment: "" });
+const approve = async (c: RetailConsolidatedCountry) => {
+  actBusy.value = true;
+  actionError.value = "";
+  actionNote.value = "";
+  try {
+    await cardsApi.cardAction(c.card_id, { action: "approve" });
+    actionNote.value = `${c.country}: розница утверждена.`;
+    await load();
+  } catch (e) {
+    actionError.value = apiError(e, "Не удалось утвердить");
+  } finally {
+    actBusy.value = false;
+  }
+};
+const openReturn = (c: RetailConsolidatedCountry) => {
+  ret.country = c.country;
+  ret.target = "";
+  ret.comment = "";
+};
+const submitReturn = async (c: RetailConsolidatedCountry) => {
+  actBusy.value = true;
+  actionError.value = "";
+  actionNote.value = "";
+  try {
+    await cardsApi.cardAction(c.card_id, { action: "return", target_step: ret.target, comment: ret.comment.trim() });
+    actionNote.value = `${c.country}: возвращено на шаг ${ret.target}.`;
+    ret.country = "";
+    await load();
+  } catch (e) {
+    actionError.value = apiError(e, "Не удалось вернуть");
+  } finally {
+    actBusy.value = false;
+  }
+};
+
 const totalRows = computed(() => (data.value?.countries || []).reduce((a, c) => a + (c.rows || 0), 0));
 const allOpen = computed(() => !!data.value && data.value.countries.every((c) => !!c.error || open.has(c.country)));
 
@@ -197,6 +278,13 @@ onMounted(load);
 .row-country.dim { cursor: default; color: var(--text-muted); }
 .row-store td:first-child { padding-left: var(--sp-6); }
 .row-store td { font-size: var(--fs-sm); }
+.col-act { white-space: nowrap; text-align: right; }
+.row-return td { background: var(--bg-surface-2); }
+/* Форма возврата не уезжает при горизонтальной прокрутке широкой таблицы. */
+.return-box { position: sticky; left: 0; box-sizing: border-box; width: min(920px, 92vw); display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); }
+.return-box .fld { display: flex; flex-direction: column; gap: var(--sp-1); }
+.return-comment { flex: 1 1 280px; }
+.return-actions { display: flex; gap: var(--sp-2); }
 .row-link { margin-left: var(--sp-3); font-size: var(--fs-xs); }
 .code { font-family: var(--font-mono); color: var(--text-muted); }
 .muted { color: var(--text-muted); font-weight: 400; }

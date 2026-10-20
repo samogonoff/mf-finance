@@ -181,7 +181,7 @@
             <span class="badge" :class="cardBadge(c)">{{ cardStatus(c) }}</span>
             <span v-if="c.locked" class="fc-lock"><Icon name="lucide:lock" /> закрыт</span>
             <span v-if="c.form_code === 'TPL-TO-RETAIL' && c.missing_countries?.length" class="fc-lock">
-              Не готовы к Сипаровой: {{ c.missing_countries.join(', ') }}
+              Сипарова утвердит, когда страны дойдут до 1.4. Ждём: {{ c.missing_countries.join(', ') }}
             </span>
           </div>
           <div class="fc-links">

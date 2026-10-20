@@ -467,6 +467,9 @@ export interface RetailConsolidatedCountry {
   title: string;
   status: string;
   step_code: string;
+  /** Карточка ждёт решения шага 1.4; can_decide — текущий пользователь может утвердить или вернуть её со свода. */
+  at_final_step: boolean;
+  can_decide: boolean;
   nat_currency: string;
   rows: number;
   nat: RetailSummaryMetrics;
@@ -481,8 +484,10 @@ export interface RetailConsolidated {
   currency: string;
   total: RetailSummaryMetrics;
   countries: RetailConsolidatedCountry[];
-  /** Страны, которые ещё не дошли до шага 1.3: пока список не пуст, на 1.4 не уходит. */
+  /** Страны, которые ещё не дошли до шага 1.4: пока список не пуст, решение шага 1.4 недоступно. */
   pending: string[];
+  /** Шаги, на которые можно вернуть страну с 1.4. */
+  return_steps: { code: string; name: string }[];
 }
 
 export interface RetailLFLStatusCount {

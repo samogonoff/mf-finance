@@ -39,6 +39,11 @@ type RetailConsolidatedCountry struct {
 	Title       string                    `json:"title"`
 	Status      string                    `json:"status"`
 	StepCode    string                    `json:"step_code"`
+	// AtFinalStep — карточка ждёт решения шага 1.4 (утверждение Сипаровой). CanDecide — текущий пользователь
+	// может утвердить или вернуть её прямо со свода: он согласующий шага 1.4 (или админ), и все четыре
+	// страны дошли до этого шага.
+	AtFinalStep bool                      `json:"at_final_step"`
+	CanDecide   bool                      `json:"can_decide"`
 	NatCurrency string                    `json:"nat_currency"`
 	Rows        int                       `json:"rows"`
 	Nat         RetailSummaryMetrics      `json:"nat"`
@@ -46,6 +51,12 @@ type RetailConsolidatedCountry struct {
 	Stores      []RetailConsolidatedStore `json:"stores"`
 	// Error — почему страны нет в своде (нет карточки, вне среза доступа).
 	Error string `json:"error,omitempty"`
+}
+
+// RetailReturnStep — шаг, на который возвращают карточку.
+type RetailReturnStep struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
 }
 
 // RetailConsolidated — ответ GET /api/plans/retail/period/{plId}/consolidated.
@@ -56,9 +67,11 @@ type RetailConsolidated struct {
 	Currency  string                      `json:"currency"`
 	Total     RetailSummaryMetrics        `json:"total"`
 	Countries []RetailConsolidatedCountry `json:"countries"`
-	// Pending — страны, ещё не прошедшие до шага Дегтеревой: пока список не
-	// пуст, розница на утверждение (1.4) не уходит.
+	// Pending — страны, ещё не дошедшие до шага 1.4: пока список не пуст, Сипарова не может ни утвердить,
+	// ни вернуть розницу (директор при этом принимает свою страну независимо от остальных).
 	Pending []string `json:"pending"`
+	// ReturnSteps — шаги, на которые можно вернуть страну с 1.4 (раньше текущего, включённые в маршрут).
+	ReturnSteps []RetailReturnStep `json:"return_steps"`
 }
 
 // recomputeRatios — проценты свода от агрегатов (как aggregateMetrics).
@@ -108,6 +121,37 @@ func consolidateCountry(rows []RetailRow, in RetailSummaryInput, toBYN RetailFxR
 	return nat, byn, stores
 }
 
+// canDecideFinal — пользователь согласующий шага 1.4 этой карточки или админ процессов. Тот же отбор,
+// что делает хендлер действия над карточкой: свод показывает кнопки только тому, у кого они сработают.
+func (s *RetailService) canDecideFinal(ctx context.Context, p Principal, c Card) bool {
+	if p.PlansAdmin {
+		return true
+	}
+	if s.cards == nil || s.cards.owners == nil || p.UserID == 0 {
+		return false
+	}
+	owners, err := s.cards.owners.StepOwners(ctx, c.PlID, c.FormCode, c.ScopeKey)
+	return err == nil && owners["1.4"] == p.UserID
+}
+
+// retailReturnSteps — шаги маршрута розницы раньше 1.4, на которые Сипарова может вернуть страну.
+func (s *RetailService) retailReturnSteps(ctx context.Context) []RetailReturnStep {
+	out := []RetailReturnStep{}
+	if s.cards == nil {
+		return out
+	}
+	route, err := s.cards.Route(ctx, TemplateRetail)
+	if err != nil {
+		return out
+	}
+	steps := enabledRoute(route)
+	idx := stepIndex(steps, "1.4")
+	for i := 0; i < idx; i++ {
+		out = append(out, RetailReturnStep{Code: steps[i].StepCode, Name: steps[i].StepName})
+	}
+	return out
+}
+
 // Consolidated — свод четырёх стран периода. Страна вне среза пользователя
 // остаётся в списке с пояснением, но в итог не входит: итог по чужим магазинам
 // раскрыл бы то, что срез прячет.
@@ -131,6 +175,7 @@ func (s *RetailService) Consolidated(ctx context.Context, p Principal, plID int6
 	}
 	out := RetailConsolidated{PlID: plID, Currency: "BYN",
 		Pending: missingRetailCountries(cards, 0, false)}
+	out.ReturnSteps = s.retailReturnSteps(ctx)
 	totals := make([]RetailSummaryMetrics, 0, len(retailCountries))
 	for _, country := range retailCountries {
 		c, ok := byCountry[country]
@@ -143,6 +188,8 @@ func (s *RetailService) Consolidated(ctx context.Context, p Principal, plID int6
 		out.Year, out.Month = c.Year, c.Month
 		row.CardID, row.Title, row.StepCode = c.ID, c.Title, c.StepCode
 		row.Status = CardStatusLabel(c.Status, c.StepCode)
+		row.AtFinalStep = retailFinalDecision(c, "approve")
+		row.CanDecide = row.AtFinalStep && len(out.Pending) == 0 && s.canDecideFinal(ctx, p, c)
 		a, err := s.access(ctx, c.ID, p)
 		if err != nil {
 			row.Error = err.Error()

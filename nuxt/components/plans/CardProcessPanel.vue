@@ -71,7 +71,7 @@
     </p>
 
     <p v-if="card?.form_code === 'TPL-TO-RETAIL' && card.missing_countries?.length" class="cpp-soft">
-      <Icon name="lucide:globe" /> До шага Сипаровой не готовы: {{ card.missing_countries.join(', ') }}.
+      <Icon name="lucide:globe" /> Сипарова утвердит розницу, когда все страны дойдут до шага 1.4. Ждём: {{ card.missing_countries.join(', ') }}.
     </p>
 
     <slot v-if="canSubmitStep" name="before-submit" />
