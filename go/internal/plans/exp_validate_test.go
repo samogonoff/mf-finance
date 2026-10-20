@@ -323,7 +323,7 @@ func TestExpSummaryFold_ByPnlGroup(t *testing.T) {
 
 // E-11 с месяцем карточки: обязателен только месяц плана, последующие месяцы — предупреждение, прошедшие не
 // проверяются (они закрыты, заполнить их нельзя — «зачем заполнять всё в октябре»).
-func TestValidateExpForm_E11_OnlyPlanMonthBlocks(t *testing.T) {
+func TestValidateExpForm_E11_PlanMonthWarns(t *testing.T) {
 	onlyOct := ExpRow{CodeCFO: 101, CodePL: 61, Expense: "Коммуналка",
 		Values: []ExpValue{{Scenario: ExpScenarioPlan, Month: 10, Amount: pv(500)}}}
 	got := ValidateExpForm(ExpValidationInput{Rows: []ExpRow{onlyOct}, CardMonth: 10})
@@ -340,8 +340,16 @@ func TestValidateExpForm_E11_OnlyPlanMonthBlocks(t *testing.T) {
 
 	empty := ExpRow{CodeCFO: 101, CodePL: 61, Expense: "Коммуналка"}
 	got = ValidateExpForm(ExpValidationInput{Rows: []ExpRow{empty}, CardMonth: 10})
-	if b := ExpBlocking(got); len(b) != 1 || b[0].Code != "E-11" || b[0].Month != 10 {
-		t.Fatalf("месяц плана пуст — блокирует: %+v", got)
+	// Пустой месяц плана — предупреждение, а не блокировка: бюджет подтягивается из источника автоматически.
+	if b := ExpBlocking(got); len(b) != 0 {
+		t.Fatalf("месяц плана пуст — только предупреждение: %+v", got)
+	}
+	var warnedMonth bool
+	for _, i := range got {
+		warnedMonth = warnedMonth || i.Code == "E-11" && !i.Blocking && i.Month == 10 && strings.Contains(i.Message, "месяц плана (10)")
+	}
+	if !warnedMonth {
+		t.Fatalf("пустой месяц плана должен давать предупреждение E-11: %+v", got)
 	}
 	// Явный ноль в месяце плана — заполнено.
 	zero := ExpRow{CodeCFO: 101, CodePL: 61, Values: []ExpValue{{Scenario: ExpScenarioPlan, Month: 10, Amount: pv(0)}}}

@@ -298,12 +298,73 @@ type recordingExpRepo struct {
 	mu           sync.Mutex
 	saved        map[string][]ExpCell
 	paymentsWipe int // сколько раз очищался платёжный факт
+	budget       []ExpCell
+	budgetCalls  int
+}
+
+// Бюджет источника («Тактика бюджет (таргеты)») подставляется в план автоматически, как колонка «бюджет» листов
+// Excel: только плановый год и только открытые месяцы; прошедшие закрыты, прошлый год не нужен.
+func TestExpSync_BudgetFromSourceFillsOpenMonths(t *testing.T) {
+	src := &stubExpSource{cells: []ExpCostCell{
+		{Scenario: ExpSrcFact, Year: 2025, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 100},
+		{Scenario: ExpSrcTactic, Year: 2025, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 999}, // прошлый год — не бюджет плана
+		{Scenario: ExpSrcTactic, Year: 2026, Month: 9, CodePL: 24, CodeCFO: 101, Amount: 910},  // прошедший месяц — закрыт
+		{Scenario: ExpSrcTactic, Year: 2026, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 1000},
+		{Scenario: ExpSrcTactic, Year: 2026, Month: 11, CodePL: 24, CodeCFO: 101, Amount: 1100},
+	}}
+	repo := &recordingExpRepo{fakeExpRepo: fakeExpRepo{inst: ExpInstance{ID: 7, FormKind: ExpKindRetail, Country: "BY", PlanYear: 2026}}}
+	svc := NewExpService(repo, nil, src)
+	card := Card{ID: 1, FormCode: TemplateExp, Status: CardDraft, Year: 2026, Month: 10}
+	if _, err := svc.syncFromSource(context.Background(), card, repo.inst, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.budget) != 2 {
+		t.Fatalf("в план должны попасть октябрь и ноябрь 2026: %+v", repo.budget)
+	}
+	got := map[int]float64{}
+	for _, c := range repo.budget {
+		if c.Source != ExpSourceBudget {
+			t.Errorf("ячейка бюджета без пометки источника: %+v", c)
+		}
+		got[c.Month] = *c.Amount
+	}
+	if got[10] != 1000 || got[11] != 1100 {
+		t.Errorf("суммы бюджета: %v", got)
+	}
+	// Бюджет не попадает в нередактируемые сценарии: это план, а не снимок источника.
+	if _, ok := repo.saved[ExpScenarioPlan]; ok {
+		t.Error("бюджет не должен писаться через SaveReadOnly")
+	}
+}
+
+// Утверждённая карточка остаётся такой, какой её согласовали: бюджет в неё не подставляется.
+func TestExpSync_BudgetNotFilledInClosedCard(t *testing.T) {
+	src := &stubExpSource{cells: []ExpCostCell{
+		{Scenario: ExpSrcTactic, Year: 2026, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 1000},
+	}}
+	repo := &recordingExpRepo{fakeExpRepo: fakeExpRepo{inst: ExpInstance{ID: 7, FormKind: ExpKindRetail, Country: "BY", PlanYear: 2026}}}
+	svc := NewExpService(repo, nil, src)
+	card := Card{ID: 1, FormCode: TemplateExp, Status: CardApproved, Year: 2026, Month: 10}
+	if _, err := svc.syncFromSource(context.Background(), card, repo.inst, true); err != nil {
+		t.Fatal(err)
+	}
+	if repo.budgetCalls != 0 {
+		t.Fatalf("в утверждённую карточку бюджет подставлять нельзя: вызовов %d", repo.budgetCalls)
+	}
 }
 
 func (r *recordingExpRepo) ClearPaymentsFact(context.Context, int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.paymentsWipe++
+	return nil
+}
+
+func (r *recordingExpRepo) FillPlanFromSource(_ context.Context, _ int64, cells []ExpCell) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.budget = append(r.budget, cells...)
+	r.budgetCalls++
 	return nil
 }
 

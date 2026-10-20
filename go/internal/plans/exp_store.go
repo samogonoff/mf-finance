@@ -19,6 +19,10 @@ type ExpRepo interface {
 	Rows(ctx context.Context, instanceID int64, f ExpFilter) ([]ExpRow, int, error)
 	SaveValues(ctx context.Context, instanceID int64, cells []ExpCell, actorID int64, cardVersion int) (int, error)
 	SaveReadOnly(ctx context.Context, instanceID int64, scenario string, cells []ExpCell) error
+	// FillPlanFromSource подставляет в план бюджет источника (ExpSourceBudget). Пустые ячейки заполняются,
+	// ячейки, ещё не тронутые человеком (source = budget), обновляются по источнику; введённое руками, из файла,
+	// расчётом или реестром не перезаписывается. Журнал изменений не ведётся: это не ввод человека.
+	FillPlanFromSource(ctx context.Context, instanceID int64, cells []ExpCell) error
 	// FactBasis — на чём построен сохранённый факт экземпляра: ExpFactBasisPayments, если в нём
 	// лежат платёжные значения, иначе пусто. Признак хранится вместе с данными и переживает рестарт.
 	FactBasis(ctx context.Context, instanceID int64) (string, error)
@@ -313,6 +317,36 @@ func (s *expRepo) SaveReadOnly(ctx context.Context, instanceID int64, scenario s
 			ON CONFLICT (row_id, scenario, month) DO UPDATE SET
 			    amount = EXCLUDED.amount, source = EXCLUDED.source, updated_at = NOW()`,
 			instanceID, c.CodeCFO, c.Month, *c.Amount, c.CodePL, scenario, src)
+	}
+	br := s.pool.SendBatch(ctx, b)
+	defer br.Close()
+	for i := 0; i < b.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// FillPlanFromSource — см. ExpRepo.FillPlanFromSource.
+func (s *expRepo) FillPlanFromSource(ctx context.Context, instanceID int64, cells []ExpCell) error {
+	b := &pgx.Batch{}
+	for _, c := range cells {
+		if c.Amount == nil || c.Month < 1 || c.Month > 12 {
+			continue
+		}
+		b.Queue(`
+			INSERT INTO exp_value (row_id, scenario, month, amount, source)
+			SELECT r.id, 'plan', $3, $4, $6
+			  FROM exp_row r
+			 WHERE r.instance_id = $1 AND r.code_cfo = $2 AND r.code_pl = $5
+			ON CONFLICT (row_id, scenario, month) DO UPDATE SET
+			    amount = EXCLUDED.amount, updated_at = NOW()
+			 WHERE exp_value.source = $6`,
+			instanceID, c.CodeCFO, c.Month, *c.Amount, c.CodePL, ExpSourceBudget)
+	}
+	if b.Len() == 0 {
+		return nil
 	}
 	br := s.pool.SendBatch(ctx, b)
 	defer br.Close()
