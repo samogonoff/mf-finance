@@ -120,8 +120,16 @@ func (s *CardService) WithRetailCountryGate(v bool) *CardService { s.retailCount
 
 // EnsureCards создаёт карточки периода по реестру форм (идемпотентно).
 func (s *CardService) EnsureCards(ctx context.Context, plID int64, actorID int64) ([]Card, error) {
+	existing, err := s.cards.Cards(ctx, plID)
+	if err != nil {
+		return nil, err
+	}
 	for _, f := range FormRegistry() {
+		closed := formClosedInPeriod(existing, f.Code)
 		for _, sc := range f.Scopes {
+			if sc.Late && closed && !hasCardScope(existing, f.Code, sc.Key) {
+				continue
+			}
 			if _, err := s.cards.EnsureCard(ctx, Card{
 				PlID: plID, FormCode: f.Code, ScopeKey: sc.Key,
 				Title: f.Name + " · " + sc.Title, Country: sc.Country,

@@ -22,7 +22,7 @@ export function num(v: number | null | undefined, fractionDigits = 0): string {
 }
 
 export interface MoneyOpts {
-  currency?: "RUB" | "USD" | "EUR" | "BYN";
+  currency?: "RUB" | "USD" | "EUR" | "BYN" | "KZT" | "UZS" | (string & {});
   compact?: boolean;
   signed?: boolean;
   fractionDigits?: number;
@@ -32,7 +32,8 @@ const CURRENCY_SIGN: Record<string, string> = {
   RUB: "₽",
   USD: "$",
   EUR: "€",
-  BYN: "Br"
+  BYN: "Br",
+  KZT: "₸"
 };
 
 export function money(v: number | null | undefined, opts: MoneyOpts = {}): string {

@@ -161,7 +161,22 @@ func expCostsSQL(kind, country string, years []int) string {
 // запрос платёжного факта).
 func expCostsSQLScenario(kind, country string, years []int, scenario string) string {
 	var w []string
-	w = append(w, "group_cfo1 = "+chLit(expKindGroup(kind)))
+	// Сумма в национальной валюте страны; у форм с несколькими странами (опт) — в BYN.
+	amountCol := "amount"
+	if expKindInBYN(kind) {
+		amountCol = "amount_byn"
+	}
+	group1, group3 := expKindFilter(kind)
+	if group1 != "" {
+		w = append(w, "group_cfo1 = "+chLit(group1))
+	}
+	if len(group3) > 0 {
+		lits := make([]string, len(group3))
+		for i, g := range group3 {
+			lits[i] = chLit(g)
+		}
+		w = append(w, "group_cfo3 IN ("+strings.Join(lits, ", ")+")")
+	}
 	if country != "" {
 		w = append(w, "country = "+chLit(country))
 	}
@@ -193,7 +208,7 @@ func expCostsSQLScenario(kind, country string, years []int, scenario string) str
 		w = append(w, "scenario != '' AND scenario != "+chLit(ExpSrcFactPayments))
 	}
 	return `SELECT scenario, country, toYear(month) AS y, toMonth(month) AS m, code_pl, group_pl, expense,
-       code_cfo, cfo, group_cfo1, group_cfo2, project_name, special_access, toFloat64(amount) AS amount
+       code_cfo, cfo, group_cfo1, group_cfo2, project_name, special_access, toFloat64(` + amountCol + `) AS amount
   FROM finance.exp_costs
  WHERE ` + strings.Join(w, "\n   AND ") + `
  LIMIT ` + strconv.Itoa(expRowCap+1)

@@ -45,13 +45,51 @@ type FormScope struct {
 	Country     string `json:"country"`
 	LegalEntity string `json:"legal_entity"`
 	Currency    string `json:"currency"` // валюта ВВОДА (национальная)
+	// Late — область добавлена после запуска формы. В периоде, где форма уже утверждена целиком, её
+	// карточка не заводится: иначе первое же открытие старого периода создало бы пустой черновик и
+	// откатило этап из «завершён» (см. EnsureCards).
+	Late bool `json:"-"`
+	// Countries — страны многострановой карточки (опт). Пустая страна карточки в ABAC означает «без
+	// ограничения», поэтому для таких карточек доступ даётся только тому, кто допущен ко всем странам.
+	Countries []scopeCountry `json:"-"`
 }
+
+// scopeCountry — страна и её юрлицо в составе многострановой области.
+type scopeCountry struct{ Country, LegalEntity string }
 
 // FormDef — описание формы: код, название и набор карточек на период.
 type FormDef struct {
 	Code   string      `json:"code"`
 	Name   string      `json:"name"`
 	Scopes []FormScope `json:"scopes"`
+}
+
+// formClosedInPeriod — в периоде у формы есть карточки, и все они уже утверждены (или опубликованы,
+// заархивированы): этап формы пройден. Скрытые флагом карточки отделов в расчёт не входят.
+func formClosedInPeriod(cards []Card, formCode string) bool {
+	n := 0
+	for _, c := range cards {
+		if c.FormCode != formCode || cfoDeptHidden(c.FormCode, c.ScopeKey) {
+			continue
+		}
+		switch c.Status {
+		case CardApproved, CardPublished, CardPublishFailed, CardArchived:
+			n++
+		default:
+			return false
+		}
+	}
+	return n > 0
+}
+
+// hasCardScope — карточка формы с таким ключом области в периоде уже есть.
+func hasCardScope(cards []Card, formCode, scopeKey string) bool {
+	for _, c := range cards {
+		if c.FormCode == formCode && c.ScopeKey == scopeKey {
+			return true
+		}
+	}
+	return false
 }
 
 // FormRegistry — формы, у которых есть карточка процесса (без скрытых флагом).
@@ -109,6 +147,12 @@ func formRegistryAll() []FormDef {
 				{Key: "MP-RU", Title: "Маркетплейсы РФ", Country: "RU", LegalEntity: "TDMF", Currency: "RUB"},
 				{Key: "MP-KZ", Title: "Маркетплейсы KZ", Country: "KZ", LegalEntity: "MFKaz", Currency: "KZT"},
 				{Key: "MP-UZ", Title: "Маркетплейсы UZ", Country: "UZ", LegalEntity: "MFUz", Currency: "UZS"},
+				// Листы «ИМ» и «ОПТ» файла PL 2025-2026 — по одной форме, как в Excel. ИМ: расходы только РБ
+				// (по РФ/КЗ в источнике единицы строк плана без факта). Опт: одна карточка на три страны
+				// (РБ, РФ, УЗ), ввод в BYN по суммам источника в BYN; страны у карточки нет.
+				{Key: "IM-BY", Title: "Интернет-магазин РБ", Country: "BY", LegalEntity: "F", Currency: "BYN", Late: true},
+				{Key: "OPT", Title: "Опт (РБ, РФ, УЗ)", Country: "", LegalEntity: "", Currency: "BYN", Late: true,
+					Countries: []scopeCountry{{"BY", "F"}, {"RU", "TDMF"}, {"UZ", "MFUz"}}},
 			},
 		},
 		{

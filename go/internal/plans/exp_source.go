@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -83,7 +84,31 @@ type ExpTables struct {
 const (
 	expGroupCfoRetail = "3.Магазины"
 	expGroupCfoMP     = "4.Маркетплейсы"
+	expGroupCfoIM     = "5.Интернет-магазин"
+	// expGroupCfoOpt — группа, в которой лежат ЦФО опта по факту (отделы). Для отбора не используется:
+	// опт выбирается по GroupCFO3 (expOptGroup3), а группа ЦФО у него бывает любой; значение нужно
+	// подписи строк публикации и фикстурам.
+	expGroupCfoOpt = "2.Отделы"
 )
+
+// expOptGroups3 — GroupCFO3 опта: лист «ОПТ» файла PL 2025-2026 отбирает расходы по этому полю
+// (колонка K листа DATA) для трёх стран — ОПТ РБ / ОПТ РФ / ОПТ УЗ. Форма опта одна на все три страны
+// (как лист Excel), поэтому берутся все три значения.
+var expOptGroups3 = []string{"ОПТ РБ", "ОПТ РФ", "ОПТ УЗ"}
+
+// expKindFilter — отбор строк источника для вида формы: группа ЦФО 1 и список значений группы ЦФО 3.
+// Пустое значение — без отбора по этому полю. У опта группы ЦФО 1 нет: ЦФО опта лежат в «2.Отделы»,
+// а признак опта — GroupCFO3. Страна у опта не задаётся: форма сводит три страны сразу.
+func expKindFilter(kind string) (group1 string, group3 []string) {
+	if kind == ExpKindOpt {
+		return "", expOptGroups3
+	}
+	return expKindGroup(kind), nil
+}
+
+// expKindInBYN — форма вводится в BYN по суммам источника в BYN (колонка AmountBYN), а не в
+// национальной валюте страны: у формы несколько стран с разными валютами (опт).
+func expKindInBYN(kind string) bool { return kind == ExpKindOpt }
 
 // expDropCodePL — служебные коды PL, которые ТЗ §2.1 велит отбросить.
 var expDropCodePL = map[int]bool{50: true, 93: true, 1: true}
@@ -161,8 +186,13 @@ func expKindGroup(kind string) string {
 	if _, ok := CfoExpCodeFromKind(kind); ok {
 		return "Отдел"
 	}
-	if kind == ExpKindMP {
+	switch kind {
+	case ExpKindMP:
 		return expGroupCfoMP
+	case ExpKindIM:
+		return expGroupCfoIM
+	case ExpKindOpt:
+		return expGroupCfoOpt
 	}
 	return expGroupCfoRetail
 }
@@ -181,7 +211,8 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 	for _, y := range years {
 		wantYear[y] = true
 	}
-	group := expKindGroup(kind)
+	group, group3 := expKindFilter(kind)
+	inBYN := expKindInBYN(kind)
 
 	// Процедура без параметров отдаёт весь бюджет (~1 млн строк, около 4 минут на
 	// OLAP). Параллельные выгрузки по разным странам и видам форм не нужны: идут по
@@ -228,6 +259,16 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 	if _, ok := idx["amount"]; !ok {
 		if _, ok := idx["amountbyn"]; !ok {
 			return nil, fmt.Errorf("в выдаче процедуры %s нет колонки %q или %q", proc, "amount", "amountbyn")
+		}
+	}
+	if len(group3) > 0 {
+		if _, ok := idx["groupcfo3"]; !ok {
+			return nil, fmt.Errorf("в выдаче процедуры %s нет колонки %q — опт отобрать нельзя", proc, "groupcfo3")
+		}
+	}
+	if inBYN {
+		if _, ok := idx["amountbyn"]; !ok {
+			return nil, fmt.Errorf("в выдаче процедуры %s нет колонки %q — форма вводится в BYN", proc, "amountbyn")
 		}
 	}
 
@@ -308,7 +349,10 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 			continue
 		}
 		c.GroupCFO1 = str("groupcfo1")
-		if c.GroupCFO1 != group {
+		if group != "" && c.GroupCFO1 != group {
+			continue
+		}
+		if len(group3) > 0 && !slices.Contains(group3, str("groupcfo3")) {
 			continue
 		}
 		c.CodeCFO = int(num("codecfo"))
@@ -343,10 +387,14 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 		c.GroupPL, c.Expense = str("grouppl"), str("expense")
 		c.CFO = str("cfo")
 		c.GroupCFO2, c.CountryCompany, c.Company = str("groupcfo2"), str("country_company"), str("company")
-		if _, ok := idx["amount"]; ok {
+		if _, ok := idx["amount"]; ok && !inBYN {
 			c.Amount = num("amount")
 		} else {
 			c.Amount = num("amountbyn")
+		}
+		if c.CountryCompany == "" && kind == ExpKindOpt {
+			// У формы несколько стран: по строке должно быть видно, чья она.
+			c.CountryCompany = c.Country
 		}
 		if paymentsFact {
 			payments = append(payments, c)
@@ -401,7 +449,8 @@ func expScenarioForKind(kind, scenario string) bool {
 // строки соберутся по атрибутам самого источника затрат, просто без города и РМ.
 func (s *expSource) Cfo(ctx context.Context, kind, country string) (map[int]ExpCfoAttrs, error) {
 	table := strings.TrimSpace(s.tables.CfoTable)
-	if table == "" {
+	if table == "" || kind == ExpKindOpt {
+		// У опта город, тип магазина и РМ не нужны (это атрибуты магазина), а группы ЦФО 1 у него нет.
 		return map[int]ExpCfoAttrs{}, nil
 	}
 	// В процедуре затрат группа называется «3.Магазины», в справочнике ЦФО — «Магазины»

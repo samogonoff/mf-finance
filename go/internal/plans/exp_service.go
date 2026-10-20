@@ -61,12 +61,19 @@ func expKindOf(scopeKey string) (kind, country string) {
 	if code, parsedCountry, ok := ParseCfoExpScope(scopeKey); ok {
 		return CfoExpKind(code), parsedCountry
 	}
+	// Опт — одна форма на три страны листа «ОПТ» (ключ без страны).
+	if strings.EqualFold(scopeKey, "OPT") {
+		return ExpKindOpt, ""
+	}
 	parts := strings.SplitN(scopeKey, "-", 2)
 	if len(parts) != 2 {
 		return ExpKindRetail, ""
 	}
-	if strings.EqualFold(parts[0], "MP") {
+	switch strings.ToUpper(parts[0]) {
+	case "MP":
 		return ExpKindMP, strings.ToUpper(parts[1])
+	case "IM":
+		return ExpKindIM, strings.ToUpper(parts[1])
 	}
 	return ExpKindRetail, strings.ToUpper(parts[1])
 }
