@@ -15,6 +15,9 @@
         <NuxtLink v-if="cards.some((c) => c.form_code === 'TPL-CFO-EXP' && (c.scope_key || '').startsWith('R-'))" :to="`/plans/exp-consolidated/${id}`" class="btn btn-ghost">
           <Icon name="lucide:wallet" /> Свод расходов розницы · 4 страны
         </NuxtLink>
+        <NuxtLink v-if="cards.some((c) => c.form_code === 'TPL-CFO-EXP' && (c.scope_key === 'IM-BY' || c.scope_key === 'OPT'))" :to="`/plans/exp-consolidated/${id}?channel=all`" class="btn btn-ghost">
+          <Icon name="lucide:layers" /> Свод расходов · все каналы
+        </NuxtLink>
         <NuxtLink v-if="cards.some((c) => c.form_code === 'TPL-CFO-EXP' && c.scope_key === 'IM-BY')" :to="`/plans/exp-consolidated/${id}?channel=im`" class="btn btn-ghost">
           <Icon name="lucide:wallet" /> Свод расходов ИМ
         </NuxtLink>

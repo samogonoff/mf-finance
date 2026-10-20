@@ -116,7 +116,7 @@ export interface ExpConsGroup extends ExpConsAmounts {
   unassigned?: boolean;
   lines: ExpConsLine[];
 }
-export type ExpConsChannel = "retail" | "im" | "opt";
+export type ExpConsChannel = "retail" | "im" | "opt" | "all";
 export interface ExpConsolidated {
   channel?: ExpConsChannel;
   pl_id: number;
@@ -131,6 +131,10 @@ export interface ExpConsolidated {
   total: ExpConsAmounts;
   fact_basis?: "payments";
   missing?: string[];
+  /** Общий свод: пояснения к неполному итогу (страна розницы не прочитана, нет курса, нет карточки страны). */
+  warnings?: string[];
+  /** Общий свод: каналы, карточек которых в периоде нет (штатно). */
+  absent_channels?: string[];
 }
 
 export interface ExpCell {
