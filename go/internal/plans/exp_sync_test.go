@@ -280,6 +280,7 @@ func TestExpSyncErrText_ProcedureProblems(t *testing.T) {
 	for raw, want := range map[string]string{
 		"mssql: Could not find stored procedure 'ZATRATY_DLYA_OKSANY_BYSTRYE'.":                           "процедура затрат не найдена",
 		"mssql: The EXECUTE permission was denied on the object 'X', database 'Budgeting', schema 'dbo'.": "нет права выполнить",
+		"mssql: The SELECT permission was denied on the object 'T', database 'Budgeting', schema 'dbo'.":  "нет прав на процедуру затрат или её таблицы",
 	} {
 		got := expSyncErrText(errors.New(raw))
 		if !strings.Contains(got, want) || strings.Contains(got, "Budgeting") && strings.Contains(got, "schema") {
