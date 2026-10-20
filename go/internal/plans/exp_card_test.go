@@ -15,6 +15,8 @@ type fakeExpRepo struct {
 
 func (f *fakeExpRepo) FactBasis(context.Context, int64) (string, error) { return f.factBasis, nil }
 
+func (f *fakeExpRepo) ClearPaymentsFact(context.Context, int64) error { return nil }
+
 func (f *fakeExpRepo) EnsureInstance(context.Context, ExpInstance, int64) (ExpInstance, error) {
 	return f.inst, nil
 }

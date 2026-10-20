@@ -413,6 +413,13 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 	} else if n > 0 {
 		log.Printf("plans/exp: в справочник статей добавлено кодов PL: %d", n)
 	}
+	// Выдача по начислениям: платёжные ячейки прежней загрузки не должны остаться «фактом» (состав строк
+	// и месяцев у платежей и начислений разный, перезапись затрагивает только пришедшие ключи).
+	if factBasis == "" {
+		if err := s.repo.ClearPaymentsFact(ctx, in.ID); err != nil {
+			return len(cells), err
+		}
+	}
 	if err := s.repo.SaveReadOnly(ctx, in.ID, ExpScenarioFact, fact); err != nil {
 		return len(cells), err
 	}

@@ -22,6 +22,9 @@ type ExpRepo interface {
 	// FactBasis — на чём построен сохранённый факт экземпляра: ExpFactBasisPayments, если в нём
 	// лежат платёжные значения, иначе пусто. Признак хранится вместе с данными и переживает рестарт.
 	FactBasis(ctx context.Context, instanceID int64) (string, error)
+	// ClearPaymentsFact удаляет платёжные ячейки факта (fact и fact_cur): SaveReadOnly только
+	// перезаписывает пришедшие ключи, и без очистки платёжные остатки пережили бы переход на начисления.
+	ClearPaymentsFact(ctx context.Context, instanceID int64) error
 	SaveComment(ctx context.Context, instanceID int64, codeCFO, codePL int, comment string) error
 	GroupTotals(ctx context.Context, instanceID int64) (map[string]float64, error)
 	GroupOrder(ctx context.Context, formKind string) ([]string, error)
@@ -319,6 +322,16 @@ func (s *expRepo) SaveReadOnly(ctx context.Context, instanceID int64, scenario s
 		}
 	}
 	return nil
+}
+
+// ClearPaymentsFact — см. ExpRepo.ClearPaymentsFact.
+func (s *expRepo) ClearPaymentsFact(ctx context.Context, instanceID int64) error {
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM exp_value v USING exp_row r
+		 WHERE r.id = v.row_id AND r.instance_id = $1
+		   AND v.scenario IN ($2, $3) AND v.source = $4`,
+		instanceID, ExpScenarioFact, ExpScenarioFactCur, ExpFactBasisPayments)
+	return err
 }
 
 // FactBasis — см. ExpRepo.FactBasis.

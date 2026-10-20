@@ -295,8 +295,16 @@ func TestExpSyncErrText_ProcedureProblems(t *testing.T) {
 // recordingExpRepo запоминает, что и в какой сценарий записал синхронизатор.
 type recordingExpRepo struct {
 	fakeExpRepo
-	mu    sync.Mutex
-	saved map[string][]ExpCell
+	mu           sync.Mutex
+	saved        map[string][]ExpCell
+	paymentsWipe int // сколько раз очищался платёжный факт
+}
+
+func (r *recordingExpRepo) ClearPaymentsFact(context.Context, int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.paymentsWipe++
+	return nil
 }
 
 func (r *recordingExpRepo) SaveReadOnly(_ context.Context, _ int64, scenario string, cells []ExpCell) error {
@@ -420,5 +428,25 @@ func TestExpSync_PaymentsFactBasisPersistsInData(t *testing.T) {
 	}
 	if got := NewExpService(&fakeExpRepo{}, nil, nil).syncStatusWithBasis(context.Background(), 7).FactBasis; got != "" {
 		t.Fatalf("без платёжных данных пометки нет: %q", got)
+	}
+}
+
+// Переход на начисления: платёжные ячейки прежней загрузки очищаются (SaveReadOnly их не затрёт — у платежей
+// и начислений разный состав строк и месяцев); пока факт по платежам, очистки нет.
+func TestExpSync_AccrualsWipePaymentsFact(t *testing.T) {
+	cells := []ExpCostCell{{Scenario: ExpSrcFact, Year: 2025, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 100}}
+	run := func(src ExpDataSource) *recordingExpRepo {
+		repo := &recordingExpRepo{fakeExpRepo: fakeExpRepo{inst: ExpInstance{ID: 7, FormKind: ExpKindRetail, Country: "BY", PlanYear: 2026}}}
+		ctx, _ := WithExpSourceTrace(context.Background())
+		if _, err := NewExpService(repo, nil, src).syncFromSource(ctx, Card{ID: 1}, repo.inst, true); err != nil {
+			t.Fatal(err)
+		}
+		return repo
+	}
+	if got := run(&stubExpSource{cells: cells}).paymentsWipe; got != 1 {
+		t.Fatalf("загрузка по начислениям должна очистить платёжный факт, очисток: %d", got)
+	}
+	if got := run(&basisSource{stubExpSource{cells: cells}}).paymentsWipe; got != 0 {
+		t.Fatalf("пока факт по платежам, очищать нечего, очисток: %d", got)
 	}
 }

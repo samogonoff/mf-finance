@@ -54,11 +54,23 @@ func TestExpRepo_FactBasisPersists_PG(t *testing.T) {
 	if b, err := repo.FactBasis(ctx, inst.ID); err != nil || b != ExpFactBasisPayments {
 		t.Fatalf("платёжный факт должен быть помечен: %q %v", b, err)
 	}
-	// Начисления появились: перезапись той же ячейки снимает пометку.
+	// Платёжная ячейка другого месяца, которой не будет в выдаче по начислениям.
+	amt2 := 20.0
+	if err := repo.SaveReadOnly(ctx, inst.ID, ExpScenarioFact, []ExpCell{{CodeCFO: 101, CodePL: 24, Month: 4, Amount: &amt2, Source: ExpFactBasisPayments}}); err != nil {
+		t.Fatal(err)
+	}
+	// Начисления появились: перезапись пришедших ключей и очистка платёжных остатков снимают пометку.
+	if err := repo.ClearPaymentsFact(ctx, inst.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := repo.SaveReadOnly(ctx, inst.ID, ExpScenarioFact, cell("")); err != nil {
 		t.Fatal(err)
 	}
 	if b, err := repo.FactBasis(ctx, inst.ID); err != nil || b != "" {
-		t.Fatalf("пометка должна сняться: %q %v", b, err)
+		t.Fatalf("пометка должна сняться, платёжный остаток другого месяца не должен её держать: %q %v", b, err)
+	}
+	var left int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM exp_value v JOIN exp_row r ON r.id = v.row_id WHERE r.instance_id = $1 AND v.scenario = $2`, inst.ID, ExpScenarioFact).Scan(&left); err != nil || left != 1 {
+		t.Fatalf("после перехода на начисления остаётся только их ячейка: %d %v", left, err)
 	}
 }
