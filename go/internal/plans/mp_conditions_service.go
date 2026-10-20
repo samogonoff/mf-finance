@@ -144,6 +144,8 @@ func (s *MpConditionsService) Conditions(ctx context.Context, cardID int64, acto
 			byCfo[c.CodeCFO] = c
 		}
 		byCfo = s.shareDefaults.Attach(ctx, byCfo, platforms, card.Year, card.Month)
+		// %СПП и наценки несохранённых условий — из стратегии: реестр показывает то же, что считает форма.
+		byCfo = mpApplyStrategyDefaultsAll(ctx, s.fact, card.Year, card.Month, platforms, byCfo)
 		list := make([]MpConditions, 0, len(byCfo))
 		for _, mp := range platforms {
 			if c, ok := byCfo[mp.CodeCFO]; ok {
@@ -342,6 +344,8 @@ func (s *MpConditionsService) Recalc(ctx context.Context, cardID int64, preview 
 		}
 	}
 	condByCfo = s.shareDefaults.Attach(ctx, condByCfo, platformsInfo, card.Year, card.Month)
+	// %СПП и наценки несохранённых условий — из стратегии, как в форме (иначе пересчёт записал бы нули).
+	condByCfo = mpApplyStrategyDefaultsAll(ctx, s.fact, card.Year, card.Month, platformsInfo, condByCfo)
 	// Базис НДС — тот же, что в форме: отношение плановых сумм площадки, ставка
 	// справочника фолбэком. Иначе предпросмотр пересчёта показывал бы суммы,
 	// которых форма не даёт.

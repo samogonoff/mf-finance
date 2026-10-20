@@ -324,6 +324,16 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 	snapshotConditions, snapshotValues := s.mpClosedSnapshot(ctx, card, f.Currency)
 	if snapshotConditions != nil {
 		condByCfo = snapshotConditions
+	} else if mode == CalcInverse {
+		// Условия не сохранены — %СПП и наценки из стратегии месяца (mp_strategy_defaults.go): иначе маржа и PL
+		// считаются по нулям. Тот же хелпер, что у пересчёта карточки и реестра условий.
+		platforms := make([]MarketplaceRow, 0)
+		for _, mp := range MarketplaceSeed() {
+			if segment == "" || mp.Segment == segment {
+				platforms = append(platforms, mp)
+			}
+		}
+		condByCfo = mpApplyStrategyDefaultsAll(ctx, s.fact, year, month, platforms, condByCfo)
 	}
 	if mode == CalcInverse {
 		f.Conditions = condByCfo
@@ -484,13 +494,6 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 		// Слои берутся по сегменту КАЖДОЙ площадки: в объединённой форме
 		// large и small приходят из разных срезов источника.
 		pl := layerSet.forCfo(p.CodeCFO)
-		if mode == CalcInverse && snapshotConditions == nil {
-			// Условия не сохранены — %СПП и наценки по умолчанию из стратегии месяца (mp_strategy_defaults.go),
-			// иначе маржа и PL считаются по нулям.
-			c := condByCfo[p.CodeCFO]
-			c.CodeCFO = p.CodeCFO
-			condByCfo[p.CodeCFO] = mpApplyStrategyDefaults(c, pl.strategy)
-		}
 		norm := s.normShareOf(ctx, p.CodeCFO, year, month)
 		if norm > 0 {
 			if f.NormByCfo == nil {
