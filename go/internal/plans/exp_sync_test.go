@@ -288,3 +288,75 @@ func TestExpSyncErrText_ProcedureProblems(t *testing.T) {
 		}
 	}
 }
+
+// recordingExpRepo запоминает, что и в какой сценарий записал синхронизатор.
+type recordingExpRepo struct {
+	fakeExpRepo
+	mu    sync.Mutex
+	saved map[string][]ExpCell
+}
+
+func (r *recordingExpRepo) SaveReadOnly(_ context.Context, _ int64, scenario string, cells []ExpCell) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.saved == nil {
+		r.saved = map[string][]ExpCell{}
+	}
+	r.saved[scenario] = cells
+	return nil
+}
+
+// Факт прошлого года и факт планового года идут в РАЗНЫЕ сценарии: рядом с вводом нужны «тот же
+// месяц прошлого года», «прошлый месяц» и «текущий месяц», а ФОТ-база считается по факту прошлого года.
+func TestExpSync_FactOfPlanYearGoesToSeparateScenario(t *testing.T) {
+	src := &stubExpSource{cells: []ExpCostCell{
+		{Scenario: ExpSrcFact, Year: 2025, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 100},
+		{Scenario: ExpSrcFact, Year: 2026, Month: 9, CodePL: 24, CodeCFO: 101, Amount: 200},
+		{Scenario: ExpSrcStrategy, Year: 2026, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 300},
+	}}
+	repo := &recordingExpRepo{fakeExpRepo: fakeExpRepo{inst: ExpInstance{ID: 7, FormKind: ExpKindRetail, Country: "BY", PlanYear: 2026}}}
+	svc := NewExpService(repo, nil, src)
+	if _, err := svc.syncFromSource(context.Background(), Card{ID: 1}, repo.inst, true); err != nil {
+		t.Fatal(err)
+	}
+	get := func(sc string) []ExpCell { repo.mu.Lock(); defer repo.mu.Unlock(); return repo.saved[sc] }
+	if f := get(ExpScenarioFact); len(f) != 1 || f[0].Month != 10 || *f[0].Amount != 100 {
+		t.Fatalf("факт прошлого года: %+v", f)
+	}
+	if f := get(ExpScenarioFactCur); len(f) != 1 || f[0].Month != 9 || *f[0].Amount != 200 {
+		t.Fatalf("факт планового года: %+v", f)
+	}
+	if s := get(ExpScenarioStrategy); len(s) != 1 || *s[0].Amount != 300 {
+		t.Fatalf("стратегия: %+v", s)
+	}
+	if !ExpScenarioReadOnly(ExpScenarioFactCur) {
+		t.Fatal("факт планового года должен быть read-only")
+	}
+}
+
+// Форма готовится на месяц плана или «до конца года»: массовые действия трогают только окно, ранние
+// месяцы остаются как были.
+func TestExpBulkCells_Window(t *testing.T) {
+	amt := 5.0
+	cases := []struct {
+		name string
+		req  ExpBulkRequest
+		want int
+		from int
+	}{
+		{"очистка всей строки", ExpBulkRequest{Action: ExpBulkClearRow, CodeCFO: 1, CodePL: 2}, 12, 1},
+		{"очистка от ноября до декабря", ExpBulkRequest{Action: ExpBulkClearRow, CodeCFO: 1, CodePL: 2, Month: 11, MonthTo: 12}, 2, 11},
+		{"очистка одного месяца", ExpBulkRequest{Action: ExpBulkClearRow, CodeCFO: 1, CodePL: 2, Month: 11, MonthTo: 11}, 1, 11},
+		{"размножение до конца года", ExpBulkRequest{Action: ExpBulkSpreadTail, CodeCFO: 1, CodePL: 2, Month: 11, Amount: &amt}, 2, 11},
+		{"размножение окна", ExpBulkRequest{Action: ExpBulkSpreadTail, CodeCFO: 1, CodePL: 2, Month: 10, MonthTo: 11, Amount: &amt}, 2, 10},
+	}
+	for _, c := range cases {
+		cells, err := expBulkCells(c.req)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if len(cells) != c.want || cells[0].Month != c.from {
+			t.Errorf("%s: %d ячеек с %d-го месяца, ждали %d с %d", c.name, len(cells), cells[0].Month, c.want, c.from)
+		}
+	}
+}

@@ -33,11 +33,14 @@ const (
 	ExpScenarioPlan     = "plan"     // ввод формы = «Тактика бюджет (таргеты)»
 	ExpScenarioFact     = "fact"     // факт прошлого года, read-only
 	ExpScenarioStrategy = "strategy" // «Стратегический бюджет» планового года, read-only
+	// ExpScenarioFactCur — факт ПЛАНОВОГО года (идёт на экран как «прошлый месяц» и «текущий
+	// месяц» рядом с вводом), read-only. Факт прошлого года остаётся в ExpScenarioFact.
+	ExpScenarioFactCur = "fact_cur"
 )
 
 // ExpScenarioReadOnly — сценарий не редактируется формой.
 func ExpScenarioReadOnly(scenario string) bool {
-	return scenario == ExpScenarioFact || scenario == ExpScenarioStrategy
+	return scenario == ExpScenarioFact || scenario == ExpScenarioStrategy || scenario == ExpScenarioFactCur
 }
 
 // Источник значения ячейки — тот же словарь, что у розницы (tp_value.source),

@@ -316,6 +316,7 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 
 	rowByKey := map[[2]int]ExpRow{}
 	fact := make([]ExpCell, 0, len(cells))
+	factCur := make([]ExpCell, 0, len(cells))
 	strategy := make([]ExpCell, 0, len(cells))
 	for _, cell := range cells {
 		key := [2]int{cell.CodeCFO, cell.CodePL}
@@ -346,6 +347,9 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 		switch {
 		case cell.Scenario == ExpSrcFact && cell.Year == prev:
 			fact = append(fact, c)
+		case cell.Scenario == ExpSrcFact && cell.Year == in.PlanYear:
+			// Факт планового года: нужен рядом с вводом («прошлый месяц», «текущий месяц»).
+			factCur = append(factCur, c)
 		case cell.Scenario == ExpSrcStrategy && cell.Year == in.PlanYear:
 			strategy = append(strategy, c)
 		}
@@ -377,6 +381,9 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 		log.Printf("plans/exp: в справочник статей добавлено кодов PL: %d", n)
 	}
 	if err := s.repo.SaveReadOnly(ctx, in.ID, ExpScenarioFact, fact); err != nil {
+		return len(cells), err
+	}
+	if err := s.repo.SaveReadOnly(ctx, in.ID, ExpScenarioFactCur, factCur); err != nil {
 		return len(cells), err
 	}
 	if err := s.repo.SaveReadOnly(ctx, in.ID, ExpScenarioStrategy, strategy); err != nil {
@@ -438,6 +445,9 @@ type ExpBulkRequest struct {
 	CodeCFO int      `json:"code_cfo"`
 	CodePL  int      `json:"code_pl"`
 	Month   int      `json:"month"`
+	// MonthTo — последний месяц окна (включительно); 0 — до декабря. Окно нужно, когда форма
+	// готовится на один месяц или «до конца года», а ранние месяцы трогать нельзя.
+	MonthTo int      `json:"month_to"`
 	Amount  *float64 `json:"amount"`
 }
 
@@ -476,8 +486,15 @@ func expBulkCells(req ExpBulkRequest) ([]ExpCell, error) {
 		from = req.Month
 	case ExpBulkClearRow:
 		req.Amount = nil
+		// Очистка с указанным месяцем — только это окно, а не вся строка.
+		if req.Month >= 1 && req.Month <= 12 {
+			from = req.Month
+		}
 	default:
 		return nil, fmt.Errorf("неизвестное действие %q", req.Action)
+	}
+	if req.MonthTo >= from && req.MonthTo <= 12 {
+		to = req.MonthTo
 	}
 	out := make([]ExpCell, 0, to-from+1)
 	for m := from; m <= to; m++ {

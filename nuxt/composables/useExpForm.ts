@@ -9,7 +9,8 @@
  */
 
 export interface ExpValue {
-  scenario: "plan" | "fact";
+  // fact — факт ПРОШЛОГО года, fact_cur — факт ПЛАНОВОГО года (прошлый и текущий месяц), strategy — стратегия.
+  scenario: "plan" | "fact" | "fact_cur" | "strategy";
   month: number;
   /** null — ячейка НЕ заполнена. Ноль вводится явно и значит «расхода нет» (ТЗ §7.8). */
   amount: number | null;
@@ -270,13 +271,13 @@ export const MONTHS_SHORT = [
  * Значение ячейки строки. Возвращает undefined для незаполненной: отличать
  * «пусто» от нуля обязаны и API, и интерфейс — на этом стоит валидация E-11.
  */
-export const expCell = (row: ExpRow, scenario: "plan" | "fact", month: number): number | undefined => {
+export const expCell = (row: ExpRow, scenario: ExpValue["scenario"], month: number): number | undefined => {
   const v = row.values.find((x) => x.scenario === scenario && x.month === month);
   return v && v.amount !== null ? v.amount : undefined;
 };
 
 /** Итог строки по сценарию: считаются только заполненные месяцы. */
-export const expRowTotal = (row: ExpRow, scenario: "plan" | "fact"): number =>
+export const expRowTotal = (row: ExpRow, scenario: ExpValue["scenario"]): number =>
   row.values.reduce((s, v) => (v.scenario === scenario && v.amount !== null ? s + v.amount : s), 0);
 
 export const useExpForm = () => {
@@ -303,7 +304,7 @@ export const useExpForm = () => {
       headers: authHeader()
     });
 
-  const bulk = (cardId: number, body: { action: ExpBulkAction; code_cfo: number; code_pl: number; month?: number; amount?: number | null }) =>
+  const bulk = (cardId: number, body: { action: ExpBulkAction; code_cfo: number; code_pl: number; month?: number; month_to?: number; amount?: number | null }) =>
     $fetch<{ changed: number }>(`${base}/api/plans/exp/${cardId}/bulk`, {
       method: "POST",
       body,

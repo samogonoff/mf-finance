@@ -126,11 +126,18 @@ func (expMockSource) Costs(_ context.Context, kind, country string, years []int)
 			}
 		} else if y == earliest {
 			scenarios = []string{ExpSrcFact}
+		} else {
+			// Плановый год: стратегия на весь год и факт за уже прошедшие месяцы (до октября) —
+			// рядом с вводом нужны «прошлый месяц» и «текущий месяц» факта.
+			scenarios = append(scenarios, ExpSrcFact)
 		}
 		for _, scenario := range scenarios {
 			for _, c := range cfos {
 				for si, st := range stmts {
 					for m := 1; m <= 12; m++ {
+						if scenario == ExpSrcFact && y != earliest && m >= 11 {
+							continue
+						}
 						// Разброс без случайности: тест и стенд должны видеть одно и то же.
 						amt := float64((st.CodePL*100+c.CodeCFO)%900+120) * (1 + float64(m)/24) * (1 + float64(si)/10)
 						out = append(out, ExpCostCell{

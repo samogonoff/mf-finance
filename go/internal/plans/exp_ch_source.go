@@ -132,6 +132,12 @@ func chLit(s string) string {
 // expCostsSQL — отбор ТЗ §2.1 тем же правилом, что у чтения процедуры (expSource.Costs):
 // группа ЦФО вида формы, страна, годы, без служебных кодов PL и проектов, сценарии вида.
 func expCostsSQL(kind, country string, years []int) string {
+	return expCostsSQLScenario(kind, country, years, "")
+}
+
+// expCostsSQLScenario — то же, но с явным сценарием вместо отбора по виду формы (запасной
+// запрос платёжного факта).
+func expCostsSQLScenario(kind, country string, years []int, scenario string) string {
 	var w []string
 	w = append(w, "group_cfo1 = "+chLit(expKindGroup(kind)))
 	if country != "" {
@@ -152,7 +158,9 @@ func expCostsSQL(kind, country string, years []int) string {
 	w = append(w, "code_pl NOT IN ("+strings.Join(drop, ",")+")")
 	// Проект: пусто или «Нет проектов!» (ответ 5.4), иначе строки задвоятся по проектам.
 	w = append(w, "(project_name = '' OR project_name = "+chLit(expProjectsNone)+")")
-	if code, ok := CfoExpCodeFromKind(kind); ok {
+	if scenario != "" {
+		w = append(w, "scenario = "+chLit(scenario))
+	} else if code, ok := CfoExpCodeFromKind(kind); ok {
 		w = append(w, "code_cfo = "+strconv.Itoa(int(code)))
 		if spec, exists := LookupCfoExpSpec(code); exists {
 			w = append(w, "scenario IN ("+chLit(spec.FactScenario)+", "+chLit(spec.PlanScenario)+")")
@@ -206,6 +214,37 @@ func (s *chExpSource) Costs(ctx context.Context, kind, country string, years []i
 		return s.base.Costs(ctx, kind, country, years)
 	}
 	noteExpSource(ctx, ExpSourceKindCH)
+	out, err := parseChCostRows(body)
+	if err != nil {
+		return nil, err
+	}
+	// Факт: «по начислениям» (ТЗ, ответ 44); пока его в выдаче нет — платёжный (как и при чтении
+	// процедуры напрямую): без него колонки факта рядом с вводом пустые. Появятся начисления —
+	// платёжный снова не используется.
+	if _, cfo := CfoExpCodeFromKind(kind); !cfo && !expHasScenario(out, ExpSrcFact) {
+		if pb, err := s.query(ctx, expCostsSQLScenario(kind, country, years, ExpSrcFactPayments), "JSONEachRow"); err == nil {
+			if pc, perr := parseChCostRows(pb); perr == nil {
+				for i := range pc {
+					pc[i].Scenario = ExpSrcFact
+				}
+				out = append(out, pc...)
+			}
+		}
+	}
+	return out, nil
+}
+
+func expHasScenario(cells []ExpCostCell, scenario string) bool {
+	for _, c := range cells {
+		if c.Scenario == scenario {
+			return true
+		}
+	}
+	return false
+}
+
+// parseChCostRows разбирает JSONEachRow выборки затрат.
+func parseChCostRows(body []byte) ([]ExpCostCell, error) {
 	out := make([]ExpCostCell, 0, 4096)
 	sc := bufio.NewScanner(strings.NewReader(string(body)))
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)

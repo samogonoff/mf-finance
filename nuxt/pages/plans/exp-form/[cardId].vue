@@ -22,7 +22,7 @@
         <h1 class="page-title">{{ card?.title || "Расходы ЦП" }} · {{ planYear }}</h1>
         <p class="page-subtitle">
           {{ form?.total ?? 0 }} строк · ввод в {{ card?.currency || "—" }} ·
-          план за год {{ money(shownPlanTotal) }}
+          план {{ viewTotalLabel }} {{ money(shownPlanTotal) }}
           <span v-if="sourceNote" class="src-note" :title="sourceNoteTitle"> · {{ sourceNote }}</span>
           <span v-if="card?.locked" class="lock-note"><Icon name="lucide:lock" /> период закрыт на запись</span>
         </p>
@@ -286,6 +286,23 @@
       <p v-else class="val-ok">Замечаний нет.</p>
     </section>
 
+    <!-- ===== Период формы и сравнение с фактом ===== -->
+    <section class="card view-card">
+      <div class="f-row view-row">
+        <span class="view-lbl">Период формы</span>
+        <div class="seg" role="group" aria-label="Период формы">
+          <button type="button" class="seg-btn" :class="{ on: viewMode === 'month' }" @click="setViewMode('month')">{{ monthName }} {{ planYear }}</button>
+          <button type="button" class="seg-btn" :class="{ on: viewMode === 'tail' }" @click="setViewMode('tail')">{{ monthName }}–дек</button>
+          <button type="button" class="seg-btn" :class="{ on: viewMode === 'year' }" @click="setViewMode('year')">весь год</button>
+        </div>
+        <label class="view-chk" title="Факт того же месяца прошлого года, прошлого месяца и текущего месяца рядом с вводом (только чтение)">
+          <input v-model="showRef" type="checkbox" @change="saveViewPrefs" />
+          Сравнение с фактом
+        </label>
+        <span v-if="viewMode !== 'year'" class="view-hint">ранние месяцы скрыты, их значения не удаляются</span>
+      </div>
+    </section>
+
     <!-- ===== Фильтры (ТЗ §7.1) ===== -->
     <section class="card filters">
       <div class="f-row">
@@ -344,14 +361,19 @@
                 {{ c.key === "cfo" && !isRetail ? "Площадка" : c.label }}{{ sortMark(c.key) }}
               </th>
               <th
-                v-for="(m, i) in MONTHS_SHORT"
-                :key="m"
+                v-for="mm in shownMonths"
+                :key="mm"
                 class="col-num c-mon th-sort"
-                :title="`План ${planYear}, ${m} · ${sortHint(monthKey(i + 1))}`"
-                @click="toggleSort(monthKey(i + 1))"
-              >{{ m }}{{ sortMark(monthKey(i + 1)) }}</th>
-              <th class="col-num c-total">Итого план</th>
+                :title="`План ${planYear}, ${MONTHS_SHORT[mm - 1]} · ${sortHint(monthKey(mm))}`"
+                @click="toggleSort(monthKey(mm))"
+              >{{ MONTHS_SHORT[mm - 1] }}{{ sortMark(monthKey(mm)) }}</th>
+              <th class="col-num c-total" :title="`Сумма плана за показанные месяцы (${viewTotalLabel})`">Итого план</th>
               <th class="col-num c-fact" :title="`Факт ${planYear - 1} за год`">Факт {{ planYear - 1 }}</th>
+              <template v-if="showRef">
+                <th class="col-num c-ref" :title="`Факт ${monthName} ${planYear - 1} (тот же месяц прошлого года)`">Факт {{ monthName }} {{ planYear - 1 }}</th>
+                <th class="col-num c-ref" :title="`Факт прошлого месяца: ${refPrev.label}`">Факт {{ refPrev.label }}</th>
+                <th class="col-num c-ref" :title="`Факт текущего месяца плана (учтён на момент загрузки): ${monthName} ${planYear}`">Факт {{ monthName }} {{ planYear }}</th>
+              </template>
               <th class="c-act">Строка</th>
             </tr>
           </thead>
@@ -369,9 +391,14 @@
                   {{ item.group }}
                   <span class="grp-count">{{ groupRows(item.group).length }}</span>
                 </td>
-                <td v-for="m in 12" :key="m" class="col-num grp-num">{{ money(groupMonthTotal(item.group, m)) }}</td>
+                <td v-for="mm in shownMonths" :key="mm" class="col-num grp-num">{{ money(groupMonthTotal(item.group, mm)) }}</td>
                 <td class="col-num grp-num strong">{{ money(groupTotal(item.group)) }}</td>
                 <td class="col-num grp-num">{{ money(groupFactTotal(item.group)) }}</td>
+                <template v-if="showRef">
+                  <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'ly')) }}</td>
+                  <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'prev')) }}</td>
+                  <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'cur')) }}</td>
+                </template>
                 <td></td>
               </tr>
 
@@ -382,33 +409,39 @@
                   :class="[c.sticky ? 'sticky-c' : '', c.cls, c.mono ? 'mono' : '']"
                   :title="String(attrValue(item.row, c.key) || '')"
                 >{{ attrValue(item.row, c.key) || "—" }}</td>
-                <td v-for="m in 12" :key="m" class="col-num c-mon">
+                <td v-for="(mm, ci) in shownMonths" :key="mm" class="col-num c-mon">
                   <input
                     class="cell-input"
-                    :class="{ 'is-dirty': isDirty(item.row, m) }"
-                    :data-grid-cell="`${item.index}:${m - 1}`"
-                    :value="cellText(item.row, m)"
+                    :class="{ 'is-dirty': isDirty(item.row, mm) }"
+                    :data-grid-cell="`${item.index}:${ci}`"
+                    :value="cellText(item.row, mm)"
                     :disabled="!editable"
                     inputmode="decimal"
-                    @focus="nav.onFocusCell(item.index, m - 1)"
-                    @keydown="nav.onKeydown($event, item.index, m - 1)"
-                    @input="onInput(item.row, m, ($event.target as HTMLInputElement).value)"
+                    @focus="nav.onFocusCell(item.index, ci)"
+                    @keydown="nav.onKeydown($event, item.index, ci)"
+                    @input="onInput(item.row, mm, ($event.target as HTMLInputElement).value)"
                   />
                 </td>
                 <td class="col-num c-total strong">{{ money(rowPlanTotal(item.row)) }}</td>
                 <td class="col-num c-fact muted">{{ money(expRowTotal(item.row, 'fact')) }}</td>
+                <template v-if="showRef">
+                  <td class="col-num c-ref muted">{{ refText(item.row, 'ly') }}</td>
+                  <td class="col-num c-ref muted">{{ refText(item.row, 'prev') }}</td>
+                  <td class="col-num c-ref muted">{{ refText(item.row, 'cur') }}</td>
+                </template>
                 <td class="c-act">
                   <div class="row-acts">
                     <button
+                      v-if="viewMode !== 'month'"
                       class="btn btn-xs btn-ghost"
                       :disabled="!editable || busy"
-                      title="Размножить значение января на все двенадцать месяцев"
-                      @click="spread(item.row, 'spread_year')"
-                    >на год</button>
+                      :title="viewMode === 'year' ? 'Размножить значение января на все двенадцать месяцев' : `Размножить значение месяца ${monthName} до декабря`"
+                      @click="spread(item.row, viewMode === 'year' ? 'spread_year' : 'spread_to_end')"
+                    >{{ viewMode === "year" ? "на год" : "до конца года" }}</button>
                     <button
                       class="btn btn-xs btn-ghost"
                       :disabled="!editable || busy"
-                      title="Очистить строку: во всех месяцах станет пусто (пусто не равно нулю)"
+                      :title="viewMode === 'year' ? 'Очистить строку: во всех месяцах станет пусто (пусто не равно нулю)' : 'Очистить показанные месяцы (пусто не равно нулю); скрытые не меняются'"
                       @click="spread(item.row, 'clear_row')"
                     >очистить</button>
                   </div>
@@ -702,6 +735,64 @@ const filter = reactive({ search: "", group_pl: "", city: "", reg_manager: "" })
 
 const card = computed(() => form.value?.card ?? null);
 const planYear = computed(() => form.value?.instance.plan_year ?? card.value?.year ?? 0);
+
+// ── Период формы и сравнение с фактом ───────────────────────────────────────
+// Форма готовится на месяц плана или «до конца года»: все двенадцать месяцев сразу не нужны.
+// Скрытые месяцы не удаляются и не правятся. Выбор помним в браузере.
+type ViewMode = "month" | "tail" | "year";
+const VIEW_KEY = "exp-form-view";
+const viewMode = ref<ViewMode>("tail");
+const showRef = ref(true);
+const cardMonth = computed(() => Math.min(12, Math.max(1, card.value?.month || 1)));
+const monthName = computed(() => MONTHS_SHORT[cardMonth.value - 1]);
+const shownMonths = computed<number[]>(() => {
+  if (viewMode.value === "year") return Array.from({ length: 12 }, (_, i) => i + 1);
+  if (viewMode.value === "month") return [cardMonth.value];
+  return Array.from({ length: 13 - cardMonth.value }, (_, i) => cardMonth.value + i);
+});
+const viewTotalLabel = computed(() =>
+  viewMode.value === "year" ? "за год" : viewMode.value === "month" ? `за ${monthName.value}` : `${monthName.value}–дек`);
+const loadViewPrefs = () => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(VIEW_KEY) || "{}");
+    if (raw.mode === "month" || raw.mode === "tail" || raw.mode === "year") viewMode.value = raw.mode;
+    if (typeof raw.ref === "boolean") showRef.value = raw.ref;
+  } catch {
+    // Нет сохранённого вида — остаются значения по умолчанию.
+  }
+};
+const saveViewPrefs = () => {
+  try {
+    localStorage.setItem(VIEW_KEY, JSON.stringify({ mode: viewMode.value, ref: showRef.value }));
+  } catch {
+    // Хранилище недоступно — вид просто не запомнится.
+  }
+};
+const setViewMode = (m: ViewMode) => {
+  viewMode.value = m;
+  saveViewPrefs();
+};
+// Факт рядом с вводом: тот же месяц прошлого года, прошлый месяц, текущий месяц плана.
+// «Факт» прошлого года — сценарий fact, факт планового года — fact_cur (прошлый месяц января —
+// декабрь прошлого года из fact).
+const refPrev = computed(() => {
+  const m = cardMonth.value;
+  return m > 1
+    ? { scenario: "fact_cur" as const, month: m - 1, label: `${MONTHS_SHORT[m - 2]} ${planYear.value}` }
+    : { scenario: "fact" as const, month: 12, label: `${MONTHS_SHORT[11]} ${planYear.value - 1}` };
+});
+type RefKind = "ly" | "prev" | "cur";
+const refValue = (row: ExpRow, kind: RefKind): number | undefined => {
+  if (kind === "ly") return expCell(row, "fact", cardMonth.value);
+  if (kind === "prev") return expCell(row, refPrev.value.scenario, refPrev.value.month);
+  return expCell(row, "fact_cur", cardMonth.value);
+};
+const refText = (row: ExpRow, kind: RefKind): string => {
+  const v = refValue(row, kind);
+  return v === undefined ? "—" : money(v);
+};
+const groupRefTotal = (g: string, kind: RefKind) =>
+  rows.value.filter((r) => r.group_pl === g).reduce((s, r) => s + (refValue(r, kind) ?? 0), 0);
 const isRetail = computed(() => form.value?.instance.form_kind !== "mp");
 const editable = computed(() => !!form.value && !form.value.read_only);
 const hasMore = computed(() => !!form.value && rows.value.length < form.value.total);
@@ -736,7 +827,7 @@ const cellText = (row: ExpRow, month: number): string => {
 
 const rowPlanTotal = (row: ExpRow): number => {
   let t = 0;
-  for (let m = 1; m <= 12; m++) {
+  for (const m of shownMonths.value) {
     const v = draftOrSaved(row, m);
     if (v !== undefined) t += v;
   }
@@ -806,8 +897,8 @@ const windowEnd = computed(() =>
 const windowItems = computed(() => displayItems.value.slice(windowStart.value, windowEnd.value));
 const padTop = computed(() => windowStart.value * ROW_H);
 const padBottom = computed(() => Math.max(0, (displayItems.value.length - windowEnd.value) * ROW_H));
-/** Колонок всего: атрибуты + 12 месяцев + итог + факт + действия. */
-const colCount = computed(() => visibleAttrColumns.value.length + 15);
+/** Колонок всего: атрибуты + показанные месяцы + итог + факт + (сравнение) + действия. */
+const colCount = computed(() => visibleAttrColumns.value.length + shownMonths.value.length + 3 + (showRef.value ? 3 : 0));
 
 const onScroll = (e: Event) => {
   const el = e.target as HTMLElement;
@@ -844,15 +935,15 @@ const rowIndex = (row: ExpRow) => flatRows.value.findIndex((r) => r.id === row.i
 
 const nav = useGridNav({
   rows: () => flatRows.value.length,
-  cols: () => 12,
+  cols: () => shownMonths.value.length,
   ensureVisible: ensureRowVisible,
   onPaste: (anchor, matrix) => {
     if (!editable.value) return;
     matrix.forEach((line, di) => {
       line.forEach((raw, dj) => {
         const row = flatRows.value[anchor.row + di];
-        const month = anchor.col + dj + 1;
-        if (!row || month > 12) return;
+        const month = shownMonths.value[anchor.col + dj];
+        if (!row || month === undefined) return;
         const v = nav.parseCellNumber(raw);
         setDraft(row, month, v === null ? null : v);
       });
@@ -907,12 +998,15 @@ const spread = async (row: ExpRow, action: ExpBulkAction) => {
   error.value = "";
   note.value = "";
   try {
-    const amount = action === "clear_row" ? null : (draftOrSaved(row, 1) ?? null);
+    // База размножения — первый показанный месяц (январь только в виде «весь год»).
+    const baseMonth = shownMonths.value[0];
+    const amount = action === "clear_row" ? null : (draftOrSaved(row, baseMonth) ?? null);
     if (action !== "clear_row" && amount === null) {
-      error.value = "Размножать нечего: сначала заполните январь этой строки";
+      error.value = `Размножать нечего: сначала заполните ${MONTHS_SHORT[baseMonth - 1]} этой строки`;
       return;
     }
-    await api.bulk(cardId, { action, code_cfo: row.code_cfo, code_pl: row.code_pl, amount });
+    const win = viewMode.value === "year" ? {} : { month: baseMonth, month_to: shownMonths.value[shownMonths.value.length - 1] };
+    await api.bulk(cardId, { action, code_cfo: row.code_cfo, code_pl: row.code_pl, amount, ...win });
     // Правки по этой строке уже не актуальны — их перезаписал сервер.
     const next = new Map(drafts.value);
     for (let m = 1; m <= 12; m++) next.delete(key(row.code_cfo, row.code_pl, m));
@@ -1038,6 +1132,7 @@ const beforeUnload = (e: BeforeUnloadEvent) => {
 };
 onMounted(async () => {
   window.addEventListener("beforeunload", beforeUnload);
+  loadViewPrefs();
   // Раскладка восстанавливается ДО первой загрузки: иначе форма моргнёт
   // дефолтным порядком колонок и чужой сортировкой.
   try {
@@ -1070,6 +1165,17 @@ onBeforeRouteLeave(() => {
 .f-sel { flex: 0 1 180px; min-width: 140px; }
 
 .grid-card { padding: 0; overflow: hidden; }
+.view-card { padding: var(--space-2, 8px) var(--space-3, 12px); }
+.view-row { display: flex; align-items: center; gap: var(--space-3, 12px); flex-wrap: wrap; }
+.view-lbl { color: var(--text-secondary); font-size: var(--fs-sm, 13px); }
+.seg { display: inline-flex; border: 1px solid var(--border, #d8dce6); border-radius: 8px; overflow: hidden; }
+.seg-btn { background: transparent; border: 0; padding: 6px 12px; font: inherit; cursor: pointer; color: var(--text-primary); }
+.seg-btn + .seg-btn { border-left: 1px solid var(--border, #d8dce6); }
+.seg-btn.on { background: var(--brand, #4f46e5); color: #fff; }
+.view-chk { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: var(--fs-sm, 13px); }
+.view-hint { color: var(--text-secondary); font-size: var(--fs-xs, 12px); }
+.c-ref { min-width: 96px; color: var(--text-secondary); }
+
 /* Сетка шире экрана всегда: 12 месяцев плюс атрибуты. Прокрутка живёт внутри
    карточки, страница по горизонтали не едет. */
 .grid-scroll { overflow: auto; max-height: 70vh; }
