@@ -67,6 +67,20 @@ func TestExpCostsOptsDefaults(t *testing.T) {
 	if o.AfterHour != 5 || o.BeforeHour != 9 || o.MinYear != 2024 || o.Proc == "" {
 		t.Fatalf("дефолты: %+v", o)
 	}
+	// Имя процедуры без базы (как в .env.example) дополняется базой Budgeting.
+	o2 := ExpCostsOpts{Proc: "ZATRATY_DLYA_OKSANY_BYSTRYE"}
+	o2.normalize()
+	if o2.Proc != "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]" {
+		t.Fatalf("имя процедуры: %q", o2.Proc)
+	}
+	if got := qualifyBudgetingProc("fin.Proc"); got != "[Budgeting].[fin].[Proc]" {
+		t.Fatalf("схема.имя: %q", got)
+	}
+	o3 := ExpCostsOpts{Proc: "[Budgeting].[dbo].[X]"}
+	o3.normalize()
+	if o3.Proc != "[Budgeting].[dbo].[X]" {
+		t.Fatalf("имя с базой должно сохраняться: %q", o3.Proc)
+	}
 }
 
 func TestExpCostsSwapAllowed(t *testing.T) {

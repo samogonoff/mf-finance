@@ -516,6 +516,7 @@ func main() {
 	// расхождения, о котором согласующий и так увидит предупреждение.
 	plansCards.WithSubmitStrict(cfg.PlansSubmitStrict)
 	plansCards.WithRetailCountryGate(cfg.PlansRetailCountryGate)
+	plans.SetCfoDeptFormsEnabled(cfg.PlansCfoDeptForms)
 	plansCards.WithSubmitGate(plans.TemplateRetail, plans.NewRetailSubmitGate(plansRetail))
 	plansRetailH := plans.NewRetailHandler(plansRetail, plansPrincipal)
 

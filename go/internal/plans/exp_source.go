@@ -173,7 +173,7 @@ func expKindGroup(kind string) string {
 // параметров не принимает, оборачивать её во временную таблицу ради фильтра
 // дороже, чем отбросить лишние строки на чтении.
 func (s *expSource) Costs(ctx context.Context, kind, country string, years []int) ([]ExpCostCell, error) {
-	proc := strings.TrimSpace(s.tables.CostsProc)
+	proc := expQualifiedProc(s.tables.CostsProc)
 	if proc == "" {
 		return nil, nil
 	}
@@ -469,4 +469,26 @@ func expGroupWithoutNumber(group string) string {
 		}
 	}
 	return group
+}
+
+// expQualifiedProc — полное имя процедуры затрат. Общий OLAP-пул кабинета подключён к базе
+// FinDWH (MSSQL_PREMASTER_DB), а процедура лежит в Budgeting: имя без базы
+// («ZATRATY_DLYA_OKSANY_BYSTRYE», так оно и в .env.example) из FinDWH не находится
+// (проверено 19.10.2026), форма затрат открывалась пустой, а причина уходила в журнал.
+// Дополняется недостающее: «имя» → [Budgeting].[dbo].[имя], «схема.имя» → [Budgeting].[схема].[имя];
+// полное «база.схема.имя» используется как есть. Та же логика — в etl.ExpCostsOpts.normalize.
+func expQualifiedProc(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return name
+	}
+	parts := strings.Split(name, ".")
+	switch len(parts) {
+	case 1:
+		return "[Budgeting].[dbo].[" + strings.Trim(parts[0], "[] ") + "]"
+	case 2:
+		return "[Budgeting].[" + strings.Trim(parts[0], "[] ") + "].[" + strings.Trim(parts[1], "[] ") + "]"
+	default:
+		return name
+	}
 }

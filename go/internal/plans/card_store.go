@@ -161,6 +161,9 @@ func (s *pgCardStore) Cards(ctx context.Context, plID int64) ([]Card, error) {
 		if err != nil {
 			return nil, err
 		}
+		if cfoDeptHidden(c.FormCode, c.ScopeKey) {
+			continue
+		}
 		out = append(out, c)
 	}
 	return out, rows.Err()

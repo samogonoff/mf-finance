@@ -159,11 +159,13 @@ type Config struct {
 	// эксплуатации.
 	PlansSubmitStrict bool
 	// Four-country retail gate is enabled unless explicitly disabled for a test run.
+	// PlansCfoDeptForms показывает формы расходов отделов (31–37, 962); по умолчанию скрыты.
+	PlansCfoDeptForms      bool
 	PlansRetailCountryGate bool
 
 	// Форма «Расходы ЦП» (TPL-CFO-EXP, этап 1.5). Источники — тот же OLAP,
 	// что у остальных форм модуля. Пусто или PlansMock=1 → фикстуры exp_mock.go.
-	PlansExpCostsProc string // процедура затрат: ZATRATY_DLYA_OKSANY_BYSTRYE (база BUDGETING)
+	PlansExpCostsProc string // процедура затрат: ZATRATY_DLYA_OKSANY_BYSTRYE; без указания базы ищется в Budgeting (пул подключён к FinDWH)
 	PlansExpCfoTable  string // справочник ЦФО этапа 1.5: FinDWH.dbo.[001 CodeCFO]
 
 	// Форма «Розница» (TPL-TO-RETAIL, ТЗ Розница §11). Источники — тот же сервер
@@ -285,6 +287,7 @@ func Load() Config {
 
 		PlansSubmitStrict:      env("PLANS_SUBMIT_STRICT", "") == "1",
 		PlansRetailCountryGate: env("PLANS_RETAIL_COUNTRY_GATE", "1") != "0",
+		PlansCfoDeptForms:      env("PLANS_CFO_DEPT_FORMS", "0") == "1",
 
 		PlansExpCostsProc: env("PLANS_EXP_COSTS_PROC", "ZATRATY_DLYA_OKSANY_BYSTRYE"),
 		PlansExpCfoTable:  env("PLANS_EXP_CFO_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
