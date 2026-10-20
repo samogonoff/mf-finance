@@ -186,6 +186,20 @@ export interface ExpParamRow {
   value: number;
 }
 
+/** Подстановка плана из факта: откуда брать факт, как раскладывать по месяцам и к каким строкам применять. */
+export interface ExpFactFill {
+  source: "prev_month" | "same_month_ly" | "ym";
+  year?: number;
+  month?: number;
+  mode?: "same_month" | "one_month";
+  coef?: number;
+}
+export interface ExpCalcExtra {
+  months?: number[];
+  fill?: ExpFactFill;
+  filter?: { search?: string; group_pl?: string; city?: string; reg_manager?: string };
+}
+
 export interface ExpCalcDiff {
   code_cfo: number;
   code_pl: number;
@@ -387,6 +401,10 @@ export const useExpForm = () => {
     return `${base}/api/plans/exp/${cardId}/export${qs ? `?${qs}` : ""}`;
   };
 
+  /** Пример .xlsx для импорта: колонки-ключи, месяцы плана и одна заполненная строка формы. */
+  const importTemplateXlsx = (cardId: number): Promise<Blob> =>
+    $fetch<Blob>(`${base}/api/plans/exp/${cardId}/import-template`, { headers: authHeader(), responseType: "blob" });
+
   const importFile = (cardId: number, file: File, preview: boolean) =>
     $fetch<ExpImportResult>(`${base}/api/plans/exp/${cardId}/import?preview=${preview ? 1 : 0}`, {
       method: "POST",
@@ -404,10 +422,10 @@ export const useExpForm = () => {
       headers: authHeader()
     });
 
-  const calc = (cardId: number, op: string, preview: boolean) =>
+  const calc = (cardId: number, op: string, preview: boolean, extra: ExpCalcExtra = {}) =>
     $fetch<ExpCalcResult>(`${base}/api/plans/exp/${cardId}/calc`, {
       method: "POST",
-      body: { op, preview },
+      body: { op, preview, ...extra },
       headers: authHeader()
     });
 
@@ -442,6 +460,6 @@ export const useExpForm = () => {
   return {
     form, save, bulk, totals, cards, validate, summary, params, saveParam, calc,
     registry, saveRegRow, copyRegRow, deleteRegRow,
-    presets, savePreset, exportUrl, importFile, syncNow, consolidated
+    presets, savePreset, exportUrl, importFile, importTemplateXlsx, syncNow, consolidated
   };
 };

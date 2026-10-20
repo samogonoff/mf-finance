@@ -620,6 +620,23 @@ func (s *expRepo) SyncPLLines(ctx context.Context, lines []ExpPLLine) (int, erro
 	return added, nil
 }
 
+// expAllRowsFiltered — все строки экземпляра с отбором (страницами, как expAllRows).
+func expAllRowsFiltered(ctx context.Context, repo ExpRepo, instanceID int64, f ExpFilter) ([]ExpRow, error) {
+	const page = 5000
+	var all []ExpRow
+	for off := 0; ; off += page {
+		f.Limit, f.Offset = page, off
+		rows, total, err := repo.Rows(ctx, instanceID, f)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, rows...)
+		if len(rows) == 0 || off+len(rows) >= total {
+			return all, nil
+		}
+	}
+}
+
 // expAllRows — все строки экземпляра: Rows отдаёт не больше 5000 за раз (иначе 500), а строк
 // у розницы BY больше (проверено живой выгрузкой — 5 716), поэтому читаем страницами.
 func expAllRows(ctx context.Context, repo ExpRepo, instanceID int64) ([]ExpRow, error) {
