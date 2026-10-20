@@ -264,7 +264,7 @@ func TestFinDebtReport_RevenueRowsMerged(t *testing.T) {
 	}
 }
 
-// Нет таблицы оборотов (миграция 013 не накатана) → отчёт по долгу жив, без выручки.
+// Нет таблицы оборотов (миграция 014 не накатана) → отчёт по долгу жив, без выручки.
 func TestFinDebtReport_RevenueUnavailableDegrades(t *testing.T) {
 	debtBody := `{"company_id":"690591512","company":"МФ","counterparty_id":"690719790","counterparty":"Ф","acc":"62.1","acc_root":"62","doc_number":"1","description":"1","currency":"BYN","delay":0,"close_dz":"10","close_kz":"0","open_dz":"0","open_kz":"0"}` + "\n"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

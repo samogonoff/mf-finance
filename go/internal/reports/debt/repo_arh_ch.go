@@ -13,7 +13,7 @@ import (
 
 // arhCHRepo — источник отчёта DEBT_BACKEND=arh: остатки и продажи собраны из СЫРЫХ
 // таблиц OLAP (Debt_arh + Docs, Wholesales_arh), залитых ETL в ClickHouse
-// finance.fact_arh_debt / finance.fact_arh_sales (миграция 014, правила — в
+// finance.fact_arh_debt / finance.fact_arh_sales (миграция 015, правила — в
 // docs/reports/debt/arh-runbook.md). Готовые вьюхи FinDebt1/3 не используются.
 //
 // Отличия от findebt:
@@ -260,7 +260,7 @@ func (r *arhCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error) {
 			return nil, err
 		}
 	}
-	// Продажи — отдельная таблица: нет миграции 014 / поток не залит → отчёт по долгу
+	// Продажи — отдельная таблица: нет миграции 015 / поток не залит → отчёт по долгу
 	// остаётся рабочим, только без продаж и возвратов (причина — в логе).
 	sales, err := r.salesRows(ctx, f, from, to, lens)
 	if err != nil {

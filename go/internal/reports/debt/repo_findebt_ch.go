@@ -136,7 +136,7 @@ func (r *findebtCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error
 		return nil, err
 	}
 	// Объём продаж — из оборотов FinDebt1 (fact_findebt_turnover). Деградируем мягко:
-	// если миграция 013 ещё не накатана / поток не залит, отчёт остаётся рабочим,
+	// если миграция 014 ещё не накатана / поток не залит, отчёт остаётся рабочим,
 	// только без выручки (в логе видно причину).
 	rev, err := r.revenueRows(ctx, f, lens)
 	if err != nil {

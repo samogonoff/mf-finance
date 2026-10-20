@@ -96,7 +96,7 @@ func RunIncrementalFinDebt(ctx context.Context, deps Deps, opts FinDebtOpts) (in
 		log.Printf("etl: incremental-findebt from=%s rows=%d", last, n)
 	}
 
-	// Обороты: свой watermark (таблица может отставать, если миграция 013 накатили
+	// Обороты: свой watermark (таблица может отставать, если миграция 014 накатили
 	// позже). Пустая таблица → полный догон с 2021.
 	tlast, err := ch.queryString(ctx,
 		"SELECT ifNull(toString(max(snapshot_date)), '') FROM finance.fact_findebt_turnover")
