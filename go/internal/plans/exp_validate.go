@@ -41,6 +41,11 @@ type ExpValidationInput struct {
 	LegalEntity string
 	// Currency — национальная валюта страны формы (E-15).
 	Currency string
+	// CardMonth — месяц плана карточки (1–12; 0 — не задан). Форма планирует месяц карточки и последующие:
+	// прошедшие месяцы закрыты (по ним факт), поэтому E-11 требует заполнить только месяц плана, а остальные
+	// месяцы года — предупреждение; E-18 сравнивает те же месяцы с прошлым годом. Без месяца — прежние правила
+	// (все двенадцать месяцев).
+	CardMonth int
 }
 
 // Минус допустим В ЛЮБОЙ статье (ответ И-2 от 11.09.2026).
@@ -102,16 +107,34 @@ func ValidateExpForm(in ExpValidationInput) []ExpIssue {
 			}
 		}
 
-		// E-11 — заполнены ВСЕ плановые месяцы; пусто не равно нулю.
-		var missing []int
-		for m := 1; m <= 12; m++ {
-			if !filled[m] {
-				missing = append(missing, m)
+		// E-11 — пусто не равно нулю. Месяц плана карточки обязателен (блокирует), месяцы после него — предупреждение
+		// «не заполнено»; прошедшие месяцы не проверяются: они закрыты, и заполнить их нельзя. Без месяца карточки —
+		// прежнее правило: заполнены все двенадцать.
+		if cm := in.CardMonth; cm >= 1 && cm <= 12 {
+			if !filled[cm] {
+				add("E-11", true, r, cm, 0,
+					"не заполнен месяц плана (%02d): пусто не равно нулю — для нуля нужен явный ввод", cm)
 			}
-		}
-		if len(missing) > 0 {
-			add("E-11", true, r, missing[0], 0,
-				"не заполнено месяцев: %d (пусто не равно нулю — для нуля нужен явный ввод)", len(missing))
+			var later []int
+			for m := cm + 1; m <= 12; m++ {
+				if !filled[m] {
+					later = append(later, m)
+				}
+			}
+			if len(later) > 0 {
+				add("E-11", false, r, later[0], 0, "не заполнено месяцев после планового: %d", len(later))
+			}
+		} else {
+			var missing []int
+			for m := 1; m <= 12; m++ {
+				if !filled[m] {
+					missing = append(missing, m)
+				}
+			}
+			if len(missing) > 0 {
+				add("E-11", true, r, missing[0], 0,
+					"не заполнено месяцев: %d (пусто не равно нулю — для нуля нужен явный ввод)", len(missing))
+			}
 		}
 
 		// E-13 — все строки формы отнесены на одно юридическое лицо страны.
@@ -142,8 +165,26 @@ func ValidateExpForm(in ExpValidationInput) []ExpIssue {
 		// E-18 — отклонение от предыдущего периода больше 30 %: предупреждение,
 		// требуется комментарий к строке.
 		prev, hasPrev := in.PrevYearByRow[[2]int{r.CodeCFO, r.CodePL}]
+		planSum := r.PlanTotal()
+		if in.CardMonth >= 1 && in.CardMonth <= 12 {
+			// Сравниваем ТЕ ЖЕ месяцы (плановый и последующие заполненные): весь прошлый год против одного-двух
+			// месяцев плана дал бы ложное «минус 90 %» по каждой строке.
+			prev, hasPrev, planSum = 0, false, 0
+			for _, v := range r.Values {
+				if v.Amount == nil || v.Month < in.CardMonth || !filled[v.Month] {
+					continue
+				}
+				switch v.Scenario {
+				case ExpScenarioPlan:
+					planSum += *v.Amount
+				case ExpScenarioFact:
+					prev += *v.Amount
+					hasPrev = true
+				}
+			}
+		}
 		if hasPrev && prev != 0 {
-			dev := (r.PlanTotal() - prev) / math.Abs(prev)
+			dev := (planSum - prev) / math.Abs(prev)
 			if math.Abs(dev) > expDeviationLimit {
 				msg := "отклонение от прошлого периода %.0f %% — нужен комментарий к строке"
 				if strings.TrimSpace(in.CommentByRow[[2]int{r.CodeCFO, r.CodePL}]) != "" {

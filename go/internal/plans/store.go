@@ -296,6 +296,9 @@ func (s *pgStore) Stages(ctx context.Context, plID int64) ([]StageState, error) 
 		if d, ok := stageDefByCode(st.Code); ok {
 			st.Name = d.Name
 			st.IsApproval = d.IsApproval
+			// Зависимости — из маршрута в коде, а не из строки периода: в уже созданных периодах там осталось
+			// прежнее «1.6 ждёт 2.4», и экран показывал бы блок, которого логика уже не применяет.
+			st.DependsOn = d.DependsOn
 		}
 		out = append(out, st)
 	}
