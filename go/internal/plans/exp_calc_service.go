@@ -55,6 +55,9 @@ type ExpCalcRequest struct {
 	Preview bool   `json:"preview"`
 	// Months — охват по времени (ТЗ §7.7). Пусто — весь плановый год.
 	Months []int `json:"months"`
+	// Fill и Filter — для op = fact_fill: откуда брать факт и к каким строкам применять (exp_fact_fill.go).
+	Fill   *ExpFactFillParams `json:"fill,omitempty"`
+	Filter *ExpCalcFilter     `json:"filter,omitempty"`
 }
 
 // WithSalesPlan подключает план продаж — вход расчёта §6.1.
@@ -97,7 +100,7 @@ func (s *ExpService) SaveParam(ctx context.Context, p Principal, cardID int64, r
 func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req ExpCalcRequest) (ExpCalcResult, error) {
 	res := ExpCalcResult{Op: req.Op, Preview: req.Preview, Diff: []ExpCalcDiff{}}
 	switch req.Op {
-	case ExpCalcPayroll, ExpCalcRent:
+	case ExpCalcPayroll, ExpCalcRent, ExpCalcFactFill:
 	default:
 		return res, fmt.Errorf("неизвестный расчёт %q", req.Op)
 	}
@@ -107,6 +110,9 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 	}
 	if !req.Preview && !cardEditable(c) {
 		return res, errors.New("период закрыт на запись: расчёт недоступен")
+	}
+	if req.Op == ExpCalcFactFill {
+		return s.factFill(ctx, p, c, in, req, res)
 	}
 	if req.Op == ExpCalcPayroll && s.sales == nil {
 		return res, errors.New("план продаж недоступен — расчёт §6.1 не выполняется")

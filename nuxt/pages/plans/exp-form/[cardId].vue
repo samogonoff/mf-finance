@@ -31,11 +31,27 @@
         <NuxtLink v-if="card" :to="`/plans/exp/${card.pl_id}`" class="btn btn-ghost">
           <Icon name="lucide:arrow-left" /> К комплекту
         </NuxtLink>
-        <NuxtLink :to="`/plans/exp-registry/${cardId}`" class="btn btn-ghost">
+        <NuxtLink
+          :to="`/plans/exp-registry/${cardId}`"
+          class="btn btn-ghost"
+          title="Детальные таблицы ФОТ, командировок, логистики и ИТ: их итоги подставляются в статьи формы (24, 27, 30, 48, 51, 52). Если такие расходы вы вводите прямо в форме — реестры не нужны."
+        >
           <Icon name="lucide:list-checks" /> Реестры
         </NuxtLink>
-        <NuxtLink :to="`/plans/exp-summary/${cardId}`" class="btn btn-ghost">
-          <Icon name="lucide:layout-list" /> Свод
+        <NuxtLink
+          :to="`/plans/exp-summary/${cardId}`"
+          class="btn btn-ghost"
+          title="Свод ЭТОЙ формы: план и факт по группам PL. Сравнить все четыре страны — «Свод 4 страны»."
+        >
+          <Icon name="lucide:layout-list" /> Свод формы
+        </NuxtLink>
+        <NuxtLink
+          v-if="card && (card.scope_key || '').startsWith('R-')"
+          :to="`/plans/exp-consolidated/${card.pl_id}`"
+          class="btn btn-ghost"
+          title="Расходы розницы по четырём странам в BYN: группы PL, факт для сравнения"
+        >
+          <Icon name="lucide:wallet" /> Свод 4 страны
         </NuxtLink>
         <button class="btn btn-sm btn-ghost" @click="columnsOpen = !columnsOpen">
           <Icon name="lucide:columns-3" /> Колонки
@@ -45,6 +61,14 @@
         </a>
         <button v-if="editable" class="btn btn-sm btn-ghost" :disabled="syncRunning" title="Перечитать состав строк и факт из источника затрат (OLAP). Процедура работает несколько минут." @click="runSync">
           <Icon name="lucide:refresh-cw" :class="{ spin: syncRunning }" /> Обновить из источника
+        </button>
+        <button
+          class="btn btn-sm btn-ghost"
+          :disabled="busy"
+          title="Скачать пример .xlsx: колонки-ключи (код ЦФО и код статьи), месяцы плана и одна строка вашей формы. Заполните месяцы и загрузите файл кнопкой «Импорт»."
+          @click="downloadImportTemplate"
+        >
+          <Icon name="lucide:file-down" /> Пример импорта
         </button>
         <button class="btn btn-sm btn-ghost" :disabled="!editable" @click="importInput?.click()">
           <Icon name="lucide:upload" /> Импорт
@@ -148,6 +172,64 @@
           </button>
           <button class="btn btn-sm btn-ghost" @click="calcResult = null">Отмена</button>
         </div>
+      </div>
+    </section>
+
+    <!-- ===== Подстановка плана из факта ===== -->
+    <section class="card fill-card">
+      <div class="params-row">
+        <span class="params-title">План из факта</span>
+        <label class="params-f">
+          Откуда
+          <select v-model="fillSource" class="input params-in fill-sel">
+            <option value="prev_month">факт прошлого месяца</option>
+            <option value="same_month_ly">факт того же месяца прошлого года (помесячно)</option>
+            <option value="ym">факт выбранного года и месяца</option>
+          </select>
+        </label>
+        <template v-if="fillSource === 'ym'">
+          <label class="params-f">
+            Год
+            <select v-model.number="fillYear" class="input params-in">
+              <option :value="planYear - 1">{{ planYear - 1 }}</option>
+              <option :value="planYear">{{ planYear }}</option>
+            </select>
+          </label>
+          <label class="params-f">
+            Как раскладывать
+            <select v-model="fillMode" class="input params-in fill-sel">
+              <option value="one_month">один месяц → все плановые месяцы</option>
+              <option value="same_month">каждый плановый месяц ← тот же месяц года</option>
+            </select>
+          </label>
+          <label v-if="fillMode === 'one_month'" class="params-f">
+            Месяц
+            <select v-model.number="fillMonth" class="input params-in">
+              <option v-for="(label, i) in MONTHS_SHORT" :key="i" :value="i + 1">{{ label }}</option>
+            </select>
+          </label>
+        </template>
+        <label class="params-f">
+          Коэффициент
+          <input v-model.number="fillCoef" class="input params-in" inputmode="decimal" title="значение факта умножается на коэффициент (1 — без изменений, 1,05 — плюс 5 %)" />
+        </label>
+        <label class="params-f">
+          К строкам
+          <select v-model="fillScope" class="input params-in">
+            <option value="all">всей формы</option>
+            <option value="filtered" :disabled="!filterActive">по текущим фильтрам</option>
+          </select>
+        </label>
+        <button
+          class="btn btn-sm btn-ghost"
+          :disabled="calcBusy || !editable"
+          :title="editable ? 'Показать, что подставится, ничего не записывая' : 'Карточка закрыта на запись'"
+          @click="runCalc('fact_fill', true)"
+        ><Icon name="lucide:history" :class="{ spin: calcBusy }" /> Предпросмотр</button>
+        <span class="params-hint">
+          Факт подтягивается из источника сам, вручную его не вводят. Здесь он служит стартом для плана: заполняются
+          месяцы {{ fillMonthsLabel }}, потом значения правятся руками. Прошедшие месяцы не заполняются.
+        </span>
       </div>
     </section>
 
@@ -474,7 +556,7 @@ import { money } from "~/utils/format";
 import { useGridNav } from "~/composables/useGridNav";
 import {
   useExpForm, expCell, expRowTotal, MONTHS_SHORT,
-  type ExpBulkAction, type ExpCalcResult, type ExpCell, type ExpForm, type ExpImportResult,
+  type ExpBulkAction, type ExpCalcExtra, type ExpCalcResult, type ExpFactFill, type ExpCell, type ExpForm, type ExpImportResult,
   type ExpParamRow, type ExpRow, type ExpValidationReport
 } from "~/composables/useExpForm";
 
@@ -636,7 +718,7 @@ const runCalc = async (op: string, preview: boolean) => {
   calcBusy.value = true;
   error.value = "";
   try {
-    const r = await api.calc(cardId, op, preview);
+    const r = await api.calc(cardId, op, preview, op === "fact_fill" ? fillExtra() : {});
     if (preview) {
       calcResult.value = r;
       if (!r.changed) note.value = "Расчёт ничего не меняет: значения уже совпадают";
@@ -654,6 +736,22 @@ const runCalc = async (op: string, preview: boolean) => {
 
 // ── Импорт (ТЗ §7.9) ────────────────────────────────────────────────────────
 const importInput = ref<HTMLInputElement | null>(null);
+const downloadImportTemplate = async () => {
+  error.value = "";
+  note.value = "";
+  try {
+    const blob = await api.importTemplateXlsx(cardId);
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = `expenses-import-example-${card.value?.scope_key || cardId}-${planYear.value}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(href);
+    note.value = "Пример скачан: заполните месяцы плана по своим строкам и загрузите файл кнопкой «Импорт». Строки, которых нет в форме, не создаются.";
+  } catch (e) {
+    error.value = apiError(e, "Не удалось скачать пример");
+  }
+};
 const importReport = ref<ExpImportResult | null>(null);
 const importFileRef = ref<File | null>(null);
 
@@ -760,6 +858,42 @@ const factWord = computed(() => (factByPayments.value ? "Факт по плат�
 const factBasisNote = computed(() => (factByPayments.value ? " — по платежам, начислений в источнике нет" : ""));
 const viewTotalLabel = computed(() =>
   viewMode.value === "year" ? "за год" : viewMode.value === "month" ? `за ${monthName.value}` : `${monthName.value}–дек`);
+// ── План из факта ────────────────────────────────────────────────────────────
+const fillSource = ref<ExpFactFill["source"]>("prev_month");
+const fillYear = ref(0);
+const fillMonth = ref(0);
+const fillMode = ref<"one_month" | "same_month">("one_month");
+const fillCoef = ref(1);
+const fillScope = ref<"all" | "filtered">("all");
+// Заполняются месяцы показанного окна, кроме прошедших (по ним факт, планировать нельзя).
+const fillMonths = computed(() => shownMonths.value.filter((m) => !monthLocked(m)));
+const fillMonthsLabel = computed(() => {
+  const ms = fillMonths.value;
+  if (!ms.length) return "—";
+  return ms.length === 1 ? MONTHS_SHORT[ms[0] - 1] : `${MONTHS_SHORT[ms[0] - 1]}–${MONTHS_SHORT[ms[ms.length - 1] - 1]}`;
+});
+watch(
+  () => [planYear.value, cardMonth.value],
+  () => {
+    if (!fillYear.value) fillYear.value = planYear.value - 1;
+    if (!fillMonth.value) fillMonth.value = cardMonth.value === 1 ? 12 : cardMonth.value - 1;
+  },
+  { immediate: true }
+);
+const fillExtra = (): ExpCalcExtra => ({
+  months: fillMonths.value,
+  fill: {
+    source: fillSource.value,
+    year: fillSource.value === "ym" ? fillYear.value : undefined,
+    month: fillSource.value === "ym" && fillMode.value === "one_month" ? fillMonth.value : undefined,
+    mode: fillSource.value === "ym" ? fillMode.value : undefined,
+    coef: Number.isFinite(fillCoef.value) && fillCoef.value >= 0 ? fillCoef.value : 1
+  },
+  filter: fillScope.value === "filtered"
+    ? { search: filter.search || undefined, group_pl: filter.group_pl || undefined, city: filter.city || undefined, reg_manager: filter.reg_manager || undefined }
+    : undefined
+});
+
 const loadViewPrefs = () => {
   try {
     const raw = JSON.parse(localStorage.getItem(VIEW_KEY) || "{}");
@@ -1253,6 +1387,8 @@ onBeforeRouteLeave(() => {
 .params-f { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); }
 .params-in { width: 90px; font-family: var(--font-mono); text-align: right; }
 .params-hint { font-size: var(--fs-2xs); color: var(--text-muted); flex: 1 1 260px; min-width: 0; }
+.fill-card { padding: var(--sp-4) var(--sp-5); }
+.fill-sel { width: auto; min-width: 200px; font-family: inherit; text-align: left; }
 .calc-prev { display: flex; flex-direction: column; gap: var(--sp-2); border-top: 1px solid var(--border); padding-top: var(--sp-3); }
 .calc-head { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; }
 .calc-ul { margin: 0; padding-left: var(--sp-5); font-size: var(--fs-sm); display: flex; flex-direction: column; gap: 2px; }
