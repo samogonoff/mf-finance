@@ -111,6 +111,10 @@ type DebtRow struct {
 
 	RevenuePeriod    float64 `json:"revenue_period"`
 	RevenueLastMonth float64 `json:"revenue_last_month"`
+	// Возвраты (отрицательные строки продаж), положительные числа. Заполняет только
+	// бэкенд arh; у остальных нули (источник FinDebt отдаёт продажи без разделения).
+	ReturnsPeriod    float64 `json:"returns_period"`
+	ReturnsLastMonth float64 `json:"returns_last_month"`
 }
 
 // DocumentRow — детализация по документу (drill-down под договором).

@@ -40,6 +40,7 @@ func mockRows() []DebtRow {
 			TurnoverDZ: 1_800_000.00, TurnoverKZ: 1_200_000.00,
 			ClosingDZ: 3_720_000.00, ClosingKZ: 0,
 			RevenuePeriod: 1_800_000.00, RevenueLastMonth: 420_000.00,
+			ReturnsPeriod: 45_000.00, ReturnsLastMonth: 12_500.00,
 		},
 		// РБ → УЗ, два юрлица одного партнёра
 		{
@@ -52,6 +53,7 @@ func mockRows() []DebtRow {
 			TurnoverDZ: 9_200.00, TurnoverKZ: 5_100.00,
 			ClosingDZ: 22_500.00, ClosingKZ: 0,
 			RevenuePeriod: 9_200.00, RevenueLastMonth: 3_400.00,
+			ReturnsPeriod: 600.00, ReturnsLastMonth: 0,
 		},
 		// смесь ДЗ и КЗ в рамках одного субсчёта — проверка знаковой раскраски
 		{
