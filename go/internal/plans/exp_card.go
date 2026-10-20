@@ -137,17 +137,29 @@ func (p *ExpCardProvider) PublishRows(ctx context.Context, c Card) ([]PublishRow
 			if v.Scenario != ExpScenarioPlan || v.Amount == nil || *v.Amount == 0 {
 				continue
 			}
-			pr := mk(r.CodeCFO, r.CodePL, v.Month, r.CFO, r.GroupCFO2, *v.Amount, r.LegalEntity)
-			if pr.Country == "" {
-				// Форма нескольких стран (опт): страна строки — страна её ЦФО.
-				pr.Country = r.CountryCompany
-			}
-			out = append(out, pr)
+			out = append(out, mk(r.CodeCFO, r.CodePL, v.Month, r.CFO, r.GroupCFO2, *v.Amount, r.LegalEntity))
 		}
 	}
 
 	if p.reg != nil {
 		out = append(out, p.registryRows(ctx, in, mk)...)
+	}
+
+	// Форма нескольких стран (опт): у экземпляра страны нет, страна строки — страна её ЦФО. Подставляем
+	// и строкам сетки, и строкам реестров (командировки, ИТ, логистика): ключ записи в приёмнике
+	// включает страну.
+	if in.Country == "" {
+		countryOf := map[int]string{}
+		for _, r := range rows {
+			if r.CountryCompany != "" {
+				countryOf[r.CodeCFO] = r.CountryCompany
+			}
+		}
+		for i := range out {
+			if out[i].Country == "" {
+				out[i].Country = countryOf[out[i].CodeCFO]
+			}
+		}
 	}
 
 	// 2. Общие затраты МП — под ЦФО 250 (ответ 34). Только у формы

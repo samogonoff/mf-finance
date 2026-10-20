@@ -134,6 +134,78 @@ func TestFormClosedInPeriod(t *testing.T) {
 	}
 }
 
+// Карточка опта многострановая (страна и ЮЛ пустые): пустая страна в ABAC — «без ограничения»,
+// поэтому доступ даётся только тому, кто допущен ко всем трём странам формы.
+func TestScopeFilter_AllowsCard_MultiCountryOpt(t *testing.T) {
+	opt := Card{FormCode: TemplateExp, ScopeKey: "OPT"}
+	cases := []struct {
+		name  string
+		admin bool
+		rules []UserScope
+		want  bool
+	}{
+		{"исполнитель розницы KZ", false, []UserScope{{Country: "KZ", LegalEntity: "MFKaz"}}, false},
+		{"только РБ", false, []UserScope{{Country: "BY", LegalEntity: "F"}}, false},
+		{"РБ и РФ без УЗ", false, []UserScope{{Country: "BY"}, {Country: "RU"}}, false},
+		{"все три страны", false, []UserScope{{Country: "BY", LegalEntity: "F"}, {Country: "RU", LegalEntity: "TDMF"}, {Country: "UZ", LegalEntity: "MFUz"}}, true},
+		{"правило без страны", false, []UserScope{{}}, true},
+		{"нет правил", false, nil, false},
+		{"админ", true, nil, true},
+	}
+	for _, c := range cases {
+		if got := NewScopeFilter(c.admin, c.rules).AllowsCard(opt); got != c.want {
+			t.Errorf("%s: AllowsCard=%v, ожидали %v", c.name, got, c.want)
+		}
+	}
+	// Остальные карточки проверяются по своей стране, как и раньше.
+	kz := NewScopeFilter(false, []UserScope{{Country: "KZ", LegalEntity: "MFKaz"}})
+	if !kz.AllowsCard(Card{FormCode: TemplateExp, ScopeKey: "R-KZ", Country: "KZ", LegalEntity: "MFKaz"}) ||
+		kz.AllowsCard(Card{FormCode: TemplateExp, ScopeKey: "IM-BY", Country: "BY", LegalEntity: "F"}) {
+		t.Error("карточки с одной страной проверяются по ней")
+	}
+}
+
+// Опт публикуется со страной своего ЦФО — и строки сетки, и строки реестров (командировки, ИТ):
+// ключ записи в приёмнике включает страну.
+func TestExpPublishRows_OptCountryFromCFO(t *testing.T) {
+	repo := &fakeExpRepo{
+		inst: ExpInstance{ID: 1, FormKind: ExpKindOpt, Country: "", PlanYear: 2026, Currency: "BYN"},
+		rows: []ExpRow{
+			{CodeCFO: 35, CodePL: 24, CFO: "Отдел продаж", CountryCompany: "BY",
+				Values: []ExpValue{{Scenario: ExpScenarioPlan, Month: 1, Amount: pv(100)}}},
+			{CodeCFO: 303, CodePL: 24, CFO: "ВЭД РФ", CountryCompany: "RU",
+				Values: []ExpValue{{Scenario: ExpScenarioPlan, Month: 1, Amount: pv(200)}}},
+			{CodeCFO: 414, CodePL: 24, CFO: "Отдел продаж опта УЗ", CountryCompany: "UZ",
+				Values: []ExpValue{{Scenario: ExpScenarioPlan, Month: 1, Amount: pv(300)}}},
+		},
+	}
+	reg := &fakeExpReg{byKind: map[string][]ExpRegRow{
+		ExpRegTravel: {{Kind: ExpRegTravel, CodeCFO: 303,
+			Attrs:  map[string]any{"month": float64(2), "tickets": 600.0, "per_diem": 280.0, "lodging": 1050.0},
+			Months: map[int]float64{2: 1930}}},
+	}}
+	rows, err := NewExpCardProvider(repo, reg).PublishRows(context.Background(), Card{ID: 1, PlID: 7, Month: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int]string{35: "BY", 303: "RU", 414: "UZ"}
+	var travel int
+	for _, r := range rows {
+		if r.Country == "" {
+			t.Errorf("строка без страны: %+v", r)
+		}
+		if w, ok := want[r.CodeCFO]; ok && r.Country != w {
+			t.Errorf("ЦФО %d: страна %q, ожидали %q", r.CodeCFO, r.Country, w)
+		}
+		if r.CodePL == ExpPLTravel || r.CodePL == ExpPLLodging {
+			travel++
+		}
+	}
+	if travel == 0 {
+		t.Fatal("строки реестра командировок не попали в публикацию — тест ничего не проверяет")
+	}
+}
+
 // Справочник ЦФО опту не нужен (город/тип/РМ — атрибуты магазина): пустой ответ, а не ошибка.
 func TestExpSourceCfo_OptSkipsDirectory(t *testing.T) {
 	s := &expSource{tables: ExpTables{CfoTable: "FinDWH.dbo.[001 CodeCFO]"}}

@@ -49,7 +49,13 @@ type FormScope struct {
 	// карточка не заводится: иначе первое же открытие старого периода создало бы пустой черновик и
 	// откатило этап из «завершён» (см. EnsureCards).
 	Late bool `json:"-"`
+	// Countries — страны многострановой карточки (опт). Пустая страна карточки в ABAC означает «без
+	// ограничения», поэтому для таких карточек доступ даётся только тому, кто допущен ко всем странам.
+	Countries []scopeCountry `json:"-"`
 }
+
+// scopeCountry — страна и её юрлицо в составе многострановой области.
+type scopeCountry struct{ Country, LegalEntity string }
 
 // FormDef — описание формы: код, название и набор карточек на период.
 type FormDef struct {
@@ -145,7 +151,8 @@ func formRegistryAll() []FormDef {
 				// (по РФ/КЗ в источнике единицы строк плана без факта). Опт: одна карточка на три страны
 				// (РБ, РФ, УЗ), ввод в BYN по суммам источника в BYN; страны у карточки нет.
 				{Key: "IM-BY", Title: "Интернет-магазин РБ", Country: "BY", LegalEntity: "F", Currency: "BYN", Late: true},
-				{Key: "OPT", Title: "Опт (РБ, РФ, УЗ)", Country: "", LegalEntity: "", Currency: "BYN", Late: true},
+				{Key: "OPT", Title: "Опт (РБ, РФ, УЗ)", Country: "", LegalEntity: "", Currency: "BYN", Late: true,
+					Countries: []scopeCountry{{"BY", "F"}, {"RU", "TDMF"}, {"UZ", "MFUz"}}},
 			},
 		},
 		{

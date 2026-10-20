@@ -95,6 +95,16 @@ func (f ScopeFilter) HasExplicitStep(step string) bool {
 
 // AllowsCard — доступ к карточке формы (по стране и ЮЛ карточки).
 func (f ScopeFilter) AllowsCard(c Card) bool {
+	// Многострановая карточка (опт): пустая страна в правиле значит «без ограничения», поэтому
+	// проверка по пустой стране пропустила бы любого со срезом. Нужен доступ ко всем её странам.
+	if sc, ok := formScope(c.FormCode, c.ScopeKey); ok && len(sc.Countries) > 0 {
+		for _, cn := range sc.Countries {
+			if !f.Allows(0, cn.Country, cn.LegalEntity) {
+				return false
+			}
+		}
+		return true
+	}
 	return f.Allows(0, c.Country, c.LegalEntity)
 }
 
