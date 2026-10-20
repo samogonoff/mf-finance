@@ -76,6 +76,10 @@
     <p v-if="error" class="banner banner-neg">{{ error }}</p>
     <p v-if="note" class="banner banner-pos">{{ note }}</p>
 	<p v-if="form && !canEdit" class="banner banner-warn">Форма для согласования · только просмотр.</p>
+	<p v-if="strategyDefaultNames.length" class="banner banner-info">
+		%СПП и наценки по площадкам {{ strategyDefaultNames.join(", ") }} взяты из стратегии месяца: условия площадки ещё не
+		сохранены. В «Условиях площадок» те же значения подставлены и помечены «из стратегии» — проверьте их и сохраните, чтобы зафиксировать.
+	</p>
 
     <!-- Оболочка процесса: статус карточки, шаги, возврат, публикация. Отправку
          на согласование блокируем по результату валидаций (ТЗ §7 — блокирующие
@@ -648,6 +652,14 @@ const segmentGroups = computed(() => {
 // %СПП и итоговые скидки/уценки по всем площадкам.
 const INVERSE_INPUTS: string[] = [B.salesManagerGross, B.spp, B.discount, B.markdown];
 const inverseInput = (line: MpLine) => INVERSE_INPUTS.includes(line.block_type);
+// Площадки, у которых %СПП и наценки пока из стратегии (условия не сохранены): иначе маржа и PL были бы нулевыми.
+const strategyDefaultNames = computed<string[]>(() => {
+  const conds = form.value?.conditions || {};
+  return (form.value?.platforms || [])
+    .filter((p) => (conds[p.code_cfo]?.strategy_defaults?.length || 0) > 0)
+    .map((p) => p.name || String(p.code_cfo));
+});
+
 const editableCell = (line: MpLine) => canEdit.value && line.editable && (!isInverse.value || inverseInput(line));
 const canEdit = computed(() => {
   if (readonly.value) return false;
@@ -1058,6 +1070,7 @@ onMounted(() => {
 .banner-neg { background: var(--neg-soft); color: var(--neg-strong); }
 .banner-pos { background: var(--pos-soft); color: var(--pos-strong); }
 .banner-warn { background: var(--warn-soft); color: var(--warn); }
+.banner-info { background: var(--info-soft); color: var(--info); }
 .page-actions { display: flex; gap: var(--sp-3); flex-wrap: wrap; }
 
 .legend { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-4); font-size: var(--fs-2xs); flex-wrap: wrap; }

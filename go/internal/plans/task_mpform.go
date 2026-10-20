@@ -324,6 +324,16 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 	snapshotConditions, snapshotValues := s.mpClosedSnapshot(ctx, card, f.Currency)
 	if snapshotConditions != nil {
 		condByCfo = snapshotConditions
+	} else if mode == CalcInverse {
+		// Условия не сохранены — %СПП и наценки из стратегии месяца (mp_strategy_defaults.go): иначе маржа и PL
+		// считаются по нулям. Тот же хелпер, что у пересчёта карточки и реестра условий.
+		platforms := make([]MarketplaceRow, 0)
+		for _, mp := range MarketplaceSeed() {
+			if segment == "" || mp.Segment == segment {
+				platforms = append(platforms, mp)
+			}
+		}
+		condByCfo = mpApplyStrategyDefaultsAll(ctx, s.fact, year, month, platforms, condByCfo)
 	}
 	if mode == CalcInverse {
 		f.Conditions = condByCfo
