@@ -67,6 +67,18 @@ var finDWHMeta = map[string]finDWHTableMeta{
 		Target: "finance.findwh_glmf",
 		Method: "сверка отпечатков дней, замена секций REPLACE PARTITION",
 	},
+	FinDWHArhDebt: {
+		Title:  "Остатки ДЗ/КЗ (Debt_arh)",
+		Source: "dbo.Debt_arh + dbo.Docs (Payments)",
+		Target: "finance.fact_arh_debt",
+		Method: "сверка отпечатков дней (MAX DateChange), перезагрузка изменившихся дат",
+	},
+	FinDWHArhSales: {
+		Title:  "Продажи (Wholesales_arh)",
+		Source: "dbo.Wholesales_arh (Payments)",
+		Target: "finance.fact_arh_sales",
+		Method: "сверка отпечатков дней (MAX DateChange), перезагрузка изменившихся дат",
+	},
 }
 
 // FinDWHStatus — сборщик статуса. deps.MSSQL — отдельный маленький пул (не пул
@@ -333,6 +345,15 @@ func (s *FinDWHStatus) settings() []FinDWHSetting {
 		{Env: "FINDWH_READY_CHECK", Value: boolEnv(s.opts.ReadyCheck), Hint: readyHint},
 		{Env: "FINDWH_READY_AFTER_HOUR", Value: strconv.Itoa(s.opts.ReadyAfterHour), Hint: "час по MSSQL, раньше которого не грузим (только при FINDWH_READY_CHECK=0)"},
 	}
+	if s.opts.Arh.Enabled() {
+		a := s.opts.Arh
+		out = append(out,
+			FinDWHSetting{Env: "ARH_SYNC", Value: "1", Hint: "потоки arh_debt/arh_sales (отчёт ВГО DEBT_BACKEND=arh) идут в этом же воркере"},
+			FinDWHSetting{Env: "DEBTARH_RAW_MIN_DATE", Value: a.MinDate, Hint: "нижняя граница: концы месяцев остатков и все дни продаж"},
+			FinDWHSetting{Env: "ARH_WINDOW_DAYS", Value: strconv.Itoa(a.WindowDays), Hint: "окно ежедневных снэпшотов остатков, дней"},
+			FinDWHSetting{Env: "ARH_READY_AFTER_HOUR", Value: strconv.Itoa(a.ReadyAfterHour), Hint: "час по MSSQL, раньше которого ARH не грузим (1С перезаливает данные утром)"},
+		)
+	}
 	for i := range out {
 		out[i].Error = s.settingErr[out[i].Env]
 	}
@@ -347,6 +368,9 @@ func boolEnv(b bool) string {
 }
 
 func (s *FinDWHStatus) readyRule(table string) string {
+	if isArhTable(table) {
+		return fmt.Sprintf("по часам MSSQL, не раньше %d:00 (ARH_READY_AFTER_HOUR)", s.opts.Arh.ReadyAfterHour)
+	}
 	if !s.opts.ReadyCheck {
 		return fmt.Sprintf("по часам MSSQL, не раньше %d:00", s.opts.ReadyAfterHour)
 	}
@@ -410,7 +434,7 @@ func (s *FinDWHStatus) tableStatus(table string, ms finDWHMSSQLView, cv finDWHCH
 		Hour:          ms.src.Hour,
 		SourceChecked: ms.src.Checked,
 		SourceReady:   ts.SourceReady,
-		ReadyCheck:    s.opts.ReadyCheck,
+		ReadyCheck:    s.opts.ReadyCheck && !isArhTable(table),
 		LastRun:       ts.LastRun,
 		LastOK:        ts.LastOK,
 		WorkerOn:      ws.Enabled,
@@ -582,14 +606,19 @@ FROM finance.findwh_glmf_day_fp FINAL WHERE is_deleted = 0`); ok {
 				}
 			}
 		}
-	case FinDWHTableFinPL, FinDWHExRates:
-		col := "month"
-		if table == FinDWHExRates {
+	case FinDWHTableFinPL, FinDWHExRates, FinDWHArhDebt, FinDWHArhSales:
+		col, loadedCol := "month", "loaded_at"
+		switch table {
+		case FinDWHExRates:
 			col = "data"
+		case FinDWHArhDebt:
+			col, loadedCol = "snapshot_date", "inserted_at"
+		case FinDWHArhSales:
+			col, loadedCol = "event_date", "inserted_at"
 		}
 		if r, ok := one(fmt.Sprintf(`SELECT count() AS rows, toString(min(%[1]s)) AS date_from,
-  toString(max(%[1]s)) AS date_to, toUnixTimestamp(max(loaded_at)) AS loaded
-FROM %[2]s`, col, finDWHMeta[table].Target)); ok {
+  toString(max(%[1]s)) AS date_to, toUnixTimestamp(max(%[3]s)) AS loaded
+FROM %[2]s`, col, finDWHMeta[table].Target, loadedCol)); ok {
 			st.Rows = &r.Rows
 			if r.Rows > 0 {
 				st.From, st.To = r.DateFrom, r.DateTo

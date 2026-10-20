@@ -57,6 +57,15 @@ type Config struct {
 	DebtArhCpartyCol    string
 	DebtArhSyncInterval int
 
+	// Поток DEBT_BACKEND=arh: сырые Debt_arh/Docs/Wholesales_arh → CH fact_arh_*.
+	// Идёт в воркере реплики FinDWH (FINDWH_SYNC_INTERVAL), строки arh_debt/arh_sales
+	// на странице /admin/etl. ArhSync выключен → потоки не запускаются.
+	ArhSync           bool
+	DocsFQN           string
+	ArhMinDate        string // YYYY-MM-DD
+	ArhWindowDays     int
+	ArhReadyAfterHour int
+
 	// FinDebt-вьюхи в БД Payments (PremasterPaymentsDatabase), схема report.
 	// FinDebt1 — свод остатков ДЗ/КЗ, FinDebt3 — документная детализация с
 	// просрочкой. Имена в env, чтобы переключаться на копию без правки кода.
@@ -275,6 +284,12 @@ func Load() Config {
 		WholesalesArhFQN:    env("MSSQL_WHOLESALES_ARH_FQN", "[Payments].[dbo].[Wholesales_arh]"),
 		DebtArhCpartyCol:    env("MSSQL_DEBT_ARH_CPARTY_COL", ""),
 		DebtArhSyncInterval: atoiDef(env("DEBTARH_SYNC_INTERVAL", "0"), 0),
+
+		ArhSync:           env("ARH_SYNC", "0") == "1",
+		DocsFQN:           env("MSSQL_DOCS_FQN", "[Payments].[dbo].[Docs]"),
+		ArhMinDate:        env("DEBTARH_RAW_MIN_DATE", "2026-06-01"),
+		ArhWindowDays:     atoiDef(env("ARH_WINDOW_DAYS", "45"), 45),
+		ArhReadyAfterHour: atoiDef(env("ARH_READY_AFTER_HOUR", "13"), 13),
 
 		PlansMock:                 env("PLANS_MOCK", "0") == "1",
 		PlansMpFactTable:          env("PLANS_MP_FACT_TABLE", "Budgeting.dbo.FormToLoadFact"),

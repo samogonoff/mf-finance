@@ -45,6 +45,7 @@ type FinDWHOpts struct {
 	Tables         []string  // какие таблицы гонять; пусто → FinDWHAllTables
 	Force          bool      // игнорировать «уже загружено сегодня» и готовность источника
 	GLMFFull       bool      // GLMF: игнорировать отпечатки реплики и перегрузить всё
+	Arh            ArhOpts   // потоки arh_debt/arh_sales (сырые Debt_arh/Docs/Wholesales_arh); пусто → выключены
 	TriggeredBy    string    // cron | cli
 
 	// progress — куда сообщать, что сейчас грузится (воркер показывает это на
@@ -76,8 +77,12 @@ func (o *FinDWHOpts) normalize() {
 	if o.ReadyAfterHour <= 0 {
 		o.ReadyAfterHour = 9
 	}
+	o.Arh.normalize()
 	if len(o.Tables) == 0 {
-		o.Tables = FinDWHAllTables
+		o.Tables = append([]string{}, FinDWHAllTables...)
+		if o.Arh.Enabled() {
+			o.Tables = append(o.Tables, FinDWHArhTables...)
+		}
 	}
 	if o.TriggeredBy == "" {
 		o.TriggeredBy = "cli"
@@ -289,6 +294,11 @@ WHERE j.name = @job AND h.step_id = @step AND h.run_status = 1
 // историю SQL Agent (нужен SELECT на msdb.dbo.sysjobs/sysjobhistory), без него —
 // только час на сервере.
 func sourceReady(ctx context.Context, db *sql.DB, opts FinDWHOpts, table string, hour int) (bool, error) {
+	// Debt_arh/Wholesales_arh заполняет 1С, а не джоб DWH: смотреть в SQL Agent нечего,
+	// ориентируемся на час по часам MSSQL (ARH_READY_AFTER_HOUR).
+	if isArhTable(table) {
+		return hour >= opts.Arh.ReadyAfterHour, nil
+	}
 	if !opts.ReadyCheck {
 		return hour >= opts.ReadyAfterHour, nil
 	}
@@ -368,6 +378,10 @@ func RunFinDWHDaily(ctx context.Context, deps Deps, opts FinDWHOpts) (int64, err
 			n, err = runFinDWHSnapshot(ctx, deps, ch, tableFinPLSnapshot(opts), opts.BatchSize)
 		case FinDWHExRates:
 			n, err = runFinDWHSnapshot(ctx, deps, ch, exRatesSnapshot(opts), opts.BatchSize)
+		case FinDWHArhDebt, FinDWHArhSales:
+			var st ArhStats
+			st, err = RunFinDWHArh(ctx, deps, ch, opts, table, sourceDate)
+			n, details = st.Rows, st.String()
 		default:
 			err = fmt.Errorf("неизвестная таблица %q (допустимо: %s)", table, strings.Join(FinDWHAllTables, ", "))
 		}
