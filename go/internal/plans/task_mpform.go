@@ -99,6 +99,11 @@ type MpTaskForm struct {
 	// значение источника рядом с полем, БЕЗ подстановки в значение и без
 	// блокировки. Сохранение их не касается.
 	Hints []FieldHint `json:"hints,omitempty"`
+	// Reference — «своды» за периоды сравнения рядом с основными данными: ключ периода
+	// (ly — тот же месяц прошлого года, prev — прошлый месяц, cur — текущий месяц, факт на момент
+	// загрузки) → площадка → block_type → значение. Значения строк формы пересчитаны по ФАКТУ
+	// периода тем же каскадом, что и тактика; только чтение, в расчёте формы не участвуют.
+	Reference map[string]map[int]map[string]float64 `json:"reference,omitempty"`
 	// FactSnapshot — отметка «данные актуальны на …» (правка МП §12). Форма читает
 	// снимок, а не OLAP вживую, и обязана показывать, когда он собран: иначе
 	// заполняющий не отличит свежий факт от факта месячной давности.
@@ -562,7 +567,41 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 			}
 		}
 	}
+	f.Reference = mpReferenceTotals(f.Platforms, layerSet, f.VatByCfo)
 	return f, nil
+}
+
+// Ключи периодов сравнения в MpTaskForm.Reference.
+const (
+	MpRefLastYear   = "ly"   // тот же месяц прошлого года
+	MpRefPrevMonth  = "prev" // прошлый месяц
+	MpRefCurrentFct = "cur"  // текущий месяц плана: факт на момент загрузки
+)
+
+// mpReferenceTotals считает строки формы по факту периодов сравнения: те же входы, что у
+// тактики (mpPlatformInputs), но слои — только факт периода (без таргета и стратегии, чтобы
+// не подмешать план). Периоды без факта по площадке не попадают в ответ — колонка покажет «—».
+func mpReferenceTotals(platforms []MpFormPlatform, layers mpLayerSet, vat map[int]MpVatBasis) map[string]map[int]map[string]float64 {
+	out := map[string]map[int]map[string]float64{}
+	for _, p := range platforms {
+		pl := layers.forCfo(p.CodeCFO)
+		for kind, fact := range map[string]map[[2]int]float64{
+			MpRefLastYear: pl.factPrev, MpRefPrevMonth: pl.factPrevMonth, MpRefCurrentFct: pl.fact,
+		} {
+			if len(fact) == 0 {
+				continue
+			}
+			only := newMpLayers()
+			only.fact = fact
+			in := mpPlatformInputs(p.CodeCFO, nil, only)
+			vals := computeMpPlatform(in, vat[p.CodeCFO])
+			if out[kind] == nil {
+				out[kind] = map[int]map[string]float64{}
+			}
+			out[kind][p.CodeCFO] = vals
+		}
+	}
+	return out
 }
 
 // platformValues — значения строк по площадке в зависимости от режима расчёта.

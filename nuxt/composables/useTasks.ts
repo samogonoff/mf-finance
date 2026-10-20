@@ -120,6 +120,12 @@ export interface MpFormCell {
   missing_share?: boolean;
 }
 export interface MpTaskForm {
+  /**
+   * Своды за периоды сравнения (только чтение): ly — тот же месяц прошлого года, prev — прошлый месяц,
+   * cur — текущий месяц плана (факт на момент загрузки). Период → площадка → строка → значение;
+   * периода без факта по площадке нет.
+   */
+  reference?: Record<string, Record<number, Record<string, number>>>;
   editable: boolean;
   task: Task;
   segment: string;
