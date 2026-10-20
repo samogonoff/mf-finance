@@ -80,3 +80,62 @@ func TestExpOptIM_CardsAndInstance_PG(t *testing.T) {
 		t.Errorf("страны строк опта потеряны: %v", countries)
 	}
 }
+
+// Период, где расходы уже утверждены, не получает карточки ИМ и опта (этап 1.5 не откатывается);
+// период «в работе» получает.
+func TestExpOptIM_NotCreatedInClosedPeriod_PG(t *testing.T) {
+	dsn := os.Getenv("PLANS_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("PLANS_TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	pl, err := NewPgStore(pool).EnsureInstance(ctx, 2097, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(ctx, `DELETE FROM pl_instance WHERE id=$1`, pl)
+	defer pool.Exec(ctx, `DELETE FROM form_card WHERE pl_id=$1 AND form_code=$2`, pl, TemplateExp)
+
+	svc := NewCardService(NewCardStore(pool))
+	// Старый период: заводим только прежние области и утверждаем их, как было до выката ИМ и опта.
+	for _, key := range []string{"R-BY", "R-RU", "MP-RU"} {
+		sc, ok := formScope(TemplateExp, key)
+		if !ok {
+			t.Fatalf("нет области %s", key)
+		}
+		if _, err := NewCardStore(pool).EnsureCard(ctx, Card{PlID: pl, FormCode: TemplateExp, ScopeKey: key,
+			Title: "t " + key, Country: sc.Country, LegalEntity: sc.LegalEntity, Currency: sc.Currency}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE form_card SET status=$3 WHERE pl_id=$1 AND form_code=$2`, pl, TemplateExp, CardApproved); err != nil {
+		t.Fatal(err)
+	}
+	has := func(cards []Card, key string) bool { return hasCardScope(cards, TemplateExp, key) }
+
+	cards, err := svc.EnsureCards(ctx, pl, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has(cards, "OPT") || has(cards, "IM-BY") {
+		t.Fatal("в периоде с утверждёнными расходами карточки ИМ и опта создаваться не должны")
+	}
+	// Один из прежних карточек вернули в работу — период снова «в работе»: поздние области заводятся.
+	if _, err := pool.Exec(ctx, `UPDATE form_card SET status=$3 WHERE pl_id=$1 AND form_code=$2 AND scope_key='R-BY'`,
+		pl, TemplateExp, CardDraft); err != nil {
+		t.Fatal(err)
+	}
+	cards, err = svc.EnsureCards(ctx, pl, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has(cards, "OPT") || !has(cards, "IM-BY") {
+		t.Fatal("в периоде в работе карточки ИМ и опта должны заводиться")
+	}
+}

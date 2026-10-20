@@ -95,6 +95,45 @@ func TestExpMockSource_IMAndOpt(t *testing.T) {
 	}
 }
 
+// Новые области (ИМ, опт) не заводятся в периодах, где расходы уже утверждены целиком: иначе пустые
+// черновики откатили бы этап 1.5 из «завершён».
+func TestFormClosedInPeriod(t *testing.T) {
+	card := func(scope, status string) Card {
+		return Card{FormCode: TemplateExp, ScopeKey: scope, Status: status}
+	}
+	if formClosedInPeriod(nil, TemplateExp) {
+		t.Error("без карточек период не считается закрытым")
+	}
+	if !formClosedInPeriod([]Card{card("R-BY", CardApproved), card("MP-RU", CardPublished)}, TemplateExp) {
+		t.Error("все карточки утверждены/опубликованы — период закрыт")
+	}
+	if formClosedInPeriod([]Card{card("R-BY", CardApproved), card("MP-RU", CardDraft)}, TemplateExp) {
+		t.Error("есть черновик — период не закрыт")
+	}
+	// Скрытая флагом карточка отдела не мешает и не помогает.
+	if !formClosedInPeriod([]Card{card("R-BY", CardApproved), card("CFO-31-BY", CardDraft)}, TemplateExp) {
+		t.Error("скрытые карточки отделов не должны влиять")
+	}
+	// Карточки других форм не в счёт.
+	if formClosedInPeriod([]Card{{FormCode: TemplateRetail, ScopeKey: "BY", Status: CardApproved}}, TemplateExp) {
+		t.Error("карточки другой формы не должны считаться")
+	}
+	if !hasCardScope([]Card{card("OPT", CardDraft)}, TemplateExp, "OPT") || hasCardScope(nil, TemplateExp, "OPT") {
+		t.Error("hasCardScope")
+	}
+	late := map[string]bool{}
+	for _, f := range formRegistryAll() {
+		for _, sc := range f.Scopes {
+			if sc.Late {
+				late[sc.Key] = true
+			}
+		}
+	}
+	if !late["IM-BY"] || !late["OPT"] || late["R-BY"] || late["MP-RU"] {
+		t.Errorf("поздними должны быть ИМ и опт, а не прежние области: %v", late)
+	}
+}
+
 // Справочник ЦФО опту не нужен (город/тип/РМ — атрибуты магазина): пустой ответ, а не ошибка.
 func TestExpSourceCfo_OptSkipsDirectory(t *testing.T) {
 	s := &expSource{tables: ExpTables{CfoTable: "FinDWH.dbo.[001 CodeCFO]"}}

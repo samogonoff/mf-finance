@@ -45,6 +45,10 @@ type FormScope struct {
 	Country     string `json:"country"`
 	LegalEntity string `json:"legal_entity"`
 	Currency    string `json:"currency"` // валюта ВВОДА (национальная)
+	// Late — область добавлена после запуска формы. В периоде, где форма уже утверждена целиком, её
+	// карточка не заводится: иначе первое же открытие старого периода создало бы пустой черновик и
+	// откатило этап из «завершён» (см. EnsureCards).
+	Late bool `json:"-"`
 }
 
 // FormDef — описание формы: код, название и набор карточек на период.
@@ -52,6 +56,34 @@ type FormDef struct {
 	Code   string      `json:"code"`
 	Name   string      `json:"name"`
 	Scopes []FormScope `json:"scopes"`
+}
+
+// formClosedInPeriod — в периоде у формы есть карточки, и все они уже утверждены (или опубликованы,
+// заархивированы): этап формы пройден. Скрытые флагом карточки отделов в расчёт не входят.
+func formClosedInPeriod(cards []Card, formCode string) bool {
+	n := 0
+	for _, c := range cards {
+		if c.FormCode != formCode || cfoDeptHidden(c.FormCode, c.ScopeKey) {
+			continue
+		}
+		switch c.Status {
+		case CardApproved, CardPublished, CardPublishFailed, CardArchived:
+			n++
+		default:
+			return false
+		}
+	}
+	return n > 0
+}
+
+// hasCardScope — карточка формы с таким ключом области в периоде уже есть.
+func hasCardScope(cards []Card, formCode, scopeKey string) bool {
+	for _, c := range cards {
+		if c.FormCode == formCode && c.ScopeKey == scopeKey {
+			return true
+		}
+	}
+	return false
 }
 
 // FormRegistry — формы, у которых есть карточка процесса (без скрытых флагом).
@@ -112,8 +144,8 @@ func formRegistryAll() []FormDef {
 				// Листы «ИМ» и «ОПТ» файла PL 2025-2026 — по одной форме, как в Excel. ИМ: расходы только РБ
 				// (по РФ/КЗ в источнике единицы строк плана без факта). Опт: одна карточка на три страны
 				// (РБ, РФ, УЗ), ввод в BYN по суммам источника в BYN; страны у карточки нет.
-				{Key: "IM-BY", Title: "Интернет-магазин РБ", Country: "BY", LegalEntity: "F", Currency: "BYN"},
-				{Key: "OPT", Title: "Опт (РБ, РФ, УЗ)", Country: "", LegalEntity: "", Currency: "BYN"},
+				{Key: "IM-BY", Title: "Интернет-магазин РБ", Country: "BY", LegalEntity: "F", Currency: "BYN", Late: true},
+				{Key: "OPT", Title: "Опт (РБ, РФ, УЗ)", Country: "", LegalEntity: "", Currency: "BYN", Late: true},
 			},
 		},
 		{
