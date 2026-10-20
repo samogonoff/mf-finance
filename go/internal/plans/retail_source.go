@@ -56,6 +56,7 @@ type RetailDataSource interface {
 type RetailTables struct {
 	StoreTable          string // FinDWH.dbo.[001 CodeCFO]
 	StoreGroup          string // значение GroupCFO1 справочника: 'Магазины'
+	LFLTable            string // DWH.dim.s_klient: актуальный LFL-статус из карточки клиента Лисы (пусто — берётся LfLStatus справочника ЦФО)
 	FactTable           string // FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail
 	ComparisonFactTable string // Budgeting.dbo.VFORMTOLOADFACT, начисленный факт в нац. валюте
 	StrategyTable       string // Budgeting.dbo.VFORMTOLOADPLAN (нац. валюта)
@@ -115,19 +116,39 @@ func NewRetailSource(mock bool, db *sql.DB, tbl RetailTables) RetailDataSource {
 // A.CodeCFO = D.CodeCFO даёт потери строк.
 const storeJoinCFO = `IIF(D.[CodeCFO] = 'XXX', D.[Country] + '_' + D.[CodeCFO], D.[CodeCFO])`
 
+// retailStoresQuery — выборка справочника магазинов. С таблицей Лисы (lflTable) к строке
+// присоединяется карточка клиента по KLIENT_ID (= CodeFOX): оттуда берётся актуальный LFL-статус.
+// Без неё колонки Лисы пустые, и действует LfLStatus справочника ЦФО.
+func retailStoresQuery(storeTable, lflTable string) string {
+	lisaCols, lisaJoin := "CAST(NULL AS int), CAST(NULL AS nvarchar(40))", ""
+	if strings.TrimSpace(lflTable) != "" {
+		lisaCols = "K.[ITEM_ID], K.[LFL_STATUS]"
+		lisaJoin = fmt.Sprintf(" LEFT JOIN %s K ON K.[ITEM_ID] = TRY_CAST(S.[CodeFOX] AS int)", lflTable)
+	}
+	return fmt.Sprintf(`
+		SELECT S.[GroupCFO1], S.[GroupCFO2], S.[CodeCFO], S.[CFO], S.[Country], S.[CodeFOX],
+		       S.[Ploschad], S.[TypeOfStore], S.[DateOpen], S.[DateClose], S.[StadiyaOfStore],
+		       S.[CompanyMF], S.[Channel], S.[CFOold], S.[Category], S.[LfLStatus],
+		       S.[RegManager], S.[Manager], S.[PLAnalyticCFO1], %s
+		  FROM %s S%s
+		 WHERE S.[GroupCFO1] = @p1
+		   AND (@p2 = '' OR S.[Country] = @p2)`, lisaCols, storeTable, lisaJoin)
+}
+
+// retailLFLSource — LFL-статус магазина: если карточка клиента найдена в Лисе, берётся её статус
+// (пустой — значит, статус не присвоен), иначе — LfLStatus справочника ЦФО.
+func retailLFLSource(cfoStatus, lisaStatus string, lisaFound bool) string {
+	if lisaFound {
+		return strings.TrimSpace(lisaStatus)
+	}
+	return cfoStatus
+}
+
 // Stores — справочник магазинов (ТЗ §11). Фильтр GroupCFO1 берётся из конфига,
 // а не из строкового литерала: ТЗ прямо предупреждает, что в справочнике
 // 'Магазины', а в таблице плана '3.Магазины', и сопоставление идёт справочником.
 func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]RetailStore, error) {
-	q := fmt.Sprintf(`
-		SELECT [GroupCFO1], [GroupCFO2], [CodeCFO], [CFO], [Country], [CodeFOX],
-		       [Ploschad], [TypeOfStore], [DateOpen], [DateClose], [StadiyaOfStore],
-		       [CompanyMF], [Channel], [CFOold], [Category], [LfLStatus],
-		       [RegManager], [Manager], [PLAnalyticCFO1]
-		  FROM %s
-		 WHERE [GroupCFO1] = @p1
-		   AND (@p2 = '' OR [Country] = @p2)`, s.tbl.StoreTable)
-	rows, err := s.db.QueryContext(ctx, q, s.tbl.StoreGroup, country)
+	rows, err := s.db.QueryContext(ctx, retailStoresQuery(s.tbl.StoreTable, s.tbl.LFLTable), s.tbl.StoreGroup, country)
 	if err != nil {
 		return nil, err
 	}
@@ -136,14 +157,15 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 	skipped := 0
 	for rows.Next() {
 		var st RetailStore
-		var g1, g2, cfo, ctry, fox, typ, open, close_, stage, comp, ch, old, cat, lfl, rm, mgr, pla sql.NullString
+		var g1, g2, cfo, ctry, fox, typ, open, close_, stage, comp, ch, old, cat, lfl, rm, mgr, pla, lisa sql.NullString
+		var lisaID sql.NullInt64
 		// CodeCFO читаем СТРОКОЙ, а не int64: в справочнике встречаются
 		// нечисловые коды («40RUBK»), и на первом же таком синк падал целиком —
 		// вместе с ним пропадали все магазины, а не одна битая строка.
 		var code sql.NullString
 		var plo sql.NullFloat64
 		if err := rows.Scan(&g1, &g2, &code, &cfo, &ctry, &fox, &plo, &typ, &open, &close_,
-			&stage, &comp, &ch, &old, &cat, &lfl, &rm, &mgr, &pla); err != nil {
+			&stage, &comp, &ch, &old, &cat, &lfl, &rm, &mgr, &pla, &lisaID, &lisa); err != nil {
 			return nil, err
 		}
 		codeNum, ok := parseNumericCFO(code.String)
@@ -153,12 +175,15 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 			skipped++
 			continue
 		}
+		// Актуальный статус — из карточки клиента Лисы: справочник ЦФО хранит устаревший (у большинства
+		// магазинов «новый»), из-за чего у них не считались LFL и % выполнения.
+		lflSrc := retailLFLSource(lfl.String, lisa.String, lisaID.Valid)
 		st = RetailStore{
 			CodeCFO: codeNum, GroupCFO1: g1.String, City: g2.String, NameCFO: cfo.String,
 			Country: ctry.String, CodeFOX: fox.String, Ploschad: plo.Float64, StoreType: typ.String,
 			DateOpen: retailDateOrEmpty(open.String), DateClose: retailDateOrEmpty(close_.String),
 			Stage: stage.String, CompanyMF: comp.String, Channel: ch.String, CFOold: old.String,
-			Category: cat.String, LFLStatus: retailLFLStatus(lfl.String), LFLRaw: strings.TrimSpace(lfl.String), RegManager: rm.String,
+			Category: cat.String, LFLStatus: retailLFLStatus(lflSrc), LFLRaw: strings.TrimSpace(lflSrc), RegManager: rm.String,
 			Manager: mgr.String, PLAnalytic: pla.String,
 		}
 		out = append(out, st)

@@ -385,6 +385,7 @@ func main() {
 	plansRetailSource := plans.NewRetailSource(cfg.PlansMock, mssqlDB, plans.RetailTables{
 		StoreTable:          cfg.PlansRetailStoreTable,
 		StoreGroup:          cfg.PlansRetailStoreGroup,
+		LFLTable:            cfg.PlansRetailLFLTable,
 		FactTable:           cfg.PlansRetailFactTable,
 		StrategyTable:       cfg.PlansRetailStrategyTable,
 		ApprovedTable:       cfg.PlansRetailApprovedTable,
