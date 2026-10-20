@@ -38,6 +38,10 @@
     <p v-if="data && failedCountries.length" class="banner banner-warn">
       Не удалось прочитать форму: {{ failedCountries.map((c) => `${c.country} (${c.error})`).join("; ") }}. Итог неполный.
     </p>
+    <p v-for="w in data?.warnings || []" :key="w" class="banner banner-warn">{{ w }}</p>
+    <p v-if="data?.absent_channels?.length" class="banner banner-info">
+      В периоде нет карточек расходов: {{ data.absent_channels.join(", ") }}.
+    </p>
     <p v-if="noRate.length" class="banner banner-warn">
       Нет курса к BYN для {{ noRate.map((c) => `${c.country} (${c.nat_currency})`).join(", ") }}: суммы этих стран не показаны и в итог не входят. Итог неполный.
     </p>

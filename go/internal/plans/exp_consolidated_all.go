@@ -3,6 +3,7 @@ package plans
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 )
 
@@ -20,11 +21,13 @@ const (
 	expAllLabelOpt    = "Опт"
 )
 
-// expAllPart — свод одного канала на входе слияния; Err — почему канала нет в своде (нет карточки, нет доступа).
+// expAllPart — свод одного канала на входе слияния. Err — канал не прочитан (нет доступа, сбой чтения); Absent —
+// карточки канала в периоде нет вовсе (штатная ситуация, показывается нейтрально, не как сбой).
 type expAllPart struct {
-	Label string
-	Cons  ExpConsolidated
-	Err   string
+	Label  string
+	Cons   ExpConsolidated
+	Err    string
+	Absent bool
 }
 
 // mergeExpConsolidatedChannels складывает своды каналов в один: колонка — канал, итог — сумма каналов. Канал с
@@ -40,6 +43,12 @@ func mergeExpConsolidatedChannels(plID int64, parts []expAllPart, order []string
 	factBasisPayments := false
 	for _, p := range parts {
 		row := ExpConsCountry{Country: p.Label, NatCurrency: "BYN"}
+		if p.Absent {
+			row.Status = "нет карточки"
+			out.Countries = append(out.Countries, row)
+			out.AbsentChannels = append(out.AbsentChannels, p.Label)
+			continue
+		}
 		if p.Err != "" {
 			row.Error = p.Err
 			out.Countries = append(out.Countries, row)
@@ -49,10 +58,19 @@ func mergeExpConsolidatedChannels(plID int64, parts []expAllPart, order []string
 			out.Year, out.Month, out.Window, out.FromMonth, out.ToMonth = p.Cons.Year, p.Cons.Month, p.Cons.Window, p.Cons.FromMonth, p.Cons.ToMonth
 		}
 		factBasisPayments = factBasisPayments || p.Cons.FactBasis == ExpFactBasisPayments
+		// Диагностики стран внутри канала (розница по странам) не теряем: колонка канала не «ошибочная» и не «без курса»
+		// целиком, а итог неполный из-за конкретной страны — это говорит предупреждение с её кодом.
 		for _, c := range p.Cons.Countries {
 			row.Rows += c.Rows
-			if c.NoRate {
-				row.NoRate = true
+			switch {
+			case c.Error != "":
+				out.Warnings = append(out.Warnings, fmt.Sprintf("%s · %s: не удалось прочитать форму (%s). Итог неполный.", p.Label, c.Country, c.Error))
+			case c.NoRate:
+				cur := c.NatCurrency
+				if cur == "" {
+					cur = "нац. валюта"
+				}
+				out.Warnings = append(out.Warnings, fmt.Sprintf("%s · %s (%s): нет курса к BYN, сумма страны не входит в итог. Итог неполный.", p.Label, c.Country, cur))
 			}
 		}
 		row.Plan = p.Cons.Total.PlanTotal
@@ -125,14 +143,20 @@ func addChannelAmounts(dst *ExpConsAmounts, src ExpConsAmounts, label string) {
 // колонкой с пояснением и в итог не входит; если нет ни одного канала — ошибка.
 func (s *ExpService) AllChannelsConsolidated(ctx context.Context, p Principal, plID int64, window string) (ExpConsolidated, error) {
 	var parts []expAllPart
+	var retail ExpConsolidated
 	add := func(label string, c ExpConsolidated, err error) {
 		part := expAllPart{Label: label, Cons: c}
-		if err != nil {
+		var noCard expNoCardErr
+		switch {
+		case errors.As(err, &noCard):
+			part.Absent = true // карточки канала в периоде нет — штатно, не сбой
+		case err != nil:
 			part.Err = err.Error()
 		}
 		parts = append(parts, part)
 	}
 	rc, err := s.RetailConsolidated(ctx, p, plID, window)
+	retail = rc
 	add(expAllLabelRetail, rc, err)
 	ic, err := s.ChannelConsolidated(ctx, p, plID, ExpChannelIM, window)
 	add(expAllLabelIM, ic, err)
@@ -141,15 +165,15 @@ func (s *ExpService) AllChannelsConsolidated(ctx context.Context, p Principal, p
 
 	ok := false
 	for _, pt := range parts {
-		ok = ok || pt.Err == ""
+		ok = ok || (pt.Err == "" && !pt.Absent)
 	}
 	if !ok {
-		return ExpConsolidated{}, errors.New("в периоде нет карточек расходов розницы, интернет-магазина и опта")
+		return ExpConsolidated{}, errors.New("в периоде нет доступных карточек расходов розницы, интернет-магазина и опта")
 	}
 	out := mergeExpConsolidatedChannels(plID, parts, expRetailPnlOrder)
-	// Розница без части стран даёт неполный итог канала: переносим предупреждение.
-	if rc.Channel != "" || len(rc.Missing) > 0 {
-		out.Missing = rc.Missing
+	// Страны розницы без карточки: итог розницы неполный.
+	for _, c := range retail.Missing {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("%s · %s: карточки расходов нет. Итог неполный.", expAllLabelRetail, c))
 	}
 	return out, nil
 }

@@ -3,6 +3,7 @@ package plans
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,5 +174,118 @@ func TestExpService_AllChannelsConsolidated_PG(t *testing.T) {
 	}
 	if optErr == "" || near(restricted.Total.Plan[expAllLabelOpt], 20) {
 		t.Errorf("опт при ограниченном доступе должен быть закрыт: ошибка %q, итоги %+v", optErr, restricted.Total)
+	}
+}
+
+// Диагностики стран розницы не теряются при слиянии: страна не прочитана или без курса — предупреждение с её кодом;
+// колонка «Розница» при этом не «ошибочная» и не «нет курса» целиком, остальные страны в ней есть.
+func TestMergeExpConsolidatedChannels_RetailCountryWarnings(t *testing.T) {
+	retail := consPart(expAllLabelRetail, 900, consGroup("Аренда", 54, 900))
+	retail.Cons.Countries = []ExpConsCountry{
+		{Country: "BY", Rows: 5},
+		{Country: "RU", Rows: 4, NatCurrency: "RUB", NoRate: true},
+		{Country: "KZ", Error: "карточка вне вашего среза доступа"},
+		{Country: "UZ", Rows: 3},
+	}
+	out := mergeExpConsolidatedChannels(7, []expAllPart{retail}, expRetailPnlOrder)
+	if len(out.Warnings) != 2 {
+		t.Fatalf("ожидали два предупреждения (КЗ не прочитан, РФ без курса): %v", out.Warnings)
+	}
+	joined := strings.Join(out.Warnings, " | ")
+	for _, want := range []string{"Розница · KZ", "среза доступа", "Розница · RU (RUB)", "нет курса к BYN", "Итог неполный"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("в предупреждениях нет %q: %s", want, joined)
+		}
+	}
+	row := out.Countries[0]
+	if row.NoRate || row.Error != "" || row.Rows != 12 {
+		t.Errorf("колонка канала не должна быть помечена целиком: %+v", row)
+	}
+}
+
+// Карточки канала в периоде нет — это штатно: нейтральная пометка в колонке и список отсутствующих, не сбой.
+func TestMergeExpConsolidatedChannels_AbsentChannel(t *testing.T) {
+	parts := []expAllPart{
+		consPart(expAllLabelRetail, 500, consGroup("Аренда", 54, 500)),
+		{Label: expAllLabelIM, Absent: true},
+		{Label: expAllLabelOpt, Absent: true},
+	}
+	out := mergeExpConsolidatedChannels(7, parts, expRetailPnlOrder)
+	if len(out.AbsentChannels) != 2 || out.AbsentChannels[0] != expAllLabelIM || out.AbsentChannels[1] != expAllLabelOpt {
+		t.Fatalf("отсутствующие каналы: %v", out.AbsentChannels)
+	}
+	if len(out.Warnings) != 0 {
+		t.Errorf("отсутствие канала — не предупреждение о неполном итоге: %v", out.Warnings)
+	}
+	for _, c := range out.Countries[1:] {
+		if c.Error != "" || c.Status != "нет карточки" {
+			t.Errorf("колонка без карточки: ошибка %q, статус %q", c.Error, c.Status)
+		}
+	}
+	if !near(out.Total.PlanTotal, 500) {
+		t.Errorf("итог: %+v", out.Total)
+	}
+}
+
+// Сервис на PG: в периоде есть только розница РБ — общий свод строится, ИМ и опт показаны как «нет карточки», сбоя нет.
+func TestExpService_AllChannels_OnlyRetail_PG(t *testing.T) {
+	dsn := os.Getenv("PLANS_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("PLANS_TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	pl, err := NewPgStore(pool).EnsureInstance(ctx, 2091, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(ctx, `DELETE FROM pl_instance WHERE id=$1`, pl)
+	defer pool.Exec(ctx, `DELETE FROM form_card WHERE pl_id=$1 AND form_code=$2`, pl, TemplateExp)
+	sc, ok := formScope(TemplateExp, "R-BY")
+	if !ok {
+		t.Fatal("нет области R-BY")
+	}
+	card, err := NewCardStore(pool).EnsureCard(ctx, Card{PlID: pl, FormCode: TemplateExp, ScopeKey: "R-BY", Title: "t",
+		Country: sc.Country, LegalEntity: sc.LegalEntity, Currency: sc.Currency})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewExpRepo(pool)
+	inst, err := repo.EnsureInstance(ctx, ExpInstance{CardID: card.ID, FormKind: ExpKindRetail, Country: "BY", PlanYear: 2091, Currency: "BYN"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(ctx, `DELETE FROM exp_instance WHERE id=$1`, inst.ID)
+	if _, err := repo.SyncRows(ctx, inst.ID, []ExpRow{{CodeCFO: 101, CodePL: 24, Expense: "ЗП"}}); err != nil {
+		t.Fatal(err)
+	}
+	amt := 700.0
+	if _, err := repo.SaveValues(ctx, inst.ID, []ExpCell{{CodeCFO: 101, CodePL: 24, Month: 10, Amount: &amt}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewExpService(repo, NewCardService(NewCardStore(pool)), nil)
+	out, err := svc.ChannelConsolidated(ctx, Principal{UserID: 1, PlansAdmin: true}, pl, ExpChannelAll, ExpWindowMonth)
+	if err != nil {
+		t.Fatalf("общий свод только с розницей: %v", err)
+	}
+	if len(out.AbsentChannels) != 2 || !near(out.Total.Plan[expAllLabelRetail], 700) {
+		t.Fatalf("отсутствующие каналы %v, итоги %+v", out.AbsentChannels, out.Total)
+	}
+	for _, c := range out.Countries {
+		if c.Error != "" {
+			t.Errorf("колонка %s не должна быть ошибочной: %s", c.Country, c.Error)
+		}
+	}
+	// Страны розницы без карточки (РФ, КЗ, УЗ) — в предупреждениях: итог розницы неполный.
+	joined := strings.Join(out.Warnings, " | ")
+	for _, want := range []string{"Розница · RU", "Розница · KZ", "Розница · UZ"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("нет предупреждения %q: %s", want, joined)
+		}
 	}
 }

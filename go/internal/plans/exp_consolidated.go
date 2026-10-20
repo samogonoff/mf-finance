@@ -105,6 +105,10 @@ type ExpConsolidated struct {
 	FactBasis string `json:"fact_basis,omitempty"`
 	// Missing — страны, по которым карточки расходов нет: итог неполный.
 	Missing []string `json:"missing,omitempty"`
+	// Warnings — пояснения к неполному итогу общего свода (страна розницы не прочитана или без курса к BYN).
+	Warnings []string `json:"warnings,omitempty"`
+	// AbsentChannels — каналы общего свода, карточки которых в периоде нет (штатная ситуация, не сбой).
+	AbsentChannels []string `json:"absent_channels,omitempty"`
 }
 
 // expWindowMonths — месяцы окна: month → [m, m], tail → [m, 12], year → [1, 12].
@@ -285,7 +289,7 @@ func (s *ExpService) RetailConsolidated(ctx context.Context, p Principal, plID i
 		}
 	}
 	if len(byCountry) == 0 {
-		return ExpConsolidated{}, errors.New("в периоде нет карточек расходов розницы")
+		return ExpConsolidated{}, expNoCardErr{"в периоде нет карточек расходов розницы"}
 	}
 	pnlByCode := map[int]string{}
 	if m, err := s.pnlGroups(ctx); err == nil {
@@ -355,6 +359,12 @@ func (s *ExpService) RetailConsolidated(ctx context.Context, p Principal, plID i
 	return out, nil
 }
 
+// expNoCardErr — в периоде нет карточки канала. Отличается от ошибки чтения и от отказа в доступе: общий свод
+// показывает такой канал нейтрально («нет карточки»), а не как сбой.
+type expNoCardErr struct{ msg string }
+
+func (e expNoCardErr) Error() string { return e.msg }
+
 // WithScope подключает срез доступа: свод опта показывает суммы карточки, доступной не всем.
 func (s *ExpService) WithScope(st ScopeStore) *ExpService { s.scope = st; return s }
 
@@ -405,7 +415,7 @@ func (s *ExpService) ChannelConsolidated(ctx context.Context, p Principal, plID 
 		}
 	}
 	if card == nil {
-		return ExpConsolidated{}, errors.New("в периоде нет карточки расходов этого канала")
+		return ExpConsolidated{}, expNoCardErr{"в периоде нет карточки расходов этого канала"}
 	}
 	if s.scope != nil {
 		f, err := scopeFilterFor(ctx, s.scope, p)
