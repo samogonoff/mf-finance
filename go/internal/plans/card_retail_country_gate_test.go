@@ -168,3 +168,17 @@ func TestRetailConsolidatedFinalStepRights(t *testing.T) {
 		t.Fatalf("шаги возврата: %v", codes)
 	}
 }
+
+// Выключатель шлюза действует и на своде: при PLANS_RETAIL_COUNTRY_GATE=0 ждать некого.
+func TestRetailPendingRespectsGateSwitch(t *testing.T) {
+	cards, _ := countryGateFixtureAt("1.4")
+	svc := NewRetailService(nil, cards, nil)
+	period := []Card{{ID: 1, FormCode: TemplateRetail, Country: "BY", Status: CardOnApproval, StepCode: "1.4"}}
+	if got := svc.retailPending(period); strings.Join(got, ",") != "RU,KZ,UZ" {
+		t.Fatalf("шлюз включён: %v", got)
+	}
+	cards.WithRetailCountryGate(false)
+	if got := svc.retailPending(period); got == nil || len(got) != 0 {
+		t.Fatalf("шлюз выключен — ждать некого, список пуст (не nil): %v", got)
+	}
+}

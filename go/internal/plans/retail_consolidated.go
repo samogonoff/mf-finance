@@ -121,6 +121,16 @@ func consolidateCountry(rows []RetailRow, in RetailSummaryInput, toBYN RetailFxR
 	return nat, byn, stores
 }
 
+// retailPending — страны, которых ждёт шаг 1.4. «Все четыре страны» — условие шлюза: при
+// PLANS_RETAIL_COUNTRY_GATE=0 (срочное утверждение одной страны) ждать некого, и свод, как карточка и
+// действие, ничего не требует.
+func (s *RetailService) retailPending(cards []Card) []string {
+	if s.cards == nil || !s.cards.retailCountryGate {
+		return []string{}
+	}
+	return missingRetailCountries(cards, 0, false)
+}
+
 // canDecideFinal — пользователь согласующий шага 1.4 этой карточки или админ процессов. Тот же отбор,
 // что делает хендлер действия над карточкой: свод показывает кнопки только тому, у кого они сработают.
 func (s *RetailService) canDecideFinal(ctx context.Context, p Principal, c Card) bool {
@@ -173,8 +183,7 @@ func (s *RetailService) Consolidated(ctx context.Context, p Principal, plID int6
 	if len(byCountry) == 0 {
 		return RetailConsolidated{}, errors.New("в периоде нет карточек розницы")
 	}
-	out := RetailConsolidated{PlID: plID, Currency: "BYN",
-		Pending: missingRetailCountries(cards, 0, false)}
+	out := RetailConsolidated{PlID: plID, Currency: "BYN", Pending: s.retailPending(cards)}
 	out.ReturnSteps = s.retailReturnSteps(ctx)
 	totals := make([]RetailSummaryMetrics, 0, len(retailCountries))
 	for _, country := range retailCountries {
@@ -189,13 +198,14 @@ func (s *RetailService) Consolidated(ctx context.Context, p Principal, plID int6
 		row.CardID, row.Title, row.StepCode = c.ID, c.Title, c.StepCode
 		row.Status = CardStatusLabel(c.Status, c.StepCode)
 		row.AtFinalStep = retailFinalDecision(c, "approve")
-		row.CanDecide = row.AtFinalStep && len(out.Pending) == 0 && s.canDecideFinal(ctx, p, c)
 		a, err := s.access(ctx, c.ID, p)
 		if err != nil {
 			row.Error = err.Error()
 			out.Countries = append(out.Countries, row)
 			continue
 		}
+		// Кнопки решения — только когда страна доступна пользователю: хендлер действия отклонит чужой срез.
+		row.CanDecide = row.AtFinalStep && len(out.Pending) == 0 && s.canDecideFinal(ctx, p, c)
 		row.NatCurrency = a.inst.Currency
 		ser, klient, stores := s.series(ctx, c.Country, c.Year, c.Month)
 		// Строки страны появляются синхронизацией со справочником при открытии
