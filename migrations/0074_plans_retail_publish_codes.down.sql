@@ -1,18 +1,8 @@
--- Возврат кодов и обоснований (тексты из 0032 и 0035): значение и примечание должны откатываться вместе.
+-- Возврат кодов и обоснований к состоянию до 0074: коды — как в 0032/0035 (RU 2011, KZ/UZ не заданы),
+-- примечание — текст, который последней выставила 0043 для стран кроме BY.
 UPDATE publish_mapping
-   SET code_pl = 2011,
-       note = 'код по срезу A4 (ЦФО 105 RU); подтвердить по справочнику CodePL',
+   SET code_pl = CASE WHEN country = 'RU' THEN 2011 ELSE NULL END,
+       note = 'ожидает КодPL от BI: финальные правки 02.09.2026 кодов для этой страны не называют, а КодPL несёт показатель И канал/страну',
        updated_at = NOW()
- WHERE form_code = 'TPL-TO-RETAIL' AND block_type = 'sales_plan' AND country = 'RU' AND param_name = 'ПРОДАЖИ';
-
-UPDATE publish_mapping
-   SET code_pl = NULL,
-       note = 'ТЗ Розница §7.2/§12: КодPL по срезу KZ подтверждает BI',
-       updated_at = NOW()
- WHERE form_code = 'TPL-TO-RETAIL' AND block_type = 'sales_plan' AND country = 'KZ' AND param_name = 'ПРОДАЖИ';
-
-UPDATE publish_mapping
-   SET code_pl = NULL,
-       note = 'ТЗ Розница §7.2/§12: КодPL по срезу UZ подтверждает BI',
-       updated_at = NOW()
- WHERE form_code = 'TPL-TO-RETAIL' AND block_type = 'sales_plan' AND country = 'UZ' AND param_name = 'ПРОДАЖИ';
+ WHERE form_code = 'TPL-TO-RETAIL' AND block_type = 'sales_plan'
+   AND country IN ('RU', 'KZ', 'UZ') AND param_name = 'ПРОДАЖИ';
