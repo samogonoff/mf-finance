@@ -1933,7 +1933,8 @@ onBeforeUnmount(() => {
 .preset-box { display: flex; align-items: center; gap: var(--sp-2); }
 
 /* Выпадающее меню «Колонки» раскрывается за пределы карточки фильтров: с overflow:hidden оно обрезалось. */
-.filter-card { overflow: visible; position: relative; z-index: 3; }
+/* z-index выше липких заголовков таблицы (3 и 4) и ниже липкой шапки страницы (8): иначе строка заголовков рисуется поверх меню. */
+.filter-card { overflow: visible; position: relative; z-index: 5; }
 .cols-menu { position: relative; }
 .bulk-help { margin: 0; padding: var(--sp-3) var(--sp-5); font-size: var(--fs-sm); color: var(--text-secondary); }
 .bulk-closed { margin: var(--sp-3) var(--sp-5) 0; }
