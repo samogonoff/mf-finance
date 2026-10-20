@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // Источники данных формы «Розница» (ТЗ §11). Онлайн — тот же *sql.DB MSSQL, что у
@@ -56,6 +58,7 @@ type RetailDataSource interface {
 type RetailTables struct {
 	StoreTable          string // FinDWH.dbo.[001 CodeCFO]
 	StoreGroup          string // значение GroupCFO1 справочника: 'Магазины'
+	LFLTable            string // DWH.dim.s_klient: актуальный LFL-статус из карточки клиента Лисы (пусто — берётся LfLStatus справочника ЦФО)
 	FactTable           string // FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail
 	ComparisonFactTable string // Budgeting.dbo.VFORMTOLOADFACT, начисленный факт в нац. валюте
 	StrategyTable       string // Budgeting.dbo.VFORMTOLOADPLAN (нац. валюта)
@@ -99,6 +102,31 @@ func allViewGuards(table string) string {
 type mssqlRetailSource struct {
 	db  *sql.DB
 	tbl RetailTables
+	// lisaSkipUntil — до этого момента (unix nano) карточки Лисы не запрашиваются: после отказа в правах
+	// или отсутствия таблицы повторять JOIN при каждом открытии формы незачем.
+	lisaSkipUntil atomic.Int64
+}
+
+// retailLisaRetryAfter — как долго после отказа в правах не пробуем Лису снова.
+const retailLisaRetryAfter = 5 * time.Minute
+
+// retailLisaUnavailable — ошибка говорит, что к таблице Лисы нет доступа или её нет: права (229/230),
+// нет объекта (208), база недоступна под этим логином (916/4060). Обрыв соединения, deadlock, таймаут и
+// ошибки контекста сюда не входят: при них синхронизация должна упасть, а не подменить статусы Лисы
+// устаревшими статусами справочника ЦФО.
+func retailLisaUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se interface{ SQLErrorNumber() int32 }
+	if !errors.As(err, &se) {
+		return false
+	}
+	switch se.SQLErrorNumber() {
+	case 229, 230, 208, 916, 4060:
+		return true
+	}
+	return false
 }
 
 // NewRetailSource — источник данных розницы. mock=true или db=nil → фикстуры.
@@ -115,36 +143,97 @@ func NewRetailSource(mock bool, db *sql.DB, tbl RetailTables) RetailDataSource {
 // A.CodeCFO = D.CodeCFO даёт потери строк.
 const storeJoinCFO = `IIF(D.[CodeCFO] = 'XXX', D.[Country] + '_' + D.[CodeCFO], D.[CodeCFO])`
 
+// retailStoresQuery — выборка справочника магазинов. С таблицей Лисы (lflTable) к строке
+// присоединяется карточка клиента по KLIENT_ID (= CodeFOX): оттуда берётся актуальный LFL-статус.
+// Без неё колонки Лисы пустые, и действует LfLStatus справочника ЦФО.
+func retailStoresQuery(storeTable, lflTable string) string {
+	lisaCols, lisaJoin := "CAST(NULL AS int), CAST(NULL AS nvarchar(40))", ""
+	if strings.TrimSpace(lflTable) != "" {
+		lisaCols = "K.[ITEM_ID], K.[LFL_STATUS]"
+		lisaJoin = fmt.Sprintf(" LEFT JOIN %s K ON K.[ITEM_ID] = TRY_CAST(S.[CodeFOX] AS int)", lflTable)
+	}
+	return fmt.Sprintf(`
+		SELECT S.[GroupCFO1], S.[GroupCFO2], S.[CodeCFO], S.[CFO], S.[Country], S.[CodeFOX],
+		       S.[Ploschad], S.[TypeOfStore], S.[DateOpen], S.[DateClose], S.[StadiyaOfStore],
+		       S.[CompanyMF], S.[Channel], S.[CFOold], S.[Category], S.[LfLStatus],
+		       S.[RegManager], S.[Manager], S.[PLAnalyticCFO1], %s
+		  FROM %s S%s
+		 WHERE S.[GroupCFO1] = @p1
+		   AND (@p2 = '' OR S.[Country] = @p2)`, lisaCols, storeTable, lisaJoin)
+}
+
+// RetailStoresWithLFLSource — источник отдаёт магазины вместе с подписью, откуда взяты их LFL-статусы.
+type RetailStoresWithLFLSource interface {
+	StoresWithLFLSource(ctx context.Context, country string) ([]RetailStore, string, error)
+}
+
+func retailLFLSourceLabel(storeTable, lflTable string, lisaFailed bool) string {
+	cfo := storeTable + ".LfLStatus"
+	switch {
+	case strings.TrimSpace(lflTable) == "":
+		return cfo
+	case lisaFailed:
+		return cfo + " (карточки Лисы " + lflTable + " недоступны)"
+	default:
+		return lflTable + ".LFL_STATUS (нет карточки в Лисе — " + cfo + ")"
+	}
+}
+
+// retailLFLSource — LFL-статус магазина: если карточка клиента найдена в Лисе, берётся её статус
+// (пустой — значит, статус не присвоен), иначе — LfLStatus справочника ЦФО.
+func retailLFLSource(cfoStatus, lisaStatus string, lisaFound bool) string {
+	if lisaFound {
+		return strings.TrimSpace(lisaStatus)
+	}
+	return cfoStatus
+}
+
 // Stores — справочник магазинов (ТЗ §11). Фильтр GroupCFO1 берётся из конфига,
 // а не из строкового литерала: ТЗ прямо предупреждает, что в справочнике
 // 'Магазины', а в таблице плана '3.Магазины', и сопоставление идёт справочником.
 func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]RetailStore, error) {
-	q := fmt.Sprintf(`
-		SELECT [GroupCFO1], [GroupCFO2], [CodeCFO], [CFO], [Country], [CodeFOX],
-		       [Ploschad], [TypeOfStore], [DateOpen], [DateClose], [StadiyaOfStore],
-		       [CompanyMF], [Channel], [CFOold], [Category], [LfLStatus],
-		       [RegManager], [Manager], [PLAnalyticCFO1]
-		  FROM %s
-		 WHERE [GroupCFO1] = @p1
-		   AND (@p2 = '' OR [Country] = @p2)`, s.tbl.StoreTable)
-	rows, err := s.db.QueryContext(ctx, q, s.tbl.StoreGroup, country)
+	out, _, err := s.StoresWithLFLSource(ctx, country)
+	return out, err
+}
+
+// StoresWithLFLSource — те же магазины и подпись источника LFL-статусов ИМЕННО ЭТОГО чтения (а не
+// общего состояния источника: параллельные вызовы не путают подпись друг другу).
+func (s *mssqlRetailSource) StoresWithLFLSource(ctx context.Context, country string) ([]RetailStore, string, error) {
+	lflTable := strings.TrimSpace(s.tbl.LFLTable)
+	lisaFailed := false
+	if lflTable != "" && time.Now().UnixNano() < s.lisaSkipUntil.Load() {
+		lflTable, lisaFailed = "", true // недавно отказали в правах — Лису не дёргаем
+	}
+	rows, err := s.db.QueryContext(ctx, retailStoresQuery(s.tbl.StoreTable, lflTable), s.tbl.StoreGroup, country)
+	if err != nil && lflTable != "" && ctx.Err() == nil && retailLisaUnavailable(err) {
+		// Лиса нужна только для уточнения статуса: нет прав на её таблицу — не должно ронять форму,
+		// синхронизацию и свод. Повторяем без присоединения, статусы — из справочника ЦФО. Любая
+		// другая ошибка (обрыв, таймаут, deadlock) возвращается как есть: подмена статусов Лисы
+		// устаревшими затёрла бы уже синхронизированные данные.
+		log.Printf("plans retail: карточки Лисы (%s) недоступны, LFL-статус взят из справочника ЦФО (повтор через %s): %v",
+			s.tbl.LFLTable, retailLisaRetryAfter, err)
+		s.lisaSkipUntil.Store(time.Now().Add(retailLisaRetryAfter).UnixNano())
+		lisaFailed = true
+		rows, err = s.db.QueryContext(ctx, retailStoresQuery(s.tbl.StoreTable, ""), s.tbl.StoreGroup, country)
+	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	out := make([]RetailStore, 0, 400)
 	skipped := 0
 	for rows.Next() {
 		var st RetailStore
-		var g1, g2, cfo, ctry, fox, typ, open, close_, stage, comp, ch, old, cat, lfl, rm, mgr, pla sql.NullString
+		var g1, g2, cfo, ctry, fox, typ, open, close_, stage, comp, ch, old, cat, lfl, rm, mgr, pla, lisa sql.NullString
+		var lisaID sql.NullInt64
 		// CodeCFO читаем СТРОКОЙ, а не int64: в справочнике встречаются
 		// нечисловые коды («40RUBK»), и на первом же таком синк падал целиком —
 		// вместе с ним пропадали все магазины, а не одна битая строка.
 		var code sql.NullString
 		var plo sql.NullFloat64
 		if err := rows.Scan(&g1, &g2, &code, &cfo, &ctry, &fox, &plo, &typ, &open, &close_,
-			&stage, &comp, &ch, &old, &cat, &lfl, &rm, &mgr, &pla); err != nil {
-			return nil, err
+			&stage, &comp, &ch, &old, &cat, &lfl, &rm, &mgr, &pla, &lisaID, &lisa); err != nil {
+			return nil, "", err
 		}
 		codeNum, ok := parseNumericCFO(code.String)
 		if !code.Valid || !ok {
@@ -153,18 +242,21 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 			skipped++
 			continue
 		}
+		// Актуальный статус — из карточки клиента Лисы: справочник ЦФО хранит устаревший (у большинства
+		// магазинов «новый»), из-за чего у них не считались LFL и % выполнения.
+		lflSrc := retailLFLSource(lfl.String, lisa.String, lisaID.Valid)
 		st = RetailStore{
 			CodeCFO: codeNum, GroupCFO1: g1.String, City: g2.String, NameCFO: cfo.String,
 			Country: ctry.String, CodeFOX: fox.String, Ploschad: plo.Float64, StoreType: typ.String,
 			DateOpen: retailDateOrEmpty(open.String), DateClose: retailDateOrEmpty(close_.String),
 			Stage: stage.String, CompanyMF: comp.String, Channel: ch.String, CFOold: old.String,
-			Category: cat.String, LFLStatus: retailLFLStatus(lfl.String), LFLRaw: strings.TrimSpace(lfl.String), RegManager: rm.String,
+			Category: cat.String, LFLStatus: retailLFLStatus(lflSrc), LFLRaw: strings.TrimSpace(lflSrc), RegManager: rm.String,
 			Manager: mgr.String, PLAnalytic: pla.String,
 		}
 		out = append(out, st)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if skipped > 0 {
 		// Молча терять строки нельзя: расхождение «в справочнике N, в форме N−k»
@@ -172,7 +264,7 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 		log.Printf("plans retail: пропущено строк справочника с нечисловым CodeCFO: %d", skipped)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CodeCFO < out[j].CodeCFO })
-	return out, nil
+	return out, retailLFLSourceLabel(s.tbl.StoreTable, s.tbl.LFLTable, lisaFailed), nil
 }
 
 // Fact — факт продаж (выручка с НДС) по магазинам за годы (ТЗ §11).

@@ -63,24 +63,38 @@ func summarizeLFLStatuses(stores []RetailStore) []RetailLFLStatusCount {
 
 // LFLStatuses — статусы LFL по справочнику магазинов (все страны).
 func (s *RetailService) LFLStatuses(ctx context.Context) ([]RetailLFLStatusCount, error) {
+	list, _, err := s.LFLStatusesWithSource(ctx)
+	return list, err
+}
+
+// LFLStatusesWithSource — статусы LFL и подпись их источника, определённая тем же чтением.
+func (s *RetailService) LFLStatusesWithSource(ctx context.Context) ([]RetailLFLStatusCount, string, error) {
+	const cfoLabel = "FinDWH.dbo.[001 CodeCFO].LfLStatus"
 	if s.source == nil {
-		return nil, nil
+		return nil, cfoLabel, nil
+	}
+	if l, ok := s.source.(RetailStoresWithLFLSource); ok {
+		stores, label, err := l.StoresWithLFLSource(ctx, "")
+		if err != nil {
+			return nil, "", err
+		}
+		return summarizeLFLStatuses(stores), label, nil
 	}
 	stores, err := s.source.Stores(ctx, "")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return summarizeLFLStatuses(stores), nil
+	return summarizeLFLStatuses(stores), cfoLabel, nil
 }
 
 // LFLStatusesGet — GET /api/plans/retail/lfl-statuses.
 func (h *RetailHandler) LFLStatusesGet(w http.ResponseWriter, r *http.Request) {
-	list, err := h.svc.LFLStatuses(r.Context())
+	list, source, err := h.svc.LFLStatusesWithSource(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "справочник магазинов недоступен: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"source": "FinDWH.dbo.[001 CodeCFO].LfLStatus", "statuses": list})
+	writeJSON(w, http.StatusOK, map[string]any{"source": source, "statuses": list})
 }
 
 // StrategyMpMonth — доли статей стратегии по площадкам на месяц.

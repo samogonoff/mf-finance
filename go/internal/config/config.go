@@ -173,6 +173,7 @@ type Config struct {
 	// фикстуры (plans/retail_mock.go), форма и тесты не зависят от VPN.
 	PlansRetailStoreTable          string // справочник магазинов: FinDWH.dbo.[001 CodeCFO]
 	PlansRetailStoreGroup          string // значение GroupCFO1 справочника ('Магазины')
+	PlansRetailLFLTable            string // справочник клиентов Лисы с актуальным LFL-статусом: DWH.dim.s_klient (пусто — только справочник ЦФО)
 	PlansRetailFactTable           string // факт продаж (выручка с НДС) из FOX
 	PlansRetailNewStrategyTable    string // необязательный источник НовСтрат с полем Scenario
 	PlansRetailComparisonFactTable string // факт Budgeting в национальной валюте
@@ -294,6 +295,7 @@ func Load() Config {
 
 		PlansRetailStoreTable:          env("PLANS_RETAIL_STORE_TABLE", "FinDWH.dbo.[001 CodeCFO]"),
 		PlansRetailStoreGroup:          env("PLANS_RETAIL_STORE_GROUP", "Магазины"),
+		PlansRetailLFLTable:            env("PLANS_RETAIL_LFL_TABLE", "DWH.dim.s_klient"),
 		PlansRetailFactTable:           env("PLANS_RETAIL_FACT_TABLE", "FinDWH.dbo.sales_and_COGG_from_FOX_offline_retail"),
 		PlansRetailNewStrategyTable:    env("PLANS_RETAIL_NEW_STRATEGY_TABLE", ""),
 		PlansRetailComparisonFactTable: env("PLANS_RETAIL_COMPARISON_FACT_TABLE", "Budgeting.dbo.VFORMTOLOADFACT"),
