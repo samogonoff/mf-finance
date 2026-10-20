@@ -48,6 +48,11 @@ func TestZZLiveExpCH_FormsAndBudgetPrefill(t *testing.T) {
 			t.Errorf("%s: снимок пуст", f.name)
 			continue
 		}
+		for _, c := range cells {
+			if expIsSalesGroupPL(c.GroupPL) {
+				t.Fatalf("%s: в форму попала строка продаж/себестоимости/маржи: код %d, группа %q", f.name, c.CodePL, c.GroupPL)
+			}
+		}
 		byScenario := map[string]int{}
 		cfos := map[int]bool{}
 		countries := map[string]bool{}
