@@ -77,8 +77,20 @@ type ExpConsGroup struct {
 	ExpConsAmounts
 }
 
+// Каналы свода расходов: розница (4 карточки по странам), интернет-магазин и опт (по одной карточке).
+const (
+	ExpChannelRetail = "retail"
+	ExpChannelIM     = "im"
+	ExpChannelOpt    = "opt"
+)
+
+// expOptCountries — страны опта в порядке вывода (колонки свода): совпадают с GroupCFO3 листа «ОПТ».
+var expOptCountries = []string{"BY", "RU", "UZ"}
+
 // ExpConsolidated — ответ GET /api/plans/exp-consolidated/{plId}.
 type ExpConsolidated struct {
+	// Channel — канал свода: retail, im или opt.
+	Channel   string           `json:"channel"`
 	PlID      int64            `json:"pl_id"`
 	Year      int              `json:"year"`
 	Month     int              `json:"month"`
@@ -133,7 +145,7 @@ type expConsInput struct {
 // чтобы правила (окно, курсы, группы, порядок) проверялись тестом без БД.
 func buildExpConsolidated(plID int64, year, month int, window string, in []expConsInput, pnlByCode map[int]string, order []string) ExpConsolidated {
 	from, to, win := expWindowMonths(window, month)
-	out := ExpConsolidated{PlID: plID, Year: year, Month: month, Window: win, FromMonth: from, ToMonth: to, Currency: "BYN"}
+	out := ExpConsolidated{Channel: ExpChannelRetail, PlID: plID, Year: year, Month: month, Window: win, FromMonth: from, ToMonth: to, Currency: "BYN"}
 	prevM, prevScenario := month-1, ExpScenarioFactCur
 	if month <= 1 {
 		prevM, prevScenario = 12, ExpScenarioFact // январь: прошлый месяц — декабрь прошлого года
@@ -343,13 +355,107 @@ func (s *ExpService) RetailConsolidated(ctx context.Context, p Principal, plID i
 	return out, nil
 }
 
-// ConsolidatedGet — GET /api/plans/exp-consolidated/{plId}?window=month|tail|year.
+// WithScope подключает срез доступа: свод опта показывает суммы карточки, доступной не всем.
+func (s *ExpService) WithScope(st ScopeStore) *ExpService { s.scope = st; return s }
+
+// splitOptRows раскладывает строки карточки опта по странам их ЦФО (CountryCompany). Строки без
+// известной страны попадают в отдельную колонку «—», чтобы итог не терял суммы.
+func splitOptRows(rows []ExpRow) map[string][]ExpRow {
+	out := map[string][]ExpRow{}
+	known := map[string]bool{}
+	for _, c := range expOptCountries {
+		known[c] = true
+	}
+	for _, r := range rows {
+		c := strings.ToUpper(strings.TrimSpace(r.CountryCompany))
+		if !known[c] {
+			c = "—"
+		}
+		out[c] = append(out[c], r)
+	}
+	return out
+}
+
+// ChannelConsolidated — свод расходов канала периода. Розница — по четырём карточкам стран;
+// интернет-магазин — одна карточка IM-BY; опт — одна карточка OPT, колонки — страны ЦФО. ИМ и опт
+// вводятся в BYN, пересчёта курсами нет.
+func (s *ExpService) ChannelConsolidated(ctx context.Context, p Principal, plID int64, channel, window string) (ExpConsolidated, error) {
+	var scopeKey string
+	switch channel {
+	case "", ExpChannelRetail:
+		return s.RetailConsolidated(ctx, p, plID, window)
+	case ExpChannelIM:
+		scopeKey = "IM-BY"
+	case ExpChannelOpt:
+		scopeKey = "OPT"
+	default:
+		return ExpConsolidated{}, errors.New("неизвестный канал свода расходов")
+	}
+	cards, err := s.cards.Cards(ctx, plID)
+	if err != nil {
+		return ExpConsolidated{}, err
+	}
+	var card *Card
+	for i := range cards {
+		if cards[i].FormCode == TemplateExp && cards[i].ScopeKey == scopeKey {
+			card = &cards[i]
+			break
+		}
+	}
+	if card == nil {
+		return ExpConsolidated{}, errors.New("в периоде нет карточки расходов этого канала")
+	}
+	if s.scope != nil {
+		f, err := scopeFilterFor(ctx, s.scope, p)
+		if err != nil {
+			return ExpConsolidated{}, err
+		}
+		if !f.AllowsCard(*card) {
+			return ExpConsolidated{}, errors.New("карточка вне вашего среза доступа")
+		}
+	}
+	c, inst, err := s.access(ctx, card.ID)
+	if err != nil {
+		return ExpConsolidated{}, err
+	}
+	rows, err := expAllRows(ctx, s.repo, inst.ID)
+	if err != nil {
+		return ExpConsolidated{}, err
+	}
+	pnlByCode := map[int]string{}
+	if m, err := s.pnlGroups(ctx); err == nil {
+		pnlByCode = m
+	}
+	pnlByCode = expApplyDefaultPnlGroups(ExpKindRetail, pnlByCode)
+
+	fx := sameExpFx(1)
+	var inputs []expConsInput
+	if channel == ExpChannelIM {
+		inputs = []expConsInput{{Country: "BY", Card: c, Inst: inst, Rows: rows, Fx: fx}}
+	} else {
+		by := splitOptRows(rows)
+		for _, country := range append(append([]string{}, expOptCountries...), "—") {
+			if country == "—" && len(by[country]) == 0 {
+				continue
+			}
+			inputs = append(inputs, expConsInput{Country: country, Card: c, Inst: inst, Rows: by[country], Fx: fx})
+		}
+	}
+	out := buildExpConsolidated(plID, c.Year, c.Month, window, inputs, pnlByCode, expRetailPnlOrder)
+	out.Channel = channel
+	if s.syncStatusWithBasis(ctx, inst.ID).FactBasis == ExpFactBasisPayments {
+		out.FactBasis = ExpFactBasisPayments
+	}
+	return out, nil
+}
+
+// ConsolidatedGet — GET /api/plans/exp-consolidated/{plId}?window=month|tail|year&channel=retail|im|opt.
 func (h *ExpHandler) ConsolidatedGet(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "plId")
 	if !ok {
 		return
 	}
-	res, err := h.svc.RetailConsolidated(r.Context(), h.principal(r), id, r.URL.Query().Get("window"))
+	res, err := h.svc.ChannelConsolidated(r.Context(), h.principal(r), id, r.URL.Query().Get("channel"), r.URL.Query().Get("window"))
 	if err != nil {
 		expErr(w, err)
 		return

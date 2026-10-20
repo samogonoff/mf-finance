@@ -46,6 +46,8 @@ type ExpService struct {
 	norms ExpTravelNorms
 	// sales — утверждённый план продаж: вход расчёта §6.1, только чтение.
 	sales ExpDataSource
+	// scope — срез доступа пользователей (свод опта проверяет доступ к карточке); nil — без проверки.
+	scope ScopeStore
 }
 
 // NewExpService — конструктор.

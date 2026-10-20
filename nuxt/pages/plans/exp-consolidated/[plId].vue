@@ -1,5 +1,6 @@
 <!--
-  Свод расходов розницы по четырём странам (аналог свода продаж розницы).
+  Свод расходов розницы по четырём странам (аналог свода продаж розницы). Тот же вид — для
+  интернет-магазина (?channel=im) и опта (?channel=opt, колонки РБ / РФ / УЗ; опт и ИМ вводятся в BYN).
 
   Строки — группы PL (в порядке листа «Розница» Excel) и статьи внутри них,
   колонки — страны. Общая валюта свода — BYN: суммы стран пересчитаны по курсу
@@ -10,10 +11,10 @@
   <div class="page-econs">
     <header class="page-header">
       <div>
-        <h1 class="page-title">Свод расходов розницы · все страны</h1>
+        <h1 class="page-title">{{ pageTitle }}</h1>
         <strong v-if="data" class="tactic-period">{{ periodLabel }}</strong>
         <p class="page-subtitle">
-          Расходы по группам PL и статьям, по странам · валюта свода {{ data?.currency || "BYN" }}
+          Расходы по группам PL и статьям, {{ channel === "im" ? "одна форма" : "по странам" }} · валюта свода {{ data?.currency || "BYN" }}
         </p>
       </div>
       <div class="page-actions">
@@ -66,8 +67,8 @@
             <tr>
               <th>Группа / статья</th>
               <th v-for="c in data.countries" :key="c.country" class="col-num" :class="{ dim: !!c.error || !c.card_id }">
-                <NuxtLink v-if="c.card_id" :to="`/plans/exp-form/${c.card_id}`" class="head-link" :title="`Открыть форму расходов: ${c.title || c.country}`">{{ c.country }}</NuxtLink>
-                <template v-else>{{ c.country }}</template>
+                <NuxtLink v-if="c.card_id" :to="`/plans/exp-form/${c.card_id}`" class="head-link" :title="`Открыть форму расходов: ${c.title || c.country}`">{{ c.country === "—" ? "прочие" : c.country }}</NuxtLink>
+                <template v-else>{{ c.country === "—" ? "прочие" : c.country }}</template>
               </th>
               <th class="col-num">Итого</th>
               <template v-if="showRef">
@@ -87,7 +88,7 @@
           </thead>
           <tbody>
             <tr class="row-total">
-              <td>Расходы розницы · итого</td>
+              <td>{{ totalLabel }}</td>
               <td v-for="c in data.countries" :key="c.country" class="col-num">{{ money0(data.total.plan[c.country]) }}</td>
               <td class="col-num">{{ money0(data.total.plan_total) }}</td>
               <template v-if="showRef">
@@ -137,7 +138,7 @@
 
 <script setup lang="ts">
 import SkeletonTable from "~/components/SkeletonTable.vue";
-import { MONTHS_SHORT, useExpForm, type ExpConsolidated, type ExpConsWindow } from "~/composables/useExpForm";
+import { MONTHS_SHORT, useExpForm, type ExpConsChannel, type ExpConsolidated, type ExpConsWindow } from "~/composables/useExpForm";
 import { apiError } from "~/utils/apiError";
 import { num as fmtNum } from "~/utils/format";
 
@@ -146,6 +147,15 @@ definePageMeta({ middleware: ["scope-guard"] });
 const route = useRoute();
 const plId = Number(route.params.plId);
 const api = useExpForm();
+
+// Канал свода: розница (4 страны), интернет-магазин или опт (одна карточка, колонки — страны ЦФО).
+const channel = computed<ExpConsChannel>(() => (route.query.channel === "opt" ? "opt" : route.query.channel === "im" ? "im" : "retail"));
+const pageTitle = computed(() =>
+  channel.value === "opt" ? "Свод расходов опта · РБ, РФ, УЗ" : channel.value === "im" ? "Свод расходов интернет-магазина" : "Свод расходов розницы · все страны"
+);
+const totalLabel = computed(() =>
+  channel.value === "opt" ? "Расходы опта · итого" : channel.value === "im" ? "Расходы ИМ · итого" : "Расходы розницы · итого"
+);
 
 const PREFS_KEY = "exp-cons-view";
 const data = ref<ExpConsolidated | null>(null);
@@ -213,10 +223,10 @@ const load = async () => {
   loading.value = true;
   error.value = "";
   try {
-    const r = await api.consolidated(plId, win.value);
+    const r = await api.consolidated(plId, win.value, channel.value);
     if (my === seq) data.value = r;
   } catch (e) {
-    if (my === seq) error.value = apiError(e, "Не удалось загрузить свод расходов розницы");
+    if (my === seq) error.value = apiError(e, "Не удалось загрузить свод расходов");
   } finally {
     if (my === seq) loading.value = false;
   }
@@ -224,6 +234,13 @@ const load = async () => {
 
 onMounted(() => {
   loadPrefs();
+  load();
+});
+
+// Переход между каналами не пересоздаёт страницу: перечитываем свод сами.
+watch(channel, () => {
+  data.value = null;
+  open.clear();
   load();
 });
 </script>
