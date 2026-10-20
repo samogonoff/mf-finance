@@ -45,3 +45,35 @@ func TestMpDiscountsPassThroughAndDoNotAffectMargin(t *testing.T) {
 		t.Fatalf("inverse: скидка %v, уценка %v", v[BDiscount], v[BMarkdown])
 	}
 }
+
+// Импорт .xlsx формы: скидки и уценки без кода PL загружаются по названию блока (раньше такие
+// строки пропускались, и подгрузить значения по площадкам было нечем); строки с кодом PL — как раньше.
+func TestParseMpImportRows_DiscountsByBlockName(t *testing.T) {
+	rows := [][]string{
+		{"Площадка", "Код ЦФО", "Блок", "КодPL", "Факт", "Стратегия", "Тактика"},
+		{"Wildberries", "335", "Скидки", "0", "", "", "1 000,5"},
+		{"Lamoda", "336", "Уценки", "0", "", "", "40"},
+		{"Ozon", "337", "Скидки", "0", "", "", ""},           // пусто — пропуск
+		{"Ozon", "337", "% СПП (скидка)", "0", "", "", "10"}, // без кода PL и не скидка — не трогаем
+		{"Wildberries", "335", "Реклама", "13", "", "", "200"},
+	}
+	got, err := parseMpImportRows(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]float64{
+		"335:" + BDiscount: 1000.5, "336:" + BMarkdown: 40, "335:" + BCostAds: 200,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("разобрано %d строк, ждали %d: %+v", len(got), len(want), got)
+	}
+	for _, r := range got {
+		k := layerKey(r.CodeCFO, r.BlockType)
+		if v, ok := want[k]; !ok || v != r.Amount {
+			t.Errorf("%s: %v (ждали %v)", k, r.Amount, want[k])
+		}
+	}
+	if _, err := parseMpImportRows([][]string{{"Код ЦФО", "Блок"}}); err == nil {
+		t.Fatal("нет колонок «КодPL»/«Тактика» — ждали ошибку")
+	}
+}
