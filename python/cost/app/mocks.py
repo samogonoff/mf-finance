@@ -1917,6 +1917,146 @@ def _fot_b1_mock_dashboard(params: dict) -> dict:
     return data
 
 
+# ── B3 «Подразделения по странам»: зерно под якоря листов 28/30 деки ──────────
+
+# Направление × страна (f25_h1, f26_h1, f25_h2, t26_h2) — якоря деки 28 (HR):
+# карточки BY 1 659 109 (+24,0/+9,1/+15,1), RU 644 502 (−16,5/+25,1/+2,6),
+# KZ 128 690 (+214,6/−6,6/+89,9), UZ 178 672 (−26,7/−28,0/−27,4). Числа —
+# масштаб CFO-свода (= сырые суммы витрины, см. _b3_assemble/_r0), без
+# множителей. «Складская логистика» — вторая опция селектора (4 страны), числа
+# листа 7 деки (моку достаточно правдоподобия). Численность HR подобрана под
+# панель листа 28 (39,5/42,5/40,5) и листа 30 BY (24,5/25,0/24,5).
+_FOT_B3_GRAIN_MOCK = (
+    # dir, ctry, f25_h1, f26_h1, f25_h2, t26_h2
+    ("HR", "BY", 581381, 720958, 859735, 938151),
+    ("HR", "RU", 339682, 283635, 288293, 360867),
+    ("HR", "KZ", 29559, 92997, 38195, 35693),
+    ("HR", "UZ", 113592, 83263, 132524, 95409),
+    ("Складская логистика", "BY", 5353, 6064, 5727, 6122),
+    ("Складская логистика", "RU", 1340, 1236, 1376, 1222),
+    ("Складская логистика", "KZ", 400, 450, 380, 420),
+    ("Складская логистика", "UZ", 300, 280, 260, 240),
+)
+
+# Статьи HR×BY (лист 30 деки): раскладка статей по row_template даёт якоря
+# карточек — Выплаты 595 377/591 881/1 187 258, Прочие 112 802/336 550/449 352,
+# Вспомогательные 8 440/5 400/13 840, Амортизация 4 224/4 320/8 544, Основные
+# 114/0/114 (Δ −9,5/−100,0/−72,3 и т.д. сходятся до 0,1 п.п.); «Вложений» у HR
+# нет — пустая статья не отдаётся. Складская×BY — правдоподобный минимум.
+_FOT_B3_ART_MOCK = {
+    ("HR", "BY"): (
+        # tmpl, f25_h1, f26_h1, f25_h2, t26_h2
+        ("Заработная плата", 522300, 595377, 573022, 591881),
+        ("Прочие расходы на персонал", 51493, 112802, 276488, 336550),
+        ("Материалы", 1500, 4000, 2500, 2100),
+        ("Расходы на ИТ", 2616, 4440, 3708, 3300),
+        ("Амортизация", 3345, 4224, 3731, 4320),
+        ("Ремонты и строительство (Opex)", 126, 114, 286, 0),
+    ),
+    ("Складская логистика", "BY"): (
+        ("Заработная плата", 5300, 5964, 5600, 6027),
+        ("Материалы", 50, 100, 120, 90),
+        ("Амортизация", 3, 0, 7, 5),
+    ),
+}
+
+# Численность направлений по странам: план утв. / факт 30.06.2025 / 30.06.2026
+_FOT_B3_HC_MOCK = {
+    "HR": (
+        # ctry, pa, q25, q26
+        ("BY", 24.5, 25.0, 24.5),
+        ("RU", 6.0, 9.0, 7.0),
+        ("KZ", 2.0, 2.5, 2.0),
+        ("UZ", 7.0, 6.0, 7.0),
+    ),
+    "Складская логистика": (
+        ("BY", 328.0, 332.2, 304.9),
+        ("RU", 44.4, 48.2, 44.0),
+        ("KZ", 5.0, 5.0, 5.0),
+        ("UZ", 3.0, 3.0, 3.0),
+    ),
+}
+
+# KPI-лента листа 28 деки (суммы всех стран): сама дека не бьётся с карточками
+# стран на ~0,6% (артефакт CFO-свода), поэтому сводный вид хранит якоря деки
+# точными, а вид страны собирается из зерна (там расхождение ±1 тыс).
+_FOT_B3_RIBBON_MOCK = {
+    "f25_h1": 1072484, "f26_h1": 1186646, "d1": 10.6,
+    "f25_h2": 1310496, "t26_h2": 1424327, "d2": 8.7,
+    "exp": 2610972, "dyear": 9.6,
+}
+
+
+def _fot_b3_mock_dashboard(params: dict) -> dict:
+    """B3 моком: зерно двух направлений под якоря листов 28/30, сборка боевым
+    fot._b3_assemble + fot._b3_dept_options (C=8, сценарий «тактика»). Из
+    параметров применяет b3_dept/b3_country (селектор вкладки), срезы панели
+    на числа не влияют (это мок)."""
+    from app import fot
+
+    currency = _fot_first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+    grain = [
+        {"dir": d, "ctry": ctry, "f25_h1": float(f1), "f26_h1": float(f2),
+         "f25_h2": float(f3), "t26_h2": float(f4), "f25": float(f1 + f3)}
+        for d, ctry, f1, f2, f3, f4 in _FOT_B3_GRAIN_MOCK
+    ]
+    _mock_expect_keys(grain, {}, 8)
+    dept_options = fot._b3_dept_options(grain)
+    known = {o["dept"] for o in dept_options}
+    dept = _fot_first(params.get("b3_dept"), "")
+    if dept and dept not in known:
+        raise ValueError("fot: b3_dept — %r нет среди направлений, "
+                         "присутствующих в ≥2 странах" % (dept,))
+    sel_dept = dept or (dept_options[0]["dept"] if dept_options else "")
+    cards_cc = {(r.get("ctry") or "") for r in grain if r.get("dir") == sel_dept}
+    want_country = _fot_first(params.get("b3_country"), "")
+    sel_country = want_country if want_country in cards_cc else ""
+    art_rows = [
+        {"tmpl": tmpl, "f25_h1": float(f1), "f26_h1": float(f2),
+         "f25_h2": float(f3), "t26_h2": float(f4)}
+        for (d, ctry), rows in _FOT_B3_ART_MOCK.items()
+        if d == sel_dept and ctry == sel_country
+        for tmpl, f1, f2, f3, f4 in rows
+    ]
+    _mock_expect_keys(art_rows, {}, 8)
+    hc_rows = _FOT_B3_HC_MOCK.get(sel_dept, ())
+    hc = {
+        "h25": [{"ctry": ctry, "q": q25} for ctry, _pa, q25, _q26 in hc_rows],
+        "h26": [{"ctry": ctry, "q": q26} for ctry, _pa, _q25, q26 in hc_rows],
+        "plan": [{"ctry": ctry, "pa": pa} for ctry, pa, _q25, _q26 in hc_rows],
+    }
+    cfg = {"by_month": True, "close_month": 8, "scenario": "тактика",
+           "source": "closed_period", "warning": None}
+    data, warning = fot._b3_assemble(currency, grain, hc, art_rows,
+                                     sel_dept, sel_country, cfg, [])
+    if sel_dept == "HR" and not sel_country:
+        # лента листа 28 — якоря деки (карточки стран ниже собраны из зерна)
+        data["cards"] = dict(_FOT_B3_RIBBON_MOCK)
+    meta = {
+        "tab": "b3",
+        "params": dict(params),
+        "currency": currency,
+        "periods": fot._periods_meta(fot.YEAR_PLAN),
+        "closed_period": _FOT_MOCK_STATE["closed_period"],
+        "stale": False,
+        "refreshed_at": _FOT_MOCK_STATE["refreshed_at"],
+        "methodology": fot.METHODOLOGY_B3,
+        "expect": {"by_month": True, "close_month": 8, "plan_scenario": "тактика",
+                   "source": "closed_period", "fact_months": "07–08", "plan_months": "09–12"},
+        "sel_dept": sel_dept,
+        "sel_country": sel_country or None,
+        "dept_options": dept_options,
+        "country_dropped": bool(want_country) and not sel_country,
+    }
+    meta.update(_FOT_MOCK_META)
+    if warning:
+        meta["warning"] = warning
+    data["meta"] = meta
+    return data
+
+
 def fot_dashboard(tab: str, params: dict) -> dict:
     """Мок вкладки ФОТ-дашборда — форма ответа 1:1 с app.fot.dashboard().
 
@@ -1929,7 +2069,7 @@ def fot_dashboard(tab: str, params: dict) -> dict:
     """
     from app import fot
 
-    if tab not in ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18", "b1"):
+    if tab not in ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18", "b1", "b3"):
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
     if tab in ("p10", "p11"):
         return _fot_half_mock_dashboard(tab, params)
@@ -1941,6 +2081,8 @@ def fot_dashboard(tab: str, params: dict) -> dict:
         return _fot_p18_mock_dashboard(params)
     if tab == "b1":
         return _fot_b1_mock_dashboard(params)
+    if tab == "b3":
+        return _fot_b3_mock_dashboard(params)
     if tab == "p13":
         return _fot_p13_mock_dashboard(params)
     if tab == "p14":

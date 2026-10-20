@@ -47,7 +47,7 @@ FOT_DATABASE = os.environ.get("FOT_DATABASE", "FinDWH")
 YEAR_PREV = 2025
 YEAR_PLAN = 2026
 
-_FOT_TABS = ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18", "b1")
+_FOT_TABS = ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18", "b1", "b3")
 
 
 def fot_mock_enabled() -> bool:
@@ -825,6 +825,12 @@ def _r1(v) -> float | None:
     return None if v is None else round(float(v), 1)
 
 
+def _r0(v) -> float | None:
+    """Целое для JSON: лента и карточки B3 — формат листов 28–33 деки
+    (крупные целые с пробелом-разделителем)."""
+    return None if v is None else int(round(float(v)))
+
+
 # ── Сводные вкладки P10/P11: фиксированные полугодия 2025 vs 2026 ────────────
 #
 # Порты визуалов P10 «ФОТ свод по группе» и P11 «ФОТ направления и
@@ -1468,6 +1474,13 @@ def _parse_halfyear_params(params: dict) -> dict:
     p["year"] = _parse_int(params.get("year"), "year", YEAR_PLAN, 2020, 2100)
     # B1: сверочный срез помесячного ожидания (в UI не показывать)
     p["expect_month"] = _parse_int(params.get("expect_month"), "expect_month", 0, 0, 12)
+    # B3: селектор подразделения вкладки (зерно direction) и страна детализации;
+    # пустые — дефолт (первое из dept_options) и сводный вид. Незнакомый b3_dept
+    # отсеивает _dashboard_b3 по dept_options (→ 400), b3_country валидируется
+    # присутствием в карточках (выпала из среза — фронт возвращается к сводному
+    # виду, повторный запрос не нужен).
+    p["b3_dept"] = str(params.get("b3_dept") or "").strip()
+    p["b3_country"] = str(params.get("b3_country") or "").strip()
     return p
 
 
@@ -2517,6 +2530,448 @@ async def _dashboard_b1(p: dict, meta: dict) -> dict:
     if warnings:
         meta_out["warning"] = " ".join(warnings)
     data.pop("warning", None)
+    data["meta"] = meta_out
+    return data
+
+
+# ── Блок 3: подразделения по странам (b3, слайды 28/30 деки) ──────────────────
+
+# Статьи бюджета направления (лист 30 деки) — группировка row_template витрины.
+# Дека CFO-свода не расшифровывает состав статей, поэтому соответствие выведено
+# по якорям листа 30 (HR×BY: Выплаты 595 377 ≈ ЗП витрины, Прочие 112 802 ≈
+# «Прочие расходы»+«Прочие расходы на персонал», Амортизация — точно); порядок
+# фиксированный постановкой, незнакомый row_template — во «Вспомогательные».
+_B3_ARTICLE_ORDER = ("Выплаты работникам", "Прочие расходы",
+                     "Вспомогательные расходы", "Амортизация",
+                     "Основные расходы", "Вложения")
+_B3_ARTICLE_BY_TMPL = {
+    "Заработная плата": "Выплаты работникам",
+    "Прочие расходы": "Прочие расходы",
+    "Прочие расходы на персонал": "Прочие расходы",
+    "Прочие доходы и расходы": "Прочие расходы",
+    "Безвозмездная помощь": "Прочие расходы",
+    "Результаты инвентаризации": "Прочие расходы",
+    "Налоги": "Прочие расходы",
+    "Амортизация": "Амортизация",
+    "Ремонты и строительство (Opex)": "Основные расходы",
+    "Расходы на открытие магазина (текущие)": "Вложения",
+    "Материалы": "Вспомогательные расходы",
+    "Расходы на ИТ": "Вспомогательные расходы",
+    "Информационно-консультационные услуги": "Вспомогательные расходы",
+    "Банковские расходы": "Вспомогательные расходы",
+    "Комиссионное вознаграждение": "Вспомогательные расходы",
+    "Коммунальные расходы": "Вспомогательные расходы",
+    "Логистические расходы": "Вспомогательные расходы",
+    "Аренда": "Вспомогательные расходы",
+    "Расходы на магазины": "Вспомогательные расходы",
+    "Расходы на охрану и страхование": "Вспомогательные расходы",
+    "Реклама и маркетинг": "Вспомогательные расходы",
+    "Прочие статьи вне списка финслужбы": "Вспомогательные расходы",
+    "Себестоимость по отпускным ценам": "Вспомогательные расходы",
+    "Себестоимость пошива, раскроя, печати": "Вспомогательные расходы",
+    "Себестоимость реализованной продукции": "Вспомогательные расходы",
+    "Услуги пошива": "Вспомогательные расходы",
+    "(прочее)": "Вспомогательные расходы",
+}
+
+# Доходно-финансовые строки в «бюджет подразделения» деки не входят: выручка,
+# проценты, курсовые, налог на прибыль, финскидка — иначе у производственных
+# направлений (Вязание полотна, Пошив) в «бюджет» попадали бы их продажи.
+_B3_TMPL_EXCLUDED = ("Продажи без НДС", "Продажи с НДС", "Проценты к получению",
+                     "Проценты к уплате", "Курсовые разницы", "Налог на прибыль",
+                     "Финансовая скидка")
+
+# Имена стран карточек: отчётные четыре + встречающиеся в живом зерне TR/CN
+# (Вязание полотна TR,UZ; УКК BY,CN,RU,UZ) — коды вне мапы печатаются как есть.
+_B3_COUNTRY_NAMES = dict(COUNTRY_OPTIONS, TR="Турция", CN="Китай")
+
+METHODOLOGY_B3 = (
+    "Блок 3 «Бюджет ФОТ подразделения» (слайды 28–30 деки): подразделения, "
+    "присутствующие минимум в двух странах; зерно — направление справочника "
+    "(fot_cfo.direction). Срез панели «Направление» на вкладке НЕ действует — "
+    "его заменяет локальный селектор подразделения; остальные срезы (страна, "
+    "юрлицо, группа/подгруппа ЦФО, ЦФО, ВГО, валюта) действуют. Суммы — все "
+    "расходные статьи бюджета направления по row_template (выручка и чисто "
+    "финансовые строки исключены), как в CFO-своде деки, а не только статьи "
+    "ФОТ-семейства: поэтому значения вкладки больше P10–P18 и возможен дрейф "
+    "против CFO-свода (тот же, что у P15/P16). Значения — крупные целые, как "
+    "на листах 28–33 деки (масштаб CFO-свода), подпись «тыс». Год — из "
+    "фильтра «Год»; «Тактика "
+    "2ПГ» незакрытого полугодия = факт до закрытого месяца C + тактика после C; "
+    "Ожидание года = факт 1ПГ + тактика 2ПГ (гибрид). Δ% — только к "
+    "положительной базе, иначе «н/д». ПЧ — план PlanChisl (утвержд.), ФЧ — "
+    "факт на 30.06 текущего и прошлого года (срез юрлица план не режет). Статьи "
+    "детализации страны — группировка row_template: «Заработная плата» → "
+    "«Выплаты работникам», «Прочие расходы»+«Прочие расходы на персонал» → "
+    "«Прочие расходы» и т.д.; пустые (все нулевые) статьи не показываются."
+)
+
+
+def _b3_periods(year_cur: int, year_prev: int) -> tuple:
+    """Периоды фиксированных полугодий B3 с динамическим годом: fam=raw — все
+    статьи бюджета направления, а не только ФОТ-семейство (см. методологию).
+    Бюджетных колонок у B3 нет — слайды 28/30 их не показывают."""
+    return (
+        ("f25_h1", "факт", year_prev, 1, 6, "raw"),
+        ("f25_h2", "факт", year_prev, 7, 12, "raw"),
+        ("f25", "факт", year_prev, 1, 12, "raw"),
+        ("f26_h1", "факт", year_cur, 1, 6, "raw"),
+        ("t26_h2", "тактика", year_cur, 7, 12, "raw"),
+    )
+
+
+def _b3_expect_periods(cfg: dict, year_cur: int) -> tuple:
+    """Периоды помесячного ожидания B3 (факт 2ПГ до C + тактика после), fam=raw."""
+    if not cfg.get("by_month"):
+        return ()
+    c = cfg["close_month"]
+    return (
+        ("f26_h2c", "факт", year_cur, 7, c, "raw"),
+        ("p26_h2o", "тактика", year_cur, c + 1, 12, "raw"),
+    )
+
+
+def _b3_sql(p: dict, periods: tuple) -> tuple[str, list]:
+    """Зерно B3: направление × страна × период-суммы по срезам панели БЕЗ
+    срезов «Направление» и «Страна».
+
+    Направление на b3 заменяет селектор вкладки (см. методологию); страна НЕ
+    режет зерно в SQL, чтобы dept_options (наличие по ≥2 странам) оставались
+    стабильными при сужении среза стран — срез страны применяется в Python к
+    карточкам и KPI. Остальные срезы — как у P10/P11 (dim + юрлицо + ВГО +
+    hier_gate). fam=raw: в бюджет направления входят все row_template, кроме
+    доходно-финансовых (_B3_TMPL_EXCLUDED)."""
+    col = FOT_CURRENCIES[p["currency"]]
+    sql_params: list = []
+    ic_sql = _ic_where(p)
+    # dim без direction (заменён селектором) и country (срезим в Python)
+    dim_conds = "".join(
+        _any_cond(colname, _phl(p[key], sql_params))
+        for colname, key in _FOT_SLICE_KEYS if key not in ("directions", "countries")
+    )
+    hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
+    m_legal = _legal_cond(p, sql_params)
+    excl_ph = _phl(list(_B3_TMPL_EXCLUDED), sql_params)
+    grain_sums = ",\n        ".join(
+        _half_sum_sql(key, scen, year, m1, m2, fam, col)
+        for key, scen, year, m1, m2, fam in periods
+    )
+    sql = f"""
+WITH dim AS (
+    SELECT code_cfo, direction, country_code
+    FROM fot_cfo
+    WHERE TRUE{dim_conds}
+),
+grain AS (
+    SELECT coalesce(c.direction, '') AS dir, coalesce(c.country_code, '') AS ctry,
+        {grain_sums}
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE (m.row_template IS NULL OR m.row_template <> ALL({excl_ph}::text[]))
+        AND {ic_sql}{m_legal}{hier_gate}
+    GROUP BY 1, 2
+)
+SELECT COALESCE((SELECT jsonb_agg(to_jsonb(g)) FROM grain g), '[]'::jsonb)::text AS payload
+"""
+    return sql, sql_params
+
+
+def _b3_hc_art_sql(p: dict, dept: str, country: str, periods: tuple,
+                   year_cur: int, year_prev: int) -> tuple[str, list]:
+    """Численность (направление × страна) и статьи (направление × страна ×
+    row_template) выбранного подразделения — вторым запросом b3.
+
+    Численность — то же зерно, что у P12, но по direction и с динамическими
+    датами 30.06 года/года−1 (у B3 год из фильтра); план PlanChisl срезом
+    юрлица не режется (как у P12). Статьи — те же период-суммы fam=raw по
+    row_template для детализации страны (лист 30); без b3_country CTE нет."""
+    sql_params: list = []
+    dim_conds = "".join(
+        _any_cond(colname, _phl(p[key], sql_params))
+        for colname, key in _FOT_SLICE_KEYS if key not in ("directions", "countries")
+    )
+    hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
+    h_legal = _legal_cond(p, sql_params, "h.legal_entity")
+    dept_ph = _phl([dept], sql_params)
+    hc_prev = date(year_prev, 6, 1).isoformat()
+    hc_curr = date(year_cur, 6, 1).isoformat()
+    art_cte = art_sel = ""
+    if country:
+        col = FOT_CURRENCIES[p["currency"]]
+        ic_sql = _ic_where(p)
+        ctry_ph = _phl([country], sql_params)
+        art_sums = ",\n        ".join(
+            _half_sum_sql(key, scen, year, m1, m2, fam, col)
+            for key, scen, year, m1, m2, fam in periods
+        )
+        art_cte = f""",
+art AS (
+    SELECT m.row_template AS tmpl,
+        {art_sums}
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE c.direction = ANY({dept_ph}::text[])
+        AND coalesce(c.country_code, '') = ANY({ctry_ph}::text[])
+        AND (m.row_template IS NULL OR m.row_template <> ALL({_phl(list(_B3_TMPL_EXCLUDED), sql_params)}::text[]))
+        AND {ic_sql}{h_legal}{hier_gate}
+    GROUP BY 1
+)"""
+        art_sel = ", 'art', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM art x), '[]'::jsonb)"
+    sql = f"""
+WITH dim AS (
+    SELECT code_cfo, direction, country_code
+    FROM fot_cfo
+    WHERE TRUE{dim_conds}
+),
+h25 AS (
+    SELECT coalesce(c.country_code, '') AS ctry, sum(h.quantity) AS q
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE c.direction = ANY({dept_ph}::text[])
+        AND h.month_date = DATE '{hc_prev}'{h_legal}{hier_gate}
+    GROUP BY 1
+),
+h26 AS (
+    SELECT coalesce(c.country_code, '') AS ctry, sum(h.quantity) AS q
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE c.direction = ANY({dept_ph}::text[])
+        AND h.month_date = DATE '{hc_curr}'{h_legal}{hier_gate}
+    GROUP BY 1
+),
+plan AS (
+    SELECT coalesce(c.country_code, '') AS ctry, sum(p.plan_approved) AS pa
+    FROM fot_headcount_plan p
+    LEFT JOIN dim c ON c.code_cfo = p.code_cfo
+    WHERE c.direction = ANY({dept_ph}::text[]){hier_gate}
+    GROUP BY 1
+){art_cte}
+SELECT jsonb_build_object(
+    'h25', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h25 x), '[]'::jsonb),
+    'h26', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h26 x), '[]'::jsonb),
+    'plan', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM plan x), '[]'::jsonb){art_sel}
+)::text AS payload
+"""
+    return sql, sql_params
+
+
+def _b3_hybrid(slot: dict) -> None:
+    """Подмена t26_h2 гибридом «факт до C + тактика после» (паттерн слайдов 5-6):
+    мутирует слот период-сумм на месте, если ключи ожидания есть."""
+    if slot.get("f26_h2c") is not None or slot.get("p26_h2o") is not None:
+        slot["t26_h2"] = _nsum([slot.get("f26_h2c"), slot.get("p26_h2o")])
+
+
+def _b3_sum(rows: list[dict]) -> dict:
+    """Период-суммы строк b3-зерна (ключи _b3_periods + ожидание) с гибридом."""
+    keys = ("f25_h1", "f25_h2", "f25", "f26_h1", "t26_h2", "f26_h2c", "p26_h2o")
+    slot = {key: _nsum([r.get(key) for r in rows]) for key in keys}
+    _b3_hybrid(slot)
+    return slot
+
+
+def _b3_dept_options(grain: list[dict]) -> list[dict]:
+    """Опции селектора подразделений: направления с ненулевыми суммами в ≥2
+    странах. Порядок: больше стран → больше ожидание года → алфавит; дефолт
+    селектора — первый (решение постановки)."""
+    by_dept: dict = {}
+    for r in grain:
+        d = r.get("dir") or ""
+        if not d:
+            continue
+        s = _b3_sum([r])
+        present = any(s[k] for k in ("f25_h1", "f25_h2", "f26_h1", "t26_h2",
+                                     "f26_h2c", "p26_h2o"))
+        if present:
+            by_dept.setdefault(d, set()).add(r.get("ctry") or "")
+    options = []
+    for d, countries in by_dept.items():
+        n = len(countries - {""})
+        if n < 2:
+            continue
+        s = _b3_sum([r for r in grain if (r.get("dir") or "") == d])
+        exp = _nsum([s.get("f26_h1"), s.get("t26_h2")])
+        options.append({"dept": d, "countries": n,
+                        "label": "%s · %d %s" % (d, n,
+                                                 "страны" if 2 <= n <= 4 else "стран"),
+                        "expect": exp})
+    options.sort(key=lambda o: (-o["countries"], -(o["expect"] or 0), o["dept"]))
+    for o in options:
+        o.pop("expect")
+    return options
+
+
+def _b3_assemble(cur: str, grain: list[dict], hc: dict, art: list[dict],
+                 sel_dept: str, sel_country: str, cfg: dict,
+                 countries_slice: list[str]) -> tuple:
+    """Тело ответа B3: KPI-лента, ПЧ/ФЧ-панель, карточки стран, статьи страны.
+
+    grain — зерно ВСЕХ направлений (dept_options считаются из него, суммы — по
+    строкам выбранного); страны среза применяются здесь, «»-страна (ЦФО без
+    страны справочника) входит в KPI, но карточки не имеет. hc — {h25, h26,
+    plan} по странам выбранного направления; art — строки row_template
+    выбранной страны (пусто без b3_country). Возвращает (data, warning)."""
+    rows = [r for r in grain if (r.get("dir") or "") == sel_dept]
+    by_ctry: dict = {}
+    for r in rows:
+        by_ctry.setdefault(r.get("ctry") or "", []).append(r)
+    wanted = set(countries_slice)
+    sums = {cc: _b3_sum(parts) for cc, parts in by_ctry.items()}
+
+    def _exp(s: dict):
+        return _nsum([s.get("f26_h1"), s.get("t26_h2")]) or 0
+
+    active = [cc for cc in by_ctry if cc and (not wanted or cc in wanted)]
+    if sel_country:
+        # вид детализации (лист 30): лента и численность — только страна
+        active = [cc for cc in active if cc == sel_country]
+    active.sort(key=lambda cc: (-_exp(sums[cc]), cc))
+
+    def _dev(cur_v, base):
+        # Δ% — только от положительной базы: сторно-базы дают −190% и хуже
+        # (правило P15/деки «н/д»).
+        return _div(_diff(cur_v, base), base) if (base or 0) > 0 else None
+
+    # KPI-лента: суммы по выбранным странам + «»-страна (вне карточек)
+    kpi_rows = [r for cc in active for r in by_ctry[cc]] + (by_ctry.get("") or [])
+    s = _b3_sum(kpi_rows)
+    exp = _nsum([s.get("f26_h1"), s.get("t26_h2")])
+    cards = {
+        "f25_h1": _r0(s.get("f25_h1")), "f26_h1": _r0(s.get("f26_h1")),
+        "d1": _r1(_pct(_dev(s.get("f26_h1"), s.get("f25_h1")))),
+        "f25_h2": _r0(s.get("f25_h2")), "t26_h2": _r0(s.get("t26_h2")),
+        "d2": _r1(_pct(_dev(s.get("t26_h2"), s.get("f25_h2")))),
+        "exp": _r0(exp), "dyear": _r1(_pct(_dev(exp, s.get("f25")))),
+    }
+
+    # ПЧ/ФЧ-панель: численность по тем же странам, что и KPI
+    hc_set = set(active) | ({sel_country} if sel_country else set())
+
+    def _hc_sum(src: str, key: str) -> float | None:
+        return _nsum([r.get(key) for r in (hc.get(src) or [])
+                      if (r.get("ctry") or "") in hc_set])
+    pa, q25, q26 = _hc_sum("plan", "pa"), _hc_sum("h25", "q"), _hc_sum("h26", "q")
+    headcount = {
+        "plan_approved": _r2(pa), "fact_prev": _r2(q25), "fact_cur": _r2(q26),
+        "d_plan": _r2(_diff(q26, pa)) if pa is not None and q26 is not None else None,
+        "d_year": _r2(_diff(q26, q25)) if q25 is not None and q26 is not None else None,
+    }
+
+    # Карточки стран: ожидание года и три Δ%, порядок — по убыванию ожидания
+    cards_by_country = []
+    for cc in active:
+        sc = sums[cc]
+        cc_exp = _nsum([sc.get("f26_h1"), sc.get("t26_h2")])
+        cards_by_country.append({
+            "cc": cc, "label": _B3_COUNTRY_NAMES.get(cc, cc),
+            "exp": _r0(cc_exp),
+            "d1": _r1(_pct(_dev(sc.get("f26_h1"), sc.get("f25_h1")))),
+            "d2": _r1(_pct(_dev(sc.get("t26_h2"), sc.get("f25_h2")))),
+            "dyear": _r1(_pct(_dev(cc_exp, sc.get("f25")))),
+        })
+
+    # Статьи детализации страны (лист 30): группировка row_template, порядок
+    # фиксированный, все-нулевые статьи не отдаются
+    articles = []
+    if sel_country:
+        by_art: dict = {}
+        for r in art or []:
+            tmpl = r.get("tmpl") or ""
+            slot = by_art.setdefault(_B3_ARTICLE_BY_TMPL.get(tmpl, "Вспомогательные расходы"), {})
+            for key in ("f25_h1", "f25_h2", "f26_h1", "t26_h2", "f26_h2c", "p26_h2o"):
+                v = r.get(key)
+                if v is not None:
+                    slot[key] = slot.get(key, 0.0) + float(v)
+        for name in _B3_ARTICLE_ORDER:
+            slot = by_art.get(name)
+            if not slot or not any(slot.get(k) for k in
+                                   ("f25_h1", "f25_h2", "f26_h1", "t26_h2", "f26_h2c", "p26_h2o")):
+                continue
+            _b3_hybrid(slot)
+            year25 = _nsum([slot.get("f25_h1"), slot.get("f25_h2")])
+            a_exp = _nsum([slot.get("f26_h1"), slot.get("t26_h2")])
+            articles.append({
+                "label": name,
+                "v1": _r0(slot.get("f26_h1")), "b1": _r0(slot.get("f25_h1")),
+                "v2": _r0(slot.get("t26_h2")), "b2": _r0(slot.get("f25_h2")),
+                "v3": _r0(a_exp), "b3": _r0(year25),
+                "d1": _r1(_pct(_dev(slot.get("f26_h1"), slot.get("f25_h1")))),
+                "d2": _r1(_pct(_dev(slot.get("t26_h2"), slot.get("f25_h2")))),
+                "d3": _r1(_pct(_dev(a_exp, year25))),
+            })
+
+    warning = None
+    if not rows:
+        warning = "Нет данных бюджета по выбранному подразделению и срезам."
+    elif by_ctry.get("") and any(_b3_sum(by_ctry[""]).values()):
+        warning = ("Часть строк подразделения без страны справочника входит в "
+                   "KPI-ленту, но не имеет карточки страны.")
+    data = {"cards": cards, "headcount": headcount,
+            "cards_by_country": cards_by_country, "articles": articles}
+    return data, warning
+
+
+async def _dashboard_b3(p: dict, meta: dict) -> dict:
+    """Блок 3 «Подразделения по странам»: свод по группе (лист 28) и детализация
+    страны по статьям (лист 30). Подразделение — селектор вкладки (b3_dept,
+    дефолт — первое из dept_options), страна — b3_country; год — фильтр «Год»,
+    ожидание помесячно как у B1 (факт 2ПГ до C + тактика после)."""
+    year_cur = p.get("year") or YEAR_PLAN
+    year_prev = year_cur - 1
+    closed = _closed_from_meta(meta)
+    overrides = {}
+    if p.get("expect_month"):
+        overrides["close_month"] = p["expect_month"]
+    cfg = _expect_cfg(closed, year_cur, overrides)
+    periods = _b3_periods(year_cur, year_prev) + _b3_expect_periods(cfg, year_cur)
+
+    sql, sql_params = _b3_sql(p, periods)
+    async with acquire() as pg:
+        grain = json.loads(await pg.fetchval(sql, *sql_params, timeout=FOT_QUERY_TIMEOUT))
+        dept_options = _b3_dept_options(grain)
+        known = {o["dept"] for o in dept_options}
+        if p["b3_dept"] and p["b3_dept"] not in known:
+            raise ValueError("fot: b3_dept — %r нет среди направлений, "
+                             "присутствующих в ≥2 странах" % (p["b3_dept"],))
+        sel_dept = p["b3_dept"] or (dept_options[0]["dept"] if dept_options else "")
+        # Страна детализации вне карточек среза игнорируется: фронт по
+        # country_dropped вернётся к сводному виду без повторного запроса.
+        cards_cc = {(r.get("ctry") or "") for r in grain
+                    if (r.get("dir") or "") == sel_dept}
+        if p["countries"]:
+            cards_cc &= set(p["countries"])
+        sel_country = p["b3_country"] if p["b3_country"] in cards_cc else ""
+        hc_sql, hc_params = _b3_hc_art_sql(p, sel_dept, sel_country, periods,
+                                           year_cur, year_prev)
+        payload = json.loads(await pg.fetchval(hc_sql, *hc_params, timeout=FOT_QUERY_TIMEOUT))
+    data, warning = _b3_assemble(
+        p["currency"], grain, payload, payload.get("art") or [],
+        sel_dept, sel_country, cfg, p["countries"])
+
+    c = cfg["close_month"]
+    fact_months = ("07–%02d" % min(c, 12)) if c and c > 6 else None
+    plan_months = ("%02d–12" % (c + 1)) if c and c < 12 else None
+    meta_out = {
+        "tab": "b3", "params": p, "currency": p["currency"],
+        "periods": _periods_meta(year_cur),
+        "closed_period": closed.isoformat() if closed else None,
+        "stale": meta.get("stale"), "refreshed_at": meta.get("refreshed_at"),
+        "methodology": METHODOLOGY_B3,
+        "expect": {
+            "by_month": cfg["by_month"], "close_month": c,
+            "plan_scenario": cfg["scenario"], "source": cfg["source"],
+            "fact_months": fact_months, "plan_months": plan_months,
+        },
+        "sel_dept": sel_dept, "sel_country": sel_country or None,
+        "dept_options": dept_options,
+        "country_dropped": bool(p["b3_country"]) and not sel_country,
+    }
+    warnings = [w for w in (cfg.get("warning"), warning) if w]
+    if not data["cards"]["f25_h1"]:
+        warnings.append("Данные %s года пусты в источнике — сравнения к %s "
+                        "останутся без значений." % (year_prev, year_prev))
+    if warnings:
+        meta_out["warning"] = " ".join(warnings)
     data["meta"] = meta_out
     return data
 
@@ -4833,7 +5288,7 @@ async def dashboard(tab: str, params: dict) -> dict:
     if tab == "p9":
         p = _parse_p9_params(params, meta)
         return await _dashboard_p9(p, meta)
-    if tab in ("p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18", "b1"):
+    if tab in ("p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18", "b1", "b3"):
         p = _parse_halfyear_params(params)
         if tab == "p10":
             return await _dashboard_p10(p, meta)
@@ -4847,6 +5302,8 @@ async def dashboard(tab: str, params: dict) -> dict:
             return await _dashboard_p18(p, meta)
         if tab == "b1":
             return await _dashboard_b1(p, meta)
+        if tab == "b3":
+            return await _dashboard_b3(p, meta)
         if tab == "p13":
             return await _dashboard_p13(p, meta)
         if tab == "p15":
@@ -4880,6 +5337,7 @@ __all__ = [
     "METHODOLOGY_P18",
     "METHODOLOGY_P9",
     "METHODOLOGY_B1",
+    "METHODOLOGY_B3",
     "P11_CHANNEL_LEVELS",
     "P11_MATRIX_LEVELS",
     "ROW_TEMPLATE_BY_CODE",

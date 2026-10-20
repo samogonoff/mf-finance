@@ -1017,6 +1017,140 @@
             </section>
           </template>
 
+          <!-- Блок 3 «Подразделения по странам» (лист 28 — свод по группе,
+               лист 30 — страна по статьям). Срез «Направление» панели здесь
+               не действует — его заменяет селектор вкладки; плашки «ОГОВОРКИ»
+               и приписки деки не переносятся (решение заказчика 16.10). -->
+          <template v-if="isB3">
+            <!-- Тулбар: селектор подразделения + возврат к сводному виду -->
+            <div class="b3-toolbar">
+              <label class="b3-dept-label">Подразделение
+                <CostMultiSelect v-model="b3DeptSel" :options="b3DeptOptions"
+                                 placeholder="Все · подразделения в ≥2 странах"
+                                 @change="onB3DeptChange" />
+              </label>
+              <button v-if="b3Country" class="btn btn-ghost btn-sm" type="button"
+                      @click="b3BackToSummary">
+                <Icon name="lucide:arrow-left" /> Свод по странам
+              </button>
+              <span class="slide-unit">тыс {{ currency }}</span>
+            </div>
+
+            <section class="slide" aria-label="Бюджет ФОТ подразделения">
+              <header class="slide-hdr">
+                <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
+                <span class="slide-subtitle">
+                  {{ b3Country
+                    ? `${b3CountryName} — ${b3DeptLabel}: статьи ФОТ (тыс ${currency})`
+                    : `Бюджет ФОТ ${b3DeptLabel} ${yearPlan} — свод по группе` }}
+                </span>
+                <span class="slide-year b3-badge" aria-hidden="true" :title="b3BadgeTitle">{{ b3BadgeText }}</span>
+              </header>
+
+              <!-- KPI-лента подразделения (на виде страны — та же страна) + ПЧ/ФЧ -->
+              <div class="ribbon">
+                <div class="rb">
+                  <span class="rb-label">ФАКТ 1 ПГ {{ yearPrev }}</span>
+                  <span class="rb-value">{{ fmt0(b3Kpi.f25_h1) }}<span class="rb-unit"> тыс {{ currency }}</span></span>
+                </div>
+                <div class="rb rb-big">
+                  <span class="rb-label">ФАКТ 1 ПГ {{ yearPlan }}</span>
+                  <span class="rb-value">{{ fmt0(b3Kpi.f26_h1) }}<span class="rb-unit"> тыс {{ currency }}</span></span>
+                  <span class="rb-sub" :class="signCf(b3Kpi.d1)">{{ pctNd(b3Kpi.d1) }} к 1П {{ yearPrev }}</span>
+                </div>
+                <div class="rb">
+                  <span class="rb-label">ФАКТ 2 ПГ {{ yearPrev }}</span>
+                  <span class="rb-value">{{ fmt0(b3Kpi.f25_h2) }}<span class="rb-unit"> тыс {{ currency }}</span></span>
+                </div>
+                <div class="rb rb-big">
+                  <span class="rb-label">ТАКТИКА 2 ПГ {{ yearPlan }}</span>
+                  <span class="rb-value">{{ fmt0(b3Kpi.t26_h2) }}<span class="rb-unit"> тыс {{ currency }}</span></span>
+                  <span class="rb-sub" :class="signCf(b3Kpi.d2)">{{ pctNd(b3Kpi.d2) }} к 2П {{ yearPrev }}</span>
+                </div>
+                <div class="rb rb-big">
+                  <span class="rb-label">ОЖИДАНИЕ, ГОД {{ yearPlan }}</span>
+                  <span class="rb-value">{{ fmt0(b3Kpi.exp) }}<span class="rb-unit"> тыс {{ currency }}</span></span>
+                  <span class="rb-sub" :class="signCf(b3Kpi.dyear)">{{ pctNd(b3Kpi.dyear) }} к году {{ yearPrev }}</span>
+                </div>
+                <div v-if="b3Headcount" class="rb-hc">
+                  <div class="hc">
+                    <span class="hc-label">ПЧ {{ yearPlan }}</span>
+                    <span class="hc-value">{{ fmt1(b3Headcount.plan_approved) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">ФЧ 1ПГ{{ yr2(yearPrev) }}</span>
+                    <span class="hc-value">{{ fmt1(b3Headcount.fact_prev) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">ФЧ 1ПГ{{ yr2(yearPlan) }}</span>
+                    <span class="hc-value">{{ fmt1(b3Headcount.fact_cur) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">Δ план</span>
+                    <span class="hc-value" :class="signCf(b3Headcount.d_plan)">{{ fmtSigned(b3Headcount.d_plan) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">Δ {{ yr2(yearPrev) }}</span>
+                    <span class="hc-value" :class="signCf(b3Headcount.d_year)">{{ fmtSigned(b3Headcount.d_year) }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Свод: карточки стран (клик — детализация по статьям) -->
+              <template v-if="!b3Country">
+                <h3 class="grid-caption">ДИНАМИКА ПО СТРАНАМ (ГОД, ОЖИДАНИЕ {{ yearPlan }} К ФАКТУ {{ yearPrev }})</h3>
+                <section class="cc-grid">
+                  <article v-for="c in b3Cards" :key="c.cc" class="ccard b3-ccard"
+                           :title="`Детализация: ${c.label} — ${b3DeptLabel}`"
+                           @click="b3OpenCountry(c.cc)">
+                    <div><span class="cc-code">{{ c.cc }}</span> <span class="b3-cc-name">{{ c.label }}</span></div>
+                    <span class="cc-big">{{ fmt0(c.exp) }}<span class="rb-unit"> тыс {{ currency }}</span></span>
+                    <div class="cc-sep" role="presentation" />
+                    <p class="cc-line b3-drow">1 ПГ {{ yr2(yearPlan) }}/{{ yr2(yearPrev) }}:
+                      <b :class="signCf(c.d1)">{{ pctNd(c.d1) }}</b></p>
+                    <p class="cc-line b3-drow">2 ПГ такт/{{ yr2(yearPrev) }}:
+                      <b :class="signCf(c.d2)">{{ pctNd(c.d2) }}</b></p>
+                    <p class="cc-line b3-drow">Год ожид/{{ yr2(yearPrev) }}:
+                      <b :class="signCf(c.dyear)">{{ pctNd(c.dyear) }}</b></p>
+                  </article>
+                </section>
+              </template>
+
+              <!-- Детализация страны: статьи ФОТ (лист 30) -->
+              <template v-else>
+                <div class="b3-rule" role="presentation" />
+                <h3 class="grid-caption">ПО СТАТЬЯМ:</h3>
+                <section class="b3-articles">
+                  <article v-for="a in b3Articles" :key="a.label" class="b3-acard">
+                    <h4 class="b3-at">{{ a.label }}</h4>
+                    <div class="b3-ahr" role="presentation" />
+                    <div class="b3-per">
+                      <span class="b3-plabel">1 ПГ {{ yearPlan }}</span>
+                      <span class="b3-pval">{{ fmt0(a.v1) }}<span class="rb-unit"> тыс {{ currency }}</span></span>
+                      <span class="b3-pbase">1П{{ yr2(yearPrev) }}: {{ fmt0(a.b1) }}</span>
+                      <b class="b3-circ" :class="signCf(a.d1)" :title="`к факту 1П${yr2(yearPrev)}`">{{ pctNd(a.d1) }}</b>
+                    </div>
+                    <div class="b3-per">
+                      <span class="b3-plabel">ТАКТИКА 2 ПГ {{ yearPlan }}</span>
+                      <span class="b3-pval">{{ fmt0(a.v2) }}<span class="rb-unit"> тыс {{ currency }}</span></span>
+                      <span class="b3-pbase">2П{{ yr2(yearPrev) }}: {{ fmt0(a.b2) }}</span>
+                      <b class="b3-circ" :class="signCf(a.d2)" :title="`к факту 2П${yr2(yearPrev)}`">{{ pctNd(a.d2) }}</b>
+                    </div>
+                    <div class="b3-per">
+                      <span class="b3-plabel">ОЖИДАНИЕ, ГОД {{ yearPlan }}</span>
+                      <span class="b3-pval">{{ fmt0(a.v3) }}<span class="rb-unit"> тыс {{ currency }}</span></span>
+                      <span class="b3-pbase">Год{{ yr2(yearPrev) }}: {{ fmt0(a.b3) }}</span>
+                      <b class="b3-circ" :class="signCf(a.d3)"
+                         :title="`Ожид.${yr2(yearPlan)} / Факт.год${yr2(yearPrev)}`">{{ pctNd(a.d3) }}</b>
+                    </div>
+                  </article>
+                </section>
+              </template>
+
+              <p v-if="b3ExpectNote" class="slide-foot">{{ b3ExpectNote }}</p>
+            </section>
+          </template>
+
           <!-- P17 «Численность ГК»: свод по группе компаний -->
           <template v-if="isP17">
             <!-- Тулбар: год + полугодие (над обоими слайдами) -->
@@ -1213,8 +1347,8 @@
             </section>
           </template>
 
-          <!-- KPI-карточки вкладки: у P10 пять; у P11/P14–P18 — слайд выше -->
-          <section v-if="!isP11 && !isP14 && !isDeptTab && !isP17 && !isP18 && !isB1" class="fot-kpis">
+          <!-- KPI-карточки вкладки: у P10 пять; у P11/P14–P18/B1/B3 — слайд выше -->
+          <section v-if="!isP11 && !isP14 && !isDeptTab && !isP17 && !isP18 && !isB1 && !isB3" class="fot-kpis">
             <article v-for="c in cards" :key="c.key" class="fot-kpi">
               <span class="fot-kpi-label">{{ c.label }}</span>
               <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
@@ -1306,8 +1440,9 @@
                validate_charts), фронт отдаёт только срезы. charts компоненту
                нужен лишь как признак «есть что разбирать» — путь fot_* их
                игнорирует, поэтому на сводных вкладках передаём серию карточек.
-               У P15/P16 серверного пути разбора нет — блок скрыт. -->
-          <CostChartInsight v-if="!isDeptTab" :block="`fot_${tab}`" :block-title="`${tabLabel} (${tab.toUpperCase()})`"
+               У P15/P16 серверного пути разбора нет — блок скрыт; у B3 ИИ-разбор
+               фазы 2 (fot_insights не трогаем), блок скрыт. -->
+          <CostChartInsight v-if="!isDeptTab && !isB3" :block="`fot_${tab}`" :block-title="`${tabLabel} (${tab.toUpperCase()})`"
                             :charts="insightCharts" :context="insightContext" />
         </div>
 
@@ -1373,6 +1508,7 @@ const TABS = [
   { key: 'p17', label: 'Численность ГК' },
   { key: 'p18', label: 'Исполнение бюджета' },
   { key: 'b1', label: 'ГК' },
+  { key: 'b3', label: 'Подразделения по странам' },
 ] as const
 const tab = ref<string>('p9')
 
@@ -1527,6 +1663,11 @@ function buildQuery(): string {
   if (isB1.value) {
     // B1 берёт год из meta.periods, фильтры панели — из срезов
   }
+  if (isB3.value) {
+    // селектор подразделения и страна детализации — локальные срезы вкладки
+    if (b3Dept.value) p.set('b3_dept', b3Dept.value)
+    if (b3Country.value) p.set('b3_country', b3Country.value)
+  }
   if (isP17.value) {
     p.set('p17_year', String(p17Year.value))
     p.set('p17_half', String(p17Half.value))
@@ -1581,6 +1722,8 @@ const isP16 = computed(() => tab.value === 'p16')
 const isP17 = computed(() => tab.value === 'p17')
 const isP18 = computed(() => tab.value === 'p18')
 const isB1 = computed(() => tab.value === 'b1')
+/** Блок 3 «Подразделения по странам»: слайд-разметка, KPI-лента и ИИ скрыты. */
+const isB3 = computed(() => tab.value === 'b3')
 const p18Year = ref<number>(2026)
 const p18Half = ref<number>(0)
 const p18YearOptions = [2024, 2025, 2026, 2027]
@@ -1840,6 +1983,81 @@ const b1DotsPair = computed(() => {
   return `${h}${yr2(yearPlan.value)}/${h}${yr2(yearPrev.value)}`
 })
 const b1CapPrevDat = computed(() => b1CapPrev.value.replace('Факт', 'Факту'))
+
+// ── Блок 3 «Подразделения по странам»: селектор вкладки + два вида ───────────
+
+/** Селектор подразделения заменяет срез «Направление» (на b3 он не действует).
+ *  Пустой выбор — серверный дефолт (первое из dept_options). */
+const b3Dept = ref('')
+const b3DeptSel = ref<string[]>([])
+const b3Country = ref('')
+
+const b3Kpi = computed<any>(() => (isB3.value ? dash.value?.cards || {} : {}))
+const b3Headcount = computed<any>(() => (isB3.value ? dash.value?.headcount || null : null))
+const b3Cards = computed<any[]>(() => (isB3.value ? dash.value?.cards_by_country || [] : []))
+const b3Articles = computed<any[]>(() => (isB3.value ? dash.value?.articles || [] : []))
+const b3DeptLabel = computed(() => meta.value.sel_dept || '—')
+const b3CountryName = computed(() =>
+  b3Cards.value.find((c: any) => c.cc === b3Country.value)?.label || b3Country.value)
+/** Опции селектора: выбранный отдел, выпавший из каскада при сужении срезов,
+ *  остаётся в списке (как multiOptions у срезов панели). */
+const b3DeptOptions = computed(() => {
+  const opts = (meta.value.dept_options || []).map((o: any) => ({ value: o.dept, label: o.label }))
+  if (b3Dept.value && !opts.some((o: any) => o.value === b3Dept.value))
+    opts.unshift({ value: b3Dept.value, label: b3Dept.value })
+  return opts
+})
+/** Бейдж шапки: на своде — подразделение (может быть длинным), на стране — код. */
+const b3BadgeText = computed(() => (b3Country.value ? b3Country.value : b3BadgeShort.value))
+const b3BadgeShort = computed(() => {
+  const d = b3DeptLabel.value
+  return d.length > 9 ? d.slice(0, 8) + '…' : d
+})
+const b3BadgeTitle = computed(() => (b3Country.value
+  ? `${b3CountryName.value} — ${b3DeptLabel.value}`
+  : b3DeptLabel.value))
+const b3ExpectNote = computed(() => {
+  const e = meta.value?.expect
+  if (!e || !e.by_month) return ''
+  const f = e.fact_months; const p = e.plan_months
+  if (f && p) return `Тактика 2 ПГ = факт по закрытым месяцам (${f}) + тактика по незакрытым (${p}); ожидание = факт 1 ПГ + тактика 2 ПГ.`
+  if (f && !p) return 'Ожидание = факт за год: все месяцы периода закрыты.'
+  if (!f && p) return `Ожидание: факт 1 ПГ + тактика по незакрытым месяцам (${p}).`
+  return ''
+})
+/** Δ% с правилом «н/д»: пусто или неположительная база — «н/д» (сервер). */
+function pctNd(v: any): string {
+  return isNum(v) ? fmtSigned(v) + '%' : 'н/д'
+}
+
+function onB3DeptChange() {
+  const v = b3DeptSel.value[b3DeptSel.value.length - 1] || ''
+  b3DeptSel.value = v ? [v] : []
+  if (v === b3Dept.value) return
+  b3Dept.value = v
+  b3Country.value = '' // страна прежнего подразделения неактуальна
+  loadDash()
+}
+function b3OpenCountry(cc: string) {
+  if (b3Country.value === cc) return
+  b3Country.value = cc
+  loadDash()
+}
+function b3BackToSummary() {
+  if (!b3Country.value) return
+  b3Country.value = ''
+  loadDash()
+}
+/** Серверный дефолт селектора и авто-возврат: страна выпала из среза — сервер
+ *  уже отдал сводный вид (country_dropped), локально сбрасываем выбор. */
+watch(() => dash.value, (d: any) => {
+  if (!isB3.value || !d) return
+  if (!b3Dept.value && d.meta?.sel_dept) {
+    b3Dept.value = d.meta.sel_dept
+    b3DeptSel.value = [d.meta.sel_dept]
+  }
+  if (d.meta?.country_dropped) b3Country.value = ''
+})
 /** Бейдж п.п.: два знака, лишние нули срезаются («−2,1», «+0,33») — как в деке. */
 function ppBadge(v: any): string {
   let t = fmtSigned(v, 2)
@@ -2714,6 +2932,63 @@ const fmtDateTime = (iso: any) => {
 /* светофор внутри .cc-hc: специфичнее дефолтного цвета b */
 .cc-hc b.cf-pos { color: var(--fot-pos); }
 .cc-hc b.cf-neg { color: var(--fot-neg); }
+
+/* ── Блок 3 «Подразделения по странам» (листы 28/30 деки) ────────────────── */
+/* Тулбар: селектор подразделения (замена среза «Направление» на вкладке) */
+.b3-toolbar { display: flex; align-items: flex-end; gap: var(--sp-4); flex-wrap: wrap; margin: 0; }
+.b3-dept-label {
+  display: flex; flex-direction: column; gap: 4px; min-width: 300px; max-width: 440px;
+  font-size: 12px; font-weight: var(--fw-bold, 700); color: var(--fot-muted);
+}
+.b3-toolbar .slide-unit { margin-left: auto; }
+/* Бейдж шапки: подразделение бывает длинным — пилюля с эллипсисом вместо круга */
+.slide-year.b3-badge {
+  width: auto; min-width: 44px; max-width: 200px; height: 28px; border-radius: 14px;
+  padding: 0 10px; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Карточка страны кликабельна (переход к статьям листа 30) */
+.b3-ccard { cursor: pointer; transition: border-color .15s ease, transform .15s ease; }
+.b3-ccard:hover, .b3-ccard:focus-visible { border-color: var(--fot-accent-light); transform: translateY(-1px); }
+.b3-cc-name { font-size: 13px; color: var(--fot-muted); }
+.b3-drow b { font-variant-numeric: tabular-nums; }
+/* Детализация страны: линия и карточки статей (3 периода + круг Δ%) */
+.b3-rule { border-top: 1.5px solid var(--fot-accent-light); }
+.b3-articles { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: var(--sp-3); }
+.b3-acard {
+  background: var(--fot-card); border: 1.3px solid var(--fot-accent-light);
+  border-radius: 8px; padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  display: flex; flex-direction: column; min-width: 0;
+}
+.b3-at {
+  margin: 0; font-size: 14.5px; font-weight: var(--fw-bold, 700);
+  color: var(--fot-accent-light); letter-spacing: .03em; text-transform: uppercase;
+}
+.b3-ahr { border-top: 0.7px solid color-mix(in srgb, var(--fot-accent-light) 45%, transparent); margin: 6px 0 2px; }
+.b3-per {
+  display: grid; grid-template-columns: minmax(0, 1fr) 52px; column-gap: var(--sp-3);
+  align-items: center; padding: 7px 0;
+}
+.b3-per + .b3-per { border-top: 1px solid color-mix(in srgb, var(--fot-border) 70%, transparent); }
+.b3-plabel { font-size: 10.7px; font-weight: var(--fw-bold, 700); color: var(--fot-accent-light); letter-spacing: .2px; }
+.b3-pval {
+  font-family: 'Cambria', 'Times New Roman', serif; font-size: 16.5px;
+  font-weight: var(--fw-bold, 700); color: var(--fot-ink); white-space: nowrap;
+}
+.b3-pbase { font-size: 10.5px; color: var(--fot-muted); white-space: nowrap; }
+/* Круг Δ% статьи: рамка currentColor, ноль/н/д — нейтральный серый (дека 30);
+   светофор — усиленные селекторы, специфичнее нейтрального цвета круга */
+.b3-circ {
+  grid-column: 2; grid-row: 1 / span 3; justify-self: end;
+  width: 52px; height: 52px; border: 2px solid currentColor; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11.3px; font-weight: var(--fw-bold, 700); color: var(--fot-muted);
+  text-align: center; line-height: 1.1;
+}
+.b3-circ.cf-pos { color: var(--fot-pos); }
+.b3-circ.cf-neg { color: var(--fot-neg); }
+.fot-dark .b3-circ { background: #1E1418; color: #9C9296; }
+.fot-dark .b3-circ.cf-pos { color: #8FD9B0; }
+.fot-dark .b3-circ.cf-neg { color: #F2A69D; }
 
 /* ── P14 «ФОТ по направлениям бизнеса»: лист 4 деки ─────────────────────── */
 .slide-note { font-size: 12px; color: var(--fot-muted); white-space: nowrap; }
