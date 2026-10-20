@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // Источники данных формы «Розница» (ТЗ §11). Онлайн — тот же *sql.DB MSSQL, что у
@@ -101,9 +102,31 @@ func allViewGuards(table string) string {
 type mssqlRetailSource struct {
 	db  *sql.DB
 	tbl RetailTables
-	// lisaFailed — последний запрос магазинов с карточкой Лисы не удался (нет прав, таблицы нет) и был
-	// повторён без неё: статусы взяты из справочника ЦФО. Нужен подписи источника на экране.
-	lisaFailed atomic.Bool
+	// lisaSkipUntil — до этого момента (unix nano) карточки Лисы не запрашиваются: после отказа в правах
+	// или отсутствия таблицы повторять JOIN при каждом открытии формы незачем.
+	lisaSkipUntil atomic.Int64
+}
+
+// retailLisaRetryAfter — как долго после отказа в правах не пробуем Лису снова.
+const retailLisaRetryAfter = 5 * time.Minute
+
+// retailLisaUnavailable — ошибка говорит, что к таблице Лисы нет доступа или её нет: права (229/230),
+// нет объекта (208), база недоступна под этим логином (916/4060). Обрыв соединения, deadlock, таймаут и
+// ошибки контекста сюда не входят: при них синхронизация должна упасть, а не подменить статусы Лисы
+// устаревшими статусами справочника ЦФО.
+func retailLisaUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se interface{ SQLErrorNumber() int32 }
+	if !errors.As(err, &se) {
+		return false
+	}
+	switch se.SQLErrorNumber() {
+	case 229, 230, 208, 916, 4060:
+		return true
+	}
+	return false
 }
 
 // NewRetailSource — источник данных розницы. mock=true или db=nil → фикстуры.
@@ -139,15 +162,9 @@ func retailStoresQuery(storeTable, lflTable string) string {
 		   AND (@p2 = '' OR S.[Country] = @p2)`, lisaCols, storeTable, lisaJoin)
 }
 
-// RetailStatusSourceLabel — подпись источника LFL-статусов для экрана.
-type RetailStatusSourceLabel interface {
-	LFLSourceLabel() string
-}
-
-// LFLSourceLabel — откуда сейчас берутся LFL-статусы: Лиса (с запасом справочник ЦФО), только справочник
-// ЦФО (Лиса не настроена) или справочник ЦФО из-за недоступности Лисы.
-func (s *mssqlRetailSource) LFLSourceLabel() string {
-	return retailLFLSourceLabel(s.tbl.StoreTable, s.tbl.LFLTable, s.lisaFailed.Load())
+// RetailStoresWithLFLSource — источник отдаёт магазины вместе с подписью, откуда взяты их LFL-статусы.
+type RetailStoresWithLFLSource interface {
+	StoresWithLFLSource(ctx context.Context, country string) ([]RetailStore, string, error)
 }
 
 func retailLFLSourceLabel(storeTable, lflTable string, lisaFailed bool) string {
@@ -175,18 +192,32 @@ func retailLFLSource(cfoStatus, lisaStatus string, lisaFound bool) string {
 // а не из строкового литерала: ТЗ прямо предупреждает, что в справочнике
 // 'Магазины', а в таблице плана '3.Магазины', и сопоставление идёт справочником.
 func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]RetailStore, error) {
-	rows, err := s.db.QueryContext(ctx, retailStoresQuery(s.tbl.StoreTable, s.tbl.LFLTable), s.tbl.StoreGroup, country)
-	if err != nil && strings.TrimSpace(s.tbl.LFLTable) != "" {
+	out, _, err := s.StoresWithLFLSource(ctx, country)
+	return out, err
+}
+
+// StoresWithLFLSource — те же магазины и подпись источника LFL-статусов ИМЕННО ЭТОГО чтения (а не
+// общего состояния источника: параллельные вызовы не путают подпись друг другу).
+func (s *mssqlRetailSource) StoresWithLFLSource(ctx context.Context, country string) ([]RetailStore, string, error) {
+	lflTable := strings.TrimSpace(s.tbl.LFLTable)
+	lisaFailed := false
+	if lflTable != "" && time.Now().UnixNano() < s.lisaSkipUntil.Load() {
+		lflTable, lisaFailed = "", true // недавно отказали в правах — Лису не дёргаем
+	}
+	rows, err := s.db.QueryContext(ctx, retailStoresQuery(s.tbl.StoreTable, lflTable), s.tbl.StoreGroup, country)
+	if err != nil && lflTable != "" && ctx.Err() == nil && retailLisaUnavailable(err) {
 		// Лиса нужна только для уточнения статуса: нет прав на её таблицу — не должно ронять форму,
-		// синхронизацию и свод. Повторяем без присоединения, статусы — из справочника ЦФО.
-		log.Printf("plans retail: карточки Лисы (%s) недоступны, LFL-статус взят из справочника ЦФО: %v", s.tbl.LFLTable, err)
-		s.lisaFailed.Store(true)
+		// синхронизацию и свод. Повторяем без присоединения, статусы — из справочника ЦФО. Любая
+		// другая ошибка (обрыв, таймаут, deadlock) возвращается как есть: подмена статусов Лисы
+		// устаревшими затёрла бы уже синхронизированные данные.
+		log.Printf("plans retail: карточки Лисы (%s) недоступны, LFL-статус взят из справочника ЦФО (повтор через %s): %v",
+			s.tbl.LFLTable, retailLisaRetryAfter, err)
+		s.lisaSkipUntil.Store(time.Now().Add(retailLisaRetryAfter).UnixNano())
+		lisaFailed = true
 		rows, err = s.db.QueryContext(ctx, retailStoresQuery(s.tbl.StoreTable, ""), s.tbl.StoreGroup, country)
-	} else if err == nil {
-		s.lisaFailed.Store(false)
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	out := make([]RetailStore, 0, 400)
@@ -202,7 +233,7 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 		var plo sql.NullFloat64
 		if err := rows.Scan(&g1, &g2, &code, &cfo, &ctry, &fox, &plo, &typ, &open, &close_,
 			&stage, &comp, &ch, &old, &cat, &lfl, &rm, &mgr, &pla, &lisaID, &lisa); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		codeNum, ok := parseNumericCFO(code.String)
 		if !code.Valid || !ok {
@@ -225,7 +256,7 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 		out = append(out, st)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if skipped > 0 {
 		// Молча терять строки нельзя: расхождение «в справочнике N, в форме N−k»
@@ -233,7 +264,7 @@ func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]Retai
 		log.Printf("plans retail: пропущено строк справочника с нечисловым CodeCFO: %d", skipped)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CodeCFO < out[j].CodeCFO })
-	return out, nil
+	return out, retailLFLSourceLabel(s.tbl.StoreTable, s.tbl.LFLTable, lisaFailed), nil
 }
 
 // Fact — факт продаж (выручка с НДС) по магазинам за годы (ТЗ §11).
