@@ -17,6 +17,8 @@ func (f *fakeExpRepo) FactBasis(context.Context, int64) (string, error) { return
 
 func (f *fakeExpRepo) ClearPaymentsFact(context.Context, int64) error { return nil }
 
+func (f *fakeExpRepo) FillPlanFromSource(context.Context, int64, int, []ExpCell) error { return nil }
+
 func (f *fakeExpRepo) EnsureInstance(context.Context, ExpInstance, int64) (ExpInstance, error) {
 	return f.inst, nil
 }

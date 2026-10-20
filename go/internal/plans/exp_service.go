@@ -358,6 +358,8 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 	fact := make([]ExpCell, 0, len(cells))
 	factCur := make([]ExpCell, 0, len(cells))
 	strategy := make([]ExpCell, 0, len(cells))
+	budget := make([]ExpCell, 0, len(cells))
+	card := c // в цикле c затеняется ячейкой
 	for _, cell := range cells {
 		key := [2]int{cell.CodeCFO, cell.CodePL}
 		if _, ok := rowByKey[key]; !ok {
@@ -394,9 +396,12 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 			factCur = append(factCur, c)
 		case cell.Scenario == ExpSrcStrategy && cell.Year == in.PlanYear:
 			strategy = append(strategy, c)
+		case cell.Scenario == ExpSrcTactic && cell.Year == in.PlanYear && !expPastMonth(card, cell.Month):
+			// Бюджет источника — как колонка «бюджет» листов Excel: подставляется в план автоматически.
+			// Вводимое человеком не затирается (см. FillPlanFromSource), прошедшие месяцы закрыты.
+			c.Source = ExpSourceBudget
+			budget = append(budget, c)
 		}
-		// Тактику из источника не читаем: её и заполняет форма. Прочитать её
-		// значило бы затереть ввод пользователя снимком приёмника.
 	}
 	rows := make([]ExpRow, 0, len(rowByKey))
 	for _, r := range rowByKey {
@@ -437,6 +442,13 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 	}
 	if err := s.repo.SaveReadOnly(ctx, in.ID, ExpScenarioStrategy, strategy); err != nil {
 		return len(cells), err
+	}
+	// Бюджет источника — в план, как колонка «бюджет» листов Excel. Только в открытой карточке: утверждённая
+	// форма остаётся такой, какой её согласовали.
+	if cardEditable(card) {
+		if err := s.repo.FillPlanFromSource(ctx, in.ID, card.Month, budget); err != nil {
+			return len(cells), err
+		}
 	}
 	s.factSynced(in.ID)
 	return len(cells), nil
