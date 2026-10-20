@@ -257,3 +257,31 @@ func TestExpSourceTrace_IsPerCall(t *testing.T) {
 		t.Fatalf("следы смешались: %q %q", t1.Kind, t2.Kind)
 	}
 }
+
+// Процедура лежит в Budgeting, а пул подключён к FinDWH: имя без базы дополняется, имя с базой
+// остаётся как есть (иначе форма затрат открывалась пустой с «процедура не найдена»).
+func TestExpQualifiedProc(t *testing.T) {
+	for in, want := range map[string]string{
+		"ZATRATY_DLYA_OKSANY_BYSTRYE":                     "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]",
+		" [ZATRATY_DLYA_OKSANY_BYSTRYE] ":                 "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]",
+		"[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]": "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]",
+		"Other.dbo.Proc":                                  "Other.dbo.Proc",
+		"":                                                "",
+	} {
+		if got := expQualifiedProc(in); got != want {
+			t.Errorf("%q → %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestExpSyncErrText_ProcedureProblems(t *testing.T) {
+	for raw, want := range map[string]string{
+		"mssql: Could not find stored procedure 'ZATRATY_DLYA_OKSANY_BYSTRYE'.":                           "процедура затрат не найдена",
+		"mssql: The EXECUTE permission was denied on the object 'X', database 'Budgeting', schema 'dbo'.": "нет права выполнить",
+	} {
+		got := expSyncErrText(errors.New(raw))
+		if !strings.Contains(got, want) || strings.Contains(got, "Budgeting") && strings.Contains(got, "schema") {
+			t.Errorf("%q → %q", raw, got)
+		}
+	}
+}

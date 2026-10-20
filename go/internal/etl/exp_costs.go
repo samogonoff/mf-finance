@@ -40,6 +40,10 @@ func (o *ExpCostsOpts) normalize() {
 	if strings.TrimSpace(o.Proc) == "" {
 		o.Proc = "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]"
 	}
+	// Имя без базы (как в .env.example) из БД подключения (FinDWH) не находится.
+	if o.Proc = strings.TrimSpace(o.Proc); !strings.Contains(o.Proc, ".") {
+		o.Proc = "[Budgeting].[dbo].[" + strings.Trim(o.Proc, "[]") + "]"
+	}
 	if o.AfterHour <= 0 {
 		o.AfterHour = 5
 	}

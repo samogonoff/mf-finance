@@ -247,6 +247,10 @@ func expSyncErrText(err error) string {
 	msg := err.Error()
 	low := strings.ToLower(msg)
 	switch {
+	case strings.Contains(low, "could not find stored procedure") || strings.Contains(low, "не удалось найти хранимую процедуру"):
+		return "процедура затрат не найдена в базе источника (проверьте PLANS_EXP_COSTS_PROC и доступ)"
+	case strings.Contains(low, "permission was denied") || strings.Contains(low, "отказано в разрешении"):
+		return "нет права выполнить процедуру затрат (нужен EXECUTE у логина кабинета)"
 	case strings.Contains(low, "deadline exceeded") || strings.Contains(low, "timeout") || strings.Contains(low, "timed out"):
 		return "источник затрат не ответил вовремя (подробности в журнале сервера)"
 	case strings.Contains(low, "нет колонки") || strings.Contains(low, "нет обязательных колонок"):

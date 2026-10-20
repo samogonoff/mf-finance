@@ -173,7 +173,7 @@ func expKindGroup(kind string) string {
 // параметров не принимает, оборачивать её во временную таблицу ради фильтра
 // дороже, чем отбросить лишние строки на чтении.
 func (s *expSource) Costs(ctx context.Context, kind, country string, years []int) ([]ExpCostCell, error) {
-	proc := strings.TrimSpace(s.tables.CostsProc)
+	proc := expQualifiedProc(s.tables.CostsProc)
 	if proc == "" {
 		return nil, nil
 	}
@@ -469,4 +469,20 @@ func expGroupWithoutNumber(group string) string {
 		}
 	}
 	return group
+}
+
+// expBudgetingProcPrefix — база и схема процедуры затрат.
+const expBudgetingProcPrefix = "[Budgeting].[dbo]."
+
+// expQualifiedProc — полное имя процедуры затрат. Общий OLAP-пул кабинета подключён к базе
+// FinDWH (MSSQL_PREMASTER_DB), а процедура лежит в Budgeting: имя без базы
+// («ZATRATY_DLYA_OKSANY_BYSTRYE», так оно и в .env.example) из FinDWH не находится
+// (проверено 19.10.2026), форма затрат открывалась пустой, а причина уходила в журнал. Имя
+// без точки дополняется базой Budgeting; заданное с базой используется как есть.
+func expQualifiedProc(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.Contains(name, ".") {
+		return name
+	}
+	return expBudgetingProcPrefix + "[" + strings.Trim(name, "[]") + "]"
 }

@@ -163,7 +163,7 @@ type Config struct {
 
 	// Форма «Расходы ЦП» (TPL-CFO-EXP, этап 1.5). Источники — тот же OLAP,
 	// что у остальных форм модуля. Пусто или PlansMock=1 → фикстуры exp_mock.go.
-	PlansExpCostsProc string // процедура затрат: ZATRATY_DLYA_OKSANY_BYSTRYE (база BUDGETING)
+	PlansExpCostsProc string // процедура затрат: ZATRATY_DLYA_OKSANY_BYSTRYE; без указания базы ищется в Budgeting (пул подключён к FinDWH)
 	PlansExpCfoTable  string // справочник ЦФО этапа 1.5: FinDWH.dbo.[001 CodeCFO]
 
 	// Форма «Розница» (TPL-TO-RETAIL, ТЗ Розница §11). Источники — тот же сервер
