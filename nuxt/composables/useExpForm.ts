@@ -116,7 +116,7 @@ export interface ExpConsGroup extends ExpConsAmounts {
   unassigned?: boolean;
   lines: ExpConsLine[];
 }
-export type ExpConsChannel = "retail" | "im" | "opt";
+export type ExpConsChannel = "retail" | "im" | "opt" | "all";
 export interface ExpConsolidated {
   channel?: ExpConsChannel;
   pl_id: number;

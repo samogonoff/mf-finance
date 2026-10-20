@@ -384,6 +384,8 @@ func (s *ExpService) ChannelConsolidated(ctx context.Context, p Principal, plID 
 	switch channel {
 	case "", ExpChannelRetail:
 		return s.RetailConsolidated(ctx, p, plID, window)
+	case ExpChannelAll:
+		return s.AllChannelsConsolidated(ctx, p, plID, window)
 	case ExpChannelIM:
 		scopeKey = "IM-BY"
 	case ExpChannelOpt:

@@ -14,7 +14,7 @@
         <h1 class="page-title">{{ pageTitle }}</h1>
         <strong v-if="data" class="tactic-period">{{ periodLabel }}</strong>
         <p class="page-subtitle">
-          Расходы по группам PL и статьям, {{ channel === "im" ? "одна форма" : "по странам" }} · валюта свода {{ data?.currency || "BYN" }}
+          Расходы по группам PL и статьям, {{ channel === "im" ? "одна форма" : channel === "all" ? "по каналам" : "по странам" }} · валюта свода {{ data?.currency || "BYN" }}
         </p>
       </div>
       <div class="page-actions">
@@ -149,13 +149,26 @@ const plId = Number(route.params.plId);
 const api = useExpForm();
 
 // Канал свода: розница (4 страны), интернет-магазин или опт (одна карточка, колонки — страны ЦФО).
-const channel = computed<ExpConsChannel>(() => (route.query.channel === "opt" ? "opt" : route.query.channel === "im" ? "im" : "retail"));
-const pageTitle = computed(() =>
-  channel.value === "opt" ? "Свод расходов опта · РБ, РФ, УЗ" : channel.value === "im" ? "Свод расходов интернет-магазина" : "Свод расходов розницы · все страны"
-);
-const totalLabel = computed(() =>
-  channel.value === "opt" ? "Расходы опта · итого" : channel.value === "im" ? "Расходы ИМ · итого" : "Расходы розницы · итого"
-);
+const channel = computed<ExpConsChannel>(() => {
+  const q = route.query.channel;
+  return q === "opt" || q === "im" || q === "all" ? q : "retail";
+});
+const pageTitle = computed(() => {
+  switch (channel.value) {
+    case "opt": return "Свод расходов опта · РБ, РФ, УЗ";
+    case "im": return "Свод расходов интернет-магазина";
+    case "all": return "Свод расходов · розница, ИМ, опт";
+    default: return "Свод расходов розницы · все страны";
+  }
+});
+const totalLabel = computed(() => {
+  switch (channel.value) {
+    case "opt": return "Расходы опта · итого";
+    case "im": return "Расходы ИМ · итого";
+    case "all": return "Расходы · итого по каналам";
+    default: return "Расходы розницы · итого";
+  }
+});
 
 const PREFS_KEY = "exp-cons-view";
 const data = ref<ExpConsolidated | null>(null);
