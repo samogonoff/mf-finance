@@ -2,6 +2,7 @@ package plans
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sort"
 	"testing"
@@ -18,7 +19,9 @@ func TestZZLiveExpCH_FormsAndBudgetPrefill(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	src := NewExpCHSource(expMockSource{}, url, os.Getenv("PLANS_TEST_CH_USER"), os.Getenv("PLANS_TEST_CH_PASSWORD"), nil)
+	// Запасной источник — всегда ошибка: при недоступном ClickHouse, пустой таблице или ошибке запроса чтение молча не
+	// уйдёт в фикстуры, а тест упадёт с понятной причиной.
+	src := NewExpCHSource(failingExpSource{}, url, os.Getenv("PLANS_TEST_CH_USER"), os.Getenv("PLANS_TEST_CH_PASSWORD"), nil)
 	if src == nil {
 		t.Fatal("источник ClickHouse не создан")
 	}
@@ -33,9 +36,13 @@ func TestZZLiveExpCH_FormsAndBudgetPrefill(t *testing.T) {
 	}
 	const year, month = 2026, 10
 	for _, f := range forms {
-		cells, err := src.Costs(ctx, f.kind, f.country, []int{year - 1, year})
+		costsCtx, trace := WithExpSourceTrace(ctx)
+		cells, err := src.Costs(costsCtx, f.kind, f.country, []int{year - 1, year})
 		if err != nil {
 			t.Fatalf("%s: чтение из ClickHouse: %v", f.name, err)
+		}
+		if trace.Kind != ExpSourceKindCH {
+			t.Fatalf("%s: данные прочитаны не из ClickHouse (источник %q): таблица finance.exp_costs пуста, ClickHouse недоступен или запрос упал", f.name, trace.Kind)
 		}
 		if len(cells) == 0 {
 			t.Errorf("%s: снимок пуст", f.name)
@@ -94,6 +101,23 @@ func TestZZLiveExpCH_FormsAndBudgetPrefill(t *testing.T) {
 			t.Errorf("%s: бюджет из источника не подставился ни в одну ячейку", f.name)
 		}
 	}
+}
+
+// failingExpSource — запасной источник, который всегда отвечает ошибкой (см. TestZZLiveExpCH…).
+type failingExpSource struct{}
+
+var errLiveFallback = errors.New("запасной источник не должен использоваться: чтение должно идти из ClickHouse")
+
+func (failingExpSource) Costs(context.Context, string, string, []int) ([]ExpCostCell, error) {
+	return nil, errLiveFallback
+}
+
+func (failingExpSource) Cfo(context.Context, string, string) (map[int]ExpCfoAttrs, error) {
+	return nil, errLiveFallback
+}
+
+func (failingExpSource) SalesPlan(context.Context, string, int) (map[int]map[int]float64, error) {
+	return nil, errLiveFallback
 }
 
 func head(a []int, n int) []int {
