@@ -97,6 +97,7 @@ export interface ExpConsCountry {
   rows: number;
   rate: number;
   plan: number;
+  no_rate?: boolean;
   error?: string;
 }
 export interface ExpConsAmounts {

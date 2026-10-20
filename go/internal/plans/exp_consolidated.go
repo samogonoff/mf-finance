@@ -33,8 +33,10 @@ type ExpConsCountry struct {
 	Status      string  `json:"status,omitempty"`
 	NatCurrency string  `json:"nat_currency,omitempty"`
 	Rows        int     `json:"rows"`
-	Rate        float64 `json:"rate"` // курс тактики к BYN (1 — BYN или курса нет)
+	Rate        float64 `json:"rate"` // курс тактики к BYN (1 для BYN; 0, если курса нет)
 	Plan        float64 `json:"plan"` // план страны за окно, BYN
+	// NoRate — курса валюты страны к BYN нет: суммы страны в свод не входят.
+	NoRate bool `json:"no_rate,omitempty"`
 	// Error — почему страны нет в своде (нет карточки, ошибка чтения).
 	Error string `json:"error,omitempty"`
 }
@@ -109,9 +111,13 @@ func expWindowMonths(window string, month int) (from, to int, normalized string)
 }
 
 // expFxToBYN — курсы к BYN по назначению колонки (зеркало retailFx свода продаж).
-type expFxToBYN struct{ Tactic, FactLY, FactPrev, FactCur float64 }
+// NoRate — курса валюты страны к BYN нет: суммы страны не пересчитать, и в свод они не входят.
+type expFxToBYN struct {
+	Tactic, FactLY, FactPrev, FactCur float64
+	NoRate                            bool
+}
 
-func sameExpFx(r float64) expFxToBYN { return expFxToBYN{r, r, r, r} }
+func sameExpFx(r float64) expFxToBYN { return expFxToBYN{Tactic: r, FactLY: r, FactPrev: r, FactCur: r} }
 
 // expConsInput — одна страна на входе сборки свода.
 type expConsInput struct {
@@ -153,6 +159,11 @@ func buildExpConsolidated(plID int64, year, month int, window string, in []expCo
 			if l == nil {
 				l = &ExpConsLine{CodePL: r.CodePL, ExpConsAmounts: newExpConsAmounts()}
 				lines[k] = l
+			}
+			// Нет курса к BYN — сумму страны не пересчитать, а складывать нац. валюту с BYN нельзя
+			// (итог завышался бы в десятки–тысячи раз). Статья остаётся в списке без сумм.
+			if c.Fx.NoRate {
+				continue
 			}
 			var plan float64
 			for _, v := range r.Values {
@@ -214,7 +225,7 @@ func buildExpConsolidated(plID int64, year, month int, window string, in []expCo
 	for _, c := range in {
 		row := ExpConsCountry{Country: c.Country, CardID: c.Card.ID, Title: c.Card.Title,
 			Status: CardStatusLabel(c.Card.Status, c.Card.StepCode), NatCurrency: c.Inst.Currency,
-			Rows: len(c.Rows), Rate: c.Fx.Tactic, Plan: out.Total.Plan[c.Country]}
+			Rows: len(c.Rows), Rate: c.Fx.Tactic, Plan: out.Total.Plan[c.Country], NoRate: c.Fx.NoRate}
 		out.Countries = append(out.Countries, row)
 	}
 	return out
@@ -235,11 +246,14 @@ func (s *ExpService) WithRates(r *RateBook) *ExpService { s.rates = r; return s 
 
 // expFx — курсы страны к BYN по назначению колонки; без справочника или в BYN — единица.
 func (s *ExpService) expFx(ctx context.Context, nat string, year, month int) expFxToBYN {
-	if s.rates == nil || nat == "" || nat == "BYN" {
+	if nat == "" || nat == "BYN" {
 		return sameExpFx(1)
 	}
-	conv := func(y, m int) float64 { return s.rates.ConvertFor(ctx, 1, nat, "BYN", y, m, FxScenarioFact) }
 	prevY, prevM := prevMonth(year, month)
+	if s.rates == nil || !s.rates.FxKnown(ctx, nat, prevY, prevM) {
+		return expFxToBYN{NoRate: true}
+	}
+	conv := func(y, m int) float64 { return s.rates.ConvertFor(ctx, 1, nat, "BYN", y, m, FxScenarioFact) }
 	return expFxToBYN{Tactic: conv(prevY, prevM), FactLY: conv(year-1, month), FactPrev: conv(prevY, prevM), FactCur: conv(year, month)}
 }
 
@@ -322,7 +336,7 @@ func (s *ExpService) RetailConsolidated(ctx context.Context, p Principal, plID i
 	}
 	out.Countries = full
 	for _, c := range inputs {
-		if st := s.syncStatus(c.Inst.ID); st.FactBasis == ExpFactBasisPayments {
+		if s.syncStatusWithBasis(ctx, c.Inst.ID).FactBasis == ExpFactBasisPayments {
 			out.FactBasis = ExpFactBasisPayments
 		}
 	}

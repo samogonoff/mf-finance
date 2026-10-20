@@ -210,7 +210,7 @@
       </p>
       <ul v-if="importReport.issues.length" class="imp-ul bad">
         <li v-for="(is, i) in importReport.issues.slice(0, 20)" :key="i">
-          строка {{ is.line }}: {{ is.message }}
+          {{ is.line ? `строка ${is.line}: ` : "" }}{{ is.message }}
         </li>
       </ul>
       <div class="imp-actions">
@@ -962,6 +962,8 @@ const gridRoot = nav.container;
 
 // ── Ввод и сохранение ────────────────────────────────────────────────────────
 const setDraft = (row: ExpRow, month: number, value: number | null) => {
+  // Прошедший месяц закрыт: вставка из буфера не должна создавать в нём черновик, который сервер отбросит.
+  if (monthLocked(month)) return;
   const next = new Map(drafts.value);
   next.set(key(row.code_cfo, row.code_pl, month), value);
   drafts.value = next;

@@ -8,9 +8,12 @@ import (
 
 // fakeExpRepo — сетка формы без БД.
 type fakeExpRepo struct {
-	inst ExpInstance
-	rows []ExpRow
+	inst      ExpInstance
+	rows      []ExpRow
+	factBasis string
 }
+
+func (f *fakeExpRepo) FactBasis(context.Context, int64) (string, error) { return f.factBasis, nil }
 
 func (f *fakeExpRepo) EnsureInstance(context.Context, ExpInstance, int64) (ExpInstance, error) {
 	return f.inst, nil

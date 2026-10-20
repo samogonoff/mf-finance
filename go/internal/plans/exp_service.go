@@ -118,7 +118,7 @@ func (s *ExpService) Form(ctx context.Context, p Principal, cardID int64, f ExpF
 	SortExpRowsBy(groups, rows)
 	return ExpForm{
 		Instance: in, Card: c, Rows: rows, Total: total, Offset: f.Offset,
-		Groups: groups, ReadOnly: !cardEditable(c), Sync: s.syncStatus(in.ID),
+		Groups: groups, ReadOnly: !cardEditable(c), Sync: s.syncStatusWithBasis(ctx, in.ID),
 	}, nil
 }
 
@@ -232,6 +232,26 @@ func (s *ExpService) waitSync(run *expSyncRun) {
 	}
 }
 
+// syncStatusWithBasis — состояние загрузки с основой факта: после рестарта процесса память пуста,
+// и признак «по платежам» берётся из сохранённых данных.
+func (s *ExpService) syncStatusWithBasis(ctx context.Context, instanceID int64) ExpSyncStatus {
+	st := s.syncStatus(instanceID)
+	if st.FactBasis == "" {
+		st.FactBasis = s.factBasisStored(ctx, instanceID)
+	}
+	return st
+}
+
+// factBasisStored — основа факта по сохранённым данным экземпляра.
+func (s *ExpService) factBasisStored(ctx context.Context, instanceID int64) string {
+	b, err := s.repo.FactBasis(ctx, instanceID)
+	if err != nil {
+		log.Printf("plans/exp: основа факта экземпляра %d не прочитана: %v", instanceID, err)
+		return ""
+	}
+	return b
+}
+
 // syncStatus — состояние загрузки по экземпляру (idle, если её не было).
 func (s *ExpService) syncStatus(instanceID int64) ExpSyncStatus {
 	s.syncMu.Lock()
@@ -308,6 +328,8 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 	if err != nil {
 		return 0, err
 	}
+	// Платёжный факт помечается в данных (см. SaveReadOnly), а не только в памяти процесса.
+	factBasis := expFactBasisFrom(ctx)
 	if len(cells) == 0 {
 		// Источник ответил, но по этой форме строк нет. Это тоже «прочитано»: без отметки
 		// каждое открытие формы запускало бы выгрузку заново (минуты), а фронт —
@@ -353,8 +375,10 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 		c := ExpCell{CodeCFO: cell.CodeCFO, CodePL: cell.CodePL, Month: cell.Month, Amount: &amt}
 		switch {
 		case cell.Scenario == ExpSrcFact && cell.Year == prev:
+			c.Source = factBasis
 			fact = append(fact, c)
 		case cell.Scenario == ExpSrcFact && cell.Year == in.PlanYear:
+			c.Source = factBasis
 			// Факт планового года: нужен рядом с вводом («прошлый месяц», «текущий месяц»).
 			factCur = append(factCur, c)
 		case cell.Scenario == ExpSrcStrategy && cell.Year == in.PlanYear:
@@ -424,11 +448,31 @@ func (s *ExpService) SaveCells(ctx context.Context, p Principal, cardID int64, c
 	if !cardEditable(c) {
 		return 0, errors.New("период закрыт на запись: изменения только после возврата или reopen")
 	}
+	return s.saveValues(ctx, c, in, p, cells)
+}
+
+// saveValues — единственный путь записи плановых ячеек формы: прошедшие месяцы отбрасываются
+// здесь, чтобы ни импорт, ни расчёт, ни массовое действие не обошли закрытие.
+func (s *ExpService) saveValues(ctx context.Context, c Card, in ExpInstance, p Principal, cells []ExpCell) (int, error) {
 	cells = expDropPastMonths(c, cells)
 	if len(cells) == 0 {
 		return 0, nil
 	}
 	return s.repo.SaveValues(ctx, in.ID, cells, p.UserID, c.CurrentVersion)
+}
+
+// expPastMonth — месяц плана уже прошёл (по нему подтягивается факт).
+func expPastMonth(c Card, month int) bool { return month >= 1 && month < c.Month }
+
+// expOpenMonths — месяцы, доступные для планирования (без прошедших).
+func expOpenMonths(c Card, months []int) []int {
+	out := make([]int, 0, len(months))
+	for _, m := range months {
+		if !expPastMonth(c, m) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // expDropPastMonths — месяцы плана до месяца карточки уже прошли: по ним подтягивается
@@ -440,7 +484,7 @@ func expDropPastMonths(c Card, cells []ExpCell) []ExpCell {
 	}
 	out := cells[:0:0]
 	for _, x := range cells {
-		if x.Month >= 1 && x.Month < c.Month {
+		if expPastMonth(c, x.Month) {
 			continue
 		}
 		out = append(out, x)
@@ -492,10 +536,7 @@ func (s *ExpService) Bulk(ctx context.Context, p Principal, cardID int64, req Ex
 	if err != nil {
 		return 0, err
 	}
-	if cells = expDropPastMonths(c, cells); len(cells) == 0 {
-		return 0, nil
-	}
-	return s.repo.SaveValues(ctx, in.ID, cells, p.UserID, c.CurrentVersion)
+	return s.saveValues(ctx, c, in, p, cells)
 }
 
 // expBulkCells — раскладка массового действия в набор ячеек. Вынесено отдельно

@@ -418,6 +418,19 @@ func (b *RateBook) FxRateFor(ctx context.Context, currency string, year, month i
 	return pickFx(fx, currency, year, month, scenario)
 }
 
+// FxKnown — есть ли в справочнике курс этой валюты (любой сценарий). У BYN курс — единица по
+// определению. Нужен там, где «курса нет» нельзя путать с единичным курсом (pickFx в этом случае
+// отдаёт 1.0): свод в BYN не должен складывать суммы нац. валюты как BYN.
+func (b *RateBook) FxKnown(ctx context.Context, currency string, year, month int) bool {
+	cur := strings.ToUpper(strings.TrimSpace(currency))
+	if cur == "" || cur == "BYN" {
+		return true
+	}
+	_, fx := b.load(ctx)
+	_, ok := pickFxBy(fx, cur, year, month, func(FxRow) bool { return true })
+	return ok
+}
+
 // pickFx — чистый выбор курса. Порядок: строки запрошенного сценария (месяц →
 // год → дефолт), затем строки без сценария, затем ЛЮБЫЕ строки валюты, и только
 // потом 1.0.

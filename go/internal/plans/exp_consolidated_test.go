@@ -96,3 +96,30 @@ func TestExpWindowMonths(t *testing.T) {
 		}
 	}
 }
+
+// Нет курса к BYN: сумма страны в нац. валюте не складывается с BYN (итог завышался бы в десятки и
+// тысячи раз) — страна отмечена NoRate, а в итоги и группы не входит.
+func TestBuildExpConsolidated_NoRateCountryExcluded(t *testing.T) {
+	by := consRow(24, "Заработная плата", ExpValue{Scenario: ExpScenarioPlan, Month: 11, Amount: consPtr(100)},
+		ExpValue{Scenario: ExpScenarioFact, Month: 11, Amount: consPtr(80)})
+	uz := consRow(24, "Заработная плата", ExpValue{Scenario: ExpScenarioPlan, Month: 11, Amount: consPtr(5_000_000)},
+		ExpValue{Scenario: ExpScenarioFact, Month: 11, Amount: consPtr(4_000_000)})
+	in := []expConsInput{
+		{Country: "BY", Card: Card{ID: 1}, Inst: ExpInstance{ID: 1, Currency: "BYN"}, Rows: []ExpRow{by}, Fx: sameExpFx(1)},
+		{Country: "UZ", Card: Card{ID: 4}, Inst: ExpInstance{ID: 4, Currency: "UZS"}, Rows: []ExpRow{uz}, Fx: expFxToBYN{NoRate: true}},
+	}
+	got := buildExpConsolidated(7, 2026, 11, ExpWindowMonth, in, expApplyDefaultPnlGroups(ExpKindRetail, nil), expRetailPnlOrder)
+
+	if !consNear(got.Total.PlanTotal, 100) || !consNear(got.Total.FactLY, 80) {
+		t.Fatalf("итог без UZ: план %v, факт %v", got.Total.PlanTotal, got.Total.FactLY)
+	}
+	if _, ok := got.Groups[0].Plan["UZ"]; ok {
+		t.Fatalf("сумм страны без курса в группе быть не должно: %v", got.Groups[0].Plan)
+	}
+	if !got.Countries[1].NoRate || got.Countries[0].NoRate {
+		t.Fatalf("признак NoRate: %+v", got.Countries)
+	}
+	if len(got.Groups[0].Lines) != 1 {
+		t.Fatalf("статья остаётся в списке: %+v", got.Groups[0].Lines)
+	}
+}

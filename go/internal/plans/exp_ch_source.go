@@ -46,6 +46,14 @@ func noteExpFactBasis(ctx context.Context, basis string) {
 	}
 }
 
+// expFactBasisFrom — на чём построен факт в чтении, след которого лежит в контексте.
+func expFactBasisFrom(ctx context.Context) string {
+	if tr, ok := ctx.Value(expTraceKey{}).(*ExpSourceTrace); ok {
+		return tr.FactBasis
+	}
+	return ""
+}
+
 type expTraceKey struct{}
 
 // WithExpSourceTrace кладёт след в контекст.

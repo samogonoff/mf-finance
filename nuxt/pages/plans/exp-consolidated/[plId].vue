@@ -38,7 +38,7 @@
       Не удалось прочитать форму: {{ failedCountries.map((c) => `${c.country} (${c.error})`).join("; ") }}. Итог неполный.
     </p>
     <p v-if="noRate.length" class="banner banner-warn">
-      Нет курса к BYN для {{ noRate.map((c) => `${c.country} (${c.nat_currency})`).join(", ") }}: суммы страны не пересчитаны и в итог попадают в нац. валюте.
+      Нет курса к BYN для {{ noRate.map((c) => `${c.country} (${c.nat_currency})`).join(", ") }}: суммы этих стран не показаны и в итог не входят. Итог неполный.
     </p>
     <p v-if="data?.fact_basis === 'payments'" class="banner banner-info">
       Факт построен по платежам: «Факта по начислениям» в источнике расходов пока нет.
@@ -79,7 +79,7 @@
             <tr class="sub-head">
               <th class="muted">статус карточки · курс к BYN</th>
               <th v-for="c in data.countries" :key="c.country" class="col-num muted">
-                {{ c.error ? "ошибка" : c.status || "—" }}<template v-if="c.card_id && c.rate && c.rate !== 1"> · {{ c.rate.toFixed(4) }}</template>
+                {{ c.error ? "ошибка" : c.no_rate ? "нет курса" : c.status || "—" }}<template v-if="c.card_id && c.rate && c.rate !== 1"> · {{ c.rate.toFixed(4) }}</template>
               </th>
               <th />
               <template v-if="showRef"><th /><th /><th /></template>
@@ -170,8 +170,8 @@ const prevLabel = computed(() => {
 });
 const curLabel = computed(() => (data.value ? `${MONTHS_SHORT[month.value - 1]} ${data.value.year}` : ""));
 const failedCountries = computed(() => (data.value?.countries || []).filter((c) => !!c.error));
-// Курс 1 у небазовой валюты — значит, курса в справочнике нет и пересчёта не было.
-const noRate = computed(() => (data.value?.countries || []).filter((c) => !!c.card_id && !c.error && !!c.nat_currency && c.nat_currency !== "BYN" && c.rate === 1));
+// Курса валюты страны к BYN в справочнике нет: сервер не складывает такие суммы с BYN.
+const noRate = computed(() => (data.value?.countries || []).filter((c) => !!c.no_rate));
 const colCount = computed(() => (data.value?.countries.length || 0) + 2 + (showRef.value ? 3 : 0));
 const allOpen = computed(() => !!data.value && data.value.groups.length > 0 && data.value.groups.every((g) => open.has(g.group)));
 

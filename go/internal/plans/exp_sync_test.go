@@ -386,3 +386,37 @@ func TestExpSync_FactBasisReachesStatus(t *testing.T) {
 		t.Fatalf("пометка не должна появляться без подмены: %+v", st2)
 	}
 }
+
+// Признак «факт по платежам» хранится вместе с данными: платёжные ячейки помечаются при загрузке, а
+// после рестарта процесса (память статуса пуста) форма и свод берут основу факта из сохранённых данных.
+func TestExpSync_PaymentsFactBasisPersistsInData(t *testing.T) {
+	src := &basisSource{stubExpSource{cells: []ExpCostCell{
+		{Scenario: ExpSrcFact, Year: 2025, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 100},
+		{Scenario: ExpSrcFact, Year: 2026, Month: 9, CodePL: 24, CodeCFO: 101, Amount: 200},
+		{Scenario: ExpSrcStrategy, Year: 2026, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 300},
+	}}}
+	repo := &recordingExpRepo{fakeExpRepo: fakeExpRepo{inst: ExpInstance{ID: 7, FormKind: ExpKindRetail, Country: "BY", PlanYear: 2026}}}
+	svc := NewExpService(repo, nil, src)
+	ctx, _ := WithExpSourceTrace(context.Background())
+	if _, err := svc.syncFromSource(ctx, Card{ID: 1}, repo.inst, true); err != nil {
+		t.Fatal(err)
+	}
+	repo.mu.Lock()
+	fact, cur, strat := repo.saved[ExpScenarioFact], repo.saved[ExpScenarioFactCur], repo.saved[ExpScenarioStrategy]
+	repo.mu.Unlock()
+	if len(fact) != 1 || fact[0].Source != ExpFactBasisPayments || len(cur) != 1 || cur[0].Source != ExpFactBasisPayments {
+		t.Fatalf("платёжный факт должен быть помечен: fact=%+v cur=%+v", fact, cur)
+	}
+	if len(strat) != 1 || strat[0].Source != "" {
+		t.Fatalf("стратегия не помечается: %+v", strat)
+	}
+
+	// «После рестарта»: статус в памяти пуст, основа читается из данных.
+	restarted := NewExpService(&fakeExpRepo{factBasis: ExpFactBasisPayments}, nil, nil)
+	if got := restarted.syncStatusWithBasis(context.Background(), 7).FactBasis; got != ExpFactBasisPayments {
+		t.Fatalf("основа факта после рестарта: %q", got)
+	}
+	if got := NewExpService(&fakeExpRepo{}, nil, nil).syncStatusWithBasis(context.Background(), 7).FactBasis; got != "" {
+		t.Fatalf("без платёжных данных пометки нет: %q", got)
+	}
+}
