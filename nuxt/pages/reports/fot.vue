@@ -1713,7 +1713,10 @@ const piePaths = (segs: any[]): any[] => {
  *  но при близких значениях режем низ — авто-ось PowerPoint деки (чарты 8-10 %
  *  не схлопываются в одинаковые столбики). Подписи кат короткие, значения —
  *  цветом своей серии. */
-const S56_BAR_CAPS = ['1ПГ25', '1ПГ26', 'Т.2ПГ26', 'Ож.26']
+/** Короткие подписи периодов мини-баров — годозависимые (как названия
+ *  показателей листа ГК): 1ПГ<прошлый>/1ПГ<текущий>/Т.2ПГ<текущий>/Ож.<текущий>. */
+const S56_BAR_CAPS = computed(() => ['1ПГ' + yr2(yearPrev.value), '1ПГ' + yr2(yearPlan.value),
+  'Т.2ПГ' + yr2(yearPlan.value), 'Ож.' + yr2(yearPlan.value)])
 const niceCeil = (v: number): number => {
   if (!(v > 0)) return 1
   const p = Math.pow(10, Math.floor(Math.log10(v)))
@@ -1729,7 +1732,7 @@ const niceFloor = (v: number): number => {
 const bar56Geom = (bar: any): any[] => {
   const vals = (bar.series || []).map((x: any, i: number) => ({
     v: isNum(x.v) ? Number(x.v) : null,
-    cap: S56_BAR_CAPS[i] ?? String(x.k),
+    cap: S56_BAR_CAPS.value[i] ?? String(x.k),
     color: BAR_COLORS[i] ?? BAR_COLORS[BAR_COLORS.length - 1],
   }))
   const nums = vals.map((x: any) => x.v).filter((v: any): v is number => v !== null)

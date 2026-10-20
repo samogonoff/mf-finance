@@ -1771,8 +1771,12 @@ METHODOLOGY_P13 = (
 )
 
 METHODOLOGY_P14 = (
-    "Лист «ФОТ по направлениям бизнеса» — реплика листа 4 деки «Бюджет ФОТ 2026»: за "
-    "фиксированные полугодия (как P10/P11), в развороте по направлениям бизнеса. "
+    "Лист «ФОТ по направлениям бизнеса»: слайд 4 (реплика листа 4 деки) — за "
+    "фиксированные полугодия 2025/2026 (как P10/P11); слайды 5–6 (добавлены 20.10, "
+    "663620) — ГОДОЗАВИСИМЫ по фильтру «Год» (паттерн B1): базовый год = год−1, "
+    "«Тактика 2ПГ» незакрытого полугодия = факт до закрытого месяца + тактика "
+    "после (f26_h2c/p26_h2o), численность — факты 30.06 года и года−1; при пустых "
+    "периодах будущего года показываются прочерки. "
     "Направление бизнеса — группа ЦФО, из которой ЦФО интернет-магазина выделяются "
     "отдельной строкой (как на листе деки). Таблица «Направление × периоды» — те же "
     "период-суммы ФОТ, что у P10/P11, значения в тыс., итог среза — первой строкой; "
@@ -3901,9 +3905,17 @@ async def _dashboard_p14(p: dict, meta: dict) -> dict:
     group_detail «Направления выбранных Групп ЦФО» и direction_detail
     «Детализация по выбранным направлениям + ЦФО Отделов». Те же срезы
     панели, что у P11; слайды 5–6 — вторым запросом на том же соединении
-    (паттерн p11: _p12_sql вторым вызовом)."""
+    (паттерн p11: _p12_sql вторым вызовом). Слайды 5–6 годозависимы (фильтр
+    «Год», паттерн B1): периоды _b1_periods + помесячное ожидание
+    _expect_periods; слайд 4 остаётся на фиксированных полугодиях 2025/2026."""
+    year_cur = p.get("year") or YEAR_PLAN
+    year_prev = year_cur - 1
+    closed = _closed_from_meta(meta)
+    cfg = _expect_cfg(closed, year_cur)
     sql, sql_params = _p14_sql(p)
-    detail_sql, detail_params = _p14_detail_sql(p)
+    detail_sql, detail_params = _p14_detail_sql(
+        p, _b1_periods(year_cur, year_prev) + _expect_periods(cfg, year_cur),
+        year_cur)
     async with acquire() as pg:
         payload = json.loads(await pg.fetchval(sql, *sql_params))
         detail = json.loads(await pg.fetchval(detail_sql, *detail_params))
@@ -3911,22 +3923,32 @@ async def _dashboard_p14(p: dict, meta: dict) -> dict:
     cards, headcount, directions, tables, warning = _p14_assemble(
         p["currency"], payload, sel_country)
     group_detail, direction_detail = _p14_detail_assemble(detail)
-    closed = _closed_from_meta(meta)
     country_label = dict(COUNTRY_OPTIONS).get(sel_country)
+    c = cfg["close_month"]
     meta_out = {
         "tab": "p14",
         "params": p,
         "currency": p["currency"],
-        "periods": _periods_meta(),
+        "periods": _periods_meta(year_cur),
         "closed_period": closed.isoformat() if closed else None,
         "stale": meta.get("stale"),
         "refreshed_at": meta.get("refreshed_at"),
         "methodology": METHODOLOGY_P14,
         # Шапка листа: страна среза или свод по группе.
         "slide": {"cc": sel_country, "label": country_label or "Группа"},
+        # Ожидание незакрытого полугодия слайдов 5–6 — как у B1.
+        "expect": {
+            "by_month": cfg["by_month"],
+            "close_month": c,
+            "plan_scenario": cfg["scenario"],
+            "fact_months": ("07–%02d" % min(c, 12)) if c and c > 6 else None,
+            "plan_months": ("%02d–12" % (c + 1)) if c and c < 12 else None,
+        },
     }
     if warning:
         meta_out["warning"] = warning
+    if cfg.get("warning"):
+        meta_out["warning"] = " ".join(w for w in (meta_out.get("warning"), cfg["warning"]) if w)
     return {"cards": cards, "headcount": headcount, "directions": directions,
             "charts": [], "tables": tables, "meta": meta_out,
             "group_detail": group_detail, "direction_detail": direction_detail}
@@ -3945,15 +3967,19 @@ _P14_DIR_SELLERS = frozenset({
 })
 
 
-def _p14_detail_sql(p: dict) -> tuple[str, list]:
+def _p14_detail_sql(p: dict, periods: tuple, year_cur: int) -> tuple[str, list]:
     """Второй запрос вкладки P14 (слайды 5–6 деки): ФОТ/выручка/численность
     в разрезе группа ЦФО × направление × ЦФО.
 
+    periods — годозависимые кортежи (key, scenario, year, m1, m2, fam):
+    _b1_periods(год, год−1) + _expect_periods(cfg, год), паттерн B1 — слайды
+    5–6 реагируют на фильтр года, а «тактика 2ПГ» незакрытого полугодия
+    достраивается фактом до закрытого месяца (f26_h2c) + тактикой после
+    (p26_h2o); численность — факты 30.06 выбранного и предыдущего года.
     grain — мелкое зерно по трём уровням справочника срезов панели (те же
     условия, что у _p14_sql: dim + юрлицо + ВГО + hier_gate); rev — выручка
-    по (группа × направление) для продавцов direction-разреза; численность —
-    то же зерно, что у P12 (факты 30.06 и план PlanChisl), план срезом
-    юрлица не режется.
+    по (группа × направление) для продавцов direction-разреза; план
+    PlanChisl срезом юрлица не режется.
     """
     col = FOT_CURRENCIES[p["currency"]]
     sql_params: list = []
@@ -3962,14 +3988,16 @@ def _p14_detail_sql(p: dict) -> tuple[str, list]:
     hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
     m_legal = _legal_cond(p, sql_params)
     h_legal = _legal_cond(p, sql_params, "h.legal_entity")
+    hc_prev = date(year_cur - 1, 6, 1)
+    hc_curr = date(year_cur, 6, 1)
 
     fot_sums = ",\n        ".join(
         _half_sum_sql(key, scen, year, m1, m2, fam, col)
-        for key, scen, year, m1, m2, fam in _HALF_PERIODS if fam == "fot"
+        for key, scen, year, m1, m2, fam in periods if fam == "fot"
     )
     rev_sums = ",\n        ".join(
         _half_sum_sql(key, scen, year, m1, m2, fam, col)
-        for key, scen, year, m1, m2, fam in _HALF_PERIODS if fam == "rev"
+        for key, scen, year, m1, m2, fam in periods if fam == "rev"
     )
     grain_where = f"{ic_sql}{m_legal}{hier_gate}"
 
@@ -4004,7 +4032,7 @@ h25 AS (
            sum(h.quantity) AS q25
     FROM fot_headcount h
     LEFT JOIN dim c ON c.code_cfo = h.code_cfo
-    WHERE h.month_date = DATE '{HC_DATE_PREV.isoformat()}'{h_legal}{hier_gate}
+    WHERE h.month_date = DATE '{hc_prev.isoformat()}'{h_legal}{hier_gate}
     GROUP BY 1, 2
 ),
 h26 AS (
@@ -4012,7 +4040,7 @@ h26 AS (
            sum(h.quantity) AS q26
     FROM fot_headcount h
     LEFT JOIN dim c ON c.code_cfo = h.code_cfo
-    WHERE h.month_date = DATE '{HC_DATE_CURR.isoformat()}'{h_legal}{hier_gate}
+    WHERE h.month_date = DATE '{hc_curr.isoformat()}'{h_legal}{hier_gate}
     GROUP BY 1, 2
 ),
 plan AS (
@@ -4112,14 +4140,23 @@ def _p14_detail_assemble(payload: dict) -> tuple:
     """
     grain = payload.get("grain") or []
 
+    # Незакрытое полугодие (динамический год, паттерн B1): периоды ожидания
+    # f26_h2c/p26_h2o агрегируются рядом с фиксированными, а t26_h2
+    # заменяется их суммой — факт до закрытого месяца + тактика после.
+    value_keys = _HALF_VALUE_KEYS + ("f26_h2c", "p26_h2o")
+
     def _blank() -> dict:
-        return {key: None for key in _HALF_VALUE_KEYS}
+        return {key: None for key in value_keys}
 
     def _add(slot: dict, r: dict) -> None:
-        for key in _HALF_VALUE_KEYS:
+        for key in value_keys:
             v = r.get(key)
             if v is not None:
                 slot[key] = (slot[key] or 0.0) + float(v)
+
+    def _apply_expect(slot: dict) -> None:
+        if slot.get("f26_h2c") is not None or slot.get("p26_h2o") is not None:
+            slot["t26_h2"] = _nsum([slot.get("f26_h2c"), slot.get("p26_h2o")])
 
     # Зерно: fot/подпись ЦФО — (g1, dir, cfo); rev и численность — (g1, dir).
     fot_by: dict = {}
@@ -4128,8 +4165,11 @@ def _p14_detail_assemble(payload: dict) -> tuple:
         key3 = (r.get("g1") or "", r.get("dir") or "", r.get("cfo") or "")
         _add(fot_by.setdefault(key3, _blank()), r)
         cfon_by[key3] = r.get("cfon") or ""
+        _apply_expect(fot_by[key3])
     rev_by: dict = {}
     for r in payload.get("rev") or []:
+        if r.get("rv_f26_h2c") is not None or r.get("rv_p26_h2o") is not None:
+            r["rv_t26_h2"] = _nsum([r.get("rv_f26_h2c"), r.get("rv_p26_h2o")])
         rev_by[(r.get("g1") or "", r.get("dir") or "")] = r
     hc_by: dict = {}
     for src, key in (("h25", "q25"), ("h26", "q26"), ("plan", "pa")):
