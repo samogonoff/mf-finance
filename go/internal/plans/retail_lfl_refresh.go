@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Обновление LFL-статусов магазинов во ВСЕХ периодах (разовая операция администратора).
@@ -25,11 +26,36 @@ type RetailLFLRefreshRow struct {
 	CardID     int64
 	CodeCFO    int
 	Status     string
+	DateOpen   string // дата открытия магазина (пусто — неизвестна)
 	Country    string
 	Year       int
 	Month      int
 	CardStatus string
 	Editable   bool
+}
+
+// retailLFLComparableMonths — с какого возраста магазин сравнимый (LFL): открыт не позже чем за столько месяцев
+// до начала периода.
+const retailLFLComparableMonths = 12
+
+// retailLFLRefreshAllowed — можно ли перенести статус из Лисы в строку ПРОШЛОГО периода.
+//
+// Статус Лисы — сегодняшний, а часть статусов зависит от времени: «закрыт» и «реконструкция» относятся к
+// определённым датам, «до года» и «новый» — к возрасту магазина на момент периода. Переносить их в прошлое
+// нельзя: магазин, закрытый в сентябре, исчез бы из LFL и % выполнения в утверждённых планах до сентября.
+// Исправляется только исходный артефакт — устаревшее «новый» (или пустой статус) у магазина, который в
+// периоде уже был сравнимым: открыт не менее чем за 12 месяцев до начала периода (дата открытия неизвестна —
+// тоже считаем сравнимым: в справочнике ЦФО её нет у большинства действующих магазинов).
+func retailLFLRefreshAllowed(r RetailLFLRefreshRow, have, want string) bool {
+	if want != LFLYes || (have != LFLNew && have != "") {
+		return false
+	}
+	opened, ok := parseRetailDate(r.DateOpen)
+	if !ok {
+		return true
+	}
+	periodStart := time.Date(r.Year, time.Month(r.Month), 1, 0, 0, 0, 0, time.UTC)
+	return !opened.After(periodStart.AddDate(0, -retailLFLComparableMonths, 0))
 }
 
 // RetailLFLChange — изменение статуса одной строки.
@@ -62,6 +88,9 @@ type RetailLFLRefreshResult struct {
 	DryRun       bool                  `json:"dry_run"`
 	StoresInLisa int                   `json:"stores_in_lisa"`
 	RowsScanned  int                   `json:"rows_scanned"`
+	// RowsSkipped — строки, где статус Лисы отличается, но он зависит от времени и в прошлые периоды не переносится
+	// («закрыт», «реконструкция», «до года», «новый»; «LFL» — только магазинам, ещё не сравнимым в периоде).
+	RowsSkipped  int                   `json:"rows_skipped"`
 	RowsChanged  int                   `json:"rows_changed"`
 	CardsChanged int                   `json:"cards_changed"`
 	LockedCards  int                   `json:"locked_cards"` // из изменённых: уже не редактируемые карточки
@@ -84,6 +113,10 @@ func planRetailLFLRefresh(rows []RetailLFLRefreshRow, lisa map[int]string) ([]Re
 		}
 		have := retailLFLStatus(r.Status)
 		if have == want {
+			continue
+		}
+		if !retailLFLRefreshAllowed(r, have, want) {
+			res.RowsSkipped++
 			continue
 		}
 		changes = append(changes, RetailLFLChange{RowID: r.RowID, From: r.Status, To: want})
@@ -125,15 +158,22 @@ func planRetailLFLRefresh(rows []RetailLFLRefreshRow, lisa map[int]string) ([]Re
 	return changes, res
 }
 
+// Ошибки обновления: источник без Лисы (конфигурация) и недоступная Лиса (внешняя система) — разные вещи,
+// ошибки собственной БД — третье.
+var (
+	errRetailRefreshUnsupported = errors.New("обновление статусов доступно только с живым источником (Лиса)")
+	errRetailLisaUnavailable    = errors.New("карточки Лисы недоступны, статусы не обновлены")
+)
+
 // RefreshLFLStatuses — обновление статусов по всем периодам. apply=false — предпросмотр без записи.
 func (s *RetailService) RefreshLFLStatuses(ctx context.Context, p Principal, apply bool) (RetailLFLRefreshResult, error) {
 	src, ok := s.source.(RetailLisaStores)
 	if !ok {
-		return RetailLFLRefreshResult{}, errors.New("обновление статусов доступно только с живым источником (Лиса)")
+		return RetailLFLRefreshResult{}, errRetailRefreshUnsupported
 	}
 	stores, err := src.StoresFromLisa(ctx)
 	if err != nil {
-		return RetailLFLRefreshResult{}, fmt.Errorf("карточки Лисы недоступны, статусы не обновлены: %w", err)
+		return RetailLFLRefreshResult{}, fmt.Errorf("%w: %v", errRetailLisaUnavailable, err)
 	}
 	lisa := make(map[int]string, len(stores))
 	for _, st := range stores {
@@ -166,7 +206,14 @@ func (h *RetailHandler) LFLRefresh(w http.ResponseWriter, r *http.Request) {
 	apply := !(dry == "1" || strings.EqualFold(dry, "true"))
 	res, err := h.svc.RefreshLFLStatuses(r.Context(), h.principal(r), apply)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		switch {
+		case errors.Is(err, errRetailRefreshUnsupported):
+			writeErr(w, http.StatusConflict, err.Error())
+		case errors.Is(err, errRetailLisaUnavailable):
+			writeErr(w, http.StatusBadGateway, err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "обновление статусов не выполнено: "+err.Error())
+		}
 		return
 	}
 	if apply {

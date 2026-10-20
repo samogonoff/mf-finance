@@ -494,6 +494,8 @@ export interface RetailLFLRefreshResult {
   dry_run: boolean;
   stores_in_lisa: number;
   rows_scanned: number;
+  /** Статус Лисы отличается, но зависит от времени и в прошлые периоды не переносится. */
+  rows_skipped: number;
   rows_changed: number;
   cards_changed: number;
   locked_cards: number;

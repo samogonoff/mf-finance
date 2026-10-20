@@ -536,7 +536,7 @@ func (r *pgRetailRepo) DeleteParam(ctx context.Context, instanceID, paramID int6
 // LFLRefreshRows — см. RetailRepo.LFLRefreshRows.
 func (r *pgRetailRepo) LFLRefreshRows(ctx context.Context) ([]RetailLFLRefreshRow, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT t.id, c.id, t.code_cfo, t.lfl_status, i.country, i.period_year, i.period_month,
+		SELECT t.id, c.id, t.code_cfo, t.lfl_status, COALESCE(t.date_open::text, ''), i.country, i.period_year, i.period_month,
 		       c.status, c.step_code, c.locked
 		  FROM tp_row t
 		  JOIN tp_instance i ON i.id = t.instance_id
@@ -551,7 +551,7 @@ func (r *pgRetailRepo) LFLRefreshRows(ctx context.Context) ([]RetailLFLRefreshRo
 		var x RetailLFLRefreshRow
 		var step string
 		var locked bool
-		if err := rows.Scan(&x.RowID, &x.CardID, &x.CodeCFO, &x.Status, &x.Country, &x.Year, &x.Month,
+		if err := rows.Scan(&x.RowID, &x.CardID, &x.CodeCFO, &x.Status, &x.DateOpen, &x.Country, &x.Year, &x.Month,
 			&x.CardStatus, &step, &locked); err != nil {
 			return nil, err
 		}
@@ -562,26 +562,26 @@ func (r *pgRetailRepo) LFLRefreshRows(ctx context.Context) ([]RetailLFLRefreshRo
 	return out, rows.Err()
 }
 
-// ApplyLFLStatuses — см. RetailRepo.ApplyLFLStatuses.
+// ApplyLFLStatuses — см. RetailRepo.ApplyLFLStatuses. Одним запросом: тысячи построчных UPDATE держали бы
+// транзакцию и блокировки строк (в том числе редактируемых сейчас карточек) всё время запроса.
 func (r *pgRetailRepo) ApplyLFLStatuses(ctx context.Context, changes []RetailLFLChange) (int, error) {
-	tx, err := r.pool.Begin(ctx)
+	if len(changes) == 0 {
+		return 0, nil
+	}
+	ids := make([]int64, len(changes))
+	statuses := make([]string, len(changes))
+	for i, c := range changes {
+		ids[i], statuses[i] = c.RowID, c.To
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE tp_row t SET lfl_status = v.st, row_version = t.row_version + 1, updated_at = NOW()
+		  FROM unnest($1::bigint[], $2::text[]) AS v(id, st)
+		 WHERE t.id = v.id AND t.lfl_status IS DISTINCT FROM v.st`, ids, statuses)
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	n := 0
-	for _, c := range changes {
-		tag, err := tx.Exec(ctx, `
-			UPDATE tp_row SET lfl_status = $2, row_version = row_version + 1, updated_at = NOW()
-			 WHERE id = $1 AND lfl_status IS DISTINCT FROM $2`, c.RowID, c.To)
-		if err != nil {
-			return 0, fmt.Errorf("строка %d: %w", c.RowID, err)
-		}
-		n += int(tag.RowsAffected())
-	}
-	return n, tx.Commit(ctx)
+	return int(tag.RowsAffected()), nil
 }
-
 // SetLFLOverride — переопределение LFL-статуса на период (ТЗ §3). Пустой status
 // снимает переопределение; причина обязательна (проверка в сервисе).
 func (r *pgRetailRepo) SetLFLOverride(ctx context.Context, instanceID int64, codeCFO int,

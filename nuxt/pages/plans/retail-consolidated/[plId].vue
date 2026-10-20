@@ -106,7 +106,12 @@
       <p v-if="refreshDone" class="banner banner-pos">{{ refreshDone }}</p>
       <div v-if="refresh" class="refresh-box">
         <p v-if="!refresh.rows_changed" class="banner banner-info">
-          Во всех периодах статусы уже совпадают с Лисой: менять нечего (магазинов в Лисе: {{ refresh.stores_in_lisa }}).
+          Менять нечего: устаревшего «нового» у уже сравнимых магазинов не осталось (магазинов в Лисе: {{ refresh.stores_in_lisa }}).
+        </p>
+        <p v-if="refresh.rows_skipped" class="muted">
+          Не переносится в прошлые периоды: {{ refresh.rows_skipped }} строк. Статусы «закрыт», «реконструкция», «до года» и «новый»
+          зависят от даты (магазин закрыли в сентябре — в январе он ещё работал), поэтому в прошлом исправляется только устаревшее
+          «новый» у магазинов, которые в периоде уже были сравнимыми (LFL). В редактируемых карточках статусы обновляются при открытии формы.
         </p>
         <template v-else>
           <p class="banner banner-warn">
