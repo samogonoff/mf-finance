@@ -1399,11 +1399,59 @@ def _fot_hr_mock() -> list[dict]:
     return rows
 
 
+def _fot_int(value, default):
+    """Безопасный int для параметров мока ("" → дефолт)."""
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
 def _fot_first(value, default: str) -> str:
     """Первое значение repeated-параметра или дефолт (срезы мок игнорирует)."""
     if isinstance(value, (list, tuple)):
         return str(value[0]) if value else default
     return str(value) if value not in (None, "") else default
+
+
+# Мок-зерно P17 с g2/dir — минимум 18 направлений у BY для проверки разбивки
+_FOT_P17_MOCK = (
+    # ctry, g1, g2, dir, q25, q26, pa, pt
+    ("BY", "Производство", "Швейное", "Пошив/раскрой", 850.0, 870.0, 900.0, 120.0),
+    ("BY", "Производство", "Швейное", "Пошив мелкий", 120.0, 115.0, 130.0, 20.0),
+    ("BY", "Производство", "Вязальное", "Вязание", 200.0, 190.0, 210.0, 30.0),
+    ("BY", "Магазины", "Розница", "Розничные продажи", 300.0, 310.0, 320.0, 50.0),
+    ("BY", "Администрация", "Управление", "Руководство", 40.0, 38.0, 42.0, 5.0),
+    ("BY", "Администрация", "Бухгалтерия", "Бухгалтерия", 60.0, 58.0, 62.0, 8.0),
+    ("BY", "Логистика", "Склад", "Склад/логистика", 90.0, 95.0, 100.0, 15.0),
+    ("BY", "HR", "Персонал", "HR", 25.0, 27.0, 30.0, 4.0),
+    ("BY", "IT", "Техподдержка", "IT", 35.0, 33.0, 38.0, 5.0),
+    ("BY", "Маркетинг", "Реклама", "Маркетинг", 20.0, 22.0, 25.0, 3.0),
+    ("BY", "Закупки", "Снабжение", "Закупки", 45.0, 43.0, 48.0, 6.0),
+    ("BY", "Качество", "ОТК", "Контроль качества", 30.0, 31.0, 35.0, 4.0),
+    ("BY", "Финансы", "Казначейство", "Финансы", 15.0, 16.0, 18.0, 2.0),
+    ("BY", "Юристы", "Юр. отдел", "Юридический", 10.0, 9.0, 12.0, 2.0),
+    ("BY", "Безопасность", "Охрана", "Безопасность", 50.0, 52.0, 55.0, 8.0),
+    ("BY", "АХО", "Хоз. отдел", "АХО", 35.0, 36.0, 40.0, 5.0),
+    ("BY", "Обучение", "Тренинги", "Обучение", 8.0, 10.0, 12.0, 2.0),
+    ("BY", "Аналитика", "BI", "BI-аналитика", 12.0, 14.0, 15.0, 2.0),
+    ("RU", "Производство", "Швейное", "Пошив/раскрой", 200.0, 210.0, 220.0, 30.0),
+    ("RU", "Магазины", "Розница", "Розничные продажи", 150.0, 155.0, 160.0, 25.0),
+    ("RU", "Администрация", "Управление", "Руководство", 20.0, 19.0, 22.0, 3.0),
+    ("KZ", "Производство", "Швейное", "Пошив/раскрой", 80.0, 85.0, 90.0, 12.0),
+    ("KZ", "Магазины", "Розница", "Розничные продажи", 60.0, 62.0, 65.0, 10.0),
+)
+
+
+def _fot_p17_mock_grain() -> list[dict]:
+    """Мок-зерно P17 с полями g1, g2, dir, ctry, q25, q26, pa, pt."""
+    return [
+        {"g1": g1, "g2": g2, "dir": dir_, "ctry": ctry,
+         "q25": q25, "q26": q26, "pa": pa, "pt": pt}
+        for ctry, g1, g2, dir_, q25, q26, pa, pt in _FOT_P17_MOCK
+    ]
 
 
 def _fot_mock_meta(tab: str, params: dict, currency: str, methodology: str) -> dict:
@@ -1442,17 +1490,22 @@ def _fot_p12_mock_dashboard(params: dict) -> dict:
 
 
 def _fot_p17_mock_dashboard(params: dict) -> dict:
-    """P17 моком: боевой сборщик app.fot._p17_assemble на мок-зерне численности
-    (то же зерно, что у P12 — свод по всей группе компаний)."""
+    """P17 моком: боевой сборщик на мок-зерне с динамическими периодами."""
     from app import fot
 
     currency = _fot_first(params.get("currency"), "BYN").upper()
     if currency not in fot.FOT_CURRENCIES:
         currency = "BYN"
-    cards, tables, warning = fot._p17_assemble(_fot_hc_mock())
+    # Парсим как боевой _parse_int: "" → дефолт
+    _p17y = _fot_int(params.get("p17_year"), fot.YEAR_PLAN)
+    yr_plan = _p17y if _p17y >= 2024 else fot.YEAR_PLAN
+    yr_prev = yr_plan - 1
+    half = _fot_int(params.get("p17_half"), 1)
+    # Отдельное зерно P17 с g2/dir
+    grain = _fot_p17_mock_grain()
+    cards, tables, warning = fot._p17_assemble(grain, yr_prev, yr_plan, half)
 
     # Детали по каждой стране (слайд 4.2)
-    grain = _fot_hc_mock()
     by_cc: dict = {}
     for r in grain:
         by_cc.setdefault(r.get("ctry") or "", []).append(r)
@@ -1461,10 +1514,7 @@ def _fot_p17_mock_dashboard(params: dict) -> dict:
         parts = by_cc.get(cc)
         if not parts:
             continue
-        country_details[cc] = {
-            "cards": fot._p17_country_cards(parts),
-            "table": fot._p17_country_detail_table(parts, label),
-        }
+        country_details[cc] = fot._p17_country_detail(parts, cc, label, yr_prev, yr_plan, half)
 
     meta = _fot_mock_meta("p17", params, currency, fot.METHODOLOGY_P17)
     if warning:
@@ -1700,6 +1750,68 @@ def _fot_p15_mock_dashboard(params: dict, tab: str) -> dict:
     return out
 
 
+def _mock_expect_keys(grain: list[dict], den: dict, c: int) -> None:
+    """Досчитывает помесячные ключи ожидания B1 в мок-зерно и знаменатели.
+
+    f26_h2c ≈ t26_h2 × (C−6)/6, p26_h2o ≈ t26_h2 × (12−C)/6 (для rv так же) —
+    так что exp26 = f26_h1 + f26_h2c + p26_h2o ≈ f26_h1 + t26_h2 (контрольное
+    «Ожидание 2026» мока сохраняется). Мутирует grain и den на месте.
+    """
+    w_fact = (c - 6) / 6.0
+    w_plan = (12 - c) / 6.0
+    for r in grain:
+        t26 = r.get("t26_h2")
+        r["f26_h2c"] = round(t26 * w_fact, 2) if t26 is not None else None
+        r["p26_h2o"] = round(t26 * w_plan, 2) if t26 is not None else None
+        rv_t26 = r.get("rv_t26_h2")
+        r["rv_f26_h2c"] = round(rv_t26 * w_fact, 2) if rv_t26 is not None else None
+        r["rv_p26_h2o"] = round(rv_t26 * w_plan, 2) if rv_t26 is not None else None
+    for branch in ("grp", "kz", "uz"):
+        rv_t26 = den.get("dn_%s_rv_t26_h2" % branch)
+        if rv_t26 is None:
+            continue
+        den["dn_%s_rv_f26_h2c" % branch] = round(rv_t26 * w_fact, 2)
+        den["dn_%s_rv_p26_h2o" % branch] = round(rv_t26 * w_plan, 2)
+
+
+def _fot_b1_mock_dashboard(params: dict) -> dict:
+    """B1 моком: то же зерно/численность, что у P11, плюс помесячные ключи
+    ожидания (C=8, сценарий «тактика»). Собирается боевым fot._b1_assemble."""
+    from app import fot
+
+    def _first(value, default: str) -> str:
+        if isinstance(value, (list, tuple)):
+            return str(value[0]) if value else default
+        return str(value) if value not in (None, "") else default
+
+    currency = _first(params.get("currency"), "BYN").upper()
+    if currency not in fot.FOT_CURRENCIES:
+        currency = "BYN"
+    grain, den = _fot_half_mock()
+    _mock_expect_keys(grain, den, 8)
+    cfg = {"by_month": True, "close_month": 8, "scenario": "тактика",
+           "source": "closed_period", "warning": None}
+    data = fot._b1_assemble(currency, grain, den, _fot_hc_mock(), None, cfg)
+    meta = {
+        "tab": "b1",
+        "params": dict(params),
+        "currency": currency,
+        "periods": fot._periods_meta(fot.YEAR_PLAN),
+        "closed_period": _FOT_MOCK_STATE["closed_period"],
+        "stale": False,
+        "refreshed_at": _FOT_MOCK_STATE["refreshed_at"],
+        "methodology": fot.METHODOLOGY_B1,
+        "expect": {"by_month": True, "close_month": 8, "plan_scenario": "тактика",
+                   "source": "closed_period", "fact_months": "07–08", "plan_months": "09–12"},
+    }
+    meta.update(_FOT_MOCK_META)
+    if data.get("warning"):
+        meta["warning"] = data["warning"]
+    data.pop("warning", None)
+    data["meta"] = meta
+    return data
+
+
 def fot_dashboard(tab: str, params: dict) -> dict:
     """Мок вкладки ФОТ-дашборда — форма ответа 1:1 с app.fot.dashboard().
 
@@ -1712,7 +1824,7 @@ def fot_dashboard(tab: str, params: dict) -> dict:
     """
     from app import fot
 
-    if tab not in ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18"):
+    if tab not in ("p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18", "b1"):
         raise ValueError("fot: неизвестная вкладка %r" % (tab,))
     if tab in ("p10", "p11"):
         return _fot_half_mock_dashboard(tab, params)
@@ -1722,6 +1834,8 @@ def fot_dashboard(tab: str, params: dict) -> dict:
         return _fot_p17_mock_dashboard(params)
     if tab == "p18":
         return _fot_p18_mock_dashboard(params)
+    if tab == "b1":
+        return _fot_b1_mock_dashboard(params)
     if tab == "p13":
         return _fot_p13_mock_dashboard(params)
     if tab == "p14":

@@ -582,8 +582,257 @@
             </section>
           </template>
 
+          <!-- B1 «ГК: Итоги по группе» — три слайда деки: свод / 1ПГ / 2ПГ -->
+          <template v-if="isB1">
+            <div class="b1-tabs" role="tablist">
+              <button v-for="s in b1Slides" :key="s.key" type="button" role="tab"
+                      class="b1-tab" :class="{ active: b1Slide === s.key }"
+                      :aria-selected="b1Slide === s.key" @click="b1Slide = s.key">
+                {{ s.period === 'year' ? `Свод по группе ${yearPlan}` : s.period === 'h1' ? `Детализация 1 ПГ ${yearPlan}` : `Детализация 2 ПГ ${yearPlan}` }}
+              </button>
+            </div>
+
+            <section class="slide" aria-label="Итоги по группе">
+              <header class="slide-hdr">
+                <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
+                <span class="slide-subtitle">{{ b1Subtitle }}</span>
+                <span class="slide-year" aria-hidden="true">{{ yearPlan }}</span>
+                <span class="slide-unit">млн {{ currency }}</span>
+              </header>
+
+              <!-- ─── Слайд 1: свод по группе (корневые данные p11) ─── -->
+              <template v-if="b1Slide === 's1'">
+              <!-- KPI-лента: показатели группы + панель численности -->
+              <div class="ribbon">
+                <div class="rb">
+                  <span class="rb-label">Факт, год {{ yearPrev }}</span>
+                  <span class="rb-value">{{ fmt1(kpiNum('fot_fact_2025')) }}<span class="rb-unit"> млн {{ currency }}</span></span>
+                </div>
+                <div class="rb">
+                  <span class="rb-label">Доля ФОТ в выручке {{ yearPrev }}</span>
+                  <span class="rb-value">{{ fmt1(kpiNum('fot_share_2025')) }}<span class="rb-unit"> %</span></span>
+                </div>
+                <div class="rb rb-big">
+                  <span class="rb-label">Ожидание, год {{ yearPlan }}</span>
+                  <span class="rb-value">{{ fmt1(kpiNum('fot_expect_2026')) }}<span class="rb-unit"> млн {{ currency }}</span></span>
+                </div>
+                <div class="rb">
+                  <span class="rb-label">Динамика ФОТ к {{ yearPrev }}</span>
+                  <span class="rb-value" :class="signCf(kpiNum('fot_dev_year'))">{{ fmtSigned(kpiNum('fot_dev_year')) }}<span class="rb-unit"> %</span></span>
+                </div>
+                <div class="rb rb-big">
+                  <span class="rb-label">Доля ФОТ в выручке {{ yearPlan }}</span>
+                  <span class="rb-value">{{ fmt1(kpiNum('fot_share_2026')) }}<span class="rb-unit"> %</span></span>
+                  <span class="rb-sub" :class="signCf(kpiNum('fot_share_delta_pp'))">{{ fmtSigned(kpiNum('fot_share_delta_pp')) }} п.п. к факту {{ yearPrev }}</span>
+                </div>
+                <div class="rb">
+                  <span class="rb-label">Динамика выручки к {{ yearPrev }}</span>
+                  <span class="rb-value">{{ fmtSigned(kpiNum('revenue_dev_year')) }}<span class="rb-unit"> %</span></span>
+                </div>
+                <div v-if="headcount" class="rb-hc">
+                  <div class="hc">
+                    <span class="hc-label">ПЧ {{ yearPlan }}</span>
+                    <span class="hc-value">{{ fmt1(headcount.plan_approved) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">ФЧ 1ПГ{{ yr2(yearPrev) }}</span>
+                    <span class="hc-value">{{ fmt1(headcount.fact_2025) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">ФЧ 1ПГ{{ yr2(yearPlan) }}</span>
+                    <span class="hc-value">{{ fmt1(headcount.fact_2026) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">Δ план</span>
+                    <span class="hc-value" :class="signCf(headcount.var_plan)">{{ fmtSigned(headcount.var_plan) }}</span>
+                  </div>
+                  <div class="hc">
+                    <span class="hc-label">Δ {{ yr2(yearPrev) }}</span>
+                    <span class="hc-value" :class="signCf(headcount.var_2025)">{{ fmtSigned(headcount.var_2025) }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Таблица «страна × полугодия» -->
+              <section v-if="slideTable" class="card">
+                <div class="card-head">
+                  <h3 class="card-title">{{ slideTable.label }}</h3>
+                  <button class="btn btn-ghost btn-sm" type="button"
+                          title="Скачать CSV" @click="exportCsv(slideTable)">
+                    <Icon name="lucide:download" /> CSV
+                  </button>
+                </div>
+                <div class="table-wrap">
+                  <table class="stable">
+                    <thead>
+                      <tr>
+                        <th v-for="col in slideTable.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
+                          {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(row, i) in (slideTable.rows || [])" :key="i" :class="{ total: row.total }">
+                        <td v-for="col in slideTable.columns" :key="col.key"
+                            :class="[col.key === 'label' ? 'col-name' : 'num', row.total ? slideCmpDk(row, col.key) : slideCmp(row, col.key)]">
+                          {{ cellText(slideTable, row, col) }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <!-- Карточки стран «Ожидание к факту» -->
+              <template v-if="countryCards.length">
+                <h3 class="grid-caption">Ожидание {{ yearPlan }} к факту {{ yearPrev }}, ФОТ</h3>
+                <section class="cc-grid">
+                  <article v-for="c in countryCards" :key="c.cc" class="ccard">
+                    <span class="cc-code">{{ c.cc }}</span>
+                    <span class="cc-dyncap">Динамика, п.п. ({{ yearPlan }}/{{ yearPrev }}):</span>
+                    <span class="cc-badge" :class="signCf(c.share_delta_pp)">{{ fmtSigned(c.share_delta_pp, 2) }}</span>
+                    <span class="cc-big">{{ fmt1(c.exp26) }} млн</span>
+                    <span class="cc-delta" :class="signCf(c.dev_year)">{{ fmtSigned(c.dev_year) }}% к {{ yearPrev }} ({{ fmtSigned(c.dev_abs) }} млн)</span>
+                    <div class="cc-sep" role="presentation" />
+                    <p class="cc-line">Доля в ФОТ группы: <b>{{ fmt1(c.fot_share) }}%</b></p>
+                    <p class="cc-line">Доля ФОТ в выручке гр. ({{ yearPlan }}): <b>{{ fmt1(c.rev_share_2026) }}%</b></p>
+                    <p class="cc-line">Доля ФОТ в выручке гр. ({{ yearPrev }}): <b>{{ fmt1(c.rev_share_2025) }}%</b></p>
+                    <div class="cc-sep cc-sep-soft" role="presentation" />
+                    <p class="cc-hc">
+                      ПЧ: <b>{{ fmt1(c.plan_approved) }}</b>&nbsp;&nbsp;ФЧ 1ПГ {{ yearPlan }}:
+                      <b :class="cmpCf(c.fact_h1_2026, c.plan_approved)">{{ fmt1(c.fact_h1_2026) }}</b><br>
+                      Откл. (Ф-П): <b :class="signCf(c.hc_var)">{{ fmtSigned(c.hc_var) }}</b>
+                    </p>
+                  </article>
+                </section>
+              </template>
+
+              <!-- Наблюдения слайда 1 -->
+              <section v-if="b1Observations?.length" class="b1-obs">
+                <p v-for="(obs, i) in b1Observations" :key="i">{{ obs }}</p>
+              </section>
+              </template>
+
+              <!-- ─── Слайды 2/3: детализация полугодий (массив slides) ─── -->
+              <template v-else-if="b1Current">
+                <div class="ribbon">
+                  <div v-for="c in b1Current.cards" :key="c.key" class="rb"
+                       :class="{ 'rb-big': c.key === 'fot_value' || c.key === 'fot_share_cur' }">
+                    <span class="rb-label">{{ c.label }}</span>
+                    <span class="rb-value" :class="c.color ? deltaHexClass(c.color) : ''">
+                      <template v-if="c.unit === 'млн BYN'">{{ fmt1(c.value) }}<span class="rb-unit"> млн {{ currency }}</span></template>
+                      <template v-else-if="c.unit === 'п.п.'">{{ fmtSigned(c.value, 2) }}<span class="rb-unit"> п.п.</span></template>
+                      <template v-else-if="c.key === 'fot_dev' || c.key === 'revenue_dev'">{{ fmtSigned(c.value) }}<span class="rb-unit"> %</span></template>
+                      <template v-else>{{ fmt1(c.value) }}<span class="rb-unit"> %</span></template>
+                    </span>
+                    <span v-if="isNum(c.sub)" class="rb-sub" :class="signCf(c.sub)">
+                      {{ fmtSigned(c.sub, 1) }} {{ c.sub_label }}
+                    </span>
+                  </div>
+                  <div v-if="b1Current.headcount" class="rb-hc">
+                    <div class="hc">
+                      <span class="hc-label">ПЧ {{ yearPlan }}</span>
+                      <span class="hc-value">{{ fmt1(b1Current.headcount.plan_approved) }}</span>
+                    </div>
+                    <div class="hc">
+                      <span class="hc-label">ФЧ 1ПГ{{ yr2(yearPrev) }}</span>
+                      <span class="hc-value">{{ fmt1(b1Current.headcount.fact_2025) }}</span>
+                    </div>
+                    <div class="hc">
+                      <span class="hc-label">ФЧ 1ПГ{{ yr2(yearPlan) }}</span>
+                      <span class="hc-value">{{ fmt1(b1Current.headcount.fact_2026) }}</span>
+                    </div>
+                    <div class="hc">
+                      <span class="hc-label">Δ план</span>
+                      <span class="hc-value" :class="signCf(b1Current.headcount.var_plan)">{{ fmtSigned(b1Current.headcount.var_plan) }}</span>
+                    </div>
+                    <div class="hc">
+                      <span class="hc-label">Δ {{ yr2(yearPrev) }}</span>
+                      <span class="hc-value" :class="signCf(b1Current.headcount.var_2025)">{{ fmtSigned(b1Current.headcount.var_2025) }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <section v-if="b1Current.table" class="card">
+                  <div class="card-head">
+                    <h3 class="card-title">{{ b1Current.table.label }}</h3>
+                    <button class="btn btn-ghost btn-sm" type="button"
+                            title="Скачать CSV" @click="exportCsv(b1Current.table)">
+                      <Icon name="lucide:download" /> CSV
+                    </button>
+                  </div>
+                  <div class="table-wrap">
+                    <table class="stable">
+                      <thead>
+                        <tr>
+                          <th v-for="col in b1Current.table.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
+                            {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(row, i) in (b1Current.table.rows || [])" :key="i" :class="{ total: row.total }">
+                          <td v-for="col in b1Current.table.columns" :key="col.key"
+                              :class="[col.key === 'label' ? 'col-name' : 'num', cellDeltaClass(row, col)]">
+                            {{ cellText(b1Current.table, row, col) }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <p v-if="b1ExpectNote" class="slide-foot">{{ b1ExpectNote }}</p>
+                </section>
+
+                <template v-if="(b1Current.cards_by_country || []).length">
+                  <h3 class="grid-caption">{{ b1GridCaption }}</h3>
+                  <section class="cc-grid">
+                    <article v-for="c in b1Current.cards_by_country" :key="c.cc" class="ccard">
+                      <span class="cc-code">{{ c.cc }}</span>
+                      <template v-if="b1Current.ui && b1Current.ui.dots">
+                        <span class="cc-dyncap">Динамика, п.п. ({{ b1DotsPair }}):</span>
+                        <span class="cc-badge" :class="signCf(c.share_delta_pp)">{{ ppBadge(c.share_delta_pp) }}</span>
+                      </template>
+                      <span class="cc-big">{{ fmt1(c.value) }} млн</span>
+                      <span class="cc-delta" :class="deltaHexClass(c.dev_color) || signCf(c.dev)">
+                        к {{ b1CapPrevDat }}: {{ fmtSigned(c.dev) }}% ({{ fmtSigned(c.dev_abs) }} млн)
+                      </span>
+                      <div class="cc-sep" role="presentation" />
+                      <p class="cc-line">Доля ФОТ в выручке гр. ({{ b1CapCur }}): <b>{{ fmt1(c.share_cur) }}%</b></p>
+                      <p class="cc-line">Доля ФОТ в выручке гр. ({{ b1CapPrev }}): <b>{{ fmt1(c.share_prev) }}%</b></p>
+                      <template v-if="isNum(c.plan_approved)">
+                        <div class="cc-sep cc-sep-soft" role="presentation" />
+                        <p class="cc-hc">
+                          ПЧ: <b>{{ fmt1(c.plan_approved) }}</b>&nbsp;&nbsp;ФЧ 1ПГ {{ yearPlan }}:
+                          <b>{{ fmt1(c.fact_h1_2026) }}</b><br>
+                          Откл. (Ф-П): <b :class="signCf(c.hc_var)">{{ fmtSigned(c.hc_var) }}</b>
+                        </p>
+                      </template>
+                      <p v-if="!(b1Current.ui && b1Current.ui.dots) && isNum(c.share_delta_pp)" class="cc-line">
+                        Динамика доли в выручке, п.п.: <b :class="signCf(c.share_delta_pp)">{{ fmtSigned(c.share_delta_pp, 2) }}</b>
+                      </p>
+                    </article>
+                  </section>
+                </template>
+              </template>
+            </section>
+          </template>
+
           <!-- P17 «Численность ГК»: свод по группе компаний -->
           <template v-if="isP17">
+            <!-- Тулбар: год + полугодие (над обоими слайдами) -->
+            <div class="hc-toolbar">
+              <label class="hc-tb-label">Период
+                <select v-model="p17Year" class="select select-sm" @change="loadDash">
+                  <option v-for="y in p17YearOptions" :key="y" :value="y">{{ y }}</option>
+                </select>
+              </label>
+              <div class="hc-half-sel">
+                <button v-for="h in p17HalfOptions" :key="h.key" class="hc-half-btn"
+                        :class="{ active: p17Half === h.key }"
+                        @click="p17Half = h.key; loadDash()">{{ h.label }}</button>
+              </div>
+            </div>
+
             <!-- Слайд 4.1: ГК свод по странам -->
             <section class="slide" aria-label="Численность ГК">
               <header class="slide-hdr">
@@ -594,66 +843,50 @@
                 </span>
               </header>
 
-              <!-- KPI-лента: 5 карточек укомплектованности -->
-              <section class="fot-kpis">
-                <article v-for="c in cards" :key="c.key" class="fot-kpi">
-                  <span class="fot-kpi-label">{{ c.label }}</span>
-                  <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
-                </article>
+              <!-- Метрики: компактная лента -->
+              <section v-if="cards.length" class="hc-metrics">
+                <span v-for="c in cards" :key="c.key" class="hc-m">
+                  <span class="hc-m-label">{{ c.label }}</span>
+                  <span class="hc-m-val">{{ hcMetricValue(c) }}</span>
+                  <span class="hc-m-unit" v-if="c.unit">{{ c.unit }}</span>
+                </span>
               </section>
 
-              <!-- Селекторы: год + полугодие -->
-              <div class="p18-periods">
-                <label class="p18-period-label">Год
-                  <select v-model="p17Year" class="select select-sm" @change="loadDash">
-                    <option v-for="y in p17YearOptions" :key="y" :value="y">{{ y }}</option>
-                  </select>
-                </label>
-                <div class="p18-half-sel">
-                  <button v-for="h in p17HalfOptions" :key="h.key" class="p18-half-btn"
-                          :class="{ active: p17Half === h.key }"
-                          @click="p17Half = h.key; loadDash()">{{ h.label }}</button>
-                </div>
-              </div>
+              <!-- Наблюдения (генерируются бэкендом) -->
+              <section v-if="p17Observations?.length" class="hc-obs">
+                <p v-for="(obs, i) in p17Observations" :key="i">{{ obs }}</p>
+              </section>
 
               <!-- Таблица «Численность ГК по странам» -->
-              <section v-if="slideTable17" class="card">
-                <div class="card-head">
-                  <h3 class="card-title">{{ slideTable17.label }}</h3>
-                </div>
+              <section v-if="slideTable17" class="hc-tbl">
                 <div class="table-wrap">
                   <table class="stable">
                     <thead>
                       <tr>
                         <th v-for="col in slideTable17.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
-                          {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
+                          {{ col.label }}
                         </th>
                       </tr>
                     </thead>
                     <tbody>
                       <tr v-for="(row, i) in (slideTable17.rows || [])" :key="i" :class="{ total: row.total }">
                         <td v-for="col in slideTable17.columns" :key="col.key"
-                            :class="[col.key === 'label' ? 'col-name' : 'num', cellDeltaClass(row, col)]">
-                          {{ cellText(slideTable17, row, col) }}
+                            :class="[col.key === 'label' ? 'col-name' : 'num', hcCellClass(row, col)]">
+                          {{ hcCell(row, col) }}
                         </td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
+                <p v-if="slideTable17.note" class="slide-foot">{{ slideTable17.note }}</p>
               </section>
             </section>
 
             <!-- Слайд 4.2: численность по выбранной стране -->
             <section class="slide" aria-label="Численность по стране" v-if="p17CountryCc">
               <header class="slide-hdr">
-                <h2 class="slide-title">{{ p17CountryLabel }} — численность по направлениям</h2>
-                <span class="slide-subtitle">На конец 1 ПГ {{ yearPlan }}</span>
-                <span v-if="p17CountryTotal" class="slide-note">
-                  ПЧ/ФЧ 1ПГ{{ yr2(yearPlan) }}:
-                  <b>{{ fmt1(p17CountryTotal.plan_approved) }}/{{ fmt1(p17CountryTotal.q26) }}</b>,
-                  {{ fmt0(p17CountryTotal.staff_pct) }}% укомпл.
-                </span>
-                <!-- Сегмент выбора страны -->
+                <h2 class="slide-title">{{ p17CountryDetail?.title || p17CountryLabel }}</h2>
+                <span class="slide-subtitle">На конец {{ p17HalfLabel }} {{ p17Year }}</span>
                 <div class="seg" role="group" aria-label="Страна">
                   <button v-for="c in p17CountryOptions" :key="c.key"
                           class="btn btn-sm"
@@ -666,66 +899,48 @@
                 </span>
               </header>
 
-              <!-- KPI-лента: 5 карточек страны -->
-              <section v-if="p17CountryCardsKpi.length" class="fot-kpis">
-                <article v-for="c in p17CountryCardsKpi" :key="c.key" class="fot-kpi">
-                  <span class="fot-kpi-label">{{ c.label }}</span>
-                  <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
-                </article>
+              <!-- Метрики страны -->
+              <section v-if="p17CountryDetail?.cards?.length" class="hc-metrics">
+                <span v-for="c in p17CountryDetail.cards" :key="c.key" class="hc-m">
+                  <span class="hc-m-label">{{ c.label }}</span>
+                  <span class="hc-m-val">{{ hcMetricValue(c) }}</span>
+                  <span class="hc-m-unit" v-if="c.unit">{{ c.unit }}</span>
+                </span>
               </section>
 
-              <!-- Карточки направлений (паттерн P16) -->
-              <section v-if="p17DeptRows.length" class="dpc-grid dp16-grid">
-                <article v-for="d in p17DeptRows" :key="d.label" class="dpcard dp16">
-                  <div class="dpc-title" :title="d.label">{{ d.label }}</div>
-                  <div class="dpc-block">
-                    <span class="dpc-label">УТВ. СТРАТ. {{ yearPlan }}</span>
-                    <span class="dpc-value">{{ fmt1(d.plan_approved) }}<span class="dpc-unit"> чел.</span></span>
+              <!-- Таблица направлений: 1 или 2 колонки -->
+              <section v-if="p17CountryTable" class="hc-tbl">
+                <div class="hc-split" :class="{ split: hcSplit(p17CountryTable.rows) }">
+                  <div class="hc-split-pane" v-for="(paneRows, pi) in hcSplitRows(p17CountryTable.rows)" :key="pi">
+                    <table class="stable">
+                      <thead>
+                        <tr>
+                          <th v-for="col in p17CountryTable.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
+                            {{ col.label }}
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(row, i) in paneRows" :key="i" :class="{ total: row.total }">
+                          <td v-for="col in p17CountryTable.columns" :key="col.key"
+                              :class="[col.key === 'label' ? 'col-name' : 'num', hcCellClass(row, col)]">
+                            {{ hcCell(row, col) }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
                   </div>
-                  <div class="dpc-block">
-                    <span class="dpc-label">ФАКТ 1П {{ yearPlan }}</span>
-                    <span class="dpc-ppwrap" v-if="isNum(d.plan_approved)">
-                      <span class="dpc-pp" :class="cmpCf(d.q26, d.plan_approved)">
-                        <span class="pp-val">{{ fmtSigned(d.dev_appr) }}</span><span class="pp-unit">%</span>
-                      </span>
-                      <span class="dpc-ppcap">к утв.</span>
-                    </span>
-                    <span class="dpc-value">{{ fmt1(d.q26) }}<span class="dpc-unit"> чел.</span></span>
-                  </div>
-                  <div class="dpc-block">
-                    <span class="dpc-label">ФАКТ 1П {{ yearPrev }}</span>
-                    <span class="dpc-value">{{ fmt1(d.q25) }}<span class="dpc-unit"> чел.</span></span>
-                    <span class="dpc-delta" :class="signCf(d.dev_2625)">{{ fmtSigned(d.dev_2625) }}% к 1П{{ yr2(yearPrev) }}</span>
-                  </div>
-                  <hr class="cc-sep" />
-                  <p class="cc-hc">Укомплектованность: <b :class="cellDeltaClass(d, {key:'staff_pct'})">{{ fmt0(d.staff_pct) }}%</b></p>
-                </article>
-              </section>
+                </div>
 
-              <!-- Таблица подразделений -->
-              <section v-if="p17CountryTable" class="card">
-                <div class="card-head">
-                  <h3 class="card-title">{{ p17CountryTable.label }}</h3>
+                <!-- Итого (видимые позиции) -->
+                <div v-if="p17CountryTotal" class="hc-total-bar">
+                  <span class="hc-total-label">Итого:</span>
+                  <span v-for="k in ['plan_approved','q25','q26','staff_pct','delta_25','delta_appr']" :key="k" class="hc-total-val">
+                    {{ hcTotalVal(p17CountryTotal, k) }}
+                  </span>
                 </div>
-                <div class="table-wrap">
-                  <table class="stable">
-                    <thead>
-                      <tr>
-                        <th v-for="col in p17CountryTable.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
-                          {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="(row, i) in (p17CountryTable.rows || [])" :key="i" :class="{ total: row.total }">
-                        <td v-for="col in p17CountryTable.columns" :key="col.key"
-                            :class="[col.key === 'label' ? 'col-name' : 'num', cellDeltaClass(row, col)]">
-                          {{ cellText(p17CountryTable, row, col) }}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
+
+                <p v-if="p17CountryDetail?.note" class="slide-foot">{{ p17CountryDetail.note }}</p>
               </section>
             </section>
           </template>
@@ -799,7 +1014,7 @@
           </template>
 
           <!-- KPI-карточки вкладки: у P10 пять; у P11/P14–P18 — слайд выше -->
-          <section v-if="!isP11 && !isP14 && !isDeptTab && !isP17 && !isP18" class="fot-kpis">
+          <section v-if="!isP11 && !isP14 && !isDeptTab && !isP17 && !isP18 && !isB1" class="fot-kpis">
             <article v-for="c in cards" :key="c.key" class="fot-kpi">
               <span class="fot-kpi-label">{{ c.label }}</span>
               <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
@@ -957,6 +1172,7 @@ const TABS = [
   { key: 'p16', label: 'Отделы: анализ по подразделениям' },
   { key: 'p17', label: 'Численность ГК' },
   { key: 'p18', label: 'Исполнение бюджета' },
+  { key: 'b1', label: 'ГК' },
 ] as const
 const tab = ref<string>('p9')
 
@@ -1108,6 +1324,9 @@ function buildQuery(): string {
     p.set('p18_year', String(p18Year.value))
     p.set('p18_half', String(p18Half.value))
   }
+  if (isB1.value) {
+    // B1 берёт год из meta.periods, фильтры панели — из срезов
+  }
   if (isP17.value) {
     p.set('p17_year', String(p17Year.value))
     p.set('p17_half', String(p17Half.value))
@@ -1161,6 +1380,7 @@ const isP15 = computed(() => tab.value === 'p15')
 const isP16 = computed(() => tab.value === 'p16')
 const isP17 = computed(() => tab.value === 'p17')
 const isP18 = computed(() => tab.value === 'p18')
+const isB1 = computed(() => tab.value === 'b1')
 const p18Year = ref<number>(2026)
 const p18Half = ref<number>(0)
 const p18YearOptions = [2024, 2025, 2026, 2027]
@@ -1226,18 +1446,127 @@ const p17CountryCc = computed(() => {
   const first = p17CountryOptions.find(o => d[o.key])
   return first?.key || ''
 })
-const p17CountryDetails = computed<any>(() => {
+/** Детали выбранной страны: ответ бэкенда целиком (cards, table, total,
+ *  title, note) + человекочитаемый label страны. */
+const p17CountryDetail = computed<any>(() => {
   if (!isP17.value) return null
   const d = countryDetails.value[p17CountryCc.value]
   if (!d) return null
   const label = p17CountryOptions.find(o => o.key === p17CountryCc.value)?.label || p17CountryCc.value
-  return { cards: d.cards || [], table: d.table || null, label }
+  return { ...d, label }
 })
-const p17CountryCardsKpi = computed<any[]>(() => p17CountryDetails.value?.cards || [])
-const p17CountryTable = computed<any>(() => p17CountryDetails.value?.table || null)
-const p17CountryLabel = computed(() => p17CountryDetails.value?.label || '')
-const p17CountryTotal = computed<any>(() => (p17CountryTable.value?.rows || []).find((r: any) => r.total) || null)
-const p17DeptRows = computed<any[]>(() => (p17CountryTable.value?.rows || []).filter((r: any) => !r.total))
+const p17CountryTable = computed<any>(() => p17CountryDetail.value?.table || null)
+const p17CountryLabel = computed(() => p17CountryDetail.value?.label || '')
+/** Итог страны — блок total ответа, а не строка таблицы. */
+const p17CountryTotal = computed<any>(() => p17CountryDetail.value?.total || null)
+/** Наблюдения слайда 4.1 — генерируются бэкендом (p17_observations). */
+const p17Observations = computed<string[]>(() =>
+  isP17.value ? (dash.value?.p17_observations || dash.value?.observations || []) : [])
+/** Наблюдения B1. */
+const b1Observations = computed<string[]>(() =>
+  isB1.value ? (dash.value?.observations || []) : [])
+/** Переключатель слайда B1: s1 — свод, s2 — 1ПГ, s3 — 2ПГ (массив slides в одном ответе). */
+const b1Slide = ref<string>('s1')
+const b1Slides = computed<any[]>(() => (isB1.value ? (dash.value?.slides || []) : []))
+const b1Current = computed<any>(() =>
+  b1Slides.value.find((s: any) => s.key === b1Slide.value && s.key !== 's1') || null)
+const b1Subtitle = computed(() => {
+  if (b1Slide.value === 's2') return `Бюджет ФОТ ${yearPlan.value} — детализация 1 полугодия по странам`
+  if (b1Slide.value === 's3') return `Бюджет ФОТ ${yearPlan.value} — детализация 2 полугодия по странам`
+  return `Бюджет ФОТ ${yearPlan.value} — свод по странам группы`
+})
+/** Подписи периода для карточек: с2 «Факт 1ПГ26», с3 «Тактика 2ПГ26» и пред. год. */
+const b1CapCur = computed(() => b1Current.value?.period === 'h2'
+  ? `Такт. 2ПГ${yr2(yearPlan.value)}` : `Факт 1ПГ${yr2(yearPlan.value)}`)
+const b1CapPrev = computed(() => b1Current.value?.period === 'h2'
+  ? `Факт 2ПГ${yr2(yearPrev.value)}` : `Факт 1ПГ${yr2(yearPrev.value)}`)
+const b1GridCaption = computed(() => b1Current.value?.period === 'h2'
+  ? `Тактика 2 ПГ ${yearPlan.value}: исполнение бюджета и динамика к ${yearPrev.value}`
+  : `Факт 1 ПГ ${yearPlan.value}: исполнение бюджета и динамика к ${yearPrev.value}`)
+/** Сноска о правиле ожидания — из meta.expect; границы месяцев могут быть
+ *  пустыми (все месяцы закрыты / ещё ни одного не закрыто) — часть не печатается. */
+const b1ExpectNote = computed(() => {
+  const e = meta.value?.expect
+  if (!e || !e.by_month) return ''
+  const f = e.fact_months; const p = e.plan_months
+  if (f && p) return `Ожидание: факт по закрытым месяцам (${f}) + тактика по незакрытым (${p}).`
+  if (f && !p) return 'Ожидание = факт за год: все месяцы периода закрыты.'
+  if (!f && p) return `Ожидание: факт 1 ПГ + тактика по незакрытым месяцам (${p}).`
+  return ''
+})
+const b1DotsPair = computed(() => {
+  const h = b1Current.value?.period === 'h2' ? '2ПГ' : '1ПГ'
+  return `${h}${yr2(yearPlan.value)}/${h}${yr2(yearPrev.value)}`
+})
+const b1CapPrevDat = computed(() => b1CapPrev.value.replace('Факт', 'Факту'))
+/** Бейдж п.п.: два знака, лишние нули срезаются («−2,1», «+0,33») — как в деке. */
+function ppBadge(v: any): string {
+  let t = fmtSigned(v, 2)
+  if (/[1-9]0$/.test(t)) t = t.slice(0, -1)
+  if (t === '0,00') t = '0,0'
+  return t
+}
+/** Метка выбранного полугодия для подзаголовка слайда 4.2. */
+const p17HalfLabel = computed(() => {
+  const h = p17HalfOptions.find(o => o.key === p17Half.value)
+  return h ? (h.key === 0 ? 'года' : h.label) : ''
+})
+/** Форматирование ячейки HC: абсолютное значение или Δ */
+function hcCell(row: any, col: any): string {
+  const v = row[col.key]
+  if (v == null) return '—'
+  if (col.key === 'label') return String(v)
+  if (col.key.startsWith('delta')) return fmtHcSigned(v)
+  if (col.key === 'staff_pct') return v != null ? fmt0(v) + '%' : '—'
+  return fmt1(v)
+}
+/** Форматирование значения метрики HC */
+function hcMetricValue(card: any): string {
+  const v = card.value
+  if (v == null) return '—'
+  const k = card.key || ''
+  if (k.startsWith('delta')) return fmtHcSigned(v)
+  if (k === 'staff_pct') return v != null ? fmt0(v) + '%' : '—'
+  return fmt1(v)
+}
+/** Форматирование значения в строке итогов */
+function hcTotalVal(total: any, key: string): string {
+  const v = total?.[key]
+  if (v == null) return '—'
+  if (key.startsWith('delta')) return fmtHcSigned(v)
+  if (key === 'staff_pct') return fmt0(v) + '%'
+  return fmt1(v)
+}
+/** Класс ячейки HC: светофор укомплектованности + знак Δ */
+function hcCellClass(row: any, col: any): string {
+  if (col.key === 'staff_pct' && row.staff_pct_color) return row.staff_pct_color
+  if (col.key.startsWith('delta')) {
+    const v = row[col.key]
+    if (v != null) return Number(v) >= 0 ? 'cf-pos' : 'cf-neg'
+  }
+  return ''
+}
+/** Знаковое форматирование для HC (только для Δ) */
+function fmtHcSigned(v: unknown): string {
+  if (v == null) return '—'
+  const n = Number(v)
+  if (!isFinite(n)) return '—'
+  return (n >= 0 ? '+' : '') + fmt1(n)
+}
+/** Нужно ли делить таблицу на 2 колонки (>17 строк) */
+function hcSplit(rows: any[]): boolean {
+  return (rows || []).filter((r: any) => !r.total).length > 17
+}
+/** Разбить строки на панели: короткая таблица — одна, длинная (>17) — две
+ *  половины, строка «Итого» дублируется в каждую. */
+function hcSplitRows(rows: any[]): any[][] {
+  const all = rows || []
+  if (!hcSplit(all)) return [all]
+  const visible = all.filter((r: any) => !r.total)
+  const total = all.filter((r: any) => r.total)
+  const mid = Math.ceil(visible.length / 2)
+  return [visible.slice(0, mid).concat(total), visible.slice(mid).concat(total)]
+}
 /** Баннеры-выводы: P15 — «Тенденции и прогноз», P16 — пара листа 8. */
 const deptTrends = computed<string[]>(() => dash.value?.dept_trends || [])
 const deptBanners = computed<any>(() => dash.value?.dept_banners || null)
@@ -1292,7 +1621,7 @@ const headcount = computed<any>(() => dash.value?.headcount || null)
 const countryCards = computed<any[]>(() => dash.value?.cards_by_country || [])
 /** Таблица стран рендерится внутри слайда; в общем списке таблиц её нет. */
 const slideTable = computed<any>(() =>
-  isP11.value ? tables.value.find((t: any) => t.key === 'by_country') || null : null)
+  (isP11.value || isB1.value) ? tables.value.find((t: any) => t.key === 'by_country') || null : null)
 const shownTables = computed<any[]>(() => {
   if (isP11.value) return tables.value.filter((t: any) => t.key !== 'by_country')
   if (isP14.value) return tables.value.filter((t: any) => t.key !== 'by_direction')
@@ -1307,7 +1636,7 @@ const kpiNum = (key: string): number | null => {
   return c && isNum(c.value) ? Number(c.value) : null
 }
 /** P10–P16 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
-const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13', 'p14', 'p15', 'p16', 'p17', 'p18'].includes(tab.value))
+const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13', 'p14', 'p15', 'p16', 'p17', 'p18', 'b1'].includes(tab.value))
 /** Метка активной вкладки — заголовок блока ИИ и нотификации. */
 const tabLabel = computed(() => TABS.find((t) => t.key === tab.value)?.label || tab.value)
 
@@ -1573,6 +1902,11 @@ function cellText(t: any, row: any, col: any): string {
   if (col.key === 'label' || !isNum(v)) return String(v)
   const n = Number(v)
   const unit = String(col.unit || '').trim()
+  // таблицы слайдов 2/3 B1: отклонения со знаком и одним знаком после запятой,
+  // как на листах деки («+5,4 %», «−0,4»)
+  if (String(t?.key || '').startsWith('by_country_') && String(col.key).startsWith('dev_')) {
+    return fmtSigned(n, 1)
+  }
   if (unit.startsWith('млн')) return nf1.format(n)
   if (UNITS_2DP.has(unit)) return nf2.format(n)
   return MONEY_2DP_TABLES.has(t?.key) ? nf2.format(n) : nf0.format(n)
@@ -1586,6 +1920,11 @@ const DELTA_COLOR_CLASS: Record<string, string> = {
   '#1C8A5A': 'delta-pos', // var(--fot-pos) — рост в пределах порога
   '#9E6B0F': 'delta-mid', // var(--fot-mid) — рост выше порога без роста доли
   '#C0392B': 'delta-neg', // var(--fot-neg) — зона контроля
+}
+
+/** hex-цвет дельты из API → CSS-класс. */
+function deltaHexClass(hex: unknown): string {
+  return DELTA_COLOR_CLASS[String(hex || '').trim().toUpperCase()] || ''
 }
 function cellDeltaClass(row: any, col: any): string {
   const hex = String(row?.[col.key + '_color'] || '').trim().toUpperCase()
@@ -1898,6 +2237,13 @@ const fmtDateTime = (iso: any) => {
 .matrix td.delta-pos { color: var(--fot-pos); }
 .matrix td.delta-mid { color: var(--fot-mid); }
 .matrix td.delta-neg { color: var(--fot-neg); }
+.stable td.delta-pos { color: var(--fot-pos); }
+.stable td.delta-mid { color: var(--fot-mid); }
+.stable td.delta-neg { color: var(--fot-neg); }
+/* светлые варианты в тёмной итоговой строке b1 s2/s3 */
+.stable tr.total td.delta-pos { color: #8FD9B0; }
+.stable tr.total td.delta-mid { color: #F0C88A; }
+.stable tr.total td.delta-neg { color: #F2A69D; }
 /* В тёмной теме шапка на светлом винном — белый текст не читается, берём тёмный. */
 .fot-dark .matrix th { color: #2A1E22; }
 
@@ -2195,6 +2541,60 @@ const fmtDateTime = (iso: any) => {
 @media (max-width: 720px) {
   .fot-kpi-value { font-size: 18px; }
 }
+
+/* P17 «Численность ГК» — метрики-лента, тулбар, таблицы без .card */
+.hc-metrics { display: flex; gap: 12px; padding: 8px 0; flex-wrap: wrap; }
+.hc-m {
+  display: flex; flex-direction: column; padding: 6px 12px; min-width: 100px;
+  border-left: 2px solid var(--accent, #4338ca); border-radius: 4px;
+  background: var(--bg-muted, #f8f9fa);
+}
+.hc-m-label { font-size: 11px; color: var(--text-muted, #6b7280); }
+.hc-m-val { font-size: 18px; font-weight: 600; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.hc-m-unit { font-size: 12px; color: var(--text-muted, #6b7280); }
+
+.hc-toolbar { display: flex; gap: 16px; align-items: center; padding: 8px 0; margin-bottom: 8px; }
+.hc-tb-label { font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.hc-half-sel { display: flex; gap: 2px; }
+.hc-half-btn {
+  font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 4px;
+  border: 1px solid var(--border, #d1d5db); background: var(--bg, #fff);
+  cursor: pointer; transition: all 0.15s;
+}
+.hc-half-btn.active { background: var(--accent, #4338ca); color: #fff; border-color: var(--accent, #4338ca); }
+.hc-half-btn:hover:not(.active) { border-color: var(--accent, #4338ca); color: var(--text, #1e293b); }
+/* B1 «ГК»: переключатель трёх слайдов */
+.b1-tabs { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.b1-tab {
+  font: inherit; font-size: 13px; padding: 6px 14px; cursor: pointer;
+  background: var(--fot-card); color: var(--fot-ink);
+  border: 1px solid var(--fot-border); border-radius: 999px;
+}
+.b1-tab.active { background: var(--fot-accent-light); color: #fff; border-color: var(--fot-accent-light); }
+.b1-tab:hover:not(.active) { border-color: var(--fot-accent-light); }
+
+.hc-tbl .table-wrap { margin: 0; }
+.hc-tbl .stable { font-size: 13px; }
+
+.slide-foot { font-size: 11px; color: var(--text-muted, #6b7280); margin-top: 8px; font-style: italic; }
+
+.hc-obs { padding: 8px 0; }
+.hc-obs p { font-size: 13px; margin: 4px 0; color: var(--text-secondary, #374151); }
+
+.hc-total-bar {
+  display: flex; gap: 12px; padding: 6px 12px; margin-top: 8px; flex-wrap: wrap;
+  border-radius: 4px; background: var(--bg-muted, #f0f0f0);
+  font-size: 13px; font-weight: 500;
+}
+.hc-total-label { color: var(--text-muted, #6b7280); }
+.hc-total-val { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.hc-split.split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.hc-split-pane .table-wrap { margin: 0; }
+
+/* B1 — наблюдения слайда 22 (KPI/c-card стили переиспользуются с p11) */
+.b1-obs { padding: 12px 0; }
+.b1-obs p { font-size: 13px; margin: 6px 0; color: var(--text-secondary); line-height: 1.5; }
 
 /* P18 — периоды и подтабы разрезов */
 .p18-periods { display: flex; gap: 12px; align-items: center; margin: 8px 0 4px; flex-wrap: wrap; }
