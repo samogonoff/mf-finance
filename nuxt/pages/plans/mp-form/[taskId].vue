@@ -163,7 +163,7 @@
 		Вводятся продажи с НДС и % СПП. Доли и наценки действуют из условий площадки; суммы затрат рассчитываются.
       </span>
       <span v-else class="lg-hint">Менеджер задаёт «Продажи с НДС», %СПП и статьи затрат — остальное считается автоматически.</span>
-      <label class="ref-toggle" title="Своды по факту: тот же месяц прошлого года, прошлый месяц и текущий месяц плана — рядом с итогом, только чтение">
+      <label class="checkbox ref-toggle" title="Своды по факту: тот же месяц прошлого года, прошлый месяц и текущий месяц плана — рядом с итогом, только чтение">
         <input v-model="showRef" type="checkbox" @change="saveRefPref" />
         Сравнение с фактом
       </label>
@@ -1031,9 +1031,9 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.ref-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: var(--fs-sm, 13px); }
-.ref-col { background: var(--bg-subtle, #f4f5f9); min-width: 120px; }
-.ref-cell { background: var(--bg-subtle, #f4f5f9); text-align: right; }
+.ref-toggle { margin-left: auto; font-size: var(--fs-xs); }
+.ref-col { background: var(--bg-surface-2); min-width: 120px; }
+.ref-cell { background: var(--bg-surface-2); text-align: right; }
 .sticky-period { position: sticky; top: 0; z-index: 15; background: var(--bg, #fff); padding-bottom: var(--sp-2); }
 .tactic-month { margin: 2px 0; font-size: 1.35rem; font-weight: 750; }
 .section-toggle { border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
