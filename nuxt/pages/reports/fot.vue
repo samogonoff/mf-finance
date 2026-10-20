@@ -543,27 +543,28 @@
                 <section class="p14-cards">
                   <article v-for="(c, ci) in directionDetail.cards"
                            :key="(c.code || c.parent || '') + '|' + c.label + '|' + ci" class="p14card"
-                           :class="{ 'p14card-im': isImCard(c) }" :style="{ '--dcolor': s56CardColor(ci) }">
+                           :style="{ '--dcolor': s56CardColor(c) }">
+                    <h4 class="p14c-title" :title="c.parent ? c.parent + ' → ' + c.label : c.label">{{ c.label }}</h4>
                     <div class="p14c-block">
                       <span class="p14c-label">1 ПГ {{ yearPlan }}</span>
                       <span class="p14c-badge cc-badge" :class="signCf(c.pp_h1)"
                             :title="'Δ доли ФОТ в выручке к факту 1ПГ' + yr2(yearPrev)">{{ fmtSigned(c.pp_h1, 2) }}</span>
                       <span class="p14c-value">{{ fmt0(c.f26_h1) }}<span class="p14c-unit"> тыс {{ currency }}</span></span>
-                      <span class="p14c-delta" :class="[signCf(c.dev_h1_pct), imDeltaCls(c, 'h1')]">{{ s56Delta(c, 'h1') }}% к факту {{ yearPrev }} ({{ s56DeltaAbs(c, 'h1') }})</span>
+                      <span class="p14c-delta" :class="signCf(c.dev_h1_pct)">{{ fmtSigned(c.dev_h1_pct) }}% к факту {{ yearPrev }} ({{ fmtSigned(c.dev_h1_abs) }})</span>
                     </div>
                     <div class="p14c-block">
                       <span class="p14c-label">ТАКТИКА 2 ПГ {{ yearPlan }}</span>
                       <span class="p14c-badge cc-badge" :class="signCf(c.pp_h2)"
                             :title="'Δ доли ФОТ в выручке к факту 2ПГ' + yr2(yearPrev)">{{ fmtSigned(c.pp_h2, 2) }}</span>
                       <span class="p14c-value">{{ fmt0(c.t26_h2) }}<span class="p14c-unit"> тыс {{ currency }}</span></span>
-                      <span class="p14c-delta" :class="[signCf(c.dev_h2_pct), imDeltaCls(c, 'h2')]">{{ s56Delta(c, 'h2') }}% к факту {{ yearPrev }} ({{ s56DeltaAbs(c, 'h2') }})</span>
+                      <span class="p14c-delta" :class="signCf(c.dev_h2_pct)">{{ fmtSigned(c.dev_h2_pct) }}% к факту {{ yearPrev }} ({{ fmtSigned(c.dev_h2_abs) }})</span>
                     </div>
                     <div class="p14c-block">
                       <span class="p14c-label">ОЖИДАНИЕ, ГОД {{ yearPlan }}</span>
                       <span class="p14c-badge cc-badge" :class="signCf(c.pp_year)"
                             :title="'Δ доли ФОТ в выручке: ожидание ' + yearPlan + ' к факту ' + yearPrev">{{ fmtSigned(c.pp_year, 2) }}</span>
                       <span class="p14c-value">{{ fmt0(c.exp26) }}<span class="p14c-unit"> тыс {{ currency }}</span></span>
-                      <span class="p14c-delta" :class="signCf(c.dev_year_pct)">{{ s56Delta(c, 'year') }}% к факту {{ yearPrev }} ({{ s56DeltaAbs(c, 'year') }})</span>
+                      <span class="p14c-delta" :class="signCf(c.dev_year_pct)">{{ fmtSigned(c.dev_year_pct) }}% к факту {{ yearPrev }} ({{ fmtSigned(c.dev_year_abs) }})</span>
                     </div>
                     <div class="cc-sep" role="presentation" />
                     <p class="cc-hc">
@@ -1652,15 +1653,23 @@ const s56CellCls = (row: any, key: string, dk = false): string => {
 const s56RowCls = (row: any): string =>
   row.kind === 'total' ? 'total' : row.kind === 'direction' ? 's56-group' : row.kind === 'detail' ? 's56-det' : ''
 /** Кап доната слайдов 5-6: без фильтра листьев десятки (ЦФО Отделов) — читаемость
- *  против деки (7 сегментов). Больше 10 — топ-9 по доле + «Прочие» нейтральным. */
+ *  против деки (7 сегментов). Больше 10 — топ-9 по доле + «Прочие» нейтральным.
+ *  Доли нормируются по сумме положительных (сторно-минусы в итоге раздували
+ *  сумму > 100%), цвета переназначаются ПОСЛЕ свёртки — по индексу показанного
+ *  сегмента, иначе листья за концом бэкенд-палитры слипались одним цветом. */
 const DONUT_MAX = 9
+const S56_PIE_COLORS = ['#7A1F3D', '#F4A6C1', '#C2185B', '#E85D75', '#FFC845', '#9E6B0F', '#9B5A70', '#C27B92', '#6B3347']
 const capDonut = (segs: any[]): any[] => {
-  const src = (segs || []).filter((s) => isNum(s.pct) && Number(s.pct) > 0)
-  if (src.length <= DONUT_MAX + 1) return src
+  let src = (segs || []).filter((s) => isNum(s.pct) && Number(s.pct) > 0)
+  const posSum = src.reduce((acc, s) => acc + Number(s.pct), 0)
+  if (posSum > 0 && Math.abs(posSum - 100) > 0.05)
+    src = src.map((s) => ({ ...s, pct: (Number(s.pct) / posSum) * 100 }))
+  const paint = (list: any[]) => list.map((s, i) => ({ ...s, color: S56_PIE_COLORS[i] || '#C9AEB6' }))
+  if (src.length <= DONUT_MAX + 1) return paint(src)
   const top = [...src].sort((a, b) => Number(b.pct) - Number(a.pct)).slice(0, DONUT_MAX)
   const restPct = src.reduce((acc, s) => acc + Number(s.pct), 0) - top.reduce((acc, s) => acc + Number(s.pct), 0)
   const restVal = src.reduce((acc, s) => acc + (Number(s.value) || 0), 0) - top.reduce((acc, s) => acc + (Number(s.value) || 0), 0)
-  return [...top, { label: 'Прочие', value: restVal, pct: restPct, color: '#C9AEB6' }]
+  return [...paint(top), { label: 'Прочие', value: restVal, pct: restPct, color: '#C9AEB6' }]
 }
 /** Геометрия доната слайдов 5-6 — та же, что у pieSegs листа 4: от 12 часов по
  *  часовой, подписи у секторов >= 1 %; вход — сегменты бэкенда (label/pct/color). */
@@ -1675,6 +1684,18 @@ const piePaths = (segs: any[]): any[] => {
     const a1 = a0 + ang
     const mid = (a0 + a1) / 2
     const pt = (r: number, a: number) => [CX + r * Math.cos(a), CY + r * Math.sin(a)]
+    if (p >= 99.95) {
+      // Единственный сегмент: сектор вырождается (начало дуги = конец) — полный
+      // круг из двух полудуг, подпись справа.
+      out.push({
+        path: 'M ' + CX + ' ' + (CY - R) + ' A ' + R + ' ' + R + ' 0 1 1 ' + CX + ' ' + (CY + R)
+             + ' A ' + R + ' ' + R + ' 0 1 1 ' + CX + ' ' + (CY - R) + ' Z',
+        color: s.color, label: s.label, pct: p, labeled: true,
+        lx: (CX + 48).toFixed(1), ly: (CY + 3.5).toFixed(1),
+      })
+      a0 = a1
+      continue
+    }
     const xy0 = pt(R, a0), xy1 = pt(R, a1)
     out.push({
       path: 'M ' + CX + ' ' + CY + ' L ' + xy0[0].toFixed(2) + ' ' + xy0[1].toFixed(2)
@@ -1721,20 +1742,12 @@ const bar56Geom = (bar: any): any[] => {
   const span = Math.max(hi - lo, 1e-9)
   return vals.map((x: any) => ({ ...x, h: x.v === null ? 0 : Math.max(2, ((x.v - lo) / span) * 56) }))
 }
-/** Цвет карточки слайда 6 — из доната: cards и donut собраны по одним листьям. */
-const s56CardColor = (i: number): string =>
-  directionDetail.value?.donut?.[i]?.color || BAR_COLORS[i % BAR_COLORS.length]
-/** Спец-карточка ИМ (лист 6 деки): кружки с рамкой «плохо», числа accent6
- *  (#548235), дельты — первая без светофора, вторая accent6, дефисы ASCII. */
-const IM_CARD_LABELS = new Set(['Интернет-магазин'])
-const isImCard = (c: any): boolean => IM_CARD_LABELS.has(String(c?.label || '').trim())
-const imSigned = (v: any, dp: 1 | 2 = 1): string => fmtSigned(v, dp).replace('−', '-')
-const s56Delta = (c: any, per: 'h1' | 'h2' | 'year'): string =>
-  isImCard(c) ? imSigned(c['dev_' + per + '_pct']) : fmtSigned(c['dev_' + per + '_pct'])
-const s56DeltaAbs = (c: any, per: 'h1' | 'h2' | 'year'): string =>
-  isImCard(c) ? imSigned(c['dev_' + per + '_abs']) : fmtSigned(c['dev_' + per + '_abs'])
-const imDeltaCls = (c: any, per: 'h1' | 'h2' | 'year'): string =>
-  !isImCard(c) ? '' : per === 'h1' ? 's56-im-plain' : per === 'h2' ? 's56-im-green' : ''
+/** Цвет карточки слайда 6 — из СВЁРНУТОГО доната по названию (одно соответствие
+ *  «название → цвет» после capDonut); листь в «Прочих» — нейтральный. */
+const s56CardColor = (c: any): string => {
+  const seg = capDonut(directionDetail.value?.donut).find((x: any) => x.label === String(c?.label || '').trim())
+  return seg ? seg.color : '#C9AEB6'
+}
 
 /** Отделы листов 7–8 — отдельный блок ответа (cards_by_department): топ-6
  *  «требующих внимания» — лист 7 (P15), остальные — лист 8 (P16). */
@@ -2753,6 +2766,11 @@ const fmtDateTime = (iso: any) => {
 .p14c-delta.cf-neg { color: var(--fot-neg); }
 /* бейдж Δ доли, п.п. — справа от блока (классы цвета у cc-badge уже есть) */
 .p14c-badge { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
+/* Заголовок карточки слайда 6: листьев десятки, цвет рамки не идентифицирует */
+.p14c-title {
+  margin: 0; font-size: 11.5px; font-weight: var(--fw-bold, 700); color: var(--fot-ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* ── Слайды 5-6 (листы 5-6 деки, задача 663620): секции под слайдом листа 4 ── */
 /* Таблицы слайдов: двухстрочные шапки, Δ-колонки, групповые строки листа 6. */
@@ -2782,11 +2800,6 @@ const fmtDateTime = (iso: any) => {
 .s56-bar-val { font-size: 8.4px; font-family: var(--font-mono); }
 /* Карточка ИМ (лист 6): рамка кружков «плохо», числа accent6, дельты — первая
    без цвета обычного веса, вторая accent6 (как в дампе декы). */
-.p14card.p14card-im .cc-badge { border-color: var(--fot-neg); }
-.p14card.p14card-im .cc-badge.cf-pos,
-.p14card.p14card-im .cc-badge.cf-neg { color: #548235; }
-.p14card .p14c-delta.s56-im-plain { color: var(--fot-ink); font-weight: var(--fw-regular); }
-.p14card .p14c-delta.s56-im-green { color: #548235; }
 @media (max-width: 520px) {
   .s5-sec .slide-note, .s6-sec .slide-note { white-space: normal; }
   .s56-stable th, .s56-stable td { font-size: 10px; }
