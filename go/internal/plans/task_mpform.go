@@ -578,9 +578,10 @@ const (
 	MpRefCurrentFct = "cur"  // текущий месяц плана: факт на момент загрузки
 )
 
-// mpReferenceTotals считает строки формы по факту периодов сравнения: те же входы, что у
-// тактики (mpPlatformInputs), но слои — только факт периода (без таргета и стратегии, чтобы
-// не подмешать план). Периоды без факта по площадке не попадают в ответ — колонка покажет «—».
+// mpReferenceTotals считает строки формы по факту периодов сравнения. Входы каскада собираются
+// из факта отдельно от тактики (mpFactInputs): в сводах нет таргета и стратегии, чтобы не подмешать
+// план, а %СПП, себестоимость и НДС берутся из самого факта периода — иначе маржа и PL получились бы
+// завышенными. Периоды без факта по ЭТОЙ площадке не попадают в ответ — колонка покажет «—».
 func mpReferenceTotals(platforms []MpFormPlatform, layers mpLayerSet, vat map[int]MpVatBasis) map[string]map[int]map[string]float64 {
 	out := map[string]map[int]map[string]float64{}
 	for _, p := range platforms {
@@ -588,13 +589,11 @@ func mpReferenceTotals(platforms []MpFormPlatform, layers mpLayerSet, vat map[in
 		for kind, fact := range map[string]map[[2]int]float64{
 			MpRefLastYear: pl.factPrev, MpRefPrevMonth: pl.factPrevMonth, MpRefCurrentFct: pl.fact,
 		} {
-			if len(fact) == 0 {
+			// Слои задаются на весь сегмент: факт у соседней площадки не делает период «имеющимся».
+			if !mpFactHasCfo(fact, p.CodeCFO) {
 				continue
 			}
-			only := newMpLayers()
-			only.fact = fact
-			in := mpPlatformInputs(p.CodeCFO, nil, only)
-			vals := computeMpPlatform(in, vat[p.CodeCFO])
+			vals := computeMpPlatform(mpFactInputs(p.CodeCFO, fact), mpFactVatBasis(fact, p.CodeCFO, vat[p.CodeCFO]))
 			if out[kind] == nil {
 				out[kind] = map[int]map[string]float64{}
 			}
@@ -602,6 +601,44 @@ func mpReferenceTotals(platforms []MpFormPlatform, layers mpLayerSet, vat map[in
 		}
 	}
 	return out
+}
+
+// mpFactHasCfo — есть ли в слое факта хотя бы одна запись этой площадки.
+func mpFactHasCfo(fact map[[2]int]float64, cfo int) bool {
+	for k := range fact {
+		if k[0] == cfo {
+			return true
+		}
+	}
+	return false
+}
+
+// mpFactInputs — входы каскада по площадке из ФАКТА периода: продажи и статьи затрат (как у
+// формы ввода), фактический %СПП, себестоимость по отпускным ценам (8006) и общая (2006+6006).
+// Наценки не задаются — они считаются каскадом от этих сумм.
+func mpFactInputs(cfo int, fact map[[2]int]float64) map[string]float64 {
+	only := newMpLayers()
+	only.fact = fact
+	in := mpPlatformInputs(cfo, nil, only)
+	in[BSPP] = deriveSPP(fact, cfo)
+	for _, b := range []string{BShipments, BCogsTotal} {
+		if v, ok := factSeed(fact, b, cfo); ok {
+			in[b] = v
+		}
+	}
+	return in
+}
+
+// mpFactVatBasis — базис НДС периода сравнения: отношение 1046/1045 самого факта, иначе базис
+// месяца плана (он взят из плана, а у периода без пары 1046/1045 лучшего источника нет).
+func mpFactVatBasis(fact map[[2]int]float64, cfo int, fallback MpVatBasis) MpVatBasis {
+	g, n := fact[[2]int{cfo, 1046}], fact[[2]int{cfo, 1045}]
+	if g > 0 && n > 0 {
+		if r := g / n; r >= mpVatRatioMin && r <= mpVatRatioMax {
+			return MpVatBasis{Ratio: r}
+		}
+	}
+	return fallback
 }
 
 // platformValues — значения строк по площадке в зависимости от режима расчёта.
