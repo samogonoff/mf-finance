@@ -103,6 +103,21 @@ func TestMigration0076_DropsOnlyUntouchedSalesRows_PG(t *testing.T) {
 	if _, err := repo.SaveValues(ctx, touchedInst.ID, []ExpCell{{CodeCFO: 1, CodePL: 1001, Month: 10, Amount: &amt}}, 0, 1); err != nil {
 		t.Fatal(err)
 	}
+	// В открытой карточке РБ бюджет источника уже подставлен автоматически (source = budget) — и в строки продаж, и в
+	// расходную строку. Подставленный бюджет введённым планом не считается: строки продаж с ним тоже удаляются,
+	// расходная остаётся (она не из групп продаж).
+	budget := func(code int) ExpCell {
+		a := 357.0
+		return ExpCell{CodeCFO: 1, CodePL: code, Month: 10, Amount: &a, Source: ExpSourceBudget}
+	}
+	if err := repo.FillPlanFromSource(ctx, openInst.ID, 10, []ExpCell{budget(24), budget(1001), budget(5001), budget(2001)}); err != nil {
+		t.Fatal(err)
+	}
+	var autoFilled int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM exp_value v JOIN exp_row r ON r.id = v.row_id
+		 WHERE r.instance_id = $1 AND v.scenario = 'plan' AND v.source = $2`, openInst.ID, ExpSourceBudget).Scan(&autoFilled); err != nil || autoFilled != 4 {
+		t.Fatalf("бюджет не подставился в открытую карточку: %d ячеек, %v", autoFilled, err)
+	}
 	if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
 		t.Fatalf("миграция 0076: %v", err)
 	}

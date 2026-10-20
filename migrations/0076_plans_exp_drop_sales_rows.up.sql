@@ -11,4 +11,4 @@ DELETE FROM exp_row r
    AND c.status IN ('draft', 'returned') AND NOT c.locked
    AND (UPPER(r.group_pl) LIKE '%ПРОДАЖИ%' OR UPPER(r.group_pl) LIKE '%СЕБЕСТОИМОСТЬ%'
         OR UPPER(r.group_pl) LIKE '%МАРЖА%' OR UPPER(r.group_pl) LIKE '%ОТГРУЗК%')
-   AND NOT EXISTS (SELECT 1 FROM exp_value v WHERE v.row_id = r.id AND v.scenario = 'plan');
+   AND NOT EXISTS (SELECT 1 FROM exp_value v WHERE v.row_id = r.id AND v.scenario = 'plan' AND v.source <> 'budget');
