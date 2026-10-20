@@ -70,6 +70,9 @@ export interface DebtRow {
 
   revenue_period: number;
   revenue_last_month: number;
+  // Возвраты (положительные числа); есть только у бэкенда arh, у остальных нет поля.
+  returns_period?: number;
+  returns_last_month?: number;
 }
 
 export interface DebtReportResponse {
