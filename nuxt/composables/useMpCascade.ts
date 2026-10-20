@@ -112,6 +112,9 @@ export function computePlatform(input: Record<string, number | null | undefined>
   const platGross = managerGross * (1 - spp);
   const platNet = div(platGross, vat.ratio);
 
+  // Скидки и уценки вводятся по площадке и в каскад не входят.
+  out[B.discount] = n(input[B.discount]);
+  out[B.markdown] = n(input[B.markdown]);
   out[B.salesManagerGross] = managerGross;
   out[B.salesManagerNet] = managerNet;
   out[B.vatRate] = vat.ratio - 1;
@@ -196,6 +199,9 @@ export function computePlatformInverse(
 
   const managerGross = n(input[B.salesManagerGross]);
   const managerNet = div(managerGross, ratio);
+  // Скидки и уценки вводятся по площадке и в каскад не входят.
+  out[B.discount] = n(input[B.discount]);
+  out[B.markdown] = n(input[B.markdown]);
   out[B.salesManagerGross] = managerGross;
   out[B.vatRate] = ratio - 1;
   out[B.salesManagerNet] = managerNet;

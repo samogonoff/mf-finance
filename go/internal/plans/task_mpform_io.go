@@ -73,52 +73,9 @@ func (s *TaskStore) MpFormImport(ctx context.Context, taskID, actorID int64, isA
 	if len(rows) < 2 {
 		return 0, fmt.Errorf("в файле нет строк")
 	}
-	// Индексы колонок по заголовку.
-	col := map[string]int{}
-	for i, h := range rows[0] {
-		col[strings.ToLower(strings.TrimSpace(h))] = i
-	}
-	ci := func(name string) int {
-		if v, ok := col[strings.ToLower(name)]; ok {
-			return v
-		}
-		return -1
-	}
-	cfoCol, plCol, tacCol := ci("Код ЦФО"), ci("КодPL"), ci("Тактика")
-	if cfoCol < 0 || plCol < 0 || tacCol < 0 {
-		return 0, fmt.Errorf("нет колонок «Код ЦФО»/«КодPL»/«Тактика»")
-	}
-	// code_pl → block_type.
-	plToBlock := map[int]string{}
-	for _, l := range mpFormSpec() {
-		if l.Editable && l.CodePL > 0 {
-			plToBlock[l.CodePL] = l.BlockType
-		}
-	}
-	at := func(r []string, i int) string {
-		if i >= 0 && i < len(r) {
-			return strings.TrimSpace(r[i])
-		}
-		return ""
-	}
-	out := make([]MpSaveRow, 0)
-	for _, r := range rows[1:] {
-		cfo, _ := strconv.Atoi(at(r, cfoCol))
-		pl, _ := strconv.Atoi(at(r, plCol))
-		ts := strings.ReplaceAll(at(r, tacCol), " ", "")
-		ts = strings.ReplaceAll(ts, ",", ".")
-		if cfo == 0 || pl == 0 || ts == "" {
-			continue
-		}
-		amt, err := strconv.ParseFloat(ts, 64)
-		if err != nil {
-			continue
-		}
-		bt := plToBlock[pl]
-		if bt == "" {
-			continue
-		}
-		out = append(out, MpSaveRow{CodeCFO: cfo, BlockType: bt, CodePL: pl, Amount: amt})
+	out, err := parseMpImportRows(rows)
+	if err != nil {
+		return 0, err
 	}
 	if len(out) == 0 {
 		return 0, fmt.Errorf("не найдено строк с тактикой")
@@ -231,4 +188,68 @@ func (s *TaskStore) ImportStrategy(ctx context.Context, plID int64, data []byte)
 		return 0, fmt.Errorf("не найдено строк со стратегией")
 	}
 	return n, tx.Commit(ctx)
+}
+
+// mpImportNamedBlocks — строки без кода PL, которые загружаются по названию блока (колонка «Блок»):
+// скидки и уценки вводятся по площадкам, а своего кода PL у них нет.
+var mpImportNamedBlocks = map[string]string{
+	"скидки": BDiscount,
+	"уценки": BMarkdown,
+}
+
+// parseMpImportRows разбирает строки листа (первая — заголовок) в строки сохранения: тактика
+// по «КодPL» и, для скидок/уценок без кода PL, по названию блока.
+func parseMpImportRows(rows [][]string) ([]MpSaveRow, error) {
+	col := map[string]int{}
+	for i, h := range rows[0] {
+		col[strings.ToLower(strings.TrimSpace(h))] = i
+	}
+	ci := func(name string) int {
+		if v, ok := col[strings.ToLower(name)]; ok {
+			return v
+		}
+		return -1
+	}
+	cfoCol, plCol, tacCol, blockCol := ci("Код ЦФО"), ci("КодPL"), ci("Тактика"), ci("Блок")
+	if cfoCol < 0 || plCol < 0 || tacCol < 0 {
+		return nil, fmt.Errorf("нет колонок «Код ЦФО»/«КодPL»/«Тактика»")
+	}
+	// code_pl → block_type.
+	plToBlock := map[int]string{}
+	for _, l := range mpFormSpec() {
+		if l.Editable && l.CodePL > 0 {
+			plToBlock[l.CodePL] = l.BlockType
+		}
+	}
+	at := func(r []string, i int) string {
+		if i >= 0 && i < len(r) {
+			return strings.TrimSpace(r[i])
+		}
+		return ""
+	}
+	out := make([]MpSaveRow, 0)
+	for _, r := range rows[1:] {
+		cfo, _ := strconv.Atoi(at(r, cfoCol))
+		pl, _ := strconv.Atoi(at(r, plCol))
+		ts := strings.ReplaceAll(at(r, tacCol), " ", "")
+		ts = strings.ReplaceAll(ts, ",", ".")
+		if cfo == 0 || ts == "" {
+			continue
+		}
+		amt, err := strconv.ParseFloat(ts, 64)
+		if err != nil {
+			continue
+		}
+		bt := ""
+		if pl > 0 {
+			bt = plToBlock[pl]
+		} else {
+			bt = mpImportNamedBlocks[strings.ToLower(at(r, blockCol))]
+		}
+		if bt == "" {
+			continue
+		}
+		out = append(out, MpSaveRow{CodeCFO: cfo, BlockType: bt, CodePL: pl, Amount: amt})
+	}
+	return out, nil
 }

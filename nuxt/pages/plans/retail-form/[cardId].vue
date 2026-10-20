@@ -843,6 +843,7 @@ const ATTR_COLS: ColDef[] = [
 const CMP_COLS: ColDef[] = [
   { key: "fact_prev_year_month", title: "Факт ПГ", hint: "Факт того же месяца прошлого года" },
   { key: "fact_prev_month", title: "Факт пред.мес", hint: "Факт предыдущего месяца" },
+  { key: "fact_cur_month", title: "Факт тек.мес", hint: "Факт текущего месяца плана на момент загрузки (месяц ещё идёт)" },
   { key: "strategy", title: "Стратегия", hint: "Стратегический план на месяц" },
   { key: "tactic_approved", title: "Утв. тактика", hint: "Ранее утверждённая тактика на месяц" }
 ];

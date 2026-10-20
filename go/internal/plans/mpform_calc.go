@@ -51,6 +51,10 @@ func computeMpPlatform(in map[string]float64, vat MpVatBasis) map[string]float64
 	platGross := managerGross * (1 - spp)
 	platNet := safeDiv(platGross, vat.Ratio)
 
+	// Скидки и уценки вводятся по площадке и в каскад не входят (в маржу и PL не идут).
+	out[BDiscount] = in[BDiscount]
+	out[BMarkdown] = in[BMarkdown]
+
 	out[BSalesManagerGross] = managerGross
 	out[BSalesManagerNet] = managerNet
 	out[BVatRate] = vat.Rate()

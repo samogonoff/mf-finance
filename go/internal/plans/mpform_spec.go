@@ -61,8 +61,8 @@ const (
 	BSalesPlatNet      = "sales_platform_price_net" // 1006 — по цене площадки без НДС (расчёт)
 	BShipments         = "shipments"                // 8006 — себестоимость по отпускным ценам (ввод)
 	BMarkup            = "markup"                   // Наценка, % — расчёт/правка
-	BDiscount          = "discount"                 // Скидка (по всем площадкам) — ввод
-	BMarkdown          = "markdown"                 // Уценка (по всем площадкам) — ввод
+	BDiscount          = "discount"                 // Скидка по площадке — ввод
+	BMarkdown          = "markdown"                 // Уценка по площадке — ввод
 	BRetailMargin      = "retail_margin"            // Маржа розничная — расчёт
 	BRetailMarginPct   = "retail_margin_pct"        // Маржинальность розничная, % — расчёт
 	BCogsTotal         = "cogs_total"               // 2006/6006 — Себестоимость общая (ввод)
@@ -134,8 +134,8 @@ func mpFormSpec() []MpLine {
 		{BlockType: BMarkup, Name: "Наценка, %", Section: cost, Kind: KindCalcEditable, ValueKind: ValuePct, Scope: ScopePlatform, Editable: true, Formula: "вводится; от неё считается себестоимость по отпускным ценам"},
 
 		// --- Маржа розничная ---
-		{BlockType: BDiscount, Name: "Скидки по всем площадкам", Section: marginR, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopeTotal, Editable: true, Formula: "ручной ввод (по всем МП)"},
-		{BlockType: BMarkdown, Name: "Уценки по всем площадкам", Section: marginR, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopeTotal, Editable: true, Formula: "ручной ввод (по всем МП)"},
+		{BlockType: BDiscount, Name: "Скидки", Section: marginR, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, Formula: "ручной ввод по площадке (в маржу и PL не входит); в итоге — сумма по площадкам"},
+		{BlockType: BMarkdown, Name: "Уценки", Section: marginR, Kind: KindInput, ValueKind: ValueMoney, Scope: ScopePlatform, Editable: true, Formula: "ручной ввод по площадке (в маржу и PL не входит); в итоге — сумма по площадкам"},
 		{BlockType: BRetailMargin, Name: "Маржа розничная", Section: marginR, Kind: KindCalc, ValueKind: ValueMoney, Scope: ScopePlatform, Formula: "= площадка_без_НДС − себестоимость"},
 		{BlockType: BRetailMarginPct, Name: "Маржинальность розничная, %", Section: marginR, Kind: KindCalc, ValueKind: ValuePct, Scope: ScopePlatform, Formula: "= маржа розничная / площадка_без_НДС"},
 
@@ -247,11 +247,11 @@ func mpFormSpecFor(mode string) []MpLine {
 			spec[i].Editable = false
 			spec[i].Formula = "= цена площадки без НДС / (1 + наценка)"
 		case BDiscount, BMarkdown:
-			// Как в Excel-формах large/small: «Скидки и уценки по всем площадкам МП» —
-			// итоговые суммы на группу, вводятся руками (в small вписаны числами; в
-			// large тактика = план скидок / план продаж × тактические продажи, но
-			// источника плана скидок в хранилище нет). Раньше строки в inverse-режиме
-			// не вводились и не считались: форма показывала «—» и 0,00.
+			// Скидки и уценки вводятся руками по каждой площадке (итог — сумма по площадкам).
+			// В Excel-формах large/small это одна строка «по всем площадкам МП»: в small
+			// вписаны числами, в large тактика = план скидок / план продаж × тактические
+			// продажи, но источника плана скидок в хранилище нет. Раньше вводился только итог
+			// на группу, а по площадкам строки были недоступны.
 			spec[i].Editable = true
 		default:
 			if spec[i].CostLine {

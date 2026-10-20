@@ -163,6 +163,10 @@
 		Вводятся продажи с НДС и % СПП. Доли и наценки действуют из условий площадки; суммы затрат рассчитываются.
       </span>
       <span v-else class="lg-hint">Менеджер задаёт «Продажи с НДС», %СПП и статьи затрат — остальное считается автоматически.</span>
+      <label class="checkbox ref-toggle" title="Своды по факту: тот же месяц прошлого года, прошлый месяц и текущий месяц плана — рядом с итогом, только чтение">
+        <input v-model="showRef" type="checkbox" @change="saveRefPref" />
+        Сравнение с фактом
+      </label>
     </div>
 
 	<section v-if="form" class="card approval-summary">
@@ -219,11 +223,16 @@
                 >НДС {{ pctLabel(vatRateOf(p.code_cfo)) }}</span>
               </th>
               <th class="col-total num">Итого<span v-if="totalScoped" class="cfo">по фильтру</span></th>
+              <template v-if="showRef">
+                <th v-for="rp in refPeriods" :key="rp.key" class="col-total num ref-col" :title="rp.title">
+                  {{ rp.label }}<span class="cfo">факт, итого</span>
+                </th>
+              </template>
             </tr>
           </thead>
           <tbody>
             <template v-for="sec in sections" :key="sec.name">
-			  <tr class="sec-row"><td :colspan="visiblePlatforms.length + 2"><button type="button" class="section-toggle" @click="toggleSection(sec.name)">{{ collapsedSections.has(sec.name) ? '▸' : '▾' }} {{ sec.name }}</button></td></tr>
+			  <tr class="sec-row"><td :colspan="visiblePlatforms.length + 2 + (showRef ? 3 : 0)"><button type="button" class="section-toggle" @click="toggleSection(sec.name)">{{ collapsedSections.has(sec.name) ? '▸' : '▾' }} {{ sec.name }}</button></td></tr>
 			  <tr v-for="line in collapsedSections.has(sec.name) ? [] : sec.lines" :key="line.block_type" class="line-row" :class="lineClass(line)">
                 <td class="col-line">
                   <span class="line-name">{{ line.name }}</span>
@@ -316,6 +325,11 @@
 					<span class="calc-val" :class="{ neg: totalValue(line) < 0 }">{{ line.cost_line && visiblePlatforms.some(p => missingShare(line, p.code_cfo)) ? '—' : fmt(line, totalValue(line)) }}</span>
                   </template>
                 </td>
+                <template v-if="showRef">
+                  <td v-for="rp in refPeriods" :key="rp.key" class="cell ref-cell">
+                    <span class="calc-val muted" :class="{ neg: (refTotalValue(line, rp.key) ?? 0) < 0 }">{{ refTotalText(line, rp.key) }}</span>
+                  </td>
+                </template>
               </tr>
             </template>
             <tr v-if="!form.platforms.length"><td :colspan="2" class="empty-cell">У задания нет площадок (ЦФО не размечены).</td></tr>
@@ -708,8 +722,12 @@ const plModeLabel = computed(() => (form.value?.pl_with_common ? "PL полны�
 const cellValue = (line: MpLine, cfo: number): number => platformValues.value[cfo]?.[line.block_type] ?? 0;
 // Итог считается по ВИДИМЫМ площадкам: отфильтровав срез, пользователь ждёт итог
 // именно по нему. Каскад при этом считается по всем — ввод скрытых не теряется.
-const sumBlock = (block: string): number =>
-  visiblePlatforms.value.reduce((s, p) => s + (platformValues.value[p.code_cfo]?.[block] ?? 0), 0);
+// Источник значений для итогов: тактика формы или свод по факту периода сравнения.
+type ValueGetter = (cfo: number, block: string) => number;
+const planGet: ValueGetter = (cfo, block) => platformValues.value[cfo]?.[block] ?? 0;
+const sumBlockWith = (get: ValueGetter, block: string): number =>
+  visiblePlatforms.value.reduce((s, p) => s + get(p.code_cfo, block), 0);
+const sumBlock = (block: string): number => sumBlockWith(planGet, block);
 
 // Итого по строке: сумма денег; проценты пересчитываются из агрегатов.
 /**
@@ -724,38 +742,80 @@ const sumBlock = (block: string): number =>
  */
 const totalValue = (line: MpLine): number => {
   if (line.scope === "total") return Number(totals[line.block_type]) || 0;
-  if (line.value_kind === "money") return sumBlock(line.block_type);
-  const net = sumBlock(B.salesPlatNet);
+  return totalValueWith(line, planGet);
+};
+
+/** Итог строки по источнику значений: тактика формы или свод по факту периода. */
+const totalValueWith = (line: MpLine, get: ValueGetter): number => {
+  const sum = (b: string) => sumBlockWith(get, b);
+  if (line.value_kind === "money") return sum(line.block_type);
+  const net = sum(B.salesPlatNet);
   switch (line.block_type) {
-    case B.spp: { const mgr = sumBlock(B.salesManagerNet); return mgr === 0 ? 0 : 1 - net / mgr; }
-    case B.markup: { const c = sumBlock(B.shipments); return c === 0 ? 0 : net / c - 1; }
-    case B.markupTotal: { const c = sumBlock(B.cogsTotal); return c === 0 ? 0 : net / c - 1; }
-    case B.retailMarginPct: return net === 0 ? 0 : sumBlock(B.retailMargin) / net;
-    case B.grossMarginPct: return net === 0 ? 0 : sumBlock(B.grossMargin) / net;
-    case B.plPlatformPct: return net === 0 ? 0 : sumBlock(B.plPlatform) / net;
-    case B.plPlatformTotalCostPct: return net === 0 ? 0 : sumBlock(B.plPlatformTotalCost) / net;
+    case B.spp: { const mgr = sum(B.salesManagerNet); return mgr === 0 ? 0 : 1 - net / mgr; }
+    case B.markup: { const c = sum(B.shipments); return c === 0 ? 0 : net / c - 1; }
+    case B.markupTotal: { const c = sum(B.cogsTotal); return c === 0 ? 0 : net / c - 1; }
+    case B.retailMarginPct: return net === 0 ? 0 : sum(B.retailMargin) / net;
+    case B.grossMarginPct: return net === 0 ? 0 : sum(B.grossMargin) / net;
+    case B.plPlatformPct: return net === 0 ? 0 : sum(B.plPlatform) / net;
+    case B.plPlatformTotalCostPct: return net === 0 ? 0 : sum(B.plPlatformTotalCost) / net;
     // Ставка НДС взвешивается по выручке: у площадок она разная, и среднее
     // арифметическое дало бы ставку, которой нет ни у одной из них.
     case B.vatRate: {
-      const mgrNet = sumBlock(B.salesManagerNet);
-      return mgrNet === 0 ? 0 : sumBlock(B.salesManagerGross) / mgrNet - 1;
+      const mgrNet = sum(B.salesManagerNet);
+      return mgrNet === 0 ? 0 : sum(B.salesManagerGross) / mgrNet - 1;
     }
     // База долей — цена площадки без НДС (решение звонка 07.09.2026).
-    case B.directShare: return net === 0 ? 0 : sumBlock(B.platformCosts) / net;
+    case B.directShare: return net === 0 ? 0 : sum(B.platformCosts) / net;
     case B.directShareTurnover:
-      return net === 0 ? 0 : (sumBlock(B.platformCosts) - sumBlock(B.commission)) / net;
+      return net === 0 ? 0 : (sum(B.platformCosts) - sum(B.commission)) / net;
     default:
-      return weightedByPlatNet(line.block_type);
+      return weightedByPlatNet(line.block_type, get);
   }
 };
 
+// ── Своды за периоды сравнения (только чтение) ───────────────────────────────
+const REF_KEY = "mp-form-ref";
+const showRef = ref(true);
+const loadRefPref = () => {
+  try {
+    const raw = localStorage.getItem(REF_KEY);
+    if (raw !== null) showRef.value = raw === "1";
+  } catch { /* хранилище недоступно — остаётся значение по умолчанию */ }
+};
+const saveRefPref = () => {
+  try { localStorage.setItem(REF_KEY, showRef.value ? "1" : "0"); } catch { /* не запомнится */ }
+};
+const MONTH_NAMES = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const refPeriods = computed(() => {
+  const y = form.value?.year ?? 0;
+  const m = form.value?.month ?? 1;
+  const py = m > 1 ? y : y - 1;
+  const pm = m > 1 ? m - 1 : 12;
+  return [
+    { key: "ly", label: `${MONTH_NAMES[m - 1]} ${y - 1}`, title: `Факт того же месяца прошлого года (${MONTH_NAMES[m - 1]} ${y - 1})` },
+    { key: "prev", label: `${MONTH_NAMES[pm - 1]} ${py}`, title: `Факт прошлого месяца (${MONTH_NAMES[pm - 1]} ${py})` },
+    { key: "cur", label: `${MONTH_NAMES[m - 1]} ${y}`, title: `Факт текущего месяца плана (${MONTH_NAMES[m - 1]} ${y}) на момент загрузки` }
+  ];
+});
+/** Итог строки по периоду сравнения; null — по видимым площадкам факта за период нет. */
+const refTotalValue = (line: MpLine, kind: string): number | null => {
+  const ref = form.value?.reference?.[kind];
+  if (!ref || line.scope === "total") return null;
+  if (!visiblePlatforms.value.some((p) => ref[p.code_cfo])) return null;
+  return totalValueWith(line, (cfo, block) => ref[cfo]?.[block] ?? 0);
+};
+const refTotalText = (line: MpLine, kind: string): string => {
+  const v = refTotalValue(line, kind);
+  return v === null ? "—" : fmt(line, v);
+};
+
 /** Взвешивание доли по цене площадки без НДС: Σ(доля × база) ÷ Σбаза. */
-const weightedByPlatNet = (block: string): number => {
+const weightedByPlatNet = (block: string, get: ValueGetter = planGet): number => {
   let num = 0;
   let den = 0;
   for (const p of visiblePlatforms.value) {
-    const base = platformValues.value[p.code_cfo]?.[B.salesPlatNet] ?? 0;
-    num += (platformValues.value[p.code_cfo]?.[block] ?? 0) * base;
+    const base = get(p.code_cfo, B.salesPlatNet);
+    num += get(p.code_cfo, block) * base;
     den += base;
   }
   return den === 0 ? 0 : num / den;
@@ -964,10 +1024,16 @@ const doImport = async (ev: Event) => {
   finally { if (fileInput.value) fileInput.value.value = ""; }
 };
 
-onMounted(load);
+onMounted(() => {
+  loadRefPref();
+  void load();
+});
 </script>
 
 <style scoped>
+.ref-toggle { margin-left: auto; font-size: var(--fs-xs); }
+.col-total.ref-col { background: var(--bg-surface-2); min-width: 120px; }
+.ref-cell { background: var(--bg-surface-2); text-align: right; }
 .sticky-period { position: sticky; top: 0; z-index: 15; background: var(--bg, #fff); padding-bottom: var(--sp-2); }
 .tactic-month { margin: 2px 0; font-size: 1.35rem; font-weight: 750; }
 .section-toggle { border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
