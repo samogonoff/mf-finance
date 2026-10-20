@@ -53,6 +53,11 @@ type RetailRepo interface {
 	SaveParams(ctx context.Context, instanceID int64, params []RetailParam, actorID int64) error
 	DeleteParam(ctx context.Context, instanceID, paramID int64) error
 	SetLFLOverride(ctx context.Context, instanceID int64, codeCFO int, status, reason string, actorID int64) error
+	// LFLRefreshRows — строки форм ВСЕХ периодов и стран со статусом и состоянием карточки (для
+	// разового обновления статусов из Лисы, retail_lfl_refresh.go).
+	LFLRefreshRows(ctx context.Context) ([]RetailLFLRefreshRow, error)
+	// ApplyLFLStatuses записывает только tp_row.lfl_status; ячейки, карточки, версии и переопределения не трогает.
+	ApplyLFLStatuses(ctx context.Context, changes []RetailLFLChange) (int, error)
 	// RegManagers — значения RegManager, закреплённые за пользователем (ТЗ §9).
 	RegManagers(ctx context.Context, userID int64) ([]string, error)
 	// PrevMetric — значения метрики предыдущего периода той же страны (фикс-часть
@@ -526,6 +531,55 @@ func (r *pgRetailRepo) DeleteParam(ctx context.Context, instanceID, paramID int6
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// LFLRefreshRows — см. RetailRepo.LFLRefreshRows.
+func (r *pgRetailRepo) LFLRefreshRows(ctx context.Context) ([]RetailLFLRefreshRow, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT t.id, c.id, t.code_cfo, t.lfl_status, i.country, i.period_year, i.period_month,
+		       c.status, c.step_code, c.locked
+		  FROM tp_row t
+		  JOIN tp_instance i ON i.id = t.instance_id
+		  JOIN form_card c ON c.id = i.card_id
+		 ORDER BY i.period_year, i.period_month, i.country, t.code_cfo`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RetailLFLRefreshRow
+	for rows.Next() {
+		var x RetailLFLRefreshRow
+		var step string
+		var locked bool
+		if err := rows.Scan(&x.RowID, &x.CardID, &x.CodeCFO, &x.Status, &x.Country, &x.Year, &x.Month,
+			&x.CardStatus, &step, &locked); err != nil {
+			return nil, err
+		}
+		x.Editable = cardEditable(Card{FormCode: TemplateRetail, Status: x.CardStatus, StepCode: step, Locked: locked})
+		x.CardStatus = CardStatusLabel(x.CardStatus, step)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+// ApplyLFLStatuses — см. RetailRepo.ApplyLFLStatuses.
+func (r *pgRetailRepo) ApplyLFLStatuses(ctx context.Context, changes []RetailLFLChange) (int, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	n := 0
+	for _, c := range changes {
+		tag, err := tx.Exec(ctx, `
+			UPDATE tp_row SET lfl_status = $2, row_version = row_version + 1, updated_at = NOW()
+			 WHERE id = $1 AND lfl_status IS DISTINCT FROM $2`, c.RowID, c.To)
+		if err != nil {
+			return 0, fmt.Errorf("строка %d: %w", c.RowID, err)
+		}
+		n += int(tag.RowsAffected())
+	}
+	return n, tx.Commit(ctx)
 }
 
 // SetLFLOverride — переопределение LFL-статуса на период (ТЗ §3). Пустой status
