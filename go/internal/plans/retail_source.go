@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // Источники данных формы «Розница» (ТЗ §11). Онлайн — тот же *sql.DB MSSQL, что у
@@ -100,6 +101,9 @@ func allViewGuards(table string) string {
 type mssqlRetailSource struct {
 	db  *sql.DB
 	tbl RetailTables
+	// lisaFailed — последний запрос магазинов с карточкой Лисы не удался (нет прав, таблицы нет) и был
+	// повторён без неё: статусы взяты из справочника ЦФО. Нужен подписи источника на экране.
+	lisaFailed atomic.Bool
 }
 
 // NewRetailSource — источник данных розницы. mock=true или db=nil → фикстуры.
@@ -135,6 +139,29 @@ func retailStoresQuery(storeTable, lflTable string) string {
 		   AND (@p2 = '' OR S.[Country] = @p2)`, lisaCols, storeTable, lisaJoin)
 }
 
+// RetailStatusSourceLabel — подпись источника LFL-статусов для экрана.
+type RetailStatusSourceLabel interface {
+	LFLSourceLabel() string
+}
+
+// LFLSourceLabel — откуда сейчас берутся LFL-статусы: Лиса (с запасом справочник ЦФО), только справочник
+// ЦФО (Лиса не настроена) или справочник ЦФО из-за недоступности Лисы.
+func (s *mssqlRetailSource) LFLSourceLabel() string {
+	return retailLFLSourceLabel(s.tbl.StoreTable, s.tbl.LFLTable, s.lisaFailed.Load())
+}
+
+func retailLFLSourceLabel(storeTable, lflTable string, lisaFailed bool) string {
+	cfo := storeTable + ".LfLStatus"
+	switch {
+	case strings.TrimSpace(lflTable) == "":
+		return cfo
+	case lisaFailed:
+		return cfo + " (карточки Лисы " + lflTable + " недоступны)"
+	default:
+		return lflTable + ".LFL_STATUS (нет карточки в Лисе — " + cfo + ")"
+	}
+}
+
 // retailLFLSource — LFL-статус магазина: если карточка клиента найдена в Лисе, берётся её статус
 // (пустой — значит, статус не присвоен), иначе — LfLStatus справочника ЦФО.
 func retailLFLSource(cfoStatus, lisaStatus string, lisaFound bool) string {
@@ -149,6 +176,15 @@ func retailLFLSource(cfoStatus, lisaStatus string, lisaFound bool) string {
 // 'Магазины', а в таблице плана '3.Магазины', и сопоставление идёт справочником.
 func (s *mssqlRetailSource) Stores(ctx context.Context, country string) ([]RetailStore, error) {
 	rows, err := s.db.QueryContext(ctx, retailStoresQuery(s.tbl.StoreTable, s.tbl.LFLTable), s.tbl.StoreGroup, country)
+	if err != nil && strings.TrimSpace(s.tbl.LFLTable) != "" {
+		// Лиса нужна только для уточнения статуса: нет прав на её таблицу — не должно ронять форму,
+		// синхронизацию и свод. Повторяем без присоединения, статусы — из справочника ЦФО.
+		log.Printf("plans retail: карточки Лисы (%s) недоступны, LFL-статус взят из справочника ЦФО: %v", s.tbl.LFLTable, err)
+		s.lisaFailed.Store(true)
+		rows, err = s.db.QueryContext(ctx, retailStoresQuery(s.tbl.StoreTable, ""), s.tbl.StoreGroup, country)
+	} else if err == nil {
+		s.lisaFailed.Store(false)
+	}
 	if err != nil {
 		return nil, err
 	}

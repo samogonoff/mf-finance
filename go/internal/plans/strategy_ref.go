@@ -61,6 +61,14 @@ func summarizeLFLStatuses(stores []RetailStore) []RetailLFLStatusCount {
 	return out
 }
 
+// LFLSourceLabel — подпись источника статусов LFL: источник сам знает, откуда читает.
+func (s *RetailService) LFLSourceLabel() string {
+	if l, ok := s.source.(RetailStatusSourceLabel); ok {
+		return l.LFLSourceLabel()
+	}
+	return "FinDWH.dbo.[001 CodeCFO].LfLStatus"
+}
+
 // LFLStatuses — статусы LFL по справочнику магазинов (все страны).
 func (s *RetailService) LFLStatuses(ctx context.Context) ([]RetailLFLStatusCount, error) {
 	if s.source == nil {
@@ -80,7 +88,8 @@ func (h *RetailHandler) LFLStatusesGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "справочник магазинов недоступен: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"source": "FinDWH.dbo.[001 CodeCFO].LfLStatus", "statuses": list})
+	// Подпись берётся после чтения: оно же определяет, дошло ли дело до запасного пути без Лисы.
+	writeJSON(w, http.StatusOK, map[string]any{"source": h.svc.LFLSourceLabel(), "statuses": list})
 }
 
 // StrategyMpMonth — доли статей стратегии по площадкам на месяц.
