@@ -20,6 +20,10 @@ const TemplateExp = "TPL-CFO-EXP"
 const (
 	ExpKindRetail = "retail" // 1.5-Р: Country='BY' и GroupCFO1='3.Магазины'
 	ExpKindMP     = "mp"     // 1.5-МП: GroupCFO1='4.Маркетплейсы', страна по форме
+	// ExpKindIM — интернет-магазин: GroupCFO1='5.Интернет-магазин' (лист «ИМ» файла PL 2025-2026).
+	ExpKindIM = "im"
+	// ExpKindOpt — опт: отбор по GroupCFO3 'ОПТ РБ' / 'ОПТ РФ' / 'ОПТ УЗ' (лист «ОПТ»), группа ЦФО любая.
+	ExpKindOpt = "opt"
 )
 
 // Сценарии колонок формы.

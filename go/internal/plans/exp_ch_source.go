@@ -161,7 +161,13 @@ func expCostsSQL(kind, country string, years []int) string {
 // запрос платёжного факта).
 func expCostsSQLScenario(kind, country string, years []int, scenario string) string {
 	var w []string
-	w = append(w, "group_cfo1 = "+chLit(expKindGroup(kind)))
+	group1, group3 := expKindFilter(kind, country)
+	if group1 != "" {
+		w = append(w, "group_cfo1 = "+chLit(group1))
+	}
+	if group3 != "" {
+		w = append(w, "group_cfo3 = "+chLit(group3))
+	}
 	if country != "" {
 		w = append(w, "country = "+chLit(country))
 	}

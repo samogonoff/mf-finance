@@ -77,9 +77,9 @@ func TestFormRegistry_HasExpForm(t *testing.T) {
 	if !ok {
 		t.Fatal("форма расходов ЦП не зарегистрирована в реестре форм")
 	}
-	// Legacy 1.5 has seven scopes; TЗ v2 adds six code-based CFO forms.
-	if len(def.Scopes) != 13 {
-		t.Fatalf("областей формы %d, ожидали тринадцать: legacy семь и CFO 31/32/33/34/37/962", len(def.Scopes))
+	// Legacy 1.5 has eleven scopes (розница 4, МП 3, ИМ 1, опт 3); TЗ v2 adds six code-based CFO forms.
+	if len(def.Scopes) != 17 {
+		t.Fatalf("областей формы %d, ожидали семнадцать: legacy одиннадцать и CFO 31/32/33/34/37/962", len(def.Scopes))
 	}
 	seen := map[string]string{}
 	for _, sc := range def.Scopes {
@@ -95,6 +95,11 @@ func TestFormRegistry_HasExpForm(t *testing.T) {
 	for _, k := range []string{"R-BY", "R-RU", "R-KZ", "R-UZ"} {
 		if seen[k] != ExpKindRetail {
 			t.Fatalf("область %q должна быть розницей, получили %q", k, seen[k])
+		}
+	}
+	for k, want := range map[string]string{"IM-BY": ExpKindIM, "OPT-BY": ExpKindOpt, "OPT-RU": ExpKindOpt, "OPT-UZ": ExpKindOpt} {
+		if seen[k] != want {
+			t.Fatalf("область %q должна иметь вид %q, получили %q", k, want, seen[k])
 		}
 	}
 	if seen["R-BY"] != ExpKindRetail || seen["MP-RU"] != ExpKindMP {

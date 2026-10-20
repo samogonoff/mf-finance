@@ -26,7 +26,7 @@ func TestCfoDeptFormsHiddenByDefault(t *testing.T) {
 		t.Fatalf("формы отделов должны быть скрыты, видно %d", dept)
 	}
 	if other == 0 {
-		t.Fatal("розница, МП и расходы R-/MP- должны остаться")
+		t.Fatal("розница, МП, ИМ, опт и расходы R-/MP-/IM-/OPT- должны остаться")
 	}
 	if !cfoDeptHidden(TemplateExp, "CFO-32-BY") || cfoDeptHidden(TemplateExp, "R-BY") || cfoDeptHidden(TemplateRetail, "BY") {
 		t.Fatal("скрываются только CFO-* формы расходов")

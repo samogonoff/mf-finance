@@ -109,6 +109,12 @@ func formRegistryAll() []FormDef {
 				{Key: "MP-RU", Title: "Маркетплейсы РФ", Country: "RU", LegalEntity: "TDMF", Currency: "RUB"},
 				{Key: "MP-KZ", Title: "Маркетплейсы KZ", Country: "KZ", LegalEntity: "MFKaz", Currency: "KZT"},
 				{Key: "MP-UZ", Title: "Маркетплейсы UZ", Country: "UZ", LegalEntity: "MFUz", Currency: "UZS"},
+				// Листы «ИМ» и «ОПТ» файла PL 2025-2026: ИМ — одна карточка (расходы только РБ: по РФ/КЗ в
+				// источнике единицы строк плана без факта), опт — по странам листа (РБ, РФ, УЗ).
+				{Key: "IM-BY", Title: "Интернет-магазин РБ", Country: "BY", LegalEntity: "F", Currency: "BYN"},
+				{Key: "OPT-BY", Title: "Опт РБ", Country: "BY", LegalEntity: "F", Currency: "BYN"},
+				{Key: "OPT-RU", Title: "Опт РФ", Country: "RU", LegalEntity: "TDMF", Currency: "RUB"},
+				{Key: "OPT-UZ", Title: "Опт УЗ", Country: "UZ", LegalEntity: "MFUz", Currency: "UZS"},
 			},
 		},
 		{

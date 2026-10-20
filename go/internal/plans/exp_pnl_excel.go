@@ -73,7 +73,7 @@ func expRetailPnlByCode() map[int]string {
 // expApplyDefaultPnlGroups дополняет группы НСИ умолчаниями вида формы (розница): код, у которого
 // группа в НСИ уже задана, не трогается.
 func expApplyDefaultPnlGroups(kind string, fromNSI map[int]string) map[int]string {
-	if kind != ExpKindRetail {
+	if !expKindUsesRetailPnl(kind) {
 		return fromNSI
 	}
 	out := map[int]string{}
@@ -90,10 +90,17 @@ func expApplyDefaultPnlGroups(kind string, fromNSI map[int]string) map[int]strin
 
 // expPnlOrder — порядок групп свода для вида формы (nil — по алфавиту).
 func expPnlOrder(kind string) []string {
-	if kind == ExpKindRetail {
+	if expKindUsesRetailPnl(kind) {
 		return expRetailPnlOrder
 	}
 	return nil
+}
+
+// expKindUsesRetailPnl — у вида формы те же группы P&L, что у розницы. Листы «ОПТ» и «ИМ» файла
+// PL 2025-2026 повторяют блок «Условно-постоянные расходы» листа «Розница»: те же 17+ групп и те же
+// коды PL (формулы суммируют одни и те же коды из DATA).
+func expKindUsesRetailPnl(kind string) bool {
+	return kind == ExpKindRetail || kind == ExpKindIM || kind == ExpKindOpt
 }
 
 // sortPnlGroups упорядочивает группы свода: сначала группы из order в его порядке, затем
