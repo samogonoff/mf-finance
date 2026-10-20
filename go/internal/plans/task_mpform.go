@@ -586,6 +586,9 @@ func (s *TaskStore) platformValues(mode string, vat MpVatBasis, norm float64,
 		SalesManagerGross: inputs[BSalesManagerGross],
 		Conditions:        input,
 	})
+	// Скидки и уценки вводятся по площадке и в каскад не входят: передаются как есть.
+	values[BDiscount] = inputs[BDiscount]
+	values[BMarkdown] = inputs[BMarkdown]
 	return values
 }
 
