@@ -129,6 +129,22 @@ type PublishLogItem struct {
 	StartedAt time.Time `json:"started_at"`
 }
 
+// publishSandboxOnlyTargets — приёмники расходов формы 1.5 (ответ аналитика от 11.09). Проверка 20.10.2026: в
+// FormToLoadPlan и VFORMTOLOADPLAN нет кодов затрат — расходы живут в Budgeting.budget.Input (запись через
+// budget.usp_SaveCells), и реальная запись туда не согласована с ФЭО. Поэтому эти приёмники принимает только
+// песочница (publish_sandbox); боевая запись их отклоняет, чем бы ни был настроен PLANS_PUBLISH_TARGETS.
+var publishSandboxOnlyTargets = []string{"Budgeting.dbo.FormToLoadPlan", "Budgeting.dbo.VFORMTOLOADPLAN"}
+
+func isSandboxOnlyTarget(target string) bool {
+	target = strings.TrimSpace(target)
+	for _, t := range publishSandboxOnlyTargets {
+		if strings.EqualFold(t, target) {
+			return true
+		}
+	}
+	return false
+}
+
 // Publisher — запись строк в приёмник. Реализации: mssqlPublisher (прод),
 // sandboxPublisher (dev/тест — приёмник изображает таблица publish_sandbox в PG)
 // и nopPublisher (нет ни того, ни другого — только dry-run).
@@ -241,6 +257,14 @@ func (s *CardService) Publish(ctx context.Context, cardID int64, mode string, ac
 	// Песочница — тот же путь записи, но приёмник изображает PG (publish_sandbox).
 	// Помечаем результат сразу: он уезжает и в отчёт, и в журнал, и в UI.
 	res.Sandbox = s.publisher.Sandbox()
+	if !res.Sandbox && isSandboxOnlyTarget(res.Target) {
+		// Расходы пока только в песочницу: не «failed» (карточка не должна уходить в публикацию с ошибкой), а blocked.
+		res.Mode = PublishModeDryRun
+		res.Status = "blocked"
+		res.Error = "расходы пока публикуются только в песочницу: реальный приёмник расходов (Budgeting.budget.Input) не согласован с ФЭО"
+		s.logPublish(ctx, res, actorID)
+		return res, nil
+	}
 
 	if mode != PublishModeWrite {
 		res.Mode = PublishModeDryRun
@@ -459,9 +483,15 @@ func pickMapping(mappings []PublishMapping, block, country string) (PublishMappi
 		case m.BlockType == block && m.Country == country && country != "":
 			return m, true
 		case m.BlockType == block && m.Country == "":
-			byBlock, okBlock = m, true
+			// Правил с одним ключом может быть несколько (расходы: BYN-пара и национальная валюта; пишется в один
+			// приёмник за раз): берём включённое, а не «последнее по порядку из БД».
+			if !okBlock || m.Enabled && !byBlock.Enabled {
+				byBlock, okBlock = m, true
+			}
 		case m.BlockType == "" && m.Country == "":
-			generic, okGeneric = m, true
+			if !okGeneric || m.Enabled && !generic.Enabled {
+				generic, okGeneric = m, true
+			}
 		}
 	}
 	if okBlock {

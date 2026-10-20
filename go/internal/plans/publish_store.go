@@ -18,7 +18,7 @@ func (s *pgPublishStore) Mappings(ctx context.Context, formCode string) ([]Publi
 		SELECT id, form_code, block_type, country, param_name, COALESCE(code_pl,0),
 		       target_table, target_currency, aggregate, COALESCE(aggregate_cfo,0), enabled, note
 		  FROM publish_mapping WHERE form_code = $1
-		 ORDER BY block_type, country, param_name`, formCode)
+		 ORDER BY block_type, country, param_name, id`, formCode)
 	if err != nil {
 		return nil, err
 	}
