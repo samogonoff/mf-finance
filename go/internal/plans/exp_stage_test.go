@@ -77,13 +77,14 @@ func TestFormRegistry_HasExpForm(t *testing.T) {
 	if !ok {
 		t.Fatal("форма расходов ЦП не зарегистрирована в реестре форм")
 	}
-	// Legacy 1.5 has eleven scopes (розница 4, МП 3, ИМ 1, опт 3); TЗ v2 adds six code-based CFO forms.
-	if len(def.Scopes) != 17 {
-		t.Fatalf("областей формы %d, ожидали семнадцать: legacy одиннадцать и CFO 31/32/33/34/37/962", len(def.Scopes))
+	// Legacy 1.5 has nine scopes (розница 4, МП 3, ИМ 1, опт 1); TЗ v2 adds six code-based CFO forms.
+	if len(def.Scopes) != 15 {
+		t.Fatalf("областей формы %d, ожидали пятнадцать: legacy девять и CFO 31/32/33/34/37/962", len(def.Scopes))
 	}
 	seen := map[string]string{}
 	for _, sc := range def.Scopes {
-		if sc.Currency == "" || sc.Country == "" {
+		// Опт — одна форма на три страны: страны у карточки нет, ввод в BYN.
+		if sc.Currency == "" || (sc.Country == "" && sc.Key != "OPT") {
 			t.Fatalf("область %q без страны или валюты ввода: ввод в нац. валюте обязателен (ТЗ §1.3)", sc.Key)
 		}
 		kind, country := expKindOf(sc.Key)
@@ -97,7 +98,7 @@ func TestFormRegistry_HasExpForm(t *testing.T) {
 			t.Fatalf("область %q должна быть розницей, получили %q", k, seen[k])
 		}
 	}
-	for k, want := range map[string]string{"IM-BY": ExpKindIM, "OPT-BY": ExpKindOpt, "OPT-RU": ExpKindOpt, "OPT-UZ": ExpKindOpt} {
+	for k, want := range map[string]string{"IM-BY": ExpKindIM, "OPT": ExpKindOpt} {
 		if seen[k] != want {
 			t.Fatalf("область %q должна иметь вид %q, получили %q", k, want, seen[k])
 		}

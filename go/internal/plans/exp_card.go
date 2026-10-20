@@ -137,7 +137,12 @@ func (p *ExpCardProvider) PublishRows(ctx context.Context, c Card) ([]PublishRow
 			if v.Scenario != ExpScenarioPlan || v.Amount == nil || *v.Amount == 0 {
 				continue
 			}
-			out = append(out, mk(r.CodeCFO, r.CodePL, v.Month, r.CFO, r.GroupCFO2, *v.Amount, r.LegalEntity))
+			pr := mk(r.CodeCFO, r.CodePL, v.Month, r.CFO, r.GroupCFO2, *v.Amount, r.LegalEntity)
+			if pr.Country == "" {
+				// Форма нескольких стран (опт): страна строки — страна её ЦФО.
+				pr.Country = r.CountryCompany
+			}
+			out = append(out, pr)
 		}
 	}
 

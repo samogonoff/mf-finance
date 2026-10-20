@@ -83,16 +83,12 @@ func expMockCfo(kind, country string) []ExpCfoAttrs {
 		return []ExpCfoAttrs{{CodeCFO: 380, CFO: "Интернет-магазин", GroupCFO2: "Минск", Country: "BY", LegalEntity: "F"}}
 	}
 	if kind == ExpKindOpt {
-		switch country {
-		case "RU":
-			return []ExpCfoAttrs{{CodeCFO: 303, CFO: "ВЭД РФ", GroupCFO2: "-", Country: "RU", LegalEntity: "TDMF"}}
-		case "UZ":
-			return []ExpCfoAttrs{{CodeCFO: 414, CFO: "Отдел продаж опта УЗ", GroupCFO2: "-", Country: "UZ", LegalEntity: "MFUz"}}
-		default:
-			return []ExpCfoAttrs{
-				{CodeCFO: 35, CFO: "Отдел продаж (франчайзинг, оптовая торговля)", GroupCFO2: "-", Country: "BY", LegalEntity: "F"},
-				{CodeCFO: 254, CFO: "Отдел мерчендайзинга ОПТ", GroupCFO2: "-", Country: "BY", LegalEntity: "F"},
-			}
+		// Одна форма на три страны листа «ОПТ»: страна карточки не задаётся.
+		return []ExpCfoAttrs{
+			{CodeCFO: 35, CFO: "Отдел продаж (франчайзинг, оптовая торговля)", GroupCFO2: "-", Country: "BY", LegalEntity: "F"},
+			{CodeCFO: 254, CFO: "Отдел мерчендайзинга ОПТ", GroupCFO2: "-", Country: "BY", LegalEntity: "F"},
+			{CodeCFO: 303, CFO: "ВЭД РФ", GroupCFO2: "-", Country: "RU", LegalEntity: "TDMF"},
+			{CodeCFO: 414, CFO: "Отдел продаж опта УЗ", GroupCFO2: "-", Country: "UZ", LegalEntity: "MFUz"},
 		}
 	}
 	return []ExpCfoAttrs{
