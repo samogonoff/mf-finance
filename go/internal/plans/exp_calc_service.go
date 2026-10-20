@@ -112,7 +112,7 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 		return res, errors.New("план продаж недоступен — расчёт §6.1 не выполняется")
 	}
 
-	rows, _, err := s.repo.Rows(ctx, in.ID, ExpFilter{Limit: 5000})
+	rows, err := expAllRows(ctx, s.repo, in.ID)
 	if err != nil {
 		return res, err
 	}
@@ -132,6 +132,8 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 	if len(months) == 0 {
 		months = allMonths()
 	}
+	// Прошедшие месяцы не планируются: ни в предпросмотре, ни в записи.
+	months = expOpenMonths(c, months)
 	share := expParamValue(params, ExpParamPayrollShare, "")
 	capDefault := expParamValue(params, ExpParamPayrollCap, "")
 
@@ -171,7 +173,7 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 		if req.Preview {
 			return res, nil
 		}
-		if _, err := s.repo.SaveValues(ctx, in.ID, cells, p.UserID, c.CurrentVersion); err != nil {
+		if _, err := s.saveValues(ctx, c, in, p, cells); err != nil {
 			return res, err
 		}
 		return res, nil
@@ -245,7 +247,7 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 	if req.Preview {
 		return res, nil
 	}
-	if _, err := s.repo.SaveValues(ctx, in.ID, cells, p.UserID, c.CurrentVersion); err != nil {
+	if _, err := s.saveValues(ctx, c, in, p, cells); err != nil {
 		return res, err
 	}
 	log.Printf("plans/exp: расчёт %s карточки %d: строк %d, ограничено %d, без базы %d",

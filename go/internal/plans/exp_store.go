@@ -19,6 +19,12 @@ type ExpRepo interface {
 	Rows(ctx context.Context, instanceID int64, f ExpFilter) ([]ExpRow, int, error)
 	SaveValues(ctx context.Context, instanceID int64, cells []ExpCell, actorID int64, cardVersion int) (int, error)
 	SaveReadOnly(ctx context.Context, instanceID int64, scenario string, cells []ExpCell) error
+	// FactBasis — на чём построен сохранённый факт экземпляра: ExpFactBasisPayments, если в нём
+	// лежат платёжные значения, иначе пусто. Признак хранится вместе с данными и переживает рестарт.
+	FactBasis(ctx context.Context, instanceID int64) (string, error)
+	// ClearPaymentsFact удаляет платёжные ячейки факта (fact и fact_cur): SaveReadOnly только
+	// перезаписывает пришедшие ключи, и без очистки платёжные остатки пережили бы переход на начисления.
+	ClearPaymentsFact(ctx context.Context, instanceID int64) error
 	SaveComment(ctx context.Context, instanceID int64, codeCFO, codePL int, comment string) error
 	GroupTotals(ctx context.Context, instanceID int64) (map[string]float64, error)
 	GroupOrder(ctx context.Context, formKind string) ([]string, error)
@@ -295,14 +301,18 @@ func (s *expRepo) SaveReadOnly(ctx context.Context, instanceID int64, scenario s
 		if c.Amount == nil || c.Month < 1 || c.Month > 12 {
 			continue
 		}
+		src := "source"
+		if c.Source == ExpFactBasisPayments {
+			src = ExpFactBasisPayments // платёжный факт помечается в данных: подпись «по платежам» переживает рестарт
+		}
 		b.Queue(`
 			INSERT INTO exp_value (row_id, scenario, month, amount, source)
-			SELECT r.id, $6, $3, $4, 'source'
+			SELECT r.id, $6, $3, $4, $7
 			  FROM exp_row r
 			 WHERE r.instance_id = $1 AND r.code_cfo = $2 AND r.code_pl = $5
 			ON CONFLICT (row_id, scenario, month) DO UPDATE SET
-			    amount = EXCLUDED.amount, updated_at = NOW()`,
-			instanceID, c.CodeCFO, c.Month, *c.Amount, c.CodePL, scenario)
+			    amount = EXCLUDED.amount, source = EXCLUDED.source, updated_at = NOW()`,
+			instanceID, c.CodeCFO, c.Month, *c.Amount, c.CodePL, scenario, src)
 	}
 	br := s.pool.SendBatch(ctx, b)
 	defer br.Close()
@@ -312,6 +322,30 @@ func (s *expRepo) SaveReadOnly(ctx context.Context, instanceID int64, scenario s
 		}
 	}
 	return nil
+}
+
+// ClearPaymentsFact — см. ExpRepo.ClearPaymentsFact.
+func (s *expRepo) ClearPaymentsFact(ctx context.Context, instanceID int64) error {
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM exp_value v USING exp_row r
+		 WHERE r.id = v.row_id AND r.instance_id = $1
+		   AND v.scenario IN ($2, $3) AND v.source = $4`,
+		instanceID, ExpScenarioFact, ExpScenarioFactCur, ExpFactBasisPayments)
+	return err
+}
+
+// FactBasis — см. ExpRepo.FactBasis.
+func (s *expRepo) FactBasis(ctx context.Context, instanceID int64) (string, error) {
+	var has bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM exp_value v JOIN exp_row r ON r.id = v.row_id
+			 WHERE r.instance_id = $1 AND v.scenario IN ($2, $3) AND v.source = $4)`,
+		instanceID, ExpScenarioFact, ExpScenarioFactCur, ExpFactBasisPayments).Scan(&has)
+	if err != nil || !has {
+		return "", err
+	}
+	return ExpFactBasisPayments, nil
 }
 
 // SaveComment — комментарий строки (ТЗ §7.8, обязателен при E-18).
@@ -584,4 +618,21 @@ func (s *expRepo) SyncPLLines(ctx context.Context, lines []ExpPLLine) (int, erro
 		added += int(ct.RowsAffected())
 	}
 	return added, nil
+}
+
+// expAllRows — все строки экземпляра: Rows отдаёт не больше 5000 за раз (иначе 500), а строк
+// у розницы BY больше (проверено живой выгрузкой — 5 716), поэтому читаем страницами.
+func expAllRows(ctx context.Context, repo ExpRepo, instanceID int64) ([]ExpRow, error) {
+	const page = 5000
+	var all []ExpRow
+	for off := 0; ; off += page {
+		rows, total, err := repo.Rows(ctx, instanceID, ExpFilter{Limit: page, Offset: off})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, rows...)
+		if len(rows) == 0 || off+len(rows) >= total {
+			return all, nil
+		}
+	}
 }

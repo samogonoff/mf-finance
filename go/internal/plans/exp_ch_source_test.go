@@ -16,6 +16,7 @@ type chStub struct {
 	queries  []string
 	count    string // ответ на SELECT count() FROM finance.exp_costs
 	rows     string // ответ на выборку затрат (JSONEachRow)
+	payments string // ответ на запасной запрос платёжного факта
 	asOf     string // ответ на max(finished_at)
 	failWith int    // не 0 — отвечать этим статусом на всё
 }
@@ -39,6 +40,8 @@ func (c *chStub) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case strings.Contains(q, "scenario = '"+ExpSrcFactPayments+"'"):
+		fmt.Fprint(w, c.payments)
 	case strings.Contains(q, "SELECT count() FROM finance.exp_costs"):
 		fmt.Fprint(w, c.count)
 	case strings.Contains(q, "exp_costs_etl_runs"):
@@ -72,10 +75,12 @@ func newCHTest(t *testing.T, stub *chStub, fb *fallbackSource) ExpDataSource {
 	return NewExpCHSource(fb, srv.URL, "u", "p", nil)
 }
 
+const chRowFact = `{"scenario":"Факт по начислениям","country":"BY","y":2025,"m":3,"code_pl":24,"group_pl":"ВЫПЛАТЫ РАБОТНИКАМ","expense":"Заработная плата","code_cfo":101,"cfo":"Магазин Минск","group_cfo1":"3.Магазины","group_cfo2":"Минск","project_name":"Нет проектов!","special_access":"0","amount":999}`
+
 const chRowRetail = `{"scenario":"Стратегический бюджет","country":"BY","y":2026,"m":3,"code_pl":24,"group_pl":"ВЫПЛАТЫ РАБОТНИКАМ","expense":"Заработная плата","code_cfo":101,"cfo":"Магазин Минск","group_cfo1":"3.Магазины","group_cfo2":"Минск","project_name":"Нет проектов!","special_access":"0","amount":1234.5}`
 
 func TestExpCHSource_ReadsSnapshot(t *testing.T) {
-	stub := &chStub{count: "960595\n", rows: chRowRetail + "\n" + chRowRetail + "\n", asOf: "1792400000\n"}
+	stub := &chStub{count: "960595\n", rows: chRowRetail + "\n" + chRowRetail + "\n" + chRowFact + "\n", asOf: "1792400000\n"}
 	fb := &fallbackSource{}
 	src := newCHTest(t, stub, fb)
 	ctx, trace := WithExpSourceTrace(context.Background())
@@ -89,8 +94,8 @@ func TestExpCHSource_ReadsSnapshot(t *testing.T) {
 	if fb.calls != 0 {
 		t.Fatal("при наполненном снимке процедуру звать нельзя")
 	}
-	if len(cells) != 2 {
-		t.Fatalf("ждали 2 ячейки, got %d", len(cells))
+	if len(cells) != 3 {
+		t.Fatalf("ждали 3 ячейки, got %d", len(cells))
 	}
 	c := cells[0]
 	if c.Scenario != "Стратегический бюджет" || c.Year != 2026 || c.Month != 3 || c.CodePL != 24 || c.CodeCFO != 101 ||
@@ -171,5 +176,37 @@ func TestExpCostsSQL_CfoFormsUseSpecScenarios(t *testing.T) {
 	if !strings.Contains(q, "group_cfo1 = 'Отдел'") || !strings.Contains(q, fmt.Sprintf("code_cfo = %d", int(code))) ||
 		!strings.Contains(q, chLit(spec.FactScenario)) || !strings.Contains(q, chLit(spec.PlanScenario)) {
 		t.Errorf("запрос формы отдела:\n%s", q)
+	}
+}
+
+// Пока в выдаче нет «Факта по начислениям», факт берётся платёжный — иначе колонки факта рядом с
+// вводом пустые; при наличии начислений платёжный не используется (ответ 44).
+func TestExpCHSource_PaymentsFactFallback(t *testing.T) {
+	pay := strings.Replace(chRowFact, "Факт по начислениям", ExpSrcFactPayments, 1)
+	stub := &chStub{count: "10\n", rows: chRowRetail + "\n", payments: pay + "\n"}
+	ctx, trace := WithExpSourceTrace(context.Background())
+	cells, err := newCHTest(t, stub, &fallbackSource{}).Costs(ctx, ExpKindRetail, "BY", []int{2025, 2026})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trace.FactBasis != ExpFactBasisPayments {
+		t.Fatalf("экран должен узнать, что факт по платежам: %q", trace.FactBasis)
+	}
+	var fact int
+	for _, c := range cells {
+		if c.Scenario == ExpSrcFact && c.Year == 2025 && c.Amount == 999 {
+			fact++
+		}
+	}
+	if fact != 1 {
+		t.Fatalf("платёжный факт не подставлен как факт: %+v", cells)
+	}
+	// Для форм отделов (CFO-kind) подмены нет.
+	stub2 := &chStub{count: "10\n", rows: chRowRetail + "\n", payments: pay + "\n"}
+	cells2, _ := newCHTest(t, stub2, &fallbackSource{}).Costs(context.Background(), CfoExpKind(CfoExp31), "BY", []int{2025, 2026})
+	for _, c := range cells2 {
+		if c.Scenario == ExpSrcFact && c.Amount == 999 {
+			t.Fatal("для форм отделов платёжный факт подставлять нельзя")
+		}
 	}
 }

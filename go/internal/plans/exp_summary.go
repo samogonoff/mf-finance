@@ -57,7 +57,7 @@ func (s *ExpService) Summary(ctx context.Context, p Principal, cardID int64) (Ex
 	if err != nil {
 		return ExpSummary{}, err
 	}
-	rows, _, err := s.repo.Rows(ctx, in.ID, ExpFilter{Limit: 5000})
+	rows, err := expAllRows(ctx, s.repo, in.ID)
 	if err != nil {
 		return ExpSummary{}, err
 	}
@@ -65,6 +65,8 @@ func (s *ExpService) Summary(ctx context.Context, p Principal, cardID int64) (Ex
 	if m, err := s.pnlGroups(ctx); err == nil {
 		pnlByCode = m
 	}
+	// Группы НСИ дополняются умолчаниями вида формы (розница — как на листе «Розница» Excel).
+	pnlByCode = expApplyDefaultPnlGroups(in.FormKind, pnlByCode)
 
 	// Строки свода: ключ ТЗ §8 — группа PL + статья + код PL.
 	type key struct {
@@ -107,7 +109,7 @@ func (s *ExpService) Summary(ctx context.Context, p Principal, cardID int64) (Ex
 		return out.Rows[a].CodePL < out.Rows[b].CodePL
 	})
 
-	out.Groups = ExpFoldToPnlGroups(out.Rows)
+	out.Groups = ExpFoldToPnlGroupsOrdered(out.Rows, expPnlOrder(in.FormKind))
 	out.Recon = ExpReconcile(ExpReconInput{Rows: rows, Registries: s.registriesFor(ctx, in)})
 	return out, nil
 }
@@ -116,6 +118,11 @@ func (s *ExpService) Summary(ctx context.Context, p Principal, cardID int64) (Ex
 // Сворачивается ТАКТИКА (то, что заполняет форма): свод этапа 1.6 строится по
 // плановым числам, а факт и стратегия лежат рядом для сравнения.
 func ExpFoldToPnlGroups(rows []ExpSummaryRow) []ExpSummaryGroup {
+	return ExpFoldToPnlGroupsOrdered(rows, nil)
+}
+
+// ExpFoldToPnlGroupsOrdered — то же с заданным порядком групп (для розницы — как в Excel).
+func ExpFoldToPnlGroupsOrdered(rows []ExpSummaryRow, order []string) []ExpSummaryGroup {
 	byGroup := map[string]*ExpSummaryGroup{}
 	for _, r := range rows {
 		g, ok := byGroup[r.PnlGroup]
@@ -139,12 +146,7 @@ func ExpFoldToPnlGroups(rows []ExpSummaryRow) []ExpSummaryGroup {
 		out = append(out, *g)
 	}
 	// «Не распределено» всегда последней: это остаток, а не подгруппа наравне.
-	sort.SliceStable(out, func(a, b int) bool {
-		if out[a].Unassigned != out[b].Unassigned {
-			return !out[a].Unassigned
-		}
-		return out[a].PnlGroup < out[b].PnlGroup
-	})
+	sortPnlGroups(out, order)
 	return out
 }
 

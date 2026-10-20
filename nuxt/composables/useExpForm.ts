@@ -9,7 +9,8 @@
  */
 
 export interface ExpValue {
-  scenario: "plan" | "fact";
+  // fact — факт ПРОШЛОГО года, fact_cur — факт ПЛАНОВОГО года (прошлый и текущий месяц), strategy — стратегия.
+  scenario: "plan" | "fact" | "fact_cur" | "strategy";
   month: number;
   /** null — ячейка НЕ заполнена. Ноль вводится явно и значит «расхода нет» (ТЗ §7.8). */
   amount: number | null;
@@ -80,8 +81,54 @@ export interface ExpSync {
   started_at?: string;
   finished_at?: string;
   warning?: string; // загрузка прошла, но перезаливка снимка не удалась
+  fact_basis?: "payments"; // факт построен по платежам (начислений в источнике нет); пусто — по начислениям
   source_kind?: "clickhouse" | "olap";
   source_as_of?: string; // когда залит ночной снимок затрат (только clickhouse)
+}
+
+// Свод расходов розницы по четырём странам (всё в BYN).
+export type ExpConsWindow = "month" | "tail" | "year";
+export interface ExpConsCountry {
+  country: string;
+  card_id?: number;
+  title?: string;
+  status?: string;
+  nat_currency?: string;
+  rows: number;
+  rate: number;
+  plan: number;
+  no_rate?: boolean;
+  error?: string;
+}
+export interface ExpConsAmounts {
+  plan: Record<string, number>;
+  plan_total: number;
+  fact_ly: number;
+  fact_prev: number;
+  fact_cur: number;
+}
+export interface ExpConsLine extends ExpConsAmounts {
+  code_pl: number;
+  expense: string;
+}
+export interface ExpConsGroup extends ExpConsAmounts {
+  group: string;
+  unassigned?: boolean;
+  lines: ExpConsLine[];
+}
+export interface ExpConsolidated {
+  pl_id: number;
+  year: number;
+  month: number;
+  window: ExpConsWindow;
+  from_month: number;
+  to_month: number;
+  currency: string;
+  countries: ExpConsCountry[];
+  groups: ExpConsGroup[];
+  total: ExpConsAmounts;
+  fact_basis?: "payments";
+  missing?: string[];
 }
 
 export interface ExpCell {
@@ -270,13 +317,13 @@ export const MONTHS_SHORT = [
  * Значение ячейки строки. Возвращает undefined для незаполненной: отличать
  * «пусто» от нуля обязаны и API, и интерфейс — на этом стоит валидация E-11.
  */
-export const expCell = (row: ExpRow, scenario: "plan" | "fact", month: number): number | undefined => {
+export const expCell = (row: ExpRow, scenario: ExpValue["scenario"], month: number): number | undefined => {
   const v = row.values.find((x) => x.scenario === scenario && x.month === month);
   return v && v.amount !== null ? v.amount : undefined;
 };
 
 /** Итог строки по сценарию: считаются только заполненные месяцы. */
-export const expRowTotal = (row: ExpRow, scenario: "plan" | "fact"): number =>
+export const expRowTotal = (row: ExpRow, scenario: ExpValue["scenario"]): number =>
   row.values.reduce((s, v) => (v.scenario === scenario && v.amount !== null ? s + v.amount : s), 0);
 
 export const useExpForm = () => {
@@ -293,6 +340,9 @@ export const useExpForm = () => {
     });
   };
 
+  const consolidated = (plId: number, window: ExpConsWindow = "tail"): Promise<ExpConsolidated> =>
+    $fetch<ExpConsolidated>(`${base}/api/plans/exp-consolidated/${plId}?window=${window}`, { headers: authHeader() });
+
   const syncNow = (cardId: number): Promise<ExpSync> =>
     $fetch<ExpSync>(`${base}/api/plans/exp/${cardId}/sync`, { method: "POST", headers: authHeader() });
 
@@ -303,7 +353,7 @@ export const useExpForm = () => {
       headers: authHeader()
     });
 
-  const bulk = (cardId: number, body: { action: ExpBulkAction; code_cfo: number; code_pl: number; month?: number; amount?: number | null }) =>
+  const bulk = (cardId: number, body: { action: ExpBulkAction; code_cfo: number; code_pl: number; month?: number; month_to?: number; amount?: number | null }) =>
     $fetch<{ changed: number }>(`${base}/api/plans/exp/${cardId}/bulk`, {
       method: "POST",
       body,
@@ -392,6 +442,6 @@ export const useExpForm = () => {
   return {
     form, save, bulk, totals, cards, validate, summary, params, saveParam, calc,
     registry, saveRegRow, copyRegRow, deleteRegRow,
-    presets, savePreset, exportUrl, importFile, syncNow
+    presets, savePreset, exportUrl, importFile, syncNow, consolidated
   };
 };

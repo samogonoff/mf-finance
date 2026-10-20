@@ -174,8 +174,14 @@ func TestExpMockSource(t *testing.T) {
 	if !byYear[2025][ExpSrcFact] || byYear[2025][ExpSrcStrategy] {
 		t.Fatalf("2025 должен быть только фактом, получили %v", byYear[2025])
 	}
-	if !byYear[2026][ExpSrcStrategy] || byYear[2026][ExpSrcFact] {
-		t.Fatalf("2026 должен быть только стратегией, получили %v", byYear[2026])
+	// Плановый год — стратегия на весь год и факт за прошедшие месяцы (до октября).
+	if !byYear[2026][ExpSrcStrategy] || !byYear[2026][ExpSrcFact] {
+		t.Fatalf("2026 должен быть стратегией и фактом прошедших месяцев, получили %v", byYear[2026])
+	}
+	for _, c := range both {
+		if c.Year == 2026 && c.Scenario == ExpSrcFact && c.Month >= 11 {
+			t.Fatalf("факт планового года не должен идти за будущие месяцы: %+v", c)
+		}
 	}
 }
 

@@ -124,9 +124,10 @@ func TestExpSync_EmptySourceIsReported(t *testing.T) {
 	}
 }
 
-// Отбор сценариев: платёжный факт в форму не идёт (ответ 44), начисления и стратегия идут.
-// Колонка проекта в выдаче процедуры — ProjectName, а не Projects.
-func TestExpScenarioSelectionAndProjectColumn(t *testing.T) {
+// Источник без «Факта по начислениям» (так сейчас отдаёт процедура): платёжный факт
+// подставляется как факт, иначе колонка факта и база расчётов остаются пустыми.
+// Если начисления есть — платёжный факт по-прежнему не используется (ответ 44).
+func TestExpScenarioPaymentsFallbackRules(t *testing.T) {
 	if expScenarioForKind(ExpKindRetail, ExpSrcFactPayments) {
 		t.Fatal("платёжный факт не должен проходить отбор напрямую")
 	}
@@ -288,5 +289,164 @@ func TestExpSyncErrText_ProcedureProblems(t *testing.T) {
 		if !strings.Contains(got, want) || strings.Contains(got, "Budgeting") && strings.Contains(got, "schema") {
 			t.Errorf("%q → %q", raw, got)
 		}
+	}
+}
+
+// recordingExpRepo запоминает, что и в какой сценарий записал синхронизатор.
+type recordingExpRepo struct {
+	fakeExpRepo
+	mu           sync.Mutex
+	saved        map[string][]ExpCell
+	paymentsWipe int // сколько раз очищался платёжный факт
+}
+
+func (r *recordingExpRepo) ClearPaymentsFact(context.Context, int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.paymentsWipe++
+	return nil
+}
+
+func (r *recordingExpRepo) SaveReadOnly(_ context.Context, _ int64, scenario string, cells []ExpCell) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.saved == nil {
+		r.saved = map[string][]ExpCell{}
+	}
+	r.saved[scenario] = cells
+	return nil
+}
+
+// Факт прошлого года и факт планового года идут в РАЗНЫЕ сценарии: рядом с вводом нужны «тот же
+// месяц прошлого года», «прошлый месяц» и «текущий месяц», а ФОТ-база считается по факту прошлого года.
+func TestExpSync_FactOfPlanYearGoesToSeparateScenario(t *testing.T) {
+	src := &stubExpSource{cells: []ExpCostCell{
+		{Scenario: ExpSrcFact, Year: 2025, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 100},
+		{Scenario: ExpSrcFact, Year: 2026, Month: 9, CodePL: 24, CodeCFO: 101, Amount: 200},
+		{Scenario: ExpSrcStrategy, Year: 2026, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 300},
+	}}
+	repo := &recordingExpRepo{fakeExpRepo: fakeExpRepo{inst: ExpInstance{ID: 7, FormKind: ExpKindRetail, Country: "BY", PlanYear: 2026}}}
+	svc := NewExpService(repo, nil, src)
+	if _, err := svc.syncFromSource(context.Background(), Card{ID: 1}, repo.inst, true); err != nil {
+		t.Fatal(err)
+	}
+	get := func(sc string) []ExpCell { repo.mu.Lock(); defer repo.mu.Unlock(); return repo.saved[sc] }
+	if f := get(ExpScenarioFact); len(f) != 1 || f[0].Month != 10 || *f[0].Amount != 100 {
+		t.Fatalf("факт прошлого года: %+v", f)
+	}
+	if f := get(ExpScenarioFactCur); len(f) != 1 || f[0].Month != 9 || *f[0].Amount != 200 {
+		t.Fatalf("факт планового года: %+v", f)
+	}
+	if s := get(ExpScenarioStrategy); len(s) != 1 || *s[0].Amount != 300 {
+		t.Fatalf("стратегия: %+v", s)
+	}
+	if !ExpScenarioReadOnly(ExpScenarioFactCur) {
+		t.Fatal("факт планового года должен быть read-only")
+	}
+}
+
+// Форма готовится на месяц плана или «до конца года»: массовые действия трогают только окно, ранние
+// месяцы остаются как были.
+func TestExpBulkCells_Window(t *testing.T) {
+	amt := 5.0
+	cases := []struct {
+		name string
+		req  ExpBulkRequest
+		want int
+		from int
+	}{
+		{"очистка всей строки", ExpBulkRequest{Action: ExpBulkClearRow, CodeCFO: 1, CodePL: 2}, 12, 1},
+		{"очистка от ноября до декабря", ExpBulkRequest{Action: ExpBulkClearRow, CodeCFO: 1, CodePL: 2, Month: 11, MonthTo: 12}, 2, 11},
+		{"очистка одного месяца", ExpBulkRequest{Action: ExpBulkClearRow, CodeCFO: 1, CodePL: 2, Month: 11, MonthTo: 11}, 1, 11},
+		{"размножение до конца года", ExpBulkRequest{Action: ExpBulkSpreadTail, CodeCFO: 1, CodePL: 2, Month: 11, Amount: &amt}, 2, 11},
+		{"размножение окна", ExpBulkRequest{Action: ExpBulkSpreadTail, CodeCFO: 1, CodePL: 2, Month: 10, MonthTo: 11, Amount: &amt}, 2, 10},
+	}
+	for _, c := range cases {
+		cells, err := expBulkCells(c.req)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if len(cells) != c.want || cells[0].Month != c.from {
+			t.Errorf("%s: %d ячеек с %d-го месяца, ждали %d с %d", c.name, len(cells), cells[0].Month, c.want, c.from)
+		}
+	}
+}
+
+// basisSource — источник, который сообщает экрану, что факт взят по платежам.
+type basisSource struct{ stubExpSource }
+
+func (b *basisSource) Costs(ctx context.Context, kind, country string, years []int) ([]ExpCostCell, error) {
+	noteExpFactBasis(ctx, ExpFactBasisPayments)
+	return b.stubExpSource.Costs(ctx, kind, country, years)
+}
+
+// Колонки факта подписываются честно: статус загрузки знает, что факт построен по платежам.
+func TestExpSync_FactBasisReachesStatus(t *testing.T) {
+	src := &basisSource{stubExpSource{cells: []ExpCostCell{{Scenario: ExpSrcFact, Year: 2025, Month: 1, CodePL: 10, CodeCFO: 100, Amount: 5}}}}
+	svc, in := newSyncTestService(src)
+	svc.ensureSync(Card{ID: 1}, in, false)
+	st := waitSyncState(t, svc, in.ID, ExpSyncOK)
+	if st.FactBasis != ExpFactBasisPayments {
+		t.Fatalf("статус: %+v", st)
+	}
+	// Обычный источник (факт по начислениям) — без пометки.
+	svc2, in2 := newSyncTestService(&stubExpSource{})
+	svc2.ensureSync(Card{ID: 1}, in2, false)
+	if st2 := waitSyncState(t, svc2, in2.ID, ExpSyncOK); st2.FactBasis != "" {
+		t.Fatalf("пометка не должна появляться без подмены: %+v", st2)
+	}
+}
+
+// Признак «факт по платежам» хранится вместе с данными: платёжные ячейки помечаются при загрузке, а
+// после рестарта процесса (память статуса пуста) форма и свод берут основу факта из сохранённых данных.
+func TestExpSync_PaymentsFactBasisPersistsInData(t *testing.T) {
+	src := &basisSource{stubExpSource{cells: []ExpCostCell{
+		{Scenario: ExpSrcFact, Year: 2025, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 100},
+		{Scenario: ExpSrcFact, Year: 2026, Month: 9, CodePL: 24, CodeCFO: 101, Amount: 200},
+		{Scenario: ExpSrcStrategy, Year: 2026, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 300},
+	}}}
+	repo := &recordingExpRepo{fakeExpRepo: fakeExpRepo{inst: ExpInstance{ID: 7, FormKind: ExpKindRetail, Country: "BY", PlanYear: 2026}}}
+	svc := NewExpService(repo, nil, src)
+	ctx, _ := WithExpSourceTrace(context.Background())
+	if _, err := svc.syncFromSource(ctx, Card{ID: 1}, repo.inst, true); err != nil {
+		t.Fatal(err)
+	}
+	repo.mu.Lock()
+	fact, cur, strat := repo.saved[ExpScenarioFact], repo.saved[ExpScenarioFactCur], repo.saved[ExpScenarioStrategy]
+	repo.mu.Unlock()
+	if len(fact) != 1 || fact[0].Source != ExpFactBasisPayments || len(cur) != 1 || cur[0].Source != ExpFactBasisPayments {
+		t.Fatalf("платёжный факт должен быть помечен: fact=%+v cur=%+v", fact, cur)
+	}
+	if len(strat) != 1 || strat[0].Source != "" {
+		t.Fatalf("стратегия не помечается: %+v", strat)
+	}
+
+	// «После рестарта»: статус в памяти пуст, основа читается из данных.
+	restarted := NewExpService(&fakeExpRepo{factBasis: ExpFactBasisPayments}, nil, nil)
+	if got := restarted.syncStatusWithBasis(context.Background(), 7).FactBasis; got != ExpFactBasisPayments {
+		t.Fatalf("основа факта после рестарта: %q", got)
+	}
+	if got := NewExpService(&fakeExpRepo{}, nil, nil).syncStatusWithBasis(context.Background(), 7).FactBasis; got != "" {
+		t.Fatalf("без платёжных данных пометки нет: %q", got)
+	}
+}
+
+// Переход на начисления: платёжные ячейки прежней загрузки очищаются (SaveReadOnly их не затрёт — у платежей
+// и начислений разный состав строк и месяцев); пока факт по платежам, очистки нет.
+func TestExpSync_AccrualsWipePaymentsFact(t *testing.T) {
+	cells := []ExpCostCell{{Scenario: ExpSrcFact, Year: 2025, Month: 10, CodePL: 24, CodeCFO: 101, Amount: 100}}
+	run := func(src ExpDataSource) *recordingExpRepo {
+		repo := &recordingExpRepo{fakeExpRepo: fakeExpRepo{inst: ExpInstance{ID: 7, FormKind: ExpKindRetail, Country: "BY", PlanYear: 2026}}}
+		ctx, _ := WithExpSourceTrace(context.Background())
+		if _, err := NewExpService(repo, nil, src).syncFromSource(ctx, Card{ID: 1}, repo.inst, true); err != nil {
+			t.Fatal(err)
+		}
+		return repo
+	}
+	if got := run(&stubExpSource{cells: cells}).paymentsWipe; got != 1 {
+		t.Fatalf("загрузка по начислениям должна очистить платёжный факт, очисток: %d", got)
+	}
+	if got := run(&basisSource{stubExpSource{cells: cells}}).paymentsWipe; got != 0 {
+		t.Fatalf("пока факт по платежам, очищать нечего, очисток: %d", got)
 	}
 }

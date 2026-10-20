@@ -158,6 +158,7 @@ func (s *ExpService) ImportForm(ctx context.Context, p Principal, cardID int64, 
 	}
 
 	cells := make([]ExpCell, 0, 256)
+	pastSkipped := 0
 	for i, line := range table {
 		lineNo := i + 2
 		res.RowsInFile++
@@ -192,6 +193,10 @@ func (s *ExpService) ImportForm(ctx context.Context, p Principal, cardID int64, 
 			if raw == "" {
 				continue // пустая клетка файла ячейку не трогает
 			}
+			if expPastMonth(c, month) {
+				pastSkipped++ // прошедший месяц: по нему факт, значение файла не принимается
+				continue
+			}
 			v, err := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(raw, " ", ""), ",", "."), 64)
 			if err != nil {
 				res.Issues = append(res.Issues, ExpImportIssue{
@@ -214,10 +219,15 @@ func (s *ExpService) ImportForm(ctx context.Context, p Principal, cardID int64, 
 		}
 	}
 
+	if pastSkipped > 0 {
+		res.Issues = append(res.Issues, ExpImportIssue{
+			Message: fmt.Sprintf("значения за прошедшие месяцы не приняты (ячеек: %d): по ним подтягивается факт", pastSkipped),
+		})
+	}
 	if preview {
 		return res, nil
 	}
-	n, err := s.repo.SaveValues(ctx, in.ID, cells, p.UserID, c.CurrentVersion)
+	n, err := s.saveValues(ctx, c, in, p, cells)
 	if err != nil {
 		return res, err
 	}
@@ -241,7 +251,7 @@ type expNameRow struct {
 // — для листов без колонки CodeCFO (ответ И-8).
 func (s *ExpService) rowIndex(ctx context.Context, instanceID int64) (
 	map[[2]int]map[int]*float64, map[expNameKey]expNameRow, error) {
-	rows, _, err := s.repo.Rows(ctx, instanceID, ExpFilter{Limit: 5000})
+	rows, err := expAllRows(ctx, s.repo, instanceID)
 	if err != nil {
 		return nil, nil, err
 	}
