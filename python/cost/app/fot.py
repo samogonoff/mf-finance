@@ -1786,7 +1786,35 @@ METHODOLOGY_P14 = (
     "2025. ПЧ/ФЧ в карточках — то же зерно, что у P12 (план PlanChisl и факты "
     "30.06.2025/2026), в группировке по направлению; строка шапки — свод по всему "
     "срезу. Светофор по знаку (как верхний свод P11): рост ФОТ/доли и превышение ФЧ "
-    "плана — красный, снижение — зелёный; таблица без светофора, как на листе деки."
+    "плана — красный, снижение — зелёный; таблица без светофора, как на листе деки. "
+    "Слайд 5 «Направления выбранных Групп ЦФО» (group_detail): секции по группам "
+    "ЦФО среза (фильтр группы пуст — все группы), строки — колонка "
+    "«Направление» справочника внутри группы (дековые «подразделения» листа 5 "
+    "сидят на этом уровне; g2 — города/площадки, живая сверка 20.10.2026), "
+    "«Итого» группы — первой строкой, численность группы — в шапке секции; "
+    "в группе «Отдел» пара «Складская» + «Транспортная логистика» показывается "
+    "одной строкой, как на листе 7. Слайд 6 «Детализация по выбранным "
+    "направлениям + ЦФО Отделов» (direction_detail): верхние строки — значения "
+    "фильтра «Направление» (колонка direction справочника; пустой фильтр — все "
+    "направления среза), под каждым — расшифровка: ЦФО группы «Отдел» по "
+    "каждому ЦФО, ЦФО остальных групп — свёрнуты в строку группы (одна "
+    "расшифровка, равная самому направлению, не показывается); плюс строки "
+    "«ЦФО Отделов» — направления группы «Отдел», не вошедшие в верхние строки "
+    "(беспродажные, с парой «Складская + Транспортная», как на листе 7). "
+    "Дековая сноска «Развитие розницы включено в группу Отделы» в веб-слайд не "
+    "переносится: в витрине «Развитие розницы» — отдельное направление группы "
+    "«Отдел» и показывается своей строкой. Донат, мини-бары и карточки слайда "
+    "6 — по листьевым строкам (расшифровки и направления без расшифровок), "
+    "итог таблицы = сумма листьев; численность в шапке — по выбранным "
+    "направлениям. Знаменатель «доля ФОТ в выручке» слайдов 5–6 — правило p14, "
+    "продавцы direction-разреза: направления «Интернет-магазин», «Производство "
+    "картонажное» и пары «Магазины × Розница РБ» (сеть магазинов), "
+    "«Отдел × Маркетплейсы», «Отдел × ОПТ РБ» (живая сверка 20.10.2026) — "
+    "своя выручка, остальные строки — вся выручка среза. Якоря слайдов 5–6 "
+    "сверены с декой v16 20.10.2026: структура и порядок величин совпадают "
+    "(расхождения точных значений — витрина обновилась после сборки деки: "
+    "ФОТ МП выше декового в ~1,6 раза, факт численности производства ниже "
+    "декового на ~13 %, подпись «Хим. цех» деки в витрине — «Производство»)."
 )
 
 # HR-ЦФО: коды ЦФО HR-служб по странам — фиксированный список постановки
@@ -3869,13 +3897,20 @@ def _p14_assemble(cur: str, payload: dict, sel_country: str | None) -> tuple:
 async def _dashboard_p14(p: dict, meta: dict) -> dict:
     """Вкладка P14 «ФОТ по направлениям бизнеса»: лист 4 деки — таблица
     «Направление × периоды», донат структуры, мини-бары «доля ФОТ в выручке»
-    и карточки направлений с численностью. Те же срезы панели, что у P11."""
+    и карточки направлений с численностью — и слайды 5–6 деки (663620):
+    group_detail «Направления выбранных Групп ЦФО» и direction_detail
+    «Детализация по выбранным направлениям + ЦФО Отделов». Те же срезы
+    панели, что у P11; слайды 5–6 — вторым запросом на том же соединении
+    (паттерн p11: _p12_sql вторым вызовом)."""
     sql, sql_params = _p14_sql(p)
+    detail_sql, detail_params = _p14_detail_sql(p)
     async with acquire() as pg:
         payload = json.loads(await pg.fetchval(sql, *sql_params))
+        detail = json.loads(await pg.fetchval(detail_sql, *detail_params))
     sel_country = p["countries"][0] if len(p["countries"]) == 1 else None
     cards, headcount, directions, tables, warning = _p14_assemble(
         p["currency"], payload, sel_country)
+    group_detail, direction_detail = _p14_detail_assemble(detail)
     closed = _closed_from_meta(meta)
     country_label = dict(COUNTRY_OPTIONS).get(sel_country)
     meta_out = {
@@ -3893,7 +3928,431 @@ async def _dashboard_p14(p: dict, meta: dict) -> dict:
     if warning:
         meta_out["warning"] = warning
     return {"cards": cards, "headcount": headcount, "directions": directions,
-            "charts": [], "tables": tables, "meta": meta_out}
+            "charts": [], "tables": tables, "meta": meta_out,
+            "group_detail": group_detail, "direction_detail": direction_detail}
+
+
+# ── Слайды 5–6 деки: направления групп ЦФО и детализация направлений ──────────
+
+# Продавцы direction-разреза (слайды 5–6): помимо направлений _P14_OWN_REVENUE
+# собственная выручка есть у пары (группа ЦФО, направление) — «Розница РБ» в
+# группе «Магазины» (сеть магазинов), «Маркетплейсы» и «ОПТ РБ» в группе
+# «Отдел» (живая сверка 20.10.2026: выручка 1ПГ26 у этих пар в витрине есть,
+# у производственных и офисных направлений — нет). Остальные строки слайдов
+# соотносятся со всей выручкой среза — то же правило p14 для беспродажных.
+_P14_DIR_SELLERS = frozenset({
+    ("Магазины", "Розница РБ"), ("Отдел", "Маркетплейсы"), ("Отдел", "ОПТ РБ"),
+})
+
+
+def _p14_detail_sql(p: dict) -> tuple[str, list]:
+    """Второй запрос вкладки P14 (слайды 5–6 деки): ФОТ/выручка/численность
+    в разрезе группа ЦФО × направление × ЦФО.
+
+    grain — мелкое зерно по трём уровням справочника срезов панели (те же
+    условия, что у _p14_sql: dim + юрлицо + ВГО + hier_gate); rev — выручка
+    по (группа × направление) для продавцов direction-разреза; численность —
+    то же зерно, что у P12 (факты 30.06 и план PlanChisl), план срезом
+    юрлица не режется.
+    """
+    col = FOT_CURRENCIES[p["currency"]]
+    sql_params: list = []
+    ic_sql = _ic_where(p)
+    dim_conds = _dim_conds(p, sql_params)
+    hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
+    m_legal = _legal_cond(p, sql_params)
+    h_legal = _legal_cond(p, sql_params, "h.legal_entity")
+
+    fot_sums = ",\n        ".join(
+        _half_sum_sql(key, scen, year, m1, m2, fam, col)
+        for key, scen, year, m1, m2, fam in _HALF_PERIODS if fam == "fot"
+    )
+    rev_sums = ",\n        ".join(
+        _half_sum_sql(key, scen, year, m1, m2, fam, col)
+        for key, scen, year, m1, m2, fam in _HALF_PERIODS if fam == "rev"
+    )
+    grain_where = f"{ic_sql}{m_legal}{hier_gate}"
+
+    sql = f"""
+WITH dim AS (
+    SELECT code_cfo, group_cfo1, direction, cfo_name
+    FROM fot_cfo
+    WHERE TRUE{dim_conds}
+),
+grain AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1,
+           coalesce(c.direction, '') AS dir,
+           coalesce(c.code_cfo, '') AS cfo,
+           coalesce(c.cfo_name, '') AS cfon,
+           {fot_sums}
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE {grain_where}
+    GROUP BY 1, 2, 3, 4
+),
+rev AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1,
+           coalesce(c.direction, '') AS dir,
+           {rev_sums}
+    FROM fot_monthly m
+    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+    WHERE {grain_where}
+    GROUP BY 1, 2
+),
+h25 AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1, coalesce(c.direction, '') AS dir,
+           sum(h.quantity) AS q25
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = DATE '{HC_DATE_PREV.isoformat()}'{h_legal}{hier_gate}
+    GROUP BY 1, 2
+),
+h26 AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1, coalesce(c.direction, '') AS dir,
+           sum(h.quantity) AS q26
+    FROM fot_headcount h
+    LEFT JOIN dim c ON c.code_cfo = h.code_cfo
+    WHERE h.month_date = DATE '{HC_DATE_CURR.isoformat()}'{h_legal}{hier_gate}
+    GROUP BY 1, 2
+),
+plan AS (
+    SELECT coalesce(c.group_cfo1, '') AS g1, coalesce(c.direction, '') AS dir,
+           sum(p.plan_approved) AS pa
+    FROM fot_headcount_plan p
+    LEFT JOIN dim c ON c.code_cfo = p.code_cfo
+    WHERE TRUE{hier_gate}
+    GROUP BY 1, 2
+)
+SELECT jsonb_build_object(
+    'grain', COALESCE((SELECT jsonb_agg(to_jsonb(g)) FROM grain g), '[]'::jsonb),
+    'rev', COALESCE((SELECT jsonb_agg(to_jsonb(r)) FROM rev r), '[]'::jsonb),
+    'h25', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h25 x), '[]'::jsonb),
+    'h26', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h26 x), '[]'::jsonb),
+    'plan', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM plan x), '[]'::jsonb)
+)::text AS payload
+"""
+    return sql, sql_params
+
+
+def _p14_slide_entry(label: str, kind: str, s: dict, rv: dict,
+                     hc: dict, parent: str | None = None,
+                     code: str | None = None) -> dict:
+    """Строка-карточка слайдов 5–6: те же формулы, что у направлений p14
+    (_p14_assemble) — периоды в тыс., приросты к факту 2025, доли ФОТ в
+    выручке и бейджи Δ п.п., численность. kind: total | direction | detail |
+    dept; detail-строки несут parent (направление) и code (ЦФО)."""
+    exp = _nsum([s.get("f26_h1"), s.get("t26_h2")])
+    rv_exp = rv.get("rv_exp")
+    if rv_exp is None:
+        rv_exp = _nsum([rv.get("rv_f26_h1"), rv.get("rv_t26_h2")])
+    def _dev_pct(cur, base):
+        # Δ% к факту 2025 — только от положительной базы: сторно-базы
+        # («Генеральная администрация» 2ПГ25) дают −190% и хуже (правило P15).
+        return _div(_diff(cur, base), base) if (base or 0) > 0 else None
+
+    dev_h1 = _dev_pct(s.get("f26_h1"), s.get("f25_h1"))
+    dev_h2 = _dev_pct(s.get("t26_h2"), s.get("f25_h2"))
+    dev_year = _dev_pct(exp, s.get("f25"))
+    out = {
+        "label": label, "kind": kind, "parent": parent, "code": code,
+        "f25_h1": _r1(_t(s.get("f25_h1"))), "f25_h2": _r1(_t(s.get("f25_h2"))),
+        "f25": _r1(_t(s.get("f25"))), "b26_h1": _r1(_t(s.get("b26_h1"))),
+        "f26_h1": _r1(_t(s.get("f26_h1"))), "b26_h2": _r1(_t(s.get("b26_h2"))),
+        "t26_h2": _r1(_t(s.get("t26_h2"))), "exp26": _r1(_t(exp)),
+        "dev_h1_pct": _r1(_pct(dev_h1)),
+        "dev_h1_abs": _r1(_t(_diff(s.get("f26_h1"), s.get("f25_h1")))),
+        "dev_h2_pct": _r1(_pct(dev_h2)),
+        "dev_h2_abs": _r1(_t(_diff(s.get("t26_h2"), s.get("f25_h2")))),
+        "dev_year_pct": _r1(_pct(dev_year)),
+        "dev_year_abs": _r1(_t(_diff(exp, s.get("f25")))),
+        "share_h1_25": _r1(_pct(_div(s.get("f25_h1"), rv.get("rv_f25_h1")))),
+        "share_h1_26": _r1(_pct(_div(s.get("f26_h1"), rv.get("rv_f26_h1")))),
+        "share_h2_tac": _r1(_pct(_div(s.get("t26_h2"), rv.get("rv_t26_h2")))),
+        "share_exp": _r1(_pct(_div(exp, rv_exp))),
+        "share_f25": _r1(_pct(_div(s.get("f25"), rv.get("rv_f25")))),
+        "pp_h1": _r2(_pct(_diff(_div(s.get("f26_h1"), rv.get("rv_f26_h1")),
+                                _div(s.get("f25_h1"), rv.get("rv_f25_h1"))))),
+        "pp_h2": _r2(_pct(_diff(_div(s.get("t26_h2"), rv.get("rv_t26_h2")),
+                                _div(s.get("f25_h2"), rv.get("rv_f25_h2"))))),
+        "pp_year": _r2(_pct(_diff(_div(exp, rv_exp),
+                                  _div(s.get("f25"), rv.get("rv_f25"))))),
+        "hc_plan": _r2(hc.get("pa")),
+        "hc_fact": _r2(hc.get("q26")),
+        "hc_staffing": _r1(_pct(_div(hc.get("q26"), hc.get("pa")))),
+        "hc_dev": _r2(_diff(hc.get("q26"), hc.get("q25"))),
+    }
+    return out
+
+
+def _p14_slide_bars(entry: dict) -> dict:
+    """Мини-бары «доля ФОТ в выручке, %» слайдов 5–6: четыре периода записи
+    (факт 1ПГ25 / факт 1ПГ26 / тактика 2ПГ26 / ожидание 2026), как на листах
+    деки (серия 0 дампа не имеет — фронт красит по месту)."""
+    return {"label": entry["label"], "series": [
+        {"k": "f25_h1", "v": entry["share_h1_25"]},
+        {"k": "f26_h1", "v": entry["share_h1_26"]},
+        {"k": "t26_h2", "v": entry["share_h2_tac"]},
+        {"k": "exp26", "v": entry["share_exp"]},
+    ]}
+
+
+def _p14_detail_assemble(payload: dict) -> tuple:
+    """Слайды 5–6 деки из ответа _p14_detail_sql.
+
+    group_detail (слайд 5) — секции по группам ЦФО среза: строки-направления
+    колонки direction внутри группы (дековые «подразделения» листа 5 — этот
+    уровень, а не подгруппы: живая сверка 20.10.2026, g2 — города/площадки),
+    «Итого» группы первой строкой, донат и мини-бары по тем же строкам,
+    численность группы в шапку секции. direction_detail (слайд 6) — таблица
+    «направления среза (значения фильтра «Направление»; пусто — все) +
+    расшифровки + строки ЦФО группы «Отдел», не вошедшие в направления»;
+    донат/мини-бары/карточки — по листьевым строкам (top-строки с
+    расшифровками в них не входят, чтобы доли не дублировались). Возвращает
+    (group_detail, direction_detail).
+    """
+    grain = payload.get("grain") or []
+
+    def _blank() -> dict:
+        return {key: None for key in _HALF_VALUE_KEYS}
+
+    def _add(slot: dict, r: dict) -> None:
+        for key in _HALF_VALUE_KEYS:
+            v = r.get(key)
+            if v is not None:
+                slot[key] = (slot[key] or 0.0) + float(v)
+
+    # Зерно: fot/подпись ЦФО — (g1, dir, cfo); rev и численность — (g1, dir).
+    fot_by: dict = {}
+    cfon_by: dict = {}
+    for r in grain:
+        key3 = (r.get("g1") or "", r.get("dir") or "", r.get("cfo") or "")
+        _add(fot_by.setdefault(key3, _blank()), r)
+        cfon_by[key3] = r.get("cfon") or ""
+    rev_by: dict = {}
+    for r in payload.get("rev") or []:
+        rev_by[(r.get("g1") or "", r.get("dir") or "")] = r
+    hc_by: dict = {}
+    for src, key in (("h25", "q25"), ("h26", "q26"), ("plan", "pa")):
+        for r in payload.get(src) or []:
+            slot = hc_by.setdefault((r.get("g1") or "", r.get("dir") or ""), {})
+            v = r.get(key)
+            if v is not None:
+                slot[key] = slot.get(key, 0.0) + float(v)
+
+    # Выручка среза — знаменатель беспродажных строк (правило p14).
+    tot_rv = {key: _nsum([v.get(key) for v in rev_by.values()]) for key in
+              ("rv_f25_h1", "rv_f25_h2", "rv_f25", "rv_f26_h1", "rv_t26_h2")}
+    tot_rv["rv_exp"] = _nsum([tot_rv.get("rv_f26_h1"), tot_rv.get("rv_t26_h2")])
+
+    def _is_seller(g1: str, dkey: str) -> bool:
+        return dkey in _P14_OWN_REVENUE or (g1, dkey) in _P14_DIR_SELLERS
+
+    def _dir_rv(pairs) -> dict:
+        """Знаменатель направления: своя выручка продавческих веток (g1, dir),
+        иначе вся выручка среза. rv_exp ветки досчитываем из полугодий."""
+        merged = None
+        for pair in pairs:
+            r = rev_by.get(pair)
+            if r is None:
+                continue
+            if merged is None:
+                merged = {k: None for k in
+                          ("rv_f25_h1", "rv_f25_h2", "rv_f25", "rv_f26_h1",
+                           "rv_t26_h2", "rv_exp")}
+            for k, v in r.items():
+                if k.startswith("rv_") and k != "rv_exp":
+                    merged[k] = (merged.get(k) or 0.0) + float(v or 0.0)
+        if merged is not None:
+            merged["rv_exp"] = _nsum([merged.get("rv_f26_h1"),
+                                      merged.get("rv_t26_h2")])
+            return merged
+        return tot_rv
+
+    def _label(g1: str, dkey: str) -> str:
+        # Пара деки «Складская + Транспортная» — одной строкой, как на листе 7.
+        if g1 == _P15_DEPT_GROUP:
+            return _P15_DEPT_MERGE.get(dkey, dkey)
+        return dkey
+
+    def _exp_of(s: dict) -> float:
+        return _nsum([s.get("f26_h1"), s.get("t26_h2")]) or 0.0
+
+    def _has_data(s: dict, hc: dict) -> bool:
+        """Правило p14: строки без ФОТ и численности (только выручка — бывает
+        в RU) на слайды не идут; их вклад остаётся в знаменателе среза."""
+        return (_nsum([s.get(key) for key in _HALF_VALUE_KEYS]) is not None
+                or _nsum([hc.get(k) for k in ("q25", "q26", "pa")]) is not None)
+
+    def _hc_sum(g1: str, dkey: str, merged: bool = True) -> dict:
+        """Численность (g1, направление); merged=True — с учётом пары деки."""
+        out = {}
+        raw = {d for gg, d in hc_by if gg == g1 and
+               (not merged or _label(gg, d) == _label(g1, dkey))}
+        for d in raw:
+            for key, v in hc_by.get((g1, d), {}).items():
+                if v is not None:
+                    out[key] = out.get(key, 0.0) + float(v)
+        return out
+
+    # ── Слайд 5 «Направления выбранных Групп ЦФО»: секции по группам ────────
+    dirs_by_group: dict = {}
+    for (g1, dkey, _cfo) in fot_by:
+        dirs_by_group.setdefault(g1 or "", {}).setdefault(_label(g1, dkey), _blank())
+    for (g1, dkey, _cfo), s in fot_by.items():
+        _add(dirs_by_group[g1 or ""][_label(g1, dkey)], s)
+
+    sections: list = []
+    for g1 in sorted(dirs_by_group,
+                     key=lambda g: (bool(g), sum(_exp_of(s) for s in
+                                                 dirs_by_group[g].values())),
+                     reverse=True):
+        entries = []
+        for dkey, s in dirs_by_group[g1].items():
+            if not _has_data(s, _hc_sum(g1, dkey)):
+                continue
+            entries.append(_p14_slide_entry(
+                str(dkey) or "(не указано)", "direction", s,
+                _dir_rv({(g1, d) for d in {dd for gg, dd in rev_by
+                                           if gg == g1 and _label(gg, dd) == dkey}
+                         if _is_seller(g1, d)}),
+                _hc_sum(g1, dkey)))
+        # по убыванию «Ожидания 2026», «(не указано)» — последним
+        entries.sort(key=lambda e: (bool(e["label"] != "(не указано)"),
+                                    e["exp26"] or 0.0), reverse=True)
+        if not entries:
+            continue
+        hc = {key: _nsum([_hc_sum(g1, d).get(key) for d in dirs_by_group[g1]])
+              for key in ("q25", "q26", "pa")}
+        tot = _blank()
+        for s in dirs_by_group[g1].values():
+            _add(tot, s)
+        total_row = _p14_slide_entry(
+            "Итого %s" % (g1 or "(без группы)"), "total", tot, tot_rv, hc)
+        tot_exp = total_row["exp26"] or 0.0
+        donut = [{"label": e["label"], "value": e["exp26"],
+                  "pct": _r1(_pct(_div(e["exp26"], tot_exp)))} for e in entries]
+        for i, seg in enumerate(donut):
+            seg["color"] = _P14_PIE_COLORS[min(i, len(_P14_PIE_COLORS) - 1)]
+        bars = [_p14_slide_bars(e) for e in entries]
+        sections.append({
+            "label": g1 or "(без группы)",
+            "rows": [total_row] + entries,
+            "headcount": {
+                "plan": _r2(hc.get("pa")), "fact": _r2(hc.get("q26")),
+                "staffing": _r1(_pct(_div(hc.get("q26"), hc.get("pa")))),
+            },
+            "donut": donut, "bars": bars,
+        })
+    group_detail = {"sections": sections}
+
+    # ── Слайд 6 «Детализация по выбранным направлениям + ЦФО Отделов» ───────
+    by_dir: dict = {}
+    for (g1, dkey, _cfo), s in fot_by.items():
+        d = by_dir.setdefault(dkey, {"fot": _blank(), "g1s": set()})
+        d["g1s"].add(g1)
+        _add(d["fot"], s)
+    top_keys = sorted(by_dir, key=lambda d: (bool(d), _exp_of(by_dir[d]["fot"])),
+                      reverse=True)
+
+    rows: list = []
+    leaves: list = []
+    shown_dirs: set = set()
+    for dkey in top_keys:
+        d = by_dir[dkey]
+        top_label = str(dkey) or "(не указано)"
+        hc = {key: _nsum([hc_by.get((g1, dkey), {}).get(key) for g1 in d["g1s"]])
+              for key in ("q25", "q26", "pa")}
+        if not _has_data(d["fot"], hc):
+            continue
+        shown_dirs.add(dkey)
+        top = _p14_slide_entry(
+            top_label, "direction", d["fot"],
+            _dir_rv({(g1, dkey) for g1 in d["g1s"] if _is_seller(g1, dkey)}), hc)
+        # Расшифровки направления: ЦФО группы «Отдел» — по каждому ЦФО
+        # (дека: мерч/продажи РБ, мерч/продажи ОПТ); остальные группы —
+        # свёрнуты в строку группы (дека: «Магазины»). Знаменатель доли:
+        # у свёрнутой строки продавца — своя выручка, у ЦФО-строк — выручка
+        # среза (правило p14 для беспродажных).
+        det_sums: dict = {}
+        for (g1, d2, cfo), s in fot_by.items():
+            if d2 != dkey:
+                continue
+            if g1 == _P15_DEPT_GROUP:
+                dkey3 = ("cfo", cfo)
+            else:
+                dkey3 = ("g1", g1)
+            _add(det_sums.setdefault(dkey3, _blank()), s)
+        det: list = []
+        for dkey3, s in det_sums.items():
+            if not _has_data(s, {}):
+                continue
+            if dkey3[0] == "cfo":
+                label = (cfon_by.get((_P15_DEPT_GROUP, dkey, dkey3[1]))
+                         or "ЦФО %s" % dkey3[1])
+                det.append(_p14_slide_entry(
+                    label, "detail", s, tot_rv, {},
+                    parent=top_label, code=dkey3[1]))
+            else:
+                det.append(_p14_slide_entry(
+                    dkey3[1] or "(без группы)", "detail", s,
+                    _dir_rv({(dkey3[1], dkey)}), {}, parent=top_label))
+        rows.append(top)
+        if len(det) > 1:
+            # Одна расшифровка == само направление — не показываем (дека:
+            # ИМ/МП листом-каналом без родителя).
+            rows.extend(det)
+            leaves.extend(det)
+        else:
+            leaves.append(top)
+
+    # Строки ЦФО группы «Отдел», не вошедшие в направления слайда (как
+    # беспродажные направления p15, с парой деки «Складская + Транспортная»).
+    dept: dict = {}
+    for (g1, dkey, _cfo), s in fot_by.items():
+        if g1 == _P15_DEPT_GROUP and dkey not in shown_dirs:
+            _add(dept.setdefault(_label(g1, dkey), _blank()), s)
+    dept_hc: dict = {}
+    for (g1, dkey), h in hc_by.items():
+        if g1 == _P15_DEPT_GROUP and dkey not in shown_dirs:
+            slot = dept_hc.setdefault(_label(g1, dkey), {})
+            for key in ("q25", "q26", "pa"):
+                if h.get(key) is not None:
+                    slot[key] = slot.get(key, 0.0) + float(h[key])
+    dept_rows = sorted(
+        (_p14_slide_entry(str(d), "dept", s, tot_rv, dept_hc.get(d, {}))
+         for d, s in dept.items() if _has_data(s, dept_hc.get(d, {}))),
+        key=lambda e: (bool(e["label"] != "(не указано)"), e["exp26"] or 0.0),
+        reverse=True)
+    rows.extend(dept_rows)
+    leaves.extend(dept_rows)
+
+    # Итог слайда — по листьевым строкам: сумма листьев = итог таблицы
+    # (записи в тыс., зерно — в сырых суммах, поэтому ×1000).
+    tot_slide = _blank()
+    for e in leaves:
+        for key in _HALF_VALUE_KEYS:
+            if e.get(key) is not None:
+                tot_slide[key] = (tot_slide[key] or 0.0) + float(e[key]) * 1000.0
+    total_row = _p14_slide_entry("Итого", "total", tot_slide, tot_rv, {})
+    hc_slide = {key: _nsum([hc_by.get((g1, d), {}).get(key)
+                            for (g1, d) in hc_by if d in shown_dirs])
+                for key in ("q25", "q26", "pa")}
+    tot_exp = total_row["exp26"] or 0.0
+    donut = [{"label": e["label"], "value": e["exp26"],
+              "pct": _r1(_pct(_div(e["exp26"], tot_exp)))} for e in leaves]
+    for i, seg in enumerate(donut):
+        seg["color"] = _P14_PIE_COLORS[min(i, len(_P14_PIE_COLORS) - 1)]
+    direction_detail = {
+        "rows": [total_row] + rows,
+        "donut": donut,
+        "bars": [_p14_slide_bars(e) for e in leaves],
+        "cards": leaves,
+        "headcount": {
+            "plan": _r2(hc_slide.get("pa")), "fact": _r2(hc_slide.get("q26")),
+            "staffing": _r1(_pct(_div(hc_slide.get("q26"), hc_slide.get("pa")))),
+        },
+    }
+    return group_detail, direction_detail
 
 
 # ── Вкладки P15/P16 «Отделы» (листы 7–8 деки «Бюджет ФОТ 2026») ──────────────
