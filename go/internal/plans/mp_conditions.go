@@ -52,6 +52,10 @@ type MpConditions struct {
 	// только ручные значения, поэтому «по умолчанию / вручную» различимо.
 	DefaultShares map[string]float64 `json:"default_shares,omitempty"`
 	DefaultSource string             `json:"default_source,omitempty"`
+	// StrategyDefaults — какие из %СПП и наценок не сохранены в реестре и взяты в форме из стратегии
+	// месяца («spp», «markup», «markup_total»). В реестр не пишутся: после сохранения условий
+	// значения становятся ручными, а пока форма считает маржу и PL не нулями.
+	StrategyDefaults []string `json:"strategy_defaults,omitempty"`
 	Version       int                `json:"version"`
 	ChangeReason  string             `json:"change_reason"`
 	Status        string             `json:"status"`
