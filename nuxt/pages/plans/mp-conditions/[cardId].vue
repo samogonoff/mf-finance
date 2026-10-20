@@ -171,6 +171,7 @@
                   @update:model-value="row.spp_pct_view = $event ?? 0"
                 />
                 <span v-if="hint(row, 'spp_pct') !== null" class="cell-hint">факт: {{ pct(hint(row, "spp_pct")!) }}</span>
+                <span v-if="row.strategy_defaults?.includes('spp')" class="cell-hint default" title="Не сохранено в реестре: подставлено из стратегии месяца. Проверьте и сохраните, чтобы зафиксировать.">из стратегии</span>
               </td>
               <td class="col-num">
                 <NumberField
@@ -179,6 +180,7 @@
                   @update:model-value="row.markup_pct_view = $event ?? 0"
                 />
                 <span v-if="hint(row, 'markup_pct') !== null" class="cell-hint">факт: {{ pct(hint(row, "markup_pct")!) }}</span>
+                <span v-if="row.strategy_defaults?.includes('markup')" class="cell-hint default" title="Не сохранено в реестре: подставлено из стратегии месяца. Проверьте и сохраните, чтобы зафиксировать.">из стратегии</span>
               </td>
               <td class="col-num">
                 <NumberField
@@ -186,6 +188,7 @@
                   class="cell-input pct" :disabled="!editable" placeholder="%" :digits="4"
                   @update:model-value="row.markup_total_pct_view = $event ?? 0"
                 />
+                <span v-if="row.strategy_defaults?.includes('markup_total')" class="cell-hint default" title="Не сохранено в реестре: подставлено из стратегии месяца. Проверьте и сохраните, чтобы зафиксировать.">из стратегии</span>
               </td>
               <td class="col-num">
                 <span class="vat-cell" :title="'эффективная ставка площадки из справочника dir_vat'">
@@ -404,7 +407,8 @@ const toRow = (r: MpConditionsRow): EditableRow => {
     share_src: { ...(r.share_sources || {}) },
     _origin: ""
   };
-  row._origin = signature(row);
+  // Значения из стратегии в реестре ещё не сохранены: строка считается изменённой, чтобы их можно было зафиксировать.
+  row._origin = r.strategy_defaults?.length ? "" : signature(row);
   return row;
 };
 

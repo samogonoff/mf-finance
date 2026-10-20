@@ -91,6 +91,8 @@ export interface MpConditions {
   default_shares?: Record<string, number>;
   /** Подпись источника умолчаний: «стратегия «НовСтрат» 11.2026». */
   default_source?: string;
+  /** Какие из %СПП и наценок не сохранены в реестре и взяты из стратегии месяца (spp, markup, markup_total). */
+  strategy_defaults?: string[];
 }
 
 /** Эффективные доли: ручная поверх стратегической (зеркало MpConditions.EffectiveShares). */
