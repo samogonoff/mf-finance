@@ -211,7 +211,7 @@
         </template>
         <label class="params-f">
           Коэффициент
-          <input v-model.number="fillCoef" class="input params-in" inputmode="decimal" title="значение факта умножается на коэффициент (1 — без изменений, 1,05 — плюс 5 %)" />
+          <input v-model="fillCoefText" class="input params-in" inputmode="decimal" title="значение факта умножается на коэффициент (1 — без изменений, 1,05 — плюс 5 %)" />
         </label>
         <label class="params-f">
           К строкам
@@ -713,12 +713,34 @@ const setParam = async (code: string, raw: string) => {
   }
 };
 
+// «Применить» отправляет ровно те параметры, по которым был предпросмотр: пока человек смотрит список, он может
+// сменить источник, коэффициент, фильтр или окно месяцев, и запись иначе разошлась бы с показанным (вплоть до
+// всей формы вместо отфильтрованных строк).
+const calcExtraUsed = ref<ExpCalcExtra>({});
+
 /** Расчёт §6.1. Предпросмотр обязателен: сначала показываем, что изменится. */
 const runCalc = async (op: string, preview: boolean) => {
+  let extra: ExpCalcExtra = {};
+  if (op === "fact_fill") {
+    if (preview) {
+      if (parseFillCoef() === null) {
+        error.value = "Коэффициент должен быть неотрицательным числом (например 1 или 1,05)";
+        return;
+      }
+      if (fillScope.value === "filtered" && !filterActive.value) {
+        error.value = "Фильтры не заданы: выберите «всей формы» или задайте фильтр";
+        return;
+      }
+      extra = fillExtra();
+    } else {
+      extra = calcExtraUsed.value;
+    }
+  }
   calcBusy.value = true;
   error.value = "";
   try {
-    const r = await api.calc(cardId, op, preview, op === "fact_fill" ? fillExtra() : {});
+    const r = await api.calc(cardId, op, preview, extra);
+    if (preview) calcExtraUsed.value = extra;
     if (preview) {
       calcResult.value = r;
       if (!r.changed) note.value = "Расчёт ничего не меняет: значения уже совпадают";
@@ -863,7 +885,14 @@ const fillSource = ref<ExpFactFill["source"]>("prev_month");
 const fillYear = ref(0);
 const fillMonth = ref(0);
 const fillMode = ref<"one_month" | "same_month">("one_month");
-const fillCoef = ref(1);
+// Коэффициент хранится строкой: v-model.number разбирает «1,05» как 1 (parseFloat), а подсказка предлагает именно запятую.
+const fillCoefText = ref("1");
+const parseFillCoef = (): number | null => {
+  const raw = fillCoefText.value.trim().replace(",", ".");
+  if (raw === "") return 1;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0 ? v : null;
+};
 const fillScope = ref<"all" | "filtered">("all");
 // Заполняются месяцы показанного окна, кроме прошедших (по ним факт, планировать нельзя).
 const fillMonths = computed(() => shownMonths.value.filter((m) => !monthLocked(m)));
@@ -887,7 +916,7 @@ const fillExtra = (): ExpCalcExtra => ({
     year: fillSource.value === "ym" ? fillYear.value : undefined,
     month: fillSource.value === "ym" && fillMode.value === "one_month" ? fillMonth.value : undefined,
     mode: fillSource.value === "ym" ? fillMode.value : undefined,
-    coef: Number.isFinite(fillCoef.value) && fillCoef.value >= 0 ? fillCoef.value : 1
+    coef: parseFillCoef() ?? 1
   },
   filter: fillScope.value === "filtered"
     ? { search: filter.search || undefined, group_pl: filter.group_pl || undefined, city: filter.city || undefined, reg_manager: filter.reg_manager || undefined }
@@ -939,6 +968,10 @@ const isRetail = computed(() => form.value?.instance.form_kind !== "mp");
 const editable = computed(() => !!form.value && !form.value.read_only);
 const hasMore = computed(() => !!form.value && rows.value.length < form.value.total);
 const filterActive = computed(() => !!(filter.search || filter.group_pl || filter.city || filter.reg_manager));
+// Отбор «по фильтрам» без активного фильтра равен «всей форме»: сбрасываем, чтобы не расширить область молча.
+watch(filterActive, (on) => {
+  if (!on && fillScope.value === "filtered") fillScope.value = "all";
+});
 
 const key = (codeCFO: number, codePL: number, month: number) => `${codeCFO}:${codePL}:${month}`;
 
