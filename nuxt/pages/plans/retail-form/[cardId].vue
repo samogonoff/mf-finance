@@ -143,6 +143,7 @@
                 <span class="cols-grp-t">{{ grp.title }}</span>
                 <label v-for="c in grp.cols" :key="c.key" class="checkbox">
                   <input v-model="cols[c.key]" type="checkbox" /> {{ c.title }}
+                  <span v-if="c.hint" class="cols-hint">{{ c.hint }}</span>
                 </label>
               </div>
             </div>
@@ -181,6 +182,13 @@
             утверждаются на уровне страны, переопределения — уточнение к ним.
           </span>
         </div>
+        <p v-if="!editable" class="banner banner-warn bulk-closed">
+          Операции недоступны: карточка закрыта на запись (на согласовании или утверждена). Чтобы менять значения, её нужно вернуть на доработку.
+        </p>
+        <p class="bulk-help">
+          <b>{{ BULK_OP_LABELS[bulkOp] }}.</b> {{ BULK_OP_HELP[bulkOp] }}
+          Сначала «Предпросмотр» — он ничего не записывает и показывает, что изменится («было → станет»); применить можно после него.
+        </p>
         <div class="bulk-form">
           <label class="form-field">
             <span class="form-label">Операция</span>
@@ -288,7 +296,12 @@
             сбросить защиту ручных значений
           </label>
 
-          <button class="btn btn-primary bulk-go" :disabled="busy || !editable" @click="runPreview">
+          <button
+            class="btn btn-primary bulk-go"
+            :disabled="busy || !editable"
+            :title="editable ? 'Показать, что изменится, ничего не записывая' : 'Карточка закрыта на запись: операции недоступны'"
+            @click="runPreview"
+          >
             <Icon name="lucide:eye" /> Предпросмотр
           </button>
         </div>
@@ -391,7 +404,7 @@
                     <button class="mv" title="Правее" @click.stop="moveAttrCol(c.key, 1)">›</button>
                   </span>
                 </th>
-                <th v-for="c in visibleCmpCols" :key="c.key" class="col-num cmp-h" :title="c.hint">{{ c.title }}</th>
+                <th v-for="c in visibleCmpCols" :key="c.key" class="col-num cmp-h" :title="c.hint">{{ cmpTitle(c) }}</th>
                 <th v-for="m in monthCols" :key="'m' + m" class="col-num inp-h">
                   {{ monthLabel(m) }} {{ String(form.year).slice(2) }}
                 </th>
@@ -659,7 +672,7 @@ import { useGridNav } from "~/composables/useGridNav";
 import { useMpConditions, type PlanCard } from "~/composables/useMpConditions";
 import { useScope } from "~/composables/useScope";
 import {
-  BULK_OP_LABELS, LFL_LABELS, MONTH_LABELS, PARAM_LABELS, RETAIL_FORM_CODE,
+  BULK_OP_HELP, BULK_OP_LABELS, LFL_LABELS, MONTH_LABELS, PARAM_LABELS, RETAIL_FORM_CODE,
   cellKey, iferrorDiv, iferrorRatioMinus1, noBaseline, resolveParam, retailErrText, useRetail,
   type RetailBulkRequest, type RetailBulkResult, type RetailForm, type RetailIndicators,
   type RetailParam, type RetailRow, type RetailValidationReport, type ViewPreset,
@@ -1016,6 +1029,17 @@ const visibleAttrCols = computed(() =>
   attrOrder.value.map((k) => ATTR_COLS.find((c) => c.key === k)).filter((c): c is ColDef => !!c && c.key !== "lfl_status" && cols[c.key])
 );
 const visibleCmpCols = computed(() => CMP_COLS.filter((c) => cols[c.key]));
+// Подпись колонки факта называет период явно («Факт окт 2025»), а не «ПГ»: иначе непонятно, о каком месяце речь.
+const cmpTitle = (c: ColDef): string => {
+  const f = form.value;
+  if (!f) return c.title;
+  const m = f.month;
+  const lab = (mm: number, yy: number) => `${MONTH_LABELS[mm - 1] || mm} ${yy}`;
+  if (c.key === "fact_prev_year_month") return `Факт ${lab(m, f.year - 1)}`;
+  if (c.key === "fact_prev_month") return m === 1 ? `Факт ${lab(12, f.year - 1)}` : `Факт ${lab(m - 1, f.year)}`;
+  if (c.key === "fact_cur_month") return `Факт ${lab(m, f.year)}`;
+  return c.title;
+};
 const visibleIndCols = computed(() => IND_COLS.filter((c) => cols[c.key]));
 
 /** Колонки ввода: в режиме «месяц → магазины» заполняется один месяц по всем магазинам. */
@@ -1908,13 +1932,19 @@ onBeforeUnmount(() => {
 .sel-note { font-size: var(--fs-sm); color: var(--accent); white-space: nowrap; }
 .preset-box { display: flex; align-items: center; gap: var(--sp-2); }
 
+/* Выпадающее меню «Колонки» раскрывается за пределы карточки фильтров: с overflow:hidden оно обрезалось. */
+.filter-card { overflow: visible; position: relative; z-index: 3; }
 .cols-menu { position: relative; }
+.bulk-help { margin: 0; padding: var(--sp-3) var(--sp-5); font-size: var(--fs-sm); color: var(--text-secondary); }
+.bulk-closed { margin: var(--sp-3) var(--sp-5) 0; }
+.cols-hint { display: block; margin-left: calc(var(--sp-5) + var(--sp-2)); font-size: var(--fs-xs); color: var(--text-muted); }
 .cols-menu > summary { list-style: none; cursor: pointer; }
 .cols-menu > summary::-webkit-details-marker { display: none; }
 .cols-pop {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
+  /* Раскрывается влево от кнопки: справа от неё на узком экране не хватает места. */
+  right: 0;
   z-index: var(--z-dropdown);
   width: 260px;
   max-height: 60vh;
