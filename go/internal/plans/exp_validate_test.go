@@ -320,3 +320,55 @@ func TestExpSummaryFold_ByPnlGroup(t *testing.T) {
 		t.Fatalf("нераспределённые коды должны идти последними и быть помечены: %+v", last)
 	}
 }
+
+// E-11 с месяцем карточки: обязателен только месяц плана, последующие месяцы — предупреждение, прошедшие не
+// проверяются (они закрыты, заполнить их нельзя — «зачем заполнять всё в октябре»).
+func TestValidateExpForm_E11_OnlyPlanMonthBlocks(t *testing.T) {
+	onlyOct := ExpRow{CodeCFO: 101, CodePL: 61, Expense: "Коммуналка",
+		Values: []ExpValue{{Scenario: ExpScenarioPlan, Month: 10, Amount: pv(500)}}}
+	got := ValidateExpForm(ExpValidationInput{Rows: []ExpRow{onlyOct}, CardMonth: 10})
+	if len(ExpBlocking(got)) != 0 {
+		t.Fatalf("заполнен месяц плана — блокировать нечего: %+v", got)
+	}
+	var warned bool
+	for _, i := range got {
+		warned = warned || i.Code == "E-11" && !i.Blocking && strings.Contains(i.Message, "после планового: 2")
+	}
+	if !warned {
+		t.Fatalf("ноябрь и декабрь не заполнены — предупреждение: %+v", got)
+	}
+
+	empty := ExpRow{CodeCFO: 101, CodePL: 61, Expense: "Коммуналка"}
+	got = ValidateExpForm(ExpValidationInput{Rows: []ExpRow{empty}, CardMonth: 10})
+	if b := ExpBlocking(got); len(b) != 1 || b[0].Code != "E-11" || b[0].Month != 10 {
+		t.Fatalf("месяц плана пуст — блокирует: %+v", got)
+	}
+	// Явный ноль в месяце плана — заполнено.
+	zero := ExpRow{CodeCFO: 101, CodePL: 61, Values: []ExpValue{{Scenario: ExpScenarioPlan, Month: 10, Amount: pv(0)}}}
+	if got := ValidateExpForm(ExpValidationInput{Rows: []ExpRow{zero}, CardMonth: 10}); len(ExpBlocking(got)) != 0 {
+		t.Fatalf("явный ноль заполнен: %+v", got)
+	}
+	// Без месяца карточки — прежнее правило.
+	if got := ValidateExpForm(ExpValidationInput{Rows: []ExpRow{onlyOct}}); len(ExpBlocking(got)) != 1 {
+		t.Fatalf("без месяца карточки обязательны все двенадцать: %+v", got)
+	}
+}
+
+// E-18 с месяцем карточки сравнивает те же месяцы: один месяц плана против всего прошлого года не даёт ложных отклонений.
+func TestValidateExpForm_E18_SameMonthsOnly(t *testing.T) {
+	r := ExpRow{CodeCFO: 101, CodePL: 61, Expense: "Коммуналка", Values: []ExpValue{
+		{Scenario: ExpScenarioPlan, Month: 10, Amount: pv(100)},
+		{Scenario: ExpScenarioFact, Month: 10, Amount: pv(95)}, // октябрь прошлого года
+		{Scenario: ExpScenarioFact, Month: 1, Amount: pv(5000)},
+		{Scenario: ExpScenarioFact, Month: 2, Amount: pv(5000)},
+	}}
+	in := ExpValidationInput{Rows: []ExpRow{r}, CardMonth: 10, PrevYearByRow: map[[2]int]float64{{101, 61}: 10095}}
+	if got := ValidateExpForm(in); hasCode(got, "E-18") {
+		t.Fatalf("октябрь к октябрю (100 к 95) — не отклонение, а весь год в сравнение не идёт: %+v", got)
+	}
+	r.Values[0].Amount = pv(300) // октябрь 300 против 95
+	in.Rows = []ExpRow{r}
+	if got := ValidateExpForm(in); !hasCode(got, "E-18") {
+		t.Fatal("октябрь 300 против 95 — отклонение обязано дать предупреждение")
+	}
+}

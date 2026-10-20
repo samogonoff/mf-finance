@@ -37,26 +37,33 @@ func TestApplyAction_SubmitNoDeps(t *testing.T) {
 	}
 }
 
-func TestApplyAction_DependencyBlocks16Until24(t *testing.T) {
+// 1.6 ждёт только поток продаж (1.5): производство (2.4) пока не блокирует — его нет в кабинете.
+func TestApplyAction_Stage16WaitsForSalesOnly(t *testing.T) {
 	stages := initStages(2026, 6, "RU", CalendarSeed(), nil)
-	// 1.6 зависит от 1.5 и 2.4 (WF-DEP-01) — пока не завершены, submit нельзя.
 	if _, err := applyStageAction(stages, "1.6", "submit", ""); err == nil {
-		t.Error("ожидалась ошибка зависимости: 1.6 до 2.4/1.5")
+		t.Error("ожидалась ошибка зависимости: 1.6 до завершения 1.5")
 	}
-	// Завершаем цепочку продаж и производства.
-	for _, code := range []string{"1.1", "1.2", "1.3", "1.4", "1.5", "2.1", "2.2", "2.3", "2.4"} {
+	// Завершаем только поток продаж; производство (2.1–2.4) не трогаем.
+	for _, code := range []string{"1.1", "1.2", "1.3", "1.4", "1.5"} {
 		var err error
 		stages, err = applyStageAction(stages, code, "submit", "")
 		if err != nil {
 			t.Fatalf("submit %s: %v", code, err)
 		}
 	}
+	if findStage(stages, "2.4").Status == "completed" {
+		t.Fatal("контроль теста: производство не завершалось")
+	}
 	out, err := applyStageAction(stages, "1.6", "submit", "")
 	if err != nil {
-		t.Fatalf("1.6 после 2.4 должен пройти: %v", err)
+		t.Fatalf("1.6 после 1.5 должен проходить без 2.4: %v", err)
 	}
 	if findStage(out, "1.6").Status != "completed" {
-		t.Error("1.6 должен стать completed после зависимостей")
+		t.Error("1.6 должен стать completed")
+	}
+	// Этап 3 ждёт 1.6 (WF-DEP-02).
+	if _, err := applyStageAction(stages, "3", "submit", ""); err == nil {
+		t.Error("этап 3 до завершения 1.6 нельзя")
 	}
 }
 

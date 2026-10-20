@@ -47,6 +47,7 @@ func (s *ExpService) Validate(ctx context.Context, p Principal, cardID int64) (E
 		Rows:          rows,
 		Currency:      in.Currency,
 		LegalEntity:   in.LegalEntity,
+		CardMonth:     c.Month,
 		PrevYearByRow: map[[2]int]float64{},
 		CommentByRow:  map[[2]int]string{},
 	}
