@@ -508,6 +508,10 @@
                 Сезон<span v-if="sortField === 'Сезон'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'decor' && isVisible('decor')" :class="{ sorted: sortField === 'Декор, наименование' }" @click="toggleSort('Декор, наименование')">
+                Декор<span v-if="sortField === 'Декор, наименование'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
+              </th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'date' && isVisible('date')" :class="{ sorted: sortField === 'дата расчета' }" @click="toggleSort('дата расчета')">
                 Дата<span v-if="sortField === 'дата расчета'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
@@ -744,6 +748,7 @@
               <td v-if="ck === 'country' && isVisible('country')">{{ row['Страна пр-ва'] || '—' }}</td>
               <td v-if="ck === 'family' && isVisible('family')">{{ row['Семья'] || '—' }}</td>
               <td v-if="ck === 'season' && isVisible('season')">{{ row['Сезон'] || '—' }}</td>
+              <td v-if="ck === 'decor' && isVisible('decor')" :title="row['Декор, наименование'] || ''">{{ row['Декор, наименование'] || '—' }}</td>
               <td v-if="ck === 'date' && isVisible('date')" class="num">{{ formatDate(row['дата расчета']) }}</td>
               <td v-if="ck === 'calc_sign' && isVisible('calc_sign')">{{ row['Признак калькуляции'] || '—' }}</td>
               <td v-if="ck === 'planned_retail' && isVisible('planned_retail')" class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
@@ -2884,6 +2889,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'country', label: 'Страна' },
   { key: 'family', label: 'Семья' },
   { key: 'season', label: 'Сезон' },
+  { key: 'decor', label: 'Декор' },
   { key: 'date', label: 'Дата' },
   { key: 'calc_sign', label: 'Пр.кальк' },
   { key: 'planned_retail', label: 'План. розница' },
@@ -2924,7 +2930,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
 
 // Column groupings for the settings modal
 const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','plan_id'];
-const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713'];
+const infoColumnKeys = ['country','family','season','decor','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
 const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','cut_qty','sum_decors','sum_knitting','sum_cost','cost_deviation'];
@@ -2948,7 +2954,7 @@ const COL_DEFAULT_WIDTHS: Record<string, number> = {
   peo_sel: 34, actions: 150, raw_rows: 40, bm: 160, model: 120, articul: 90,
   model_name: 228, color: 120, task_num: 90, plan_id: 70,
   // информационные
-  country: 90, family: 110, season: 80, date: 76, calc_sign: 76,
+  country: 90, family: 110, season: 80, decor: 140, date: 76, calc_sign: 76,
   planned_retail: 78, planned_wholesale: 78, planned_cost: 78,
   planned_profitability: 92, avg_retail_rub: 92, avg_rate: 72,
   retail_markup: 92, price_rf: 92, price_kz: 92, price_uz: 92,
@@ -2983,7 +2989,7 @@ const STORAGE_KEY = 'cost_column_visibility';
  *
  * Порядок хранится списком ключей, а не индексами: список ключей переживает
  * добавление и удаление колонок в коде, а индексы — нет. */
-const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','cut_qty','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
+const MOVABLE_COL_KEYS = ['country','family','season','decor','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','cut_qty','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 const ORDER_STORAGE_KEY = 'cost_column_order';
 /** Все колонки таблицы: закреплённые слева плюс переносимые. */
 const ALL_COL_KEYS = [...STICKY_COL_KEYS, ...MOVABLE_COL_KEYS];
@@ -3837,9 +3843,9 @@ function onPageSizeChange(value: string | number) {
 }
 
 // ── Column filters (client-side, top-down cascade) ──────────────────────────
-type ColFilterKey = 'col_bm' | 'col_model' | 'col_articul' | 'col_model_name' | 'col_plan_id' | 'col_calc_sign' | 'col_country' | 'col_season' | 'col_date';
+type ColFilterKey = 'col_bm' | 'col_model' | 'col_articul' | 'col_model_name' | 'col_plan_id' | 'col_calc_sign' | 'col_country' | 'col_season' | 'col_date' | 'col_decor';
 
-const COL_FILTER_KEYS: ColFilterKey[] = ['col_bm', 'col_model', 'col_articul', 'col_model_name', 'col_plan_id', 'col_calc_sign', 'col_country', 'col_season', 'col_date'];
+const COL_FILTER_KEYS: ColFilterKey[] = ['col_bm', 'col_model', 'col_articul', 'col_model_name', 'col_plan_id', 'col_calc_sign', 'col_country', 'col_season', 'col_date', 'col_decor'];
 
 const columnFilterConfig: { key: ColFilterKey; label: string; field: string }[] = [
   { key: 'col_bm', label: 'Бренд-менеджер', field: 'Бренд-менеджер' },
@@ -3851,6 +3857,7 @@ const columnFilterConfig: { key: ColFilterKey; label: string; field: string }[] 
   { key: 'col_country', label: 'Страна пр-ва', field: 'Страна пр-ва' },
   { key: 'col_season', label: 'Сезон', field: 'Сезон' },
   { key: 'col_date', label: 'Дата', field: 'дата расчета' },
+  { key: 'col_decor', label: 'Декор', field: 'Декор, наименование' },
 ];
 
 const columnFilters = reactive<Record<string, string[]>>(
@@ -3871,14 +3878,21 @@ const columnFilterOptions = computed(() => {
       const higher = columnFilterConfig[j];
       const sel = columnFilters[higher.key];
       if (sel && sel.length > 0) {
-        available = available.filter((r: any) => sel.includes(_colFilterValue(r, higher.field)));
+        // col_decor: в ячейке список «Печать, Вышивка» — строка проходит,
+        // если хотя бы один её декор выбран (пересечение списков).
+        available = available.filter((r: any) => higher.key === 'col_decor'
+          ? sel.some((sv: string) => _colFilterValue(r, higher.field).split(',').map((x: string) => x.trim()).includes(sv))
+          : sel.includes(_colFilterValue(r, higher.field)));
       }
     }
     const vals = new Set<string>();
     for (const row of available) {
       let v = _colFilterValue(row, cfg.field);
       if (cfg.key === 'col_date') v = v.split('T')[0];
-      if (v) vals.add(v);
+      // col_decor: в ячейке может быть список «Печать, Вышивка» — фильтр по
+      // точному значению списка не найдёт строку, раскладываем на опции.
+      if (cfg.key === 'col_decor') v.split(',').map(sv => sv.trim()).filter(Boolean).forEach(d => vals.add(d));
+      else if (v) vals.add(v);
     }
     opts[cfg.key] = Array.from(vals).sort();
   }
@@ -3919,6 +3933,11 @@ const filteredAggregated = computed(() => {
       if (!sel || sel.length === 0) return true;
       let val = _colFilterValue(row, cfg.field);
       if (cfg.key === 'col_date') val = val.split('T')[0];
+      // col_decor: строка проходит, если хотя бы один её декор из выбранных.
+      if (cfg.key === 'col_decor') {
+        const parts = val.split(',').map(sv => sv.trim()).filter(Boolean);
+        return parts.some(p => sel.includes(p));
+      }
       return sel.includes(val);
     });
   });
@@ -9568,7 +9587,7 @@ const headers = [
   "Осн. материалы (руб)", "Осн. материалы ($)",
   "Вспом. материалы (руб)", "Вспом. материалы ($)",
   "Пошив (руб)", "Пошив ($)", "Раскрой (руб)", "Раскрой ($)",
-  "Декоры (руб)", "Декоры ($)",
+  "Декор", "Декоры (руб)", "Декоры ($)",
   "Вязание (руб)", "Вязание ($)",
   "Себест. (руб)", "Себест. ($)",
   "Рентабельность (руб)", "Рентабельность (%)", "Маржа (%)", "Откл. маржи (%)",
@@ -9647,6 +9666,7 @@ const exportToExcel = () => {
       fmt(row["sum_Пошив, USD."]),
       fmt(row["sum_Раскрой, руб."]),
       fmt(row["sum_Раскрой, USD."]),
+      row["Декор, наименование"] || "",
       fmt(row["sum_Декоры, руб."]),
       fmt(row["sum_Декоры, USD."]),
       fmt(row["sum_Вязание, руб."]),

@@ -4155,6 +4155,9 @@ _PLAN_MAT_KEY = ["Наименование", "артикул материала"
 # в неё напрямую, без нормы и коэффициента.
 _PLAN_DECOR_TYPES: list[str] = ["шт", "декор", "Декор", "Декоры лиса"]
 
+# Публичное имя для import в routes.py (колонка «Декор» в таблице, 666569).
+DECOR_TYPES = _PLAN_DECOR_TYPES
+
 
 def _plan_key_select(alias: str = "c") -> str:
     """trim(COALESCE(...)) по каждому полю ключа, с алиасами k0..k4."""
