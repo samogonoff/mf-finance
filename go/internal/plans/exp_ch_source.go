@@ -30,7 +30,21 @@ type ExpSourceInfo interface {
 // ExpSourceTrace — «след» одного чтения: источник пишет сюда, откуда реально прочитал
 // данные. Передаётся в контексте вызова Costs, поэтому параллельные загрузки разных форм
 // не путают друг друга (общего состояния на процесс нет).
-type ExpSourceTrace struct{ Kind string }
+type ExpSourceTrace struct {
+	Kind string
+	// FactBasis — на чём построен «факт»: пусто — по начислениям (как в ТЗ), ExpFactBasisPayments —
+	// запасной вариант по платежам (начислений в выдаче нет). Нужен экрану для честной подписи.
+	FactBasis string
+}
+
+// ExpFactBasisPayments — факт взят из сценария «Факт по платежам».
+const ExpFactBasisPayments = "payments"
+
+func noteExpFactBasis(ctx context.Context, basis string) {
+	if tr, ok := ctx.Value(expTraceKey{}).(*ExpSourceTrace); ok {
+		tr.FactBasis = basis
+	}
+}
 
 type expTraceKey struct{}
 
@@ -226,6 +240,9 @@ func (s *chExpSource) Costs(ctx context.Context, kind, country string, years []i
 			if pc, perr := parseChCostRows(pb); perr == nil {
 				for i := range pc {
 					pc[i].Scenario = ExpSrcFact
+				}
+				if len(pc) > 0 {
+					noteExpFactBasis(ctx, ExpFactBasisPayments)
 				}
 				out = append(out, pc...)
 			}

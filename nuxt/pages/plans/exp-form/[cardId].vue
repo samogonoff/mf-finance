@@ -300,6 +300,7 @@
           Сравнение с фактом
         </label>
         <span v-if="viewMode !== 'year'" class="view-hint">ранние месяцы скрыты, их значения не удаляются</span>
+        <span v-if="factByPayments" class="view-hint" title="Сценарий «Факт по начислениям» в выдаче источника пока отсутствует">факт — по платежам</span>
       </div>
     </section>
 
@@ -368,11 +369,11 @@
                 @click="toggleSort(monthKey(mm))"
               >{{ MONTHS_SHORT[mm - 1] }}{{ sortMark(monthKey(mm)) }}</th>
               <th class="col-num c-total" :title="`Сумма плана за показанные месяцы (${viewTotalLabel})`">Итого план</th>
-              <th class="col-num c-fact" :title="`Факт ${planYear - 1} за год`">Факт {{ planYear - 1 }}</th>
+              <th class="col-num c-fact" :title="`${factWord} ${planYear - 1} за год${factBasisNote}`">Факт {{ planYear - 1 }}</th>
               <template v-if="showRef">
-                <th class="col-num c-ref" :title="`Факт ${monthName} ${planYear - 1} (тот же месяц прошлого года)`">Факт {{ monthName }} {{ planYear - 1 }}</th>
-                <th class="col-num c-ref" :title="`Факт прошлого месяца: ${refPrev.label}`">Факт {{ refPrev.label }}</th>
-                <th class="col-num c-ref" :title="`Факт текущего месяца плана (учтён на момент загрузки): ${monthName} ${planYear}`">Факт {{ monthName }} {{ planYear }}</th>
+                <th class="col-num c-ref" :title="`${factWord}: ${monthName} ${planYear - 1} (тот же месяц прошлого года)${factBasisNote}`">Факт {{ monthName }} {{ planYear - 1 }}</th>
+                <th class="col-num c-ref" :title="`${factWord} прошлого месяца: ${refPrev.label}${factBasisNote}`">Факт {{ refPrev.label }}</th>
+                <th class="col-num c-ref" :title="`${factWord} текущего месяца плана (учтён на момент загрузки): ${monthName} ${planYear}${factBasisNote}`">Факт {{ monthName }} {{ planYear }}</th>
               </template>
               <th class="c-act">Строка</th>
             </tr>
@@ -750,6 +751,10 @@ const shownMonths = computed<number[]>(() => {
   if (viewMode.value === "month") return [cardMonth.value];
   return Array.from({ length: 13 - cardMonth.value }, (_, i) => cardMonth.value + i);
 });
+// Факт строится по платежам, пока «Факта по начислениям» в источнике нет: колонки подписываем честно.
+const factByPayments = computed(() => form.value?.sync?.fact_basis === "payments");
+const factWord = computed(() => (factByPayments.value ? "Факт по платежам" : "Факт"));
+const factBasisNote = computed(() => (factByPayments.value ? " — по платежам, начислений в источнике нет" : ""));
 const viewTotalLabel = computed(() =>
   viewMode.value === "year" ? "за год" : viewMode.value === "month" ? `за ${monthName.value}` : `${monthName.value}–дек`);
 const loadViewPrefs = () => {

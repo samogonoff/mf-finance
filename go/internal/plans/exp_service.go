@@ -203,6 +203,7 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 			run.status.State = ExpSyncOK
 		}
 		run.status.SourceKind, run.status.SourceAsOf = srcKind, srcAsOf
+		run.status.FactBasis = trace.FactBasis
 		// Хвост предупреждения — по тому, откуда реально прочитано (после чтения): снимок
 		// прошлой заливки или процедура напрямую; иначе плашка противоречила бы шапке.
 		if refreshWarn != "" {

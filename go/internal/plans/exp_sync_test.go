@@ -360,3 +360,28 @@ func TestExpBulkCells_Window(t *testing.T) {
 		}
 	}
 }
+
+// basisSource — источник, который сообщает экрану, что факт взят по платежам.
+type basisSource struct{ stubExpSource }
+
+func (b *basisSource) Costs(ctx context.Context, kind, country string, years []int) ([]ExpCostCell, error) {
+	noteExpFactBasis(ctx, ExpFactBasisPayments)
+	return b.stubExpSource.Costs(ctx, kind, country, years)
+}
+
+// Колонки факта подписываются честно: статус загрузки знает, что факт построен по платежам.
+func TestExpSync_FactBasisReachesStatus(t *testing.T) {
+	src := &basisSource{stubExpSource{cells: []ExpCostCell{{Scenario: ExpSrcFact, Year: 2025, Month: 1, CodePL: 10, CodeCFO: 100, Amount: 5}}}}
+	svc, in := newSyncTestService(src)
+	svc.ensureSync(Card{ID: 1}, in, false)
+	st := waitSyncState(t, svc, in.ID, ExpSyncOK)
+	if st.FactBasis != ExpFactBasisPayments {
+		t.Fatalf("статус: %+v", st)
+	}
+	// Обычный источник (факт по начислениям) — без пометки.
+	svc2, in2 := newSyncTestService(&stubExpSource{})
+	svc2.ensureSync(Card{ID: 1}, in2, false)
+	if st2 := waitSyncState(t, svc2, in2.ID, ExpSyncOK); st2.FactBasis != "" {
+		t.Fatalf("пометка не должна появляться без подмены: %+v", st2)
+	}
+}

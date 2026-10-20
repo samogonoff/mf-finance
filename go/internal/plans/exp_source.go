@@ -372,6 +372,7 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 		for i := range payments {
 			payments[i].Scenario = ExpSrcFact
 		}
+		noteExpFactBasis(ctx, ExpFactBasisPayments)
 		out = append(out, payments...)
 	}
 	return out, nil

@@ -153,6 +153,9 @@ type ExpSyncStatus struct {
 	// Warning — загрузка прошла, но что-то не удалось (перезаливка снимка по кнопке): форма
 	// показана по тому, что есть, а причина видна на экране.
 	Warning    string     `json:"warning,omitempty"`
+	// FactBasis — на чём построен факт рядом с вводом: пусто — по начислениям (ТЗ), "payments" —
+	// по платежам (начислений в выдаче источника нет); экран подписывает колонки честно.
+	FactBasis  string     `json:"fact_basis,omitempty"`
 	SourceKind string     `json:"source_kind,omitempty"`
 	SourceAsOf *time.Time `json:"source_as_of,omitempty"`
 }

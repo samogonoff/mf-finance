@@ -184,9 +184,13 @@ func TestExpCostsSQL_CfoFormsUseSpecScenarios(t *testing.T) {
 func TestExpCHSource_PaymentsFactFallback(t *testing.T) {
 	pay := strings.Replace(chRowFact, "Факт по начислениям", ExpSrcFactPayments, 1)
 	stub := &chStub{count: "10\n", rows: chRowRetail + "\n", payments: pay + "\n"}
-	cells, err := newCHTest(t, stub, &fallbackSource{}).Costs(context.Background(), ExpKindRetail, "BY", []int{2025, 2026})
+	ctx, trace := WithExpSourceTrace(context.Background())
+	cells, err := newCHTest(t, stub, &fallbackSource{}).Costs(ctx, ExpKindRetail, "BY", []int{2025, 2026})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if trace.FactBasis != ExpFactBasisPayments {
+		t.Fatalf("экран должен узнать, что факт по платежам: %q", trace.FactBasis)
 	}
 	var fact int
 	for _, c := range cells {
