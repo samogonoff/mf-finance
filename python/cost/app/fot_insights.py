@@ -956,3 +956,75 @@ async def analyze_block(payload: dict, email: Any) -> dict:
         cost=usage.get("cost"))
 
     return {"cached": False, **result}
+
+
+# ─── Инструменты агента /insights/ask (domain=fot) ───────────────────────────
+
+# Уточнения среза, которые модель может передать в agent_facts поверх среза
+# пользователя; все ключи входят в _LIST_PARAM_KEYS, поэтому в params идут
+# списками.
+_AGENT_FILTER_KEYS = ("direction", "cfo", "legal_entity", "country")
+
+# Потолок строк таблицы в ответе агенту: модели нужны детали, а не вся матрица
+# ЦФО; полный объём она видит в строке «строк_всего».
+_AGENT_TABLE_ROWS = 25
+
+
+async def agent_facts(tab: str, base_context: dict,
+                      overrides: dict | None = None) -> dict:
+    """Факты вкладки для агентского разбора /insights/ask.
+
+    Логику _facts_* НЕ дублируем: сборщик вкладки тот же (_fot_dashboard),
+    факты — те же _TAB_FACTS, что и у разбора блока. Уточнения среза от
+    модели ложатся ПОВЕРХ среза пользователя, пустое значение срез не меняет.
+    Чужая вкладка — ValueError из _fot_dashboard: его конвертирует в текст
+    ошибки для модели диспетчер агента, и модель исправит tab сама.
+    """
+    params = _params_from_context(base_context)
+    for key in _AGENT_FILTER_KEYS:
+        value = str((overrides or {}).get(key) or "").strip()
+        if value:
+            params[key] = [value]
+
+    data = await _fot_dashboard(tab, params)
+    if tab not in _TAB_FACTS:
+        # Та же страховка, что в analyze_block: сборщик отдал вкладку без фактов.
+        raise ValueError(f"fot: неизвестная вкладка {tab!r}")
+    return {
+        "tab": tab,
+        "факты": _TAB_FACTS[tab](data),
+        "таблицы_вкладки": sorted(
+            str(t.get("key")) for t in data.get("tables") or [] if t.get("key")),
+    }
+
+
+async def agent_table(tab: str, base_context: dict, table_key: str) -> dict:
+    """Сырые строки одной таблицы вкладки для агента /insights/ask.
+
+    Незнакомый ключ — не исключение, а подсказка со списком доступных ключей:
+    модель исправит аргумент следующим вызовом. Колонки отдаём парами
+    ключ→подпись (+единица), чтобы числа в строках были говорящими без
+    повторного вызова.
+    """
+    params = _params_from_context(base_context)
+    data = await _fot_dashboard(tab, params)
+
+    table = _table(data, str(table_key or "").strip())
+    if table is None:
+        keys = sorted(str(t.get("key")) for t in data.get("tables") or []
+                      if t.get("key"))
+        return {"ошибка": f"таблицы «{table_key}» на вкладке нет; "
+                          f"доступные ключи: {', '.join(keys) or 'нет'}"}
+
+    rows = [r for r in table.get("rows") or [] if isinstance(r, dict)]
+    columns = [{"key": str(c.get("key") or ""),
+                "label": str(c.get("label") or ""),
+                **({"unit": str(c.get("unit"))} if c.get("unit") else {})}
+               for c in table.get("columns") or [] if isinstance(c, dict)]
+    return {
+        "tab": tab,
+        "таблица": str(table.get("label") or table_key),
+        "колонки": columns,
+        "строки": rows[:_AGENT_TABLE_ROWS],
+        "строк_всего": len(rows),
+    }

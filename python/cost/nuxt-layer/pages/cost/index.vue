@@ -319,6 +319,17 @@
           <Icon name="lucide:info" />
           Строк с прочерком в розничной цене: {{ heldNoPriceCount }} — не сохраняются
         </span>
+        <!-- Серверный черновик: сколько правок восстановлено после перезагрузки.
+             Отдельная плашка, чтобы «восстановлено» не читалось как «сохранено». -->
+        <span v-if="draftRestoredCount && !draftNoticeHidden" class="draft-restored" :title="DRAFT_RESTORED_HINT">
+          <Icon name="lucide:history" />
+          Восстановлено из вашего черновика: {{ draftRestoredCount }} — не отправлено ПЭО
+          <button class="draft-restored__close" aria-label="Скрыть" @click="draftNoticeHidden = true">×</button>
+        </span>
+        <span v-if="draftError" class="draft-error">
+          <Icon name="lucide:triangle-alert" />
+          {{ draftError }}
+        </span>
       </div>
     </div>
 
@@ -495,6 +506,10 @@
               </th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'season' && isVisible('season')" :class="{ sorted: sortField === 'Сезон' }" @click="toggleSort('Сезон')">
                 Сезон<span v-if="sortField === 'Сезон'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
+                <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
+              </th>
+              <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'decor' && isVisible('decor')" :class="{ sorted: sortField === 'Декор, наименование' }" @click="toggleSort('Декор, наименование')">
+                Декор<span v-if="sortField === 'Декор, наименование'" class="sort-arrow">{{ sortDir === 'asc' ? ' ▲' : ' ▼' }}</span>
                 <span class="col-resize-handle" @mousedown.stop.prevent="startColResize(ck, $event)" @dblclick.stop.prevent="resetColWidth(ck)" title="Изменить ширину · двойной клик — сброс"></span>
               </th>
               <th v-bind="colDragBind(ck)" v-on="colDragOn(ck)" :style="colStyle(ck)" v-if="ck === 'date' && isVisible('date')" :class="{ sorted: sortField === 'дата расчета' }" @click="toggleSort('дата расчета')">
@@ -733,6 +748,7 @@
               <td v-if="ck === 'country' && isVisible('country')">{{ row['Страна пр-ва'] || '—' }}</td>
               <td v-if="ck === 'family' && isVisible('family')">{{ row['Семья'] || '—' }}</td>
               <td v-if="ck === 'season' && isVisible('season')">{{ row['Сезон'] || '—' }}</td>
+              <td v-if="ck === 'decor' && isVisible('decor')" :title="row['Декор, наименование'] || ''">{{ row['Декор, наименование'] || '—' }}</td>
               <td v-if="ck === 'date' && isVisible('date')" class="num">{{ formatDate(row['дата расчета']) }}</td>
               <td v-if="ck === 'calc_sign' && isVisible('calc_sign')">{{ row['Признак калькуляции'] || '—' }}</td>
               <td v-if="ck === 'planned_retail' && isVisible('planned_retail')" class="col-num num">{{ row.planned_retail != null ? fmt(row.planned_retail) : '—' }}</td>
@@ -1191,8 +1207,68 @@
                     @click="exportRawRowsToExcel">
               <Icon name="lucide:download" /> Экспорт в Excel
             </button>
+            <!-- 664398: экономист при замене артикула раньше строил ПФКСС из плановой
+                 калькуляции руками. Кнопка — только для КПСС/ПКПСС и не для ЧНИ.
+                 План/задание исходника переносятся как есть (пустые — пустыми);
+                 поправить их можно затем в самой созданной ПФКСС — блок ниже. -->
+            <button v-if="canCreatePfkss" class="btn btn-ghost btn-sm"
+                    :disabled="pfkssBusy || rawRowsLoading"
+                    title="Создать новую калькуляцию ПФКСС копией строк этой плановой (задача 664398)"
+                    @click="createPfkssFromSource">
+              <Icon name="lucide:copy-plus" /> {{ pfkssBusy ? 'Создание…' : 'Создать ПФКСС на основании' }}
+            </button>
             <button class="modal-close" @click="showRawRowsModal = false">×</button>
           </div>
+        </div>
+        <div v-if="pfkssError" class="cost-error" style="margin:var(--sp-3) var(--sp-5);flex-shrink:0">
+          <Icon name="lucide:alert-triangle" />
+          <div>
+            <strong>{{ pfkssErrorTitle }}</strong>
+            <p>{{ pfkssError }}</p>
+          </div>
+          <button class="cost-error-x" @click="pfkssError = ''" aria-label="Закрыть">×</button>
+        </div>
+        <!-- 664398 (переделка 21.10): план и задание правятся в САМОЙ
+             созданной ПФКСС, а не при создании из основания. Блок — только
+             для ПФКСС, созданных в вебе (строки в cost_manual_calc — их
+             показывает /pfkss-manual-info): править плановые исходники и
+             ПФКСС по приходу приложение не может. -->
+        <div v-if="pfkssManual" class="raw-rows-banner pfkss-manual">
+          <strong>План и задание этой ПФКСС</strong>
+          <span class="pfkss-manual-hint">
+            ПФКСС создана в вебе — её план и задание можно поправить (значения
+            смотрят в ПФКСС первоначального артикула, автопоиска нет). Задание
+            можно оставить пустым: ПФКСС останется с планом без задания.
+          </span>
+          <div class="pfkss-manual-grid">
+            <div class="pfkss-manual-field">
+              <label>План *</label>
+              <CostMultiSelect
+                v-model="pfkssPlanSel"
+                :options="filterOptions['plan_id'] || []"
+                placeholder="Выберите план"
+                @change="onPfkssPlanPick"
+              />
+            </div>
+            <div class="pfkss-manual-field">
+              <label>Задание</label>
+              <CostMultiSelect
+                v-model="pfkssTaskSel"
+                :options="pfkssTaskOptions"
+                :disabled="!pfkssPlanSel.length"
+                :placeholder="!pfkssPlanSel.length
+                  ? 'Сначала выберите план'
+                  : (pfkssPlanTasksLoading ? 'Загрузка заданий…' : 'Без задания')"
+                @change="onPfkssTaskPick"
+              />
+            </div>
+          </div>
+          <button class="btn btn-primary btn-sm"
+                  :disabled="pfkssSaving || !pfkssPlanSel.length || pfkssPlanUnchanged"
+                  title="Сохранить новый план и задание для этой ПФКСС (задание можно оставить пустым)"
+                  @click="savePfkssPlan">
+            <Icon name="lucide:save" /> {{ pfkssSaving ? 'Сохранение…' : 'Сохранить план и задание' }}
+          </button>
         </div>
         <div class="raw-rows-banner" v-if="rawRowsData.length">
           <strong>Фильтры:</strong>
@@ -2026,6 +2102,7 @@
                        (наименование + артикул + три свойства). -->
                   <th v-for="sp in stagePrices" :key="'h-' + sp.stage" class="col-num stage-col"
                       :title="stageColHint(sp)">Цена {{ sp.stage }}, руб.</th>
+                  <th class="col-num" title="Фактически раскроено штук по карте кроя задания">Раскроено, шт</th>
                   <th class="col-num">Норма</th>
                   <th class="col-num" title="Цена в валюте строки: у части материалов ФКСС она в валюте закупки (узб. сумы, рос. рубли). Сумма считается в рублях по курсу.">Цена</th>
                   <th class="col-num">Цена, USD</th>
@@ -2081,6 +2158,9 @@
                     </template>
                     <span v-else class="muted" title="На этом этапе такого материала не было">—</span>
                   </td>
+                  <!-- Раскроено, шт — из карты кроя задания (задача Б24 663722).
+                       Поле источника: только для чтения, одинаково для всех строк расчёта. -->
+                  <td class="col-num num">{{ vr['Раскрой, ШТ'] ? fmtNorm(vr['Раскрой, ШТ']) : '—' }}</td>
                   <!-- У декоров нормы и цены материала в источнике нет: их стоимость
                        задаётся суммой в колонках «Сумма» ниже. Поля скрыты намеренно —
                        если их заполнить, произведение затрёт сумму декора. -->
@@ -2869,6 +2949,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
   { key: 'country', label: 'Страна' },
   { key: 'family', label: 'Семья' },
   { key: 'season', label: 'Сезон' },
+  { key: 'decor', label: 'Декор' },
   { key: 'date', label: 'Дата' },
   { key: 'calc_sign', label: 'Пр.кальк' },
   { key: 'planned_retail', label: 'План. розница' },
@@ -2909,7 +2990,7 @@ const COLUMNS_CONFIG: ColumnDef[] = [
 
 // Column groupings for the settings modal
 const mainColumnKeys = ['bm','model','articul','model_name','color','task_num','plan_id'];
-const infoColumnKeys = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713'];
+const infoColumnKeys = ['country','family','season','decor','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713'];
 const rubColumnKeys = ['avg_wholesale','price_level'];
 const usdColumnKeys = ['avg_retail_usd','sum_materials','sum_aux_materials'];
 const costColumnKeys = ['avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','cut_qty','sum_decors','sum_knitting','sum_cost','cost_deviation'];
@@ -2933,7 +3014,7 @@ const COL_DEFAULT_WIDTHS: Record<string, number> = {
   peo_sel: 34, actions: 150, raw_rows: 40, bm: 160, model: 120, articul: 90,
   model_name: 228, color: 120, task_num: 90, plan_id: 70,
   // информационные
-  country: 90, family: 110, season: 80, date: 76, calc_sign: 76,
+  country: 90, family: 110, season: 80, decor: 140, date: 76, calc_sign: 76,
   planned_retail: 78, planned_wholesale: 78, planned_cost: 78,
   planned_profitability: 92, avg_retail_rub: 92, avg_rate: 72,
   retail_markup: 92, price_rf: 92, price_kz: 92, price_uz: 92,
@@ -2968,7 +3049,7 @@ const STORAGE_KEY = 'cost_column_visibility';
  *
  * Порядок хранится списком ключей, а не индексами: список ключей переживает
  * добавление и удаление колонок в коде, а индексы — нет. */
-const MOVABLE_COL_KEYS = ['country','family','season','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','cut_qty','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
+const MOVABLE_COL_KEYS = ['country','family','season','decor','date','calc_sign','planned_retail','planned_wholesale','planned_cost','planned_profitability','avg_retail_rub','avg_rate','retail_markup','price_rf','price_kz','price_uz','mp_price_rub','comment','replace','obsolete','reg713','avg_wholesale','price_level','avg_retail_usd','sum_materials','sum_aux_materials','avg_sewing_min','sum_sewing','avg_cutting_min','sum_cutting','cut_qty','sum_decors','sum_knitting','sum_cost','cost_deviation','calc_markup','calc_markup_pct','calc_margin_pct','calc_margin_deviation','peo'];
 const ORDER_STORAGE_KEY = 'cost_column_order';
 /** Все колонки таблицы: закреплённые слева плюс переносимые. */
 const ALL_COL_KEYS = [...STICKY_COL_KEYS, ...MOVABLE_COL_KEYS];
@@ -3822,9 +3903,9 @@ function onPageSizeChange(value: string | number) {
 }
 
 // ── Column filters (client-side, top-down cascade) ──────────────────────────
-type ColFilterKey = 'col_bm' | 'col_model' | 'col_articul' | 'col_model_name' | 'col_plan_id' | 'col_calc_sign' | 'col_country' | 'col_season' | 'col_date';
+type ColFilterKey = 'col_bm' | 'col_model' | 'col_articul' | 'col_model_name' | 'col_plan_id' | 'col_calc_sign' | 'col_country' | 'col_season' | 'col_date' | 'col_decor';
 
-const COL_FILTER_KEYS: ColFilterKey[] = ['col_bm', 'col_model', 'col_articul', 'col_model_name', 'col_plan_id', 'col_calc_sign', 'col_country', 'col_season', 'col_date'];
+const COL_FILTER_KEYS: ColFilterKey[] = ['col_bm', 'col_model', 'col_articul', 'col_model_name', 'col_plan_id', 'col_calc_sign', 'col_country', 'col_season', 'col_date', 'col_decor'];
 
 const columnFilterConfig: { key: ColFilterKey; label: string; field: string }[] = [
   { key: 'col_bm', label: 'Бренд-менеджер', field: 'Бренд-менеджер' },
@@ -3836,6 +3917,7 @@ const columnFilterConfig: { key: ColFilterKey; label: string; field: string }[] 
   { key: 'col_country', label: 'Страна пр-ва', field: 'Страна пр-ва' },
   { key: 'col_season', label: 'Сезон', field: 'Сезон' },
   { key: 'col_date', label: 'Дата', field: 'дата расчета' },
+  { key: 'col_decor', label: 'Декор', field: 'Декор, наименование' },
 ];
 
 const columnFilters = reactive<Record<string, string[]>>(
@@ -3856,14 +3938,21 @@ const columnFilterOptions = computed(() => {
       const higher = columnFilterConfig[j];
       const sel = columnFilters[higher.key];
       if (sel && sel.length > 0) {
-        available = available.filter((r: any) => sel.includes(_colFilterValue(r, higher.field)));
+        // col_decor: в ячейке список «Печать, Вышивка» — строка проходит,
+        // если хотя бы один её декор выбран (пересечение списков).
+        available = available.filter((r: any) => higher.key === 'col_decor'
+          ? sel.some((sv: string) => _colFilterValue(r, higher.field).split(',').map((x: string) => x.trim()).includes(sv))
+          : sel.includes(_colFilterValue(r, higher.field)));
       }
     }
     const vals = new Set<string>();
     for (const row of available) {
       let v = _colFilterValue(row, cfg.field);
       if (cfg.key === 'col_date') v = v.split('T')[0];
-      if (v) vals.add(v);
+      // col_decor: в ячейке может быть список «Печать, Вышивка» — фильтр по
+      // точному значению списка не найдёт строку, раскладываем на опции.
+      if (cfg.key === 'col_decor') v.split(',').map(sv => sv.trim()).filter(Boolean).forEach(d => vals.add(d));
+      else if (v) vals.add(v);
     }
     opts[cfg.key] = Array.from(vals).sort();
   }
@@ -3904,6 +3993,11 @@ const filteredAggregated = computed(() => {
       if (!sel || sel.length === 0) return true;
       let val = _colFilterValue(row, cfg.field);
       if (cfg.key === 'col_date') val = val.split('T')[0];
+      // col_decor: строка проходит, если хотя бы один её декор из выбранных.
+      if (cfg.key === 'col_decor') {
+        const parts = val.split(',').map(sv => sv.trim()).filter(Boolean);
+        return parts.some(p => sel.includes(p));
+      }
       return sel.includes(val);
     });
   });
@@ -4122,6 +4216,9 @@ async function loadData() {
       if (usdW <= 0 && rubW > 0) r['avg_Отпускная цена по уровню, USD.'] = r2(rubW / rate);
       if (usdR <= 0 && rubR > 0) r['avg_Розничная цена по уровню, USD.'] = r2(rubR / rate);
     }
+    // Первая успешная выдача — момент наложить серверный черновик (если он
+    // уже пришёл; если черновик придёт позже — попытку повторит loadPriceDraft).
+    tryApplyDraft();
   } catch (e: any) {
     console.error("[cost] aggregated load failed", e);
     lastError.value = e?.data?.detail || e?.message || String(e);
@@ -5171,7 +5268,217 @@ async function openRawRows(row: any) {
   detailsAggregatedRow.value = row;
   showRawRowsModal.value = true;
   lastError.value = '';
+  pfkssError.value = '';
+  resetPfkssForm();
+  void checkPfkssManual();
   await loadRawRows();
+}
+
+// ── ПФКСС (664398): создание на основании + правка плана/задания ───────────
+const pfkssBusy = ref(false);
+const pfkssError = ref('');
+/** Заголовок блока ошибок зависит от операции (создание vs правка плана). */
+const pfkssErrorTitle = ref('ПФКСС не создана');
+
+/** Правка плана/задания — в самой ПФКСС (переделка 21.10): CostMultiSelect —
+ * мультивыбор, а тут нужно ровно одно значение, поэтому держим массив
+ * длиной 0/1 и при повторном выборе оставляем последний. */
+const pfkssPlanSel = ref<string[]>([]);
+const pfkssTaskSel = ref<string[]>([]);
+const pfkssPlanTasks = ref<{ task_number: string; calc_count: number }[]>([]);
+const pfkssPlanTasksLoading = ref(false);
+
+/** Строка — созданная в вебе ПФКСС (is_manual из /pfkss-manual-info):
+ * показываем блок правки плана/задания только для неё. */
+const pfkssManual = ref(false);
+const pfkssSaving = ref(false);
+
+/** Задания выбранного плана с числом калькуляций — подпись в селекте. */
+const pfkssTaskOptions = computed(() =>
+  pfkssPlanTasks.value.map((t) => ({
+    value: t.task_number,
+    label: t.task_number,
+    description: `калькуляций: ${t.calc_count}`,
+  }))
+);
+
+/** Выбор плана: держим одиночное значение, грузим задания плана. */
+async function onPfkssPlanPick() {
+  if (pfkssPlanSel.value.length > 1) {
+    pfkssPlanSel.value = [pfkssPlanSel.value[pfkssPlanSel.value.length - 1]];
+  }
+  pfkssTaskSel.value = [];
+  pfkssPlanTasks.value = [];
+  const plan = pfkssPlanSel.value[0];
+  if (!plan) return;
+  pfkssPlanTasksLoading.value = true;
+  try {
+    const res = await $fetch<any>(
+      `${apiBase.value}/api/cost/plan-tasks?plan_id=${encodeURIComponent(plan)}`,
+      { headers: fetchHeaders.value }
+    );
+    pfkssPlanTasks.value = res || [];
+  } catch (e: any) {
+    pfkssError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    pfkssPlanTasksLoading.value = false;
+  }
+}
+
+function onPfkssTaskPick() {
+  if (pfkssTaskSel.value.length > 1) {
+    pfkssTaskSel.value = [pfkssTaskSel.value[pfkssTaskSel.value.length - 1]];
+  }
+}
+
+/** Сброс полей при открытии окна: план предвыбираем текущим (кроме «0» —
+ * технического «нет плана», заданий у плана 0 нет — выбор за экономистом).
+ * Задания грузятся позже, когда блок правки подтвердится (is_manual). */
+function resetPfkssForm() {
+  const plan = String(detailsAggregatedRow.value?.['PLAN_ID'] ?? '').trim();
+  pfkssPlanSel.value = plan && plan !== '0' ? [plan] : [];
+  pfkssTaskSel.value = [];
+  pfkssPlanTasks.value = [];
+}
+
+/** Тихо спросить, создана ли эта ПФКСС в вебе: блок правки — только для
+ * «своих» калькуляций (переделка 21.10). Ошибка запроса окну не мешает —
+ * блок просто не появится. */
+async function checkPfkssManual() {
+  pfkssManual.value = false;
+  const row = detailsAggregatedRow.value;
+  const sign = String(row?.['Признак калькуляции'] ?? '').trim();
+  if (sign !== 'ПФКСС') return;
+  if (!(can('cost:edit_materials') || can('cost:approve') || can('cost:admin'))) return;
+  try {
+    const res = await $fetch<{ is_manual: boolean }>(
+      `${apiBase.value}/api/cost/pfkss-manual-info`,
+      {
+        params: {
+          model: row['Модель'],
+          articul: row['Артикул'],
+          plan_id: String(row['PLAN_ID'] ?? '').trim(),
+          task_number: String(row['Номер задания производства'] ?? '').trim(),
+        },
+        headers: fetchHeaders.value,
+      }
+    );
+    pfkssManual.value = !!res?.is_manual;
+    if (pfkssManual.value && pfkssPlanSel.value.length) {
+      // Задания предвыбранного плана; текущее задание предвыбираем, если
+      // оно в списке (нет — селект остаётся пустым, «Без задания»).
+      const curTask = String(row['Номер задания производства'] ?? '').trim();
+      await onPfkssPlanPick();
+      if (curTask && pfkssPlanTasks.value.some((t) => t.task_number === curTask)) {
+        pfkssTaskSel.value = [curTask];
+      }
+    }
+  } catch (e: any) {
+    console.debug('[cost] pfkss-manual-info failed', e);
+  }
+}
+
+/** Кнопка сохранения неактивна, пока значения совпадают с текущими:
+ * предвыбор уже показывает их — «сохранить» нечего. */
+const pfkssPlanUnchanged = computed(() => {
+  const row = detailsAggregatedRow.value;
+  return (pfkssPlanSel.value[0] || '') === String(row?.['PLAN_ID'] ?? '').trim()
+    && (pfkssTaskSel.value[0] || '') === String(row?.['Номер задания производства'] ?? '').trim();
+});
+
+/** confirm → POST /pfkss-update-plan. Успех: окно закрывается, таблица
+ * перезагружается; ошибки (400/409) — в блок ошибок этого же окна. */
+async function savePfkssPlan() {
+  const row = detailsAggregatedRow.value;
+  if (!row || pfkssSaving.value) return;
+  const curPlan = String(row['PLAN_ID'] ?? '').trim();
+  const curTask = String(row['Номер задания производства'] ?? '').trim();
+  const newPlan = pfkssPlanSel.value[0] || '';
+  const newTask = pfkssTaskSel.value[0] || '';
+  if (!newPlan) return;
+  if (!confirm(`Изменить план и задание этой ПФКСС?\nплан: ${curPlan || '—'} → ${newPlan}, задание: ${curTask || '—'} → ${newTask || '—'}.`)) return;
+  pfkssSaving.value = true;
+  pfkssError.value = '';
+  pfkssErrorTitle.value = 'План и задание не сохранены';
+  peoBulkStatus.value = '';
+  try {
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/pfkss-update-plan`, {
+      method: 'POST',
+      headers: fetchHeaders.value,
+      body: {
+        model: row['Модель'],
+        articul: row['Артикул'],
+        current_plan_id: curPlan,
+        current_task_number: curTask,
+        new_plan_id: newPlan,
+        new_task_number: newTask,
+      },
+    });
+    showRawRowsModal.value = false;
+    // Сообщение — ПОСЛЕ перезагрузки, как у /calc-sign-copy: loadData() чистит
+    // статусные строки, и успех был бы тихим.
+    await loadData();
+    peoBulkStatus.value = `План и задание ПФКСС обновлены: строк ${resp?.rows ?? '—'} (план ${resp?.plan_id || '—'}, задание ${resp?.task_number || '—'})`;
+  } catch (e: any) {
+    pfkssError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    pfkssSaving.value = false;
+  }
+}
+
+/** Кнопка видна только у КПСС/ПКПСС вне ЧНИ и с правом инвойсных операций —
+ * то же проверяет сервер (право, признак, Level 01 строк). */
+const canCreatePfkss = computed(() => {
+  const row = detailsAggregatedRow.value;
+  const sign = String(row?.['Признак калькуляции'] ?? '').trim();
+  return (sign === 'КПСС' || sign === 'ПКПСС')
+    && !isChniRow(row)
+    && (can('cost:edit_materials') || can('cost:approve') || can('cost:admin'));
+});
+
+/** Подтверждение с суммаризацией, затем POST /create-pfkss-from-source.
+ * Успех: окно закрывается, таблица перезагружается. Ошибку (409 дубль, 400
+ * ЧНИ и прочее) показываем в этом же окне — пользователь не теряет контекст.
+ * План/задание исходника переносятся как есть (пустые — пустыми): правка
+ * плана/задания — в самой созданной ПФКСС, блок выше. */
+async function createPfkssFromSource() {
+  const row = detailsAggregatedRow.value;
+  if (!row || pfkssBusy.value) return;
+  const plan = String(row['PLAN_ID'] ?? '').trim();
+  const task = String(row['Номер задания производства'] ?? '').trim();
+  const rowsText = rawRowsData.value.length
+    ? `скопируется строк: ${rawRowsData.value.length}`
+    : 'строки скопируются целиком';
+  const planText = plan ? `план ${plan} — перенесётся` : 'план — останется пустым';
+  const taskText = task ? `задание ${task} — перенесётся` : 'задание — останется пустым';
+  if (!confirm(`Создать калькуляцию ПФКСС на основании этой плановой?\n${rowsText}, ${planText}, ${taskText}.`)) return;
+  pfkssBusy.value = true;
+  pfkssError.value = '';
+  pfkssErrorTitle.value = 'ПФКСС не создана';
+  peoBulkStatus.value = '';
+  try {
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/create-pfkss-from-source`, {
+      method: 'POST',
+      headers: fetchHeaders.value,
+      body: {
+        model: row['Модель'],
+        articul: row['Артикул'],
+        calc_sign: row['Признак калькуляции'],
+        plan_id: plan,
+        task_number: task,
+        date: (row['дата расчета'] ?? '').toString().split('T')[0],
+      },
+    });
+    showRawRowsModal.value = false;
+    // Сообщение — ПОСЛЕ перезагрузки, как у /calc-sign-copy: loadData() чистит
+    // статусные строки, и успех был бы тихим.
+    await loadData();
+    peoBulkStatus.value = `Создана калькуляция ПФКСС: строк ${resp?.rows ?? '—'} (план ${resp?.plan_id || '—'}, задание ${resp?.task_number || '—'})`;
+  } catch (e: any) {
+    pfkssError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    pfkssBusy.value = false;
+  }
 }
 
 /** Переключить режим детализации и перезагрузить данные. */
@@ -5883,6 +6190,9 @@ const HELD_NO_PRICE_HINT =
 
 function discardChanges() {
   changedRows.clear();
+  // Сброс — единственная операция, которая ещё и удаляет черновик: человек
+  // явно отказался от ввода, на сервере от него ничего не должно остаться.
+  void draftDeleteAll();
   loadData();
 }
 
@@ -5935,6 +6245,202 @@ const editingTypeCell = ref<number>(-1);
 
 /** Комментарий по строке (ключ калькуляции → текст). */
 const comments = reactive<Record<string, string>>({});
+
+// ── Серверный черновик несохранённых цен (просьба Б24 14.10.2026) ────────────
+//
+// Несохранённый ввод жил только в памяти вкладки: перезагрузка браузера стирала
+// цены бренд-менеджера, который расценивает по частям и сохраняет в конце
+// («ни одной цены нету» — Сапега). Черновик добавляет серверное хранилище того
+// же ввода (миграция 0068): запись ТОЛЬКО дополняет свои ключи, в выдачу,
+// фильтры, pending и блокировки черновик не входит — это личная копия, не
+// заявка. Кнопку «Сохранить изменения» он не заменяет.
+
+const DRAFT_SYNC_DEBOUNCE_MS = 1500;
+/** Совпадает с PRICE_DRAFT_MAX_ROWS в app/db.py. */
+const DRAFT_MAX_KEYS = 500;
+
+const DRAFT_RESTORED_HINT =
+  'Это тот же несохранённый ввод, что висит с отметкой ✱: он переживает '
+  + 'перезагрузку и закрытие браузера. На согласование ПЭО не отправлен — '
+  + 'нужно нажать «Сохранить изменения».';
+
+/** Черновик с сервера: row_key → {snapshot, updated_at}. Прочитан один раз. */
+const draftServer = ref<Record<string, any> | null>(null);
+const draftReady = ref(false);
+const draftApplied = ref(false);
+const draftRestoredCount = ref(0);
+const draftNoticeHidden = ref(false);
+const draftError = ref('');
+let draftSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let draftFetchStarted = false;
+/** Что уже лежит на сервере: ключ → сериализованный снимок. Отправляем диффу. */
+const draftSent = new Map<string, string>();
+
+const draftCanEdit = computed(() => !permLoading.value && can('cost:edit_price'));
+
+/** Снимок правки: полный клон строки выдачи (для строк под фильтром из него
+ *  потом собирается payload save-batch — как и сейчас для скрытых строк) плюс
+ *  значения из отдельных словарей. Комментарий не включаем: он живёт своей
+ *  записью /row-comment (задача 664394) и сервер уже знает его. */
+function draftSnapshotOf(key: string, row: any) {
+  return {
+    row: JSON.parse(JSON.stringify(row ?? {})),
+    markup: markupSelections[key],
+    rf: priceRF[key],
+    kz: priceKZ[key],
+    uz: priceUZ[key],
+  };
+}
+
+/** Плановая отправка диффа — вызывать из каждого обработчика правки. */
+function scheduleDraftSync() {
+  if (!draftCanEdit.value) return;
+  if (draftSyncTimer) clearTimeout(draftSyncTimer);
+  draftSyncTimer = setTimeout(() => {
+    draftSyncTimer = null;
+    void pushDraftDiff();
+  }, DRAFT_SYNC_DEBOUNCE_MS);
+}
+
+/** Отправить новые и изменённые ключи. MERGE: чужие не трогает; удаления здесь
+ *  нет — ключ снимается только явным сохранением или сбросом. */
+async function pushDraftDiff(opts: { keepalive?: boolean } = {}) {
+  if (!draftCanEdit.value) return;
+  const prepared: { key: string; snapshot: any; ser: string }[] = [];
+  for (const [key, row] of changedRows.entries()) {
+    try {
+      const snapshot = draftSnapshotOf(key, row);
+      const ser = JSON.stringify(snapshot);
+      if (draftSent.get(key) !== ser) prepared.push({ key, snapshot, ser });
+    } catch { /* не сериализуется — не отправляем */ }
+  }
+  if (!prepared.length) return;
+  const overflow = Math.max(0, prepared.length - DRAFT_MAX_KEYS);
+  const batch = overflow ? prepared.slice(overflow) : prepared;
+  if (overflow) draftError.value = `Черновик: ${overflow} старых строк не отправлено (лимит ${DRAFT_MAX_KEYS})`;
+  const body = JSON.stringify({ items: batch.map((b) => ({ key: b.key, snapshot: b.snapshot })) });
+  try {
+    const resp = await fetch(`${apiBase.value}/api/cost/price-draft/upsert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...fetchHeaders.value },
+      body,
+      keepalive: !!opts.keepalive,
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    for (const it of batch) draftSent.set(it.key, it.ser);
+    if (!overflow) draftError.value = '';
+  } catch (e: any) {
+    // Черновик — удобство, а не данных источник: правка остаётся на экране,
+    // попробуем отправить при следующем изменении.
+    console.warn('[cost] черновик не отправлен', e);
+  }
+}
+
+/** Явное удаление сохранённых ключей (после успешного save-batch). */
+async function draftDeleteKeys(keys: string[]) {
+  for (const k of keys) draftSent.delete(k);
+  if (!keys.length || !draftCanEdit.value) return;
+  try {
+    await $fetch(`${apiBase.value}/api/cost/price-draft/delete`, {
+      method: 'POST', body: { keys }, headers: fetchHeaders.value,
+    });
+  } catch (e) {
+    console.warn('[cost] удалить строки черновика не удалось', e);
+  }
+}
+
+/** Явное удаление всего черновика («Сбросить введённые значения»). */
+async function draftDeleteAll() {
+  const had = draftSent.size > 0;
+  draftSent.clear();
+  draftRestoredCount.value = 0;
+  draftNoticeHidden.value = false;
+  if (!had || !draftCanEdit.value) return;
+  try {
+    await $fetch(`${apiBase.value}/api/cost/price-draft/delete`, {
+      method: 'POST', body: { all: true }, headers: fetchHeaders.value,
+    });
+  } catch (e) {
+    console.warn('[cost] очистить черновик не удалось', e);
+  }
+}
+
+/** Наложить черновик на загруженную выдачу. changedRows.set здесь — прямой,
+ *  БЕЗ scheduleDraftSync: серверный документ мы не меняли, отправлять нечего. */
+function applyDraftToTable() {
+  draftApplied.value = true;
+  const doc = draftServer.value;
+  if (!doc || !draftCanEdit.value) return;
+  const byKey = new Map<string, any>();
+  for (const r of allAggregated.value) byKey.set(calcRowKey(r), r);
+  let n = 0;
+  for (const [key, entry] of Object.entries(doc)) {
+    const snap: any = (entry as any)?.snapshot || {};
+    const srow: any = snap.row || {};
+    const live = byKey.get(key);
+    if (live) {
+      // С тех пор по калькуляции появилась заявка или блокировка — ввод дожил
+      // до назначения (или его ведёт другой процесс), черновик не накладываем.
+      if (isRowLocked(live) || live._has_pending) continue;
+      for (const f of PRICE_DRAFT_FIELDS) if (srow[f] !== undefined) live[f] = srow[f];
+      changedRows.set(key, live);
+    } else {
+      // Строки сейчас нет в выдаче — ровно то состояние, которое механизм
+      // changedRows уже поддерживает для скрытых фильтром правок.
+      changedRows.set(key, srow);
+    }
+    if (snap.markup !== undefined) markupSelections[key] = snap.markup;
+    if (snap.rf !== undefined) priceRF[key] = snap.rf;
+    if (snap.kz !== undefined) priceKZ[key] = snap.kz;
+    if (snap.uz !== undefined) priceUZ[key] = snap.uz;
+    try { draftSent.set(key, JSON.stringify(snap)); } catch { /* noop */ }
+    n++;
+  }
+  draftRestoredCount.value = n;
+  draftNoticeHidden.value = false;
+}
+
+/** Черновик готов и выдача загружена — применить ровно один раз. */
+function tryApplyDraft() {
+  if (draftApplied.value || !draftReady.value) return;
+  if (!allAggregated.value.length) return;
+  applyDraftToTable();
+}
+
+async function loadPriceDraft() {
+  try {
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/price-draft`, {
+      headers: fetchHeaders.value,
+    });
+    draftServer.value = resp?.items || {};
+  } catch (e) {
+    console.warn('[cost] черновик с сервера не получен, работаем без него', e);
+    draftServer.value = {};
+  } finally {
+    draftReady.value = true;
+    tryApplyDraft();
+  }
+}
+
+watch(draftCanEdit, (ok) => {
+  // Только на клиенте: на SSR относительный URL до API не дойдёт, а черновик
+  // нужен ровно в браузере, где человек печатает цены.
+  if (ok && process.client && !draftFetchStarted) {
+    draftFetchStarted = true;
+    void loadPriceDraft();
+  }
+}, { immediate: true });
+
+onMounted(() => {
+  // Закрыли вкладку раньше дебаунса — дописать черновик успевшим запросом.
+  window.addEventListener('pagehide', () => {
+    if (draftSyncTimer !== null) {
+      clearTimeout(draftSyncTimer);
+      draftSyncTimer = null;
+      void pushDraftDiff({ keepalive: true });
+    }
+  });
+});
 
 async function loadPriceLevels() {
   try {
@@ -6029,18 +6535,21 @@ const onPriceRFInput = (row: any, value: string) => {
   const v = parseFloat(value);
   priceRF[calcRowKey(row)] = isNaN(v) ? 0 : v;
   changedRows.set(calcRowKey(row), row);
+  scheduleDraftSync();
 };
 const onPriceKZInput = (row: any, value: string) => {
   if (!row || isRowLocked(row)) return;
   const v = parseFloat(value);
   priceKZ[calcRowKey(row)] = isNaN(v) ? 0 : v;
   changedRows.set(calcRowKey(row), row);
+  scheduleDraftSync();
 };
 const onPriceUZInput = (row: any, value: string) => {
   if (!row || isRowLocked(row)) return;
   const v = parseFloat(value);
   priceUZ[calcRowKey(row)] = isNaN(v) ? 0 : v;
   changedRows.set(calcRowKey(row), row);
+  scheduleDraftSync();
 };
 
 // Комментарий — самостоятельная сущность (задача 664394): сохраняется сразу
@@ -7612,9 +8121,11 @@ const onRetailPriceSelect = (row: any, value: string) => {
 
   if (isNaN(numVal) || numVal <= 0) {
     targets.forEach(clearRow);
+    scheduleDraftSync();
     return;
   }
   targets.forEach(r => updateRow(r, numVal));
+  scheduleDraftSync();
 
   // Автовыбор наценки по category level01 (только для текущей строки, onMarkupSelect синхронизирует сам)
   const options = getMarkupOptions(row);
@@ -7683,6 +8194,7 @@ const onMarkupSelect = async (row: any, markupValue: string) => {
     markupSelections[k] = markupValue;
     changedRows.set(k, r);
   }
+  scheduleDraftSync();
 };
 
 /** Курс RUB→USD строки: из калькуляции, иначе из её цен, иначе из любой строки
@@ -7920,6 +8432,7 @@ function applyManualPrice() {
     changedRows.set(k, r);
   }
   manualPrice.value = null;
+  scheduleDraftSync();
 }
 
 const saveAllChanges = async () => {
@@ -8001,9 +8514,16 @@ const saveAllChanges = async () => {
     // changedRows, иначе loadData вычистит введённые по ним цены РФ/КЗ/УЗ и
     // комментарий при первой же смене фильтра.
     const sentKeys = new Set(sent.map(([key]) => key));
+    const droppedKeys: string[] = [];
     for (const [key, row] of Array.from(changedRows.entries())) {
-      if (sentKeys.has(key) && !failedKeys.has(calcRowKey(row))) changedRows.delete(key);
+      if (sentKeys.has(key) && !failedKeys.has(calcRowKey(row))) {
+        changedRows.delete(key);
+        droppedKeys.push(key);
+      }
     }
+    // Сохранённое черновику больше не нужно: ключи снимаем явным удалением,
+    // иначе «несуществующая» правка вернулась бы после перезагрузки.
+    void draftDeleteKeys(droppedKeys);
     // Формулировка — СОСТОЯНИЕ, а не итог попытки: придержанные строки остаются
     // отмеченными и после сохранения, поэтому «не отправлено N» повторялось бы
     // из раза в раз и читалось как новая потеря.
@@ -9337,7 +9857,7 @@ const headers = [
   "Осн. материалы (руб)", "Осн. материалы ($)",
   "Вспом. материалы (руб)", "Вспом. материалы ($)",
   "Пошив (руб)", "Пошив ($)", "Раскрой (руб)", "Раскрой ($)",
-  "Декоры (руб)", "Декоры ($)",
+  "Декор", "Декоры (руб)", "Декоры ($)",
   "Вязание (руб)", "Вязание ($)",
   "Себест. (руб)", "Себест. ($)",
   "Рентабельность (руб)", "Рентабельность (%)", "Маржа (%)", "Откл. маржи (%)",
@@ -9416,6 +9936,7 @@ const exportToExcel = () => {
       fmt(row["sum_Пошив, USD."]),
       fmt(row["sum_Раскрой, руб."]),
       fmt(row["sum_Раскрой, USD."]),
+      row["Декор, наименование"] || "",
       fmt(row["sum_Декоры, руб."]),
       fmt(row["sum_Декоры, USD."]),
       fmt(row["sum_Вязание, руб."]),
@@ -11239,6 +11760,23 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   color: var(--text-muted);
   font-weight: var(--fw-medium);
 }
+/* Правка плана/задания ПФКСС (664398, переделка 21.10): та же полоса-баннер,
+   но вертикальная, с двумя полями; hint — пояснение, зачем это окно появилось. */
+.pfkss-manual { flex-direction: column; align-items: stretch; gap: var(--sp-2); }
+.pfkss-manual-hint { color: var(--text-muted); font-size: var(--fs-xs); }
+.pfkss-manual-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(180px, 260px);
+  gap: var(--sp-3);
+}
+.pfkss-manual-field { display: flex; flex-direction: column; gap: 4px; }
+.pfkss-manual-field label {
+  font-size: var(--fs-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: var(--fw-semibold);
+}
 .raw-rows-table-wrap {
   overflow: auto;
   flex: 1;
@@ -11460,6 +11998,17 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
    кнопкой сохранения, видима и когда кнопка неактивна. */
 .held-no-price { display:inline-flex; align-items:center; gap:6px; font-size: var(--fs-xs);
   color: var(--text-muted); cursor: help; white-space: nowrap; }
+/* Плашка восстановленного черновика — цвет «несохранённого» (акцент), как
+   полоса строки row-unsaved: то же состояние, просто дожившее до перезагрузки. */
+.draft-restored { display:inline-flex; align-items:center; gap:6px; font-size: var(--fs-xs);
+  color: var(--text-secondary); cursor: help; white-space: nowrap;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 6px; padding: 2px 8px; }
+.draft-restored__close { border: none; background: transparent; color: inherit; cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px; margin-left: 2px; }
+.draft-error { display:inline-flex; align-items:center; gap:6px; font-size: var(--fs-xs);
+  color: var(--warn, #b76e00); white-space: nowrap; cursor: help; }
 .stage-legend-item { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
 .stage-legend .stage-badge { min-width:18px; height:18px; font-size:11px; }
 /* «Источник изменился» (миграция 0057) — второй значок в колонке этапа,

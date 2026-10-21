@@ -15,8 +15,8 @@ from urllib.parse import quote
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app import articul_replace, commercial, fot, fot_insights, fot_pptx, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
-from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED, row_comments_for, set_row_comment)
+from app import articul_replace, commercial, fot, fot_insights, fot_pptx, insight_agent, insights, llm_settings, margin, mocks, multipack, pfkss, purchase, reg713
+from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_price_draft, upsert_price_draft_items, delete_price_draft, PRICE_DRAFT_MAX_ROWS, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED, row_comments_for, set_row_comment, DECOR_TYPES)
 from app.logship import log
 from app.db import get_source_change_flags
 from app.middleware import require_perm
@@ -471,6 +471,21 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     # «выпуск шт» в витрине — MAX, не SUM: SUM размножил бы значение по числу
     # строк-материалов.
     select_parts.append('MAX(cd."Раскрой, ШТ") AS "Раскроено шт"')
+    # Наименования декоров калькуляции (666569): сумма статей уже есть в выдаче,
+    # но без наименования не понять, какой декор в модели сидит — при пересчёте
+    # цены декора в источнике экономисту нужен список затронутых моделей. Несколько
+    # декоров — список через запятую; строка без декоров даёт NULL (фронт рисует «—»).
+    # В поле источника числовой мусор ("0.0000" в 41k строк) и прочерки —
+    # отсечены, чтобы колонку не засоряло (SQL-проба на живой БД).
+    _decors_sql = ", ".join("'" + t.replace("'", "''") + "'" for t in DECOR_TYPES)
+    select_parts.append(
+        f'string_agg(DISTINCT trim(cd."Декоры, наименование"), \', \')'
+        f' FILTER (WHERE cd."Материал/операция/декор(призн)" IN ({_decors_sql})'
+        f' AND trim(COALESCE(cd."Декоры, наименование", \'\')) <> \'\''
+        f' AND trim(cd."Декоры, наименование") <> \'-\''
+        f' AND trim(cd."Декоры, наименование") !~ \'^[+-]?[0-9]*[.,]?[0-9]+$\''
+        f') AS "Декор, наименование"'
+    )
     select_parts.append(
         "CASE WHEN BOOL_AND(ca.status = 'approved') THEN 'approved'"
         "     WHEN BOOL_OR(ca.status = 'rejected') THEN 'rejected'"
@@ -1672,7 +1687,7 @@ async def fot_dashboard(
                     "legal_entity", "country", "matrix_path", "channel_path")
         if qp.getlist(key)
     }
-    for key in ("scenario_plan", "intercompany", "year", "month", "currency"):
+    for key in ("scenario_plan", "intercompany", "year", "month", "currency", "p17_year", "p17_half", "p18_year", "p18_half", "expect_month", "b3_dept", "b3_country"):
         params[key] = qp.get(key, "")
     try:
         if fot.fot_mock_enabled():
@@ -3508,6 +3523,62 @@ async def put_table_prefs(payload: dict, user_email: str = Depends(_require_perm
     await save_user_table_prefs(user_email or "", prefs)
     return {"success": True, "bytes": size}
 
+
+# ── Черновик несохранённых цен (миграция 0068, просьба Б24 14.10.2026) ───────
+#
+# Личная рабочая копия ввода между нажатиями «Сохранить изменения». Эндпоинты
+# ничем не помогают ПЭО и не пишут ни в какие рабочие таблицы: GET отдаёт
+# черновик владельца, upsert дополняет только его собственные ключи, delete —
+# только явное (сохранённое/сброшенное). Границы — в комментарии миграции.
+
+PRICE_DRAFT_MAX_ITEM_BYTES = 64 * 1024  # снимок одной строки
+
+
+@router.get("/price-draft")
+async def get_price_draft_ep(user_email: str = Depends(_require_perm("cost:edit_price"))) -> dict:
+    if _is_mock():
+        return {"items": {}, "mock": True}
+    return {"items": await get_price_draft(user_email or "")}
+
+
+@router.post("/price-draft/upsert")
+async def price_draft_upsert_ep(
+    payload: dict, user_email: str = Depends(_require_perm("cost:edit_price"))
+) -> dict:
+    if _is_mock():
+        return {"success": True, "mock": True}
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise HTTPException(400, "items должен быть списком")
+    if len(items) > PRICE_DRAFT_MAX_ROWS:
+        raise HTTPException(413, f"Одно сохранение не может быть больше {PRICE_DRAFT_MAX_ROWS} строк")
+    for it in items:
+        snap = (it or {}).get("snapshot") if isinstance(it, dict) else None
+        if snap is not None:
+            size = len(json.dumps(snap, ensure_ascii=False).encode())
+            if size > PRICE_DRAFT_MAX_ITEM_BYTES:
+                raise HTTPException(413, f"Снимок строки слишком большой: {size} Б > {PRICE_DRAFT_MAX_ITEM_BYTES} Б")
+    try:
+        count = await upsert_price_draft_items(user_email or "", items)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True, "count": count}
+
+
+@router.post("/price-draft/delete")
+async def price_draft_delete_ep(
+    payload: dict, user_email: str = Depends(_require_perm("cost:edit_price"))
+) -> dict:
+    if _is_mock():
+        return {"success": True, "mock": True}
+    all_rows = bool(payload.get("all"))
+    keys = payload.get("keys") or []
+    if not isinstance(keys, list):
+        raise HTTPException(400, "keys должен быть списком")
+    deleted = await delete_price_draft(user_email or "", [str(k) for k in keys], all_rows)
+    return {"success": True, "deleted": deleted}
+
+
 @router.post("/calc-sign-copy")
 async def create_calc_sign_copy(
     payload: dict, user_email: str = Depends(_require_perm("cost:calc_sign_copy"))
@@ -3947,7 +4018,8 @@ _UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 
 
 async def _run_investigation(job_id: str, question: str, context: dict,
-                             history: list[dict] | None = None) -> None:
+                             history: list[dict] | None = None,
+                             domain: str = "", block: str = "") -> None:
     """Фоновое исследование: считает и дописывает результат в свою задачу."""
 
     async def progress(step: int, tool: str, sql_calls: int) -> None:
@@ -3956,7 +4028,8 @@ async def _run_investigation(job_id: str, question: str, context: dict,
     try:
         result = await insight_agent.investigate(question, context,
                                                  on_progress=progress,
-                                                 history=history)
+                                                 history=history,
+                                                 domain=domain, block=block)
     except Exception as exc:
         # Любое необработанное исключение обязано закрыть задачу: иначе она
         # останется running до уборки, а пользователь будет ждать вечно.
@@ -4013,8 +4086,16 @@ async def ask_insight(
     if thread_id and not _UUID_RE.match(thread_id):
         raise HTTPException(400, "Некорректный thread_id")
 
+    # Домен подсказывает блок с фронта: fot_p9..fot_p14 — вкладки ФОТ-дашборда,
+    # у которых свой системный промпт и свои инструменты (см. insight_agent);
+    # всё остальное — прежнее исследование себестоимости. В БД домен не пишем:
+    # он живёт только в цепочке вызовов и в хеше (иначе отличать ветки некому).
+    block = str(payload.get("block") or "").strip()[:80]
+    domain = "fot" if block.startswith("fot_") else ""
+
     who = email if isinstance(email, str) and email else "mock"
-    req_hash = await insight_agent.request_hash(question, context, thread_id)
+    req_hash = await insight_agent.request_hash(question, context, thread_id,
+                                                block=block)
 
     # Кэш отдаём сразу готовым результатом — опрашивать нечего.
     if not payload.get("force"):
@@ -4037,13 +4118,15 @@ async def ask_insight(
     job_id, thread_id = await insight_agent.create_job(
         req_hash, who, question, context, thread_id=thread_id, seq=seq)
     task = asyncio.ensure_future(
-        _run_investigation(job_id, question, context, history))
+        _run_investigation(job_id, question, context, history,
+                           domain=domain, block=block))
     _ask_tasks.add(task)
     task.add_done_callback(_ask_tasks.discard)
 
     log(logging.INFO, "insights.ask: запуск", job_id=job_id, user=who,
         thread_id=thread_id, seq=seq, history_rounds=len(history),
-        model=insights._model())
+        model=insights._model(), domain=domain,
+        **({"block": block} if block else {}))
     return {"status": "running", "job_id": job_id, "thread_id": thread_id,
             "seq": seq, "question": question}
 
@@ -4569,6 +4652,131 @@ async def purchase_invoice_delete(inv_id: int, _: str | None = Depends(_PURCHASE
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"ok": True}
+
+
+@router.get("/plan-tasks")
+async def get_plan_tasks(
+    request: Request, _: str = Depends(_require_perm("cost:view"))
+) -> list[dict]:
+    """Задания плана для ручной подстановки в ПФКСС (664398, 21.10).
+
+    Тот же список, по которому бэкенд валидирует override-задание при
+    создании ПФКСС. Пустой или несуществующий план — пустой список,
+    не ошибка.
+    """
+    plan_id = (request.query_params.get("plan_id") or "").strip()
+    if _is_mock():
+        # Заглушка inline, как у /create-pfkss-from-source (mocks.py не
+        # трогаем): без живой базы список фиктивный, контракт тот же.
+        return [
+            {"task_number": "М26.7.3403", "calc_count": 2},
+            {"task_number": "М26.10.111", "calc_count": 1},
+        ] if plan_id else []
+    async with pool().acquire() as conn:
+        return await pfkss.get_plan_tasks(conn, plan_id)
+
+
+@router.post("/create-pfkss-from-source")
+async def create_pfkss_from_source(
+    payload: dict, user: str | None = Depends(_PURCHASE_EDIT)
+) -> dict:
+    """Создать калькуляцию ПФКСС копией плановой КПСС/ПКПСС (задача 664398).
+
+    Право — как у применения инвойса (создания ПФКСС по приходу), новое не
+    заводим. Тело — та же идентификация калькуляции, что у /raw-rows: model,
+    articul, calc_sign (КПСС или ПКПСС), plan_id, task_number, date. Дубль
+    ПФКСС с этим ключом — 409, носки (ЧНИ) — 400. План и задание переносятся
+    из исходника как есть; при пустых план/задание исходника их можно
+    подставить вручную: override_plan_id (+ опционально override_task_number
+    из заданий этого плана) — задание без плана или не из плана — 400.
+    """
+    if _is_mock():
+        # Заглушка, как у /calc-sign-copy: без живой базы записи нет,
+        # но контракт ответа тот же.
+        return {"success": True, "mock": True, "rows": 0, "batch_id": None,
+                "calc_sign": pfkss.PFKSS_CALC_SIGN, "plan_id": None,
+                "task_number": None,
+                "message": "заглушка: в mock-режиме записи нет"}
+    try:
+        result = await pfkss.create_pfkss_from_source(
+            model=str(payload.get("model") or ""),
+            articul=str(payload.get("articul") or ""),
+            plan_id=str(payload.get("plan_id") or ""),
+            calc_sign=str(payload.get("calc_sign") or ""),
+            task_number=str(payload.get("task_number") or ""),
+            calc_date=str(payload.get("date") or ""),
+            username=(user or "system").strip() or "system",
+            override_plan_id=str(payload.get("override_plan_id") or ""),
+            override_task_number=str(payload.get("override_task_number") or ""),
+        )
+    except pfkss.PfkssAlreadyExists as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"success": True, **result}
+
+
+@router.get("/pfkss-manual-info")
+async def pfkss_manual_info(
+    request: Request, _: str = Depends(_require_perm("cost:view"))
+) -> dict:
+    """Создана ли ПФКСС в вебе (664398, переделка 21.10).
+
+    По ключу строки (модель, артикул, план, задание) — есть ли строки с
+    признаком ПФКСС в cost_manual_calc. Фронт по этому решает, показывать
+    ли в окне «Исходные строки» блок правки плана/задания: править можно
+    только калькуляции, созданные приложением.
+    """
+    model = (request.query_params.get("model") or "").strip()
+    articul = (request.query_params.get("articul") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        # Заглушка inline (mocks.py не трогаем): без живой базы записи нет,
+        # но контракт тот же — фронт в моке покажет блок правки.
+        return {"is_manual": True}
+    async with pool().acquire() as conn:
+        is_manual = await pfkss.is_manual_pfkss(
+            conn, model, articul,
+            (request.query_params.get("plan_id") or "").strip(),
+            (request.query_params.get("task_number") or "").strip(),
+        )
+    return {"is_manual": is_manual}
+
+
+@router.post("/pfkss-update-plan")
+async def pfkss_update_plan(
+    payload: dict, user: str | None = Depends(_PURCHASE_EDIT)
+) -> dict:
+    """Переписать план/задание созданной в вебе ПФКСС (664398, переделка).
+
+    Право — как у /create-pfkss-from-source. Тело: model, articul,
+    current_plan_id, current_task_number (ключ открытой строки окна),
+    new_plan_id, new_task_number. План пустой или «0» — 400; задание не
+    из нового плана — 400; ПФКСС не из веба — 400; под новым ключом уже
+    другая ПФКСС — 409.
+    """
+    if _is_mock():
+        # Заглушка, как у /create-pfkss-from-source: без живой базы записи
+        # нет, но контракт ответа тот же.
+        return {"success": True, "mock": True, "rows": 0,
+                "plan_id": None, "task_number": None,
+                "message": "заглушка: в mock-режиме записи нет"}
+    try:
+        result = await pfkss.update_pfkss_plan(
+            model=str(payload.get("model") or ""),
+            articul=str(payload.get("articul") or ""),
+            current_plan_id=str(payload.get("current_plan_id") or ""),
+            current_task_number=str(payload.get("current_task_number") or ""),
+            new_plan_id=str(payload.get("new_plan_id") or ""),
+            new_task_number=str(payload.get("new_task_number") or ""),
+            username=(user or "system").strip() or "system",
+        )
+    except pfkss.PfkssAlreadyExists as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"success": True, **result}
 
 
 # ── Справочник моделей (Gpartner S_MODELI) ───────────────────────────────────

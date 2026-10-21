@@ -358,6 +358,9 @@ async function ask(force: boolean): Promise<void> {
       body: {
         question: text,
         context: props.context || {},
+        // Домен для сервера: fot_p9..p14 — вкладка ФОТ-дашборда, остальное —
+        // себестоимость. Так же, как в /insights/block.
+        block: props.block,
         force,
         // Пусто в первом вопросе — сервер откроет ветку и вернёт её id.
         thread_id: threadId.value,
