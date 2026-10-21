@@ -449,6 +449,10 @@
               >
                 {{ c.key === "cfo" && !isRetail ? "Площадка" : c.label }}{{ sortMark(c.key) }}
               </th>
+              <template v-if="showRef">
+                <th class="col-num c-ref" :title="`${factWord}: ${monthName} ${planYear - 1} (тот же месяц прошлого года)${factBasisNote}`">Факт {{ monthName }} {{ planYear - 1 }}</th>
+                <th class="col-num c-ref" :title="`${factWord} прошлого месяца: ${refPrev.label}${factBasisNote}`">Факт {{ refPrev.label }}</th>
+              </template>
               <th
                 v-for="mm in shownMonths"
                 :key="mm"
@@ -458,10 +462,6 @@
               >{{ MONTHS_SHORT[mm - 1] }}{{ sortMark(monthKey(mm)) }}</th>
               <th class="col-num c-total" :title="`Сумма плана за показанные месяцы (${viewTotalLabel})`">Итого план</th>
               <th class="col-num c-fact" :title="`${factWord} ${planYear - 1} за год${factBasisNote}`">Факт {{ planYear - 1 }}</th>
-              <template v-if="showRef">
-                <th class="col-num c-ref" :title="`${factWord}: ${monthName} ${planYear - 1} (тот же месяц прошлого года)${factBasisNote}`">Факт {{ monthName }} {{ planYear - 1 }}</th>
-                <th class="col-num c-ref" :title="`${factWord} прошлого месяца: ${refPrev.label}${factBasisNote}`">Факт {{ refPrev.label }}</th>
-              </template>
               <th class="c-act">Строка</th>
             </tr>
           </thead>
@@ -483,13 +483,13 @@
                     <span class="grp-count">{{ groupRows(item.group).length }}</span>
                   </div>
                 </td>
-                <td v-for="mm in shownMonths" :key="mm" class="col-num grp-num">{{ money(groupMonthTotal(item.group, mm)) }}</td>
-                <td class="col-num grp-num strong">{{ money(groupTotal(item.group)) }}</td>
-                <td class="col-num grp-num">{{ money(groupFactTotal(item.group)) }}</td>
                 <template v-if="showRef">
                   <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'ly')) }}</td>
                   <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'prev')) }}</td>
                 </template>
+                <td v-for="mm in shownMonths" :key="mm" class="col-num grp-num">{{ money(groupMonthTotal(item.group, mm)) }}</td>
+                <td class="col-num grp-num strong">{{ money(groupTotal(item.group)) }}</td>
+                <td class="col-num grp-num">{{ money(groupFactTotal(item.group)) }}</td>
                 <td></td>
               </tr>
 
@@ -500,6 +500,10 @@
                   :class="[c.sticky ? 'sticky-c' : '', c.cls, c.mono ? 'mono' : '']"
                   :title="String(attrValue(item.row, c.key) || '')"
                 >{{ attrValue(item.row, c.key) || "—" }}</td>
+                <template v-if="showRef">
+                  <td class="col-num c-ref muted">{{ refText(item.row, 'ly') }}</td>
+                  <td class="col-num c-ref muted">{{ refText(item.row, 'prev') }}</td>
+                </template>
                 <td v-for="(mm, ci) in shownMonths" :key="mm" class="col-num c-mon">
                   <input
                     class="cell-input"
@@ -509,17 +513,14 @@
                     :disabled="!editable || monthLocked(mm)"
                     :title="monthLocked(mm) ? `Месяц уже прошёл — по нему подтягивается факт, планировать его нельзя` : undefined"
                     inputmode="decimal"
-                    @focus="nav.onFocusCell(item.index, ci)"
+                    @focus="onCellFocus($event, item.row, mm, item.index, ci)"
+                    @blur="onCellBlur"
                     @keydown="nav.onKeydown($event, item.index, ci)"
                     @input="onInput(item.row, mm, ($event.target as HTMLInputElement).value)"
                   />
                 </td>
                 <td class="col-num c-total strong">{{ money(rowPlanTotal(item.row)) }}</td>
                 <td class="col-num c-fact muted">{{ money(expRowTotal(item.row, 'fact')) }}</td>
-                <template v-if="showRef">
-                  <td class="col-num c-ref muted">{{ refText(item.row, 'ly') }}</td>
-                  <td class="col-num c-ref muted">{{ refText(item.row, 'prev') }}</td>
-                </template>
                 <td class="c-act">
                   <div class="row-acts">
                     <button
@@ -1044,9 +1045,26 @@ const draftOrSaved = (row: ExpRow, month: number): number | undefined => {
   return expCell(row, "plan", month);
 };
 
+// Пока ячейка в фокусе, показываем ровно то, что набрано (иначе «12,» превращалось бы в «12»); вне фокуса — число в том же
+// формате, что и итоги рядом: «4 120 209,48».
+const editing = ref<{ key: string; text: string } | null>(null);
 const cellText = (row: ExpRow, month: number): string => {
+  const k = key(row.code_cfo, row.code_pl, month);
+  if (editing.value && editing.value.key === k) return editing.value.text;
   const v = draftOrSaved(row, month);
-  return v === undefined ? "" : String(v);
+  if (v === undefined) return "";
+  const fd = Number.isInteger(v) ? 0 : 2;
+  return v.toLocaleString("ru-RU", { minimumFractionDigits: fd, maximumFractionDigits: fd });
+};
+const onCellFocus = (e: FocusEvent, row: ExpRow, month: number, ri: number, ci: number) => {
+  nav.onFocusCell(ri, ci);
+  const v = draftOrSaved(row, month);
+  editing.value = { key: key(row.code_cfo, row.code_pl, month), text: v === undefined ? "" : String(v) };
+  const el = e.target as HTMLInputElement;
+  nextTick(() => el.select());
+};
+const onCellBlur = () => {
+  editing.value = null;
 };
 
 const rowPlanTotal = (row: ExpRow): number => {
@@ -1186,6 +1204,7 @@ const setDraft = (row: ExpRow, month: number, value: number | null) => {
 };
 
 const onInput = (row: ExpRow, month: number, raw: string) => {
+  if (editing.value) editing.value.text = raw;
   const s = raw.trim().replace(/\s/g, "").replace(",", ".");
   // Пустая строка — это ОЧИСТКА ячейки, а не ноль (ТЗ §7.8): ноль вводится явно.
   if (s === "") {
