@@ -107,6 +107,10 @@
                 </button>
                 <div class="sc-meta">
                   <span v-if="depHint(st)" class="sc-dep"><Icon name="lucide:lock" /> {{ depHint(st) }}</span>
+                  <span v-else-if="st.stage_code === '1.6' && st.status !== 'completed' && leOpenForms.length" class="sc-dep"
+                    :title="leOpenForms.join('\n')">
+                    <Icon name="lucide:lock" /> ждёт утверждения форм: {{ leOpenForms.length }} (отправьте на согласование в «Согласование» у формы)
+                  </span>
                   <span v-else-if="st.due_at" class="sc-due"><Icon name="lucide:calendar" /> {{ st.due_at }}</span>
                 </div>
                 <!-- У шага маршрута нет состояния в БД: двигать его нельзя,
@@ -415,6 +419,7 @@
 
 <script setup lang="ts">
 import { apiError } from "~/utils/apiError";
+import { cardStatusText, cardStatusTone } from "~/utils/cardStatus";
 import { money } from "~/utils/format";
 import PlansModal from "~/components/plans/PlansModal.vue";
 import MpBoard from "~/components/plans/MpBoard.vue";
@@ -627,6 +632,14 @@ const depHint = (st: StageState): string => {
   return unmet.length ? "ждёт " + unmet.join(", ") : "";
 };
 
+// Формы продаж и расходов периода, которые ещё не утверждены: они держат этап 1.6 (сервер проверяет то же правило).
+const leOpenForms = computed(() =>
+  cards.value
+    .filter((c) =>
+      (["TPL-TO-RETAIL", "TPL-MP"].includes(c.form_code) || (c.form_code === "TPL-CFO-EXP" && !c.scope_key?.startsWith("CFO-"))) &&
+      !["approved", "published", "archived"].includes(c.status))
+    .map((c) => `${c.title} — ${cardStatusText(c)}`));
+
 const statusLabel = (s: string) => planStatus.label(s);
 const statusBadge = (s: string) => planStatus.badge(s);
 
@@ -647,27 +660,8 @@ const stageForms = (code: string): Array<{ label: string; to: string }> => {
 
 // Человеческие метки статуса карточки: сервер отдаёт status_label технической
 // строкой (on_approval_1.2), в списке форм нужна фраза, а не код.
-const cardStatus = (c: PlanCard): string => {
-  switch (c.status) {
-    case "draft": return "черновик";
-    case "on_approval": return `на согласовании (шаг ${c.step_code})`;
-    case "returned": return `возвращено на ${c.step_code}`;
-    case "approved": return "утверждено";
-    case "published": return "опубликовано";
-    case "publish_failed": return "ошибка публикации";
-    case "archived": return "архив";
-    default: return c.status_label || c.status;
-  }
-};
-const cardBadge = (c: PlanCard): string => {
-  switch (c.status) {
-    case "on_approval": return "badge-warn";
-    case "returned": case "publish_failed": return "badge-neg";
-    case "approved": case "published": return "badge-pos";
-    case "archived": return "badge-dot";
-    default: return "badge-info";
-  }
-};
+const cardStatus = (c: PlanCard): string => cardStatusText(c);
+const cardBadge = (c: PlanCard): string => cardStatusTone(c.status);
 const scopeLabel = (scope: string) =>
   scope === "large" ? "крупные МП" : scope === "small" ? "мелкие МП" : scope === "all" ? "все площадки" : scope;
 // Ввод формы остаётся task-driven: карточка про процесс, задание — про права и

@@ -26,8 +26,16 @@
           <span v-if="sourceNote" class="src-note" :title="sourceNoteTitle"> · {{ sourceNote }}</span>
           <span v-if="card?.locked" class="lock-note"><Icon name="lucide:lock" /> период закрыт на запись</span>
         </p>
+        <p v-if="card" class="page-subtitle">
+          Статус формы: <span class="badge" :class="statusTone(card.status)">{{ cardStatusText(card) }}</span>
+          <span v-if="dirty" class="lock-note"> · есть несохранённые изменения</span>
+          <span v-else-if="savedAt" class="src-note"> · сохранено в {{ savedAt }}</span>
+        </p>
       </div>
       <div class="page-actions">
+        <button v-if="card" class="btn btn-ghost" :title="'Отправить форму на согласование или посмотреть, на каком шаге она находится'" @click="processOpen = !processOpen">
+          <Icon name="lucide:check-check" /> Согласование
+        </button>
         <NuxtLink v-if="card" :to="`/plans/exp/${card.pl_id}`" class="btn btn-ghost">
           <Icon name="lucide:arrow-left" /> К комплекту
         </NuxtLink>
@@ -94,6 +102,13 @@
 
     <p v-if="error" class="banner banner-neg">{{ error }}</p>
     <p v-if="note" class="banner banner-pos">{{ note }}</p>
+    <!-- Сохранение только записывает суммы. Этап 1.6 ждёт УТВЕРЖДЕНИЯ формы, поэтому после ввода её нужно отправить на согласование. -->
+    <p v-if="loaded && editable && card && (card.status === 'draft' || card.status === 'returned')" class="banner banner-info">
+      Форма в работе: «Сохранить» только записывает суммы. Чтобы этап 1.6 пошёл дальше, отправьте форму на согласование
+      (кнопка «Согласование» сверху) — пока она не утверждена, свод по ЮЛ закрыть нельзя.
+    </p>
+    <CardProcessPanel v-if="processOpen && card" :card-id="cardId" :can-submit="!dirty"
+      submit-hint="Сначала сохраните введённые суммы" @changed="onProcessChanged" />
     <p v-if="syncRunning" class="banner banner-info">
       <Icon name="lucide:loader-circle" class="spin" />
       Идёт загрузка состава строк и факта из источника затрат. Процедура работает несколько минут —
@@ -442,7 +457,7 @@
                 v-for="mm in shownMonths"
                 :key="mm"
                 class="col-num c-mon th-sort"
-                :title="`План ${planYear}, ${MONTHS_SHORT[mm - 1]} · ${sortHint(monthKey(mm))}`"
+                :title="`${mm === cardMonth ? `Текущий месяц ${planYear}: сумма, которую вы внесёте (факт подтягивается при загрузке из источника, его можно поправить) · ` : `План ${planYear}, ${MONTHS_SHORT[mm - 1]} · `}${sortHint(monthKey(mm))}`"
                 @click="toggleSort(monthKey(mm))"
               >{{ MONTHS_SHORT[mm - 1] }}{{ sortMark(monthKey(mm)) }}</th>
               <th class="col-num c-total" :title="`Сумма плана за показанные месяцы (${viewTotalLabel})`">Итого план</th>
@@ -450,7 +465,6 @@
               <template v-if="showRef">
                 <th class="col-num c-ref" :title="`${factWord}: ${monthName} ${planYear - 1} (тот же месяц прошлого года)${factBasisNote}`">Факт {{ monthName }} {{ planYear - 1 }}</th>
                 <th class="col-num c-ref" :title="`${factWord} прошлого месяца: ${refPrev.label}${factBasisNote}`">Факт {{ refPrev.label }}</th>
-                <th class="col-num c-ref" :title="`${factWord} текущего месяца плана (учтён на момент загрузки): ${monthName} ${planYear}${factBasisNote}`">Факт {{ monthName }} {{ planYear }}</th>
               </template>
               <th class="c-act">Строка</th>
             </tr>
@@ -479,7 +493,6 @@
                 <template v-if="showRef">
                   <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'ly')) }}</td>
                   <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'prev')) }}</td>
-                  <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'cur')) }}</td>
                 </template>
                 <td></td>
               </tr>
@@ -510,7 +523,6 @@
                 <template v-if="showRef">
                   <td class="col-num c-ref muted">{{ refText(item.row, 'ly') }}</td>
                   <td class="col-num c-ref muted">{{ refText(item.row, 'prev') }}</td>
-                  <td class="col-num c-ref muted">{{ refText(item.row, 'cur') }}</td>
                 </template>
                 <td class="c-act">
                   <div class="row-acts">
@@ -559,6 +571,8 @@ function money(v: number | null | undefined, opts: MoneyOpts = {}): string {
   return moneyBase(v, { currency: card.value?.currency || undefined, ...opts });
 }
 import { useGridNav } from "~/composables/useGridNav";
+import { cardStatusText } from "~/utils/cardStatus";
+import CardProcessPanel from "~/components/plans/CardProcessPanel.vue";
 import {
   useExpForm, expCell, expRowTotal, MONTHS_SHORT,
   type ExpBulkAction, type ExpCalcExtra, type ExpCalcResult, type ExpFactFill, type ExpCell, type ExpForm, type ExpImportResult,
@@ -577,6 +591,14 @@ const loaded = ref(false);
 const busy = ref(false);
 const error = ref("");
 const note = ref("");
+// Время последнего сохранения в этой сессии и панель согласования карточки.
+const savedAt = ref("");
+const processOpen = ref(false);
+const statusTone = (s: string) =>
+  s === "approved" || s === "published" ? "badge-pos" : s === "returned" ? "badge-neg" : s === "on_approval" ? "badge-warn" : "badge-muted";
+const onProcessChanged = async () => {
+  await reload({ keepFilter: true });
+};
 const collapsed = ref<Set<string>>(new Set());
 
 /** Несохранённые правки: ключ «ЦФО:статья:месяц» → значение (null = очистить). */
@@ -1096,7 +1118,7 @@ const windowItems = computed(() => displayItems.value.slice(windowStart.value, w
 const padTop = computed(() => windowStart.value * ROW_H);
 const padBottom = computed(() => Math.max(0, (displayItems.value.length - windowEnd.value) * ROW_H));
 /** Колонок всего: атрибуты + показанные месяцы + итог + факт + (сравнение) + действия. */
-const colCount = computed(() => visibleAttrColumns.value.length + shownMonths.value.length + 3 + (showRef.value ? 3 : 0));
+const colCount = computed(() => visibleAttrColumns.value.length + shownMonths.value.length + 3 + (showRef.value ? 2 : 0));
 
 const onScroll = (e: Event) => {
   const el = e.target as HTMLElement;
@@ -1184,6 +1206,7 @@ const save = async () => {
     const r = await api.save(cardId, cells);
     drafts.value = new Map();
     note.value = `Сохранено, изменённых ячеек: ${r.changed}`;
+    savedAt.value = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
     await reload({ keepFilter: true });
   } catch (e) {
     error.value = apiError(e, "Не удалось сохранить значения");

@@ -66,11 +66,20 @@ func NewCardStore(pool *pgxpool.Pool) CardStore { return &pgCardStore{pool: pool
 
 // Период карточки (year/month) живёт в pl_instance — тянем джойном: провайдерам
 // формы нужен период, а карточка без него бесполезна.
-const cardCols = `c.id, c.pl_id, c.form_code, c.scope_key, c.title,
+var cardCols = `c.id, c.pl_id, c.form_code, c.scope_key, c.title,
 	i.period_year, i.period_month,
 	c.country, c.legal_entity, c.currency,
 	c.calc_mode, c.status, c.step_code, c.current_version, COALESCE(c.fx_snapshot,'{}'), c.locked,
-	c.due_at, COALESCE(c.created_by,0), c.updated_at`
+	c.due_at, COALESCE(c.created_by,0), c.updated_at,
+	` + cardHasDataSQL("c.")
+
+// cardHasDataSQL — признак «в черновике формы расходов есть сохранённые ненулевые суммы плана». Дешёвый EXISTS: останавливается на
+// первой найденной ячейке, считается только для черновиков расходов.
+func cardHasDataSQL(p string) string {
+	return "(" + p + "status = 'draft' AND " + p + "form_code = '" + TemplateExp + "' AND EXISTS (SELECT 1 FROM exp_instance xi" +
+		" JOIN exp_row r ON r.instance_id = xi.id JOIN exp_value v ON v.row_id = r.id AND v.scenario = 'plan'" +
+		" WHERE xi.card_id = " + p + "id AND v.amount <> 0 AND " + expNotSalesRowSQL("r.") + "))"
+}
 
 // cardFrom — источник для cardCols.
 const cardFrom = ` FROM form_card c JOIN pl_instance i ON i.id = c.pl_id`
@@ -82,12 +91,13 @@ const cardFrom = ` FROM form_card c JOIN pl_instance i ON i.id = c.pl_id`
 // основной SELECT не видит вставленную/обновлённую строку (для INSERT — «no rows
 // in result set», для UPDATE — старые значения). Период берём подзапросами:
 // в RETURNING они разрешены и видят уже существующую pl_instance.
-const cardReturning = `id, pl_id, form_code, scope_key, title,
+var cardReturning = `id, pl_id, form_code, scope_key, title,
 	(SELECT period_year FROM pl_instance WHERE id = form_card.pl_id),
 	(SELECT period_month FROM pl_instance WHERE id = form_card.pl_id),
 	country, legal_entity, currency,
 	calc_mode, status, step_code, current_version, COALESCE(fx_snapshot,'{}'), locked,
-	due_at, COALESCE(created_by,0), updated_at`
+	due_at, COALESCE(created_by,0), updated_at,
+	` + cardHasDataSQL("form_card.")
 
 func scanCard(row interface {
 	Scan(dest ...any) error
@@ -97,7 +107,7 @@ func scanCard(row interface {
 	if err := row.Scan(&c.ID, &c.PlID, &c.FormCode, &c.ScopeKey, &c.Title,
 		&c.Year, &c.Month, &c.Country,
 		&c.LegalEntity, &c.Currency, &c.CalcMode, &c.Status, &c.StepCode, &c.CurrentVersion,
-		&fx, &c.Locked, &c.DueAt, &c.CreatedBy, &c.UpdatedAt); err != nil {
+		&fx, &c.Locked, &c.DueAt, &c.CreatedBy, &c.UpdatedAt, &c.HasData); err != nil {
 		return Card{}, err
 	}
 	if len(fx) > 0 {

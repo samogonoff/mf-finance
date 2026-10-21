@@ -60,6 +60,7 @@ export interface ExpCard {
   status_label: string;
   current_version: number;
   locked: boolean;
+  has_data?: boolean;
 }
 
 export interface ExpForm {

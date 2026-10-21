@@ -38,7 +38,7 @@
       <article v-for="c in cards" :key="c.id" class="card hub-card">
         <div class="hc-top">
           <span class="hc-title">{{ scopeTitle(c) }}</span>
-          <span class="badge" :class="statusTone(c.status)">{{ c.status_label || c.status }}</span>
+          <span class="badge" :class="statusTone(c.status)">{{ cardStatusText(c) }}</span>
         </div>
         <div class="hc-meta">
           <span class="hc-mono">{{ c.scope_key }}</span>
@@ -59,6 +59,7 @@
 
 <script setup lang="ts">
 import { apiError } from "~/utils/apiError";
+import { cardStatusText } from "~/utils/cardStatus";
 import { useExpForm, type ExpCard } from "~/composables/useExpForm";
 
 const route = useRoute();

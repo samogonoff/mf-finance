@@ -80,6 +80,8 @@ type Card struct {
 	DueAt            *time.Time     `json:"due_at,omitempty"`
 	CreatedBy        int64          `json:"created_by"`
 	UpdatedAt        time.Time      `json:"updated_at"`
+	// HasData — у черновика формы расходов в БД есть ненулевые суммы плана (статус «Выполняется», а не «Новый»).
+	HasData bool `json:"has_data"`
 }
 
 // CardActionInput — запрос на переход по маршруту.

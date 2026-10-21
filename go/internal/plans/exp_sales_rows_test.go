@@ -203,6 +203,18 @@ func TestExpRepo_HidesSalesRowsOnRead_PG(t *testing.T) {
 	if _, err := repo.SaveValues(ctx, inst.ID, []ExpCell{{CodeCFO: 1, CodePL: 1002, Month: 9, Amount: &amt}}, 0, 1); err != nil {
 		t.Fatal(err)
 	}
+	// Признак «Выполняется»: сумма только в строке продаж данных расходов не даёт; сумма расхода — даёт.
+	cs := NewCardStore(pool)
+	if cc, err := cs.Card(ctx, c.ID); err != nil || cc.HasData {
+		t.Fatalf("только продажи: has_data должен быть false: %+v %v", cc.HasData, err)
+	}
+	exp := 70.0
+	if _, err := repo.SaveValues(ctx, inst.ID, []ExpCell{{CodeCFO: 1, CodePL: 24, Month: 9, Amount: &exp}}, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if cc, err := cs.Card(ctx, c.ID); err != nil || !cc.HasData {
+		t.Fatalf("сумма расхода: has_data должен быть true: %v", err)
+	}
 	rows, total, err := repo.Rows(ctx, inst.ID, ExpFilter{})
 	if err != nil {
 		t.Fatal(err)

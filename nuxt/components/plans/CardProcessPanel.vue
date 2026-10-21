@@ -361,6 +361,7 @@
 
 <script setup lang="ts">
 import { apiError } from "~/utils/apiError";
+import { cardStatusText } from "~/utils/cardStatus";
 import PlansModal from "~/components/plans/PlansModal.vue";
 import {
   useMpConditions,
@@ -447,20 +448,7 @@ const CLOSED = ["approved", "published", "archived"];
 
 // Человеческие метки: сервер отдаёт status_label технической строкой
 // (on_approval_1.2), для человека собираем то же из статуса и шага.
-const statusText = computed(() => {
-  const c = card.value;
-  if (!c) return "…";
-  switch (c.status) {
-    case "draft": return "черновик";
-    case "on_approval": return `на согласовании (шаг ${c.step_code})`;
-    case "returned": return `возвращено на ${c.step_code}`;
-    case "approved": return "утверждено";
-    case "published": return "опубликовано";
-    case "publish_failed": return "ошибка публикации";
-    case "archived": return "архив";
-    default: return c.status_label || c.status;
-  }
-});
+const statusText = computed(() => (card.value ? cardStatusText(card.value) : "…"));
 const statusBadge = computed(() => {
   switch (card.value?.status) {
     case "on_approval": return "badge-warn";
