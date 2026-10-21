@@ -11,7 +11,7 @@ import (
 
 type pgLeApproval struct{ pool *pgxpool.Pool }
 
-// NewLeApprovalRepo — хранилище списков согласующих и решений этапов 3 и 4.
+// NewLeApprovalRepo — хранилище списков согласующих и решений этапов 1.6, 3 и 4.
 func NewLeApprovalRepo(pool *pgxpool.Pool) LeApprovalRepo { return &pgLeApproval{pool: pool} }
 
 const leUserName = `TRIM(COALESCE(u.last_name,'')||' '||COALESCE(u.name,''))`
@@ -185,9 +185,9 @@ func (r *pgLeApproval) lock(ctx context.Context, plID int64, wait time.Duration)
 	}
 }
 
-// OpenPeriods — периоды с завершённым этапом 1.6: на них могут решаться этапы 3 и 4.
+// OpenPeriods — периоды после этапа 1.5: после смены списков можно автоматически завершить 1.6, 3 или 4.
 func (r *pgLeApproval) OpenPeriods(ctx context.Context) ([]int64, error) {
-	rows, err := r.pool.Query(ctx, `SELECT pl_id FROM pl_stage_instance WHERE stage_code = '1.6' AND status = 'completed' ORDER BY pl_id`)
+	rows, err := r.pool.Query(ctx, `SELECT DISTINCT pl_id FROM pl_stage_instance WHERE stage_code IN ('1.5','1.6') AND status = 'completed' ORDER BY pl_id`)
 	if err != nil {
 		return nil, err
 	}

@@ -589,11 +589,11 @@ func main() {
 	plansLeSvc := plans.NewLeSvodService(plansCards, plansExp, plansSvc.Svod, plansRates,
 		plans.NewLeAdjustRepo(pool), plansStore.Stages)
 	plansLeH := plans.NewLeHandler(plansLeSvc, plansPrincipal)
-	// Согласование ЮЛ (этап 3) и итоговое утверждение (этап 4): настраиваемые согласующие, «все» или «один».
+	// Согласование каналов (этап 1.6), ЮЛ (этап 3) и итоговое утверждение (этап 4): настраиваемые согласующие.
 	plansLeAppr := plans.NewLeApprovalService(plans.NewLeApprovalRepo(pool), plansLeSvc, plansSvc, plansCards, plansStore.Stages)
 	plansLeSvc.WithApprovals(plansLeAppr)
 	plansLeApprH := plans.NewLeApprovalHandler(plansLeAppr, plansPrincipal)
-	// Ручной возврат этапа (таймлайн) делает недействительными согласия этапов 3 и 4.
+	// Ручной возврат этапа (таймлайн) делает недействительными согласия этапов 1.6, 3 и 4.
 	plansSvc.WithStageReturnHook(plansLeAppr.OnStageReturn)
 	// Ручное движение этапов: 1.6 — только при утверждённых формах; 3 и 4 — только решениями согласующих.
 	plansSvc.WithStageGate(func(ctx context.Context, plID int64, code, action string) error {

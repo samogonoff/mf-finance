@@ -91,17 +91,20 @@ type LeSvodRow struct {
 
 // LeSvod — ответ свода.
 type LeSvod struct {
-	PlID        int64       `json:"pl_id"`
-	Year        int         `json:"year"`
-	Month       int         `json:"month"`
-	Window      string      `json:"window"`
-	FromMonth   int         `json:"from_month"`
-	ToMonth     int         `json:"to_month"`
-	Currency    string      `json:"currency"`
-	Legals      []string    `json:"legals"`
-	Rows        []LeSvodRow `json:"rows"`
-	Adjustments []LeAdjust  `json:"adjustments"`
-	Warnings    []string    `json:"warnings,omitempty"`
+	PlID      int64  `json:"pl_id"`
+	Year      int    `json:"year"`
+	Month     int    `json:"month"`
+	Window    string `json:"window"`
+	FromMonth int    `json:"from_month"`
+	ToMonth   int    `json:"to_month"`
+	Currency  string `json:"currency"`
+	// SourceCurrencies показывает исходные валюты каждой строки до пересчёта в BYN.
+	// Для одной строки может быть несколько валют (например, продажи разных стран).
+	SourceCurrencies map[string][]string `json:"source_currencies,omitempty"`
+	Legals           []string            `json:"legals"`
+	Rows             []LeSvodRow         `json:"rows"`
+	Adjustments      []LeAdjust          `json:"adjustments"`
+	Warnings         []string            `json:"warnings,omitempty"`
 	// Closed — этап 4 завершён: корректировки закрыты.
 	Closed bool `json:"closed"`
 	// Readiness — замечания готовности к этапу 1.6; Ready — блокирующих нет.
@@ -118,15 +121,16 @@ type leAmount struct {
 }
 
 type leSvodInput struct {
-	PlID        int64
-	Year, Month int
-	Window      string
-	From, To    int
-	Amounts     []leAmount
-	Adjustments []LeAdjust
-	GroupOrder  []string
-	Warnings    []string
-	Closed      bool
+	PlID             int64
+	Year, Month      int
+	Window           string
+	From, To         int
+	Amounts          []leAmount
+	Adjustments      []LeAdjust
+	GroupOrder       []string
+	Warnings         []string
+	SourceCurrencies map[string][]string
+	Closed           bool
 }
 
 func leAdd(m map[string]float64, k string, v float64) { m[k] += v }
@@ -236,7 +240,7 @@ func buildLeSvod(in leSvodInput) LeSvod {
 
 	out := LeSvod{
 		PlID: in.PlID, Year: in.Year, Month: in.Month, Window: in.Window, FromMonth: in.From, ToMonth: in.To,
-		Currency: "BYN", Legals: legals, Warnings: in.Warnings, Adjustments: in.Adjustments, Closed: in.Closed,
+		Currency: "BYN", SourceCurrencies: in.SourceCurrencies, Legals: legals, Warnings: in.Warnings, Adjustments: in.Adjustments, Closed: in.Closed,
 	}
 	var salesRows, expRows []LeSvodRow
 	for _, k := range salesKeys {
