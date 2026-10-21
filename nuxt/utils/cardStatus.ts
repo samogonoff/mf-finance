@@ -4,12 +4,13 @@ export interface CardStatusInput {
   status: string;
   step_code?: string;
   status_label?: string;
+  /** У черновика формы расходов есть сохранённые суммы (приходит с карточкой). */
+  has_data?: boolean;
 }
 
-/** hasData — в форме уже есть сохранённые суммы (отличает «Новый» от «Выполняется» у черновика). */
-export function cardStatusText(c: CardStatusInput, hasData = false): string {
+export function cardStatusText(c: CardStatusInput): string {
   switch (c.status) {
-    case "draft": return hasData ? "Выполняется" : "Новый";
+    case "draft": return c.has_data ? "Выполняется" : "Новый";
     case "on_approval": return `Выполняется · на согласовании (шаг ${c.step_code})`;
     case "returned": return `Выполняется · возвращено на доработку (шаг ${c.step_code})`;
     case "approved": return "Закрыто";

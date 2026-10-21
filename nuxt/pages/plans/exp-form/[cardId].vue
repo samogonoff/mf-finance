@@ -27,7 +27,7 @@
           <span v-if="card?.locked" class="lock-note"><Icon name="lucide:lock" /> период закрыт на запись</span>
         </p>
         <p v-if="card" class="page-subtitle">
-          Статус формы: <span class="badge" :class="statusTone(card.status)">{{ cardStatusText(card, !!form?.has_plan) }}</span>
+          Статус формы: <span class="badge" :class="statusTone(card.status)">{{ cardStatusText(card) }}</span>
           <span v-if="dirty" class="lock-note"> · есть несохранённые изменения</span>
           <span v-else-if="savedAt" class="src-note"> · сохранено в {{ savedAt }}</span>
         </p>

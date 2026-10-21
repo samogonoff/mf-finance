@@ -60,6 +60,7 @@ export interface ExpCard {
   status_label: string;
   current_version: number;
   locked: boolean;
+  has_data?: boolean;
 }
 
 export interface ExpForm {
@@ -70,7 +71,6 @@ export interface ExpForm {
   offset: number;
   groups: string[];
   read_only: boolean;
-  has_plan?: boolean; // в сохранённой форме есть суммы плана
   sync?: ExpSync;
 }
 

@@ -60,6 +60,7 @@ export interface PlanCard {
   status: string;
   step_code: string;
   status_label: string;
+  has_data?: boolean;
   missing_countries?: string[];
   current_version: number;
   locked: boolean;
