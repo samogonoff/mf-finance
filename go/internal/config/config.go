@@ -92,6 +92,11 @@ type Config struct {
 	// PlansExpFactFromFinPL — «Факт по начислениям» формы 1.5 берётся из реплики P&L finance.findwh_table_fin_pl
 	// (сценарий «факт»), а не подменяется платёжным фактом процедуры. Действует только вместе с PlansExpCostsFromCH.
 	PlansExpFactFromFinPL bool
+	// PlansExpPlanFromFinPL - стратегия и тактика расходов розницы, ИМ и опта читаются из реплики P&L (Table_Fin_PL), а не из
+	// процедуры затрат; PlansExpFinPLStrategy/Tactic - названия сценариев в Table_Fin_PL. Маркетплейсы остаются на процедуре.
+	PlansExpPlanFromFinPL bool
+	PlansExpFinPLStrategy string
+	PlansExpFinPLTactic   string
 
 	// Модуль «Тактические планы» (docs/reports/plans/SPEC.md §10).
 	// PlansMock=1 → факт МП из фикстур (sources/mock_mp.go), как DEBT_MOCK.
@@ -252,12 +257,15 @@ func Load() Config {
 		FinDWHReadyCheck:     env("FINDWH_READY_CHECK", "1") == "1",
 		FinDWHReadyAfterHour: atoiDef(env("FINDWH_READY_AFTER_HOUR", "9"), 9),
 
-		ExpCostsSyncInterval: atoiDef(env("EXP_COSTS_SYNC_INTERVAL", "0"), 0),
-		ExpCostsProc:         env("EXP_COSTS_PROC", "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]"),
-		ExpCostsAfterHour:    atoiDef(env("EXP_COSTS_AFTER_HOUR", "5"), 5),
-		ExpCostsBeforeHour:   atoiDef(env("EXP_COSTS_BEFORE_HOUR", "9"), 9),
-		PlansExpCostsFromCH:  env("PLANS_EXP_COSTS_FROM_CH", "1") == "1",
+		ExpCostsSyncInterval:  atoiDef(env("EXP_COSTS_SYNC_INTERVAL", "0"), 0),
+		ExpCostsProc:          env("EXP_COSTS_PROC", "[Budgeting].[dbo].[ZATRATY_DLYA_OKSANY_BYSTRYE]"),
+		ExpCostsAfterHour:     atoiDef(env("EXP_COSTS_AFTER_HOUR", "5"), 5),
+		ExpCostsBeforeHour:    atoiDef(env("EXP_COSTS_BEFORE_HOUR", "9"), 9),
+		PlansExpCostsFromCH:   env("PLANS_EXP_COSTS_FROM_CH", "1") == "1",
 		PlansExpFactFromFinPL: env("PLANS_EXP_FACT_FROM_FINPL", "0") == "1",
+		PlansExpPlanFromFinPL: env("PLANS_EXP_PLAN_FROM_FINPL", "0") == "1",
+		PlansExpFinPLStrategy: env("PLANS_EXP_FINPL_STRATEGY", "бюджет"),
+		PlansExpFinPLTactic:   env("PLANS_EXP_FINPL_TACTIC", "тактика"),
 
 		DebtValutaFQN:        env("MSSQL_VALUTA_FQN", "[SRV-SQL].Gpartner.dbo.valuta"),
 		DebtCurrencyDailyFQN: env("MSSQL_CURRENCY_DAILY_FQN", "[SRV-SQL].Checks.dbo.CurrencyDaily"),

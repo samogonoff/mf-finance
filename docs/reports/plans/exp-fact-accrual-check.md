@@ -79,3 +79,56 @@ ORDER BY m;
 В локальном ClickHouse реплика P&L пустая (заливка требует доступа к FinDWH: `MODE=findwh`, см. `docs/bi/findwh-etl.md`).
 Запрос проверен на синтетических строках: оба написания группы («Магазины», «3.Магазины») суммируются, сценарий «бюджет»,
 «Для отчета» вне PL / BS_20 / BS_25 и ЦФО `35BK` отбрасываются.
+
+## Откуда какие расходы (ответ аналитика от 22.10.2026)
+
+> «Расходы для розницы, ИМ и опта — таблица Table_Fin_PL в базе FinDWH; для маркетплейсов затраты по сценарию факт идут из
+> источника ZATRATY_DLYA_OKSANY_BYSTRYE (Budgeting)».
+
+| Вид формы | Факт | Стратегия / тактика (бюджет) |
+|---|---|---|
+| Розница, интернет-магазин, опт | `Table_Fin_PL` (реплика `finance.findwh_table_fin_pl`) — флаг `PLANS_EXP_FACT_FROM_FINPL` | `Table_Fin_PL` — флаг `PLANS_EXP_PLAN_FROM_FINPL` |
+| Маркетплейсы | процедура затрат (снимок `finance.exp_costs`) | процедура затрат |
+
+Оба флага по умолчанию выключены (расходы идут из процедуры, как раньше) и действуют только для розницы, ИМ и опта;
+маркетплейсы всегда читаются из процедуры. Названия сценариев в `Table_Fin_PL` задаются `PLANS_EXP_FINPL_STRATEGY` /
+`PLANS_EXP_FINPL_TACTIC` (по умолчанию «бюджет» / «тактика», без учёта регистра) — если у аналитиков они называются иначе,
+меняется переменная, а не код. Сценарий заменяется только если в реплике за срез есть данные.
+
+## Сверка плана (перед включением `PLANS_EXP_PLAN_FROM_FINPL`)
+
+Тактика процедуры («Тактика бюджет (таргеты)») против сценария «тактика» P&L, помесячно, розница РБ (расходные статьи, без
+продаж; суммы в валюте страны). Для стратегии замените сценарии на «Стратегический бюджет» и «бюджет».
+
+```sql
+SELECT p.m AS month, round(p.proc) AS procedure_tactic, round(a.fin) AS finpl_tactic, round(a.fin - p.proc) AS diff
+FROM (
+    SELECT toStartOfMonth(month) AS m, sum(amount) AS proc
+    FROM finance.exp_costs
+    WHERE scenario = 'Тактика бюджет (таргеты)' AND country = 'BY' AND group_cfo1 = '3.Магазины'
+      AND (project_name = '' OR project_name = 'Нет проектов!')
+      AND code_pl NOT IN (1, 50, 93)
+      AND positionCaseInsensitiveUTF8(group_pl, 'ПРОДАЖИ') = 0 AND positionCaseInsensitiveUTF8(group_pl, 'СЕБЕСТОИМОСТЬ') = 0
+      AND positionCaseInsensitiveUTF8(group_pl, 'МАРЖА') = 0 AND positionCaseInsensitiveUTF8(group_pl, 'ОТГРУЗК') = 0
+      AND toYear(month) = 2026
+    GROUP BY m
+) AS p
+LEFT JOIN (
+    SELECT toStartOfMonth(f.month) AS m, sum(f.amount) AS fin
+    FROM finance.findwh_table_fin_pl AS f
+    INNER JOIN (SELECT code_pl, any(group_pl) AS gp FROM finance.exp_costs GROUP BY code_pl) AS d
+            ON d.code_pl = toInt32OrZero(f.code_pl)
+    WHERE lowerUTF8(f.scenario) = lowerUTF8('тактика') AND f.for_report IN ('PL', 'BS_20', 'BS_25') AND f.country = 'BY'
+      AND replaceRegexpOne(f.group_cfo1, '^[0-9]+\\.\\s*', '') = 'Магазины' AND toInt32OrZero(f.code_cfo) > 0
+      AND toInt32OrZero(f.code_pl) NOT IN (1, 50, 93)
+      AND positionCaseInsensitiveUTF8(d.gp, 'ПРОДАЖИ') = 0 AND positionCaseInsensitiveUTF8(d.gp, 'СЕБЕСТОИМОСТЬ') = 0
+      AND positionCaseInsensitiveUTF8(d.gp, 'МАРЖА') = 0 AND positionCaseInsensitiveUTF8(d.gp, 'ОТГРУЗК') = 0
+      AND toYear(f.month) = 2026
+    GROUP BY m
+) AS a USING (m)
+ORDER BY m;
+```
+
+Что смотреть: суммы по месяцам должны совпадать или расходиться объяснимо (в P&L нет проекта — суммируются все проекты;
+фильтр «Для отчета» взят от факта и для планового сценария может быть иным). Любое заметное расхождение — вопрос аналитикам:
+как в `Table_Fin_PL` называются сценарии и какие значения «Для отчета» у бюджета и тактики.

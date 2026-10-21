@@ -18,6 +18,8 @@ type chStub struct {
 	rows     string // ответ на выборку затрат (JSONEachRow)
 	payments string // ответ на запасной запрос платёжного факта
 	accrual  string // ответ на запрос факта по начислениям из реплики P&L
+	// finpl — ответы реплики P&L по названию сценария Table_Fin_PL (стратегия / тактика); остальное отдаёт accrual.
+	finpl    map[string]string
 	asOf     string // ответ на max(finished_at)
 	failWith int    // не 0 — отвечать этим статусом на всё
 }
@@ -42,6 +44,12 @@ func (c *chStub) handler(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case strings.Contains(q, "finance.findwh_table_fin_pl"):
+		for name, rows := range c.finpl {
+			if strings.Contains(q, "lowerUTF8('"+name+"')") {
+				fmt.Fprint(w, rows)
+				return
+			}
+		}
 		fmt.Fprint(w, c.accrual)
 	case strings.Contains(q, "scenario = '"+ExpSrcFactPayments+"'"):
 		fmt.Fprint(w, c.payments)
@@ -118,7 +126,7 @@ func TestExpCHSource_ReadsSnapshot(t *testing.T) {
 func TestExpCHSource_FallsBackToProcedure(t *testing.T) {
 	want := []ExpCostCell{{CodeCFO: 5, CodePL: 6}}
 	for name, stub := range map[string]*chStub{
-		"пустая таблица": {count: "0\n"},
+		"пустая таблица":  {count: "0\n"},
 		"CH отвечает 500": {failWith: 500},
 	} {
 		fb := &fallbackSource{cells: want}
@@ -297,7 +305,7 @@ func TestExpCHSource_AccrualFactFromFinPL(t *testing.T) {
 func TestExpAccrualFactSQL(t *testing.T) {
 	q := expAccrualFactSQL(ExpKindRetail, "BY", []int{2026})
 	for _, want := range []string{
-		"scenario = 'факт'", "for_report IN ('PL', 'BS_20', 'BS_25')", "FROM finance.findwh_table_fin_pl",
+		"lowerUTF8(scenario) = lowerUTF8('факт')", "for_report IN ('PL', 'BS_20', 'BS_25')", "FROM finance.findwh_table_fin_pl",
 		"= 'Магазины'", "'3.Магазины' AS group_cfo1", "country = 'BY'", "toYear(month) IN (2026)",
 		"f.pl NOT IN (1,50,93)", "'ПРОДАЖИ'", "toFloat64(amount) AS amt",
 	} {
@@ -312,5 +320,103 @@ func TestExpAccrualFactSQL(t *testing.T) {
 	}
 	if expStripGroupNumber("3.Магазины") != "Магазины" || expStripGroupNumber("Магазины") != "Магазины" {
 		t.Error("expStripGroupNumber")
+	}
+}
+
+// Маркетплейсы читаются из процедуры (ответ аналитика 22.10.2026): факт из реплики P&L для них не подставляется,
+// даже если флаг включён.
+func TestExpCHSource_FinPLNotForMarketplaces(t *testing.T) {
+	pay := strings.Replace(chRowFact, "Факт по начислениям", ExpSrcFactPayments, 1)
+	acc := strings.Replace(chRowFact, `"amount":999`, `"amount":555`, 1)
+	stub := &chStub{count: "10\n", rows: chRowRetail + "\n", payments: pay + "\n", accrual: acc + "\n"}
+	src := ExpCHSourceAccrualFact(newCHTest(t, stub, &fallbackSource{}), true)
+	cells, err := src.Costs(context.Background(), ExpKindMP, "RU", []int{2025, 2026})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cells {
+		if c.Scenario == ExpSrcFact && c.Amount == 555 {
+			t.Fatal("для маркетплейсов факт из P&L подставлять нельзя")
+		}
+	}
+	for _, q := range stub.queries {
+		if strings.Contains(q, "findwh_table_fin_pl") {
+			t.Fatal("реплика P&L для маркетплейсов читаться не должна")
+		}
+	}
+	// А для розницы, ИМ и опта — читается.
+	for _, kind := range []string{ExpKindRetail, ExpKindIM, ExpKindOpt} {
+		if !expKindFromFinPL(kind) {
+			t.Errorf("вид %s должен читаться из P&L", kind)
+		}
+	}
+	if expKindFromFinPL(ExpKindMP) {
+		t.Error("маркетплейсы — не из P&L")
+	}
+}
+
+// Стратегия и тактика розницы, ИМ и опта — из реплики P&L, если включено: сценарий процедуры заменяется найденным в реплике;
+// пустая реплика оставляет процедуру; маркетплейсы и выключенный флаг не затрагиваются.
+func TestExpCHSource_PlanFromFinPL(t *testing.T) {
+	tactic := strings.Replace(chRowRetail, "Стратегический бюджет", ExpSrcTactic, 1)
+	finStrategy := strings.Replace(chRowRetail, `"amount":1234.5`, `"amount":777`, 1)
+	finTactic := strings.Replace(tactic, `"amount":1234.5`, `"amount":888`, 1)
+	amountOf := func(cells []ExpCostCell, scenario string) (n int, sum float64) {
+		for _, c := range cells {
+			if c.Scenario == scenario {
+				n++
+				sum += c.Amount
+			}
+		}
+		return
+	}
+	newStub := func(fin map[string]string) *chStub {
+		return &chStub{count: "10\n", rows: chRowRetail + "\n" + tactic + "\n", finpl: fin}
+	}
+
+	// Обе замены: в реплике есть бюджет и тактика.
+	stub := newStub(map[string]string{"бюджет": finStrategy + "\n", "тактика": finTactic + "\n"})
+	src := ExpCHSourcePlanFromFinPL(newCHTest(t, stub, &fallbackSource{}), true, "", "")
+	cells, err := src.Costs(context.Background(), ExpKindRetail, "BY", []int{2026})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, sum := amountOf(cells, ExpSrcStrategy); n != 1 || sum != 777 {
+		t.Errorf("стратегия из P&L: n=%d sum=%v", n, sum)
+	}
+	if n, sum := amountOf(cells, ExpSrcTactic); n != 1 || sum != 888 {
+		t.Errorf("тактика из P&L: n=%d sum=%v", n, sum)
+	}
+
+	// В реплике нет тактики — остаётся тактика процедуры; стратегия заменена. Пустой ответ реплики не стирает данные.
+	stub2 := newStub(map[string]string{"бюджет": finStrategy + "\n", "тактика": ""})
+	cells2, _ := ExpCHSourcePlanFromFinPL(newCHTest(t, stub2, &fallbackSource{}), true, "бюджет", "тактика").Costs(context.Background(), ExpKindIM, "BY", []int{2026})
+	if _, sum := amountOf(cells2, ExpSrcStrategy); sum != 777 {
+		t.Errorf("стратегия заменена: %v", sum)
+	}
+	if _, sum := amountOf(cells2, ExpSrcTactic); sum != 1234.5 {
+		t.Errorf("тактика процедуры должна остаться: %v", sum)
+	}
+
+	// Свои названия сценариев (настраиваются).
+	stub3 := newStub(map[string]string{"НовСтрат": finStrategy + "\n"})
+	cells3, _ := ExpCHSourcePlanFromFinPL(newCHTest(t, stub3, &fallbackSource{}), true, "НовСтрат", "тактика").Costs(context.Background(), ExpKindOpt, "", []int{2026})
+	if _, sum := amountOf(cells3, ExpSrcStrategy); sum != 777 {
+		t.Errorf("настроенное название сценария: %v", sum)
+	}
+
+	// Маркетплейсы и выключенный флаг: данные процедуры.
+	for name, src := range map[string]ExpDataSource{
+		"mp":       ExpCHSourcePlanFromFinPL(newCHTest(t, newStub(map[string]string{"бюджет": finStrategy + "\n"}), &fallbackSource{}), true, "", ""),
+		"выключен": ExpCHSourcePlanFromFinPL(newCHTest(t, newStub(map[string]string{"бюджет": finStrategy + "\n"}), &fallbackSource{}), false, "", ""),
+	} {
+		kind := ExpKindRetail
+		if name == "mp" {
+			kind = ExpKindMP
+		}
+		c, _ := src.Costs(context.Background(), kind, "BY", []int{2026})
+		if _, sum := amountOf(c, ExpSrcStrategy); sum != 1234.5 {
+			t.Errorf("%s: стратегия должна остаться из процедуры: %v", name, sum)
+		}
 	}
 }

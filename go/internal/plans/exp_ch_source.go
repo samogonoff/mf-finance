@@ -89,6 +89,33 @@ type chExpSource struct {
 	refresh func(ctx context.Context) error
 	// accrualFromFinPL — «Факт по начислениям» берётся из реплики P&L finance.findwh_table_fin_pl (см. accrualFact).
 	accrualFromFinPL bool
+	// planFromFinPL — стратегия и тактика (бюджет) розницы, ИМ и опта берутся из реплики P&L, а не из процедуры затрат;
+	// finPLStrategy / finPLTactic — названия сценариев в Table_Fin_PL (без учёта регистра).
+	planFromFinPL                bool
+	finPLStrategy, finPLTactic string
+}
+
+// expKindFromFinPL — виды форм, расходы которых аналитики относят к Table_Fin_PL (FinDWH): розница, интернет-магазин, опт.
+// Маркетплейсы читаются из процедуры затрат (ответ аналитика от 22.10.2026): «затраты по сценарию факт идут из
+// ZATRATY_DLYA_OKSANY_BYSTRYE».
+func expKindFromFinPL(kind string) bool {
+	return kind == ExpKindRetail || kind == ExpKindIM || kind == ExpKindOpt
+}
+
+// ExpCHSourcePlanFromFinPL включает чтение стратегии и тактики розницы, ИМ и опта из реплики P&L (PLANS_EXP_PLAN_FROM_FINPL).
+// strategy и tactic — названия сценариев в Table_Fin_PL («бюджет» и «тактика» по умолчанию). Для других источников — как есть.
+func ExpCHSourcePlanFromFinPL(src ExpDataSource, on bool, strategy, tactic string) ExpDataSource {
+	if ch, ok := src.(*chExpSource); ok {
+		ch.planFromFinPL = on
+		ch.finPLStrategy, ch.finPLTactic = strings.TrimSpace(strategy), strings.TrimSpace(tactic)
+		if ch.finPLStrategy == "" {
+			ch.finPLStrategy = "бюджет"
+		}
+		if ch.finPLTactic == "" {
+			ch.finPLTactic = "тактика"
+		}
+	}
+	return src
 }
 
 // ExpCHSourceAccrualFact включает у чтения из ClickHouse факт по начислениям из реплики P&L (PLANS_EXP_FACT_FROM_FINPL).
@@ -274,6 +301,10 @@ func (s *chExpSource) Costs(ctx context.Context, kind, country string, years []i
 	if err != nil {
 		return nil, err
 	}
+	// Стратегия и тактика розницы, ИМ и опта — из реплики P&L, если включено (маркетплейсы остаются на процедуре).
+	if s.planFromFinPL && expKindFromFinPL(kind) {
+		out = s.planFromReplica(ctx, kind, country, years, out)
+	}
 	// Факт: «по начислениям» (ТЗ, ответ 44); пока его в выдаче нет — платёжный (как и при чтении
 	// процедуры напрямую): без него колонки факта рядом с вводом пустые. Появятся начисления —
 	// платёжный снова не используется.
@@ -312,6 +343,11 @@ var expFinPLReports = []string{"PL", "BS_20", "BS_25"}
 // «спецдоступа», а статьи вне каталога формы не показываются. Проекта в P&L нет — суммы по всем проектам; ЦФО
 // без числового кода (35BK, 250BK, XXX) отбрасываются, как в копии факта контура.
 func expAccrualFactSQL(kind, country string, years []int) string {
+	return expFinPLSQL(kind, country, years, "факт", ExpSrcFact)
+}
+
+// expFinPLSQL — сценарий реплики P&L (finScenario, без учёта регистра) как строки затрат со сценарием outScenario.
+func expFinPLSQL(kind, country string, years []int, finScenario, outScenario string) string {
 	amountCol := "amount"
 	if expKindInBYN(kind) {
 		amountCol = "amount_byn"
@@ -321,7 +357,7 @@ func expAccrualFactSQL(kind, country string, years []int) string {
 		reports[i] = chLit(r)
 	}
 	w := []string{
-		"scenario = 'факт'",
+		"lowerUTF8(scenario) = lowerUTF8(" + chLit(finScenario) + ")",
 		"for_report IN (" + strings.Join(reports, ", ") + ")",
 		fmt.Sprintf("month >= '%d-01-01'", expCutoffYear),
 		"toInt32OrZero(code_cfo) > 0",
@@ -362,7 +398,7 @@ func expAccrualFactSQL(kind, country string, years []int) string {
 	for _, word := range expSalesGroupWords {
 		notSales = append(notSales, "positionCaseInsensitiveUTF8(d.gp, "+chLit(word)+") = 0")
 	}
-	return `SELECT ` + chLit(ExpSrcFact) + ` AS scenario, f.country AS country, toYear(f.month) AS y, toMonth(f.month) AS m,
+	return `SELECT ` + chLit(outScenario) + ` AS scenario, f.country AS country, toYear(f.month) AS y, toMonth(f.month) AS m,
        f.pl AS code_pl, any(d.gp) AS group_pl, any(d.ex) AS expense,
        f.cfo_n AS code_cfo, any(f.cfn) AS cfo, ` + g1Expr + ` AS group_cfo1, any(f.g2) AS group_cfo2,
        '' AS project_name, any(d.sa) AS special_access, toFloat64(sum(f.amt)) AS amount
@@ -388,7 +424,7 @@ var expGroupNumberRe = regexp.MustCompile(`^[0-9]+\.\s*`)
 // accrualFact — «Факт по начислениям» из реплики P&L; пусто, если выключено, таблицы нет или в ней нет факта за срез
 // (тогда работает запасной платёжный факт). Ошибка чтения не ломает форму: пишется в лог.
 func (s *chExpSource) accrualFact(ctx context.Context, kind, country string, years []int) []ExpCostCell {
-	if !s.accrualFromFinPL {
+	if !s.accrualFromFinPL || !expKindFromFinPL(kind) {
 		return nil
 	}
 	body, err := s.query(ctx, expAccrualFactSQL(kind, country, years), "JSONEachRow")
@@ -402,6 +438,33 @@ func (s *chExpSource) accrualFact(ctx context.Context, kind, country string, yea
 		return nil
 	}
 	return cells
+}
+
+// planFromReplica заменяет стратегию и тактику среза данными реплики P&L. Сценарий заменяется, только если в реплике
+// за срез что-то нашлось: пустая реплика или ошибка чтения оставляют данные процедуры (форма не остаётся без плана).
+func (s *chExpSource) planFromReplica(ctx context.Context, kind, country string, years []int, out []ExpCostCell) []ExpCostCell {
+	for _, m := range []struct{ fin, out string }{{s.finPLStrategy, ExpSrcStrategy}, {s.finPLTactic, ExpSrcTactic}} {
+		body, err := s.query(ctx, expFinPLSQL(kind, country, years, m.fin, m.out), "JSONEachRow")
+		if err != nil {
+			log.Printf("plans/exp: сценарий %q из finance.findwh_table_fin_pl не прочитан, остаётся процедура: %v", m.fin, err)
+			continue
+		}
+		cells, err := parseChCostRows(body)
+		if err != nil || len(cells) == 0 {
+			if err != nil {
+				log.Printf("plans/exp: сценарий %q из finance.findwh_table_fin_pl: %v", m.fin, err)
+			}
+			continue
+		}
+		kept := out[:0:0]
+		for _, c := range out {
+			if c.Scenario != m.out {
+				kept = append(kept, c)
+			}
+		}
+		out = append(kept, cells...)
+	}
+	return out
 }
 
 // paymentsFact — платёжный факт среза как «Факт по начислениям» (запасной путь); ячейки помечены Basis=payments.
