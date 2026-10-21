@@ -17,6 +17,7 @@ type chStub struct {
 	count    string // ответ на SELECT count() FROM finance.exp_costs
 	rows     string // ответ на выборку затрат (JSONEachRow)
 	payments string // ответ на запасной запрос платёжного факта
+	accrual  string // ответ на запрос факта по начислениям из реплики P&L
 	asOf     string // ответ на max(finished_at)
 	failWith int    // не 0 — отвечать этим статусом на всё
 }
@@ -40,6 +41,8 @@ func (c *chStub) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case strings.Contains(q, "finance.findwh_table_fin_pl"):
+		fmt.Fprint(w, c.accrual)
 	case strings.Contains(q, "scenario = '"+ExpSrcFactPayments+"'"):
 		fmt.Fprint(w, c.payments)
 	case strings.Contains(q, "SELECT count() FROM finance.exp_costs"):
@@ -208,5 +211,106 @@ func TestExpCHSource_PaymentsFactFallback(t *testing.T) {
 		if c.Scenario == ExpSrcFact && c.Amount == 999 {
 			t.Fatal("для форм отделов платёжный факт подставлять нельзя")
 		}
+	}
+}
+
+// Факт по начислениям из реплики P&L: включён флагом, идёт вместо платёжного; пусто или выключено — платёжный.
+func TestExpCHSource_AccrualFactFromFinPL(t *testing.T) {
+	pay := strings.Replace(chRowFact, "Факт по начислениям", ExpSrcFactPayments, 1)
+	acc := strings.Replace(chRowFact, `"amount":999`, `"amount":555`, 1)
+	count := func(cells []ExpCostCell, amount float64) (n int) {
+		for _, c := range cells {
+			if c.Scenario == ExpSrcFact && c.Amount == amount {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Включено и в реплике есть факт: он, платёжный не нужен, экран не помечает факт «по платежам».
+	stub := &chStub{count: "10\n", rows: chRowRetail + "\n", payments: pay + "\n", accrual: acc + "\n"}
+	ctx, trace := WithExpSourceTrace(context.Background())
+	src := ExpCHSourceAccrualFact(newCHTest(t, stub, &fallbackSource{}), true)
+	cells, err := src.Costs(ctx, ExpKindRetail, "BY", []int{2025, 2026})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count(cells, 555) != 1 || count(cells, 999) != 0 || trace.FactBasis != "" {
+		t.Fatalf("факт по начислениям: %+v basis=%q", cells, trace.FactBasis)
+	}
+
+	// Месяцы без начислений дополняются платёжным фактом (ячейки помечены), месяцы с начислениями — нет.
+	payApr := strings.Replace(pay, `"m":3`, `"m":4`, 1)
+	stubGap := &chStub{count: "10\n", rows: chRowRetail + "\n", payments: pay + "\n" + payApr + "\n", accrual: acc + "\n"}
+	ctxG, traceG := WithExpSourceTrace(context.Background())
+	cellsG, _ := ExpCHSourceAccrualFact(newCHTest(t, stubGap, &fallbackSource{}), true).Costs(ctxG, ExpKindRetail, "BY", []int{2025, 2026})
+	var gapAcc, gapPay int
+	for _, c := range cellsG {
+		if c.Scenario != ExpSrcFact {
+			continue
+		}
+		switch {
+		case c.Month == 3 && c.Amount == 555 && c.Basis == "":
+			gapAcc++
+		case c.Month == 4 && c.Amount == 999 && c.Basis == ExpFactBasisPayments:
+			gapPay++
+		default:
+			t.Fatalf("лишняя ячейка факта: %+v", c)
+		}
+	}
+	if gapAcc != 1 || gapPay != 1 || traceG.FactBasis != "" {
+		t.Fatalf("дополнение платёжным фактом: acc=%d pay=%d basis=%q %+v", gapAcc, gapPay, traceG.FactBasis, cellsG)
+	}
+	if expCellBasis(ExpCostCell{Basis: ExpFactBasisPayments}, "") != ExpFactBasisPayments || expCellBasis(ExpCostCell{}, ExpFactBasisPayments) != ExpFactBasisPayments || expCellBasis(ExpCostCell{}, "") != "" {
+		t.Fatal("expCellBasis")
+	}
+
+	// Реплика пуста — запасной платёжный факт.
+	stub2 := &chStub{count: "10\n", rows: chRowRetail + "\n", payments: pay + "\n"}
+	ctx2, trace2 := WithExpSourceTrace(context.Background())
+	cells2, _ := ExpCHSourceAccrualFact(newCHTest(t, stub2, &fallbackSource{}), true).Costs(ctx2, ExpKindRetail, "BY", []int{2025, 2026})
+	if count(cells2, 999) != 1 || trace2.FactBasis != ExpFactBasisPayments {
+		t.Fatalf("при пустой реплике ждали платёжный факт: %+v basis=%q", cells2, trace2.FactBasis)
+	}
+
+	// Выключено — реплику не читаем вовсе.
+	stub3 := &chStub{count: "10\n", rows: chRowRetail + "\n", payments: pay + "\n", accrual: acc + "\n"}
+	cells3, _ := newCHTest(t, stub3, &fallbackSource{}).Costs(context.Background(), ExpKindRetail, "BY", []int{2025, 2026})
+	if count(cells3, 555) != 0 || count(cells3, 999) != 1 {
+		t.Fatalf("выключенный флаг: %+v", cells3)
+	}
+	for _, q := range stub3.queries {
+		if strings.Contains(q, "findwh_table_fin_pl") {
+			t.Fatal("при выключенном флаге реплика P&L читаться не должна")
+		}
+	}
+
+	// Формы отделов — свои сценарии, начисления из P&L для них не подставляются.
+	stub4 := &chStub{count: "10\n", rows: chRowRetail + "\n", accrual: acc + "\n"}
+	cells4, _ := ExpCHSourceAccrualFact(newCHTest(t, stub4, &fallbackSource{}), true).Costs(context.Background(), CfoExpKind(CfoExp31), "BY", []int{2025, 2026})
+	if count(cells4, 555) != 0 {
+		t.Fatal("для форм отделов факт из P&L подставлять нельзя")
+	}
+}
+
+// Запрос факта по начислениям: только факт расходных статей, группа ЦФО без номера, опт — в BYN, без служебных кодов.
+func TestExpAccrualFactSQL(t *testing.T) {
+	q := expAccrualFactSQL(ExpKindRetail, "BY", []int{2026})
+	for _, want := range []string{
+		"scenario = 'факт'", "for_report IN ('PL', 'BS_20', 'BS_25')", "FROM finance.findwh_table_fin_pl",
+		"= 'Магазины'", "'3.Магазины' AS group_cfo1", "country = 'BY'", "toYear(month) IN (2026)",
+		"f.pl NOT IN (1,50,93)", "'ПРОДАЖИ'", "toFloat64(amount) AS amt",
+	} {
+		if !strings.Contains(q, want) {
+			t.Errorf("в запросе нет %q:\n%s", want, q)
+		}
+	}
+	opt := expAccrualFactSQL(ExpKindOpt, "", nil)
+	if !strings.Contains(opt, "toFloat64(amount_byn) AS amt") || !strings.Contains(opt, "group_cfo3 IN ('ОПТ РБ', 'ОПТ РФ', 'ОПТ УЗ')") ||
+		!strings.Contains(opt, "any(f.g1) AS group_cfo1") {
+		t.Errorf("запрос опта:\n%s", opt)
+	}
+	if expStripGroupNumber("3.Магазины") != "Магазины" || expStripGroupNumber("Магазины") != "Магазины" {
+		t.Error("expStripGroupNumber")
 	}
 }

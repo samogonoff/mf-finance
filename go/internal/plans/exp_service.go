@@ -398,10 +398,10 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 		c := ExpCell{CodeCFO: cell.CodeCFO, CodePL: cell.CodePL, Month: cell.Month, Amount: &amt}
 		switch {
 		case cell.Scenario == ExpSrcFact && cell.Year == prev:
-			c.Source = factBasis
+			c.Source = expCellBasis(cell, factBasis)
 			fact = append(fact, c)
 		case cell.Scenario == ExpSrcFact && cell.Year == in.PlanYear:
-			c.Source = factBasis
+			c.Source = expCellBasis(cell, factBasis)
 			// Факт планового года: нужен рядом с вводом («прошлый месяц», «текущий месяц»).
 			factCur = append(factCur, c)
 		case cell.Scenario == ExpSrcStrategy && cell.Year == in.PlanYear:
@@ -462,6 +462,14 @@ func (s *ExpService) syncFromSource(ctx context.Context, c Card, in ExpInstance,
 	}
 	s.factSynced(in.ID)
 	return len(cells), nil
+}
+
+// expCellBasis — пометка ячейки факта: собственная (платёжная ячейка, добавленная к начислениям) или общая для выборки.
+func expCellBasis(cell ExpCostCell, readBasis string) string {
+	if cell.Basis != "" {
+		return cell.Basis
+	}
+	return readBasis
 }
 
 // factFresh — факт по экземпляру перечитан недавно.

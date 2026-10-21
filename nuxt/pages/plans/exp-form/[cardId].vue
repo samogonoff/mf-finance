@@ -377,7 +377,7 @@
           Сравнение с фактом
         </label>
         <span v-if="viewMode !== 'year'" class="view-hint">ранние месяцы скрыты, их значения не удаляются</span>
-        <span v-if="factByPayments" class="view-hint" title="Сценарий «Факт по начислениям» в выдаче источника пока отсутствует">факт — по платежам</span>
+        <span v-if="factByPayments" class="view-hint" title="Факта по начислениям в источнике нет (или нет за часть месяцев): там, где его нет, показан факт по платежам">факт — по платежам, где нет начислений</span>
       </div>
     </section>
 
@@ -878,7 +878,7 @@ const shownMonths = computed<number[]>(() => {
 // Факт строится по платежам, пока «Факта по начислениям» в источнике нет: колонки подписываем честно.
 const factByPayments = computed(() => form.value?.sync?.fact_basis === "payments");
 const factWord = computed(() => (factByPayments.value ? "Факт по платежам" : "Факт"));
-const factBasisNote = computed(() => (factByPayments.value ? " — по платежам, начислений в источнике нет" : ""));
+const factBasisNote = computed(() => (factByPayments.value ? " — по платежам там, где начислений в источнике нет" : ""));
 const viewTotalLabel = computed(() =>
   viewMode.value === "year" ? "за год" : viewMode.value === "month" ? `за ${monthName.value}` : `${monthName.value}–дек`);
 // ── План из факта ────────────────────────────────────────────────────────────

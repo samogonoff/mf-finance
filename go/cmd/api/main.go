@@ -555,6 +555,7 @@ func main() {
 	}
 	if cfg.PlansExpCostsFromCH && !cfg.PlansMock {
 		plansExpSource = plans.NewExpCHSource(plansExpSource, cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass, expCostsRefresh)
+		plansExpSource = plans.ExpCHSourceAccrualFact(plansExpSource, cfg.PlansExpFactFromFinPL)
 	}
 	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource).
 		WithRegistries(plans.NewExpRegRepo(pool)).
