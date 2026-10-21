@@ -204,21 +204,16 @@
               <option value="selected" :disabled="!selected.size">выделенные ({{ selected.size }})</option>
             </select>
           </label>
-          <!-- Копирование сценария — к ОДНОМУ месяцу, по умолчанию месяц тактики
-               (ТЗ доработок п. 2.3); предпросмотр показывает только его. -->
-          <label v-if="bulkOp === 'copy_scenario'" class="form-field">
-            <span class="form-label">Месяц применения</span>
-            <select v-model.number="bulkApplyMonth" class="select" @change="invalidatePreview">
-              <option v-for="m in form.months" :key="m" :value="m">{{ monthLabel(m) }} {{ form.year }}{{ m === form.month ? " · месяц тактики" : "" }}</option>
-            </select>
-          </label>
-          <label v-else class="form-field">
-            <span class="form-label">Месяц операции</span>
-            <select v-model="bulkMonthMode" class="select" @change="invalidatePreview">
-              <option value="all">все плановые</option>
-              <option value="one">только {{ monthLabel(selMonth) }}</option>
-            </select>
-          </label>
+          <!-- Период операции: у копирования сценария — откуда (год и месяц источника) и куда; у остальных операций — куда:
+               один месяц или все месяцы до конца года (общий компонент с формой расходов). -->
+          <BulkPeriodPicker
+            v-model="bulkPick"
+            :months="form.months"
+            :card-month="form.month"
+            :years="bulkSourceYears"
+            :show-source="bulkOp === 'copy_scenario'"
+            :disabled="!editable"
+          />
 
           <template v-if="bulkOp === 'copy_scenario'">
             <label class="form-field">
@@ -227,7 +222,7 @@
                 <option value="strategy">Стратегия</option>
                 <option value="tactic">Утверждённая тактика</option>
                 <option value="new_strategy">Новая стратегия</option>
-                <option value="fact">Факт прошлого года</option>
+                <option value="fact">Факт</option>
               </select>
             </label>
             <!-- Надбавка убрана (ТЗ доработок п. 2.2): рабочее поле — коэффициент,
@@ -679,6 +674,7 @@ import {
   type FieldHint as RetailFieldHint
 } from "~/composables/useRetail";
 import { num as fmtNum, formatDate } from "~/utils/format";
+import { defaultPick, normalizePick, targetMonthsOf, type BulkPeriodPick } from "~/utils/bulkPeriod";
 
 definePageMeta({ middleware: ["scope-guard"] });
 
@@ -1611,10 +1607,16 @@ const badSources = computed(() =>
 const bulkOpen = ref(false);
 const bulkOp = ref<RetailBulkRequest["op"]>("copy_scenario");
 const bulkScope = ref<RetailBulkRequest["scope"]>("filtered");
-const bulkMonthMode = ref<"all" | "one">("one");
 const bulkSource = ref<"strategy" | "tactic" | "fact" | "new_strategy">("strategy");
-/** Месяц применения копирования сценария (ТЗ доработок п. 2.3), дефолт — месяц тактики. */
-const bulkApplyMonth = ref(0);
+/** Период операции: откуда (год и месяц источника) и куда (один месяц или все до конца года); дефолт — месяц тактики. */
+const bulkPick = ref<BulkPeriodPick>(defaultPick([], 0));
+/** Годы источника: факт загружается за прошлый год и год периода, остальные сценарии — за год периода. */
+const bulkSourceYears = computed(() => {
+  const y = form.value?.year ?? 0;
+  return bulkSource.value === "fact" ? [y - 1, y] : [y];
+});
+/** Год источника по умолчанию для сценария: у факта — прошлый. */
+const defaultSourceYear = () => ((form.value?.year ?? 0) - (bulkSource.value === "fact" ? 1 : 0));
 const bulkCoef = ref<number | null>(null);
 const bulkTarget = ref<number | null>(null);
 const bulkBaseMonths = ref("");
@@ -1635,12 +1637,14 @@ const bulkRequest = (preview: boolean): RetailBulkRequest => {
     scope: bulkScope.value,
     preview,
     reset_manual: bulkResetManual.value,
-    months: bulkOp.value === "copy_scenario" ? [bulkApplyMonth.value || form.value?.month || selMonth.value] : bulkMonthMode.value === "one" ? [selMonth.value] : []
+    months: targetMonthsOf(bulkPick.value, form.value?.months ?? [])
   };
   if (bulkScope.value === "filtered") req.code_cfos = filteredRows.value.map((r) => r.code_cfo);
   if (bulkScope.value === "selected") req.code_cfos = [...selected];
   if (bulkOp.value === "copy_scenario") {
     req.source = bulkSource.value;
+    req.source_year = bulkPick.value.sourceYear;
+    req.source_month = bulkPick.value.sourceMonth;
     req.coefficient = bulkCoef.value ?? 0;
     req.coefficient_set = bulkCoef.value != null;
   }
@@ -1662,6 +1666,11 @@ const invalidatePreview = () => {
   // от которого §5 и требует предпросмотр.
   if (bulkPreview.value) previewSig.value = "";
 };
+
+// Смена сценария копирования возвращает источник к умолчанию: год сценария (у факта — прошлый) и «тот же месяц».
+watch(bulkSource, () => {
+  bulkPick.value = { ...bulkPick.value, sourceYear: defaultSourceYear(), sourceMonth: 0 };
+});
 
 const runPreview = async () => {
   busy.value = true;
@@ -1714,7 +1723,13 @@ const load = async () => {
       bulkOpen.value = false;
     }
     if (!selMonth.value || !f.months.includes(selMonth.value)) selMonth.value = f.month;
-    if (!bulkApplyMonth.value || !f.months.includes(bulkApplyMonth.value)) bulkApplyMonth.value = f.month;
+    // Период операции по умолчанию: месяц тактики; источник — тот же месяц сценария (факт — прошлого года).
+    bulkPick.value = normalizePick(
+      bulkPick.value.targetMonth && f.months.includes(bulkPick.value.targetMonth)
+        ? bulkPick.value
+        : { sourceYear: defaultSourceYear(), sourceMonth: 0, targetMode: "month", targetMonth: f.month },
+      f.months
+    );
     paramDraft.value = (f.params || []).map((p) => ({ ...p }));
   } catch (e) {
     error.value = retailErrText(e, "Не удалось загрузить форму");

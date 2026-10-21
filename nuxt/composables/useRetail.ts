@@ -191,9 +191,11 @@ export interface RetailBulkRequest {
   months?: number[];
   reset_manual?: boolean;
   // copy_scenario
-  // ТЗ доработок п. 2.2/2.3: только коэффициент (надбавки нет), один месяц,
-  // источник — тот же месяц сценария (факт — прошлого года).
+  // Только коэффициент (надбавки нет). Откуда: сценарий, год и месяц источника (source_month = 0 — тот же месяц,
+  // помесячно; факт по умолчанию — прошлого года). Куда: months — один месяц или все до конца года.
   source?: "strategy" | "tactic" | "fact" | "new_strategy";
+  source_year?: number;
+  source_month?: number;
   coefficient?: number;
   coefficient_set?: boolean;
   // distribute

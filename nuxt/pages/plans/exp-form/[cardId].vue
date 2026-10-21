@@ -187,36 +187,23 @@
     <section class="card fill-card">
       <div class="params-row">
         <span class="params-title">План из факта</span>
-        <label class="params-f">
-          Откуда
-          <select v-model="fillSource" class="input params-in fill-sel">
-            <option value="prev_month">факт прошлого месяца</option>
-            <option value="same_month_ly">факт того же месяца прошлого года (помесячно)</option>
-            <option value="ym">факт выбранного года и месяца</option>
-          </select>
-        </label>
-        <template v-if="fillSource === 'ym'">
-          <label class="params-f">
-            Год
-            <select v-model.number="fillYear" class="input params-in">
-              <option :value="planYear - 1">{{ planYear - 1 }}</option>
-              <option :value="planYear">{{ planYear }}</option>
-            </select>
-          </label>
-          <label class="params-f">
-            Как раскладывать
-            <select v-model="fillMode" class="input params-in fill-sel">
-              <option value="one_month">один месяц → все плановые месяцы</option>
-              <option value="same_month">каждый плановый месяц ← тот же месяц года</option>
-            </select>
-          </label>
-          <label v-if="fillMode === 'one_month'" class="params-f">
-            Месяц
-            <select v-model.number="fillMonth" class="input params-in">
-              <option v-for="(label, i) in MONTHS_SHORT" :key="i" :value="i + 1">{{ label }}</option>
-            </select>
-          </label>
-        </template>
+        <span class="params-f">
+          Быстро
+          <span class="fill-presets">
+            <button type="button" class="btn btn-sm btn-ghost" :disabled="!editable" @click="presetPrevMonth">факт прошлого месяца</button>
+            <button type="button" class="btn btn-sm btn-ghost" :disabled="!editable" @click="presetSameMonthLy">тот же месяц прошлого года</button>
+          </span>
+        </span>
+        <!-- Откуда копируем (год и месяц факта; «тот же месяц» — помесячно) и куда вставляем (один месяц или все
+             месяцы до конца года). Общий компонент: тот же выбор, что у массовых операций розницы. -->
+        <BulkPeriodPicker
+          v-model="fillPick"
+          :months="openMonths"
+          :card-month="cardMonth"
+          :years="[planYear - 1, planYear]"
+          show-source
+          select-class="input params-in"
+        />
         <label class="params-f">
           Коэффициент
           <input v-model="fillCoefText" class="input params-in" inputmode="decimal" title="значение факта умножается на коэффициент (1 — без изменений, 1,05 — плюс 5 %)" />
@@ -561,6 +548,7 @@
 <script setup lang="ts">
 import { apiError } from "~/utils/apiError";
 import { money as moneyBase, type MoneyOpts } from "~/utils/format";
+import { defaultPick, normalizePick, targetMonthsOf, type BulkPeriodPick } from "~/utils/bulkPeriod";
 
 // Суммы формы — в национальной валюте карточки (BYN/RUB/KZT/UZS), а не всегда в рублях.
 function money(v: number | null | undefined, opts: MoneyOpts = {}): string {
@@ -894,10 +882,28 @@ const factBasisNote = computed(() => (factByPayments.value ? " — по плат
 const viewTotalLabel = computed(() =>
   viewMode.value === "year" ? "за год" : viewMode.value === "month" ? `за ${monthName.value}` : `${monthName.value}–дек`);
 // ── План из факта ────────────────────────────────────────────────────────────
-const fillSource = ref<ExpFactFill["source"]>("prev_month");
-const fillYear = ref(0);
-const fillMonth = ref(0);
-const fillMode = ref<"one_month" | "same_month">("one_month");
+// Откуда (год и месяц факта; месяц 0 — «тот же месяц», помесячно) и куда (один месяц или все до конца года).
+const openMonths = computed<number[]>(() => Array.from({ length: 13 - cardMonth.value }, (_, i) => cardMonth.value + i));
+const fillPick = ref<BulkPeriodPick>(defaultPick([], 0));
+const prevMonthSource = (): { year: number; month: number } =>
+  cardMonth.value === 1 ? { year: planYear.value - 1, month: 12 } : { year: planYear.value, month: cardMonth.value - 1 };
+const presetPrevMonth = () => {
+  const s = prevMonthSource();
+  fillPick.value = { ...fillPick.value, sourceYear: s.year, sourceMonth: s.month };
+};
+const presetSameMonthLy = () => {
+  fillPick.value = { ...fillPick.value, sourceYear: planYear.value - 1, sourceMonth: 0 };
+};
+// Запрос серверу: быстрые источники сохраняют прежние названия, остальное — «факт года и месяца».
+const fillFactParams = (): ExpFactFill => {
+  const p = fillPick.value;
+  if (p.sourceMonth === 0) {
+    return p.sourceYear === planYear.value - 1 ? { source: "same_month_ly" } : { source: "ym", year: p.sourceYear, mode: "same_month" };
+  }
+  const prev = prevMonthSource();
+  if (p.sourceYear === prev.year && p.sourceMonth === prev.month) return { source: "prev_month" };
+  return { source: "ym", year: p.sourceYear, month: p.sourceMonth, mode: "one_month" };
+};
 // Коэффициент хранится строкой: v-model.number разбирает «1,05» как 1 (parseFloat), а подсказка предлагает именно запятую.
 const fillCoefText = ref("1");
 const parseFillCoef = (): number | null => {
@@ -907,28 +913,28 @@ const parseFillCoef = (): number | null => {
   return Number.isFinite(v) && v >= 0 ? v : null;
 };
 const fillScope = ref<"all" | "filtered">("all");
-// Заполняются месяцы показанного окна, кроме прошедших (по ним факт, планировать нельзя).
-const fillMonths = computed(() => shownMonths.value.filter((m) => !monthLocked(m)));
+// Заполняются выбранные месяцы среди открытых (прошедшие закрыты: по ним факт, планировать нельзя).
+const fillMonths = computed(() => targetMonthsOf(fillPick.value, openMonths.value));
 const fillMonthsLabel = computed(() => {
   const ms = fillMonths.value;
   if (!ms.length) return "—";
   return ms.length === 1 ? MONTHS_SHORT[ms[0] - 1] : `${MONTHS_SHORT[ms[0] - 1]}–${MONTHS_SHORT[ms[ms.length - 1] - 1]}`;
 });
+// Выбор по умолчанию — факт прошлого месяца во все месяцы до конца года; пересобирается при смене периода карточки,
+// пока пользователь не выбрал своё.
 watch(
-  () => [planYear.value, cardMonth.value],
+  () => [planYear.value, cardMonth.value] as const,
   () => {
-    if (!fillYear.value) fillYear.value = planYear.value - 1;
-    if (!fillMonth.value) fillMonth.value = cardMonth.value === 1 ? 12 : cardMonth.value - 1;
+    if (!planYear.value) return;
+    const s = prevMonthSource();
+    fillPick.value = normalizePick({ ...defaultPick(openMonths.value, s.year, s.month) }, openMonths.value);
   },
   { immediate: true }
 );
 const fillExtra = (): ExpCalcExtra => ({
   months: fillMonths.value,
   fill: {
-    source: fillSource.value,
-    year: fillSource.value === "ym" ? fillYear.value : undefined,
-    month: fillSource.value === "ym" && fillMode.value === "one_month" ? fillMonth.value : undefined,
-    mode: fillSource.value === "ym" ? fillMode.value : undefined,
+    ...fillFactParams(),
     coef: parseFillCoef() ?? 1
   },
   filter: fillScope.value === "filtered"
@@ -1434,6 +1440,7 @@ onBeforeRouteLeave(() => {
 .params-in { width: 90px; font-family: var(--font-mono); text-align: right; }
 .params-hint { font-size: var(--fs-2xs); color: var(--text-muted); flex: 1 1 260px; min-width: 0; }
 .fill-card { padding: var(--sp-4) var(--sp-5); }
+.fill-presets { display: inline-flex; gap: var(--sp-3); flex-wrap: wrap; }
 .fill-sel { width: auto; min-width: 200px; font-family: inherit; text-align: left; }
 .calc-prev { display: flex; flex-direction: column; gap: var(--sp-2); border-top: 1px solid var(--border); padding-top: var(--sp-3); }
 .calc-head { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; }
