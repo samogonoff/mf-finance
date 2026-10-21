@@ -1024,11 +1024,14 @@
           <template v-if="isB3">
             <!-- Тулбар: селектор подразделения + возврат к сводному виду -->
             <div class="b3-toolbar">
-              <label class="b3-dept-label">Подразделение
+              <!-- НЕ <label>: активация лейбла пересылала бы клик на первую
+                   кнопку-потомка (крестик чипа в CostMultiSelect) и снимала
+                   выбор подразделения с каждой попыткой открыть селектор. -->
+              <div class="b3-dept-label">Подразделение
                 <CostMultiSelect v-model="b3DeptSel" :options="b3DeptOptions"
                                  placeholder="Все · подразделения в ≥2 странах"
                                  @change="onB3DeptChange" />
-              </label>
+              </div>
               <button v-if="b3Country" class="btn btn-ghost btn-sm" type="button"
                       @click="b3BackToSummary">
                 <Icon name="lucide:arrow-left" /> Свод по странам
