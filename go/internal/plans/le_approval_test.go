@@ -3,6 +3,7 @@ package plans
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -435,5 +436,101 @@ func TestLeApproval_ConcurrentDecisionsCompleteOnce_PG(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("записей согласования этапа 3: %d, ждали 1", n)
+	}
+}
+
+// Ожидание блокировки периода не держит соединение пула: при маленьком пуле держатель лока продолжает ходить в БД, а
+// ожидающие получают лок по очереди (раньше ожидающие занимали все соединения, и весь API вставал).
+func TestLeApproval_LockDoesNotStarvePool_PG(t *testing.T) {
+	dsn := os.Getenv("PLANS_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("PLANS_TEST_PG_DSN not set")
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 2
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	repo := NewLeApprovalRepo(pool)
+	const pl = 987654
+	unlock, err := repo.Lock(ctx, pl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	got := make(chan struct{}, 4)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			u, err := repo.Lock(ctx, pl)
+			if err != nil {
+				t.Errorf("ожидающий не получил лок: %v", err)
+				return
+			}
+			got <- struct{}{}
+			u()
+		}()
+	}
+	time.Sleep(300 * time.Millisecond)
+	// Держатель лока ходит в БД другими соединениями пула, пока остальные ждут: не должно зависнуть.
+	done := make(chan error, 1)
+	go func() {
+		var one int
+		done <- pool.QueryRow(ctx, `SELECT 1`).Scan(&one)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("запрос держателя лока завис: ожидающие заняли соединения пула")
+	}
+	select {
+	case <-got:
+		t.Fatal("ожидающий получил лок, пока он занят")
+	default:
+	}
+	unlock()
+	wg.Wait()
+	if len(got) != 4 {
+		t.Errorf("лок получили %d из 4 ожидающих", len(got))
+	}
+}
+
+// Корректировка итога идёт под блокировкой периода: пока период занят (например, согласующий завершает этап), она ждёт.
+func TestLeApproval_AdjustWaitsForPeriodLock_PG(t *testing.T) {
+	f := leFlowFixture(t)
+	ctx := f.ctx
+	unlock, err := f.appr.LockPeriod(ctx, f.pl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.le.Adjust(ctx, f.pl, LeAdjust{LegalEntity: "F", LineKey: "exp:Заработная плата", AmountBYN: 5, Reason: "тест блокировки", UserID: f.users[0]})
+		done <- err
+	}()
+	select {
+	case <-done:
+		t.Fatal("корректировка записана, хотя период заблокирован другой операцией")
+	case <-time.After(400 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("корректировка не дождалась освобождения периода")
 	}
 }

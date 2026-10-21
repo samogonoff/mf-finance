@@ -96,7 +96,8 @@ func (s *LeSvodService) Build(ctx context.Context, plID int64, window string) (L
 		pnlBase = m
 	}
 	for _, c := range cards {
-		if c.FormCode != TemplateExp || strings.HasPrefix(c.ScopeKey, "CFO-") {
+		// Архивная карточка «убрана из периода» (в готовности она не блокирует): её суммы в свод не идут.
+		if c.FormCode != TemplateExp || strings.HasPrefix(c.ScopeKey, "CFO-") || c.Status == CardArchived {
 			continue
 		}
 		card, inst, err := s.exp.access(ctx, c.ID)
@@ -180,6 +181,15 @@ func (s *LeSvodService) Adjust(ctx context.Context, plID int64, a LeAdjust) (int
 	if err := validateLeAdjust(a); err != nil {
 		return 0, err
 	}
+	// Проверка закрытия, снятие согласий и запись корректировки идут под блокировкой периода: иначе согласующий мог бы завершить
+	// этап по старым цифрам между снятием согласий и записью корректировки.
+	if s.approvals != nil {
+		unlock, err := s.approvals.LockPeriod(ctx, plID)
+		if err != nil {
+			return 0, err
+		}
+		defer unlock()
+	}
 	if closed, err := s.leClosed(ctx, plID); err != nil {
 		return 0, fmt.Errorf("не удалось проверить состояние этапов: %w", err)
 	} else if closed {
@@ -204,6 +214,13 @@ func (s *LeSvodService) Adjust(ctx context.Context, plID int64, a LeAdjust) (int
 func (s *LeSvodService) RevokeAdjust(ctx context.Context, plID, id, userID int64, reason string) error {
 	if strings.TrimSpace(reason) == "" {
 		return errors.New("укажите причину снятия")
+	}
+	if s.approvals != nil {
+		unlock, err := s.approvals.LockPeriod(ctx, plID)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 	}
 	if closed, err := s.leClosed(ctx, plID); err != nil {
 		return fmt.Errorf("не удалось проверить состояние этапов: %w", err)
