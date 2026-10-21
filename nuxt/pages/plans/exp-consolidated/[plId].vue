@@ -38,6 +38,13 @@
     <p v-if="data && failedCountries.length" class="banner banner-warn">
       Не удалось прочитать форму: {{ failedCountries.map((c) => `${c.country} (${c.error})`).join("; ") }}. Итог неполный.
     </p>
+    <p v-if="data?.syncing && !pollExhausted" class="banner banner-info">
+      Идёт загрузка данных из источника — таблица обновится сама. Пока показано то, что уже загружено.
+    </p>
+    <p v-else-if="data?.syncing" class="banner banner-warn">
+      Загрузка из источника идёт дольше обычного. Пока показано то, что уже загружено; обновите страницу чуть позже.
+      <button type="button" class="btn btn-sm btn-ghost" @click="load()">Обновить сейчас</button>
+    </p>
     <p v-for="w in data?.warnings || []" :key="w" class="banner banner-warn">{{ w }}</p>
     <p v-if="data?.absent_channels?.length" class="banner banner-info">
       В периоде нет карточек расходов: {{ data.absent_channels.join(", ") }}.
@@ -235,19 +242,46 @@ const setWin = (w: ExpConsWindow) => {
 
 // Ответы приходят не по порядку, если окно переключают быстро: учитываем только последний запрос.
 let seq = 0;
-const load = async () => {
+// Пока по какой-то карточке идёт загрузка из источника (свод сам её запускает), страница молча перечитывает свод.
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let polls = 0;
+// Опрос исчерпан, а загрузка всё ещё идёт: баннер перестаёт обещать автообновление.
+const pollExhausted = ref(false);
+const POLL_MS = 5000;
+const POLL_MAX = 60;
+const stopPoll = () => {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = null;
+};
+const load = async (opts?: { poll?: boolean }) => {
   const my = ++seq;
-  loading.value = true;
+  const silent = opts?.poll === true;
+  if (!silent) {
+    stopPoll();
+    polls = 0;
+    pollExhausted.value = false;
+    loading.value = true;
+  }
   error.value = "";
   try {
     const r = await api.consolidated(plId, win.value, channel.value);
-    if (my === seq) data.value = r;
+    if (my === seq) {
+      data.value = r;
+      if (r.syncing && polls < POLL_MAX) {
+        polls += 1;
+        pollTimer = setTimeout(() => load({ poll: true }), POLL_MS);
+      } else if (r.syncing) {
+        pollExhausted.value = true;
+      }
+    }
   } catch (e) {
     if (my === seq) error.value = apiError(e, "Не удалось загрузить свод расходов");
   } finally {
-    if (my === seq) loading.value = false;
+    if (my === seq && !silent) loading.value = false;
   }
 };
+
+onBeforeUnmount(stopPoll);
 
 onMounted(() => {
   loadPrefs();

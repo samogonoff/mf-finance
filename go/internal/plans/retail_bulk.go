@@ -218,8 +218,8 @@ func ApplyRetailBulk(req RetailBulkRequest, ctx RetailBulkContext) (RetailBulkRe
 	if len(res.Diff) == 0 && res.Protected == 0 && res.SkippedNoBase > 0 {
 		// Источник задан явно (год/месяц) — пусто именно в нём, а не в целевых месяцах: называем период источника.
 		if req.Op == BulkCopyScenario && (req.SourceYear != 0 || req.SourceMonth != 0) {
-			return res, fmt.Errorf("нет данных сценария %q за %s: ни у одного магазина области нет базы для операции",
-				req.Source, bulkSourcePeriodLabel(req, ctx, months))
+			return res, fmt.Errorf("нет данных источника «%s» за %s: ни у одного магазина области нет базы для операции",
+				bulkSourceName(req.Source), bulkSourcePeriodLabel(req, ctx, months))
 		}
 		return res, fmt.Errorf("нет данных за выбранный период (%s): ни у одного магазина области нет базы для операции",
 			bulkMonthsLabel(months, ctx.Year))
@@ -251,6 +251,21 @@ func bulkCopySourceYear(req RetailBulkRequest, ctx RetailBulkContext) int {
 		return ctx.Year - 1
 	}
 	return ctx.Year
+}
+
+// bulkSourceName — название сценария-источника, как в выпадающем списке формы (пользователю код не показываем).
+func bulkSourceName(source string) string {
+	switch source {
+	case CopyFromStrategy:
+		return "Стратегия"
+	case CopyFromTactic:
+		return "Утверждённая тактика"
+	case CopyFromNewStrategy:
+		return "Новая стратегия"
+	case CopyFromFact:
+		return "Факт"
+	}
+	return source
 }
 
 // bulkSourcePeriodLabel — период источника для сообщений: заданный месяц источника или месяцы применения в году источника.
@@ -371,7 +386,7 @@ func bulkCopyScenario(res *RetailBulkResult, req RetailBulkRequest, ctx RetailBu
 			return errors.New("нет утверждённой тактики за выбранный период")
 		}
 		res.Notes = append(res.Notes,
-			fmt.Sprintf("нет данных сценария %q по %d ячейкам — они остались без изменений", req.Source, res.SkippedNoBase))
+			fmt.Sprintf("нет данных источника «%s» по %d ячейкам — они остались без изменений", bulkSourceName(req.Source), res.SkippedNoBase))
 	}
 	return nil
 }
