@@ -41,14 +41,14 @@
     </div>
 
     <template v-else>
-      <!-- Вкладки P9…P13 листов отчёта CFO_ALL_AGG_RS -->
+      <!-- Вкладки P9–P17 листов отчёта CFO_ALL_AGG_RS -->
       <div class="fot-tabs" role="tablist">
         <button v-for="t in TABS" :key="t.key" role="tab" class="fot-tab" type="button"
                 :class="{ active: tab === t.key }" :aria-selected="tab === t.key"
                 @click="setTab(t.key)">{{ t.label }}</button>
       </div>
 
-      <!-- P10–P13 собираются по фиксированным полугодиям — срезы дат на них не влияют -->
+      <!-- P10 и P14–P17 собираются по фиксированным полугодиям — срезы дат на них не влияют -->
       <p v-if="isHalfTab" class="basis">
         Вкладка не зависит от срезов дат (полугодия 2025/2026 фиксированы)
       </p>
@@ -65,7 +65,7 @@
           <span>{{ meta.warning }}</span>
         </div>
 
-        <!-- Панель фильтров — едина для всех вкладок; P10–P13 сервер игнорирует срезы сам -->
+        <!-- Панель фильтров — едина для всех вкладок; P10 и P14–P17 сервер игнорирует срезы сам -->
         <section class="filters">
           <div v-for="f in MULTI_FILTERS" :key="f.key" class="filter-item">
             <label>{{ f.label }}</label>
@@ -106,8 +106,6 @@
           </div>
         </section>
 
-        <!-- Вкладки без бэкенда (p12/p13 до выката шага 2c): плашку показывает
-             и ответ со status='not_implemented'. -->
         <div v-if="notImplemented" class="fot-wip">
           <Icon name="lucide:construction" class="fot-wip-icon" />
           <strong>Раздел в разработке</strong>
@@ -115,7 +113,7 @@
         </div>
 
         <div v-else class="fot-body" :class="{ pending: loading }">
-          <!-- P10/P11 — фиксированные полугодия: срезы дат и «План» сервер
+          <!-- P10 — фиксированные полугодия: срезы дат и «План» сервер
                игнорирует, поэтому в строке базы показываем то, что работает. -->
           <p class="basis">
             <template v-if="isHalfTab">
@@ -130,127 +128,6 @@
               <span class="dot">·</span> ВГО: {{ icLabel }}
             </template>
           </p>
-
-          <!-- P11: верхний свод — реплика листа 1 деки «Бюджет ФОТ 2026»
-               (KPI-лента + панель численности + таблица стран + карточки
-               стран); разрезы вкладки — таблицами ниже. -->
-          <template v-if="isP11">
-            <section class="slide" aria-label="Свод по группе">
-              <header class="slide-hdr">
-                <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
-                <span class="slide-subtitle">Бюджет ФОТ {{ yearPlan }} — направления и подразделения</span>
-                <span class="slide-year" aria-hidden="true">{{ yearPlan }}</span>
-                <span class="slide-unit">млн {{ currency }}</span>
-              </header>
-
-              <!-- KPI-лента: 6 показателей группы + панель численности (P12) -->
-              <div class="ribbon">
-                <div class="rb">
-                  <span class="rb-label">Факт, год {{ yearPrev }}</span>
-                  <span class="rb-value">{{ fmt1(kpiNum('fot_fact_2025')) }}<span class="rb-unit"> млн {{ currency }}</span></span>
-                </div>
-                <div class="rb">
-                  <span class="rb-label">Доля ФОТ в выручке {{ yearPrev }}</span>
-                  <span class="rb-value">{{ fmt1(kpiNum('fot_share_2025')) }}<span class="rb-unit"> %</span></span>
-                </div>
-                <div class="rb rb-big">
-                  <span class="rb-label">Ожидание, год {{ yearPlan }}</span>
-                  <span class="rb-value">{{ fmt1(kpiNum('fot_expect_2026')) }}<span class="rb-unit"> млн {{ currency }}</span></span>
-                </div>
-                <div class="rb">
-                  <span class="rb-label">Динамика ФОТ к {{ yearPrev }}</span>
-                  <span class="rb-value" :class="signCf(kpiNum('fot_dev_year'))">{{ fmtSigned(kpiNum('fot_dev_year')) }}<span class="rb-unit"> %</span></span>
-                </div>
-                <div class="rb rb-big">
-                  <span class="rb-label">Доля ФОТ в выручке {{ yearPlan }}</span>
-                  <span class="rb-value">{{ fmt1(kpiNum('fot_share_2026')) }}<span class="rb-unit"> %</span></span>
-                  <span class="rb-sub" :class="signCf(kpiNum('fot_share_delta_pp'))">{{ fmtSigned(kpiNum('fot_share_delta_pp')) }} п.п. к факту {{ yearPrev }}</span>
-                </div>
-                <div class="rb">
-                  <span class="rb-label">Динамика выручки к {{ yearPrev }}</span>
-                  <span class="rb-value">{{ fmtSigned(kpiNum('revenue_dev_year')) }}<span class="rb-unit"> %</span></span>
-                </div>
-                <div v-if="headcount" class="rb-hc">
-                  <div class="hc">
-                    <span class="hc-label">ПЧ {{ yearPlan }}</span>
-                    <span class="hc-value">{{ fmt1(headcount.plan_approved) }}</span>
-                  </div>
-                  <div class="hc">
-                    <span class="hc-label">ФЧ 1ПГ{{ yr2(yearPrev) }}</span>
-                    <span class="hc-value">{{ fmt1(headcount.fact_2025) }}</span>
-                  </div>
-                  <div class="hc">
-                    <span class="hc-label">ФЧ 1ПГ{{ yr2(yearPlan) }}</span>
-                    <span class="hc-value">{{ fmt1(headcount.fact_2026) }}</span>
-                  </div>
-                  <div class="hc">
-                    <span class="hc-label">Δ план</span>
-                    <span class="hc-value" :class="signCf(headcount.var_plan)">{{ fmtSigned(headcount.var_plan) }}</span>
-                  </div>
-                  <div class="hc">
-                    <span class="hc-label">Δ {{ yr2(yearPrev) }}</span>
-                    <span class="hc-value" :class="signCf(headcount.var_2025)">{{ fmtSigned(headcount.var_2025) }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Таблица «страна × полугодия»: светофор «факт/тактика против
-                   бюджета» и «ожидание против факта 2025», итог — тёмной строкой -->
-              <section v-if="slideTable" class="card">
-                <div class="card-head">
-                  <h3 class="card-title">{{ slideTable.label }}</h3>
-                  <button class="btn btn-ghost btn-sm" type="button"
-                          title="Скачать CSV: разделитель «;», BOM — Excel откроет без мастера импорта"
-                          @click="exportCsv(slideTable)">
-                    <Icon name="lucide:download" /> CSV
-                  </button>
-                </div>
-                <div class="table-wrap">
-                  <table class="stable">
-                    <thead>
-                      <tr>
-                        <th v-for="col in slideTable.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
-                          {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="(row, i) in (slideTable.rows || [])" :key="i" :class="{ total: row.total }">
-                        <td v-for="col in slideTable.columns" :key="col.key"
-                            :class="[col.key === 'label' ? 'col-name' : 'num', row.total ? slideCmpDk(row, col.key) : slideCmp(row, col.key)]">
-                          {{ cellText(slideTable, row, col) }}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-
-              <!-- Карточки стран «Ожидание 2026 к факту 2025» -->
-              <template v-if="countryCards.length">
-                <h3 class="grid-caption">Ожидание {{ yearPlan }} к факту {{ yearPrev }}, ФОТ</h3>
-                <section class="cc-grid">
-                  <article v-for="c in countryCards" :key="c.cc" class="ccard">
-                    <span class="cc-code">{{ c.cc }}</span>
-                    <span class="cc-dyncap">Динамика, п.п. ({{ yearPlan }}/{{ yearPrev }}):</span>
-                    <span class="cc-badge" :class="signCf(c.share_delta_pp)">{{ fmtSigned(c.share_delta_pp, 2) }}</span>
-                    <span class="cc-big">{{ fmt1(c.exp26) }} млн</span>
-                    <span class="cc-delta" :class="signCf(c.dev_year)">{{ fmtSigned(c.dev_year) }}% к {{ yearPrev }} ({{ fmtSigned(c.dev_abs) }} млн)</span>
-                    <div class="cc-sep" role="presentation" />
-                    <p class="cc-line">Доля в ФОТ группы: <b>{{ fmt1(c.fot_share) }}%</b></p>
-                    <p class="cc-line">Доля ФОТ в выручке гр. ({{ yearPlan }}): <b>{{ fmt1(c.rev_share_2026) }}%</b></p>
-                    <p class="cc-line">Доля ФОТ в выручке гр. ({{ yearPrev }}): <b>{{ fmt1(c.rev_share_2025) }}%</b></p>
-                    <div class="cc-sep cc-sep-soft" role="presentation" />
-                    <p class="cc-hc">
-                      ПЧ: <b>{{ fmt1(c.plan_approved) }}</b>&nbsp;&nbsp;ФЧ 1ПГ {{ yearPlan }}:
-                      <b :class="cmpCf(c.fact_h1_2026, c.plan_approved)">{{ fmt1(c.fact_h1_2026) }}</b><br>
-                      Откл. (Ф-П): <b :class="signCf(c.hc_var)">{{ fmtSigned(c.hc_var) }}</b>
-                    </p>
-                  </article>
-                </section>
-              </template>
-            </section>
-          </template>
 
           <!-- P14 «ФОТ по направлениям бизнеса»: лист 4 деки — таблица
                «Направление × периоды» с донатом структуры, ряд мини-баров
@@ -1285,76 +1162,8 @@
             </section>
           </template>
 
-          <!-- P18 «Исполнение бюджета»: ФОТ vs план, 3 разреза -->
-          <template v-if="isP18">
-            <section class="slide" aria-label="Исполнение бюджета">
-              <header class="slide-hdr">
-                <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
-                <span class="slide-subtitle">Исполнение ФОТ — факт vs тактика/бюджет</span>
-                <span class="slide-year p15-badge" aria-hidden="true">
-                  <span>ГК</span><span>ИСПОЛНЕНИЕ</span>
-                </span>
-              </header>
-
-              <!-- KPI-лента: 5 карточек исполнения -->
-              <section class="fot-kpis">
-                <article v-for="c in cards" :key="c.key" class="fot-kpi">
-                  <span class="fot-kpi-label">{{ c.label }}</span>
-                  <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
-                </article>
-              </section>
-
-              <!-- Селекторы: год + полугодие -->
-              <div class="p18-periods">
-                <label class="p18-period-label">Год
-                  <select v-model="p18Year" class="select select-sm" @change="loadDash">
-                    <option v-for="y in p18YearOptions" :key="y" :value="y">{{ y }}</option>
-                  </select>
-                </label>
-                <div class="p18-half-sel">
-                  <button v-for="h in p18HalfOptions" :key="h.key" class="p18-half-btn"
-                          :class="{ active: p18Half === h.key }"
-                          @click="p18Half = h.key; loadDash()">{{ h.label }}</button>
-                </div>
-              </div>
-
-              <!-- Переключатель разрезов -->
-              <div class="p18-tabs">
-                <button v-for="t in p18SubTabs" :key="t.key" class="p18-tab"
-                        :class="{ active: p18SubTab === t.key }"
-                        @click="p18SubTab = t.key">{{ t.label }}</button>
-              </div>
-
-              <!-- Таблица выбранного разреза: светофор Δ, без итога -->
-              <section v-if="p18ActiveTable" class="card">
-                <div class="card-head">
-                  <h3 class="card-title">{{ p18ActiveTable.label }}</h3>
-                </div>
-                <div class="table-wrap">
-                  <table class="stable">
-                    <thead>
-                      <tr>
-                        <th v-for="col in p18ActiveTable.columns" :key="col.key" :class="{ 'col-name': col.key === 'label' }">
-                          {{ col.label }}<span v-if="col.unit && col.key !== 'label'" class="th-unit">, {{ col.unit }}</span>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="(row, i) in (p18ActiveTable.rows || [])" :key="i">
-                        <td v-for="col in p18ActiveTable.columns" :key="col.key"
-                            :class="[col.key === 'label' ? 'col-name' : 'num', col.key.endsWith('_color') ? undefined : cellDeltaClass(row, col)]">
-                          {{ cellText(p18ActiveTable, row, col) }}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            </section>
-          </template>
-
-          <!-- KPI-карточки вкладки: у P10 пять; у P11/P14–P18/B1/B3 — слайд выше -->
-          <section v-if="!isP11 && !isP14 && !isDeptTab && !isP17 && !isP18 && !isB1 && !isB3" class="fot-kpis">
+          <!-- KPI-карточки вкладки: у P10 пять; у P14–P17/B1/B3 — слайд выше -->
+          <section v-if="!isP14 && !isDeptTab && !isP17 && !isB1 && !isB3" class="fot-kpis">
             <article v-for="c in cards" :key="c.key" class="fot-kpi">
               <span class="fot-kpi-label">{{ c.label }}</span>
               <span class="fot-kpi-value">{{ fmtCard(c.value) }}<span class="fot-kpi-unit">{{ c.unit === '%' ? '%' : ` ${c.unit}` }}</span></span>
@@ -1362,7 +1171,7 @@
           </section>
 
           <!-- Комбо-график: столбцы ФОТ + линия численности на второй оси.
-               Только у вкладок с данными графика (P9) — у P10/P11 charts пустой. -->
+               Только у вкладок с данными графика (P9) — у P10 charts пустой. -->
           <section v-if="chartData" class="card">
             <div class="card-head">
               <h3 class="card-title">{{ chart?.label || 'Динамика по месяцам' }}</h3>
@@ -1376,10 +1185,8 @@
           </section>
 
           <!-- Таблицы вкладки — по порядку из dash.tables: у P9 матрица с
-               проваливанием, у P10 одна таблица по странам, у P11 три
-               (подразделения, каналы сбыта, направления) — таблица стран у
-               P11 рендерится в слайде выше. Дрилл, крошки и CSV-кнопка
-               включаются признаками из meta таблицы и вкладки. -->
+               проваливанием, у P10 одна таблица по странам. Дрилл, крошки и
+               CSV-кнопка включаются признаками из meta таблицы и вкладки. -->
           <section v-for="t in shownTables" :key="t.key" class="card">
             <div class="card-head">
               <div>
@@ -1398,7 +1205,7 @@
                   </template>
                 </nav>
               </div>
-              <!-- Клиентский CSV (Blob + BOM, разделитель «;») — сводным вкладкам P10/P11 -->
+              <!-- Клиентский CSV (Blob + BOM, разделитель «;») — сводной вкладке P10 -->
               <button v-if="canExport" class="btn btn-ghost btn-sm" type="button"
                       title="Скачать CSV: разделитель «;», BOM — Excel откроет без мастера импорта"
                       @click="exportCsv(t)">
@@ -1505,14 +1312,10 @@ function errText(e: any): string {
 const TABS = [
   { key: 'p9', label: 'ФОТ и численность' },
   { key: 'p10', label: 'ФОТ свод по группе' },
-  { key: 'p11', label: 'Направления и подразделения' },
-  { key: 'p12', label: 'Численность план и факт' },
-  { key: 'p13', label: 'HR-бюджет и отделы' },
   { key: 'p14', label: 'ФОТ по направлениям бизнеса' },
   { key: 'p15', label: 'Отделы: свод' },
   { key: 'p16', label: 'Отделы: анализ по подразделениям' },
   { key: 'p17', label: 'Численность ГК' },
-  { key: 'p18', label: 'Исполнение бюджета' },
   { key: 'b1', label: 'ГК' },
   { key: 'b3', label: 'Подразделения по странам' },
 ] as const
@@ -1521,9 +1324,6 @@ const tab = ref<string>('p9')
 // Описания не-P9 — по листам презентации CFO_ALL_AGG_RS (слайды 22–27, 34–35).
 const WIP_TEXT: Record<string, string> = {
   p10: 'Свод ФОТ по группе за фиксированные полугодия: факт 1ПГ 2025 и 1ПГ 2026, тактика 2ПГ 2026 и ожидание года — с динамикой к 2025-му, долей ФОТ в выручке группы и численностью отделов (плановая/фактическая, % укомплектования).',
-  p11: 'Анализ по направлениям и подразделениям: ФОТ по странам, доля ФОТ в выручке и динамика к 2025 году.',
-  p12: 'Численность: утверждённая численность стратегии-2026 против факта на конец 1ПГ 2025 и 1ПГ 2026 — % укомплектования и отклонения по странам и подразделениям.',
-  p13: 'HR-бюджет: статьи 65 «Расходы на персонал» и 66 «Прочие расходы» по странам — факт полугодий 2025/2026, тактика 2ПГ 2026 и ожидание года.',
 }
 const wipText = computed(() => WIP_TEXT[tab.value] || 'Раздел готовится.')
 
@@ -1662,10 +1462,6 @@ function buildQuery(): string {
   if (year.value) p.set('year', year.value)
   if (month.value) p.set('month', month.value)
   if (currency.value) p.set('currency', currency.value)
-  if (isP18.value) {
-    p.set('p18_year', String(p18Year.value))
-    p.set('p18_half', String(p18Half.value))
-  }
   if (isB1.value) {
     // B1 берёт год из meta.periods, фильтры панели — из срезов
   }
@@ -1707,15 +1503,10 @@ const notImplemented = computed(() => meta.value.status === 'not_implemented')
 const cards = computed<any[]>(() => dash.value?.cards || [])
 const chart = computed<any>(() =>
   (dash.value?.charts || []).find((c: any) => c.key === 'monthly') || (dash.value?.charts || [])[0] || null)
-/** Все таблицы вкладки — по порядку API: у P9 матрица, у P10 одна, у P11
- *  таблица стран слайда + три разреза. */
+/** Все таблицы вкладки — по порядку API: у P9 матрица, у P10 одна. */
 const tables = computed<any[]>(() => dash.value?.tables || [])
-/** CSV-кнопка в заголовке каждой таблицы — только сводным вкладкам P10/P11. */
-const canExport = computed(() => tab.value === 'p10' || tab.value === 'p11')
-
-// ── P11: верхний свод — реплика листа 1 деки «Бюджет ФОТ 2026» ───────────────
-
-const isP11 = computed(() => tab.value === 'p11')
+/** CSV-кнопка в заголовке каждой таблицы — только сводной вкладке P10. */
+const canExport = computed(() => tab.value === 'p10')
 
 // ── P14 «ФОТ по направлениям бизнеса»: лист 4 деки ───────────────────────────
 
@@ -1726,29 +1517,9 @@ const isP14 = computed(() => tab.value === 'p14')
 const isP15 = computed(() => tab.value === 'p15')
 const isP16 = computed(() => tab.value === 'p16')
 const isP17 = computed(() => tab.value === 'p17')
-const isP18 = computed(() => tab.value === 'p18')
 const isB1 = computed(() => tab.value === 'b1')
 /** Блок 3 «Подразделения по странам»: слайд-разметка, KPI-лента и ИИ скрыты. */
 const isB3 = computed(() => tab.value === 'b3')
-const p18Year = ref<number>(2026)
-const p18Half = ref<number>(0)
-const p18YearOptions = [2024, 2025, 2026, 2027]
-const p18HalfOptions = [
-  { key: 0, label: 'Год' },
-  { key: 1, label: '1ПГ' },
-  { key: 2, label: '2ПГ' },
-]
-const p18SubTab = ref<string>('direction')
-const p18SubTabs = [
-  { key: 'direction', label: 'Направление' },
-  { key: 'group', label: 'Группа ЦФО' },
-  { key: 'dept', label: 'Подразделение' },
-]
-const p18ActiveTable = computed<any>(() => {
-  if (!isP18.value) return null
-  const keyMap: Record<string, string> = { direction: 'p18_by_direction', group: 'p18_by_group', dept: 'p18_by_dept' }
-  return tables.value.find((t: any) => t.key === keyMap[p18SubTab.value]) || null
-})
 /** Обе вкладки «Отделы» живут на одном слайде: KPI-лента и блок ИИ скрыты. */
 const isDeptTab = computed(() => isP15.value || isP16.value)
 /** Направления листа и шапка страны — отдельные блоки ответа p14. */
@@ -2181,18 +1952,16 @@ const yearPlan = computed(() => Number(meta.value.periods?.year_plan) || 2026)
 const yearPrev = computed(() => Number(meta.value.periods?.year_prev) || 2025)
 const yr2 = (y: any) => String(y).slice(2)
 /** Панель численности (правый край KPI-ленты) и карточки стран — отдельные
- *  блоки ответа p11 (headcount, cards_by_country), карточек они не касаются. */
+ *  блоки ответа (headcount, cards_by_country), карточек они не касаются. */
 const headcount = computed<any>(() => dash.value?.headcount || null)
 const countryCards = computed<any[]>(() => dash.value?.cards_by_country || [])
 /** Таблица стран рендерится внутри слайда; в общем списке таблиц её нет. */
 const slideTable = computed<any>(() =>
-  (isP11.value || isB1.value) ? tables.value.find((t: any) => t.key === 'by_country') || null : null)
+  isB1.value ? tables.value.find((t: any) => t.key === 'by_country') || null : null)
 const shownTables = computed<any[]>(() => {
-  if (isP11.value) return tables.value.filter((t: any) => t.key !== 'by_country')
   if (isP14.value) return tables.value.filter((t: any) => t.key !== 'by_direction')
   if (isP15.value) return tables.value.filter((t: any) => t.key !== 'departments')
   if (isP17.value) return tables.value.filter((t: any) => t.key !== 'hc_countries' && t.key !== 'hc_country_detail')
-  if (isP18.value) return tables.value.filter((t: any) => !t.key.startsWith('p18_'))
   return tables.value
 })
 /** Значение карточки по ключу — для KPI-ленты слайда. */
@@ -2200,8 +1969,8 @@ const kpiNum = (key: string): number | null => {
   const c = cards.value.find((x: any) => x.key === key)
   return c && isNum(c.value) ? Number(c.value) : null
 }
-/** P10–P16 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
-const isHalfTab = computed(() => ['p10', 'p11', 'p12', 'p13', 'p14', 'p15', 'p16', 'p17', 'p18', 'b1'].includes(tab.value))
+/** P10 и P14–P17, B1 — фиксированные полугодия: срезы дат и «План» сервер игнорирует. */
+const isHalfTab = computed(() => ['p10', 'p14', 'p15', 'p16', 'p17', 'b1'].includes(tab.value))
 /** Метка активной вкладки — заголовок блока ИИ и нотификации. */
 const tabLabel = computed(() => TABS.find((t) => t.key === tab.value)?.label || tab.value)
 
@@ -2453,11 +2222,6 @@ const ppText = (v: any): string => {
  *  фактических col.unit API (app/fot.py), фронт ничего не угадывает. */
 const UNITS_2DP = new Set(['%', 'п.п.', 'ставок'])
 
-/** Таблицы с деньгами в копейках: HR-бюджет P13 бэкенд округляет до двух
- *  знаков (_r2) при unit=валюта — точность в col.unit не выражена, поэтому
- *  исключение держим картой по ключу таблицы (контроль деки — «592,29»). */
-const MONEY_2DP_TABLES = new Set(['hr_budget'])
-
 /** Ячейка таблицы: пустое значение — прочерк, никогда не NaN.
  *  Точность — по col.unit (млн-колонки — один знак); отрицательные Δ
  *  ru-RU пишет со знаком минус. */
@@ -2474,7 +2238,7 @@ function cellText(t: any, row: any, col: any): string {
   }
   if (unit.startsWith('млн')) return nf1.format(n)
   if (UNITS_2DP.has(unit)) return nf2.format(n)
-  return MONEY_2DP_TABLES.has(t?.key) ? nf2.format(n) : nf0.format(n)
+  return nf0.format(n)
 }
 
 /** Светофор Δ-ячеек: цвет считает сервер и кладёт рядом со значением —
@@ -3258,30 +3022,5 @@ const fmtDateTime = (iso: any) => {
 /* B1 — наблюдения слайда 22 (KPI/c-card стили переиспользуются с p11) */
 .b1-obs { padding: 12px 0; }
 .b1-obs p { font-size: 13px; margin: 6px 0; color: var(--text-secondary); line-height: 1.5; }
-
-/* P18 — периоды и подтабы разрезов */
-.p18-periods { display: flex; gap: 12px; align-items: center; margin: 8px 0 4px; flex-wrap: wrap; }
-.p18-period-label { font-size: 13px; display: flex; align-items: center; gap: 6px; }
-.p18-half-sel { display: flex; gap: 4px; }
-.p18-half-btn {
-  font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 4px;
-  border: 1px solid var(--border, #e2e8f0); background: transparent;
-  color: var(--text-muted, #64748b); cursor: pointer; transition: all 0.15s;
-}
-.p18-half-btn.active { background: var(--accent, #4338ca); color: #fff; border-color: var(--accent, #4338ca); }
-.p18-half-btn:hover:not(.active) { border-color: var(--accent, #4338ca); color: var(--text, #1e293b); }
-.p18-tabs { display: flex; gap: 6px; margin: 8px 0 4px; }
-.p18-tab {
-  font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 6px;
-  border: 1px solid var(--border, #e2e8f0); background: transparent;
-  color: var(--text-muted, #64748b); cursor: pointer; transition: all 0.15s;
-}
-.p18-tab.active { background: var(--accent, #4338ca); color: #fff; border-color: var(--accent, #4338ca); }
-.p18-tab:hover:not(.active) { border-color: var(--accent, #4338ca); color: var(--text, #1e293b); }
-
-@media (max-width: 720px) {
-  .p18-tabs { flex-wrap: wrap; }
-  .p18-tab { font-size: 12px; padding: 3px 8px; }
-}
 
 </style>
