@@ -63,7 +63,7 @@
         <button type="button" :aria-pressed="win === 'tail'" @click="setWin('tail')">{{ monthLabel }}–дек</button>
         <button type="button" :aria-pressed="win === 'year'" @click="setWin('year')">весь год</button>
       </div>
-      <label class="checkbox" title="Факт того же месяца прошлого года, прошлого месяца и текущего месяца (только чтение)">
+      <label class="checkbox" title="Факт того же периода прошлого года, месяца перед началом окна и месяцев окна текущего года (только чтение)">
         <input v-model="showRef" type="checkbox" @change="savePrefs" />
         Сравнение с фактом
       </label>
@@ -83,9 +83,9 @@
               </th>
               <th class="col-num">Итого</th>
               <template v-if="showRef">
-                <th class="col-num ref-h">{{ factWord }} {{ lyLabel }}</th>
-                <th class="col-num ref-h">{{ factWord }} {{ prevLabel }}</th>
-                <th class="col-num ref-h">{{ factWord }} {{ curLabel }}</th>
+                <th class="col-num ref-h" :title="factTitle">{{ factWord }} {{ lyLabel }}</th>
+                <th class="col-num ref-h" :title="factTitle">{{ factWord }} {{ prevLabel }}</th>
+                <th class="col-num ref-h" :title="`${factTitle} В колонке текущего года — только месяцы окна, по которым факт уже есть.`">{{ factWord }} {{ curLabel }}</th>
               </template>
             </tr>
             <tr class="sub-head">
@@ -204,6 +204,8 @@ const windowLabel = (year: number) => {
   const { from_month: from, to_month: to } = data.value;
   return from === to ? `${MONTHS_SHORT[from - 1]} ${year}` : `${MONTHS_SHORT[from - 1]}–${MONTHS_SHORT[to - 1]} ${year}`;
 };
+// Месяцы окна в колонке пересчитываются в BYN по одному курсу (по-месячных курсов в справочнике сводов нет).
+const factTitle = "Суммы месяцев окна пересчитаны в BYN по одному курсу колонки.";
 const lyLabel = computed(() => (data.value ? windowLabel(data.value.year - 1) : ""));
 const prevLabel = computed(() => {
   if (!data.value) return "";

@@ -1,8 +1,10 @@
 package plans
 
 import (
+	"context"
 	"math"
 	"testing"
+	"time"
 )
 
 func consPtr(v float64) *float64 { return &v }
@@ -163,6 +165,39 @@ func TestBuildExpConsolidated_FactFollowsWindow(t *testing.T) {
 		if !consNear(out.Total.FactLY, c.ly) || !consNear(out.Total.FactPrev, c.prev) || !consNear(out.Total.FactCur, c.cur) {
 			t.Errorf("%s: факт LY=%v prev=%v cur=%v, ждали %v / %v / %v", c.window,
 				out.Total.FactLY, out.Total.FactPrev, out.Total.FactCur, c.ly, c.prev, c.cur)
+		}
+	}
+}
+
+// «Прошлый месяц» колонки следует за окном, и курс у него тоже: для окна «весь год» это декабрь прошлого года, а не месяц
+// перед карточкой; для «месяца» и «до конца года» курс прежний (месяц перед карточкой).
+func TestExpFx_FactPrevRateFollowsWindowStart(t *testing.T) {
+	b := NewRateBook(nil)
+	b.mu.Lock()
+	b.loadedAt = time.Now()
+	b.vat = VatSeed()
+	b.fx = []FxRow{
+		{Currency: "RUB", Year: 2025, Month: 12, RateBYN: 0.03},
+		{Currency: "RUB", Year: 2026, Month: 9, RateBYN: 0.04},
+		{Currency: "RUB", Year: 2026, Month: 10, RateBYN: 0.05},
+	}
+	b.mu.Unlock()
+	svc := &ExpService{rates: b}
+	ctx := context.Background()
+
+	// Карточка октября 2026.
+	for _, c := range []struct {
+		name       string
+		from       int
+		prev, tact float64
+	}{
+		{"месяц", 10, 0.04, 0.04},         // прошлый месяц — сентябрь
+		{"до конца года", 10, 0.04, 0.04}, // то же начало окна
+		{"весь год", 1, 0.03, 0.04},       // декабрь 2025; курс плана — по-прежнему месяц перед карточкой
+	} {
+		fx := svc.expFx(ctx, "RUB", 2026, 10, c.from)
+		if fx.NoRate || !consNear(fx.FactPrev, c.prev) || !consNear(fx.Tactic, c.tact) {
+			t.Fatalf("%s: FactPrev=%v Tactic=%v NoRate=%v, ждали %v / %v", c.name, fx.FactPrev, fx.Tactic, fx.NoRate, c.prev, c.tact)
 		}
 	}
 }

@@ -280,7 +280,7 @@ func expCellOf(r ExpRow, scenario string, month int) (float64, bool) {
 func (s *ExpService) WithRates(r *RateBook) *ExpService { s.rates = r; return s }
 
 // expFx — курсы страны к BYN по назначению колонки; без справочника или в BYN — единица.
-func (s *ExpService) expFx(ctx context.Context, nat string, year, month int) expFxToBYN {
+func (s *ExpService) expFx(ctx context.Context, nat string, year, month, from int) expFxToBYN {
 	if nat == "" || nat == "BYN" {
 		return sameExpFx(1)
 	}
@@ -289,7 +289,10 @@ func (s *ExpService) expFx(ctx context.Context, nat string, year, month int) exp
 		return expFxToBYN{NoRate: true}
 	}
 	conv := func(y, m int) float64 { return s.rates.ConvertFor(ctx, 1, nat, "BYN", y, m, FxScenarioFact) }
-	return expFxToBYN{Tactic: conv(prevY, prevM), FactLY: conv(year-1, month), FactPrev: conv(prevY, prevM), FactCur: conv(year, month)}
+	// «Прошлый месяц» колонки следует за окном (месяц перед его началом), и его курс — тоже: для окна «весь год» это
+	// декабрь прошлого года, а не месяц перед карточкой. Для окон «месяц» и «до конца года» совпадает с курсом плана.
+	factPrevY, factPrevM := prevMonth(year, from)
+	return expFxToBYN{Tactic: conv(prevY, prevM), FactLY: conv(year-1, month), FactPrev: conv(factPrevY, factPrevM), FactCur: conv(year, month)}
 }
 
 // RetailConsolidated — свод расходов розницы по четырём странам периода.
@@ -352,7 +355,8 @@ func (s *ExpService) RetailConsolidated(ctx context.Context, p Principal, plID i
 		if len(rows) == 0 && !cardEditable(l.Card) {
 			warnings = append(warnings, svodEmptyClosedWarning(l.Label))
 		}
-		inputs = append(inputs, expConsInput{Country: l.Label, Card: l.Card, Inst: l.Inst, Rows: rows, Fx: s.expFx(ctx, l.Inst.Currency, l.Card.Year, l.Card.Month)})
+		from, _, _ := expWindowMonths(window, l.Card.Month)
+		inputs = append(inputs, expConsInput{Country: l.Label, Card: l.Card, Inst: l.Inst, Rows: rows, Fx: s.expFx(ctx, l.Inst.Currency, l.Card.Year, l.Card.Month, from)})
 	}
 	out := buildExpConsolidated(plID, year, month, window, inputs, pnlByCode, expRetailPnlOrder)
 	out.Missing = missing
