@@ -104,6 +104,9 @@ type LeSvod struct {
 	Warnings    []string    `json:"warnings,omitempty"`
 	// Closed — этап 4 завершён: корректировки закрыты.
 	Closed bool `json:"closed"`
+	// Readiness — замечания готовности к этапу 1.6; Ready — блокирующих нет.
+	Readiness []LeIssue `json:"readiness,omitempty"`
+	Ready     bool      `json:"ready"`
 }
 
 // leAmount — сумма в BYN по ЮЛ и строке на входе сборки.

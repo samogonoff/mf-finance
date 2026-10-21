@@ -23,7 +23,19 @@
     <p v-if="data?.closed" class="banner banner-info">
       Период утверждён (этап 4): корректировки закрыты. Изменить итоги можно только после переоткрытия периода.
     </p>
-    <p v-for="w in data?.warnings || []" :key="w" class="banner banner-warn">{{ w }}</p>
+    <section v-if="data" class="card ready-card" :class="{ 'ready-bad': !data.ready }">
+      <div class="card-header">
+        <span class="card-title">Готовность к этапу 1.6</span>
+        <span class="badge" :class="data.ready ? 'badge-pos' : 'badge-neg'">{{ data.ready ? "можно завершать" : "есть блокирующие замечания" }}</span>
+      </div>
+      <ul v-if="data.readiness?.length" class="ready-list">
+        <li v-for="(i, k) in data.readiness" :key="k">
+          <span class="badge" :class="i.level === 'block' ? 'badge-neg' : 'badge-warn'">{{ i.level === "block" ? "блокирует" : "предупреждение" }}</span>
+          {{ i.message }}
+        </li>
+      </ul>
+      <p v-else class="ready-ok">Все формы продаж и расходов утверждены, замечаний нет.</p>
+    </section>
 
     <section class="card controls">
       <span class="view-lbl">Период расходов</span>
@@ -258,6 +270,9 @@ onMounted(load);
 
 <style scoped>
 .page-lesvod { display: flex; flex-direction: column; gap: var(--sp-5); }
+.ready-card { padding-bottom: var(--sp-3); }
+.ready-list { margin: 0; padding: 0 var(--sp-4) var(--sp-2); list-style: none; display: flex; flex-direction: column; gap: var(--sp-2); font-size: var(--fs-sm); }
+.ready-ok { margin: 0; padding: 0 var(--sp-4) var(--sp-2); color: var(--text-muted); font-size: var(--fs-sm); }
 .controls { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; padding: var(--sp-3) var(--sp-4); }
 .view-lbl { color: var(--text-muted); font-size: var(--fs-sm); }
 .hint { color: var(--text-muted); font-size: var(--fs-sm); }

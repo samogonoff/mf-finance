@@ -23,6 +23,18 @@ type Service struct {
 	cards CardReader
 	// retailSvod — товарооборот розницы для свода по ЮЛ. nil → в своде только МП.
 	retailSvod RetailSvodSource
+	// gate — дополнительная проверка перед ручным движением этапа (1.6, 3, 4: готовность свода по ЮЛ, решения согласующих).
+	// nil — проверки нет.
+	gate StageGate
+}
+
+// StageGate - проверка перед ручным движением этапа; ошибка отклоняет действие (текст показывается пользователю).
+type StageGate func(ctx context.Context, plID int64, code, action string) error
+
+// WithStageGate подключает проверку готовности этапов 1.6, 3 и 4.
+func (s *Service) WithStageGate(g StageGate) *Service {
+	s.gate = g
+	return s
 }
 
 // Каналы свода по ЮЛ. Совпадают с подписями Code_канала_для_маржи из справочника
@@ -277,6 +289,11 @@ func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year
 	// черновиках. Ровно на это наткнулся заказчик, двигая этапы вместо карточек.
 	if err := s.guardCardStage(ctx, plID, code, action); err != nil {
 		return nil, err
+	}
+	if s.gate != nil {
+		if err := s.gate(ctx, plID, code, action); err != nil {
+			return nil, err
+		}
 	}
 	next, err := applyStageAction(stages, code, action, target)
 	if err != nil {

@@ -112,3 +112,74 @@ func TestLeSvod_BuildAdjustRevoke_PG(t *testing.T) {
 		t.Error("признак Closed должен быть выставлен")
 	}
 }
+
+// Этап 1.6 нельзя отправить, пока формы периода не утверждены: ручное движение отклоняется проверкой готовности.
+func TestLeSvod_Gate16_PG(t *testing.T) {
+	svc, cards, pool, pl, ctx := svodSyncFixture(t, &stubExpSource{})
+	le := NewLeSvodService(cards, svc, nil, NewRateBook(nil), NewLeAdjustRepo(pool), nil)
+	flow := NewService(NewPgStore(pool), nil, nil).WithStageGate(le.Gate)
+
+	_, err := flow.StageAction(ctx, Principal{UserID: 1, PlansAdmin: true}, pl, 2090, 8, "BY", "1.6", "submit", "", "")
+	if err == nil || !strings.Contains(err.Error(), "этап 1.6 нельзя завершить") || !strings.Contains(err.Error(), "не утверждены") {
+		t.Fatalf("при неутверждённых формах 1.6 должен отклоняться: %v", err)
+	}
+	// Возврат этапа проверкой не блокируется.
+	if err := le.Gate(ctx, pl, "1.6", "return"); err != nil {
+		t.Errorf("возврат не проверяется: %v", err)
+	}
+	// Другие этапы проверка не трогает.
+	if err := le.Gate(ctx, pl, "1.5", "submit"); err != nil {
+		t.Errorf("этап 1.5 не проверяется: %v", err)
+	}
+}
+
+// Архивная карточка расходов «убрана из периода»: её суммы не попадают в свод по ЮЛ, а этап 1.6 она не блокирует.
+func TestLeSvod_ArchivedExpenseCardLeavesSvod_PG(t *testing.T) {
+	src := &stubExpSource{cells: []ExpCostCell{{Scenario: ExpSrcTactic, Year: 2090, Month: 8, CodePL: 24, CodeCFO: 101, Amount: 400, Company: "F",
+		Country: "BY", GroupPL: "ВЫПЛАТЫ РАБОТНИКАМ", Expense: "ЗП", CFO: "Магазин"}}}
+	svc, cards, pool, pl, ctx := svodSyncFixture(t, src)
+	list, err := cards.Cards(ctx, pl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var byCard int64
+	for _, c := range list {
+		if c.FormCode == TemplateExp && c.ScopeKey == "R-BY" {
+			byCard = c.ID
+		}
+	}
+	if _, err := svc.Form(ctx, Principal{UserID: 1, PlansAdmin: true}, byCard, ExpFilter{}); err != nil {
+		t.Fatal(err)
+	}
+	_, inst, _ := svc.access(ctx, byCard)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if rows, _ := expAllRows(ctx, svc.repo, inst.ID); len(rows) >= 1 {
+			break
+		}
+	}
+	le := NewLeSvodService(cards, svc, nil, NewRateBook(nil), NewLeAdjustRepo(pool), nil)
+	s, err := le.Build(ctx, pl, ExpWindowMonth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := leRow(t, s, "exp:Заработная плата"); !leNear(r.TotAll, 400) {
+		t.Fatalf("до архива расходы в своде: %+v", r)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE form_card SET status=$2 WHERE id=$1`, byCard, CardArchived); err != nil {
+		t.Fatal(err)
+	}
+	s, err = le.Build(ctx, pl, ExpWindowMonth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range s.Rows {
+		if r.Section == LeSectionExp {
+			t.Errorf("архивная карточка не должна попадать в свод: %+v", r)
+		}
+	}
+	for _, i := range s.Readiness {
+		if i.Code == "expenses_not_approved" && strings.Contains(i.Message, "Розница РБ") {
+			t.Errorf("архивная карточка не блокирует готовность: %s", i.Message)
+		}
+	}
+}
