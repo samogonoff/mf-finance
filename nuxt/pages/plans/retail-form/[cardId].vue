@@ -222,7 +222,7 @@
                 <option value="strategy">Стратегия</option>
                 <option value="tactic">Утверждённая тактика</option>
                 <option value="new_strategy">Новая стратегия</option>
-                <option value="fact">Факт прошлого года</option>
+                <option value="fact">Факт</option>
               </select>
             </label>
             <!-- Надбавка убрана (ТЗ доработок п. 2.2): рабочее поле — коэффициент,
