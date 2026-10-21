@@ -584,6 +584,9 @@ func main() {
 	plansCards.WithSubmitGate(plans.TemplateExp,
 		plans.NewRoutedExpSubmitGate(plans.NewExpSubmitGate(plansExp), plans.NewCfoSubmitGate(plansCfoSvc)))
 	plansExpH := plans.NewExpHandler(plansExp, plansPrincipal)
+	// Свод «Бюджет по ЮЛ» (этапы 1.6, 3, 4): продажи и расходы по ЮЛ ЦФО, корректировки итогов.
+	plansLeH := plans.NewLeHandler(plans.NewLeSvodService(plansCards, plansExp, plansSvc.Svod, plansRates,
+		plans.NewLeAdjustRepo(pool), plansStore.Stages), plansPrincipal)
 	plansCfoH := plans.NewCfoExpenseHandler(plansCfoSvc, plansPrincipal)
 	plansCfoRegistryH := plans.NewCfoExpenseRegistryHandler(pool, plansCards, plansScope, plansPrincipal)
 
@@ -652,6 +655,9 @@ func main() {
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormGet))
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormSave))
 	mux.HandleFunc("GET /api/plans/exp-consolidated/{plId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ConsolidatedGet))
+	mux.HandleFunc("GET /api/plans/le-svod/{plId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansLeH.Get))
+	mux.HandleFunc("POST /api/plans/le-svod/{plId}/adjust", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansLeH.Adjust))
+	mux.HandleFunc("DELETE /api/plans/le-svod/{plId}/adjust/{id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansLeH.Revoke))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/sync", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.SyncPost))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.BulkApply))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/totals", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.TotalsGet))
