@@ -26,8 +26,16 @@
           <span v-if="sourceNote" class="src-note" :title="sourceNoteTitle"> · {{ sourceNote }}</span>
           <span v-if="card?.locked" class="lock-note"><Icon name="lucide:lock" /> период закрыт на запись</span>
         </p>
+        <p v-if="card" class="page-subtitle">
+          Статус формы: <span class="badge" :class="statusTone(card.status)">{{ card.status_label || card.status }}</span>
+          <span v-if="savedAt" class="src-note"> · сохранено в {{ savedAt }}</span>
+          <span v-else-if="dirty" class="lock-note"> · есть несохранённые изменения</span>
+        </p>
       </div>
       <div class="page-actions">
+        <button v-if="card" class="btn btn-ghost" :title="'Отправить форму на согласование или посмотреть, на каком шаге она находится'" @click="processOpen = !processOpen">
+          <Icon name="lucide:check-check" /> Согласование
+        </button>
         <NuxtLink v-if="card" :to="`/plans/exp/${card.pl_id}`" class="btn btn-ghost">
           <Icon name="lucide:arrow-left" /> К комплекту
         </NuxtLink>
@@ -94,6 +102,13 @@
 
     <p v-if="error" class="banner banner-neg">{{ error }}</p>
     <p v-if="note" class="banner banner-pos">{{ note }}</p>
+    <!-- Сохранение только записывает суммы. Этап 1.6 ждёт УТВЕРЖДЕНИЯ формы, поэтому после ввода её нужно отправить на согласование. -->
+    <p v-if="loaded && editable && card && (card.status === 'draft' || card.status === 'returned')" class="banner banner-info">
+      Форма в работе: «Сохранить» только записывает суммы. Чтобы этап 1.6 пошёл дальше, отправьте форму на согласование
+      (кнопка «Согласование» сверху) — пока она не утверждена, свод по ЮЛ закрыть нельзя.
+    </p>
+    <CardProcessPanel v-if="processOpen && card" :card-id="cardId" :can-submit="!dirty"
+      submit-hint="Сначала сохраните введённые суммы" @changed="onProcessChanged" />
     <p v-if="syncRunning" class="banner banner-info">
       <Icon name="lucide:loader-circle" class="spin" />
       Идёт загрузка состава строк и факта из источника затрат. Процедура работает несколько минут —
@@ -559,6 +574,7 @@ function money(v: number | null | undefined, opts: MoneyOpts = {}): string {
   return moneyBase(v, { currency: card.value?.currency || undefined, ...opts });
 }
 import { useGridNav } from "~/composables/useGridNav";
+import CardProcessPanel from "~/components/plans/CardProcessPanel.vue";
 import {
   useExpForm, expCell, expRowTotal, MONTHS_SHORT,
   type ExpBulkAction, type ExpCalcExtra, type ExpCalcResult, type ExpFactFill, type ExpCell, type ExpForm, type ExpImportResult,
@@ -577,6 +593,14 @@ const loaded = ref(false);
 const busy = ref(false);
 const error = ref("");
 const note = ref("");
+// Время последнего сохранения в этой сессии и панель согласования карточки.
+const savedAt = ref("");
+const processOpen = ref(false);
+const statusTone = (s: string) =>
+  s === "approved" || s === "published" ? "badge-pos" : s === "returned" ? "badge-neg" : s === "on_approval" ? "badge-warn" : "badge-muted";
+const onProcessChanged = async () => {
+  await reload({ keepFilter: true });
+};
 const collapsed = ref<Set<string>>(new Set());
 
 /** Несохранённые правки: ключ «ЦФО:статья:месяц» → значение (null = очистить). */
@@ -1184,6 +1208,7 @@ const save = async () => {
     const r = await api.save(cardId, cells);
     drafts.value = new Map();
     note.value = `Сохранено, изменённых ячеек: ${r.changed}`;
+    savedAt.value = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
     await reload({ keepFilter: true });
   } catch (e) {
     error.value = apiError(e, "Не удалось сохранить значения");
