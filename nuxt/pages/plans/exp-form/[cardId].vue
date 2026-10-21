@@ -464,10 +464,14 @@
 
             <template v-for="item in windowItems" :key="item.key">
               <tr v-if="item.kind === 'group'" class="grp-row" @click="toggleGroup(item.group)">
+                <!-- Раскладка flex — во вложенном блоке: у самой ячейки display:flex отключал colspan, и суммы группы
+                     сдвигались на три колонки влево (итог «Факт прошлого года» оказывался под месяцем плана). -->
                 <td class="sticky-c grp-cell" :colspan="visibleAttrColumns.length">
-                  <Icon :name="collapsed.has(item.group) ? 'lucide:chevron-right' : 'lucide:chevron-down'" />
-                  {{ item.group }}
-                  <span class="grp-count">{{ groupRows(item.group).length }}</span>
+                  <div class="grp-label">
+                    <Icon :name="collapsed.has(item.group) ? 'lucide:chevron-right' : 'lucide:chevron-down'" />
+                    {{ item.group }}
+                    <span class="grp-count">{{ groupRows(item.group).length }}</span>
+                  </div>
                 </td>
                 <td v-for="mm in shownMonths" :key="mm" class="col-num grp-num">{{ money(groupMonthTotal(item.group, mm)) }}</td>
                 <td class="col-num grp-num strong">{{ money(groupTotal(item.group)) }}</td>
@@ -1398,10 +1402,12 @@ onBeforeRouteLeave(() => {
   left: 0;
   font-weight: var(--fw-semibold);
   color: var(--text-strong);
+  background: var(--bg-surface-3);
+}
+.grp-label {
   display: flex;
   align-items: center;
   gap: 4px;
-  background: var(--bg-surface-3);
 }
 .grp-count { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-muted); }
 .grp-num { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-secondary); }
