@@ -39,56 +39,52 @@
         <NuxtLink v-if="card" :to="`/plans/exp/${card.pl_id}`" class="btn btn-ghost">
           <Icon name="lucide:arrow-left" /> К комплекту
         </NuxtLink>
-        <NuxtLink
-          :to="`/plans/exp-registry/${cardId}`"
-          class="btn btn-ghost"
-          title="Детальные таблицы ФОТ, командировок, логистики и ИТ: их итоги подставляются в статьи формы (24, 27, 30, 48, 51, 52). Если такие расходы вы вводите прямо в форме — реестры не нужны."
-        >
-          <Icon name="lucide:list-checks" /> Реестры
-        </NuxtLink>
-        <NuxtLink
-          :to="`/plans/exp-summary/${cardId}`"
-          class="btn btn-ghost"
-          title="Свод ЭТОЙ формы: план и факт по группам PL. Сравнить все четыре страны — «Свод 4 страны»."
-        >
-          <Icon name="lucide:layout-list" /> Свод формы
-        </NuxtLink>
-        <NuxtLink
-          v-if="card && (card.scope_key || '').startsWith('R-')"
-          :to="`/plans/exp-consolidated/${card.pl_id}`"
-          class="btn btn-ghost"
-          title="Расходы розницы по четырём странам в BYN: группы PL, факт для сравнения"
-        >
-          <Icon name="lucide:wallet" /> Свод 4 страны
-        </NuxtLink>
-        <NuxtLink
-          v-if="card && (card.scope_key === 'IM-BY' || card.scope_key === 'OPT')"
-          :to="`/plans/exp-consolidated/${card.pl_id}?channel=${card.scope_key === 'OPT' ? 'opt' : 'im'}`"
-          class="btn btn-ghost"
-          :title="card.scope_key === 'OPT' ? 'Расходы опта по странам РБ, РФ, УЗ в BYN: группы PL, факт для сравнения' : 'Расходы интернет-магазина в BYN: группы PL, факт для сравнения'"
-        >
-          <Icon name="lucide:wallet" /> {{ card.scope_key === "OPT" ? "Свод опта" : "Свод ИМ" }}
-        </NuxtLink>
-        <button class="btn btn-sm btn-ghost" @click="columnsOpen = !columnsOpen">
-          <Icon name="lucide:columns-3" /> Колонки
-        </button>
-        <a class="btn btn-sm btn-ghost" :href="exportHref" target="_blank" rel="noopener">
-          <Icon name="lucide:download" /> Экспорт
-        </a>
-        <button v-if="editable" class="btn btn-sm btn-ghost" :disabled="syncRunning" title="Перечитать состав строк и факт из источника затрат (OLAP). Процедура работает несколько минут." @click="runSync">
-          <Icon name="lucide:refresh-cw" :class="{ spin: syncRunning }" /> Обновить из источника
-        </button>
-        <button
-          class="btn btn-sm btn-ghost"
-          :disabled="busy"
-          title="Скачать пример .xlsx: колонки-ключи (код ЦФО и код статьи), месяцы плана и одна строка вашей формы. Заполните месяцы и загрузите файл кнопкой «Импорт»."
-          @click="downloadImportTemplate"
-        >
-          <Icon name="lucide:file-down" /> Пример импорта
-        </button>
-        <button class="btn btn-sm btn-ghost" :disabled="!editable" @click="importInput?.click()">
-          <Icon name="lucide:upload" /> Импорт
-        </button>
+        <div ref="moreRoot" class="more-menu">
+          <button class="btn btn-ghost" :aria-expanded="moreOpen" @click="moreOpen = !moreOpen">
+            <Icon name="lucide:ellipsis" /> Ещё
+          </button>
+          <div v-if="moreOpen" class="more-pop" @click="moreOpen = false">
+            <NuxtLink
+              :to="`/plans/exp-registry/${cardId}`"
+              class="more-item"
+              title="Детальные таблицы ФОТ, командировок, логистики и ИТ: их итоги подставляются в статьи формы (24, 27, 30, 48, 51, 52). Если такие расходы вы вводите прямо в форме — реестры не нужны."
+            ><Icon name="lucide:list-checks" /> Реестры</NuxtLink>
+            <NuxtLink
+              :to="`/plans/exp-summary/${cardId}`"
+              class="more-item"
+              title="Свод ЭТОЙ формы: план и факт по группам PL. Сравнить все четыре страны — «Свод 4 страны»."
+            ><Icon name="lucide:layout-list" /> Свод формы</NuxtLink>
+            <NuxtLink
+              v-if="card && (card.scope_key || '').startsWith('R-')"
+              :to="`/plans/exp-consolidated/${card.pl_id}`"
+              class="more-item"
+              title="Расходы розницы по четырём странам в BYN: группы PL, факт для сравнения"
+            ><Icon name="lucide:wallet" /> Свод 4 страны</NuxtLink>
+            <NuxtLink
+              v-if="card && (card.scope_key === 'IM-BY' || card.scope_key === 'OPT')"
+              :to="`/plans/exp-consolidated/${card.pl_id}?channel=${card.scope_key === 'OPT' ? 'opt' : 'im'}`"
+              class="more-item"
+              :title="card.scope_key === 'OPT' ? 'Расходы опта по странам РБ, РФ, УЗ в BYN: группы PL, факт для сравнения' : 'Расходы интернет-магазина в BYN: группы PL, факт для сравнения'"
+            ><Icon name="lucide:wallet" /> {{ card.scope_key === "OPT" ? "Свод опта" : "Свод ИМ" }}</NuxtLink>
+            <hr class="more-sep" />
+            <button class="more-item" @click="columnsOpen = !columnsOpen"><Icon name="lucide:columns-3" /> Колонки</button>
+            <a class="more-item" :href="exportHref" target="_blank" rel="noopener"><Icon name="lucide:download" /> Экспорт</a>
+            <button
+              v-if="editable"
+              class="more-item"
+              :disabled="syncRunning"
+              title="Перечитать состав строк и факт из источника затрат (OLAP). Процедура работает несколько минут."
+              @click="runSync"
+            ><Icon name="lucide:refresh-cw" :class="{ spin: syncRunning }" /> Обновить из источника</button>
+            <button
+              class="more-item"
+              :disabled="busy"
+              title="Скачать пример .xlsx: колонки-ключи (код ЦФО и код статьи), месяцы плана и одна строка вашей формы. Заполните месяцы и загрузите файл кнопкой «Импорт»."
+              @click="downloadImportTemplate"
+            ><Icon name="lucide:file-down" /> Пример импорта</button>
+            <button class="more-item" :disabled="!editable" @click="importInput?.click()"><Icon name="lucide:upload" /> Импорт</button>
+          </div>
+        </div>
         <input ref="importInput" type="file" accept=".xlsx" class="hidden-file" @change="onImportFile" />
         <button class="btn btn-sm btn-ghost" :disabled="checking" @click="check">
           <Icon name="lucide:shield-check" :class="{ spin: checking }" /> Проверить
@@ -453,6 +449,10 @@
               >
                 {{ c.key === "cfo" && !isRetail ? "Площадка" : c.label }}{{ sortMark(c.key) }}
               </th>
+              <template v-if="showRef">
+                <th class="col-num c-ref" :title="`${factWord}: ${monthName} ${planYear - 1} (тот же месяц прошлого года)${factBasisNote}`">Факт {{ monthName }} {{ planYear - 1 }}</th>
+                <th class="col-num c-ref" :title="`${factWord} прошлого месяца: ${refPrev.label}${factBasisNote}`">Факт {{ refPrev.label }}</th>
+              </template>
               <th
                 v-for="mm in shownMonths"
                 :key="mm"
@@ -462,10 +462,6 @@
               >{{ MONTHS_SHORT[mm - 1] }}{{ sortMark(monthKey(mm)) }}</th>
               <th class="col-num c-total" :title="`Сумма плана за показанные месяцы (${viewTotalLabel})`">Итого план</th>
               <th class="col-num c-fact" :title="`${factWord} ${planYear - 1} за год${factBasisNote}`">Факт {{ planYear - 1 }}</th>
-              <template v-if="showRef">
-                <th class="col-num c-ref" :title="`${factWord}: ${monthName} ${planYear - 1} (тот же месяц прошлого года)${factBasisNote}`">Факт {{ monthName }} {{ planYear - 1 }}</th>
-                <th class="col-num c-ref" :title="`${factWord} прошлого месяца: ${refPrev.label}${factBasisNote}`">Факт {{ refPrev.label }}</th>
-              </template>
               <th class="c-act">Строка</th>
             </tr>
           </thead>
@@ -487,13 +483,13 @@
                     <span class="grp-count">{{ groupRows(item.group).length }}</span>
                   </div>
                 </td>
-                <td v-for="mm in shownMonths" :key="mm" class="col-num grp-num">{{ money(groupMonthTotal(item.group, mm)) }}</td>
-                <td class="col-num grp-num strong">{{ money(groupTotal(item.group)) }}</td>
-                <td class="col-num grp-num">{{ money(groupFactTotal(item.group)) }}</td>
                 <template v-if="showRef">
                   <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'ly')) }}</td>
                   <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'prev')) }}</td>
                 </template>
+                <td v-for="mm in shownMonths" :key="mm" class="col-num grp-num">{{ money(groupMonthTotal(item.group, mm)) }}</td>
+                <td class="col-num grp-num strong">{{ money(groupTotal(item.group)) }}</td>
+                <td class="col-num grp-num">{{ money(groupFactTotal(item.group)) }}</td>
                 <td></td>
               </tr>
 
@@ -504,6 +500,10 @@
                   :class="[c.sticky ? 'sticky-c' : '', c.cls, c.mono ? 'mono' : '']"
                   :title="String(attrValue(item.row, c.key) || '')"
                 >{{ attrValue(item.row, c.key) || "—" }}</td>
+                <template v-if="showRef">
+                  <td class="col-num c-ref muted">{{ refText(item.row, 'ly') }}</td>
+                  <td class="col-num c-ref muted">{{ refText(item.row, 'prev') }}</td>
+                </template>
                 <td v-for="(mm, ci) in shownMonths" :key="mm" class="col-num c-mon">
                   <input
                     class="cell-input"
@@ -513,17 +513,14 @@
                     :disabled="!editable || monthLocked(mm)"
                     :title="monthLocked(mm) ? `Месяц уже прошёл — по нему подтягивается факт, планировать его нельзя` : undefined"
                     inputmode="decimal"
-                    @focus="nav.onFocusCell(item.index, ci)"
+                    @focus="onCellFocus($event, item.row, mm, item.index, ci)"
+                    @blur="onCellBlur"
                     @keydown="nav.onKeydown($event, item.index, ci)"
                     @input="onInput(item.row, mm, ($event.target as HTMLInputElement).value)"
                   />
                 </td>
                 <td class="col-num c-total strong">{{ money(rowPlanTotal(item.row)) }}</td>
                 <td class="col-num c-fact muted">{{ money(expRowTotal(item.row, 'fact')) }}</td>
-                <template v-if="showRef">
-                  <td class="col-num c-ref muted">{{ refText(item.row, 'ly') }}</td>
-                  <td class="col-num c-ref muted">{{ refText(item.row, 'prev') }}</td>
-                </template>
                 <td class="c-act">
                   <div class="row-acts">
                     <button
@@ -593,6 +590,14 @@ const error = ref("");
 const note = ref("");
 // Время последнего сохранения в этой сессии и панель согласования карточки.
 const savedAt = ref("");
+// Меню «Ещё» в шапке: редкие действия и переходы, чтобы кнопки не уезжали за край экрана.
+const moreOpen = ref(false);
+const moreRoot = ref<HTMLElement | null>(null);
+const onDocClick = (e: MouseEvent) => {
+  if (moreOpen.value && moreRoot.value && !moreRoot.value.contains(e.target as Node)) moreOpen.value = false;
+};
+onMounted(() => document.addEventListener("click", onDocClick));
+onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
 const processOpen = ref(false);
 const statusTone = (s: string) =>
   s === "approved" || s === "published" ? "badge-pos" : s === "returned" ? "badge-neg" : s === "on_approval" ? "badge-warn" : "badge-muted";
@@ -1040,9 +1045,26 @@ const draftOrSaved = (row: ExpRow, month: number): number | undefined => {
   return expCell(row, "plan", month);
 };
 
+// Пока ячейка в фокусе, показываем ровно то, что набрано (иначе «12,» превращалось бы в «12»); вне фокуса — число в том же
+// формате, что и итоги рядом: «4 120 209,48».
+const editing = ref<{ key: string; text: string } | null>(null);
 const cellText = (row: ExpRow, month: number): string => {
+  const k = key(row.code_cfo, row.code_pl, month);
+  if (editing.value && editing.value.key === k) return editing.value.text;
   const v = draftOrSaved(row, month);
-  return v === undefined ? "" : String(v);
+  if (v === undefined) return "";
+  const fd = Number.isInteger(v) ? 0 : 2;
+  return v.toLocaleString("ru-RU", { minimumFractionDigits: fd, maximumFractionDigits: fd });
+};
+const onCellFocus = (e: FocusEvent, row: ExpRow, month: number, ri: number, ci: number) => {
+  nav.onFocusCell(ri, ci);
+  const v = draftOrSaved(row, month);
+  editing.value = { key: key(row.code_cfo, row.code_pl, month), text: v === undefined ? "" : String(v) };
+  const el = e.target as HTMLInputElement;
+  nextTick(() => el.select());
+};
+const onCellBlur = () => {
+  editing.value = null;
 };
 
 const rowPlanTotal = (row: ExpRow): number => {
@@ -1182,6 +1204,7 @@ const setDraft = (row: ExpRow, month: number, value: number | null) => {
 };
 
 const onInput = (row: ExpRow, month: number, raw: string) => {
+  if (editing.value) editing.value.text = raw;
   const s = raw.trim().replace(/\s/g, "").replace(",", ".");
   // Пустая строка — это ОЧИСТКА ячейки, а не ноль (ТЗ §7.8): ноль вводится явно.
   if (s === "") {
@@ -1378,6 +1401,16 @@ onBeforeRouteLeave(() => {
 </script>
 
 <style scoped>
+.more-menu { position: relative; }
+.more-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: var(--z-dropdown); min-width: 230px; display: flex; flex-direction: column; padding: var(--sp-2); background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: var(--rd-3); }
+.more-item { display: flex; align-items: center; gap: var(--sp-3); padding: 7px 10px; border: 0; background: none; border-radius: var(--rd-2, 3px); font-size: var(--fs-sm); color: var(--text-primary); text-align: left; text-decoration: none; cursor: pointer; white-space: nowrap; }
+.more-item:hover:not(:disabled) { background: var(--bg-tonal); }
+.more-item:disabled { opacity: .5; cursor: default; }
+.more-sep { border: 0; border-top: 1px solid var(--border-strong); margin: var(--sp-2) 0; width: 100%; }
+/* Кнопок в шапке много: переносим на следующие строки, а не выталкиваем за край экрана. */
+.page-exp .page-actions { flex-wrap: wrap; flex: 1 1 100%; gap: var(--sp-2) var(--sp-3); }
+.page-exp .page-actions .btn { white-space: nowrap; }
+
 .page-exp { display: flex; flex-direction: column; gap: var(--sp-4); }
 .lock-note { color: var(--neg); display: inline-flex; align-items: center; gap: 3px; margin-left: var(--sp-3); }
 .dirty-dot { color: var(--warn); margin-left: 4px; }
