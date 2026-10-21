@@ -4,13 +4,20 @@ export interface CardStatusInput {
   status: string;
   step_code?: string;
   status_label?: string;
+  form_code?: string;
+  scope_key?: string;
   /** У черновика формы расходов есть сохранённые суммы (приходит с карточкой). */
   has_data?: boolean;
 }
 
+function expHasDataKnown(c: CardStatusInput): boolean {
+  return c.form_code === "TPL-CFO-EXP" && !(c.scope_key || "").startsWith("CFO-");
+}
+
 export function cardStatusText(c: CardStatusInput): string {
   switch (c.status) {
-    case "draft": return c.has_data ? "Выполняется" : "Новый";
+    // Признак has_data считает сервер только для форм расходов ЦП (не CFO-*); у остальных черновиков он неизвестен — нейтральная подпись.
+    case "draft": return expHasDataKnown(c) ? (c.has_data ? "Выполняется" : "Новый") : "Черновик";
     case "on_approval": return `Выполняется · на согласовании (шаг ${c.step_code})`;
     case "returned": return `Выполняется · возвращено на доработку (шаг ${c.step_code})`;
     case "approved": return "Закрыто";
