@@ -1102,11 +1102,14 @@
               <!-- Свод: карточки стран (клик — детализация по статьям) -->
               <template v-if="!b3Country">
                 <h3 class="grid-caption">ДИНАМИКА ПО СТРАНАМ (ГОД, ОЖИДАНИЕ {{ yearPlan }} К ФАКТУ {{ yearPrev }})</h3>
+                <!-- Второй слайд декы (лист 30, карточки статей) открывается отсюда —
+                     без подсказки проваливание не находили. -->
+                <p class="b3-hint">Нажмите на карточку страны — откроется детализация затрат подразделения по статьям ФОТ</p>
                 <section class="cc-grid">
                   <article v-for="c in b3Cards" :key="c.cc" class="ccard b3-ccard"
                            :title="`Детализация: ${c.label} — ${b3DeptLabel}`"
                            @click="b3OpenCountry(c.cc)">
-                    <div><span class="cc-code">{{ c.cc }}</span> <span class="b3-cc-name">{{ c.label }}</span></div>
+                    <div><span class="cc-code">{{ c.cc }}</span> <span class="b3-cc-name">{{ c.label }}</span><span class="b3-go" aria-hidden="true">›</span></div>
                     <span class="cc-big">{{ fmt0(c.exp) }}<span class="rb-unit"> тыс {{ currency }}</span></span>
                     <div class="cc-sep" role="presentation" />
                     <p class="cc-line b3-drow">1 ПГ {{ yr2(yearPlan) }}/{{ yr2(yearPrev) }}:
@@ -2952,6 +2955,9 @@ const fmtDateTime = (iso: any) => {
 /* Карточка страны кликабельна (переход к статьям листа 30) */
 .b3-ccard { cursor: pointer; transition: border-color .15s ease, transform .15s ease; }
 .b3-ccard:hover, .b3-ccard:focus-visible { border-color: var(--fot-accent-light); transform: translateY(-1px); }
+/* Подсказка проваливания в лист 30 и стрелка на карточке страны */
+.b3-hint { margin: 2px 0 6px; font-size: 11.5px; color: var(--fot-muted); }
+.b3-ccard .b3-go { float: right; color: var(--fot-accent-light); font-size: 18px; line-height: 1; font-weight: 700; }
 .b3-cc-name { font-size: 13px; color: var(--fot-muted); }
 .b3-drow b { font-variant-numeric: tabular-nums; }
 /* Детализация страны: линия и карточки статей (3 периода + круг Δ%) */
