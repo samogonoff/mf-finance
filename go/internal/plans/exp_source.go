@@ -41,6 +41,9 @@ type ExpCostCell struct {
 	// Projects и SpecialAccess — измерения фильтра страницы эталона (ответ 5.4).
 	Projects      string
 	SpecialAccess string
+	// Basis — на чём построена ячейка факта, если иначе, чем вся выборка: ExpFactBasisPayments у платёжных ячеек, которые
+	// добавлены к начислениям по месяцам, где начислений нет. Пусто — как задаёт след чтения (expFactBasisFrom).
+	Basis string
 }
 
 // ExpCfoAttrs — атрибуты ЦФО из справочника (ТЗ §2.4): то, чего нет в строке

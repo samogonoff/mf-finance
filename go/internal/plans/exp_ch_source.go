@@ -279,20 +279,26 @@ func (s *chExpSource) Costs(ctx context.Context, kind, country string, years []i
 	// платёжный снова не используется.
 	if _, cfo := CfoExpCodeFromKind(kind); !cfo && !expHasScenario(out, ExpSrcFact) {
 		// Факт по начислениям — из реплики P&L (Table_Fin_PL), если включено: в выдаче процедуры его нет.
+		pay := s.paymentsFact(ctx, kind, country, years)
 		if acc := s.accrualFact(ctx, kind, country, years); len(acc) > 0 {
-			return append(out, acc...), nil
-		}
-		if pb, err := s.query(ctx, expCostsSQLScenario(kind, country, years, ExpSrcFactPayments), "JSONEachRow"); err == nil {
-			if pc, perr := parseChCostRows(pb); perr == nil {
-				for i := range pc {
-					pc[i].Scenario = ExpSrcFact
-				}
-				if len(pc) > 0 {
-					noteExpFactBasis(ctx, ExpFactBasisPayments)
-				}
-				out = append(out, pc...)
+			// Начисления в реплике появляются после закрытия месяца: по месяцам, где их за срез нет вовсе, остаётся
+			// платёжный факт (колонки «прошлый / текущий месяц» не должны пустеть). Такие ячейки помечены Basis.
+			have := map[[2]int]bool{}
+			for _, c := range acc {
+				have[[2]int{c.Year, c.Month}] = true
 			}
+			out = append(out, acc...)
+			for _, c := range pay {
+				if !have[[2]int{c.Year, c.Month}] {
+					out = append(out, c)
+				}
+			}
+			return out, nil
 		}
+		if len(pay) > 0 {
+			noteExpFactBasis(ctx, ExpFactBasisPayments)
+		}
+		out = append(out, pay...)
 	}
 	return out, nil
 }
@@ -396,6 +402,23 @@ func (s *chExpSource) accrualFact(ctx context.Context, kind, country string, yea
 		return nil
 	}
 	return cells
+}
+
+// paymentsFact — платёжный факт среза как «Факт по начислениям» (запасной путь); ячейки помечены Basis=payments.
+func (s *chExpSource) paymentsFact(ctx context.Context, kind, country string, years []int) []ExpCostCell {
+	pb, err := s.query(ctx, expCostsSQLScenario(kind, country, years, ExpSrcFactPayments), "JSONEachRow")
+	if err != nil {
+		return nil
+	}
+	pc, err := parseChCostRows(pb)
+	if err != nil {
+		return nil
+	}
+	for i := range pc {
+		pc[i].Scenario = ExpSrcFact
+		pc[i].Basis = ExpFactBasisPayments
+	}
+	return pc
 }
 
 func expHasScenario(cells []ExpCostCell, scenario string) bool {

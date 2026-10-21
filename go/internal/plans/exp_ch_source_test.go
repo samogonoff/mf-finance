@@ -239,6 +239,32 @@ func TestExpCHSource_AccrualFactFromFinPL(t *testing.T) {
 		t.Fatalf("факт по начислениям: %+v basis=%q", cells, trace.FactBasis)
 	}
 
+	// Месяцы без начислений дополняются платёжным фактом (ячейки помечены), месяцы с начислениями — нет.
+	payApr := strings.Replace(pay, `"m":3`, `"m":4`, 1)
+	stubGap := &chStub{count: "10\n", rows: chRowRetail + "\n", payments: pay + "\n" + payApr + "\n", accrual: acc + "\n"}
+	ctxG, traceG := WithExpSourceTrace(context.Background())
+	cellsG, _ := ExpCHSourceAccrualFact(newCHTest(t, stubGap, &fallbackSource{}), true).Costs(ctxG, ExpKindRetail, "BY", []int{2025, 2026})
+	var gapAcc, gapPay int
+	for _, c := range cellsG {
+		if c.Scenario != ExpSrcFact {
+			continue
+		}
+		switch {
+		case c.Month == 3 && c.Amount == 555 && c.Basis == "":
+			gapAcc++
+		case c.Month == 4 && c.Amount == 999 && c.Basis == ExpFactBasisPayments:
+			gapPay++
+		default:
+			t.Fatalf("лишняя ячейка факта: %+v", c)
+		}
+	}
+	if gapAcc != 1 || gapPay != 1 || traceG.FactBasis != "" {
+		t.Fatalf("дополнение платёжным фактом: acc=%d pay=%d basis=%q %+v", gapAcc, gapPay, traceG.FactBasis, cellsG)
+	}
+	if expCellBasis(ExpCostCell{Basis: ExpFactBasisPayments}, "") != ExpFactBasisPayments || expCellBasis(ExpCostCell{}, ExpFactBasisPayments) != ExpFactBasisPayments || expCellBasis(ExpCostCell{}, "") != "" {
+		t.Fatal("expCellBasis")
+	}
+
 	// Реплика пуста — запасной платёжный факт.
 	stub2 := &chStub{count: "10\n", rows: chRowRetail + "\n", payments: pay + "\n"}
 	ctx2, trace2 := WithExpSourceTrace(context.Background())
