@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -85,6 +87,17 @@ type chExpSource struct {
 	url     string
 	client  *http.Client
 	refresh func(ctx context.Context) error
+	// accrualFromFinPL — «Факт по начислениям» берётся из реплики P&L finance.findwh_table_fin_pl (см. accrualFact).
+	accrualFromFinPL bool
+}
+
+// ExpCHSourceAccrualFact включает у чтения из ClickHouse факт по начислениям из реплики P&L (PLANS_EXP_FACT_FROM_FINPL).
+// Для других источников возвращает его как есть.
+func ExpCHSourceAccrualFact(src ExpDataSource, on bool) ExpDataSource {
+	if ch, ok := src.(*chExpSource); ok {
+		ch.accrualFromFinPL = on
+	}
+	return src
 }
 
 // NewExpCHSource — читатель затрат из ClickHouse с откатом на base. refresh — запуск
@@ -265,6 +278,10 @@ func (s *chExpSource) Costs(ctx context.Context, kind, country string, years []i
 	// процедуры напрямую): без него колонки факта рядом с вводом пустые. Появятся начисления —
 	// платёжный снова не используется.
 	if _, cfo := CfoExpCodeFromKind(kind); !cfo && !expHasScenario(out, ExpSrcFact) {
+		// Факт по начислениям — из реплики P&L (Table_Fin_PL), если включено: в выдаче процедуры его нет.
+		if acc := s.accrualFact(ctx, kind, country, years); len(acc) > 0 {
+			return append(out, acc...), nil
+		}
 		if pb, err := s.query(ctx, expCostsSQLScenario(kind, country, years, ExpSrcFactPayments), "JSONEachRow"); err == nil {
 			if pc, perr := parseChCostRows(pb); perr == nil {
 				for i := range pc {
@@ -278,6 +295,107 @@ func (s *chExpSource) Costs(ctx context.Context, kind, country string, years []i
 		}
 	}
 	return out, nil
+}
+
+// expFinPLReports — значения «Для отчета» в Table_Fin_PL, из которых строится факт P&L. Как в копии факта контура
+// «Бюджетирование» (budget.usp_RefreshFact, сверена с FactAndBudgetPlusCompany на 144 672 ячейках).
+var expFinPLReports = []string{"PL", "BS_20", "BS_25"}
+
+// expAccrualFactSQL — факт по начислениям из реплики P&L (finance.findwh_table_fin_pl, сценарий «факт»), приведённый к
+// виду строк затрат. Каталог статей (группа, название, спецдоступ) берётся из снимка затрат: Table_Fin_PL не знает
+// «спецдоступа», а статьи вне каталога формы не показываются. Проекта в P&L нет — суммы по всем проектам; ЦФО
+// без числового кода (35BK, 250BK, XXX) отбрасываются, как в копии факта контура.
+func expAccrualFactSQL(kind, country string, years []int) string {
+	amountCol := "amount"
+	if expKindInBYN(kind) {
+		amountCol = "amount_byn"
+	}
+	reports := make([]string, len(expFinPLReports))
+	for i, r := range expFinPLReports {
+		reports[i] = chLit(r)
+	}
+	w := []string{
+		"scenario = 'факт'",
+		"for_report IN (" + strings.Join(reports, ", ") + ")",
+		fmt.Sprintf("month >= '%d-01-01'", expCutoffYear),
+		"toInt32OrZero(code_cfo) > 0",
+	}
+	group1, group3 := expKindFilter(kind)
+	if group1 != "" {
+		// Группа ЦФО в справочнике бывает с номером («3.Магазины») и без («Магазины») — сравниваем без номера.
+		w = append(w, "replaceRegexpOne(group_cfo1, "+chLit(`^[0-9]+\.\s*`)+", '') = "+chLit(expStripGroupNumber(group1)))
+	}
+	if len(group3) > 0 {
+		lits := make([]string, len(group3))
+		for i, g := range group3 {
+			lits[i] = chLit(g)
+		}
+		w = append(w, "group_cfo3 IN ("+strings.Join(lits, ", ")+")")
+	}
+	if country != "" {
+		w = append(w, "country = "+chLit(country))
+	}
+	if len(years) > 0 {
+		ys := make([]string, len(years))
+		for i, y := range years {
+			ys[i] = strconv.Itoa(y)
+		}
+		w = append(w, "toYear(month) IN ("+strings.Join(ys, ",")+")")
+	}
+	// Группа ЦФО в строках формы — в написании источника затрат («3.Магазины»), чтобы факт не завёл вторую группу.
+	g1Expr := "any(f.g1)"
+	if group1 != "" {
+		g1Expr = chLit(group1)
+	}
+	var drop []string
+	for c := range expDropCodePL {
+		drop = append(drop, strconv.Itoa(c))
+	}
+	sort.Strings(drop)
+	var notSales []string
+	for _, word := range expSalesGroupWords {
+		notSales = append(notSales, "positionCaseInsensitiveUTF8(d.gp, "+chLit(word)+") = 0")
+	}
+	return `SELECT ` + chLit(ExpSrcFact) + ` AS scenario, f.country AS country, toYear(f.month) AS y, toMonth(f.month) AS m,
+       f.pl AS code_pl, any(d.gp) AS group_pl, any(d.ex) AS expense,
+       f.cfo_n AS code_cfo, any(f.cfn) AS cfo, ` + g1Expr + ` AS group_cfo1, any(f.g2) AS group_cfo2,
+       '' AS project_name, any(d.sa) AS special_access, toFloat64(sum(f.amt)) AS amount
+  FROM (SELECT country, month, toInt32OrZero(code_pl) AS pl, toInt32OrZero(code_cfo) AS cfo_n, cfo AS cfn,
+               group_cfo1 AS g1, group_cfo2 AS g2, toFloat64(` + amountCol + `) AS amt
+          FROM finance.findwh_table_fin_pl
+         WHERE ` + strings.Join(w, "\n           AND ") + `) AS f
+ INNER JOIN (SELECT code_pl AS dpl, any(group_pl) AS gp, any(expense) AS ex, max(special_access) AS sa
+               FROM finance.exp_costs GROUP BY code_pl) AS d ON d.dpl = f.pl
+ WHERE f.pl NOT IN (` + strings.Join(drop, ",") + `)
+   AND ` + strings.Join(notSales, "\n   AND ") + `
+ GROUP BY f.country, y, m, f.pl, f.cfo_n
+ LIMIT ` + strconv.Itoa(expRowCap+1)
+}
+
+// expStripGroupNumber — «3.Магазины» → «Магазины».
+func expStripGroupNumber(g string) string {
+	return strings.TrimSpace(expGroupNumberRe.ReplaceAllString(g, ""))
+}
+
+var expGroupNumberRe = regexp.MustCompile(`^[0-9]+\.\s*`)
+
+// accrualFact — «Факт по начислениям» из реплики P&L; пусто, если выключено, таблицы нет или в ней нет факта за срез
+// (тогда работает запасной платёжный факт). Ошибка чтения не ломает форму: пишется в лог.
+func (s *chExpSource) accrualFact(ctx context.Context, kind, country string, years []int) []ExpCostCell {
+	if !s.accrualFromFinPL {
+		return nil
+	}
+	body, err := s.query(ctx, expAccrualFactSQL(kind, country, years), "JSONEachRow")
+	if err != nil {
+		log.Printf("plans/exp: факт по начислениям из finance.findwh_table_fin_pl не прочитан, берём платёжный: %v", err)
+		return nil
+	}
+	cells, err := parseChCostRows(body)
+	if err != nil {
+		log.Printf("plans/exp: факт по начислениям из finance.findwh_table_fin_pl: %v", err)
+		return nil
+	}
+	return cells
 }
 
 func expHasScenario(cells []ExpCostCell, scenario string) bool {

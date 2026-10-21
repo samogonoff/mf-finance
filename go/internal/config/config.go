@@ -89,6 +89,9 @@ type Config struct {
 	// PlansExpCostsFromCH — форма 1.5 читает затраты из finance.exp_costs (а при пустой
 	// таблице или недоступном CH — из процедуры напрямую, медленно).
 	PlansExpCostsFromCH bool
+	// PlansExpFactFromFinPL — «Факт по начислениям» формы 1.5 берётся из реплики P&L finance.findwh_table_fin_pl
+	// (сценарий «факт»), а не подменяется платёжным фактом процедуры. Действует только вместе с PlansExpCostsFromCH.
+	PlansExpFactFromFinPL bool
 
 	// Модуль «Тактические планы» (docs/reports/plans/SPEC.md §10).
 	// PlansMock=1 → факт МП из фикстур (sources/mock_mp.go), как DEBT_MOCK.
@@ -254,6 +257,7 @@ func Load() Config {
 		ExpCostsAfterHour:    atoiDef(env("EXP_COSTS_AFTER_HOUR", "5"), 5),
 		ExpCostsBeforeHour:   atoiDef(env("EXP_COSTS_BEFORE_HOUR", "9"), 9),
 		PlansExpCostsFromCH:  env("PLANS_EXP_COSTS_FROM_CH", "1") == "1",
+		PlansExpFactFromFinPL: env("PLANS_EXP_FACT_FROM_FINPL", "0") == "1",
 
 		DebtValutaFQN:        env("MSSQL_VALUTA_FQN", "[SRV-SQL].Gpartner.dbo.valuta"),
 		DebtCurrencyDailyFQN: env("MSSQL_CURRENCY_DAILY_FQN", "[SRV-SQL].Checks.dbo.CurrencyDaily"),
