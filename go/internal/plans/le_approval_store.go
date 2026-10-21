@@ -2,6 +2,7 @@ package plans
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -130,22 +131,48 @@ func (r *pgLeApproval) RevokeDecisions(ctx context.Context, plID int64, stage, l
 	return int(tag.RowsAffected()), nil
 }
 
-// Lock — блокировка периода (advisory, на отдельном соединении) на время операции согласования.
+// leLockWait — сколько ждём блокировку периода, прежде чем отказать («период занят»).
+const leLockWait = 30 * time.Second
+
+// Lock — блокировка периода (advisory, на отдельном соединении) на время операции согласования. Соединение пула во время
+// ожидания НЕ удерживается: ожидающие пробуют pg_try_advisory_lock и между попытками возвращают соединение, иначе при
+// нескольких согласующих пул заканчивался бы (держатель лока тоже ходит в БД другими соединениями) и вставал весь API.
 func (r *pgLeApproval) Lock(ctx context.Context, plID int64) (func(), error) {
-	conn, err := r.pool.Acquire(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtext('le_approval'), $1::int)`, plID); err != nil {
+	deadline := time.Now().Add(leLockWait)
+	for {
+		conn, err := r.pool.Acquire(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var got bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext('le_approval'), $1::int)`, plID).Scan(&got); err != nil {
+			conn.Release()
+			return nil, err
+		}
+		if got {
+			return func() {
+				bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				var ok bool
+				if err := conn.QueryRow(bg, `SELECT pg_advisory_unlock(hashtext('le_approval'), $1::int)`, plID).Scan(&ok); err != nil || !ok {
+					// Не удалось снять лок: соединение с висящим сессионным локом нельзя возвращать в пул — закрываем его
+					// (лок исчезнет вместе с сессией), иначе период остался бы заблокирован навсегда.
+					_ = conn.Hijack().Close(bg)
+					return
+				}
+				conn.Release()
+			}, nil
+		}
 		conn.Release()
-		return nil, err
+		if time.Now().After(deadline) {
+			return nil, errors.New("период обрабатывается другим пользователем: повторите через несколько секунд")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(75 * time.Millisecond):
+		}
 	}
-	return func() {
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, _ = conn.Exec(bg, `SELECT pg_advisory_unlock(hashtext('le_approval'), $1::int)`, plID)
-		conn.Release()
-	}, nil
 }
 
 // OpenPeriods — периоды с завершённым этапом 1.6: на них могут решаться этапы 3 и 4.

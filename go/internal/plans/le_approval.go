@@ -375,19 +375,30 @@ func (s *LeApprovalService) RecheckOpen(ctx context.Context, p Principal) {
 	}
 }
 
+// LockPeriod берёт блокировку периода (решения, корректировки и возвраты по одному периоду идут по одному).
+func (s *LeApprovalService) LockPeriod(ctx context.Context, plID int64) (func(), error) {
+	return s.repo.Lock(ctx, plID)
+}
+
 // OnStageReturn вызывается после возврата этапа вручную (таймлайн): любой возврат делает недействительным итоговое утверждение
 // и согласия ЮЛ — согласовывали другие цифры. Возврат из Decide отключает хук (там согласия снимаются точнее).
 func (s *LeApprovalService) OnStageReturn(ctx context.Context, plID int64, code, target string) error {
 	if v, _ := ctx.Value(leReturnSkipKey{}).(bool); v || target == "4" {
 		return nil
 	}
+	unlock, err := s.repo.Lock(ctx, plID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	reason := "возврат этапа " + code + " на этап " + target
 	if _, err := s.repo.RevokeDecisions(ctx, plID, "4", "", true, reason); err != nil {
 		return err
 	}
-	_, err := s.repo.RevokeDecisions(ctx, plID, "3", "", true, reason)
+	_, err = s.repo.RevokeDecisions(ctx, plID, "3", "", true, reason)
 	return err
 }
+
 func (s *LeApprovalService) periodOf(ctx context.Context, plID int64) (int, int, error) {
 	cards, err := s.cards.Cards(ctx, plID)
 	if err != nil {
