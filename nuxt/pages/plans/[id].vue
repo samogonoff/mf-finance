@@ -81,7 +81,15 @@
                   <span class="badge" :class="statusBadge(st.status)">{{ statusLabel(st.status) }}</span>
                 </div>
                 <div class="sc-name">{{ st.name }}</div>
+                <!-- Этапы 1.6, 3, 4 работают со сводом «Бюджет по ЮЛ»: заданий у них нет, поэтому вместо «0/0 заданий» — вход в свод. -->
+                <NuxtLink v-if="isLeStage(st)" :to="`/plans/le-svod/${id}`" class="sc-tasks" title="Открыть свод «Бюджет по ЮЛ»: продажи и расходы по юридическим лицам, готовность, согласование">
+                  <span class="sct-count"><Icon name="lucide:table-2" /> Свод по ЮЛ</span>
+                  <span class="sct-people" :title="stageAssignees(st.stage_code).join(', ')">
+                    <Icon name="lucide:users" /> {{ peopleLabel(st.stage_code) }}
+                  </span>
+                </NuxtLink>
                 <button
+                  v-else
                   type="button"
                   class="sc-tasks"
                   :title="stageIsApproval(st) ? `Что согласуется на этапе ${st.stage_code}` : `Открыть задания этапа ${st.stage_code}`"
@@ -356,7 +364,16 @@
              КАРТОЧКАМ ФОРМ (у каждой формы свой лист согласования, ТЗ §2.2).
              Раньше здесь предлагалось «сгенерировать задания», и человек искал
              кнопку, которой не существует. -->
-        <div v-if="!stageTasks(stageModal.stage_code).length && stageIsApproval(stageModal)" class="sm-appr">
+        <div v-if="isLeStage(stageModal)" class="sm-appr">
+          <p class="sm-appr-txt">
+            Этап работает со сводом «Бюджет по ЮЛ»: там видны продажи и расходы по юридическим лицам, готовность форм,
+            согласующие и решения. Отдельных заданий у него нет.
+          </p>
+          <NuxtLink :to="`/plans/le-svod/${id}`" class="btn btn-sm btn-primary" @click="stageModal = null">
+            <Icon name="lucide:table-2" /> Открыть свод по ЮЛ
+          </NuxtLink>
+        </div>
+        <div v-else-if="!stageTasks(stageModal.stage_code).length && stageIsApproval(stageModal)" class="sm-appr">
           <p class="sm-appr-txt">
             Это этап согласования — отдельных заданий у него нет. Согласуются
             <b>карточки форм</b>: у каждой формы свой лист согласования, версия и возврат,
@@ -578,6 +595,8 @@ const isApproval = (code: string) => APPROVAL.has(code);
  * Этап согласования: признак приходит с сервера (stageDefs.IsApproval), а
  * локальный список APPROVAL остаётся фолбэком для старых ответов API.
  */
+// Этапы свода по ЮЛ: формирование (1.6), согласование ЮЛ (3), итоговое утверждение (4).
+const isLeStage = (st: StageState) => ["1.6", "3", "4"].includes(st.stage_code);
 const stageIsApproval = (st: StageState) => st.is_approval ?? APPROVAL.has(st.stage_code);
 
 /**
@@ -995,6 +1014,8 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 .sc-tasks {
+  text-decoration: none;
+  color: inherit;
   display: flex;
   flex-direction: column;
   gap: 2px;
