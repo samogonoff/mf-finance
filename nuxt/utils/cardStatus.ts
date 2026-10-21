@@ -14,7 +14,8 @@ export function cardStatusText(c: CardStatusInput, hasData = false): string {
     case "returned": return `Выполняется · возвращено на доработку (шаг ${c.step_code})`;
     case "approved": return "Закрыто";
     case "published": return "Закрыто · опубликовано";
-    case "publish_failed": return "Закрыто · ошибка публикации";
+    // Этап 1.6 такую карточку не считает закрытой (сервер: leCardClosed), поэтому и подпись не «Закрыто».
+    case "publish_failed": return "Выполняется · ошибка публикации";
     case "archived": return "Архив";
     default: return c.status_label || c.status;
   }

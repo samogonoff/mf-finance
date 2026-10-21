@@ -135,9 +135,20 @@ func (s *ExpService) Form(ctx context.Context, p Principal, cardID int64, f ExpF
 	} else if len(present) > 0 {
 		groups = orderGroups(present, order)
 	}
+	hasPlan := false
+	if c.Status == CardDraft {
+		if gt, gerr := s.repo.GroupTotals(ctx, in.ID); gerr == nil {
+			for _, v := range gt {
+				if v != 0 {
+					hasPlan = true
+					break
+				}
+			}
+		}
+	}
 	return ExpForm{
 		Instance: in, Card: c, Rows: rows, Total: total, Offset: f.Offset,
-		Groups: groups, ReadOnly: !cardEditable(c), Sync: s.syncStatusWithBasis(ctx, in.ID),
+		Groups: groups, ReadOnly: !cardEditable(c), HasPlan: hasPlan, Sync: s.syncStatusWithBasis(ctx, in.ID),
 	}, nil
 }
 
