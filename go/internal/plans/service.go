@@ -23,6 +23,29 @@ type Service struct {
 	cards CardReader
 	// retailSvod — товарооборот розницы для свода по ЮЛ. nil → в своде только МП.
 	retailSvod RetailSvodSource
+	// gate — дополнительная проверка перед ручным движением этапа (1.6, 3, 4: готовность свода по ЮЛ, решения согласующих).
+	// nil — проверки нет.
+	gate StageGate
+	// returnHook - вызывается после ручного возврата этапа (согласия этапов 3 и 4 после возврата недействительны). nil - нет.
+	returnHook StageReturnHook
+}
+
+// StageGate - проверка перед ручным движением этапа; ошибка отклоняет действие (текст показывается пользователю).
+type StageGate func(ctx context.Context, plID int64, code, action string) error
+
+// StageReturnHook - действие после ручного возврата этапа; ошибка возвращается пользователю.
+type StageReturnHook func(ctx context.Context, plID int64, code, target string) error
+
+// WithStageReturnHook подключает хук возврата этапа.
+func (s *Service) WithStageReturnHook(h StageReturnHook) *Service {
+	s.returnHook = h
+	return s
+}
+
+// WithStageGate подключает проверку готовности этапов 1.6, 3 и 4.
+func (s *Service) WithStageGate(g StageGate) *Service {
+	s.gate = g
+	return s
 }
 
 // Каналы свода по ЮЛ. Совпадают с подписями Code_канала_для_маржи из справочника
@@ -278,6 +301,11 @@ func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year
 	if err := s.guardCardStage(ctx, plID, code, action); err != nil {
 		return nil, err
 	}
+	if s.gate != nil {
+		if err := s.gate(ctx, plID, code, action); err != nil {
+			return nil, err
+		}
+	}
 	next, err := applyStageAction(stages, code, action, target)
 	if err != nil {
 		return nil, err
@@ -299,6 +327,11 @@ func (s *Service) StageAction(ctx context.Context, p Principal, plID int64, year
 		if err := s.store.RevokeApprovalsFrom(ctx, plID, target,
 			"возврат на этап "+target+" с этапа "+code); err != nil {
 			return nil, err
+		}
+		if s.returnHook != nil {
+			if err := s.returnHook(ctx, plID, code, target); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return next, nil
