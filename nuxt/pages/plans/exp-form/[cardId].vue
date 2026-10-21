@@ -27,7 +27,7 @@
           <span v-if="card?.locked" class="lock-note"><Icon name="lucide:lock" /> период закрыт на запись</span>
         </p>
         <p v-if="card" class="page-subtitle">
-          Статус формы: <span class="badge" :class="statusTone(card.status)">{{ card.status_label || card.status }}</span>
+          Статус формы: <span class="badge" :class="statusTone(card.status)">{{ cardStatusText(card, shownPlanTotal !== 0) }}</span>
           <span v-if="savedAt" class="src-note"> · сохранено в {{ savedAt }}</span>
           <span v-else-if="dirty" class="lock-note"> · есть несохранённые изменения</span>
         </p>
@@ -574,6 +574,7 @@ function money(v: number | null | undefined, opts: MoneyOpts = {}): string {
   return moneyBase(v, { currency: card.value?.currency || undefined, ...opts });
 }
 import { useGridNav } from "~/composables/useGridNav";
+import { cardStatusText } from "~/utils/cardStatus";
 import CardProcessPanel from "~/components/plans/CardProcessPanel.vue";
 import {
   useExpForm, expCell, expRowTotal, MONTHS_SHORT,
