@@ -97,7 +97,7 @@ type LeScopeStatus struct {
 
 // evalLeScope — состояние списка: согласия считаются только у тех, кто сейчас в списке.
 func evalLeScope(stage, legal string, approvers []LeApprover, requireAll bool, decisions []LeDecision, me int64) LeScopeStatus {
-	st := LeScopeStatus{StageCode: stage, LegalEntity: legal, RequireAll: requireAll}
+	st := LeScopeStatus{StageCode: stage, LegalEntity: legal, RequireAll: requireAll, Approvers: []LeApproverState{}}
 	approved := map[int64]LeDecision{}
 	for _, d := range decisions {
 		if d.StageCode == stage && d.LegalEntity == legal && d.Decision == LeApprove && !d.Revoked {
@@ -212,7 +212,16 @@ func (s *LeApprovalService) Status(ctx context.Context, plID int64, p Principal)
 		return LeApprovalStatus{}, err
 	}
 	stages := s.stageStatuses(ctx, plID)
-	out := LeApprovalStatus{PlID: plID, Stages: stages, Decisions: decisions, CanConfigure: p.PlansAdmin}
+	out := LeApprovalStatus{
+		PlID:         plID,
+		Stages:       stages,
+		Stage3:       []LeScopeStatus{},
+		Decisions:    []LeDecision{},
+		CanConfigure: p.PlansAdmin,
+	}
+	if decisions != nil {
+		out.Decisions = decisions
+	}
 	open3 := stages["1.6"] == "completed" && stages["3"] != "completed"
 	for _, lg := range legals {
 		sc := evalLeScope("3", lg, approvers, policyOf(policies, "3", lg), decisions, p.UserID)
