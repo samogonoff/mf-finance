@@ -152,9 +152,13 @@ type expConsInput struct {
 func buildExpConsolidated(plID int64, year, month int, window string, in []expConsInput, pnlByCode map[int]string, order []string) ExpConsolidated {
 	from, to, win := expWindowMonths(window, month)
 	out := ExpConsolidated{Channel: ExpChannelRetail, PlID: plID, Year: year, Month: month, Window: win, FromMonth: from, ToMonth: to, Currency: "BYN"}
-	prevM, prevScenario := month-1, ExpScenarioFactCur
-	if month <= 1 {
-		prevM, prevScenario = 12, ExpScenarioFact // январь: прошлый месяц — декабрь прошлого года
+	// Колонки факта следуют за окном: факт того же периода прошлого года (месяцы окна), факт месяца перед началом окна
+	// («прошлый месяц») и факт месяцев окна текущего года (по тем, по которым факт уже есть). Для окна «месяц» это
+	// прежние три колонки: тот же месяц прошлого года, прошлый месяц, текущий месяц. Курс каждой колонки — один на все
+	// месяцы окна (как у плана): по-месячных курсов в справочнике сводов нет.
+	prevM, prevScenario := from-1, ExpScenarioFactCur
+	if from <= 1 {
+		prevM, prevScenario = 12, ExpScenarioFact // начало года: прошлый месяц — декабрь прошлого года
 	}
 
 	type key struct {
@@ -192,13 +196,13 @@ func buildExpConsolidated(plID int64, year, month int, window string, in []expCo
 			plan *= c.Fx.Tactic
 			l.Plan[c.Country] += plan
 			l.PlanTotal += plan
-			if v, ok := expCellOf(r, ExpScenarioFact, month); ok {
+			if v, ok := expSumRange(r, ExpScenarioFact, from, to); ok {
 				l.FactLY += v * c.Fx.FactLY
 			}
 			if v, ok := expCellOf(r, prevScenario, prevM); ok {
 				l.FactPrev += v * c.Fx.FactPrev
 			}
-			if v, ok := expCellOf(r, ExpScenarioFactCur, month); ok {
+			if v, ok := expSumRange(r, ExpScenarioFactCur, from, to); ok {
 				l.FactCur += v * c.Fx.FactCur
 			}
 		}
@@ -249,6 +253,19 @@ func buildExpConsolidated(plID int64, year, month int, window string, in []expCo
 	return out
 }
 
+// expSumRange — сумма заполненных значений строки по сценарию за месяцы [from, to]; false, если заполненных нет.
+func expSumRange(r ExpRow, scenario string, from, to int) (float64, bool) {
+	var sum float64
+	found := false
+	for _, v := range r.Values {
+		if v.Scenario == scenario && v.Amount != nil && v.Month >= from && v.Month <= to {
+			sum += *v.Amount
+			found = true
+		}
+	}
+	return sum, found
+}
+
 // expCellOf — заполненное значение строки по сценарию и месяцу.
 func expCellOf(r ExpRow, scenario string, month int) (float64, bool) {
 	for _, v := range r.Values {
@@ -263,7 +280,7 @@ func expCellOf(r ExpRow, scenario string, month int) (float64, bool) {
 func (s *ExpService) WithRates(r *RateBook) *ExpService { s.rates = r; return s }
 
 // expFx — курсы страны к BYN по назначению колонки; без справочника или в BYN — единица.
-func (s *ExpService) expFx(ctx context.Context, nat string, year, month int) expFxToBYN {
+func (s *ExpService) expFx(ctx context.Context, nat string, year, month, from int) expFxToBYN {
 	if nat == "" || nat == "BYN" {
 		return sameExpFx(1)
 	}
@@ -272,7 +289,10 @@ func (s *ExpService) expFx(ctx context.Context, nat string, year, month int) exp
 		return expFxToBYN{NoRate: true}
 	}
 	conv := func(y, m int) float64 { return s.rates.ConvertFor(ctx, 1, nat, "BYN", y, m, FxScenarioFact) }
-	return expFxToBYN{Tactic: conv(prevY, prevM), FactLY: conv(year-1, month), FactPrev: conv(prevY, prevM), FactCur: conv(year, month)}
+	// «Прошлый месяц» колонки следует за окном (месяц перед его началом), и его курс — тоже: для окна «весь год» это
+	// декабрь прошлого года, а не месяц перед карточкой. Для окон «месяц» и «до конца года» совпадает с курсом плана.
+	factPrevY, factPrevM := prevMonth(year, from)
+	return expFxToBYN{Tactic: conv(prevY, prevM), FactLY: conv(year-1, month), FactPrev: conv(factPrevY, factPrevM), FactCur: conv(year, month)}
 }
 
 // RetailConsolidated — свод расходов розницы по четырём странам периода.
@@ -335,7 +355,8 @@ func (s *ExpService) RetailConsolidated(ctx context.Context, p Principal, plID i
 		if len(rows) == 0 && !cardEditable(l.Card) {
 			warnings = append(warnings, svodEmptyClosedWarning(l.Label))
 		}
-		inputs = append(inputs, expConsInput{Country: l.Label, Card: l.Card, Inst: l.Inst, Rows: rows, Fx: s.expFx(ctx, l.Inst.Currency, l.Card.Year, l.Card.Month)})
+		from, _, _ := expWindowMonths(window, l.Card.Month)
+		inputs = append(inputs, expConsInput{Country: l.Label, Card: l.Card, Inst: l.Inst, Rows: rows, Fx: s.expFx(ctx, l.Inst.Currency, l.Card.Year, l.Card.Month, from)})
 	}
 	out := buildExpConsolidated(plID, year, month, window, inputs, pnlByCode, expRetailPnlOrder)
 	out.Missing = missing
