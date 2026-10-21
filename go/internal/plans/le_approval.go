@@ -195,10 +195,12 @@ func (s *LeApprovalService) legalsOf(ctx context.Context, plID int64) ([]string,
 
 // Status — состояние согласования для текущего пользователя.
 func (s *LeApprovalService) Status(ctx context.Context, plID int64, p Principal) (LeApprovalStatus, error) {
-	legals, err := s.legalsOf(ctx, plID)
+	// Один снимок свода используется для каналов этапа 1.6, ЮЛ этапа 3 и готовности.
+	snapshot, err := s.svod.Build(ctx, plID, ExpWindowMonth)
 	if err != nil {
 		return LeApprovalStatus{}, err
 	}
+	legals := legalsFromSvod(snapshot)
 	approvers, err := s.repo.Approvers(ctx)
 	if err != nil {
 		return LeApprovalStatus{}, err
@@ -224,11 +226,8 @@ func (s *LeApprovalService) Status(ctx context.Context, plID int64, p Principal)
 		out.Decisions = decisions
 	}
 	open16 := stages["1.5"] == "completed" && stages["1.6"] != "completed"
-	ready16 := open16 && readyForStage16(ctx, s.svod, plID)
-	channels, err := s.channelsOf(ctx, plID)
-	if err != nil {
-		return LeApprovalStatus{}, err
-	}
+	ready16 := open16 && snapshot.Ready
+	channels := channelsFromSvod(snapshot)
 	for _, channel := range channels {
 		sc := evalLeScope("1.6", channel, approvers, true, decisions, p.UserID)
 		sc.CanDecide = ready16 && leMine(sc)
@@ -253,6 +252,10 @@ func (s *LeApprovalService) channelsOf(ctx context.Context, plID int64) ([]strin
 	if err != nil {
 		return nil, err
 	}
+	return channelsFromSvod(sv), nil
+}
+
+func channelsFromSvod(sv LeSvod) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, row := range sv.Rows {
@@ -266,7 +269,7 @@ func (s *LeApprovalService) channelsOf(ctx context.Context, plID int64) ([]strin
 		}
 	}
 	sort.Strings(out)
-	return out, nil
+	return out
 }
 
 func readyForStage16(ctx context.Context, svod *LeSvodService, plID int64) bool {
@@ -275,6 +278,16 @@ func readyForStage16(ctx context.Context, svod *LeSvodService, plID int64) bool 
 	}
 	v, err := svod.Build(ctx, plID, ExpWindowMonth)
 	return err == nil && v.Ready
+}
+
+func legalsFromSvod(sv LeSvod) []string {
+	var out []string
+	for _, legal := range sv.Legals {
+		if legal != leNoEntity {
+			out = append(out, legal)
+		}
+	}
+	return out
 }
 
 func leMine(sc LeScopeStatus) bool {
@@ -375,7 +388,12 @@ func (s *LeApprovalService) Decide(ctx context.Context, plID int64, p Principal,
 			return err
 		}
 		if stage == "3" {
-			_, err := s.repo.RevokeDecisions(ctx, plID, "3", legal, false, reason)
+			if _, err := s.repo.RevokeDecisions(ctx, plID, "3", legal, false, reason); err != nil {
+				return err
+			}
+			// Возврат с этапа 3 открывает 1.6 заново: старые согласия каналов
+			// больше не подтверждают изменённые формы.
+			_, err := s.repo.RevokeDecisions(ctx, plID, "1.6", "", true, reason)
 			return err
 		}
 		// Возврат итогового утверждения на этап 3: согласия этапа 4 и прежние согласия по ЮЛ недействительны.
@@ -405,9 +423,6 @@ func (s *LeApprovalService) complete(ctx context.Context, plID int64, p Principa
 		prereq = "3"
 	}
 	if stages[prereq] != "completed" || stages[stage] == "completed" {
-		return nil
-	}
-	if stage == "1.6" && !readyForStage16(ctx, s.svod, plID) {
 		return nil
 	}
 	done, _, err := s.stageSatisfied(ctx, plID, stage)
@@ -509,14 +524,15 @@ func (s *LeApprovalService) stageSatisfied(ctx context.Context, plID int64, stag
 		return false, nil, err
 	}
 	var pending []string
+	snapshot, err := s.svod.Build(ctx, plID, ExpWindowMonth)
+	if err != nil {
+		return false, nil, err
+	}
 	if stage == "1.6" {
-		if !readyForStage16(ctx, s.svod, plID) {
+		if !snapshot.Ready {
 			return false, []string{"этап 1.6: есть блокирующие замечания готовности"}, nil
 		}
-		channels, err := s.channelsOf(ctx, plID)
-		if err != nil {
-			return false, nil, err
-		}
+		channels := channelsFromSvod(snapshot)
 		if len(channels) == 0 {
 			return false, []string{"в своде нет каналов продаж"}, nil
 		}
@@ -535,10 +551,7 @@ func (s *LeApprovalService) stageSatisfied(ctx context.Context, plID int64, stag
 		}
 		return sc.Satisfied, pending, nil
 	}
-	legals, err := s.legalsOf(ctx, plID)
-	if err != nil {
-		return false, nil, err
-	}
+	legals := legalsFromSvod(snapshot)
 	if len(legals) == 0 {
 		return false, []string{"в своде нет юридических лиц"}, nil
 	}

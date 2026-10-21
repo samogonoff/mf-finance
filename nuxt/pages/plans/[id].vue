@@ -158,7 +158,7 @@
                   >Отправить</button>
                   <!-- Этапы 3 и 4 завершаются решениями согласующих на экране «Бюджет по ЮЛ» (ручное «Согласовать» сервер отклонит). -->
                   <NuxtLink
-                    v-else-if="st.stage_code === '3' || st.stage_code === '4'"
+                    v-else-if="st.stage_code === '1.6' || st.stage_code === '3' || st.stage_code === '4'"
                     :to="`/plans/le-svod/${id}`"
                     class="btn btn-sm btn-primary"
                     :class="{ disabled: !!depHint(st) }"
@@ -621,7 +621,12 @@ const stageIsApproval = (st: StageState) => st.is_approval ?? APPROVAL.has(st.st
  * ручным, как этапы производства и сводов.
  */
 const CARD_STEPS = ["1.1", "1.2", "1.3", "1.4"];
-const stageDrivenByCards = (st: StageState) => st.stage_code === "1.5" || (CARD_STEPS.includes(st.stage_code) && cards.value.length > 0);
+const stageDrivenByCards = (st: StageState) => {
+  if (st.stage_code === "1.5") {
+    return cards.value.some((c) => c.form_code === "TPL-CFO-EXP" && !c.scope_key?.startsWith("CFO-"));
+  }
+  return CARD_STEPS.includes(st.stage_code) && cards.value.length > 0;
+};
 
 /**
  * Плашка ожидания: «1 форма ждёт решения», «2 формы», «5 форм». Раньше стояло
