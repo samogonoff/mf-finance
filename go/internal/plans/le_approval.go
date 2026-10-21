@@ -638,6 +638,14 @@ func (s *LeApprovalService) Config(ctx context.Context) (LeApprovalConfig, error
 		return LeApprovalConfig{}, err
 	}
 	p, err := s.repo.Policies(ctx)
+	// Пустые выборки из pgx возвращаются как nil-срезы. Отдаём пустые
+	// JSON-массивы, чтобы клиент мог безопасно использовать filter/find.
+	if a == nil {
+		a = []LeApprover{}
+	}
+	if p == nil {
+		p = []LePolicy{}
+	}
 	return LeApprovalConfig{Approvers: a, Policies: p}, err
 }
 

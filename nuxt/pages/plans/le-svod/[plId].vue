@@ -527,14 +527,17 @@ const openConfig = async () => {
   cfgError.value = "";
   try {
     const cfg = await api.approvalConfig();
+    // Старые версии API могут вернуть null вместо пустых массивов.
+    const approvers = Array.isArray(cfg?.approvers) ? cfg.approvers : [];
+    const policies = Array.isArray(cfg?.policies) ? cfg.policies : [];
     const rowFor = (stage: "1.6" | "3" | "4", legal: string): CfgRow => {
-      const pol = cfg.policies.find((p) => p.stage_code === stage && p.legal_entity === legal);
+      const pol = policies.find((p) => p.stage_code === stage && p.legal_entity === legal);
       return {
         key: `${stage}|${legal}`,
         stage,
         legal,
         requireAll: stage === "1.6" ? true : pol ? pol.require_all : true,
-        users: cfg.approvers.filter((a) => a.stage_code === stage && a.legal_entity === legal).map((a) => ({ id: a.user_id, name: a.user_name || "" }))
+        users: approvers.filter((a) => a.stage_code === stage && a.legal_entity === legal).map((a) => ({ id: a.user_id, name: a.user_name || "" }))
       };
     };
     const legals = (data.value?.legals || []).filter((l) => l !== "(без ЮЛ)");
