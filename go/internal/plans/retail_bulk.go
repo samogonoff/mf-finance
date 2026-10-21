@@ -216,6 +216,11 @@ func ApplyRetailBulk(req RetailBulkRequest, ctx RetailBulkContext) (RetailBulkRe
 	// не делать». Если не нашлось ни одной базы — это ошибка, а не пустой diff.
 	// Защищённые ручные значения — другой случай: база была, менять нельзя.
 	if len(res.Diff) == 0 && res.Protected == 0 && res.SkippedNoBase > 0 {
+		// Источник задан явно (год/месяц) — пусто именно в нём, а не в целевых месяцах: называем период источника.
+		if req.Op == BulkCopyScenario && (req.SourceYear != 0 || req.SourceMonth != 0) {
+			return res, fmt.Errorf("нет данных сценария %q за %s: ни у одного магазина области нет базы для операции",
+				req.Source, bulkSourcePeriodLabel(req, ctx, months))
+		}
 		return res, fmt.Errorf("нет данных за выбранный период (%s): ни у одного магазина области нет базы для операции",
 			bulkMonthsLabel(months, ctx.Year))
 	}
@@ -234,6 +239,26 @@ func bulkMonthsLabel(months []int, year int) string {
 		lo, hi = min(lo, m), max(hi, m)
 	}
 	return fmt.Sprintf("%02d–%02d.%d", lo, hi, year)
+}
+
+// bulkCopySourceYear — год источника копирования: у факта по умолчанию прошлый, у остальных — год периода; явный
+// SourceYear переопределяет.
+func bulkCopySourceYear(req RetailBulkRequest, ctx RetailBulkContext) int {
+	if req.SourceYear != 0 {
+		return req.SourceYear
+	}
+	if req.Source == CopyFromFact {
+		return ctx.Year - 1
+	}
+	return ctx.Year
+}
+
+// bulkSourcePeriodLabel — период источника для сообщений: заданный месяц источника или месяцы применения в году источника.
+func bulkSourcePeriodLabel(req RetailBulkRequest, ctx RetailBulkContext, months []int) string {
+	if req.SourceMonth != 0 {
+		months = []int{req.SourceMonth}
+	}
+	return bulkMonthsLabel(months, bulkCopySourceYear(req, ctx))
 }
 
 // bulkScopeRows — строки области применения (ТЗ §5).
@@ -322,13 +347,7 @@ func bulkCopyScenario(res *RetailBulkResult, req RetailBulkRequest, ctx RetailBu
 	}
 	// По умолчанию месяц источника = месяц применения, год — год периода (у факта — прошлый). Явные год и месяц
 	// источника (SourceYear/SourceMonth) переопределяют умолчание: заданный месяц копируется во все целевые месяцы.
-	srcYear := ctx.Year
-	if req.Source == CopyFromFact {
-		srcYear = ctx.Year - 1
-	}
-	if req.SourceYear != 0 {
-		srcYear = req.SourceYear
-	}
+	srcYear := bulkCopySourceYear(req, ctx)
 	for _, row := range rows {
 		for _, m := range months {
 			srcMonth := m
@@ -346,6 +365,9 @@ func bulkCopyScenario(res *RetailBulkResult, req RetailBulkRequest, ctx RetailBu
 	}
 	if res.SkippedNoBase > 0 {
 		if res.SkippedNoBase == res.RowsIn*len(months) && (req.Source == CopyFromTactic || req.Source == CopyFromNewStrategy) {
+			if req.SourceYear != 0 || req.SourceMonth != 0 {
+				return fmt.Errorf("нет утверждённой тактики за %s", bulkSourcePeriodLabel(req, ctx, months))
+			}
 			return errors.New("нет утверждённой тактики за выбранный период")
 		}
 		res.Notes = append(res.Notes,

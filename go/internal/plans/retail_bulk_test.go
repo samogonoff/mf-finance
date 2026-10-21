@@ -640,8 +640,13 @@ func TestBulk_CopyScenarioSourceYearAndMonth(t *testing.T) {
 			t.Errorf("месяц источника %d: %v", bad, err)
 		}
 	}
-	// Нет базы в выбранном месяце источника — явная ошибка, как и раньше.
-	if _, err := run(RetailBulkRequest{Months: []int{7}, SourceMonth: 11}); err == nil || !strings.Contains(err.Error(), "нет данных за выбранный период") {
+	// Нет базы в выбранном месяце источника — явная ошибка, и называет она источник (ноябрь прошлого года), а не
+	// целевые месяцы.
+	if _, err := run(RetailBulkRequest{Months: []int{8, 9, 10}, SourceMonth: 11}); err == nil || !strings.Contains(err.Error(), `нет данных сценария "fact" за 11.2025`) || strings.Contains(err.Error(), "08") {
 		t.Errorf("пустой месяц источника: %v", err)
+	}
+	// Задан только год источника: названы месяцы применения в году источника.
+	if _, err := run(RetailBulkRequest{Months: []int{8, 9}, SourceYear: 2026}); err == nil || !strings.Contains(err.Error(), "за 08–09.2026") {
+		t.Errorf("пустой год источника: %v", err)
 	}
 }
