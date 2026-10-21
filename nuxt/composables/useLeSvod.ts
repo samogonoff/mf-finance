@@ -46,6 +46,15 @@ export interface LeSvod {
   adjustments: LeAdjust[];
   warnings?: string[];
   closed: boolean;
+  /** Замечания готовности к этапу 1.6; ready — блокирующих нет. */
+  readiness?: LeIssue[];
+  ready: boolean;
+}
+
+export interface LeIssue {
+  level: "block" | "warn";
+  code: string;
+  message: string;
 }
 
 const authHeader = (): Record<string, string> => {

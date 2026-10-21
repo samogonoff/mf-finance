@@ -585,8 +585,11 @@ func main() {
 		plans.NewRoutedExpSubmitGate(plans.NewExpSubmitGate(plansExp), plans.NewCfoSubmitGate(plansCfoSvc)))
 	plansExpH := plans.NewExpHandler(plansExp, plansPrincipal)
 	// Свод «Бюджет по ЮЛ» (этапы 1.6, 3, 4): продажи и расходы по ЮЛ ЦФО, корректировки итогов.
-	plansLeH := plans.NewLeHandler(plans.NewLeSvodService(plansCards, plansExp, plansSvc.Svod, plansRates,
-		plans.NewLeAdjustRepo(pool), plansStore.Stages), plansPrincipal)
+	plansLeSvc := plans.NewLeSvodService(plansCards, plansExp, plansSvc.Svod, plansRates,
+		plans.NewLeAdjustRepo(pool), plansStore.Stages)
+	plansLeH := plans.NewLeHandler(plansLeSvc, plansPrincipal)
+	// Этап 1.6 нельзя завершить, пока формы продаж и расходов не утверждены.
+	plansSvc.WithStageGate(plansLeSvc.Gate)
 	plansCfoH := plans.NewCfoExpenseHandler(plansCfoSvc, plansPrincipal)
 	plansCfoRegistryH := plans.NewCfoExpenseRegistryHandler(pool, plansCards, plansScope, plansPrincipal)
 

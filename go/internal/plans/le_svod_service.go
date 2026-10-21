@@ -132,7 +132,10 @@ func (s *LeSvodService) Build(ctx context.Context, plID int64, window string) (L
 	}
 	in.Adjustments = adj
 	in.Closed = s.leClosed(ctx, plID)
-	return buildLeSvod(in), nil
+	out := buildLeSvod(in)
+	out.Readiness = leReadiness(cards, out)
+	out.Ready = len(leBlockers(out.Readiness)) == 0
+	return out, nil
 }
 
 // toBYN переводит сумму в BYN по курсу сценария «тактика»; false — курса нет.

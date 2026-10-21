@@ -112,3 +112,23 @@ func TestLeSvod_BuildAdjustRevoke_PG(t *testing.T) {
 		t.Error("признак Closed должен быть выставлен")
 	}
 }
+
+// Этап 1.6 нельзя отправить, пока формы периода не утверждены: ручное движение отклоняется проверкой готовности.
+func TestLeSvod_Gate16_PG(t *testing.T) {
+	svc, cards, pool, pl, ctx := svodSyncFixture(t, &stubExpSource{})
+	le := NewLeSvodService(cards, svc, nil, NewRateBook(nil), NewLeAdjustRepo(pool), nil)
+	flow := NewService(NewPgStore(pool), nil, nil).WithStageGate(le.Gate)
+
+	_, err := flow.StageAction(ctx, Principal{UserID: 1, PlansAdmin: true}, pl, 2090, 8, "BY", "1.6", "submit", "", "")
+	if err == nil || !strings.Contains(err.Error(), "этап 1.6 нельзя завершить") || !strings.Contains(err.Error(), "не утверждены") {
+		t.Fatalf("при неутверждённых формах 1.6 должен отклоняться: %v", err)
+	}
+	// Возврат этапа проверкой не блокируется.
+	if err := le.Gate(ctx, pl, "1.6", "return"); err != nil {
+		t.Errorf("возврат не проверяется: %v", err)
+	}
+	// Другие этапы проверка не трогает.
+	if err := le.Gate(ctx, pl, "1.5", "submit"); err != nil {
+		t.Errorf("этап 1.5 не проверяется: %v", err)
+	}
+}
