@@ -58,6 +58,11 @@ func mergeExpConsolidatedChannels(plID int64, parts []expAllPart, order []string
 			out.Year, out.Month, out.Window, out.FromMonth, out.ToMonth = p.Cons.Year, p.Cons.Month, p.Cons.Window, p.Cons.FromMonth, p.Cons.ToMonth
 		}
 		factBasisPayments = factBasisPayments || p.Cons.FactBasis == ExpFactBasisPayments
+		// Загрузка канала ещё идёт / не удалась / карточка закрыта и пуста: переносим пояснения канала.
+		out.Syncing = out.Syncing || p.Cons.Syncing
+		for _, w := range p.Cons.Warnings {
+			out.Warnings = append(out.Warnings, p.Label+" · "+w)
+		}
 		// Диагностики стран внутри канала (розница по странам) не теряем: колонка канала не «ошибочная» и не «без курса»
 		// целиком, а итог неполный из-за конкретной страны — это говорит предупреждение с её кодом.
 		noCard := map[string]bool{}

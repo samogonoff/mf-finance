@@ -105,7 +105,9 @@ type ExpConsolidated struct {
 	FactBasis string `json:"fact_basis,omitempty"`
 	// Missing — страны, по которым карточки расходов нет: итог неполный.
 	Missing []string `json:"missing,omitempty"`
-	// Warnings — пояснения к неполному итогу общего свода (страна розницы не прочитана или без курса к BYN).
+	// Syncing — загрузка из источника по какой-то карточке ещё идёт: данные неполные, страница повторяет запрос.
+	Syncing bool `json:"syncing,omitempty"`
+	// Warnings — пояснения к неполному итогу (страна не прочитана, нет курса, загрузка не удалась, карточка закрыта и пуста).
 	Warnings []string `json:"warnings,omitempty"`
 	// AbsentChannels — каналы общего свода, карточки которых в периоде нет (штатная ситуация, не сбой).
 	AbsentChannels []string `json:"absent_channels,omitempty"`
@@ -304,6 +306,7 @@ func (s *ExpService) RetailConsolidated(ctx context.Context, p Principal, plID i
 		month   int
 		errs    = map[string]string{}
 	)
+	var loads []svodLoad
 	for _, country := range retailCountries {
 		c, ok := byCountry[country]
 		if !ok {
@@ -316,17 +319,28 @@ func (s *ExpService) RetailConsolidated(ctx context.Context, p Principal, plID i
 			errs[country] = err.Error()
 			continue
 		}
-		// Состав строк — как на форме: синхронизация идёт в фоне при открытии формы (минуты), свод
-		// показывает то, что уже лежит в БД, и не запускает выгрузку из источника сам.
-		rows, err := expAllRows(ctx, s.repo, inst.ID)
+		loads = append(loads, svodLoad{Label: country, Card: card, Inst: inst})
+	}
+	// Свод сам запускает загрузку из источника для открытых карточек (как открытие формы): за период, форму которого
+	// не открывали, он иначе пуст.
+	syncing, syncWarnings := s.loadForSvod(loads)
+	var warnings []string
+	warnings = append(warnings, syncWarnings...)
+	for _, l := range loads {
+		rows, err := expAllRows(ctx, s.repo, l.Inst.ID)
 		if err != nil {
-			errs[country] = err.Error()
+			errs[l.Label] = err.Error()
 			continue
 		}
-		inputs = append(inputs, expConsInput{Country: country, Card: card, Inst: inst, Rows: rows, Fx: s.expFx(ctx, inst.Currency, c.Year, c.Month)})
+		if len(rows) == 0 && !cardEditable(l.Card) {
+			warnings = append(warnings, svodEmptyClosedWarning(l.Label))
+		}
+		inputs = append(inputs, expConsInput{Country: l.Label, Card: l.Card, Inst: l.Inst, Rows: rows, Fx: s.expFx(ctx, l.Inst.Currency, l.Card.Year, l.Card.Month)})
 	}
 	out := buildExpConsolidated(plID, year, month, window, inputs, pnlByCode, expRetailPnlOrder)
 	out.Missing = missing
+	out.Syncing = syncing
+	out.Warnings = warnings
 	// Страны без чтения (нет карточки, ошибка) остаются в списке с пояснением.
 	have := map[string]bool{}
 	for _, c := range out.Countries {
@@ -430,9 +444,17 @@ func (s *ExpService) ChannelConsolidated(ctx context.Context, p Principal, plID 
 	if err != nil {
 		return ExpConsolidated{}, err
 	}
+	label := "Интернет-магазин"
+	if channel == ExpChannelOpt {
+		label = "Опт"
+	}
+	syncing, warnings := s.loadForSvod([]svodLoad{{Label: label, Card: c, Inst: inst}})
 	rows, err := expAllRows(ctx, s.repo, inst.ID)
 	if err != nil {
 		return ExpConsolidated{}, err
+	}
+	if len(rows) == 0 && !cardEditable(c) {
+		warnings = append(warnings, svodEmptyClosedWarning(label))
 	}
 	pnlByCode := map[int]string{}
 	if m, err := s.pnlGroups(ctx); err == nil {
@@ -455,6 +477,8 @@ func (s *ExpService) ChannelConsolidated(ctx context.Context, p Principal, plID 
 	}
 	out := buildExpConsolidated(plID, c.Year, c.Month, window, inputs, pnlByCode, expRetailPnlOrder)
 	out.Channel = channel
+	out.Syncing = syncing
+	out.Warnings = warnings
 	if s.syncStatusWithBasis(ctx, inst.ID).FactBasis == ExpFactBasisPayments {
 		out.FactBasis = ExpFactBasisPayments
 	}

@@ -48,6 +48,8 @@ type ExpService struct {
 	sales ExpDataSource
 	// scope — срез доступа пользователей (свод опта проверяет доступ к карточке); nil — без проверки.
 	scope ScopeStore
+	// svodWait — сколько свод расходов ждёт загрузки карточек из источника (0 — svodSyncWait).
+	svodWait time.Duration
 }
 
 // NewExpService — конструктор.
