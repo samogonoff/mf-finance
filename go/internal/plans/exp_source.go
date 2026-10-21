@@ -405,6 +405,10 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 			}
 		}
 		c.GroupPL, c.Expense = str("grouppl"), str("expense")
+		// Группа статьи — GroupPL_new (актуальная группировка P&L); старая GroupPL остаётся запасной, если новой нет в выдаче.
+		if g := str("grouppl_new"); g != "" {
+			c.GroupPL = g
+		}
 		if _, legacy := CfoExpCodeFromKind(kind); !legacy && expIsSalesGroupPL(c.GroupPL) {
 			continue // продажи, себестоимость, маржа — не расходы формы
 		}

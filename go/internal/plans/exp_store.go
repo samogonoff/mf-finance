@@ -113,9 +113,21 @@ func (s *expRepo) SyncRows(ctx context.Context, instanceID int64, rows []ExpRow)
 	return n, err
 }
 
+// expNotSalesRowSQL — условие «группа статьи не относится к продажам, себестоимости, марже и отгрузкам» (по словам из
+// expSalesGroupWords); prefix — псевдоним таблицы с точкой или пусто.
+func expNotSalesRowSQL(prefix string) string {
+	conds := make([]string, len(expSalesGroupWords))
+	for i, w := range expSalesGroupWords {
+		conds[i] = "UPPER(" + prefix + "group_pl) NOT LIKE '%" + w + "%'"
+	}
+	return "(" + strings.Join(conds, " AND ") + ")"
+}
+
 // expWhere — условия отбора (ТЗ §7.1) и их аргументы.
 func expWhere(instanceID int64, f ExpFilter) (string, []any) {
-	w := []string{"instance_id = $1"}
+	// Строки продаж, себестоимости, маржи и отгрузок — не расходы: если они уже попали в карточку (до исправления загрузки или
+	// с ручным вводом, который миграция не трогает), форма расходов их не показывает.
+	w := []string{"instance_id = $1", expNotSalesRowSQL("")}
 	args := []any{instanceID}
 	add := func(cond string, v any) {
 		args = append(args, v)
@@ -388,7 +400,7 @@ func (s *expRepo) FillPlanFromSource(ctx context.Context, instanceID int64, from
 			instanceID, ExpSourceBudget, cfos, pls, months, amounts); err != nil {
 			return err
 		}
-	}	// Ячейки, подставленные из бюджета и ещё не тронутые человеком, зеркалят источник: если бюджет по ключу
+	} // Ячейки, подставленные из бюджета и ещё не тронутые человеком, зеркалят источник: если бюджет по ключу
 	// исчез (строку тактики удалили или обнулили), старая сумма не должна остаться «актуальным бюджетом».
 	// Прошедшие месяцы (раньше месяца карточки) закрыты и не трогаются; введённое руками не затрагивается.
 	if _, err := tx.Exec(ctx, `
@@ -403,6 +415,7 @@ func (s *expRepo) FillPlanFromSource(ctx context.Context, instanceID int64, from
 	}
 	return tx.Commit(ctx)
 }
+
 // ClearPaymentsFact — см. ExpRepo.ClearPaymentsFact.
 func (s *expRepo) ClearPaymentsFact(ctx context.Context, instanceID int64) error {
 	_, err := s.pool.Exec(ctx, `
@@ -442,7 +455,7 @@ func (s *expRepo) GroupTotals(ctx context.Context, instanceID int64) (map[string
 		SELECT r.group_pl, COALESCE(SUM(v.amount), 0)
 		  FROM exp_row r
 		  LEFT JOIN exp_value v ON v.row_id = r.id AND v.scenario = 'plan'
-		 WHERE r.instance_id = $1
+		 WHERE r.instance_id = $1 AND `+expNotSalesRowSQL("r.")+`
 		 GROUP BY r.group_pl`, instanceID)
 	if err != nil {
 		return nil, err

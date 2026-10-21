@@ -275,7 +275,7 @@ func expCostsSQLScenario(kind, country string, years []int, scenario string) str
 	} else {
 		w = append(w, "scenario != '' AND scenario != "+chLit(ExpSrcFactPayments))
 	}
-	return `SELECT scenario, country, toYear(month) AS y, toMonth(month) AS m, code_pl, group_pl, expense,
+	return `SELECT scenario, country, toYear(month) AS y, toMonth(month) AS m, code_pl, ` + expGroupPLNewValue + ` AS group_pl, expense,
        code_cfo, cfo, group_cfo1, group_cfo2, project_name, special_access, toFloat64(` + amountCol + `) AS amount
   FROM finance.exp_costs
  WHERE ` + strings.Join(w, "\n   AND ") + `
@@ -433,7 +433,7 @@ func expFinPLSQL(kind, country string, years []int, finScenarios []string, outSc
                group_cfo1 AS g1, group_cfo2 AS g2, toFloat64(` + amountCol + `) AS amt
           FROM finance.findwh_table_fin_pl
          WHERE ` + strings.Join(w, "\n           AND ") + `) AS f
- INNER JOIN (SELECT code_pl AS dpl, any(group_pl) AS gp, any(expense) AS ex, max(special_access) AS sa
+ INNER JOIN (SELECT code_pl AS dpl, any(` + expGroupPLNewValue + `) AS gp, any(expense) AS ex, max(special_access) AS sa
                FROM finance.exp_costs GROUP BY code_pl) AS d ON d.dpl = f.pl
  WHERE f.pl NOT IN (` + strings.Join(drop, ",") + `)
    AND ` + strings.Join(notSales, "\n   AND ") + `
@@ -558,3 +558,6 @@ func parseChCostRows(body []byte) ([]ExpCostCell, error) {
 	}
 	return out, sc.Err()
 }
+
+// expGroupPLNewValue — группа статьи для формы: GroupPL_new (актуальная группировка P&L), а где её нет — старая GroupPL.
+const expGroupPLNewValue = "if(group_pl_new != '', group_pl_new, group_pl)"

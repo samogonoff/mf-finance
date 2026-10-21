@@ -148,3 +148,73 @@ func TestMigration0076_DropsOnlyUntouchedSalesRows_PG(t *testing.T) {
 		t.Errorf("строка продаж с введённым планом должна остаться: %v", codes)
 	}
 }
+
+// Группа статьи в форме — GroupPL_new (актуальная группировка P&L), старая GroupPL остаётся запасной.
+func TestExpCostsSQL_UsesGroupPLNew(t *testing.T) {
+	for _, kind := range []string{ExpKindRetail, ExpKindMP, ExpKindIM, ExpKindOpt} {
+		q := expCostsSQL(kind, "BY", []int{2026})
+		if !strings.Contains(q, "if(group_pl_new != '', group_pl_new, group_pl) AS group_pl") {
+			t.Errorf("%s: группа статьи должна браться из group_pl_new:\n%s", kind, q)
+		}
+	}
+	// Каталог статей запроса факта из P&L — тоже по новой группировке.
+	if q := expAccrualFactSQL(ExpKindRetail, "BY", []int{2026}); !strings.Contains(q, "any(if(group_pl_new != '', group_pl_new, group_pl)) AS gp") {
+		t.Errorf("каталог групп факта из P&L:\n%s", q)
+	}
+}
+
+// Строки продаж, себестоимости и маржи, уже попавшие в карточку, форма расходов не показывает: ни в строках, ни в итогах групп.
+func TestExpRepo_HidesSalesRowsOnRead_PG(t *testing.T) {
+	dsn := os.Getenv("PLANS_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("PLANS_TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	pl, err := NewPgStore(pool).EnsureInstance(ctx, 2093, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(ctx, `DELETE FROM pl_instance WHERE id=$1`, pl)
+	defer pool.Exec(ctx, `DELETE FROM form_card WHERE pl_id=$1 AND form_code=$2`, pl, TemplateExp)
+	c, err := NewCardStore(pool).EnsureCard(ctx, Card{PlID: pl, FormCode: TemplateExp, ScopeKey: "IM-BY", Country: "BY", Currency: "BYN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewExpRepo(pool)
+	inst, err := repo.EnsureInstance(ctx, ExpInstance{CardID: c.ID, FormKind: ExpKindIM, Country: "BY", PlanYear: 2093, Currency: "BYN"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SyncRows(ctx, inst.ID, []ExpRow{
+		{CodeCFO: 1, CodePL: 24, GroupPL: "Заработная плата", Expense: "ЗП"},
+		{CodeCFO: 1, CodePL: 1002, GroupPL: "ПРОДАЖИ", Expense: "Продажи"},
+		{CodeCFO: 1, CodePL: 9002, GroupPL: "РОЗНИЧНАЯ МАРЖА", Expense: "Маржа"},
+		{CodeCFO: 1, CodePL: 8002, GroupPL: "СЕБЕСТОИМОСТЬ ПО ОТПУСКНЫМ ЦЕНАМ", Expense: "Себестоимость"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	amt := 50.0
+	if _, err := repo.SaveValues(ctx, inst.ID, []ExpCell{{CodeCFO: 1, CodePL: 1002, Month: 9, Amount: &amt}}, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	rows, total, err := repo.Rows(ctx, inst.ID, ExpFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(rows) != 1 || rows[0].CodePL != 24 {
+		t.Fatalf("форма расходов должна показывать только расходную строку: total=%d %+v", total, rows)
+	}
+	totals, err := repo.GroupTotals(ctx, inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(totals) != 1 {
+		t.Errorf("в итогах групп только расходные группы: %v", totals)
+	}
+}
