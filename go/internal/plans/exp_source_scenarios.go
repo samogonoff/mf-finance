@@ -25,9 +25,12 @@ type ExpScenarioCount struct {
 type ExpSourceScenarios struct {
 	FinPL     []ExpScenarioCount `json:"finpl"`
 	Procedure []ExpScenarioCount `json:"procedure"`
-	// Configured — какие названия сценариев ищем в реплике P&L; Missing — те из них, которых в реплике нет.
-	Configured map[string][]string `json:"configured"`
-	Missing    map[string][]string `json:"missing"`
+	// Configured — какие названия сценариев ищем в реплике P&L; Missing — те из них, которых в реплике нет вовсе;
+	// WrongReport — которые есть, но не со значением «Для отчета», по которому читает рабочий запрос (PL, BS_20, BS_25):
+	// форма их не подхватит.
+	Configured  map[string][]string `json:"configured"`
+	Missing     map[string][]string `json:"missing"`
+	WrongReport map[string][]string `json:"wrong_report"`
 }
 
 // ExpScenarioLister — источник умеет рассказать о своих сценариях (читатель из ClickHouse).
@@ -66,7 +69,7 @@ func (s *chExpSource) scenarioRows(ctx context.Context, sql string) ([]ExpScenar
 
 // SourceScenarios читает сценарии реплики P&L и снимка процедуры затрат.
 func (s *chExpSource) SourceScenarios(ctx context.Context) (ExpSourceScenarios, error) {
-	out := ExpSourceScenarios{Configured: map[string][]string{}, Missing: map[string][]string{}}
+	out := ExpSourceScenarios{Configured: map[string][]string{}, Missing: map[string][]string{}, WrongReport: map[string][]string{}}
 	fin, err := s.scenarioRows(ctx, `SELECT scenario, for_report, count() AS rows, toString(min(month)) AS from_month, toString(max(month)) AS to_month
   FROM finance.findwh_table_fin_pl GROUP BY scenario, for_report ORDER BY scenario, for_report`)
 	if err != nil {
@@ -78,14 +81,25 @@ func (s *chExpSource) SourceScenarios(ctx context.Context) (ExpSourceScenarios, 
 		return out, err
 	}
 	out.FinPL, out.Procedure = fin, proc
-	have := map[string]bool{}
+	// Как в рабочем запросе: без обрезки пробелов (ETL реплики строки не обрезает), «Для отчета» только из expFinPLReports.
+	any, usable := map[string]bool{}, map[string]bool{}
 	for _, f := range fin {
-		have[strings.ToLower(strings.TrimSpace(f.Scenario))] = true
+		name := strings.ToLower(f.Scenario)
+		any[name] = true
+		for _, r := range expFinPLReports {
+			if f.ForReport == r {
+				usable[name] = true
+			}
+		}
 	}
 	for key, names := range map[string][]string{"fact": {"факт"}, "strategy": s.finPLStrategy, "tactic": s.finPLTactic} {
 		out.Configured[key] = names
 		for _, n := range names {
-			if !have[strings.ToLower(n)] {
+			switch name := strings.ToLower(n); {
+			case usable[name]:
+			case any[name]:
+				out.WrongReport[key] = append(out.WrongReport[key], n)
+			default:
 				out.Missing[key] = append(out.Missing[key], n)
 			}
 		}

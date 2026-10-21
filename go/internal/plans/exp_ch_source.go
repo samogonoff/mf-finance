@@ -91,16 +91,19 @@ type chExpSource struct {
 	accrualFromFinPL bool
 	// planFromFinPL — стратегия и тактика (бюджет) розницы, ИМ и опта берутся из реплики P&L, а не из процедуры затрат;
 	// finPLStrategy / finPLTactic — допустимые названия сценариев в Table_Fin_PL (без учёта регистра): сценарий может быть
-	// записан и коротко («бюджет»), и названием из справочника Budgeting.dbo.Scenario («Стратегический бюджет»).
+	// записан и коротко («бюджет»), и названием из справочника Budgeting.dbo.Scenario («Стратегический бюджет»); по умолчанию —
+// подтверждённые названия.
 	planFromFinPL              bool
 	finPLStrategy, finPLTactic []string
 }
 
-// Названия сценариев по умолчанию: короткие из реплики P&L и полные из справочника сценариев Budgeting (то, под чем они
-// приходят из процедуры затрат). Какие реально есть в Table_Fin_PL, показывает диагностика GET /api/plans/exp/source-scenarios.
+// Названия сценариев по умолчанию — подтверждены чтением FinDWH.dbo.Table_Fin_PL (22.10.2026): в таблице сценарии «факт»,
+// «бюджет», «тактика», «НовСтрат»; «бюджет» и «тактика» совпадают с «Стратегическим бюджетом» и «Тактикой бюджет (таргеты)»
+// процедуры затрат. Другие названия можно задать переменными (через запятую); что реально есть в реплике, показывает
+// диагностика GET /api/plans/exp-source/scenarios.
 const (
-	defaultFinPLStrategy = "бюджет, Стратегический бюджет"
-	defaultFinPLTactic   = "тактика, Тактика бюджет (таргеты)"
+	defaultFinPLStrategy = "бюджет"
+	defaultFinPLTactic   = "тактика"
 )
 
 // splitScenarioNames — «а, б, в» → [а б в] без пустых.
@@ -483,11 +486,19 @@ func (s *chExpSource) planFromReplica(ctx context.Context, kind, country string,
 			}
 			continue
 		}
+		// Заменяются только годы, за которые в реплике есть данные сценария: форма использует стратегию и тактику ПЛАНОВОГО
+		// года, а реплика может уже содержать прошлый год и ещё не содержать плановый (бюджет нового года заводят позже) —
+		// тогда плановый год остаётся из процедуры.
+		years := map[int]bool{}
+		for _, c := range cells {
+			years[c.Year] = true
+		}
 		kept := out[:0:0]
 		for _, c := range out {
-			if c.Scenario != m.out {
-				kept = append(kept, c)
+			if c.Scenario == m.out && years[c.Year] {
+				continue
 			}
+			kept = append(kept, c)
 		}
 		out = append(kept, cells...)
 	}

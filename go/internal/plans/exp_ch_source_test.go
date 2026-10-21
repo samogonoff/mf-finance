@@ -437,7 +437,8 @@ func TestExpCHSource_SourceScenarios(t *testing.T) {
 		switch {
 		case strings.Contains(q, "findwh_table_fin_pl"):
 			fmt.Fprint(w, `{"scenario":"факт","for_report":"PL","rows":"100","from_month":"2025-01-01","to_month":"2026-10-01"}`+"\n"+
-				`{"scenario":"Бюджет","for_report":"PL","rows":50,"from_month":"2026-01-01","to_month":"2026-12-01"}`+"\n")
+				`{"scenario":"Бюджет","for_report":"PL","rows":50,"from_month":"2026-01-01","to_month":"2026-12-01"}`+"\n"+
+				`{"scenario":"тактика","for_report":"не берем","rows":9,"from_month":"2026-01-01","to_month":"2026-12-01"}`+"\n")
 		default:
 			fmt.Fprint(w, `{"scenario":"Тактика бюджет (таргеты)","for_report":"","rows":"7","from_month":"2026-01-01","to_month":"2026-12-01"}`+"\n")
 		}
@@ -449,21 +450,54 @@ func TestExpCHSource_SourceScenarios(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.FinPL) != 2 || res.FinPL[1].Rows != 50 || res.FinPL[0].Scenario != "факт" || len(res.Procedure) != 1 {
+	if len(res.FinPL) != 3 || res.FinPL[1].Rows != 50 || res.FinPL[0].Scenario != "факт" || len(res.Procedure) != 1 {
 		t.Fatalf("сценарии источников: %+v", res)
 	}
-	// «Бюджет» есть (регистр не важен), «Стратегический бюджет», «тактика» и «Тактика бюджет (таргеты)» в реплике нет.
-	if got := strings.Join(res.Missing["strategy"], "|"); got != "Стратегический бюджет" {
-		t.Errorf("не найдены названия стратегии: %q", got)
+	// «Бюджет» есть (регистр не важен) и с нужным «Для отчета»; «тактика» есть, но только с «не берем» — форма её не подхватит;
+	// факт найден.
+	if len(res.Missing["strategy"]) != 0 || len(res.Missing["tactic"]) != 0 || len(res.Missing["fact"]) != 0 {
+		t.Errorf("не найдены: %+v", res.Missing)
 	}
-	if got := strings.Join(res.Missing["tactic"], "|"); got != "тактика|Тактика бюджет (таргеты)" {
-		t.Errorf("не найдены названия тактики: %q", got)
+	if got := strings.Join(res.WrongReport["tactic"], "|"); got != "тактика" {
+		t.Errorf("тактика с неподходящим «Для отчета»: %q", got)
 	}
-	if len(res.Missing["fact"]) != 0 {
-		t.Errorf("факт найден: %v", res.Missing["fact"])
+	if len(res.WrongReport["strategy"]) != 0 {
+		t.Errorf("бюджет найден с нужным «Для отчета»: %v", res.WrongReport["strategy"])
 	}
-	// Источник не ClickHouse — понятная ошибка.
+	// Название, которого нет вовсе.
+	src2 := ExpCHSourcePlanFromFinPL(NewExpCHSource(&fallbackSource{}, srv.URL, "u", "p", nil), true, "Стратегический бюджет", "")
+	res2, _ := NewExpService(&fakeExpRepo{}, nil, src2).SourceScenarios(context.Background())
+	if got := strings.Join(res2.Missing["strategy"], "|"); got != "Стратегический бюджет" {
+		t.Errorf("ненайденное название: %q", got)
+	} // Источник не ClickHouse — понятная ошибка.
 	if _, err := NewExpService(&fakeExpRepo{}, nil, &fallbackSource{}).SourceScenarios(context.Background()); err == nil {
 		t.Error("для источника не из ClickHouse ждали ошибку")
+	}
+}
+
+// В реплике бюджет только за прошлый год, за плановый его ещё нет: стратегия планового года остаётся из процедуры
+// (форма использует плановый год), а не стирается.
+func TestExpCHSource_PlanFromFinPL_OnlyReplacesYearsPresent(t *testing.T) {
+	prevYear := strings.Replace(chRowRetail, `"y":2026`, `"y":2025`, 1)
+	prevYear = strings.Replace(prevYear, `"amount":1234.5`, `"amount":111`, 1)
+	stub := &chStub{count: "10\n", rows: chRowRetail + "\n", finpl: map[string]string{"бюджет": prevYear + "\n"}}
+	src := ExpCHSourcePlanFromFinPL(newCHTest(t, stub, &fallbackSource{}), true, "", "")
+	cells, err := src.Costs(context.Background(), ExpKindRetail, "BY", []int{2025, 2026})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var y2025, y2026 float64
+	for _, c := range cells {
+		if c.Scenario != ExpSrcStrategy {
+			continue
+		}
+		if c.Year == 2025 {
+			y2025 += c.Amount
+		} else if c.Year == 2026 {
+			y2026 += c.Amount
+		}
+	}
+	if y2025 != 111 || y2026 != 1234.5 {
+		t.Fatalf("2025 из реплики (111), 2026 из процедуры (1234.5): %v / %v", y2025, y2026)
 	}
 }
