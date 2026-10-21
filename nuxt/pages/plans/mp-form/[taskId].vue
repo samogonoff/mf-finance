@@ -65,7 +65,12 @@
             <option value="USD">USD</option>
           </select>
         </label>
-		<button v-if="canEdit" class="btn btn-sm btn-ghost" title="Заполнить продажи из стратегического бюджета за месяц тактики" @click="copyStrategy"><Icon name="lucide:copy" /> Заполнить из стратегии</button>
+        <label v-if="canEdit" class="cur-switch" title="Подставить продажи площадок (по ценам менеджера) из выбранного источника; сохраняются только после «Сохранить»">
+          <select class="select select-sm" :value="''" @change="onFillSales">
+            <option value="">Заполнить продажи из…</option>
+            <option v-for="s in fillSources" :key="s.key" :value="s.key">{{ s.label }}</option>
+          </select>
+        </label>
         <button class="btn btn-sm btn-ghost" @click="doExport"><Icon name="lucide:download" /> Экспорт</button>
         <button v-if="canEdit" class="btn btn-sm btn-ghost" @click="fileInput?.click()"><Icon name="lucide:upload" /> Импорт</button>
         <input ref="fileInput" type="file" accept=".xlsx" class="hidden-file" @change="doImport" />
@@ -914,13 +919,28 @@ const seedFromCells = () => {
   }
 };
 
-const copyStrategy = () => {
-  if (!form.value) return;
+// Откуда подставлять продажи площадок: стратегия месяца тактики или факт (прошлого месяца / того же месяца прошлого года).
+// Факт уже загружен в ячейки формы (колонки «Факт прошлого месяца» / «Факт прошлого года»), отдельный запрос не нужен.
+const fillSources = [
+  { key: "strategy", label: "стратегии месяца", empty: "стратегии", pick: (cfo: number) => stratOf(cfo, B.salesManagerGross) },
+  { key: "prev_month", label: "факта прошлого месяца", empty: "факта прошлого месяца", pick: (cfo: number) => cellRef(cfo, B.salesManagerGross)?.fact_prev_month ?? null },
+  { key: "prev_year", label: "факта того же месяца прошлого года", empty: "факта прошлого года", pick: (cfo: number) => prevOf(cfo, B.salesManagerGross) },
+];
+const onFillSales = (e: Event) => {
+  const el = e.target as HTMLSelectElement;
+  const source = el.value;
+  el.value = "";
+  if (source) fillSales(source);
+};
+
+const fillSales = (source: string) => {
+  const src = fillSources.find((s) => s.key === source);
+  if (!form.value || !src) return;
   if (dirty.value && !window.confirm("Несохранённые продажи и % СПП будут затёрты. Продолжить?")) return;
   const empty: string[] = [];
   let count = 0;
   for (const p of form.value.platforms) {
-    const value = stratOf(p.code_cfo, B.salesManagerGross);
+    const value = src.pick(p.code_cfo);
     if (value == null) { empty.push(p.name || String(p.code_cfo)); continue; }
     inputs[key(p.code_cfo, B.salesManagerGross)] = value;
 	inputs[key(p.code_cfo, B.spp)] = cellRef(p.code_cfo, B.spp)?.tactic ?? condOf(p.code_cfo)?.spp_pct ?? 0;
@@ -934,7 +954,7 @@ const copyStrategy = () => {
   }
   if (count) dirty.value = true;
   note.value = count ? `Заполнены продажи ${count} площадок.` : "";
-  if (empty.length) note.value += ` Нет стратегии за выбранный период: ${empty.join(", ")}.`;
+  if (empty.length) note.value += ` Нет данных ${src.empty} за выбранный период: ${empty.join(", ")}.`;
 };
 
 const load = async () => {
