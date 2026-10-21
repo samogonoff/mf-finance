@@ -144,6 +144,13 @@
                     :disabled="!!depHint(st) || st.status === 'completed'"
                     @click="doAct(st.stage_code, 'submit')"
                   >Отправить</button>
+                  <!-- Этапы 3 и 4 завершаются решениями согласующих на экране «Бюджет по ЮЛ» (ручное «Согласовать» сервер отклонит). -->
+                  <NuxtLink
+                    v-else-if="st.stage_code === '3' || st.stage_code === '4'"
+                    :to="`/plans/le-svod/${id}`"
+                    class="btn btn-sm btn-primary"
+                    :class="{ disabled: !!depHint(st) }"
+                  >К согласованию</NuxtLink>
                   <button
                     v-else
                     class="btn btn-sm btn-primary"

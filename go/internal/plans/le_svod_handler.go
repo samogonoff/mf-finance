@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // LeHandler — HTTP свода «Бюджет по ЮЛ».
@@ -46,20 +47,20 @@ type leAdjustBody struct {
 	Reason      string  `json:"reason"`
 }
 
-// Adjust — POST /api/plans/le-svod/{plId}/adjust: корректировка итога (админ процессов).
+// Adjust — POST /api/plans/le-svod/{plId}/adjust: корректировка итога (администратор процессов или согласующий этого ЮЛ).
 func (h *LeHandler) Adjust(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "plId")
 	if !ok {
 		return
 	}
 	p := h.principal(r)
-	if !p.PlansAdmin {
-		writeErr(w, http.StatusForbidden, "корректировать итоги свода может администратор процессов")
-		return
-	}
 	var body leAdjustBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "некорректное тело запроса")
+		return
+	}
+	if !h.svc.CanAdjust(r.Context(), p, strings.TrimSpace(body.LegalEntity)) {
+		writeErr(w, http.StatusForbidden, "корректировать итоги ЮЛ может администратор процессов или согласующий этого ЮЛ")
 		return
 	}
 	adjID, err := h.svc.Adjust(r.Context(), id, LeAdjust{
@@ -84,8 +85,8 @@ func (h *LeHandler) Revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := h.principal(r)
-	if !p.PlansAdmin {
-		writeErr(w, http.StatusForbidden, "снимать корректировки может администратор процессов")
+	if !h.svc.CanAdjust(r.Context(), p, h.svc.adjustLegal(r.Context(), plID, adjID)) {
+		writeErr(w, http.StatusForbidden, "снимать корректировки ЮЛ может администратор процессов или согласующий этого ЮЛ")
 		return
 	}
 	if err := h.svc.RevokeAdjust(r.Context(), plID, adjID, p.UserID, r.URL.Query().Get("reason")); err != nil {
