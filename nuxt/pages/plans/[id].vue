@@ -542,7 +542,7 @@ const TRACKS = [
   { key: "production", label: "Поток производства", codes: ["2.1", "2.2", "2.3", "2.4"] },
   { key: "final", label: "Финал — ЮЛ", codes: ["3", "4"] }
 ];
-const APPROVAL = new Set(["1.2", "1.3", "1.4", "2.2", "3", "4"]);
+const APPROVAL = new Set(["1.2", "1.3", "1.4", "1.6", "2.2", "3", "4"]);
 
 const byCode = computed<Record<string, StageState>>(() =>
   Object.fromEntries(list.value.map((s) => [s.stage_code, s]))
