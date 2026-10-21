@@ -23,9 +23,10 @@ type LeIssue struct {
 	Message string `json:"message"`
 }
 
-// leCardClosed — карточка формы утверждена (или уже опубликована): её цифры не изменятся без возврата.
+// leCardClosed — карточка формы закрыта: утверждена, опубликована или убрана из периода (архив). Архивная карточка
+// в этапах 1.1–1.5 считается завершённой (stage_sync.go), и держать по ней этап 1.6 нельзя.
 func leCardClosed(c Card) bool {
-	return c.Status == CardApproved || c.Status == CardPublished
+	return c.Status == CardApproved || c.Status == CardPublished || c.Status == CardArchived
 }
 
 // leListTitles — до limit названий и «и ещё N».

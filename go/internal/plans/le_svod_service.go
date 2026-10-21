@@ -24,21 +24,22 @@ func NewLeSvodService(cards *CardService, exp *ExpService, sales func(ctx contex
 	return &LeSvodService{cards: cards, exp: exp, sales: sales, rates: rates, adj: adj, stages: stages}
 }
 
-// leClosed — этап 4 завершён: итоги закрыты для корректировок.
-func (s *LeSvodService) leClosed(ctx context.Context, plID int64) bool {
+// leClosed — этап 4 завершён: итоги закрыты для корректировок. Ошибка чтения этапов возвращается: запись при сбое
+// проверки не разрешается (проверка, которая должна запрещать, не должна открывать доступ).
+func (s *LeSvodService) leClosed(ctx context.Context, plID int64) (bool, error) {
 	if s.stages == nil {
-		return false
+		return false, nil
 	}
 	st, err := s.stages(ctx, plID)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for _, x := range st {
 		if x.Code == "4" {
-			return x.Status == "completed"
+			return x.Status == "completed", nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // Build собирает свод периода. window — month | tail | year (как у сводов расходов); продажи тактики относятся к месяцу периода,
@@ -72,7 +73,11 @@ func (s *LeSvodService) Build(ctx context.Context, plID int64, window string) (L
 	}
 
 	// Расходы: строки карточек расходов, ЮЛ — по ЦФО строки, плановые месяцы окна.
-	pnlOrder := map[string]bool{}
+	// Справочник групп P&L не зависит от карточки: читаем один раз; от вида формы зависят только группы по умолчанию.
+	pnlBase := map[int]string{}
+	if m, err := s.exp.pnlGroups(ctx); err == nil {
+		pnlBase = m
+	}
 	for _, c := range cards {
 		if c.FormCode != TemplateExp || strings.HasPrefix(c.ScopeKey, "CFO-") {
 			continue
@@ -89,11 +94,7 @@ func (s *LeSvodService) Build(ctx context.Context, plID int64, window string) (L
 			in.Warnings = append(in.Warnings, fmt.Sprintf("%s: нет курса %s к BYN, расходы формы не вошли в свод.", c.Title, inst.Currency))
 			continue
 		}
-		pnl := map[int]string{}
-		if m, err := s.exp.pnlGroups(ctx); err == nil {
-			pnl = m
-		}
-		pnl = expApplyDefaultPnlGroups(kind, pnl)
+		pnl := expApplyDefaultPnlGroups(kind, pnlBase)
 		rows, err := expAllRows(ctx, s.exp.repo, inst.ID)
 		if err != nil {
 			in.Warnings = append(in.Warnings, fmt.Sprintf("%s: строки расходов не прочитаны (%v).", c.Title, err))
@@ -121,7 +122,6 @@ func (s *LeSvodService) Build(ctx context.Context, plID int64, window string) (L
 				legal = inst.LegalEntity
 			}
 			in.Amounts = append(in.Amounts, leAmount{Legal: NormLegalEntity(legal), Key: "exp:" + group, Label: group, BYN: plan * fx.Tactic})
-			pnlOrder[group] = true
 		}
 	}
 	in.GroupOrder = expRetailPnlOrder
@@ -131,7 +131,12 @@ func (s *LeSvodService) Build(ctx context.Context, plID int64, window string) (L
 		return LeSvod{}, err
 	}
 	in.Adjustments = adj
-	in.Closed = s.leClosed(ctx, plID)
+	closed, cerr := s.leClosed(ctx, plID)
+	if cerr != nil {
+		in.Warnings = append(in.Warnings, "Состояние этапов не прочитано: корректировки временно недоступны.")
+		closed = true
+	}
+	in.Closed = closed
 	out := buildLeSvod(in)
 	out.Readiness = leReadiness(cards, out)
 	out.Ready = len(leBlockers(out.Readiness)) == 0
@@ -158,7 +163,9 @@ func (s *LeSvodService) Adjust(ctx context.Context, plID int64, a LeAdjust) (int
 	if err := validateLeAdjust(a); err != nil {
 		return 0, err
 	}
-	if s.leClosed(ctx, plID) {
+	if closed, err := s.leClosed(ctx, plID); err != nil {
+		return 0, fmt.Errorf("не удалось проверить состояние этапов: %w", err)
+	} else if closed {
 		return 0, errors.New("период утверждён: корректировки закрыты (переоткройте период с причиной)")
 	}
 	id, err := s.adj.Add(ctx, a)
@@ -174,7 +181,9 @@ func (s *LeSvodService) RevokeAdjust(ctx context.Context, plID, id, userID int64
 	if strings.TrimSpace(reason) == "" {
 		return errors.New("укажите причину снятия")
 	}
-	if s.leClosed(ctx, plID) {
+	if closed, err := s.leClosed(ctx, plID); err != nil {
+		return fmt.Errorf("не удалось проверить состояние этапов: %w", err)
+	} else if closed {
 		return errors.New("период утверждён: корректировки закрыты (переоткройте период с причиной)")
 	}
 	_, err := s.adj.Revoke(ctx, plID, id, userID, strings.TrimSpace(reason))

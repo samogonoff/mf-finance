@@ -44,6 +44,15 @@ func TestLeReadiness_BlockersAndWarnings(t *testing.T) {
 		t.Errorf("блокирующих %d, ждали 2", got)
 	}
 
+	// Архивная карточка (форму решили не утверждать и убрали из периода) этап 1.6 не блокирует.
+	arch := leReadiness([]Card{
+		{Title: "Розница РБ", FormCode: TemplateRetail, Status: CardApproved},
+		{Title: "Расходы ЦП · Интернет-магазин РБ", FormCode: TemplateExp, ScopeKey: "IM-BY", Status: CardArchived},
+	}, LeSvod{})
+	if len(leBlockers(arch)) != 0 {
+		t.Errorf("архивная карточка не должна блокировать: %+v", arch)
+	}
+
 	// Все формы утверждены, продаж нет — только предупреждение.
 	ok := leReadiness([]Card{{Title: "Розница РБ", FormCode: TemplateRetail, Status: CardApproved}}, LeSvod{})
 	if len(leBlockers(ok)) != 0 {
