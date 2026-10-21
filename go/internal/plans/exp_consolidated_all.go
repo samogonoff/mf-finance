@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 )
 
 // Общий свод расходов «розница + интернет-магазин + опт» одной таблицей: строки — те же группы PL и статьи, колонки —
@@ -58,6 +59,11 @@ func mergeExpConsolidatedChannels(plID int64, parts []expAllPart, order []string
 			out.Year, out.Month, out.Window, out.FromMonth, out.ToMonth = p.Cons.Year, p.Cons.Month, p.Cons.Window, p.Cons.FromMonth, p.Cons.ToMonth
 		}
 		factBasisPayments = factBasisPayments || p.Cons.FactBasis == ExpFactBasisPayments
+		// Загрузка канала ещё идёт / не удалась / карточка закрыта и пуста: переносим пояснения канала.
+		out.Syncing = out.Syncing || p.Cons.Syncing
+		for _, w := range p.Cons.Warnings {
+			out.Warnings = append(out.Warnings, p.Label+" · "+w)
+		}
 		// Диагностики стран внутри канала (розница по странам) не теряем: колонка канала не «ошибочная» и не «без курса»
 		// целиком, а итог неполный из-за конкретной страны — это говорит предупреждение с её кодом.
 		noCard := map[string]bool{}
@@ -169,12 +175,32 @@ func (s *ExpService) AllChannelsConsolidated(ctx context.Context, p Principal, p
 		}
 		parts = append(parts, part)
 	}
-	rc, err := s.RetailConsolidated(ctx, p, plID, window)
-	add(expAllLabelRetail, rc, err)
-	ic, err := s.ChannelConsolidated(ctx, p, plID, ExpChannelIM, window)
-	add(expAllLabelIM, ic, err)
-	oc, err := s.ChannelConsolidated(ctx, p, plID, ExpChannelOpt, window)
-	add(expAllLabelOpt, oc, err)
+	// Три канала читаются параллельно и делят ОДИН дедлайн ожидания загрузок: ожидания не складываются, ответ с
+	// признаком syncing укладывается в WriteTimeout сервера даже на медленном источнике.
+	ctx = withSvodDeadline(ctx, s.svodWaitOrDefault())
+	type result struct {
+		cons ExpConsolidated
+		err  error
+	}
+	var retail, im, opt result
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		retail.cons, retail.err = s.RetailConsolidated(ctx, p, plID, window)
+	}()
+	go func() {
+		defer wg.Done()
+		im.cons, im.err = s.ChannelConsolidated(ctx, p, plID, ExpChannelIM, window)
+	}()
+	go func() {
+		defer wg.Done()
+		opt.cons, opt.err = s.ChannelConsolidated(ctx, p, plID, ExpChannelOpt, window)
+	}()
+	wg.Wait()
+	add(expAllLabelRetail, retail.cons, retail.err)
+	add(expAllLabelIM, im.cons, im.err)
+	add(expAllLabelOpt, opt.cons, opt.err)
 
 	ok := false
 	for _, pt := range parts {
