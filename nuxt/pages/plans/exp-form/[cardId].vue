@@ -457,7 +457,7 @@
                 v-for="mm in shownMonths"
                 :key="mm"
                 class="col-num c-mon th-sort"
-                :title="`План ${planYear}, ${MONTHS_SHORT[mm - 1]} · ${sortHint(monthKey(mm))}`"
+                :title="`${mm === cardMonth ? `Текущий месяц ${planYear}: сумма, которую вы внесёте (факт подтягивается при загрузке из источника, его можно поправить) · ` : `План ${planYear}, ${MONTHS_SHORT[mm - 1]} · `}${sortHint(monthKey(mm))}`"
                 @click="toggleSort(monthKey(mm))"
               >{{ MONTHS_SHORT[mm - 1] }}{{ sortMark(monthKey(mm)) }}</th>
               <th class="col-num c-total" :title="`Сумма плана за показанные месяцы (${viewTotalLabel})`">Итого план</th>
@@ -465,7 +465,6 @@
               <template v-if="showRef">
                 <th class="col-num c-ref" :title="`${factWord}: ${monthName} ${planYear - 1} (тот же месяц прошлого года)${factBasisNote}`">Факт {{ monthName }} {{ planYear - 1 }}</th>
                 <th class="col-num c-ref" :title="`${factWord} прошлого месяца: ${refPrev.label}${factBasisNote}`">Факт {{ refPrev.label }}</th>
-                <th class="col-num c-ref" :title="`${factWord} текущего месяца плана (учтён на момент загрузки): ${monthName} ${planYear}${factBasisNote}`">Факт {{ monthName }} {{ planYear }}</th>
               </template>
               <th class="c-act">Строка</th>
             </tr>
@@ -494,7 +493,6 @@
                 <template v-if="showRef">
                   <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'ly')) }}</td>
                   <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'prev')) }}</td>
-                  <td class="col-num grp-num">{{ money(groupRefTotal(item.group, 'cur')) }}</td>
                 </template>
                 <td></td>
               </tr>
@@ -525,7 +523,6 @@
                 <template v-if="showRef">
                   <td class="col-num c-ref muted">{{ refText(item.row, 'ly') }}</td>
                   <td class="col-num c-ref muted">{{ refText(item.row, 'prev') }}</td>
-                  <td class="col-num c-ref muted">{{ refText(item.row, 'cur') }}</td>
                 </template>
                 <td class="c-act">
                   <div class="row-acts">
@@ -1121,7 +1118,7 @@ const windowItems = computed(() => displayItems.value.slice(windowStart.value, w
 const padTop = computed(() => windowStart.value * ROW_H);
 const padBottom = computed(() => Math.max(0, (displayItems.value.length - windowEnd.value) * ROW_H));
 /** Колонок всего: атрибуты + показанные месяцы + итог + факт + (сравнение) + действия. */
-const colCount = computed(() => visibleAttrColumns.value.length + shownMonths.value.length + 3 + (showRef.value ? 3 : 0));
+const colCount = computed(() => visibleAttrColumns.value.length + shownMonths.value.length + 3 + (showRef.value ? 2 : 0));
 
 const onScroll = (e: Event) => {
   const el = e.target as HTMLElement;
