@@ -79,7 +79,8 @@ func (s *LeSvodService) Build(ctx context.Context, plID int64, window string) (L
 		pnlBase = m
 	}
 	for _, c := range cards {
-		if c.FormCode != TemplateExp || strings.HasPrefix(c.ScopeKey, "CFO-") {
+		// Архивная карточка «убрана из периода» (в готовности она не блокирует): её суммы в свод не идут.
+		if c.FormCode != TemplateExp || strings.HasPrefix(c.ScopeKey, "CFO-") || c.Status == CardArchived {
 			continue
 		}
 		card, inst, err := s.exp.access(ctx, c.ID)
