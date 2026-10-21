@@ -333,7 +333,18 @@ const load = async () => {
   error.value = "";
   try {
     const r = await api.svod(plId, win.value);
-    if (my === seq) data.value = r;
+    if (my === seq) {
+      // Пустой период допустим. Go может сериализовать пустые срезы как null,
+      // а шаблону таблицы нужны массивы для colspan и перебора.
+      data.value = {
+        ...r,
+        legals: Array.isArray(r.legals) ? r.legals : [],
+        rows: Array.isArray(r.rows) ? r.rows : [],
+        adjustments: Array.isArray(r.adjustments) ? r.adjustments : [],
+        readiness: Array.isArray(r.readiness) ? r.readiness : [],
+        warnings: Array.isArray(r.warnings) ? r.warnings : []
+      };
+    }
   } catch (e) {
     if (my === seq) error.value = apiError(e, "Свод не загружен");
   } finally {
@@ -400,7 +411,19 @@ const doRevoke = async () => {
 const appr = ref<LeApprovalStatus | null>(null);
 const loadAppr = async () => {
   try {
-    appr.value = await api.approval(plId);
+    const result = await api.approval(plId);
+    // Для периода без ЮЛ API может вернуть null вместо пустых срезов Go.
+    // Нормализуем ответ, чтобы страница оставалась рабочей.
+    appr.value = {
+      ...result,
+      stages: result.stages || {},
+      stage3: Array.isArray(result.stage3) ? result.stage3 : [],
+      stage4: {
+        ...result.stage4,
+        approvers: Array.isArray(result.stage4?.approvers) ? result.stage4.approvers : []
+      },
+      decisions: Array.isArray(result.decisions) ? result.decisions : []
+    };
   } catch (e) {
     error.value = apiError(e, "Состояние согласования не загружено");
   }
