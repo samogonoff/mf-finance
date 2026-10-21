@@ -323,7 +323,7 @@ func (s *ExpService) RetailConsolidated(ctx context.Context, p Principal, plID i
 	}
 	// Свод сам запускает загрузку из источника для открытых карточек (как открытие формы): за период, форму которого
 	// не открывали, он иначе пуст.
-	syncing, syncWarnings := s.loadForSvod(loads)
+	syncing, syncWarnings := s.loadForSvod(ctx, loads)
 	var warnings []string
 	warnings = append(warnings, syncWarnings...)
 	for _, l := range loads {
@@ -448,7 +448,7 @@ func (s *ExpService) ChannelConsolidated(ctx context.Context, p Principal, plID 
 	if channel == ExpChannelOpt {
 		label = "Опт"
 	}
-	syncing, warnings := s.loadForSvod([]svodLoad{{Label: label, Card: c, Inst: inst}})
+	syncing, warnings := s.loadForSvod(ctx, []svodLoad{{Label: label, Card: c, Inst: inst}})
 	rows, err := expAllRows(ctx, s.repo, inst.ID)
 	if err != nil {
 		return ExpConsolidated{}, err

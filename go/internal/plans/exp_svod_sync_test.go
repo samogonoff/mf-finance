@@ -115,7 +115,7 @@ func TestSvodSync_StillRunningThenDone_PG(t *testing.T) {
 	}
 	close(release)
 	deadline := time.Now().Add(5 * time.Second)
-	for svc.anySyncRunning(svodItemsFor(t, svc, ctx, pl)) && time.Now().Before(deadline) {
+	for anySyncRunning(svc, svodItemsFor(t, svc, ctx, pl)) && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	out, err = svc.RetailConsolidated(ctx, Principal{UserID: 1, PlansAdmin: true}, pl, ExpWindowMonth)
@@ -199,4 +199,86 @@ func svodItemsFor(t *testing.T, svc *ExpService, ctx context.Context, pl int64) 
 		items = append(items, svodLoad{Card: c, Inst: in})
 	}
 	return items
+}
+
+// anySyncRunning — по какой-то из карточек загрузка ещё идёт.
+func anySyncRunning(svc *ExpService, items []svodLoad) bool {
+	for _, it := range items {
+		if svc.syncStatus(it.Inst.ID).State == ExpSyncRunning {
+			return true
+		}
+	}
+	return false
+}
+
+// Общий свод на медленном источнике: каналы читаются параллельно и делят один дедлайн, поэтому ответ приходит за
+// одно ожидание (а не три подряд) и с признаком syncing — раньше три ожидания складывались и не укладывались в
+// WriteTimeout сервера.
+func TestSvodSync_AllChannelsShareOneDeadline_PG(t *testing.T) {
+	release := make(chan struct{})
+	src := &stubExpSource{cells: svodCells(), release: release}
+	svc, _, _, pl, ctx := svodSyncFixture(t, src)
+	svc.svodWait = 600 * time.Millisecond
+	defer close(release)
+
+	started := time.Now()
+	out, err := svc.ChannelConsolidated(ctx, Principal{UserID: 1, PlansAdmin: true}, pl, ExpChannelAll, ExpWindowMonth)
+	took := time.Since(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Syncing {
+		t.Error("загрузка ещё идёт — общий свод должен отдать syncing")
+	}
+	// Один дедлайн 0,6 с на все три канала; три последовательных ожидания дали бы ≥ 1,8 с.
+	if took > 1500*time.Millisecond {
+		t.Errorf("ожидания каналов сложились: общий свод ответил за %v (дедлайн %v)", took, svc.svodWait)
+	}
+}
+
+// Клиент ушёл (контекст отменён): свод не висит до дедлайна, а возвращается сразу.
+func TestSvodSync_CancelledRequestDoesNotWait_PG(t *testing.T) {
+	release := make(chan struct{})
+	src := &stubExpSource{cells: svodCells(), release: release}
+	svc, _, _, pl, ctx := svodSyncFixture(t, src)
+	svc.svodWait = 10 * time.Second
+	defer close(release)
+
+	cctx, cancel := context.WithCancel(ctx)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+	started := time.Now()
+	if _, err := svc.RetailConsolidated(cctx, Principal{UserID: 1, PlansAdmin: true}, pl, ExpWindowMonth); err != nil {
+		// Чтение из БД с отменённым контекстом может вернуть ошибку — важно, что вернулось быстро.
+		t.Logf("ошибка при отменённом контексте: %v", err)
+	}
+	if took := time.Since(started); took > 3*time.Second {
+		t.Errorf("отменённый запрос ждал загрузку %v", took)
+	}
+}
+
+// Статус прошлой загрузки (ошибка) не показывается по карточке, которую уже отправили на согласование: свод её не
+// загружает, а повторить загрузку нельзя.
+func TestSvodSync_ClosedCardStaleErrorNotShown_PG(t *testing.T) {
+	src := &stubExpSource{err: errors.New("dial tcp: connection refused")}
+	svc, _, pool, pl, ctx := svodSyncFixture(t, src)
+	admin := Principal{UserID: 1, PlansAdmin: true}
+	first, err := svc.ChannelConsolidated(ctx, admin, pl, ExpChannelIM, ExpWindowMonth)
+	if err != nil || len(first.Warnings) == 0 {
+		t.Fatalf("черновик: ждали предупреждение о сбое загрузки: %v / %v", first.Warnings, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE form_card SET status=$3 WHERE pl_id=$1 AND form_code=$2 AND scope_key='IM-BY'`, pl, TemplateExp, CardOnApproval); err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.ChannelConsolidated(ctx, admin, pl, ExpChannelIM, ExpWindowMonth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range second.Warnings {
+		if strings.Contains(w, "загрузка из источника не удалась") {
+			t.Errorf("по закрытой карточке не должно быть предупреждения о сбое прошлой загрузки: %v", second.Warnings)
+		}
+	}
 }

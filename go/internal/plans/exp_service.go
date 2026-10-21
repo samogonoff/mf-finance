@@ -148,25 +148,33 @@ const expSyncRetryAfter = 10 * time.Minute
 // и ждёт её не дольше syncWait. force — запуск по кнопке: игнорирует TTL и паузу
 // после ошибки.
 func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
+	if run := s.startSync(c, in, force); run != nil {
+		s.waitSync(run)
+	}
+}
+
+// startSync запускает загрузку из источника в фоне (не больше одной на экземпляр) и сразу возвращается. Возвращает
+// идущую загрузку (новую или уже запущенную) или nil, если запускать нечего: источника нет, данные свежие, после
+// ошибки пауза. Ожидание — на вызывающем (форма ждёт syncWait, своды — один общий дедлайн).
+func (s *ExpService) startSync(c Card, in ExpInstance, force bool) *expSyncRun {
 	if s.source == nil {
-		return
+		return nil
 	}
 	s.syncMu.Lock()
 	run := s.syncState[in.ID]
 	if run != nil && run.status.State == ExpSyncRunning {
 		s.syncMu.Unlock()
-		s.waitSync(run)
-		return
+		return run
 	}
 	if !force {
 		if s.factFresh(in.ID) {
 			s.syncMu.Unlock()
-			return
+			return nil
 		}
 		if run != nil && run.status.State == ExpSyncError && run.status.FinishedAt != nil &&
 			time.Since(*run.status.FinishedAt) < expSyncRetryAfter {
 			s.syncMu.Unlock()
-			return
+			return nil
 		}
 	}
 	now := time.Now()
@@ -230,7 +238,7 @@ func (s *ExpService) ensureSync(c Card, in ExpInstance, force bool) {
 		s.syncMu.Unlock()
 		close(run.done)
 	}()
-	s.waitSync(run)
+	return run
 }
 
 func (s *ExpService) waitSync(run *expSyncRun) {
