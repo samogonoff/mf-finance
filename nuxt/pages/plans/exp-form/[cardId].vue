@@ -1378,6 +1378,10 @@ onBeforeRouteLeave(() => {
 </script>
 
 <style scoped>
+/* Кнопок в шапке много: переносим на следующие строки, а не выталкиваем за край экрана. */
+.page-exp .page-actions { flex-wrap: wrap; flex: 1 1 100%; gap: var(--sp-2) var(--sp-3); }
+.page-exp .page-actions .btn { white-space: nowrap; }
+
 .page-exp { display: flex; flex-direction: column; gap: var(--sp-4); }
 .lock-note { color: var(--neg); display: inline-flex; align-items: center; gap: 3px; margin-left: var(--sp-3); }
 .dirty-dot { color: var(--warn); margin-left: 4px; }
