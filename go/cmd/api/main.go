@@ -588,8 +588,17 @@ func main() {
 	plansLeSvc := plans.NewLeSvodService(plansCards, plansExp, plansSvc.Svod, plansRates,
 		plans.NewLeAdjustRepo(pool), plansStore.Stages)
 	plansLeH := plans.NewLeHandler(plansLeSvc, plansPrincipal)
-	// Этап 1.6 нельзя завершить, пока формы продаж и расходов не утверждены.
-	plansSvc.WithStageGate(plansLeSvc.Gate)
+	// Согласование ЮЛ (этап 3) и итоговое утверждение (этап 4): настраиваемые согласующие, «все» или «один».
+	plansLeAppr := plans.NewLeApprovalService(plans.NewLeApprovalRepo(pool), plansLeSvc, plansSvc, plansCards, plansStore.Stages)
+	plansLeSvc.WithApprovals(plansLeAppr)
+	plansLeApprH := plans.NewLeApprovalHandler(plansLeAppr, plansPrincipal)
+	// Ручное движение этапов: 1.6 — только при утверждённых формах; 3 и 4 — только решениями согласующих.
+	plansSvc.WithStageGate(func(ctx context.Context, plID int64, code, action string) error {
+		if err := plansLeSvc.Gate(ctx, plID, code, action); err != nil {
+			return err
+		}
+		return plansLeAppr.Gate(ctx, plID, code, action)
+	})
 	plansCfoH := plans.NewCfoExpenseHandler(plansCfoSvc, plansPrincipal)
 	plansCfoRegistryH := plans.NewCfoExpenseRegistryHandler(pool, plansCards, plansScope, plansPrincipal)
 
@@ -659,8 +668,12 @@ func main() {
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormSave))
 	mux.HandleFunc("GET /api/plans/exp-consolidated/{plId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ConsolidatedGet))
 	mux.HandleFunc("GET /api/plans/le-svod/{plId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansLeH.Get))
-	mux.HandleFunc("POST /api/plans/le-svod/{plId}/adjust", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansLeH.Adjust))
-	mux.HandleFunc("DELETE /api/plans/le-svod/{plId}/adjust/{id}", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansLeH.Revoke))
+	mux.HandleFunc("POST /api/plans/le-svod/{plId}/adjust", auth.RequireRole(authSvc, auth.RolePlansUser, plansLeH.Adjust))
+	mux.HandleFunc("DELETE /api/plans/le-svod/{plId}/adjust/{id}", auth.RequireRole(authSvc, auth.RolePlansUser, plansLeH.Revoke))
+	mux.HandleFunc("GET /api/plans/le-approval/{plId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansLeApprH.Status))
+	mux.HandleFunc("POST /api/plans/le-approval/{plId}/decide", auth.RequireRole(authSvc, auth.RolePlansUser, plansLeApprH.Decide))
+	mux.HandleFunc("GET /api/plans/le-approvers", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansLeApprH.Config))
+	mux.HandleFunc("PUT /api/plans/le-approvers", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansLeApprH.SetApprovers))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/sync", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.SyncPost))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.BulkApply))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/totals", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.TotalsGet))

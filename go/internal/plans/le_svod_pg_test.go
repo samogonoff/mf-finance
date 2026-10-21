@@ -103,10 +103,10 @@ func TestLeSvod_BuildAdjustRevoke_PG(t *testing.T) {
 		t.Error("повторное снятие должно давать ошибку")
 	}
 
-	// Период утверждён (этап 4 завершён) — корректировки закрыты.
+	// Согласование ЮЛ завершено (этап 3/4) — корректировки закрыты.
 	stageDone = true
-	if _, err := le.Adjust(ctx, pl, LeAdjust{LegalEntity: "F", LineKey: "exp:Заработная плата", AmountBYN: 1, Reason: "поздно", UserID: 1}); err == nil || !strings.Contains(err.Error(), "утверждён") {
-		t.Errorf("после этапа 4 корректировать нельзя: %v", err)
+	if _, err := le.Adjust(ctx, pl, LeAdjust{LegalEntity: "F", LineKey: "exp:Заработная плата", AmountBYN: 1, Reason: "поздно", UserID: 1}); err == nil || !strings.Contains(err.Error(), "уже завершено") {
+		t.Errorf("после завершения согласования корректировать нельзя: %v", err)
 	}
 	if s, _ = le.Build(ctx, pl, ExpWindowMonth); !s.Closed {
 		t.Error("признак Closed должен быть выставлен")

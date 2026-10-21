@@ -16,6 +16,22 @@ type LeSvodService struct {
 	rates  *RateBook
 	adj    LeAdjustRepo
 	stages func(ctx context.Context, plID int64) ([]StageState, error)
+	// approvals — согласующие этапов 3 и 4: кто может корректировать итог своего ЮЛ и чьи согласия сбрасывает корректировка.
+	approvals *LeApprovalService
+}
+
+// WithApprovals подключает согласование этапов 3 и 4.
+func (s *LeSvodService) WithApprovals(a *LeApprovalService) *LeSvodService {
+	s.approvals = a
+	return s
+}
+
+// CanAdjust — пользователь вправе корректировать итог ЮЛ: администратор процессов или согласующий этого ЮЛ (этап 3).
+func (s *LeSvodService) CanAdjust(ctx context.Context, p Principal, legal string) bool {
+	if p.PlansAdmin {
+		return true
+	}
+	return s.approvals != nil && s.approvals.IsApprover(ctx, "3", legal, p.UserID)
 }
 
 // NewLeSvodService — конструктор. sales — свод товарооборота по ЮЛ × каналу (Service.Svod), stages — этапы периода.
@@ -24,7 +40,8 @@ func NewLeSvodService(cards *CardService, exp *ExpService, sales func(ctx contex
 	return &LeSvodService{cards: cards, exp: exp, sales: sales, rates: rates, adj: adj, stages: stages}
 }
 
-// leClosed — этап 4 завершён: итоги закрыты для корректировок.
+// leClosed — согласование ЮЛ (этап 3) или итоговое утверждение (этап 4) завершено: итоги закрыты для корректировок.
+// Чтобы скорректировать, период возвращают на предыдущий этап.
 func (s *LeSvodService) leClosed(ctx context.Context, plID int64) bool {
 	if s.stages == nil {
 		return false
@@ -34,8 +51,8 @@ func (s *LeSvodService) leClosed(ctx context.Context, plID int64) bool {
 		return false
 	}
 	for _, x := range st {
-		if x.Code == "4" {
-			return x.Status == "completed"
+		if (x.Code == "3" || x.Code == "4") && x.Status == "completed" {
+			return true
 		}
 	}
 	return false
@@ -159,11 +176,14 @@ func (s *LeSvodService) Adjust(ctx context.Context, plID int64, a LeAdjust) (int
 		return 0, err
 	}
 	if s.leClosed(ctx, plID) {
-		return 0, errors.New("период утверждён: корректировки закрыты (переоткройте период с причиной)")
+		return 0, errors.New("согласование ЮЛ уже завершено: корректировки закрыты (верните период на этап 3 или 1.6)")
 	}
 	id, err := s.adj.Add(ctx, a)
 	if err != nil {
 		return 0, err
+	}
+	if s.approvals != nil {
+		s.approvals.OnAdjust(ctx, plID, a.LegalEntity)
 	}
 	log.Printf("plans/le-svod: корректировка pl=%d юл=%q строка=%q сумма=%.2f пользователь=%d", plID, a.LegalEntity, a.LineKey, a.AmountBYN, a.UserID)
 	return id, nil
@@ -175,8 +195,28 @@ func (s *LeSvodService) RevokeAdjust(ctx context.Context, plID, id, userID int64
 		return errors.New("укажите причину снятия")
 	}
 	if s.leClosed(ctx, plID) {
-		return errors.New("период утверждён: корректировки закрыты (переоткройте период с причиной)")
+		return errors.New("согласование ЮЛ уже завершено: корректировки закрыты (верните период на этап 3 или 1.6)")
 	}
-	_, err := s.adj.Revoke(ctx, plID, id, userID, strings.TrimSpace(reason))
-	return err
+	a, err := s.adj.Revoke(ctx, plID, id, userID, strings.TrimSpace(reason))
+	if err != nil {
+		return err
+	}
+	if s.approvals != nil {
+		s.approvals.OnAdjust(ctx, plID, a.LegalEntity)
+	}
+	return nil
+}
+
+// adjustLegal — ЮЛ корректировки (для проверки прав на её снятие).
+func (s *LeSvodService) adjustLegal(ctx context.Context, plID, id int64) string {
+	list, err := s.adj.List(ctx, plID)
+	if err != nil {
+		return ""
+	}
+	for _, a := range list {
+		if a.ID == id {
+			return a.LegalEntity
+		}
+	}
+	return ""
 }
