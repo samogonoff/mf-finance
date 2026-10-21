@@ -57,10 +57,21 @@ func TestExpGroupOrder_ByKind(t *testing.T) {
 	}
 	// ExpGroupOrder: новые названия первыми, прежний перечень по виду формы — после них.
 	retail, mp := ExpGroupOrder(ExpKindRetail), ExpGroupOrder(ExpKindMP)
-	if len(retail) != len(expGroupOrderNew)+14 || len(mp) != len(expGroupOrderNew)+8 {
+	// Названия, общие для нового и прежнего перечней (например «РЕКЛАМА И МАРКЕТИНГ»), в списке встречаются один раз.
+	for _, order := range [][]string{retail, mp} {
+		seen := map[string]bool{}
+		for _, g := range order {
+			if seen[g] {
+				t.Fatalf("группа %q в порядке повторяется", g)
+			}
+			seen[g] = true
+		}
+	}
+	if len(retail) > len(expGroupOrderNew)+14 || len(mp) > len(expGroupOrderNew)+8 || len(mp) < len(expGroupOrderNew) {
 		t.Fatalf("порядок групп: розница %d, МП %d", len(retail), len(mp))
 	}
-	if retail[0] != "Заработная плата" || mp[len(mp)-1] != expGroupOrderMP[len(expGroupOrderMP)-1] {
+	// «РЕКЛАМА И МАРКЕТИНГ» уже есть среди новых названий, поэтому последней у МП остаётся «АРЕНДА».
+	if retail[0] != "Заработная плата" || mp[len(mp)-1] != "АРЕНДА" {
 		t.Fatalf("новые названия первыми, прежние — в конце: %q ... %q", retail[0], mp[len(mp)-1])
 	}
 }

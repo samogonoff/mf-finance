@@ -259,7 +259,21 @@ func ExpGroupOrder(kind string) []string {
 	if kind == ExpKindMP {
 		old = expGroupOrderMP
 	}
-	return append(append([]string{}, expGroupOrderNew...), old...)
+	return expDedupGroups(append(append([]string{}, expGroupOrderNew...), old...))
+}
+
+// expDedupGroups убирает повторы названий групп, сохраняя порядок первого вхождения (иначе фильтр «Группа PL» покажет группу дважды).
+func expDedupGroups(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, g := range in {
+		if _, ok := seen[g]; ok {
+			continue
+		}
+		seen[g] = struct{}{}
+		out = append(out, g)
+	}
+	return out
 }
 
 // orderGroups — группы формы в порядке order; группы вне порядка идут в конце по алфавиту.

@@ -658,7 +658,7 @@ func (s *ExpService) groupOrder(ctx context.Context, kind string) []string {
 	}
 	if len(got) > 0 {
 		// Новые названия групп (GroupPL_new) идут первыми, затем порядок справочника с прежними названиями.
-		return append(append([]string{}, expGroupOrderNew...), got...)
+		return expDedupGroups(append(append([]string{}, expGroupOrderNew...), got...))
 	}
 	return ExpGroupOrder(kind)
 }
