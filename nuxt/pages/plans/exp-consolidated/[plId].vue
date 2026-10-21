@@ -193,12 +193,20 @@ const periodLabel = computed(() => {
   return from === to ? `План: ${MONTHS_SHORT[from - 1]} ${year}` : `План: ${MONTHS_SHORT[from - 1]}–${MONTHS_SHORT[to - 1]} ${year}`;
 });
 const factWord = computed(() => (data.value?.fact_basis === "payments" ? "Факт по платежам" : "Факт"));
-const lyLabel = computed(() => (data.value ? `${MONTHS_SHORT[month.value - 1]} ${data.value.year - 1}` : ""));
+// Колонки факта следуют за окном свода (from_month–to_month из ответа): тот же период прошлого года, месяц перед началом
+// окна и месяцы окна текущего года (по которым факт уже есть). Для окна «месяц» — один месяц во всех трёх колонках.
+const windowLabel = (year: number) => {
+  if (!data.value) return "";
+  const { from_month: from, to_month: to } = data.value;
+  return from === to ? `${MONTHS_SHORT[from - 1]} ${year}` : `${MONTHS_SHORT[from - 1]}–${MONTHS_SHORT[to - 1]} ${year}`;
+};
+const lyLabel = computed(() => (data.value ? windowLabel(data.value.year - 1) : ""));
 const prevLabel = computed(() => {
   if (!data.value) return "";
-  return month.value === 1 ? `${MONTHS_SHORT[11]} ${data.value.year - 1}` : `${MONTHS_SHORT[month.value - 2]} ${data.value.year}`;
+  const from = data.value.from_month;
+  return from <= 1 ? `${MONTHS_SHORT[11]} ${data.value.year - 1}` : `${MONTHS_SHORT[from - 2]} ${data.value.year}`;
 });
-const curLabel = computed(() => (data.value ? `${MONTHS_SHORT[month.value - 1]} ${data.value.year}` : ""));
+const curLabel = computed(() => (data.value ? windowLabel(data.value.year) : ""));
 const failedCountries = computed(() => (data.value?.countries || []).filter((c) => !!c.error));
 // Курса валюты страны к BYN в справочнике нет: сервер не складывает такие суммы с BYN.
 const noRate = computed(() => (data.value?.countries || []).filter((c) => !!c.no_rate));

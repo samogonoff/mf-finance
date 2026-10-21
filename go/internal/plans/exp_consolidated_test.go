@@ -123,3 +123,46 @@ func TestBuildExpConsolidated_NoRateCountryExcluded(t *testing.T) {
 		t.Fatalf("статья остаётся в списке: %+v", got.Groups[0].Lines)
 	}
 }
+
+// Колонки факта следуют за окном свода: «месяц» — три колонки за один месяц; «месяц–декабрь» и «год» — факт того же
+// периода прошлого года, факт месяца перед началом окна и факт месяцев окна текущего года (по тем, где факт уже есть).
+func TestBuildExpConsolidated_FactFollowsWindow(t *testing.T) {
+	r := consRow(24, "Заработная плата",
+		// факт прошлого года по месяцам
+		ExpValue{Scenario: ExpScenarioFact, Month: 1, Amount: consPtr(10)},
+		ExpValue{Scenario: ExpScenarioFact, Month: 8, Amount: consPtr(80)},
+		ExpValue{Scenario: ExpScenarioFact, Month: 9, Amount: consPtr(90)},
+		ExpValue{Scenario: ExpScenarioFact, Month: 12, Amount: consPtr(120)},
+		// факт текущего года: по август включительно (сентябрь — месяц периода, факт идёт)
+		ExpValue{Scenario: ExpScenarioFactCur, Month: 1, Amount: consPtr(1)},
+		ExpValue{Scenario: ExpScenarioFactCur, Month: 7, Amount: consPtr(7)},
+		ExpValue{Scenario: ExpScenarioFactCur, Month: 8, Amount: consPtr(8)},
+		ExpValue{Scenario: ExpScenarioFactCur, Month: 9, Amount: consPtr(9)},
+	)
+	in := []expConsInput{{Country: "BY", Card: Card{ID: 1}, Inst: ExpInstance{ID: 1, Currency: "BYN"}, Rows: []ExpRow{r}, Fx: sameExpFx(1)}}
+	pnl := expApplyDefaultPnlGroups(ExpKindRetail, nil)
+	const year, month = 2026, 9 // период сентябрь 2026
+
+	cases := []struct {
+		window        string
+		ly, prev, cur float64
+		from, to      int
+	}{
+		// месяц: сентябрь 2025 (90), август 2026 (8), сентябрь 2026 (9)
+		{ExpWindowMonth, 90, 8, 9, 9, 9},
+		// сентябрь–декабрь: сентябрь–декабрь 2025 (90 + 120), август 2026 (8), сентябрь–декабрь 2026 (9)
+		{ExpWindowTail, 210, 8, 9, 9, 12},
+		// год: весь 2025 (10 + 80 + 90 + 120), декабрь 2025 (120), весь 2026 по имеющимся месяцам (1 + 7 + 8 + 9)
+		{ExpWindowYear, 300, 120, 25, 1, 12},
+	}
+	for _, c := range cases {
+		out := buildExpConsolidated(7, year, month, c.window, in, pnl, expRetailPnlOrder)
+		if out.FromMonth != c.from || out.ToMonth != c.to {
+			t.Errorf("%s: окно %d–%d, ждали %d–%d", c.window, out.FromMonth, out.ToMonth, c.from, c.to)
+		}
+		if !consNear(out.Total.FactLY, c.ly) || !consNear(out.Total.FactPrev, c.prev) || !consNear(out.Total.FactCur, c.cur) {
+			t.Errorf("%s: факт LY=%v prev=%v cur=%v, ждали %v / %v / %v", c.window,
+				out.Total.FactLY, out.Total.FactPrev, out.Total.FactCur, c.ly, c.prev, c.cur)
+		}
+	}
+}

@@ -152,9 +152,13 @@ type expConsInput struct {
 func buildExpConsolidated(plID int64, year, month int, window string, in []expConsInput, pnlByCode map[int]string, order []string) ExpConsolidated {
 	from, to, win := expWindowMonths(window, month)
 	out := ExpConsolidated{Channel: ExpChannelRetail, PlID: plID, Year: year, Month: month, Window: win, FromMonth: from, ToMonth: to, Currency: "BYN"}
-	prevM, prevScenario := month-1, ExpScenarioFactCur
-	if month <= 1 {
-		prevM, prevScenario = 12, ExpScenarioFact // январь: прошлый месяц — декабрь прошлого года
+	// Колонки факта следуют за окном: факт того же периода прошлого года (месяцы окна), факт месяца перед началом окна
+	// («прошлый месяц») и факт месяцев окна текущего года (по тем, по которым факт уже есть). Для окна «месяц» это
+	// прежние три колонки: тот же месяц прошлого года, прошлый месяц, текущий месяц. Курс каждой колонки — один на все
+	// месяцы окна (как у плана): по-месячных курсов в справочнике сводов нет.
+	prevM, prevScenario := from-1, ExpScenarioFactCur
+	if from <= 1 {
+		prevM, prevScenario = 12, ExpScenarioFact // начало года: прошлый месяц — декабрь прошлого года
 	}
 
 	type key struct {
@@ -192,13 +196,13 @@ func buildExpConsolidated(plID int64, year, month int, window string, in []expCo
 			plan *= c.Fx.Tactic
 			l.Plan[c.Country] += plan
 			l.PlanTotal += plan
-			if v, ok := expCellOf(r, ExpScenarioFact, month); ok {
+			if v, ok := expSumRange(r, ExpScenarioFact, from, to); ok {
 				l.FactLY += v * c.Fx.FactLY
 			}
 			if v, ok := expCellOf(r, prevScenario, prevM); ok {
 				l.FactPrev += v * c.Fx.FactPrev
 			}
-			if v, ok := expCellOf(r, ExpScenarioFactCur, month); ok {
+			if v, ok := expSumRange(r, ExpScenarioFactCur, from, to); ok {
 				l.FactCur += v * c.Fx.FactCur
 			}
 		}
@@ -247,6 +251,19 @@ func buildExpConsolidated(plID int64, year, month int, window string, in []expCo
 		out.Countries = append(out.Countries, row)
 	}
 	return out
+}
+
+// expSumRange — сумма заполненных значений строки по сценарию за месяцы [from, to]; false, если заполненных нет.
+func expSumRange(r ExpRow, scenario string, from, to int) (float64, bool) {
+	var sum float64
+	found := false
+	for _, v := range r.Values {
+		if v.Scenario == scenario && v.Amount != nil && v.Month >= from && v.Month <= to {
+			sum += *v.Amount
+			found = true
+		}
+	}
+	return sum, found
 }
 
 // expCellOf — заполненное значение строки по сценарию и месяцу.
