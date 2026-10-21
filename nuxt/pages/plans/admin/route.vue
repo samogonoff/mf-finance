@@ -106,7 +106,7 @@ const tracks = [
 // Формы ввода по этапам (ТЗ Приложение G / модель данных).
 const STAGE_FORMS: Record<string, string[]> = {
   "1.1": ["TPL-TO-RETAIL · Розница", "TPL-MP · Маркетплейсы", "TPL-WHOLESALE · Опт", "TPL-IM · Интернет-магазин"],
-  "1.5": ["TPL-CFO-EXP · Затраты ЦП"],
+  "1.5": ["TPL-CFO-EXP · Расходы ЦП"],
   "1.6": ["Свод ЮЛ × канал"],
   "2.1": ["TPL-PROD-MINUTES · Минуты и объёмы"],
   "2.3": ["TPL-CZ-EXP · Затраты ЦЗ"],

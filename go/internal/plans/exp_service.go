@@ -36,7 +36,7 @@ type ExpService struct {
 	// Form готов ждать её окончания, прежде чем отдать форму как есть (быстрые
 	// источники и фикстуры успевают, процедура на OLAP — нет).
 	// rates — курсы для пересчёта стран в BYN (свод расходов розницы); nil — без пересчёта.
-	rates *RateBook
+	rates     *RateBook
 	syncMu    sync.Mutex
 	syncState map[int64]*expSyncRun
 	syncWait  time.Duration
@@ -125,8 +125,16 @@ func (s *ExpService) Form(ctx context.Context, p Principal, cardID int64, f ExpF
 	if err != nil {
 		return ExpForm{}, err
 	}
-	groups := s.groupOrder(ctx, in.FormKind)
-	SortExpRowsBy(groups, rows)
+	order := s.groupOrder(ctx, in.FormKind)
+	SortExpRowsBy(order, rows)
+	// Список групп для фильтра - фактические группы формы (а не справочник): после смены названий групп справочник мог
+	// остаться на старых названиях, и выбор такой группы давал бы пустую форму.
+	groups := order
+	if present, perr := s.repo.Groups(ctx, in.ID); perr != nil {
+		log.Printf("plans/exp: группы формы не прочитаны: %v", perr)
+	} else if len(present) > 0 {
+		groups = orderGroups(present, order)
+	}
 	return ExpForm{
 		Instance: in, Card: c, Rows: rows, Total: total, Offset: f.Offset,
 		Groups: groups, ReadOnly: !cardEditable(c), Sync: s.syncStatusWithBasis(ctx, in.ID),
@@ -561,10 +569,10 @@ const (
 
 // ExpBulkRequest — массовое действие по одной строке формы.
 type ExpBulkRequest struct {
-	Action  string   `json:"action"`
-	CodeCFO int      `json:"code_cfo"`
-	CodePL  int      `json:"code_pl"`
-	Month   int      `json:"month"`
+	Action  string `json:"action"`
+	CodeCFO int    `json:"code_cfo"`
+	CodePL  int    `json:"code_pl"`
+	Month   int    `json:"month"`
 	// MonthTo — последний месяц окна (включительно); 0 — до декабря. Окно нужно, когда форма
 	// готовится на один месяц или «до конца года», а ранние месяцы трогать нельзя.
 	MonthTo int      `json:"month_to"`
@@ -649,7 +657,8 @@ func (s *ExpService) groupOrder(ctx context.Context, kind string) []string {
 		log.Printf("plans/exp: порядок групп PL (%s) не прочитан из справочника: %v", kind, err)
 	}
 	if len(got) > 0 {
-		return got
+		// Новые названия групп (GroupPL_new) идут первыми, затем порядок справочника с прежними названиями.
+		return expDedupGroups(append(append([]string{}, expGroupOrderNew...), got...))
 	}
 	return ExpGroupOrder(kind)
 }

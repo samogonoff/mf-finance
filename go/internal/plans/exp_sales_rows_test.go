@@ -148,3 +148,110 @@ func TestMigration0076_DropsOnlyUntouchedSalesRows_PG(t *testing.T) {
 		t.Errorf("строка продаж с введённым планом должна остаться: %v", codes)
 	}
 }
+
+// Группа статьи в форме — GroupPL_new (актуальная группировка P&L), старая GroupPL остаётся запасной.
+func TestExpCostsSQL_UsesGroupPLNew(t *testing.T) {
+	for _, kind := range []string{ExpKindRetail, ExpKindMP, ExpKindIM, ExpKindOpt} {
+		q := expCostsSQL(kind, "BY", []int{2026})
+		if !strings.Contains(q, "if(group_pl_new != '', group_pl_new, group_pl) AS group_pl") {
+			t.Errorf("%s: группа статьи должна браться из group_pl_new:\n%s", kind, q)
+		}
+	}
+	// Каталог статей запроса факта из P&L — тоже по новой группировке.
+	if q := expAccrualFactSQL(ExpKindRetail, "BY", []int{2026}); !strings.Contains(q, "any(if(group_pl_new != '', group_pl_new, group_pl)) AS gp") {
+		t.Errorf("каталог групп факта из P&L:\n%s", q)
+	}
+}
+
+// Строки продаж, себестоимости и маржи, уже попавшие в карточку, форма расходов не показывает: ни в строках, ни в итогах групп.
+func TestExpRepo_HidesSalesRowsOnRead_PG(t *testing.T) {
+	dsn := os.Getenv("PLANS_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("PLANS_TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	pl, err := NewPgStore(pool).EnsureInstance(ctx, 2093, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(ctx, `DELETE FROM pl_instance WHERE id=$1`, pl)
+	defer pool.Exec(ctx, `DELETE FROM form_card WHERE pl_id=$1 AND form_code=$2`, pl, TemplateExp)
+	c, err := NewCardStore(pool).EnsureCard(ctx, Card{PlID: pl, FormCode: TemplateExp, ScopeKey: "IM-BY", Country: "BY", Currency: "BYN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewExpRepo(pool)
+	inst, err := repo.EnsureInstance(ctx, ExpInstance{CardID: c.ID, FormKind: ExpKindIM, Country: "BY", PlanYear: 2093, Currency: "BYN"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SyncRows(ctx, inst.ID, []ExpRow{
+		{CodeCFO: 1, CodePL: 24, GroupPL: "Заработная плата", Expense: "ЗП"},
+		{CodeCFO: 1, CodePL: 1002, GroupPL: "ПРОДАЖИ", Expense: "Продажи"},
+		{CodeCFO: 1, CodePL: 9002, GroupPL: "РОЗНИЧНАЯ МАРЖА", Expense: "Маржа"},
+		{CodeCFO: 1, CodePL: 8002, GroupPL: "СЕБЕСТОИМОСТЬ ПО ОТПУСКНЫМ ЦЕНАМ", Expense: "Себестоимость"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	amt := 50.0
+	if _, err := repo.SaveValues(ctx, inst.ID, []ExpCell{{CodeCFO: 1, CodePL: 1002, Month: 9, Amount: &amt}}, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	rows, total, err := repo.Rows(ctx, inst.ID, ExpFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(rows) != 1 || rows[0].CodePL != 24 {
+		t.Fatalf("форма расходов должна показывать только расходную строку: total=%d %+v", total, rows)
+	}
+	totals, err := repo.GroupTotals(ctx, inst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(totals) != 1 {
+		t.Errorf("в итогах групп только расходные группы: %v", totals)
+	}
+	// Список групп для фильтра - фактические группы формы без продаж и маржи.
+	groups, err := repo.Groups(ctx, inst.ID)
+	if err != nil || len(groups) != 1 || groups[0] != "Заработная плата" {
+		t.Errorf("группы формы: %v, %v", groups, err)
+	}
+	// Фильтр по новой группе находит строку.
+	if rows, total, err := repo.Rows(ctx, inst.ID, ExpFilter{GroupPL: "Заработная плата"}); err != nil || total != 1 || len(rows) != 1 {
+		t.Errorf("фильтр по группе GroupPL_new: %d %v", total, err)
+	}
+
+	// Формы отделов (cfo:N) строки продаж и маржи загружают сознательно: у них фильтр чтения не действует.
+	cfoCard, err := NewCardStore(pool).EnsureCard(ctx, Card{PlID: pl, FormCode: TemplateExp, ScopeKey: "CFO-31-BY", Country: "BY", Currency: "BYN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfoInst, err := repo.EnsureInstance(ctx, ExpInstance{CardID: cfoCard.ID, FormKind: CfoExpKind(CfoExp31), Country: "BY", PlanYear: 2093, Currency: "BYN"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SyncRows(ctx, cfoInst.ID, []ExpRow{
+		{CodeCFO: 31, CodePL: 24, GroupPL: "Заработная плата", Expense: "ЗП"},
+		{CodeCFO: 31, CodePL: 1002, GroupPL: "ПРОДАЖИ", Expense: "Продажи"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, cfoTotal, err := repo.Rows(ctx, cfoInst.ID, ExpFilter{}); err != nil || cfoTotal != 2 {
+		t.Errorf("форма отдела должна показывать обе строки: %d %v", cfoTotal, err)
+	}
+}
+
+// Группы формы: новые названия (GroupPL_new) идут в порядке листов Excel, остальные — по алфавиту после них.
+func TestOrderGroups_NewNamesFollowExcelOrder(t *testing.T) {
+	got := orderGroups([]string{"Банковские расходы", "Яблоки", "Аренда", "Заработная плата", "ВЫПЛАТЫ РАБОТНИКАМ", "Амортизация"}, ExpGroupOrder(ExpKindRetail))
+	want := []string{"Заработная плата", "Аренда", "Банковские расходы", "Амортизация", "ВЫПЛАТЫ РАБОТНИКАМ", "Яблоки"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("порядок групп:\n got  %v\n want %v", got, want)
+	}
+}

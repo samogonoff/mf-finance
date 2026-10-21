@@ -38,6 +38,7 @@ func (f *fakeExpRepo) GroupTotals(context.Context, int64) (map[string]float64, e
 	return nil, nil
 }
 func (f *fakeExpRepo) GroupOrder(context.Context, string) ([]string, error) { return nil, nil }
+func (f *fakeExpRepo) Groups(context.Context, int64) ([]string, error)      { return nil, nil }
 
 // fakeExpReg — реестры без БД.
 type fakeExpReg struct{ byKind map[string][]ExpRegRow }

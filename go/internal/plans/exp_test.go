@@ -46,13 +46,33 @@ func TestSortExpRows_GroupOrderFromSpec(t *testing.T) {
 	}
 }
 
-// У маркетплейсов групп восемь, у розницы четырнадцать (ТЗ §7.3).
+// Прежний перечень ТЗ §7.3: у маркетплейсов групп восемь, у розницы четырнадцать. Порядок формы — новые названия
+// GroupPL_new, затем этот перечень (карточки, строки которых ещё не перезагружены из источника).
 func TestExpGroupOrder_ByKind(t *testing.T) {
-	if n := len(ExpGroupOrder(ExpKindRetail)); n != 14 {
+	if n := len(expGroupOrderRetail); n != 14 {
 		t.Fatalf("групп розницы %d, ТЗ §7.3 задаёт 14", n)
 	}
-	if n := len(ExpGroupOrder(ExpKindMP)); n != 8 {
+	if n := len(expGroupOrderMP); n != 8 {
 		t.Fatalf("групп МП %d, ТЗ §7.3 задаёт 8", n)
+	}
+	// ExpGroupOrder: новые названия первыми, прежний перечень по виду формы — после них.
+	retail, mp := ExpGroupOrder(ExpKindRetail), ExpGroupOrder(ExpKindMP)
+	// Названия, общие для нового и прежнего перечней (например «РЕКЛАМА И МАРКЕТИНГ»), в списке встречаются один раз.
+	for _, order := range [][]string{retail, mp} {
+		seen := map[string]bool{}
+		for _, g := range order {
+			if seen[g] {
+				t.Fatalf("группа %q в порядке повторяется", g)
+			}
+			seen[g] = true
+		}
+	}
+	if len(retail) > len(expGroupOrderNew)+14 || len(mp) > len(expGroupOrderNew)+8 || len(mp) < len(expGroupOrderNew) {
+		t.Fatalf("порядок групп: розница %d, МП %d", len(retail), len(mp))
+	}
+	// «РЕКЛАМА И МАРКЕТИНГ» уже есть среди новых названий, поэтому последней у МП остаётся «АРЕНДА».
+	if retail[0] != "Заработная плата" || mp[len(mp)-1] != "АРЕНДА" {
+		t.Fatalf("новые названия первыми, прежние — в конце: %q ... %q", retail[0], mp[len(mp)-1])
 	}
 }
 

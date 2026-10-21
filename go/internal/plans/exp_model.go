@@ -13,7 +13,7 @@ import (
 // exp_store.go, сценарии — exp_service.go, источник строк — exp_source.go.
 
 // TemplateExp — код формы. Совпадает с шаблоном задания этапа 1.5 из миграции
-// 0027, поэтому у задания «Затраты ЦП» появляется кнопка «Форма».
+// 0027, поэтому у задания «Расходы ЦП» появляется кнопка «Форма».
 const TemplateExp = "TPL-CFO-EXP"
 
 // Вид формы: отбор строк из источника у них разный (ТЗ §2.1), оболочка общая.
@@ -159,7 +159,7 @@ type ExpSyncStatus struct {
 	// напрямую); SourceAsOf — когда снимок залит (только для clickhouse).
 	// Warning — загрузка прошла, но что-то не удалось (перезаливка снимка по кнопке): форма
 	// показана по тому, что есть, а причина видна на экране.
-	Warning    string     `json:"warning,omitempty"`
+	Warning string `json:"warning,omitempty"`
 	// FactBasis — на чём построен факт рядом с вводом: пусто — по начислениям (ТЗ), "payments" —
 	// по платежам (начислений в выдаче источника нет); экран подписывает колонки честно.
 	FactBasis  string     `json:"fact_basis,omitempty"`
@@ -240,12 +240,53 @@ var expGroupOrderMP = []string{
 	"АМОРТИЗАЦИЯ", "ОСНОВНЫЕ РАСХОДЫ", "АРЕНДА", "РЕКЛАМА И МАРКЕТИНГ",
 }
 
-// ExpGroupOrder — порядок групп PL по виду формы.
+// expGroupOrderNew — порядок групп по GroupPL_new (актуальная группировка P&L) в порядке листов Excel «PL 2025-2026»:
+// группы формы теперь называются так (Table_Fin_PL.GroupPL_new). Названия — как в источнике, включая его написания
+// («Раходы на магазины», «IT-Расходы»); группа, которой здесь нет, идёт в конец по алфавиту.
+var expGroupOrderNew = []string{
+	"Заработная плата", "Прочие расходы на персонал", "Реклама и маркетинг", "РЕКЛАМА И МАРКЕТИНГ", "Аренда",
+	"Логистические расходы", "Коммунальные расходы", "Ремонт и строительства (Opex)", "Ремонт, обслуживание и запчасти (Opex)",
+	"IT-Расходы", "Расходы на охрану и страхование", "Информационно-консультационные услуги", "Материалы",
+	"Банковские расходы", "Раходы на магазины", "Прочие расходы", "Амортизация", "Приобретение имущества (в т.ч. Лизинг)",
+	"Налоги", "Комиссионное вознаграждение", "Расходы на открытие магазина ( текущие)", "Депозит по аренде",
+	"ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ", "PL обсудить",
+}
+
+// ExpGroupOrder — порядок групп PL по виду формы: группы GroupPL_new, затем прежние названия GroupPL (карточки, в которых
+// строки ещё не перезагружены из источника).
 func ExpGroupOrder(kind string) []string {
+	old := expGroupOrderRetail
 	if kind == ExpKindMP {
-		return expGroupOrderMP
+		old = expGroupOrderMP
 	}
-	return expGroupOrderRetail
+	return expDedupGroups(append(append([]string{}, expGroupOrderNew...), old...))
+}
+
+// expDedupGroups убирает повторы названий групп, сохраняя порядок первого вхождения (иначе фильтр «Группа PL» покажет группу дважды).
+func expDedupGroups(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, g := range in {
+		if _, ok := seen[g]; ok {
+			continue
+		}
+		seen[g] = struct{}{}
+		out = append(out, g)
+	}
+	return out
+}
+
+// orderGroups — группы формы в порядке order; группы вне порядка идут в конце по алфавиту.
+func orderGroups(present, order []string) []string {
+	out := append([]string(nil), present...)
+	sort.SliceStable(out, func(i, j int) bool {
+		ri, rj := expGroupRank(order, out[i]), expGroupRank(order, out[j])
+		if ri != rj {
+			return ri < rj
+		}
+		return out[i] < out[j]
+	})
+	return out
 }
 
 // expGroupRank — позиция группы в заданном порядке. Группа, которой в порядке
