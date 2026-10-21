@@ -96,7 +96,7 @@ func TestLeSvod_BuildAdjustRevoke_PG(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, _ = le.Build(ctx, pl, ExpWindowMonth)
-	if zp = leRow(t, s, "exp:Заработная плата"); !leNear(zp.Total["F"], 100) || len(s.Adjustments) != 0 {
+	if zp = leRow(t, s, "exp:Заработная плата"); !leNear(zp.Total["F"], 100) || len(s.Adjustments) != 1 || !s.Adjustments[0].Revoked {
 		t.Errorf("после снятия: %+v / %d", zp, len(s.Adjustments))
 	}
 	if err := le.RevokeAdjust(ctx, pl, id, 1, "повторно"); err == nil {

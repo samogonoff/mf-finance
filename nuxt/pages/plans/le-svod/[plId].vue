@@ -178,14 +178,17 @@
       <table class="data-table">
         <thead><tr><th>ЮЛ</th><th>Строка</th><th class="col-num">Сумма, BYN</th><th>Причина</th><th>Кто, когда</th><th></th></tr></thead>
         <tbody>
-          <tr v-for="a in data.adjustments" :key="a.id">
+          <tr v-for="a in data.adjustments" :key="a.id" :class="{ 'adj-revoked': a.revoked }">
             <td>{{ a.legal_entity }}</td>
             <td>{{ lineLabel(a.line_key) }}</td>
             <td class="col-num">{{ money0(a.amount_byn) }}</td>
             <td>{{ a.reason }}</td>
-            <td>{{ a.user_name || a.user_id }} · {{ a.created_at.slice(0, 16).replace("T", " ") }}</td>
             <td>
-              <button v-if="canAdjustFor(a.legal_entity) && !data.closed" type="button" class="btn btn-sm btn-ghost" @click="askRevoke(a)">Снять</button>
+              {{ a.user_name || a.user_id }} · {{ a.created_at.slice(0, 16).replace("T", " ") }}
+              <template v-if="a.revoked"><br />снято{{ a.revoked_at ? ` ${a.revoked_at.slice(0, 16).replace("T", " ")}` : "" }}: {{ a.revoke_reason }}</template>
+            </td>
+            <td>
+              <button v-if="canAdjustFor(a.legal_entity) && !data.closed && !a.revoked" type="button" class="btn btn-sm btn-ghost" @click="askRevoke(a)">Снять</button>
             </td>
           </tr>
         </tbody>
@@ -523,6 +526,8 @@ onMounted(() => {
 .strong { font-weight: 600; }
 .empty-cell { text-align: center; color: var(--text-muted); padding: var(--sp-6); }
 .adj { background: var(--warn-soft); }
+.adj-revoked td { color: var(--text-muted); text-decoration: line-through; }
+.adj-revoked td:nth-child(5) { text-decoration: none; }
 .adj-mark { margin-left: var(--sp-1); color: var(--warn); font-size: 0.7em; }
 .cell-btn { background: none; border: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted; }
 .prov-note { margin: var(--sp-3) var(--sp-4); color: var(--text-muted); font-size: var(--fs-sm); }

@@ -88,9 +88,15 @@ func TestBuildLeSvod_AdjustmentsAndTotals(t *testing.T) {
 	if ratio.RatioAll == nil || !leNear(*ratio.RatioAll, 187.0/3800*100) {
 		t.Errorf("общее отношение: %v", ratio.RatioAll)
 	}
-	// Снятая корректировка не попадает в активные.
-	if len(s.Adjustments) != 2 {
-		t.Errorf("активных корректировок %d, ждали 2", len(s.Adjustments))
+	// В ответе все корректировки (журнал показывает и снятые), в итог входят только активные.
+	active := 0
+	for _, a := range s.Adjustments {
+		if !a.Revoked {
+			active++
+		}
+	}
+	if len(s.Adjustments) != 3 || active != 2 {
+		t.Errorf("корректировок в ответе %d (активных %d), ждали 3 (2)", len(s.Adjustments), active)
 	}
 	// Итоговые строки корректировать нельзя.
 	if leRow(t, s, leKeySalesTotal).Editable || leRow(t, s, leKeyExpTotal).Editable {

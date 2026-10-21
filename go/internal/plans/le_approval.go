@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -62,6 +63,11 @@ type LeApprovalRepo interface {
 	AddDecision(ctx context.Context, d LeDecision) (int64, error)
 	// RevokeDecisions снимает согласия этапа: по одному ЮЛ или по всем (allLegals); возвращает число снятых.
 	RevokeDecisions(ctx context.Context, plID int64, stage, legal string, allLegals bool, reason string) (int, error)
+	// Lock берёт блокировку периода на время операции согласования: решения и завершение этапов по одному периоду идут по одному
+	// (иначе два согласующих, решающих одновременно, оба завершили бы этап). unlock обязателен.
+	Lock(ctx context.Context, plID int64) (unlock func(), err error)
+	// OpenPeriods — периоды, у которых завершён этап 1.6 (кандидаты на завершение этапов 3 и 4).
+	OpenPeriods(ctx context.Context) ([]int64, error)
 }
 
 // LeApproverState — согласующий и его решение.
@@ -243,6 +249,11 @@ func (s *LeApprovalService) Decide(ctx context.Context, plID int64, p Principal,
 	if decision == LeReturn && comment == "" {
 		return errors.New("возврат без причины невозможен")
 	}
+	unlock, err := s.repo.Lock(ctx, plID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	stages := s.stageStatuses(ctx, plID)
 	prereq, prereqName := "1.6", "1.6"
 	if stage == "4" {
@@ -276,44 +287,107 @@ func (s *LeApprovalService) Decide(ctx context.Context, plID int64, p Principal,
 	}
 
 	if decision == LeReturn {
+		// Сначала двигаем этап: если движение не удалось, ничего не записано и согласия не сняты. Хук возврата для этого вызова
+		// отключён — снятие согласий здесь точнее (по одному ЮЛ).
+		target := "1.6"
+		if stage == "4" {
+			target = "3"
+		}
+		skip := context.WithValue(ctx, leReturnSkipKey{}, true)
+		if _, err := s.flow.StageAction(skip, p, plID, year, month, "BY", stage, "return", target, comment); err != nil {
+			return err
+		}
 		if _, err := s.repo.AddDecision(ctx, LeDecision{PlID: plID, StageCode: stage, LegalEntity: legal, UserID: p.UserID, Decision: LeReturn, Comment: comment}); err != nil {
 			return err
 		}
 		reason := "возврат: " + comment
-		target := "1.6"
 		if stage == "3" {
-			if _, err := s.repo.RevokeDecisions(ctx, plID, "3", legal, false, reason); err != nil {
-				return err
-			}
-		} else {
-			target = "3"
-			// Возврат итогового утверждения на этап 3: прежние согласия по ЮЛ тоже недействительны.
-			if _, err := s.repo.RevokeDecisions(ctx, plID, "4", "", true, reason); err != nil {
-				return err
-			}
-			if _, err := s.repo.RevokeDecisions(ctx, plID, "3", "", true, reason); err != nil {
-				return err
-			}
+			_, err := s.repo.RevokeDecisions(ctx, plID, "3", legal, false, reason)
+			return err
 		}
-		_, err := s.flow.StageAction(ctx, p, plID, year, month, "BY", stage, "return", target, comment)
+		// Возврат итогового утверждения на этап 3: согласия этапа 4 и прежние согласия по ЮЛ недействительны.
+		if _, err := s.repo.RevokeDecisions(ctx, plID, "4", "", true, reason); err != nil {
+			return err
+		}
+		_, err := s.repo.RevokeDecisions(ctx, plID, "3", "", true, reason)
 		return err
 	}
 
 	if _, err := s.repo.AddDecision(ctx, LeDecision{PlID: plID, StageCode: stage, LegalEntity: legal, UserID: p.UserID, Decision: LeApprove, Comment: comment}); err != nil {
 		return err
 	}
+	return s.complete(ctx, plID, p, year, month, stage, comment)
+}
+
+// leReturnSkipKey — признак «это возврат из Decide»: хук возврата этапа не снимает согласия повторно.
+type leReturnSkipKey struct{}
+
+// complete завершает этап, если списки выполнены и он ещё не завершён (повторный вызов безопасен). Вызывать под Lock.
+func (s *LeApprovalService) complete(ctx context.Context, plID int64, p Principal, year, month int, stage, comment string) error {
+	stages := s.stageStatuses(ctx, plID)
+	prereq := "1.6"
+	if stage == "4" {
+		prereq = "3"
+	}
+	if stages[prereq] != "completed" || stages[stage] == "completed" {
+		return nil
+	}
 	done, _, err := s.stageSatisfied(ctx, plID, stage)
+	if err != nil || !done {
+		return err
+	}
+	_, err = s.flow.StageAction(ctx, p, plID, year, month, "BY", stage, "approve", "", comment)
+	return err
+}
+
+// tryComplete пробует завершить этапы 3 и 4 периода (после смены списков или правила). Под Lock.
+func (s *LeApprovalService) tryComplete(ctx context.Context, plID int64, p Principal) error {
+	year, month, err := s.periodOf(ctx, plID)
 	if err != nil {
 		return err
 	}
-	if done {
-		if _, err := s.flow.StageAction(ctx, p, plID, year, month, "BY", stage, "approve", "", comment); err != nil {
+	for _, stage := range []string{"3", "4"} {
+		if err := s.complete(ctx, plID, p, year, month, stage, ""); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// RecheckOpen после смены списков или правила проверяет открытые периоды: если условия этапа уже выполнены (убрали
+// последнего несогласовавшего, правило «все» заменили на «один»), этап завершается, не дожидаясь нового согласия.
+func (s *LeApprovalService) RecheckOpen(ctx context.Context, p Principal) {
+	ids, err := s.repo.OpenPeriods(ctx)
+	if err != nil {
+		log.Printf("plans/le-approval: периоды для перепроверки не прочитаны: %v", err)
+		return
+	}
+	for _, id := range ids {
+		unlock, err := s.repo.Lock(ctx, id)
+		if err != nil {
+			log.Printf("plans/le-approval: период %d не заблокирован для перепроверки: %v", id, err)
+			continue
+		}
+		if err := s.tryComplete(ctx, id, p); err != nil {
+			log.Printf("plans/le-approval: период %d: этап не завершён после смены списков: %v", id, err)
+		}
+		unlock()
+	}
+}
+
+// OnStageReturn вызывается после возврата этапа вручную (таймлайн): любой возврат делает недействительным итоговое утверждение
+// и согласия ЮЛ — согласовывали другие цифры. Возврат из Decide отключает хук (там согласия снимаются точнее).
+func (s *LeApprovalService) OnStageReturn(ctx context.Context, plID int64, code, target string) error {
+	if v, _ := ctx.Value(leReturnSkipKey{}).(bool); v || target == "4" {
+		return nil
+	}
+	reason := "возврат этапа " + code + " на этап " + target
+	if _, err := s.repo.RevokeDecisions(ctx, plID, "4", "", true, reason); err != nil {
+		return err
+	}
+	_, err := s.repo.RevokeDecisions(ctx, plID, "3", "", true, reason)
+	return err
+}
 func (s *LeApprovalService) periodOf(ctx context.Context, plID int64) (int, int, error) {
 	cards, err := s.cards.Cards(ctx, plID)
 	if err != nil {
@@ -396,10 +470,15 @@ func (s *LeApprovalService) Gate(ctx context.Context, plID int64, code, action s
 }
 
 // OnAdjust вызывается после корректировки итога ЮЛ: согласия по этому ЮЛ и итоговое утверждение снимаются.
-func (s *LeApprovalService) OnAdjust(ctx context.Context, plID int64, legal string) {
+func (s *LeApprovalService) OnAdjust(ctx context.Context, plID int64, legal string) error {
 	reason := "корректировка итога ЮЛ «" + legal + "»"
-	_, _ = s.repo.RevokeDecisions(ctx, plID, "3", legal, false, reason)
-	_, _ = s.repo.RevokeDecisions(ctx, plID, "4", "", true, reason)
+	if _, err := s.repo.RevokeDecisions(ctx, plID, "3", legal, false, reason); err != nil {
+		return fmt.Errorf("не удалось снять согласия ЮЛ: %w", err)
+	}
+	if _, err := s.repo.RevokeDecisions(ctx, plID, "4", "", true, reason); err != nil {
+		return fmt.Errorf("не удалось снять итоговое утверждение: %w", err)
+	}
+	return nil
 }
 
 // IsApprover — пользователь согласующий этапа (по ЮЛ для этапа 3).
@@ -454,5 +533,9 @@ func (s *LeApprovalService) SetApprovers(ctx context.Context, p Principal, stage
 			ids = append(ids, id)
 		}
 	}
-	return s.repo.SetApprovers(ctx, stage, legal, ids, requireAll, p.UserID)
+	if err := s.repo.SetApprovers(ctx, stage, legal, ids, requireAll, p.UserID); err != nil {
+		return err
+	}
+	s.RecheckOpen(ctx, p)
+	return nil
 }

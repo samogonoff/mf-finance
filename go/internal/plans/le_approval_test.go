@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestEvalLeScope_AllOrAny(t *testing.T) {
@@ -62,6 +65,7 @@ type leFlowFx struct {
 	users   [4]int64
 	adminP  Principal
 	setDone func(codes ...string)
+	pool    *pgxpool.Pool
 }
 
 // leFlowFixture — период с готовым сводом (два ЮЛ: F и TD Mark Formelle), стек сервисов с проверками этапов и четыре пользователя.
@@ -92,7 +96,7 @@ func leFlowFixture(t *testing.T) *leFlowFx {
 			break
 		}
 	}
-	fx := &leFlowFx{ctx: ctx, pl: pl}
+	fx := &leFlowFx{ctx: ctx, pl: pl, pool: pool}
 	for i := range fx.users {
 		if err := pool.QueryRow(ctx, `INSERT INTO users(email) VALUES($1) RETURNING id`, fmt.Sprintf("le-approval-%d-%d@test.local", time.Now().UnixNano(), i)).Scan(&fx.users[i]); err != nil {
 			t.Fatal(err)
@@ -317,5 +321,119 @@ func TestLeApproval_ReturnStage3_PG(t *testing.T) {
 	// 1.6 не завершён — решения этапа 3 снова недоступны.
 	if err := f.appr.Decide(ctx, f.pl, f.user(0), "3", "F", LeApprove, ""); err == nil {
 		t.Error("пока 1.6 не завершён заново, согласовывать нельзя")
+	}
+}
+
+// Ручной возврат этапа с таймлайна делает недействительными согласия этапов 3 и 4 (раньше они оставались активными, и после
+// повторного прохода 1.6 этап закрывался чужими старыми согласиями).
+func TestLeApproval_TimelineReturnRevokesApprovals_PG(t *testing.T) {
+	f := leFlowFixture(t)
+	ctx := f.ctx
+	for _, c := range []struct {
+		stage, legal string
+		user         int64
+	}{{"3", "F", f.users[0]}, {"3", "TD Mark Formelle", f.users[0]}, {"4", "", f.users[2]}} {
+		if err := f.appr.SetApprovers(ctx, f.adminP, c.stage, c.legal, []int64{c.user}, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.setDone("1.1", "1.2", "1.3", "1.4", "1.5", "1.6")
+	f.flow.WithStageReturnHook(f.appr.OnStageReturn)
+	for _, legal := range []string{"F", "TD Mark Formelle"} {
+		if err := f.appr.Decide(ctx, f.pl, f.user(0), "3", legal, LeApprove, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.appr.Decide(ctx, f.pl, f.user(2), "4", "", LeApprove, ""); err != nil {
+		t.Fatal(err)
+	}
+	if f.stage(t, "4") != "completed" {
+		t.Fatalf("этап 4 должен быть завершён: %q", f.stage(t, "4"))
+	}
+	// Администратор возвращает период с таймлайна на этап 1.6.
+	if _, err := f.flow.StageAction(ctx, f.adminP, f.pl, 2090, 8, "BY", "4", "return", "1.6", "пересчитать"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := f.appr.Status(ctx, f.pl, f.user(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sc := range status.Stage3 {
+		if sc.Satisfied {
+			t.Errorf("после возврата с таймлайна согласия ЮЛ %s должны быть сняты", sc.LegalEntity)
+		}
+	}
+	if status.Stage4.Satisfied {
+		t.Error("итоговое утверждение после возврата снято")
+	}
+}
+
+// Смена правила «все» → «достаточно одного» завершает этап, если условие уже выполнено, не дожидаясь нового согласия.
+func TestLeApproval_PolicyChangeCompletesStage_PG(t *testing.T) {
+	f := leFlowFixture(t)
+	ctx := f.ctx
+	if err := f.appr.SetApprovers(ctx, f.adminP, "3", "F", []int64{f.users[0], f.users[1]}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.appr.SetApprovers(ctx, f.adminP, "3", "TD Mark Formelle", []int64{f.users[0]}, true); err != nil {
+		t.Fatal(err)
+	}
+	f.setDone("1.1", "1.2", "1.3", "1.4", "1.5", "1.6")
+	for _, legal := range []string{"F", "TD Mark Formelle"} {
+		if err := f.appr.Decide(ctx, f.pl, f.user(0), "3", legal, LeApprove, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.stage(t, "3") == "completed" {
+		t.Fatal("по F согласовал один из двух при правиле «все» — этап завершён рано")
+	}
+	// Администратор убирает требование «все»: условие выполнено, этап завершается сам.
+	if err := f.appr.SetApprovers(ctx, f.adminP, "3", "F", []int64{f.users[0], f.users[1]}, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.stage(t, "3"); got != "completed" {
+		t.Fatalf("после смены правила этап должен завершиться, сейчас %q", got)
+	}
+}
+
+// Два согласующих решают одновременно: этап завершается один раз (одна запись согласования этапа в листе).
+func TestLeApproval_ConcurrentDecisionsCompleteOnce_PG(t *testing.T) {
+	f := leFlowFixture(t)
+	ctx := f.ctx
+	if err := f.appr.SetApprovers(ctx, f.adminP, "3", "F", []int64{f.users[0], f.users[1]}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.appr.SetApprovers(ctx, f.adminP, "3", "TD Mark Formelle", []int64{f.users[2]}, true); err != nil {
+		t.Fatal(err)
+	}
+	f.setDone("1.1", "1.2", "1.3", "1.4", "1.5", "1.6")
+	if err := f.appr.Decide(ctx, f.pl, f.user(2), "3", "TD Mark Formelle", LeApprove, ""); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = f.appr.Decide(ctx, f.pl, f.user(i), "3", "F", LeApprove, "")
+		}(i)
+	}
+	wg.Wait()
+	// Второй из двух мог прийти уже после завершения этапа — это допустимая ошибка «уже завершён», но не двойное завершение.
+	for _, e := range errs {
+		if e != nil && !strings.Contains(e.Error(), "уже завершён") {
+			t.Fatalf("неожиданная ошибка: %v", e)
+		}
+	}
+	if f.stage(t, "3") != "completed" {
+		t.Fatalf("этап 3 не завершён: %q", f.stage(t, "3"))
+	}
+	var n int
+	if err := f.pool.QueryRow(ctx, `SELECT COUNT(*) FROM pl_approval WHERE pl_id=$1 AND stage_code='3' AND decision='approve' AND NOT revoked`, f.pl).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("записей согласования этапа 3: %d, ждали 1", n)
 	}
 }

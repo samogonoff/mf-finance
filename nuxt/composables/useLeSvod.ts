@@ -31,6 +31,8 @@ export interface LeAdjust {
   user_name?: string;
   created_at: string;
   revoked: boolean;
+  revoked_at?: string;
+  revoke_reason?: string;
 }
 
 export interface LeSvod {

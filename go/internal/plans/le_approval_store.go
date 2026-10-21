@@ -2,6 +2,7 @@ package plans
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -127,4 +128,40 @@ func (r *pgLeApproval) RevokeDecisions(ctx context.Context, plID int64, stage, l
 		return 0, err
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// Lock — блокировка периода (advisory, на отдельном соединении) на время операции согласования.
+func (r *pgLeApproval) Lock(ctx context.Context, plID int64) (func(), error) {
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtext('le_approval'), $1::int)`, plID); err != nil {
+		conn.Release()
+		return nil, err
+	}
+	return func() {
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(bg, `SELECT pg_advisory_unlock(hashtext('le_approval'), $1::int)`, plID)
+		conn.Release()
+	}, nil
+}
+
+// OpenPeriods — периоды с завершённым этапом 1.6: на них могут решаться этапы 3 и 4.
+func (r *pgLeApproval) OpenPeriods(ctx context.Context) ([]int64, error) {
+	rows, err := r.pool.Query(ctx, `SELECT pl_id FROM pl_stage_instance WHERE stage_code = '1.6' AND status = 'completed' ORDER BY pl_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
