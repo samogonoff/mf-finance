@@ -153,7 +153,7 @@ func buildLeSvod(in leSvodInput) LeSvod {
 		leAdd(l.calc, a.Legal, a.BYN)
 		legalSet[a.Legal] = true
 	}
-	var active []LeAdjust
+	// В итог входят только активные корректировки; в ответе — все, чтобы журнал показывал и снятые (кто, когда, почему).
 	for _, a := range in.Adjustments {
 		if a.Revoked {
 			continue
@@ -162,7 +162,6 @@ func buildLeSvod(in leSvodInput) LeSvod {
 		l := get(a.LineKey, label)
 		leAdd(l.adj, a.LegalEntity, a.AmountBYN)
 		legalSet[a.LegalEntity] = true
-		active = append(active, a)
 	}
 
 	legals := make([]string, 0, len(legalSet))
@@ -234,7 +233,7 @@ func buildLeSvod(in leSvodInput) LeSvod {
 
 	out := LeSvod{
 		PlID: in.PlID, Year: in.Year, Month: in.Month, Window: in.Window, FromMonth: in.From, ToMonth: in.To,
-		Currency: "BYN", Legals: legals, Warnings: in.Warnings, Adjustments: active, Closed: in.Closed,
+		Currency: "BYN", Legals: legals, Warnings: in.Warnings, Adjustments: in.Adjustments, Closed: in.Closed,
 	}
 	var salesRows, expRows []LeSvodRow
 	for _, k := range salesKeys {
