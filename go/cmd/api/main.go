@@ -556,6 +556,7 @@ func main() {
 	if cfg.PlansExpCostsFromCH && !cfg.PlansMock {
 		plansExpSource = plans.NewExpCHSource(plansExpSource, cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass, expCostsRefresh)
 		plansExpSource = plans.ExpCHSourceAccrualFact(plansExpSource, cfg.PlansExpFactFromFinPL)
+		plansExpSource = plans.ExpCHSourcePlanFromFinPL(plansExpSource, cfg.PlansExpPlanFromFinPL, cfg.PlansExpFinPLStrategy, cfg.PlansExpFinPLTactic)
 	}
 	plansExp := plans.NewExpService(plans.NewExpRepo(pool), plansCards, plansExpSource).
 		WithRegistries(plans.NewExpRegRepo(pool)).
@@ -669,6 +670,8 @@ func main() {
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormGet))
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormSave))
 	mux.HandleFunc("GET /api/plans/exp-consolidated/{plId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ConsolidatedGet))
+	// Диагностика: какие сценарии реально лежат в реплике P&L и в снимке процедуры затрат.
+	mux.HandleFunc("GET /api/plans/exp-source/scenarios", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansExpH.SourceScenariosGet))
 	mux.HandleFunc("GET /api/plans/le-svod/{plId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansLeH.Get))
 	mux.HandleFunc("POST /api/plans/le-svod/{plId}/adjust", auth.RequireRole(authSvc, auth.RolePlansUser, plansLeH.Adjust))
 	mux.HandleFunc("DELETE /api/plans/le-svod/{plId}/adjust/{id}", auth.RequireRole(authSvc, auth.RolePlansUser, plansLeH.Revoke))
