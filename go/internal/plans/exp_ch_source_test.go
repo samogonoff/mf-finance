@@ -305,7 +305,7 @@ func TestExpCHSource_AccrualFactFromFinPL(t *testing.T) {
 func TestExpAccrualFactSQL(t *testing.T) {
 	q := expAccrualFactSQL(ExpKindRetail, "BY", []int{2026})
 	for _, want := range []string{
-		"lowerUTF8(scenario) = lowerUTF8('факт')", "for_report IN ('PL', 'BS_20', 'BS_25')", "FROM finance.findwh_table_fin_pl",
+		"lowerUTF8(scenario) IN (lowerUTF8('факт'))", "for_report IN ('PL', 'BS_20', 'BS_25')", "FROM finance.findwh_table_fin_pl",
 		"= 'Магазины'", "'3.Магазины' AS group_cfo1", "country = 'BY'", "toYear(month) IN (2026)",
 		"f.pl NOT IN (1,50,93)", "'ПРОДАЖИ'", "toFloat64(amount) AS amt",
 	} {
@@ -418,5 +418,52 @@ func TestExpCHSource_PlanFromFinPL(t *testing.T) {
 		if _, sum := amountOf(c, ExpSrcStrategy); sum != 1234.5 {
 			t.Errorf("%s: стратегия должна остаться из процедуры: %v", name, sum)
 		}
+	}
+}
+
+// Диагностика сценариев: что лежит в реплике P&L и в снимке процедуры, и каких из настроенных названий в реплике нет.
+func TestExpCHSource_SourceScenarios(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := new(strings.Builder)
+		buf := make([]byte, 4096)
+		for {
+			n, err := r.Body.Read(buf)
+			b.Write(buf[:n])
+			if err != nil {
+				break
+			}
+		}
+		q := b.String()
+		switch {
+		case strings.Contains(q, "findwh_table_fin_pl"):
+			fmt.Fprint(w, `{"scenario":"факт","for_report":"PL","rows":"100","from_month":"2025-01-01","to_month":"2026-10-01"}`+"\n"+
+				`{"scenario":"Бюджет","for_report":"PL","rows":50,"from_month":"2026-01-01","to_month":"2026-12-01"}`+"\n")
+		default:
+			fmt.Fprint(w, `{"scenario":"Тактика бюджет (таргеты)","for_report":"","rows":"7","from_month":"2026-01-01","to_month":"2026-12-01"}`+"\n")
+		}
+	}))
+	defer srv.Close()
+	src := ExpCHSourcePlanFromFinPL(NewExpCHSource(&fallbackSource{}, srv.URL, "u", "p", nil), true, "", "")
+	svc := NewExpService(&fakeExpRepo{}, nil, src)
+	res, err := svc.SourceScenarios(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.FinPL) != 2 || res.FinPL[1].Rows != 50 || res.FinPL[0].Scenario != "факт" || len(res.Procedure) != 1 {
+		t.Fatalf("сценарии источников: %+v", res)
+	}
+	// «Бюджет» есть (регистр не важен), «Стратегический бюджет», «тактика» и «Тактика бюджет (таргеты)» в реплике нет.
+	if got := strings.Join(res.Missing["strategy"], "|"); got != "Стратегический бюджет" {
+		t.Errorf("не найдены названия стратегии: %q", got)
+	}
+	if got := strings.Join(res.Missing["tactic"], "|"); got != "тактика|Тактика бюджет (таргеты)" {
+		t.Errorf("не найдены названия тактики: %q", got)
+	}
+	if len(res.Missing["fact"]) != 0 {
+		t.Errorf("факт найден: %v", res.Missing["fact"])
+	}
+	// Источник не ClickHouse — понятная ошибка.
+	if _, err := NewExpService(&fakeExpRepo{}, nil, &fallbackSource{}).SourceScenarios(context.Background()); err == nil {
+		t.Error("для источника не из ClickHouse ждали ошибку")
 	}
 }

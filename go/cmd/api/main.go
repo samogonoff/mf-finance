@@ -653,6 +653,8 @@ func main() {
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormGet))
 	mux.HandleFunc("PUT /api/plans/exp/{cardId}/form", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.FormSave))
 	mux.HandleFunc("GET /api/plans/exp-consolidated/{plId}", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.ConsolidatedGet))
+	// Диагностика: какие сценарии реально лежат в реплике P&L и в снимке процедуры затрат.
+	mux.HandleFunc("GET /api/plans/exp-source/scenarios", auth.RequireRole(authSvc, auth.RolePlansAdmin, plansExpH.SourceScenariosGet))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/sync", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.SyncPost))
 	mux.HandleFunc("POST /api/plans/exp/{cardId}/bulk", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.BulkApply))
 	mux.HandleFunc("GET /api/plans/exp/{cardId}/totals", auth.RequireRole(authSvc, auth.RolePlansUser, plansExpH.TotalsGet))

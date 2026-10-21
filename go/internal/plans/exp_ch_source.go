@@ -83,16 +83,35 @@ const (
 )
 
 type chExpSource struct {
-	base     ExpDataSource // процедура на OLAP: запасной путь; справочник ЦФО и план продаж
+	base    ExpDataSource // процедура на OLAP: запасной путь; справочник ЦФО и план продаж
 	url     string
 	client  *http.Client
 	refresh func(ctx context.Context) error
 	// accrualFromFinPL — «Факт по начислениям» берётся из реплики P&L finance.findwh_table_fin_pl (см. accrualFact).
 	accrualFromFinPL bool
 	// planFromFinPL — стратегия и тактика (бюджет) розницы, ИМ и опта берутся из реплики P&L, а не из процедуры затрат;
-	// finPLStrategy / finPLTactic — названия сценариев в Table_Fin_PL (без учёта регистра).
-	planFromFinPL                bool
-	finPLStrategy, finPLTactic string
+	// finPLStrategy / finPLTactic — допустимые названия сценариев в Table_Fin_PL (без учёта регистра): сценарий может быть
+	// записан и коротко («бюджет»), и названием из справочника Budgeting.dbo.Scenario («Стратегический бюджет»).
+	planFromFinPL              bool
+	finPLStrategy, finPLTactic []string
+}
+
+// Названия сценариев по умолчанию: короткие из реплики P&L и полные из справочника сценариев Budgeting (то, под чем они
+// приходят из процедуры затрат). Какие реально есть в Table_Fin_PL, показывает диагностика GET /api/plans/exp/source-scenarios.
+const (
+	defaultFinPLStrategy = "бюджет, Стратегический бюджет"
+	defaultFinPLTactic   = "тактика, Тактика бюджет (таргеты)"
+)
+
+// splitScenarioNames — «а, б, в» → [а б в] без пустых.
+func splitScenarioNames(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // expKindFromFinPL — виды форм, расходы которых аналитики относят к Table_Fin_PL (FinDWH): розница, интернет-магазин, опт.
@@ -103,16 +122,16 @@ func expKindFromFinPL(kind string) bool {
 }
 
 // ExpCHSourcePlanFromFinPL включает чтение стратегии и тактики розницы, ИМ и опта из реплики P&L (PLANS_EXP_PLAN_FROM_FINPL).
-// strategy и tactic — названия сценариев в Table_Fin_PL («бюджет» и «тактика» по умолчанию). Для других источников — как есть.
+// strategy и tactic — названия сценариев в Table_Fin_PL через запятую (пусто — значения по умолчанию, см. defaultFinPL*).
+// Для других источников — как есть.
 func ExpCHSourcePlanFromFinPL(src ExpDataSource, on bool, strategy, tactic string) ExpDataSource {
 	if ch, ok := src.(*chExpSource); ok {
 		ch.planFromFinPL = on
-		ch.finPLStrategy, ch.finPLTactic = strings.TrimSpace(strategy), strings.TrimSpace(tactic)
-		if ch.finPLStrategy == "" {
-			ch.finPLStrategy = "бюджет"
+		if ch.finPLStrategy = splitScenarioNames(strategy); len(ch.finPLStrategy) == 0 {
+			ch.finPLStrategy = splitScenarioNames(defaultFinPLStrategy)
 		}
-		if ch.finPLTactic == "" {
-			ch.finPLTactic = "тактика"
+		if ch.finPLTactic = splitScenarioNames(tactic); len(ch.finPLTactic) == 0 {
+			ch.finPLTactic = splitScenarioNames(defaultFinPLTactic)
 		}
 	}
 	return src
@@ -343,11 +362,16 @@ var expFinPLReports = []string{"PL", "BS_20", "BS_25"}
 // «спецдоступа», а статьи вне каталога формы не показываются. Проекта в P&L нет — суммы по всем проектам; ЦФО
 // без числового кода (35BK, 250BK, XXX) отбрасываются, как в копии факта контура.
 func expAccrualFactSQL(kind, country string, years []int) string {
-	return expFinPLSQL(kind, country, years, "факт", ExpSrcFact)
+	return expFinPLSQL(kind, country, years, []string{"факт"}, ExpSrcFact)
 }
 
-// expFinPLSQL — сценарий реплики P&L (finScenario, без учёта регистра) как строки затрат со сценарием outScenario.
-func expFinPLSQL(kind, country string, years []int, finScenario, outScenario string) string {
+// expFinPLSQL — сценарии реплики P&L (finScenarios, без учёта регистра; любой из списка) как строки затрат со сценарием
+// outScenario.
+func expFinPLSQL(kind, country string, years []int, finScenarios []string, outScenario string) string {
+	scen := make([]string, len(finScenarios))
+	for i, n := range finScenarios {
+		scen[i] = "lowerUTF8(" + chLit(n) + ")"
+	}
 	amountCol := "amount"
 	if expKindInBYN(kind) {
 		amountCol = "amount_byn"
@@ -357,7 +381,7 @@ func expFinPLSQL(kind, country string, years []int, finScenario, outScenario str
 		reports[i] = chLit(r)
 	}
 	w := []string{
-		"lowerUTF8(scenario) = lowerUTF8(" + chLit(finScenario) + ")",
+		"lowerUTF8(scenario) IN (" + strings.Join(scen, ", ") + ")",
 		"for_report IN (" + strings.Join(reports, ", ") + ")",
 		fmt.Sprintf("month >= '%d-01-01'", expCutoffYear),
 		"toInt32OrZero(code_cfo) > 0",
@@ -443,7 +467,10 @@ func (s *chExpSource) accrualFact(ctx context.Context, kind, country string, yea
 // planFromReplica заменяет стратегию и тактику среза данными реплики P&L. Сценарий заменяется, только если в реплике
 // за срез что-то нашлось: пустая реплика или ошибка чтения оставляют данные процедуры (форма не остаётся без плана).
 func (s *chExpSource) planFromReplica(ctx context.Context, kind, country string, years []int, out []ExpCostCell) []ExpCostCell {
-	for _, m := range []struct{ fin, out string }{{s.finPLStrategy, ExpSrcStrategy}, {s.finPLTactic, ExpSrcTactic}} {
+	for _, m := range []struct {
+		fin []string
+		out string
+	}{{s.finPLStrategy, ExpSrcStrategy}, {s.finPLTactic, ExpSrcTactic}} {
 		body, err := s.query(ctx, expFinPLSQL(kind, country, years, m.fin, m.out), "JSONEachRow")
 		if err != nil {
 			log.Printf("plans/exp: сценарий %q из finance.findwh_table_fin_pl не прочитан, остаётся процедура: %v", m.fin, err)

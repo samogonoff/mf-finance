@@ -264,8 +264,8 @@ func Load() Config {
 		PlansExpCostsFromCH:   env("PLANS_EXP_COSTS_FROM_CH", "1") == "1",
 		PlansExpFactFromFinPL: env("PLANS_EXP_FACT_FROM_FINPL", "0") == "1",
 		PlansExpPlanFromFinPL: env("PLANS_EXP_PLAN_FROM_FINPL", "0") == "1",
-		PlansExpFinPLStrategy: env("PLANS_EXP_FINPL_STRATEGY", "бюджет"),
-		PlansExpFinPLTactic:   env("PLANS_EXP_FINPL_TACTIC", "тактика"),
+		PlansExpFinPLStrategy: env("PLANS_EXP_FINPL_STRATEGY", ""),
+		PlansExpFinPLTactic:   env("PLANS_EXP_FINPL_TACTIC", ""),
 
 		DebtValutaFQN:        env("MSSQL_VALUTA_FQN", "[SRV-SQL].Gpartner.dbo.valuta"),
 		DebtCurrencyDailyFQN: env("MSSQL_CURRENCY_DAILY_FQN", "[SRV-SQL].Checks.dbo.CurrencyDaily"),
