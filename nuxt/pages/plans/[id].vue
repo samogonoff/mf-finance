@@ -783,6 +783,9 @@ const svodLinks = computed<SvodLink[]>(() => {
   if (has("OPT")) {
     out.push({ to: `/plans/exp-consolidated/${id}?channel=opt`, title: "Расходы опта", icon: "lucide:wallet" });
   }
+  if (cards.value.length) {
+    out.push({ to: `/plans/le-svod/${id}`, title: "Бюджет по ЮЛ", icon: "lucide:building-2" });
+  }
   return out;
 });
 const svodOpen = ref(false);
