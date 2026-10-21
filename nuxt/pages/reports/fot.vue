@@ -48,9 +48,9 @@
                 @click="setTab(t.key)">{{ t.label }}</button>
       </div>
 
-      <!-- P10 и P14–P17 собираются по фиксированным полугодиям — срезы дат на них не влияют -->
+      <!-- P10 и P14–P17/B1 зависят от «Года» (и P17 от «Полугодия»); месяц/«План» сервер игнорирует -->
       <p v-if="isHalfTab" class="basis">
-        Вкладка не зависит от срезов дат (полугодия 2025/2026 фиксированы)
+        Вкладка зависит от срезов «Год» и «Полугодие» (незакрытые периоды — ожидание: факт закрытых месяцев + тактика); срезы «Месяц» и «План» не действуют
       </p>
 
       <div v-if="loading && !dash" class="fot-center muted">
@@ -99,6 +99,14 @@
             </select>
           </div>
           <div class="filter-item">
+            <label>Полугодие</label>
+            <select v-model="half" class="select" @change="loadDash">
+              <option :value="0">Год</option>
+              <option :value="1">1 полугодие</option>
+              <option :value="2">2 полугодие</option>
+            </select>
+          </div>
+          <div v-if="tab === 'p9'" class="filter-item">
             <label>Месяц</label>
             <select v-model="month" class="select" @change="loadDash">
               <option v-for="m in monthOptions" :key="m.value" :value="m.value">{{ m.label }}</option>
@@ -113,11 +121,12 @@
         </div>
 
         <div v-else class="fot-body" :class="{ pending: loading }">
-          <!-- P10 — фиксированные полугодия: срезы дат и «План» сервер
-               игнорирует, поэтому в строке базы показываем то, что работает. -->
+          <!-- P10 и P14–P17 зависят от «Года»/«Полугодия»; «Месяц» и «План»
+               сервер игнорирует — в строке базы показываем то, что работает. -->
           <p class="basis">
             <template v-if="isHalfTab">
-              Периоды: фиксированные полугодия {{ meta.periods?.year_prev || '2025' }}/{{ meta.periods?.year_plan || '2026' }}
+              Год: <strong>{{ yearPlan }}</strong>
+              <span class="dot">·</span> Полугодие: <strong>{{ halfLabel }}</strong>
               <span class="dot">·</span> Валюта: {{ currency }}
               <span class="dot">·</span> ВГО: {{ icLabel }}
             </template>
@@ -128,6 +137,7 @@
               <span class="dot">·</span> ВГО: {{ icLabel }}
             </template>
           </p>
+          <p v-if="isHalfTab && !isB1 && expectNote" class="basis">{{ expectNote }}</p>
 
           <!-- P14 «ФОТ по направлениям бизнеса»: лист 4 деки — таблица
                «Направление × периоды» с донатом структуры, ряд мини-баров
@@ -231,7 +241,7 @@
                       <span class="p14c-delta" :class="signCf(d.dev_h1_pct)">{{ fmtSigned(d.dev_h1_pct) }}% к факту {{ yearPrev }} ({{ fmtSigned(d.dev_h1_abs) }})</span>
                     </div>
                     <div class="p14c-block">
-                      <span class="p14c-label">ТАКТИКА 2 ПГ {{ yearPlan }}</span>
+                      <span class="p14c-label">{{ h2CardLabel }}</span>
                       <span class="p14c-badge cc-badge" :class="signCf(d.pp_h2)"
                             :title="`Δ доли ФОТ в выручке к факту 2ПГ${yr2(yearPrev)}`">{{ fmtSigned(d.pp_h2, 2) }}</span>
                       <span class="p14c-value">{{ fmt0(d.t26_h2) }}<span class="p14c-unit"> тыс {{ currency }}</span></span>
@@ -430,7 +440,7 @@
                       <span class="p14c-delta" :class="signCf(c.dev_h1_pct)">{{ fmtSigned(c.dev_h1_pct) }}% к факту {{ yearPrev }} ({{ fmtSigned(c.dev_h1_abs) }})</span>
                     </div>
                     <div class="p14c-block">
-                      <span class="p14c-label">ТАКТИКА 2 ПГ {{ yearPlan }}</span>
+                      <span class="p14c-label">{{ h2CardLabel }}</span>
                       <span class="p14c-badge cc-badge" :class="signCf(c.pp_h2)"
                             :title="'Δ доли ФОТ в выручке к факту 2ПГ' + yr2(yearPrev)">{{ fmtSigned(c.pp_h2, 2) }}</span>
                       <span class="p14c-value">{{ fmt0(c.t26_h2) }}<span class="p14c-unit"> тыс {{ currency }}</span></span>
@@ -505,7 +515,7 @@
                   </table>
                 </div>
                 <p class="card-note">
-                  тыс. {{ currency }}. «Ожидание 2026» = факт 1ПГ + тактика 2ПГ (формула витрины);
+                  тыс. {{ currency }}. {{ h2Closed ? '«Факт»' : '«Ожидание»' }} = факт закрытых месяцев + тактика незакрытых (незакрытые периоды);
                   CFO-свод деки даёт немного другие значения итога.
                 </p>
               </section>
@@ -523,19 +533,19 @@
                               :title="`Δ доли ФОТ в выручке: факт 1ПГ${yr2(yearPlan)} к факту 1ПГ${yr2(yearPrev)}`">
                           <span class="pp-val">{{ ppText(d.pp_h1) }}</span><span class="pp-unit">п.п.</span>
                         </span>
-                        <span class="dpc-ppcap">к факту 25</span>
+                        <span class="dpc-ppcap">к факту {{ yr2(yearPrev) }}</span>
                       </span>
                       <span class="dpc-value">{{ fmt0(d.f26_h1) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
                       <span class="dpc-delta" :class="ndCf(d.dev_h1_pct)">{{ deptDelta(d, 'h1', false) }}</span>
                     </div>
                     <div class="dpc-block">
-                      <span class="dpc-label">ТАКТИКА 2 ПГ {{ yearPlan }}</span>
+                      <span class="dpc-label">{{ h2CardLabel }}</span>
                       <span class="dpc-ppwrap">
                         <span class="dpc-pp" :class="signCf(d.pp_h2)"
-                              :title="`Δ доли ФОТ в выручке: тактика 2ПГ${yr2(yearPlan)} к факту 2ПГ${yr2(yearPrev)}`">
+                              :title="`Δ доли ФОТ в выручке: 2ПГ${yr2(yearPlan)} к факту 2ПГ${yr2(yearPrev)}`">
                           <span class="pp-val">{{ ppText(d.pp_h2) }}</span><span class="pp-unit">п.п.</span>
                         </span>
-                        <span class="dpc-ppcap">к факту 2П25</span>
+                        <span class="dpc-ppcap">к факту 2П{{ yr2(yearPrev) }}</span>
                       </span>
                       <span class="dpc-value">{{ fmt0(d.t26_h2) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
                       <span class="dpc-delta" :class="ndCf(d.dev_h2_pct)">{{ deptDelta(d, 'h2', false) }}</span>
@@ -547,7 +557,7 @@
                               :title="`Δ доли ФОТ в выручке: ожидание ${yearPlan} к факту ${yearPrev}`">
                           <span class="pp-val">{{ ppText(d.pp_year) }}</span><span class="pp-unit">п.п.</span>
                         </span>
-                        <span class="dpc-ppcap">Год/факт25</span>
+                        <span class="dpc-ppcap">Год/факт{{ yr2(yearPrev) }}</span>
                       </span>
                       <span class="dpc-value">{{ fmt0(d.exp26) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
                       <span class="dpc-delta" :class="ndCf(d.dev_year_pct)">{{ deptDelta(d, 'year', false) }}</span>
@@ -600,19 +610,19 @@
                               :title="`Δ доли ФОТ в выручке: факт 1ПГ${yr2(yearPlan)} к факту 1ПГ${yr2(yearPrev)}`">
                           <span class="pp-val">{{ ppText(d.pp_h1) }}</span><span class="pp-unit">п.п.</span>
                         </span>
-                        <span class="dpc-ppcap">к факту 25</span>
+                        <span class="dpc-ppcap">к факту {{ yr2(yearPrev) }}</span>
                       </span>
                       <span class="dpc-value">{{ fmt0(d.f26_h1) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
                       <span class="dpc-delta" :class="ndCf(d.dev_h1_pct)">{{ deptDelta(d, 'h1', true) }}</span>
                     </div>
                     <div class="dpc-block">
-                      <span class="dpc-label">ТАКТИКА 2 ПГ {{ yearPlan }}</span>
+                      <span class="dpc-label">{{ h2CardLabel }}</span>
                       <span class="dpc-ppwrap">
                         <span class="dpc-pp" :class="signCf(d.pp_h2)"
-                              :title="`Δ доли ФОТ в выручке: тактика 2ПГ${yr2(yearPlan)} к факту 2ПГ${yr2(yearPrev)}`">
+                              :title="`Δ доли ФОТ в выручке: 2ПГ${yr2(yearPlan)} к факту 2ПГ${yr2(yearPrev)}`">
                           <span class="pp-val">{{ ppText(d.pp_h2) }}</span><span class="pp-unit">п.п.</span>
                         </span>
-                        <span class="dpc-ppcap">факту 2П25</span>
+                        <span class="dpc-ppcap">факту 2П{{ yr2(yearPrev) }}</span>
                       </span>
                       <span class="dpc-value">{{ fmt0(d.t26_h2) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
                       <span class="dpc-delta" :class="ndCf(d.dev_h2_pct)">{{ deptDelta(d, 'h2', true) }}</span>
@@ -624,7 +634,7 @@
                               :title="`Δ доли ФОТ в выручке: ожидание ${yearPlan} к факту ${yearPrev}`">
                           <span class="pp-val">{{ ppText(d.pp_year) }}</span><span class="pp-unit">п.п.</span>
                         </span>
-                        <span class="dpc-ppcap">Год/факт25</span>
+                        <span class="dpc-ppcap">Год/факт{{ yr2(yearPrev) }}</span>
                       </span>
                       <span class="dpc-value">{{ fmt0(d.exp26) }}<span class="dpc-unit"> тыс {{ currency }}</span></span>
                       <span class="dpc-delta" :class="ndCf(d.dev_year_pct)">{{ deptDelta(d, 'year', true) }}</span>
@@ -659,16 +669,11 @@
             </section>
           </template>
 
-          <!-- B1 «ГК: Итоги по группе» — три слайда деки: свод / 1ПГ / 2ПГ -->
+          <!-- B1 «ГК: Итоги по группе» — три слайда деки: свод / 1ПГ / 2ПГ.
+               Показываемый слайд задаётся глобальным срезом «Полугодие»:
+               0=Год → s1 (итоги), 1 → s2 (детализация 1ПГ), 2 → s3 (2ПГ);
+               все слайды приезжают одним ответом (663620). -->
           <template v-if="isB1">
-            <div class="b1-tabs" role="tablist">
-              <button v-for="s in b1Slides" :key="s.key" type="button" role="tab"
-                      class="b1-tab" :class="{ active: b1Slide === s.key }"
-                      :aria-selected="b1Slide === s.key" @click="b1Slide = s.key">
-                {{ s.period === 'year' ? `Свод по группе ${yearPlan}` : s.period === 'h1' ? `Детализация 1 ПГ ${yearPlan}` : `Детализация 2 ПГ ${yearPlan}` }}
-              </button>
-            </div>
-
             <section class="slide" aria-label="Итоги по группе">
               <header class="slide-hdr">
                 <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
@@ -1034,22 +1039,9 @@
             </section>
           </template>
 
-          <!-- P17 «Численность ГК»: свод по группе компаний -->
+          <!-- P17 «Численность ГК»: свод по группе компаний. Период — глобальные
+               срезы «Год»/«Полугодие» панели (локальных селекторов нет, 663620) -->
           <template v-if="isP17">
-            <!-- Тулбар: год + полугодие (над обоими слайдами) -->
-            <div class="hc-toolbar">
-              <label class="hc-tb-label">Период
-                <select v-model="p17Year" class="select select-sm" @change="loadDash">
-                  <option v-for="y in p17YearOptions" :key="y" :value="y">{{ y }}</option>
-                </select>
-              </label>
-              <div class="hc-half-sel">
-                <button v-for="h in p17HalfOptions" :key="h.key" class="hc-half-btn"
-                        :class="{ active: p17Half === h.key }"
-                        @click="p17Half = h.key; loadDash()">{{ h.label }}</button>
-              </div>
-            </div>
-
             <!-- Слайд 4.1: ГК свод по странам -->
             <section class="slide" aria-label="Численность ГК">
               <header class="slide-hdr">
@@ -1103,7 +1095,7 @@
             <section class="slide" aria-label="Численность по стране" v-if="p17CountryCc">
               <header class="slide-hdr">
                 <h2 class="slide-title">{{ p17CountryDetail?.title || p17CountryLabel }}</h2>
-                <span class="slide-subtitle">На конец {{ p17HalfLabel }} {{ p17Year }}</span>
+                <span class="slide-subtitle">Численность по направлениям — {{ meta.hc?.fact_label_curr || ('на конец ' + halfLabel + ' ' + yearPlan) }}</span>
                 <div class="seg" role="group" aria-label="Страна">
                   <button v-for="c in p17CountryOptions" :key="c.key"
                           class="btn btn-sm"
@@ -1323,7 +1315,7 @@ const tab = ref<string>('p9')
 
 // Описания не-P9 — по листам презентации CFO_ALL_AGG_RS (слайды 22–27, 34–35).
 const WIP_TEXT: Record<string, string> = {
-  p10: 'Свод ФОТ по группе за фиксированные полугодия: факт 1ПГ 2025 и 1ПГ 2026, тактика 2ПГ 2026 и ожидание года — с динамикой к 2025-му, долей ФОТ в выручке группы и численностью отделов (плановая/фактическая, % укомплектования).',
+  p10: 'Свод ФОТ по группе за полугодия года из фильтра «Год»: факт 1ПГ и факт/ожидание 2ПГ (незакрытое — факт закрытых месяцев + тактика), итог года с динамикой к прошлому году, долей ФОТ в выручке группы и Δ-светофором.',
 }
 const wipText = computed(() => WIP_TEXT[tab.value] || 'Раздел готовится.')
 
@@ -1351,6 +1343,9 @@ const currency = ref('BYN')
 const intercompany = ref('all')
 const year = ref('')
 const month = ref('')
+/** Глобальный срез «Полугодие»: 0=Год, 1=1ПГ, 2=2ПГ (шлётся на все вкладки,
+ *  как year; применяется вкладками P17 и выбором слайда B1). */
+const half = ref(0)
 
 const filterOptions = ref<Record<string, any>>({})
 const filtersMeta = ref<any>({})
@@ -1389,7 +1384,8 @@ const scenarioLabel = computed(() =>
 const icLabel = computed(() => icOptions.value.find((o) => o.value === intercompany.value)?.label || intercompany.value || '—')
 
 /** Дефолт периода — закрытый период (meta.closed_period, «2026-08-31»).
- *  Применяется один раз: дальше пользователь меняет сам. */
+ *  Применяется один раз: дальше пользователь меняет сам. Полугодие — из того
+ *  же закрытого периода: месяц ≤6 → 1ПГ, иначе 2ПГ (решение 21.10.2026). */
 const defaultsApplied = ref(false)
 function applyDefaultsFromClosed() {
   if (defaultsApplied.value) return
@@ -1397,6 +1393,7 @@ function applyDefaultsFromClosed() {
   if (m) {
     year.value = m[1]
     month.value = String(Number(m[2]))
+    half.value = Number(m[2]) <= 6 ? 1 : 2
     defaultsApplied.value = true
   }
 }
@@ -1460,7 +1457,8 @@ function buildQuery(): string {
   if (scenarioPlan.value) p.set('scenario_plan', scenarioPlan.value)
   if (intercompany.value) p.set('intercompany', intercompany.value)
   if (year.value) p.set('year', year.value)
-  if (month.value) p.set('month', month.value)
+  p.set('half', String(half.value)) // 0=Год тоже шлём: дефолт сервера — закрытое полугодие
+  if (month.value && tab.value === 'p9') p.set('month', month.value)
   if (currency.value) p.set('currency', currency.value)
   if (isB1.value) {
     // B1 берёт год из meta.periods, фильтры панели — из срезов
@@ -1469,10 +1467,6 @@ function buildQuery(): string {
     // селектор подразделения и страна детализации — локальные срезы вкладки
     if (b3Dept.value) p.set('b3_dept', b3Dept.value)
     if (b3Country.value) p.set('b3_country', b3Country.value)
-  }
-  if (isP17.value) {
-    p.set('p17_year', String(p17Year.value))
-    p.set('p17_half', String(p17Half.value))
   }
   return p.toString()
 }
@@ -1547,8 +1541,8 @@ const s56Cols = computed(() => [
   { key: 'f26_h1', l1: 'Факт', l2: '1 ПГ ' + yearPlan.value },
   { key: 'dev_h1', l1: 'Δ факт', l2: 'к 1 ПГ ' + yearPrev.value },
   { key: 'b26_h2', l1: 'Бюджет', l2: '2 ПГ ' + yearPlan.value },
-  { key: 't26_h2', l1: 'Тактика', l2: '2 ПГ ' + yearPlan.value },
-  { key: 'dev_h2', l1: 'Δ такт.', l2: 'к 2 ПГ ' + yearPrev.value },
+  { key: 't26_h2', l1: h2Closed.value ? 'Факт' : 'Ожид.', l2: '2 ПГ ' + yearPlan.value },
+  { key: 'dev_h2', l1: 'Δ 2ПГ', l2: 'к 2 ПГ ' + yearPrev.value },
   { key: 'exp26', l1: 'Ожидание', l2: String(yearPlan.value) },
   { key: 'dev_year', l1: 'Δ год', l2: 'к факту ' + yearPrev.value },
 ])
@@ -1683,15 +1677,9 @@ const slideTable15 = computed<any>(() =>
 /** Таблица численности ГК рендерится в слайде; в общем списке таблиц её нет. */
 const slideTable17 = computed<any>(() =>
   isP17.value ? tables.value.find((t: any) => t.key === 'hc_countries') || null : null)
-/** Периоды P17: год и полугодие. */
-const p17Year = ref<number>(2026)
-const p17Half = ref<number>(1)
-const p17YearOptions = [2024, 2025, 2026, 2027]
-const p17HalfOptions = [
-  { key: 0, label: 'Год' },
-  { key: 1, label: '1ПГ' },
-  { key: 2, label: '2ПГ' },
-]
+/** Подпись глобального среза «Полугодие» (панель, basis-строка, слайд 4.2).
+ *  Период P17 — те же глобальные year/half панели; локальных селекторов нет. */
+const halfLabel = computed(() => ({ 0: 'Год', 1: '1 полугодие', 2: '2 полугодие' })[half.value] || 'Год')
 /** Слайд 4.2: выбор страны для детализации численности. */
 const p17Country = ref<string>('BY')
 const p17CountryOptions = [
@@ -1726,8 +1714,10 @@ const p17Observations = computed<string[]>(() =>
 /** Наблюдения B1. */
 const b1Observations = computed<string[]>(() =>
   isB1.value ? (dash.value?.observations || []) : [])
-/** Переключатель слайда B1: s1 — свод, s2 — 1ПГ, s3 — 2ПГ (массив slides в одном ответе). */
-const b1Slide = ref<string>('s1')
+/** Слайд B1 задаётся глобальным срезом «Полугодие» (663620): 0=Год → s1 —
+ *  «Итоги по группе», 1 → s2 (детализация 1ПГ), 2 → s3 (детализация 2ПГ);
+ *  массив slides приезжает одним ответом — просто выбираем по срезу. */
+const b1Slide = computed<string>(() => ({ 0: 's1', 1: 's2', 2: 's3' })[half.value] || 's1')
 const b1Slides = computed<any[]>(() => (isB1.value ? (dash.value?.slides || []) : []))
 const b1Current = computed<any>(() =>
   b1Slides.value.find((s: any) => s.key === b1Slide.value && s.key !== 's1') || null)
@@ -1744,9 +1734,10 @@ const b1CapPrev = computed(() => b1Current.value?.period === 'h2'
 const b1GridCaption = computed(() => b1Current.value?.period === 'h2'
   ? `Тактика 2 ПГ ${yearPlan.value}: исполнение бюджета и динамика к ${yearPrev.value}`
   : `Факт 1 ПГ ${yearPlan.value}: исполнение бюджета и динамика к ${yearPrev.value}`)
-/** Сноска о правиле ожидания — из meta.expect; границы месяцев могут быть
- *  пустыми (все месяцы закрыты / ещё ни одного не закрыто) — часть не печатается. */
-const b1ExpectNote = computed(() => {
+/** Сноска о правиле ожидания — из meta.expect (все годозависимые вкладки);
+ *  границы месяцев могут быть пустыми (все месяцы закрыты / ещё ни одного
+ *  не закрыто) — часть не печатается. */
+const expectNote = computed(() => {
   const e = meta.value?.expect
   if (!e || !e.by_month) return ''
   const f = e.fact_months; const p = e.plan_months
@@ -1755,6 +1746,7 @@ const b1ExpectNote = computed(() => {
   if (!f && p) return `Ожидание: факт 1 ПГ + тактика по незакрытым месяцам (${p}).`
   return ''
 })
+const b1ExpectNote = expectNote
 const b1DotsPair = computed(() => {
   const h = b1Current.value?.period === 'h2' ? '2ПГ' : '1ПГ'
   return `${h}${yr2(yearPlan.value)}/${h}${yr2(yearPrev.value)}`
@@ -1842,11 +1834,8 @@ function ppBadge(v: any): string {
   if (t === '0,00') t = '0,0'
   return t
 }
-/** Метка выбранного полугодия для подзаголовка слайда 4.2. */
-const p17HalfLabel = computed(() => {
-  const h = p17HalfOptions.find(o => o.key === p17Half.value)
-  return h ? (h.key === 0 ? 'года' : h.label) : ''
-})
+/** Метка выбранного полугодия (родительный падеж) для подзаголовка слайда 4.2. */
+const p17HalfLabel = computed(() => half.value === 0 ? 'года' : halfLabel.value)
 /** Форматирование ячейки HC: абсолютное значение или Δ */
 function hcCell(row: any, col: any): string {
   const v = row[col.key]
@@ -1940,8 +1929,8 @@ const BAR_COLORS = ['#C9AEB6', '#6B3347', '#9B5A70', '#C27B92']
 const barSpecs = computed(() => [
   { key: 'share_h1_25', label: `Факт 1ПГ${yr2(yearPrev.value)}` },
   { key: 'share_h1_26', label: `Факт 1ПГ${yr2(yearPlan.value)}` },
-  { key: 'share_h2_tac', label: `Такт.2ПГ${yr2(yearPlan.value)}` },
-  { key: 'share_exp', label: `Ожид.${yr2(yearPlan.value)}` },
+  { key: 'share_h2_tac', label: h2BarLabel.value },
+  { key: 'share_exp', label: (h2Closed.value ? 'Факт' : 'Ожид.') + `.${yr2(yearPlan.value)}` },
 ])
 const barGeom = (d: any): any[] => {
   const vals = barSpecs.value.map((s) => ({ ...s, v: isNum(d[s.key]) ? Number(d[s.key]) : null }))
@@ -1951,6 +1940,14 @@ const barGeom = (d: any): any[] => {
 const yearPlan = computed(() => Number(meta.value.periods?.year_plan) || 2026)
 const yearPrev = computed(() => Number(meta.value.periods?.year_prev) || 2025)
 const yr2 = (y: any) => String(y).slice(2)
+/** Закрытость 2ПГ года фильтра (meta.expect.close_month ≥ 12): подписи
+ *  «Факт 2ПГ» против «Ожидание 2ПГ{YY}» на p10/p14/p15/p16 (правило
+ *  факт/ожидание 663620: незакрытый период = факт закрытых месяцев + тактика). */
+const h2Closed = computed(() => Number(meta.value?.expect?.close_month) >= 12)
+const h2CardLabel = computed(() =>
+  h2Closed.value ? `ФАКТ 2 ПГ ${yearPlan.value}` : `ОЖИДАНИЕ 2 ПГ ${yearPlan.value}`)
+const h2BarLabel = computed(() =>
+  h2Closed.value ? `Факт2ПГ${yr2(yearPlan.value)}` : `Ожид.2ПГ${yr2(yearPlan.value)}`)
 /** Панель численности (правый край KPI-ленты) и карточки стран — отдельные
  *  блоки ответа (headcount, cards_by_country), карточек они не касаются. */
 const headcount = computed<any>(() => dash.value?.headcount || null)
@@ -2980,25 +2977,6 @@ const fmtDateTime = (iso: any) => {
 .hc-m-val { font-size: 18px; font-weight: 600; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .hc-m-unit { font-size: 12px; color: var(--text-muted, #6b7280); }
 
-.hc-toolbar { display: flex; gap: 16px; align-items: center; padding: 8px 0; margin-bottom: 8px; }
-.hc-tb-label { font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
-.hc-half-sel { display: flex; gap: 2px; }
-.hc-half-btn {
-  font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 4px;
-  border: 1px solid var(--border, #d1d5db); background: var(--bg, #fff);
-  cursor: pointer; transition: all 0.15s;
-}
-.hc-half-btn.active { background: var(--accent, #4338ca); color: #fff; border-color: var(--accent, #4338ca); }
-.hc-half-btn:hover:not(.active) { border-color: var(--accent, #4338ca); color: var(--text, #1e293b); }
-/* B1 «ГК»: переключатель трёх слайдов */
-.b1-tabs { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-3); }
-.b1-tab {
-  font: inherit; font-size: 13px; padding: 6px 14px; cursor: pointer;
-  background: var(--fot-card); color: var(--fot-ink);
-  border: 1px solid var(--fot-border); border-radius: 999px;
-}
-.b1-tab.active { background: var(--fot-accent-light); color: #fff; border-color: var(--fot-accent-light); }
-.b1-tab:hover:not(.active) { border-color: var(--fot-accent-light); }
 
 .hc-tbl .table-wrap { margin: 0; }
 .hc-tbl .stable { font-size: 13px; }

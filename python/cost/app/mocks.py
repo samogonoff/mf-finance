@@ -1285,11 +1285,37 @@ def _fot_half_mock() -> tuple[list[dict], dict]:
     return grain, den
 
 
+def _mock_expect_rows(rows: list[dict], c: int) -> None:
+    """Досчитывает ключи ожидания в мок-строки (grain/rev сборщиков p10/p14/p15):
+    t26_h2 → f26_h2c + p26_h2o, rv_t26_h2 → rv_f26_h2c + rv_p26_h2o (пропорции
+    как у _mock_expect_keys: факт (C−6)/6, тактика (12−C)/6 — контрольные
+    «Ожидания» сохраняются). Мутирует строки на месте."""
+    w_fact = (c - 6) / 6.0
+    w_plan = (12 - c) / 6.0
+    for r in rows:
+        t26 = r.get("t26_h2")
+        r["f26_h2c"] = round(t26 * w_fact, 2) if t26 is not None else None
+        r["p26_h2o"] = round(t26 * w_plan, 2) if t26 is not None else None
+        rv_t26 = r.get("rv_t26_h2")
+        if rv_t26 is not None:
+            r["rv_f26_h2c"] = round(rv_t26 * w_fact, 2)
+            r["rv_p26_h2o"] = round(rv_t26 * w_plan, 2)
+
+
+def _fot_mock_closed():
+    """date закрытого периода мока (для cfg ожидания и срезов факта P17)."""
+    from datetime import date
+    from app import fot
+    return fot._closed_from_meta({"closed_period": _FOT_MOCK_STATE["closed_period"]}) or date(2026, 8, 31)
+
+
 def _fot_half_mock_dashboard(tab: str, params: dict) -> dict:
     """Сборка P10/P11 мока теми же функциями, что и боевой ответ.
 
     app.fot._p10_assemble/_p11_assemble получают мок-зерно — формулы (доли,
-    Δ, светофор) и форма ответа не могут разойтись с боем. P11 берёт и мок
+    Δ, светофор) и форма ответа не могут разойтись с боем. P10 годозависим
+    (паттерн B1): зерно получает ключи ожидания (C=8), сборщику уходит cfg;
+    P11 остаётся на фиксированных полугодиях 2025/2026 и берёт мок
     численности P12 (_fot_hc_mock) для панели и карточек стран. Срезы на
     числа не влияют (это мок): страна карточек — None, пути дрилла берутся
     из запроса.
@@ -1306,9 +1332,23 @@ def _fot_half_mock_dashboard(tab: str, params: dict) -> dict:
         currency = "BYN"
     grain, den = _fot_half_mock()
     headcount = cards_by_country = None
+    expect_meta = None
     if tab == "p10":
-        cards, tables, warning = fot._p10_assemble(currency, grain, den, None)
+        year_cur = _fot_int(_fot_first(params.get("year"), fot.YEAR_PLAN), fot.YEAR_PLAN)
+        year_prev = year_cur - 1
+        cfg = fot._expect_cfg(_fot_mock_closed(), year_cur)
+        c = cfg["close_month"] or 8
+        _mock_expect_keys(grain, den, c)
+        cards, tables, warning = fot._p10_assemble(
+            currency, grain, den, None, cfg, year_cur, year_prev)
         methodology = fot.METHODOLOGY_P10
+        periods_meta = fot._periods_meta(year_cur)
+        expect_meta = {
+            "by_month": cfg["by_month"], "close_month": c,
+            "plan_scenario": cfg["scenario"],
+            "fact_months": ("07–%02d" % min(c, 12)) if c and c > 6 else None,
+            "plan_months": ("%02d–12" % (c + 1)) if c and c < 12 else None,
+        }
     else:
         cards, headcount, cards_by_country, tables, warning = fot._p11_assemble(
             currency, grain, den, _fot_hc_mock(), None,
@@ -1316,16 +1356,19 @@ def _fot_half_mock_dashboard(tab: str, params: dict) -> dict:
             fot._parse_str_list(params.get("channel_path")),
         )
         methodology = fot.METHODOLOGY_P11
+        periods_meta = fot._periods_meta()
     meta = {
         "tab": tab,
         "params": dict(params),
         "currency": currency,
-        "periods": fot._periods_meta(),
+        "periods": periods_meta,
         "closed_period": _FOT_MOCK_STATE["closed_period"],
         "stale": False,
         "refreshed_at": _FOT_MOCK_STATE["refreshed_at"],
         "methodology": methodology,
     }
+    if expect_meta is not None:
+        meta["expect"] = expect_meta
     meta.update(_FOT_MOCK_META)
     if warning:
         meta["warning"] = warning
@@ -1499,20 +1542,33 @@ def _fot_p12_mock_dashboard(params: dict) -> dict:
 
 
 def _fot_p17_mock_dashboard(params: dict) -> dict:
-    """P17 моком: боевой сборщик на мок-зерне с динамическими периодами."""
+    """P17 моком: боевой сборщик на мок-зерне с динамическими периодами.
+
+    Период — глобальные срезы year/half (как в бою: дефолт half — закрытое
+    полугодие закрытого периода мока, 2026-08-31 → 2ПГ); факт текущего года
+    при незакрытом периоде — срез на последний закрытый месяц (честная
+    подпись, см. fot._p17_fact_month)."""
     from app import fot
 
     currency = _fot_first(params.get("currency"), "BYN").upper()
     if currency not in fot.FOT_CURRENCIES:
         currency = "BYN"
+    closed = _fot_mock_closed()
     # Парсим как боевой _parse_int: "" → дефолт
-    _p17y = _fot_int(params.get("p17_year"), fot.YEAR_PLAN)
-    yr_plan = _p17y if _p17y >= 2024 else fot.YEAR_PLAN
+    _year = _fot_int(_fot_first(params.get("year"), fot.YEAR_PLAN), fot.YEAR_PLAN)
+    yr_plan = _year if _year >= 2024 else fot.YEAR_PLAN
     yr_prev = yr_plan - 1
-    half = _fot_int(params.get("p17_half"), 1)
+    half_default = 1 if (closed and closed.month <= 6) else 2
+    half = _fot_int(_fot_first(params.get("half"), half_default), half_default)
+    m_plan = fot._p17_fact_month(yr_plan, half, closed)
+    m_prev = fot._p17_fact_month(yr_prev, half, closed)
+    at_closed = m_plan != fot._p17_std_month(half)
+    month_lbl = ("%s %d" % (fot._HC_MONTHS_NOM[m_plan], yr_plan)
+                 if at_closed else fot._HC_MONTHS_NOM[m_plan])
     # Отдельное зерно P17 с g2/dir
     grain = _fot_p17_mock_grain()
-    cards, tables, warning = fot._p17_assemble(grain, yr_prev, yr_plan, half)
+    cards, tables, warning = fot._p17_assemble(
+        grain, yr_prev, yr_plan, half, month_lbl, at_closed)
 
     # Детали по каждой стране (слайд 4.2)
     by_cc: dict = {}
@@ -1523,9 +1579,19 @@ def _fot_p17_mock_dashboard(params: dict) -> dict:
         parts = by_cc.get(cc)
         if not parts:
             continue
-        country_details[cc] = fot._p17_country_detail(parts, cc, label, yr_prev, yr_plan, half)
+        country_details[cc] = fot._p17_country_detail(
+            parts, cc, label, yr_prev, yr_plan, half, month_lbl, at_closed)
 
     meta = _fot_mock_meta("p17", params, currency, fot.METHODOLOGY_P17)
+    meta["periods"] = fot._periods_meta(yr_plan)
+    meta["hc"] = {
+        "half": half,
+        "m_prev": m_prev, "m_plan": m_plan,
+        "fact_label_prev": "на конец %s %d" % (fot._HC_MONTHS_GEN[m_prev], yr_prev),
+        "fact_label_curr": "на конец %s %d" % (fot._HC_MONTHS_GEN[m_plan], yr_plan),
+        "at_closed_period": at_closed,
+        "note": "факт на конец закрытого периода" if at_closed else None,
+    }
     if warning:
         meta["warning"] = warning
     return {"cards": cards, "charts": [], "tables": tables,
@@ -1648,19 +1714,35 @@ def _fot_p14_mock_payload() -> dict:
 def _fot_p14_mock_dashboard(params: dict) -> dict:
     """P14 моком: боевой сборщик app.fot._p14_assemble на зерне листа 4 деки
     (контрольные числа — в комментарии к _FOT_P14_MOCK). Срезы на числа не
-    влияют (это мок): шапка листа — Беларусь BY."""
+    влияют (это мок): шапка листа — Беларусь BY. Вкладка годозависима
+    (паттерн B1): зерно получает ключи ожидания (C=8), сборщику уходят
+    year/cfg — контрольные «Ожидания» сохраняются (факт+тактика = тактика)."""
     from app import fot
 
     currency = _fot_first(params.get("currency"), "BYN").upper()
     if currency not in fot.FOT_CURRENCIES:
         currency = "BYN"
+    year_cur = _fot_int(_fot_first(params.get("year"), fot.YEAR_PLAN), fot.YEAR_PLAN)
+    year_prev = year_cur - 1
+    cfg = fot._expect_cfg(_fot_mock_closed(), year_cur)
+    payload = _fot_p14_mock_payload()
+    _mock_expect_rows(payload["grain"], cfg["close_month"] or 8)
+    _mock_expect_rows(payload["rev"], cfg["close_month"] or 8)
     cards, headcount, directions, tables, warning = fot._p14_assemble(
-        currency, _fot_p14_mock_payload(), "BY")
+        currency, payload, "BY", year_cur, year_prev, cfg)
     group_detail, _unused = fot._p14_detail_assemble(
         _fot_p14_detail_mock_payload())
     _unused, direction_detail = fot._p14_detail_assemble(
         _fot_p14_detail_mock_payload(_FOT_P14_S6_DIRS))
     meta = _fot_mock_meta("p14", params, currency, fot.METHODOLOGY_P14)
+    meta["periods"] = fot._periods_meta(year_cur)
+    c = cfg["close_month"]
+    meta["expect"] = {
+        "by_month": cfg["by_month"], "close_month": c,
+        "plan_scenario": cfg["scenario"],
+        "fact_months": ("07–%02d" % min(c, 12)) if c and c > 6 else None,
+        "plan_months": ("%02d–12" % (c + 1)) if c and c < 12 else None,
+    }
     meta["slide"] = {"cc": "BY", "label": "Беларусь"}
     if warning:
         meta["warning"] = warning
@@ -1840,16 +1922,31 @@ def _fot_p15_mock_payload() -> dict:
 def _fot_p15_mock_dashboard(params: dict, tab: str) -> dict:
     """P15/P16 моком: боевые сборщики на общем зерне _p15_assemble (контрольные
     числа — в комментарии к _FOT_P15_MOCK). Срезы на числа не влияют (это
-    мок): шапка листа — Беларусь BY."""
+    мок): шапка листа — Беларусь BY. Вкладки годозависимы (паттерн B1): зерно
+    получает ключи ожидания (C=8), контрольные «Ожидания» сохраняются."""
     from app import fot
 
     currency = _fot_first(params.get("currency"), "BYN").upper()
     if currency not in fot.FOT_CURRENCIES:
         currency = "BYN"
+    year_cur = _fot_int(_fot_first(params.get("year"), fot.YEAR_PLAN), fot.YEAR_PLAN)
+    year_prev = year_cur - 1
+    cfg = fot._expect_cfg(_fot_mock_closed(), year_cur)
+    payload = _fot_p15_mock_payload()
+    _mock_expect_rows(payload["fot"], cfg["close_month"] or 8)
+    _mock_expect_rows([payload["rev"]], cfg["close_month"] or 8)
     (cards, headcount, departments, tables, trends, banners,
-     warning) = fot._p15_assemble(currency, _fot_p15_mock_payload(), "BY")
+     warning) = fot._p15_assemble(currency, payload, "BY", year_cur, year_prev, cfg)
     methodology = fot.METHODOLOGY_P15 if tab == "p15" else fot.METHODOLOGY_P16
     meta = _fot_mock_meta(tab, params, currency, methodology)
+    meta["periods"] = fot._periods_meta(year_cur)
+    c = cfg["close_month"]
+    meta["expect"] = {
+        "by_month": cfg["by_month"], "close_month": c,
+        "plan_scenario": cfg["scenario"],
+        "fact_months": ("07–%02d" % min(c, 12)) if c and c > 6 else None,
+        "plan_months": ("%02d–12" % (c + 1)) if c and c < 12 else None,
+    }
     meta["slide"] = {"cc": "BY", "label": "Беларусь"}
     if warning:
         meta["warning"] = warning
