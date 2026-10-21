@@ -9,21 +9,31 @@
         <NuxtLink :to="`/plans/route-scheme/${id}`" class="btn btn-ghost">
           <Icon name="lucide:git-branch" /> Схема согласования
         </NuxtLink>
-        <NuxtLink v-if="cards.some((c) => c.form_code === 'TPL-TO-RETAIL')" :to="`/plans/retail-consolidated/${id}`" class="btn btn-ghost">
-          <Icon name="lucide:globe" /> Свод розницы · 4 страны
-        </NuxtLink>
-        <NuxtLink v-if="cards.some((c) => c.form_code === 'TPL-CFO-EXP' && (c.scope_key || '').startsWith('R-'))" :to="`/plans/exp-consolidated/${id}`" class="btn btn-ghost">
-          <Icon name="lucide:wallet" /> Свод расходов розницы · 4 страны
-        </NuxtLink>
-        <NuxtLink v-if="cards.some((c) => c.form_code === 'TPL-CFO-EXP' && (c.scope_key === 'IM-BY' || c.scope_key === 'OPT'))" :to="`/plans/exp-consolidated/${id}?channel=all`" class="btn btn-ghost">
-          <Icon name="lucide:layers" /> Свод расходов · все каналы
-        </NuxtLink>
-        <NuxtLink v-if="cards.some((c) => c.form_code === 'TPL-CFO-EXP' && c.scope_key === 'IM-BY')" :to="`/plans/exp-consolidated/${id}?channel=im`" class="btn btn-ghost">
-          <Icon name="lucide:wallet" /> Свод расходов ИМ
-        </NuxtLink>
-        <NuxtLink v-if="cards.some((c) => c.form_code === 'TPL-CFO-EXP' && c.scope_key === 'OPT')" :to="`/plans/exp-consolidated/${id}?channel=opt`" class="btn btn-ghost">
-          <Icon name="lucide:wallet" /> Свод расходов опта
-        </NuxtLink>
+        <!-- Своды — одним меню: пять кнопок в ряд на узком экране выталкивали «Процесс · задания» за край. -->
+        <div v-if="svodLinks.length" ref="svodMenuEl" class="svod-menu">
+          <button
+            type="button"
+            class="btn btn-ghost"
+            aria-haspopup="menu"
+            :aria-expanded="svodOpen"
+            @click="svodOpen = !svodOpen"
+          >
+            <Icon name="lucide:layers" /> Своды
+            <Icon :name="svodOpen ? 'lucide:chevron-up' : 'lucide:chevron-down'" />
+          </button>
+          <div v-if="svodOpen" class="svod-menu-panel" role="menu">
+            <NuxtLink
+              v-for="l in svodLinks"
+              :key="l.to"
+              :to="l.to"
+              class="svod-menu-item"
+              role="menuitem"
+              @click="svodOpen = false"
+            >
+              <Icon :name="l.icon" /> {{ l.title }}
+            </NuxtLink>
+          </div>
+        </div>
         <NuxtLink :to="`/plans/process/${id}`" class="btn btn-primary">
           <Icon name="lucide:list-checks" /> Процесс · задания
         </NuxtLink>
@@ -751,9 +761,79 @@ const submitReturn = async () => {
 };
 
 onMounted(load);
+
+// Меню «Своды»: пункты зависят от карточек периода; закрывается по клику снаружи и по Escape.
+interface SvodLink { to: string; title: string; icon: string }
+const svodLinks = computed<SvodLink[]>(() => {
+  const exp = cards.value.filter((c) => c.form_code === "TPL-CFO-EXP");
+  const has = (key: string) => exp.some((c) => c.scope_key === key);
+  const out: SvodLink[] = [];
+  if (cards.value.some((c) => c.form_code === "TPL-TO-RETAIL")) {
+    out.push({ to: `/plans/retail-consolidated/${id}`, title: "Продажи розницы · 4 страны", icon: "lucide:globe" });
+  }
+  if (exp.some((c) => (c.scope_key || "").startsWith("R-"))) {
+    out.push({ to: `/plans/exp-consolidated/${id}`, title: "Расходы розницы · 4 страны", icon: "lucide:wallet" });
+  }
+  if (has("IM-BY") || has("OPT")) {
+    out.push({ to: `/plans/exp-consolidated/${id}?channel=all`, title: "Расходы · все каналы", icon: "lucide:layers" });
+  }
+  if (has("IM-BY")) {
+    out.push({ to: `/plans/exp-consolidated/${id}?channel=im`, title: "Расходы интернет-магазина", icon: "lucide:wallet" });
+  }
+  if (has("OPT")) {
+    out.push({ to: `/plans/exp-consolidated/${id}?channel=opt`, title: "Расходы опта", icon: "lucide:wallet" });
+  }
+  return out;
+});
+const svodOpen = ref(false);
+const svodMenuEl = ref<HTMLElement | null>(null);
+const closeSvodOnOutside = (e: MouseEvent) => {
+  if (svodOpen.value && svodMenuEl.value && !svodMenuEl.value.contains(e.target as Node)) svodOpen.value = false;
+};
+const closeSvodOnEscape = (e: KeyboardEvent) => {
+  if (e.key === "Escape") svodOpen.value = false;
+};
+onMounted(() => {
+  document.addEventListener("click", closeSvodOnOutside);
+  document.addEventListener("keydown", closeSvodOnEscape);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("click", closeSvodOnOutside);
+  document.removeEventListener("keydown", closeSvodOnEscape);
+});
 </script>
 
 <style scoped>
+/* Кнопки шапки переносятся на узком экране, а не уезжают за край. */
+.page-pl-card .page-actions { flex-wrap: wrap; justify-content: flex-end; }
+.svod-menu { position: relative; }
+.svod-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--sp-2));
+  z-index: var(--z-dropdown);
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--rd-4, 6px);
+  box-shadow: var(--shadow-pop);
+}
+.svod-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--rd-3, 4px);
+  color: var(--text-primary);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.svod-menu-item:hover,
+.svod-menu-item:focus-visible { background: var(--bg-surface-3); outline: none; }
+
 /* Итоговые строки свода: тот же тон, что у шапки таблицы. */
 .tot-row td { background: var(--bg-tonal); font-weight: var(--fw-medium); }
 
