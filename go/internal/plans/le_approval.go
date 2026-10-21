@@ -10,12 +10,11 @@ import (
 	"time"
 )
 
-// Согласование бюджетов ЮЛ (этап 3) и итоговое утверждение (этап 4) на экране «Бюджет по ЮЛ».
+// Согласование форм по каналам (этап 1.6), бюджетов ЮЛ (этап 3) и итоговое утверждение (этап 4) на экране «Бюджет по ЮЛ».
 //
-// Этап 3 — по каждому ЮЛ свой список согласующих, этап 4 — один список на период. У списка политика: «нужны все» или
-// «достаточно одного» (настраивается). Этап завершается сам, когда выполнены все списки этапа. Возврат любым согласующим
-// отправляет период назад (с этапа 3 — на 1.6, с этапа 4 — на 3) с обязательной причиной. Корректировка итога ЮЛ снимает
-// согласия по этому ЮЛ и итоговое утверждение: согласовывали другие цифры.
+// Этап 1.6 — по каждому каналу свой назначенный согласующий, этап 3 — по каждому ЮЛ свой список согласующих, этап 4 —
+// один список на период. У списка политика: «нужны все» или «достаточно одного» (для 1.6 всегда один человек).
+// Этап завершается сам, когда выполнены все списки этапа. Возврат отправляет период назад с обязательной причиной.
 
 // Решения согласующих.
 const (
@@ -23,7 +22,7 @@ const (
 	LeReturn  = "return"
 )
 
-// LeApprover — согласующий списка (этап 3: ЮЛ; этап 4: legal_entity пусто).
+// LeApprover — согласующий списка (этап 1.6: канал в LegalEntity; этап 3: ЮЛ; этап 4: LegalEntity пусто).
 type LeApprover struct {
 	StageCode   string `json:"stage_code"`
 	LegalEntity string `json:"legal_entity"`
@@ -132,9 +131,10 @@ type LeApprovalStatus struct {
 	PlID int64 `json:"pl_id"`
 	// Stages — состояние этапов 1.6, 3, 4 (pending|in_progress|completed|returned).
 	Stages map[string]string `json:"stages"`
-	// Stage3 — по одному списку на ЮЛ свода; Stage4 — общий список.
-	Stage3 []LeScopeStatus `json:"stage3"`
-	Stage4 LeScopeStatus   `json:"stage4"`
+	// Stage16 — по одному списку на канал свода; Stage3 — по одному списку на ЮЛ; Stage4 — общий список.
+	Stage16 []LeScopeStatus `json:"stage16"`
+	Stage3  []LeScopeStatus `json:"stage3"`
+	Stage4  LeScopeStatus   `json:"stage4"`
 	// Decisions — журнал решений (включая снятые).
 	Decisions []LeDecision `json:"decisions"`
 	// CanConfigure — пользователь может менять списки согласующих (администратор процессов).
@@ -215,12 +215,24 @@ func (s *LeApprovalService) Status(ctx context.Context, plID int64, p Principal)
 	out := LeApprovalStatus{
 		PlID:         plID,
 		Stages:       stages,
+		Stage16:      []LeScopeStatus{},
 		Stage3:       []LeScopeStatus{},
 		Decisions:    []LeDecision{},
 		CanConfigure: p.PlansAdmin,
 	}
 	if decisions != nil {
 		out.Decisions = decisions
+	}
+	open16 := stages["1.5"] == "completed" && stages["1.6"] != "completed"
+	ready16 := open16 && readyForStage16(ctx, s.svod, plID)
+	channels, err := s.channelsOf(ctx, plID)
+	if err != nil {
+		return LeApprovalStatus{}, err
+	}
+	for _, channel := range channels {
+		sc := evalLeScope("1.6", channel, approvers, true, decisions, p.UserID)
+		sc.CanDecide = ready16 && leMine(sc)
+		out.Stage16 = append(out.Stage16, sc)
 	}
 	open3 := stages["1.6"] == "completed" && stages["3"] != "completed"
 	for _, lg := range legals {
@@ -231,6 +243,38 @@ func (s *LeApprovalService) Status(ctx context.Context, plID int64, p Principal)
 	out.Stage4 = evalLeScope("4", "", approvers, policyOf(policies, "4", ""), decisions, p.UserID)
 	out.Stage4.CanDecide = stages["3"] == "completed" && stages["4"] != "completed" && leMine(out.Stage4)
 	return out, nil
+}
+
+// channelsOf — каналы продаж, присутствующие в своде. Для этапа 1.6 ключ области
+// хранится в том же поле LegalEntity, что и ЮЛ для этапа 3, чтобы не плодить
+// отдельную схему таблиц согласующих.
+func (s *LeApprovalService) channelsOf(ctx context.Context, plID int64) ([]string, error) {
+	sv, err := s.svod.Build(ctx, plID, ExpWindowMonth)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, row := range sv.Rows {
+		if row.Section != LeSectionSales || !strings.HasPrefix(row.Key, "sales:") {
+			continue
+		}
+		channel := strings.TrimPrefix(row.Key, "sales:")
+		if channel != "" && !seen[channel] {
+			seen[channel] = true
+			out = append(out, channel)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func readyForStage16(ctx context.Context, svod *LeSvodService, plID int64) bool {
+	if svod == nil {
+		return false
+	}
+	v, err := svod.Build(ctx, plID, ExpWindowMonth)
+	return err == nil && v.Ready
 }
 
 func leMine(sc LeScopeStatus) bool {
@@ -247,12 +291,15 @@ func leMine(sc LeScopeStatus) bool {
 func (s *LeApprovalService) Decide(ctx context.Context, plID int64, p Principal, stage, legal, decision, comment string) error {
 	comment = strings.TrimSpace(comment)
 	legal = strings.TrimSpace(legal)
-	if stage != "3" && stage != "4" {
-		return errors.New("решение принимается на этапах 3 и 4")
+	if stage != "1.6" && stage != "3" && stage != "4" {
+		return errors.New("решение принимается на этапах 1.6, 3 и 4")
 	}
 	if stage == "4" {
 		legal = ""
 	} else if legal == "" {
+		if stage == "1.6" {
+			return errors.New("укажите канал")
+		}
 		return errors.New("укажите юридическое лицо")
 	}
 	if decision != LeApprove && decision != LeReturn {
@@ -267,8 +314,10 @@ func (s *LeApprovalService) Decide(ctx context.Context, plID int64, p Principal,
 	}
 	defer unlock()
 	stages := s.stageStatuses(ctx, plID)
-	prereq, prereqName := "1.6", "1.6"
-	if stage == "4" {
+	prereq, prereqName := "1.5", "1.5"
+	if stage == "3" {
+		prereq, prereqName = "1.6", "1.6"
+	} else if stage == "4" {
 		prereq, prereqName = "3", "3"
 	}
 	if stages[prereq] != "completed" {
@@ -276,6 +325,9 @@ func (s *LeApprovalService) Decide(ctx context.Context, plID int64, p Principal,
 	}
 	if stages[stage] == "completed" {
 		return fmt.Errorf("этап %s уже завершён: чтобы изменить решение, период нужно вернуть", stage)
+	}
+	if stage == "1.6" && !readyForStage16(ctx, s.svod, plID) {
+		return errors.New("этап 1.6 нельзя согласовать: есть блокирующие замечания готовности")
 	}
 	approvers, err := s.repo.Approvers(ctx)
 	if err != nil {
@@ -291,6 +343,9 @@ func (s *LeApprovalService) Decide(ctx context.Context, plID int64, p Principal,
 		if stage == "3" {
 			return fmt.Errorf("вы не назначены согласующим по ЮЛ «%s»", legal)
 		}
+		if stage == "1.6" {
+			return fmt.Errorf("вы не назначены согласующим канала «%s»", legal)
+		}
 		return errors.New("вы не назначены согласующим итогового утверждения")
 	}
 	year, month, err := s.periodOf(ctx, plID)
@@ -301,8 +356,10 @@ func (s *LeApprovalService) Decide(ctx context.Context, plID int64, p Principal,
 	if decision == LeReturn {
 		// Сначала двигаем этап: если движение не удалось, ничего не записано и согласия не сняты. Хук возврата для этого вызова
 		// отключён — снятие согласий здесь точнее (по одному ЮЛ).
-		target := "1.6"
-		if stage == "4" {
+		target := "1.5"
+		if stage == "3" {
+			target = "1.6"
+		} else if stage == "4" {
 			target = "3"
 		}
 		skip := context.WithValue(ctx, leReturnSkipKey{}, true)
@@ -313,6 +370,10 @@ func (s *LeApprovalService) Decide(ctx context.Context, plID int64, p Principal,
 			return err
 		}
 		reason := "возврат: " + comment
+		if stage == "1.6" {
+			_, err := s.repo.RevokeDecisions(ctx, plID, "1.6", legal, false, reason)
+			return err
+		}
 		if stage == "3" {
 			_, err := s.repo.RevokeDecisions(ctx, plID, "3", legal, false, reason)
 			return err
@@ -337,11 +398,16 @@ type leReturnSkipKey struct{}
 // complete завершает этап, если списки выполнены и он ещё не завершён (повторный вызов безопасен). Вызывать под Lock.
 func (s *LeApprovalService) complete(ctx context.Context, plID int64, p Principal, year, month int, stage, comment string) error {
 	stages := s.stageStatuses(ctx, plID)
-	prereq := "1.6"
-	if stage == "4" {
+	prereq := "1.5"
+	if stage == "3" {
+		prereq = "1.6"
+	} else if stage == "4" {
 		prereq = "3"
 	}
 	if stages[prereq] != "completed" || stages[stage] == "completed" {
+		return nil
+	}
+	if stage == "1.6" && !readyForStage16(ctx, s.svod, plID) {
 		return nil
 	}
 	done, _, err := s.stageSatisfied(ctx, plID, stage)
@@ -358,7 +424,7 @@ func (s *LeApprovalService) tryComplete(ctx context.Context, plID int64, p Princ
 	if err != nil {
 		return err
 	}
-	for _, stage := range []string{"3", "4"} {
+	for _, stage := range []string{"1.6", "3", "4"} {
 		if err := s.complete(ctx, plID, p, year, month, stage, ""); err != nil {
 			return err
 		}
@@ -408,6 +474,11 @@ func (s *LeApprovalService) OnStageReturn(ctx context.Context, plID int64, code,
 	if _, err := s.repo.RevokeDecisions(ctx, plID, "4", "", true, reason); err != nil {
 		return err
 	}
+	if target == "1.5" || target == "1.6" {
+		if _, err := s.repo.RevokeDecisions(ctx, plID, "1.6", "", true, reason); err != nil {
+			return err
+		}
+	}
 	_, err = s.repo.RevokeDecisions(ctx, plID, "3", "", true, reason)
 	return err
 }
@@ -438,6 +509,25 @@ func (s *LeApprovalService) stageSatisfied(ctx context.Context, plID int64, stag
 		return false, nil, err
 	}
 	var pending []string
+	if stage == "1.6" {
+		if !readyForStage16(ctx, s.svod, plID) {
+			return false, []string{"этап 1.6: есть блокирующие замечания готовности"}, nil
+		}
+		channels, err := s.channelsOf(ctx, plID)
+		if err != nil {
+			return false, nil, err
+		}
+		if len(channels) == 0 {
+			return false, []string{"в своде нет каналов продаж"}, nil
+		}
+		for _, channel := range channels {
+			sc := evalLeScope("1.6", channel, approvers, true, decisions, 0)
+			if !sc.Satisfied {
+				pending = append(pending, scopeNote("канал "+channel, sc))
+			}
+		}
+		return len(pending) == 0, pending, nil
+	}
 	if stage == "4" {
 		sc := evalLeScope("4", "", approvers, policyOf(policies, "4", ""), decisions, 0)
 		if !sc.Satisfied {
@@ -477,10 +567,10 @@ func scopeNote(name string, sc LeScopeStatus) string {
 	return name + " (нужно согласие хотя бы одного)"
 }
 
-// Gate — проверка перед ручным завершением этапов 3 и 4 (общая точка Service.WithStageGate): этап завершается только
+// Gate — проверка перед ручным завершением этапов 1.6, 3 и 4 (общая точка Service.WithStageGate): этап завершается только
 // решениями согласующих. Возврат и «взять в работу» не проверяются.
 func (s *LeApprovalService) Gate(ctx context.Context, plID int64, code, action string) error {
-	if (code != "3" && code != "4") || (action != "submit" && action != "approve") {
+	if (code != "1.6" && code != "3" && code != "4") || (action != "submit" && action != "approve") {
 		return nil
 	}
 	ok, pending, err := s.stageSatisfied(ctx, plID, code)
@@ -493,9 +583,12 @@ func (s *LeApprovalService) Gate(ctx context.Context, plID int64, code, action s
 	return fmt.Errorf("этап %s завершается решениями согласующих на экране «Бюджет по ЮЛ». Ещё не согласовано: %s", code, leListTitles(pending, 6))
 }
 
-// OnAdjust вызывается после корректировки итога ЮЛ: согласия по этому ЮЛ и итоговое утверждение снимаются.
+// OnAdjust вызывается после корректировки итога ЮЛ: согласия этапа 1.6, этого ЮЛ и итоговое утверждение снимаются.
 func (s *LeApprovalService) OnAdjust(ctx context.Context, plID int64, legal string) error {
 	reason := "корректировка итога ЮЛ «" + legal + "»"
+	if _, err := s.repo.RevokeDecisions(ctx, plID, "1.6", "", true, reason); err != nil {
+		return fmt.Errorf("не удалось снять согласия этапа 1.6: %w", err)
+	}
 	if _, err := s.repo.RevokeDecisions(ctx, plID, "3", legal, false, reason); err != nil {
 		return fmt.Errorf("не удалось снять согласия ЮЛ: %w", err)
 	}
@@ -505,7 +598,7 @@ func (s *LeApprovalService) OnAdjust(ctx context.Context, plID int64, legal stri
 	return nil
 }
 
-// IsApprover — пользователь согласующий этапа (по ЮЛ для этапа 3).
+// IsApprover — пользователь согласующий этапа (по каналу для 1.6, по ЮЛ для 3).
 func (s *LeApprovalService) IsApprover(ctx context.Context, stage, legal string, userID int64) bool {
 	approvers, err := s.repo.Approvers(ctx)
 	if err != nil {
@@ -535,18 +628,21 @@ func (s *LeApprovalService) Config(ctx context.Context) (LeApprovalConfig, error
 	return LeApprovalConfig{Approvers: a, Policies: p}, err
 }
 
-// SetApprovers задаёт список согласующих области (этап 3 — ЮЛ, этап 4 — весь период) и политику «все / один».
+// SetApprovers задаёт список согласующих области (этап 1.6 — канал, этап 3 — ЮЛ, этап 4 — весь период) и политику.
 func (s *LeApprovalService) SetApprovers(ctx context.Context, p Principal, stage, legal string, userIDs []int64, requireAll bool) error {
 	if !p.PlansAdmin {
 		return errors.New("списки согласующих настраивает администратор процессов")
 	}
-	if stage != "3" && stage != "4" {
-		return errors.New("списки настраиваются для этапов 3 и 4")
+	if stage != "1.6" && stage != "3" && stage != "4" {
+		return errors.New("списки настраиваются для этапов 1.6, 3 и 4")
 	}
 	legal = strings.TrimSpace(legal)
 	if stage == "4" {
 		legal = ""
 	} else if legal == "" {
+		if stage == "1.6" {
+			return errors.New("укажите канал")
+		}
 		return errors.New("укажите юридическое лицо")
 	}
 	seen := map[int64]bool{}
@@ -556,6 +652,9 @@ func (s *LeApprovalService) SetApprovers(ctx context.Context, p Principal, stage
 			seen[id] = true
 			ids = append(ids, id)
 		}
+	}
+	if stage == "1.6" && len(ids) > 1 {
+		return errors.New("для каждого канала этапа 1.6 можно назначить только одного согласующего")
 	}
 	if err := s.repo.SetApprovers(ctx, stage, legal, ids, requireAll, p.UserID); err != nil {
 		return err

@@ -43,6 +43,7 @@ export interface LeSvod {
   from_month: number;
   to_month: number;
   currency: string;
+  source_currencies?: Record<string, string[]>;
   legals: string[];
   rows: LeSvodRow[];
   adjustments: LeAdjust[];
@@ -74,7 +75,7 @@ export interface LeApproverState {
 }
 
 export interface LeScope {
-  stage_code: "3" | "4";
+  stage_code: "1.6" | "3" | "4";
   legal_entity: string;
   require_all: boolean;
   approvers: LeApproverState[];
@@ -99,6 +100,7 @@ export interface LeDecision {
 export interface LeApprovalStatus {
   pl_id: number;
   stages: Record<string, string>;
+  stage16: LeScope[];
   stage3: LeScope[];
   stage4: LeScope;
   decisions: LeDecision[];

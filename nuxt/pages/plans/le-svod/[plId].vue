@@ -37,6 +37,41 @@
       <p v-else class="ready-ok">Все формы продаж и расходов утверждены, замечаний нет.</p>
     </section>
 
+    <!-- ===== Согласование форм по каналам (этап 1.6) ===== -->
+    <section v-if="appr" class="card appr-card">
+      <div class="card-header">
+        <span class="card-title">Согласование форм по каналам · этап 1.6</span>
+        <span class="badge" :class="stageBadge('1.6')">{{ stageText("1.6") }}</span>
+        <button v-if="appr.can_configure" type="button" class="btn btn-sm btn-ghost" @click="openConfig">
+          <Icon name="lucide:settings-2" /> Настроить согласующих
+        </button>
+      </div>
+      <p v-if="appr.stages['1.5'] !== 'completed'" class="appr-hint">
+        Согласование форм откроется после завершения этапа 1.5. Для каждого канала назначается один согласующий.
+      </p>
+      <table class="data-table">
+        <thead><tr><th>Канал</th><th>Согласующий</th><th>Статус</th><th></th></tr></thead>
+        <tbody>
+          <tr v-if="!appr.stage16.length"><td colspan="4" class="empty-cell">В своде нет каналов продаж.</td></tr>
+          <tr v-for="sc in appr.stage16" :key="sc.legal_entity">
+            <td>{{ sc.legal_entity }}</td>
+            <td><PlansApproverChips :scope="sc" /></td>
+            <td>
+              <span class="badge" :class="sc.satisfied ? 'badge-pos' : sc.no_approvers ? 'badge-neg' : 'badge-warn'">
+                {{ sc.satisfied ? "согласовано" : sc.no_approvers ? "нет согласующего" : "ждём" }}
+              </span>
+            </td>
+            <td class="appr-act">
+              <template v-if="sc.can_decide">
+                <button type="button" class="btn btn-sm btn-primary" @click="openDecide(sc, 'approve')">Согласовано</button>
+                <button type="button" class="btn btn-sm btn-ghost" @click="openDecide(sc, 'return')">Вернуть</button>
+              </template>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
     <!-- ===== Согласование ЮЛ (этап 3) и итоговое утверждение (этап 4) ===== -->
     <section v-if="appr" class="card appr-card">
       <div class="card-header">
@@ -64,7 +99,7 @@
             </td>
             <td class="appr-act">
               <template v-if="sc.can_decide">
-                <button type="button" class="btn btn-sm btn-primary" @click="openDecide(sc, 'approve')">Согласовать</button>
+                <button type="button" class="btn btn-sm btn-primary" @click="openDecide(sc, 'approve')">Согласовано</button>
                 <button type="button" class="btn btn-sm btn-ghost" @click="openDecide(sc, 'return')">Вернуть</button>
               </template>
             </td>
@@ -91,7 +126,7 @@
             </td>
             <td class="appr-act">
               <template v-if="appr.stage4.can_decide">
-                <button type="button" class="btn btn-sm btn-primary" @click="openDecide(appr.stage4, 'approve')">Утвердить</button>
+                <button type="button" class="btn btn-sm btn-primary" @click="openDecide(appr.stage4, 'approve')">Согласовано</button>
                 <button type="button" class="btn btn-sm btn-ghost" @click="openDecide(appr.stage4, 'return')">Вернуть</button>
               </template>
             </td>
@@ -128,7 +163,7 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th>Строка</th>
+              <th>Строка · валюта</th>
               <th v-for="lg in data.legals" :key="lg" class="col-num">{{ lg }}</th>
               <th class="col-num">Итого</th>
             </tr>
@@ -143,7 +178,10 @@
                 <td :colspan="data.legals.length + 2">Продажи</td>
               </tr>
               <tr :class="{ 'row-total': r.section === 'total' }">
-                <td>{{ r.label }}</td>
+                <td>
+                  <span>{{ r.label }}</span>
+                  <small class="currency-note">{{ rowCurrency(r.key) }}</small>
+                </td>
                 <template v-if="r.key === 'total:ratio'">
                   <td v-for="lg in data.legals" :key="lg" class="col-num">{{ pct(r.ratio?.[lg]) }}</td>
                   <td class="col-num strong">{{ pct(r.ratio_all) }}</td>
@@ -222,7 +260,7 @@
     <PlansModal :open="!!dec" :title="dec ? decTitle : ''" width="520px" @close="dec = null">
       <template v-if="dec">
         <p class="pm-hint" v-if="dec.kind === 'return'">
-          Возврат отправит период {{ dec.scope.stage_code === "3" ? "на этап 1.6" : "на этап 3" }} и снимет согласия. Причина обязательна.
+          Возврат отправит период {{ dec.scope.stage_code === "1.6" ? "на этап 1.5" : dec.scope.stage_code === "3" ? "на этап 1.6" : "на этап 3" }} и снимет согласия. Причина обязательна.
         </p>
         <p class="pm-hint" v-else>
           {{ dec.scope.require_all ? "Для завершения этапа нужно согласие каждого из списка." : "Для завершения этапа достаточно согласия одного из списка." }}
@@ -235,23 +273,23 @@
         <div class="modal-foot">
           <button class="btn btn-ghost" @click="dec = null">Отмена</button>
           <button class="btn" :class="dec.kind === 'return' ? 'btn-danger' : 'btn-primary'" :disabled="busy || (dec.kind === 'return' && !decComment.trim())" @click="saveDecision">
-            {{ dec.kind === "return" ? "Вернуть" : dec.scope.stage_code === "4" ? "Утвердить" : "Согласовать" }}
+            {{ dec.kind === "return" ? "Вернуть" : "Согласовано" }}
           </button>
         </div>
       </template>
     </PlansModal>
 
     <!-- Настройка согласующих (администратор процессов) -->
-    <PlansModal :open="cfgOpen" title="Согласующие этапов 3 и 4" width="760px" @close="cfgOpen = false">
+    <PlansModal :open="cfgOpen" title="Согласующие этапов 1.6, 3 и 4" width="760px" @close="cfgOpen = false">
       <p class="pm-hint">
-        По каждому ЮЛ (этап 3) и для итогового утверждения (этап 4) задайте список согласующих и правило: нужны все или достаточно одного.
-        Изменения применяются сразу после «Сохранить» в строке.
+        Для каждого канала (этап 1.6) назначьте одного согласующего. По каждому ЮЛ (этап 3) и для итогового утверждения (этап 4)
+        задайте список и правило: нужны все или достаточно одного. Изменения применяются сразу после «Сохранить» в строке.
       </p>
       <p v-if="cfgError" class="banner banner-neg">{{ cfgError }}</p>
       <div v-for="row in cfgRows" :key="row.key" class="cfg-row">
         <div class="cfg-head">
-          <b>{{ row.stage === "4" ? "Итоговое утверждение (этап 4)" : `Этап 3 · ${row.legal}` }}</b>
-          <label class="checkbox">
+          <b>{{ row.stage === "4" ? "Итоговое утверждение (этап 4)" : row.stage === "1.6" ? `Этап 1.6 · канал ${row.legal}` : `Этап 3 · ${row.legal}` }}</b>
+          <label v-if="row.stage !== '1.6'" class="checkbox">
             <input v-model="row.requireAll" type="checkbox" /> нужны все (иначе достаточно одного)
           </label>
           <button type="button" class="btn btn-sm btn-primary" :disabled="busy" @click="saveRow(row)">Сохранить</button>
@@ -323,6 +361,10 @@ const periodLabel = computed(() => {
 const money0 = (v: number | null | undefined): string => (typeof v === "number" && v !== 0 ? fmtNum(v, 0) : "—");
 const pct = (v: number | null | undefined): string => (typeof v === "number" ? `${fmtNum(v, 1)} %` : "—");
 const lineLabel = (key: string) => key.replace(/^(sales|exp):/, "");
+const rowCurrency = (key: string): string => {
+  const source = data.value?.source_currencies?.[key] || [];
+  return source.length ? `${source.join(", ")} → BYN` : "BYN";
+};
 const cellTitle = (r: LeSvodRow, lg: string) =>
   r.adj[lg] ? `расчёт ${money0(r.calc[lg])}, корректировка ${money0(r.adj[lg])}` : r.editable && canAdjustFor(lg) ? "Нажмите, чтобы скорректировать итог" : "";
 
@@ -417,6 +459,7 @@ const loadAppr = async () => {
     appr.value = {
       ...result,
       stages: result.stages || {},
+      stage16: Array.isArray(result.stage16) ? result.stage16 : [],
       stage3: Array.isArray(result.stage3) ? result.stage3 : [],
       stage4: {
         ...result.stage4,
@@ -442,7 +485,7 @@ const decTitle = computed(() => {
   if (!dec.value) return "";
   const s = dec.value.scope;
   const what = dec.value.kind === "return" ? "Возврат" : s.stage_code === "4" ? "Итоговое утверждение" : "Согласование";
-  return s.stage_code === "3" ? `${what} · ${s.legal_entity}` : what;
+  return s.stage_code === "3" ? `${what} · ЮЛ ${s.legal_entity}` : s.stage_code === "1.6" ? `${what} · канал ${s.legal_entity}` : what;
 });
 const openDecide = (scope: LeScope, kind: "approve" | "return") => {
   dec.value = { scope, kind };
@@ -472,7 +515,7 @@ const saveDecision = async () => {
 // Настройка списков согласующих (администратор процессов).
 interface CfgRow {
   key: string;
-  stage: "3" | "4";
+  stage: "1.6" | "3" | "4";
   legal: string;
   requireAll: boolean;
   users: { id: number; name: string }[];
@@ -484,25 +527,31 @@ const openConfig = async () => {
   cfgError.value = "";
   try {
     const cfg = await api.approvalConfig();
-    const rowFor = (stage: "3" | "4", legal: string): CfgRow => {
+    const rowFor = (stage: "1.6" | "3" | "4", legal: string): CfgRow => {
       const pol = cfg.policies.find((p) => p.stage_code === stage && p.legal_entity === legal);
       return {
         key: `${stage}|${legal}`,
         stage,
         legal,
-        requireAll: pol ? pol.require_all : true,
+        requireAll: stage === "1.6" ? true : pol ? pol.require_all : true,
         users: cfg.approvers.filter((a) => a.stage_code === stage && a.legal_entity === legal).map((a) => ({ id: a.user_id, name: a.user_name || "" }))
       };
     };
     const legals = (data.value?.legals || []).filter((l) => l !== "(без ЮЛ)");
-    cfgRows.value = [rowFor("4", ""), ...legals.map((l) => rowFor("3", l))];
+    const channels = (appr.value?.stage16 || []).map((s) => s.legal_entity);
+    cfgRows.value = [
+      ...channels.map((channel) => rowFor("1.6", channel)),
+      rowFor("4", ""),
+      ...legals.map((l) => rowFor("3", l))
+    ];
     cfgOpen.value = true;
   } catch (e) {
     error.value = apiError(e, "Настройки согласующих не загружены");
   }
 };
 const addUser = (row: CfgRow, u: { id: number; name: string }) => {
-  if (!row.users.some((x) => x.id === u.id)) row.users = [...row.users, { id: u.id, name: u.name }];
+  if (row.stage === "1.6") row.users = [{ id: u.id, name: u.name }];
+  else if (!row.users.some((x) => x.id === u.id)) row.users = [...row.users, { id: u.id, name: u.name }];
 };
 const saveRow = async (row: CfgRow) => {
   busy.value = true;
@@ -528,9 +577,10 @@ onMounted(() => {
 .ready-card { padding-bottom: var(--sp-3); }
 .appr-card { padding-bottom: var(--sp-2); }
 .appr-hint { margin: 0 var(--sp-4) var(--sp-2); color: var(--text-muted); font-size: var(--fs-sm); }
-.appr-act { display: flex; gap: var(--sp-2); justify-content: flex-end; }
+.appr-act { display: flex; gap: var(--sp-2); justify-content: flex-end; flex-wrap: wrap; }
 .appr-log { margin: var(--sp-2) var(--sp-4); font-size: var(--fs-sm); color: var(--text-secondary); }
 .appr-log li.revoked { text-decoration: line-through; color: var(--text-muted); }
+.currency-note { display: block; color: var(--text-muted); font-size: var(--fs-xs); font-weight: var(--fw-normal); }
 .cfg-row { border: 1px solid var(--border, var(--bg-tonal)); border-radius: var(--rd-4, 6px); padding: var(--sp-3); margin-bottom: var(--sp-3); }
 .cfg-head { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; margin-bottom: var(--sp-2); }
 .cfg-users { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }

@@ -83,7 +83,7 @@
                 <div class="sc-name">{{ st.name }}</div>
                 <!-- Этапы 1.6, 3, 4 работают со сводом «Бюджет по ЮЛ»: заданий у них нет, поэтому вместо «0/0 заданий» — вход в свод. -->
                 <NuxtLink v-if="isLeStage(st)" :to="`/plans/le-svod/${id}`" class="sc-tasks" title="Открыть свод «Бюджет по ЮЛ»: продажи и расходы по юридическим лицам, готовность, согласование">
-                  <span class="sct-count"><Icon name="lucide:table-2" /> Свод по ЮЛ</span>
+                  <span class="sct-count"><Icon name="lucide:table-2" /> {{ st.stage_code === "1.6" ? "Что согласуется" : "Свод по ЮЛ" }}</span>
                   <span class="sct-people" :title="stageAssignees(st.stage_code).join(', ')">
                     <Icon name="lucide:users" /> {{ peopleLabel(st.stage_code) }}
                   </span>
@@ -356,7 +356,7 @@
     <PlansModal
       :open="!!stageModal"
       :title="stageModal ? `Этап ${stageModal.stage_code} · ${stageModal.name}` : ''"
-      :subtitle="stageModal ? `${stageDone(stageModal.stage_code)} из ${stageTasks(stageModal.stage_code).length} заданий выполнено · статус: ${statusLabel(stageModal.status)}` : ''"
+      :subtitle="stageModal ? isLeStage(stageModal) ? `Свод и решения согласующих · статус: ${statusLabel(stageModal.status)}` : stageModal.stage_code === '1.5' ? `Формы расходов · статус: ${statusLabel(stageModal.status)}` : `${stageDone(stageModal.stage_code)} из ${stageTasks(stageModal.stage_code).length} заданий выполнено · статус: ${statusLabel(stageModal.status)}` : ''"
       @close="stageModal = null"
     >
       <div v-if="stageModal" class="sm-body">
@@ -371,6 +371,15 @@
           </p>
           <NuxtLink :to="`/plans/le-svod/${id}`" class="btn btn-sm btn-primary" @click="stageModal = null">
             <Icon name="lucide:table-2" /> Открыть свод по ЮЛ
+          </NuxtLink>
+        </div>
+        <div v-else-if="stageModal.stage_code === '1.5'" class="sm-appr">
+          <p class="sm-appr-txt">
+            На этапе 1.5 согласуются формы расходов центров прибыли. Откройте список расходов и карточку нужной формы,
+            чтобы проверить данные и открыть лист согласования.
+          </p>
+          <NuxtLink :to="`/plans/exp/${id}`" class="btn btn-sm btn-primary" @click="stageModal = null">
+            <Icon name="lucide:wallet" /> Что согласуется
           </NuxtLink>
         </div>
         <div v-else-if="!stageTasks(stageModal.stage_code).length && stageIsApproval(stageModal)" class="sm-appr">
@@ -612,7 +621,7 @@ const stageIsApproval = (st: StageState) => st.is_approval ?? APPROVAL.has(st.st
  * ручным, как этапы производства и сводов.
  */
 const CARD_STEPS = ["1.1", "1.2", "1.3", "1.4"];
-const stageDrivenByCards = (st: StageState) => CARD_STEPS.includes(st.stage_code) && cards.value.length > 0;
+const stageDrivenByCards = (st: StageState) => st.stage_code === "1.5" || (CARD_STEPS.includes(st.stage_code) && cards.value.length > 0);
 
 /**
  * Плашка ожидания: «1 форма ждёт решения», «2 формы», «5 форм». Раньше стояло

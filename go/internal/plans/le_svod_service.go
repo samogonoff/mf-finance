@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 )
 
@@ -71,7 +72,19 @@ func (s *LeSvodService) Build(ctx context.Context, plID int64, window string) (L
 	}
 	year, month := cards[0].Year, cards[0].Month
 	from, to, win := expWindowMonths(window, month)
-	in := leSvodInput{PlID: plID, Year: year, Month: month, Window: win, From: from, To: to}
+	in := leSvodInput{PlID: plID, Year: year, Month: month, Window: win, From: from, To: to, SourceCurrencies: map[string][]string{}}
+	addCurrency := func(key, currency string) {
+		currency = strings.ToUpper(strings.TrimSpace(currency))
+		if currency == "" {
+			currency = "BYN"
+		}
+		for _, existing := range in.SourceCurrencies[key] {
+			if existing == currency {
+				return
+			}
+		}
+		in.SourceCurrencies[key] = append(in.SourceCurrencies[key], currency)
+	}
 
 	// Продажи: товарооборот сохранённой тактики по ЮЛ × каналу, в валюте строки → BYN.
 	if s.sales != nil {
@@ -80,12 +93,14 @@ func (s *LeSvodService) Build(ctx context.Context, plID int64, window string) (L
 			in.Warnings = append(in.Warnings, "Продажи не прочитаны: "+err.Error())
 		}
 		for _, r := range rows {
+			key := "sales:" + r.Channel
+			addCurrency(key, r.Currency)
 			byn, ok := s.toBYN(ctx, r.Amount, r.Currency, year, month)
 			if !ok {
 				in.Warnings = append(in.Warnings, fmt.Sprintf("Нет курса к BYN для %s: продажи «%s» (%s) не вошли в свод.", r.Currency, r.Channel, r.LegalEntity))
 				continue
 			}
-			in.Amounts = append(in.Amounts, leAmount{Legal: NormLegalEntity(r.LegalEntity), Key: "sales:" + r.Channel, Label: r.Channel, BYN: byn})
+			in.Amounts = append(in.Amounts, leAmount{Legal: NormLegalEntity(r.LegalEntity), Key: key, Label: r.Channel, BYN: byn})
 		}
 	}
 
@@ -122,6 +137,7 @@ func (s *LeSvodService) Build(ctx context.Context, plID int64, window string) (L
 			in.Warnings = append(in.Warnings, svodEmptyClosedWarning(c.Title))
 		}
 		for _, r := range rows {
+			key := "exp:" + pnl[r.CodePL]
 			var plan float64
 			for _, v := range r.Values {
 				if v.Scenario == ExpScenarioPlan && v.Amount != nil && v.Month >= cardFrom && v.Month <= cardTo {
@@ -135,14 +151,19 @@ func (s *LeSvodService) Build(ctx context.Context, plID int64, window string) (L
 			if group == "" {
 				group = leNoGroup
 			}
+			key = "exp:" + group
+			addCurrency(key, inst.Currency)
 			legal := r.LegalEntity
 			if strings.TrimSpace(legal) == "" {
 				legal = inst.LegalEntity
 			}
-			in.Amounts = append(in.Amounts, leAmount{Legal: NormLegalEntity(legal), Key: "exp:" + group, Label: group, BYN: plan * fx.Tactic})
+			in.Amounts = append(in.Amounts, leAmount{Legal: NormLegalEntity(legal), Key: key, Label: group, BYN: plan * fx.Tactic})
 		}
 	}
 	in.GroupOrder = expRetailPnlOrder
+	for key := range in.SourceCurrencies {
+		sort.Strings(in.SourceCurrencies[key])
+	}
 
 	adj, err := s.adj.List(ctx, plID)
 	if err != nil {

@@ -41,7 +41,7 @@ func stageDefs() []StageDef {
 		{Code: "1.5", Track: "sales", Name: "Обновление расходов в бюджетах ЦП", DueRD: 5, DependsOn: []string{"1.4"}},
 		// WF-DEP-01 (1.6 ждёт 2.4) отложена: поток производства (2.1–2.4) в кабинете не реализован, 2.4 не завершится
 		// никогда, и 1.6 с этапами 3–4 были бы заблокированы навсегда. Когда производство появится — вернуть "2.4".
-		{Code: "1.6", Track: "sales", Name: "Формирование по ЮЛ и каналам", DueRD: 5, DependsOn: []string{"1.5"}},
+		{Code: "1.6", Track: "sales", Name: "Формирование по ЮЛ и каналам", DueRD: 5, DependsOn: []string{"1.5"}, IsApproval: true},
 		{Code: "3", Track: "final", Name: "Согласование бюджетов ЮЛ", DueRD: 6, DependsOn: []string{"1.6"}, IsApproval: true}, // WF-DEP-02
 		{Code: "4", Track: "final", Name: "Итоговое утверждение", DueRD: 6, DependsOn: []string{"3"}, IsApproval: true},
 	}
