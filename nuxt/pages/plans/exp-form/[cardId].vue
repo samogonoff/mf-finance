@@ -1383,11 +1383,11 @@ onBeforeRouteLeave(() => {
 
 <style scoped>
 .more-menu { position: relative; }
-.more-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: var(--z-dropdown, 50); min-width: 230px; display: flex; flex-direction: column; padding: var(--sp-2); background: var(--surface, #fff); border: 1px solid var(--border); border-radius: var(--r-md, 8px); box-shadow: 0 6px 20px rgba(0,0,0,.12); }
-.more-item { display: flex; align-items: center; gap: var(--sp-3); padding: 7px 10px; border: 0; background: none; border-radius: 6px; font-size: var(--fs-sm); color: var(--text); text-align: left; text-decoration: none; cursor: pointer; white-space: nowrap; }
-.more-item:hover:not(:disabled) { background: var(--bg-hover, rgba(0,0,0,.05)); }
+.more-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: var(--z-dropdown); min-width: 230px; display: flex; flex-direction: column; padding: var(--sp-2); background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: var(--rd-3); }
+.more-item { display: flex; align-items: center; gap: var(--sp-3); padding: 7px 10px; border: 0; background: none; border-radius: var(--rd-2, 3px); font-size: var(--fs-sm); color: var(--text-primary); text-align: left; text-decoration: none; cursor: pointer; white-space: nowrap; }
+.more-item:hover:not(:disabled) { background: var(--bg-tonal); }
 .more-item:disabled { opacity: .5; cursor: default; }
-.more-sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-2) 0; width: 100%; }
+.more-sep { border: 0; border-top: 1px solid var(--border-strong); margin: var(--sp-2) 0; width: 100%; }
 /* Кнопок в шапке много: переносим на следующие строки, а не выталкиваем за край экрана. */
 .page-exp .page-actions { flex-wrap: wrap; flex: 1 1 100%; gap: var(--sp-2) var(--sp-3); }
 .page-exp .page-actions .btn { white-space: nowrap; }
