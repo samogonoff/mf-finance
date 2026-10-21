@@ -34,6 +34,8 @@ type ExpRepo interface {
 	SaveComment(ctx context.Context, instanceID int64, codeCFO, codePL int, comment string) error
 	GroupTotals(ctx context.Context, instanceID int64) (map[string]float64, error)
 	GroupOrder(ctx context.Context, formKind string) ([]string, error)
+	// Groups - группы PL, которые есть в строках экземпляра (без строк продаж): список для фильтра формы.
+	Groups(ctx context.Context, instanceID int64) ([]string, error)
 	Params(ctx context.Context, instanceID int64) ([]ExpParamRow, error)
 	SaveParam(ctx context.Context, instanceID int64, p ExpParamRow, actorID int64) error
 	SyncPLLines(ctx context.Context, lines []ExpPLLine) (int, error)
@@ -120,7 +122,8 @@ func expNotSalesRowSQL(prefix string) string {
 	for i, w := range expSalesGroupWords {
 		conds[i] = "UPPER(" + prefix + "group_pl) NOT LIKE '%" + w + "%'"
 	}
-	return "(" + strings.Join(conds, " AND ") + ")"
+	// Формы отделов (cfo:N) строки продаж и маржи загружают сознательно (свои сценарии) - их фильтр не касается.
+	return "((" + strings.Join(conds, " AND ") + ") OR EXISTS (SELECT 1 FROM exp_instance xi WHERE xi.id = " + prefix + "instance_id AND xi.form_kind LIKE 'cfo:%'))"
 }
 
 // expWhere — условия отбора (ТЗ §7.1) и их аргументы.
@@ -492,6 +495,26 @@ func nullID(id int64) any {
 		return nil
 	}
 	return id
+}
+
+// Groups - фактические группы PL экземпляра (по строкам, без строк продаж и маржи), по алфавиту.
+func (s *expRepo) Groups(ctx context.Context, instanceID int64) ([]string, error) {
+	rs, err := s.pool.Query(ctx, `SELECT DISTINCT group_pl FROM exp_row WHERE instance_id = $1 AND `+expNotSalesRowSQL("")+` ORDER BY group_pl`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rs.Close()
+	var out []string
+	for rs.Next() {
+		var g string
+		if err := rs.Scan(&g); err != nil {
+			return nil, err
+		}
+		if g != "" {
+			out = append(out, g)
+		}
+	}
+	return out, rs.Err()
 }
 
 // GroupOrder — порядок групп PL из справочника dir_pl_group (ответ 36 от

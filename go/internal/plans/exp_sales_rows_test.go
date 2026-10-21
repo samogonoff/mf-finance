@@ -217,4 +217,41 @@ func TestExpRepo_HidesSalesRowsOnRead_PG(t *testing.T) {
 	if len(totals) != 1 {
 		t.Errorf("в итогах групп только расходные группы: %v", totals)
 	}
+	// Список групп для фильтра - фактические группы формы без продаж и маржи.
+	groups, err := repo.Groups(ctx, inst.ID)
+	if err != nil || len(groups) != 1 || groups[0] != "Заработная плата" {
+		t.Errorf("группы формы: %v, %v", groups, err)
+	}
+	// Фильтр по новой группе находит строку.
+	if rows, total, err := repo.Rows(ctx, inst.ID, ExpFilter{GroupPL: "Заработная плата"}); err != nil || total != 1 || len(rows) != 1 {
+		t.Errorf("фильтр по группе GroupPL_new: %d %v", total, err)
+	}
+
+	// Формы отделов (cfo:N) строки продаж и маржи загружают сознательно: у них фильтр чтения не действует.
+	cfoCard, err := NewCardStore(pool).EnsureCard(ctx, Card{PlID: pl, FormCode: TemplateExp, ScopeKey: "CFO-31-BY", Country: "BY", Currency: "BYN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfoInst, err := repo.EnsureInstance(ctx, ExpInstance{CardID: cfoCard.ID, FormKind: CfoExpKind(CfoExp31), Country: "BY", PlanYear: 2093, Currency: "BYN"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SyncRows(ctx, cfoInst.ID, []ExpRow{
+		{CodeCFO: 31, CodePL: 24, GroupPL: "Заработная плата", Expense: "ЗП"},
+		{CodeCFO: 31, CodePL: 1002, GroupPL: "ПРОДАЖИ", Expense: "Продажи"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, cfoTotal, err := repo.Rows(ctx, cfoInst.ID, ExpFilter{}); err != nil || cfoTotal != 2 {
+		t.Errorf("форма отдела должна показывать обе строки: %d %v", cfoTotal, err)
+	}
+}
+
+// Группы формы: новые названия (GroupPL_new) идут в порядке листов Excel, остальные — по алфавиту после них.
+func TestOrderGroups_NewNamesFollowExcelOrder(t *testing.T) {
+	got := orderGroups([]string{"Банковские расходы", "Яблоки", "Аренда", "Заработная плата", "ВЫПЛАТЫ РАБОТНИКАМ", "Амортизация"}, ExpGroupOrder(ExpKindRetail))
+	want := []string{"Заработная плата", "Аренда", "Банковские расходы", "Амортизация", "ВЫПЛАТЫ РАБОТНИКАМ", "Яблоки"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("порядок групп:\n got  %v\n want %v", got, want)
+	}
 }
