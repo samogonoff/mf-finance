@@ -506,6 +506,52 @@ func TestLeApproval_LockDoesNotStarvePool_PG(t *testing.T) {
 	}
 }
 
+// Терпеливая блокировка (хук возврата этапа) ждёт держателя, пока жив ctx, и прерывается только его отменой.
+func TestLeApproval_LockPatientWaitsForHolder_PG(t *testing.T) {
+	dsn := os.Getenv("PLANS_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("PLANS_TEST_PG_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	repo := NewLeApprovalRepo(pool)
+	const pl = 987655
+	unlock, err := repo.Lock(ctx, pl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Отмена ctx прерывает ожидание.
+	short, stop := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer stop()
+	if _, err := repo.LockPatient(short, pl); err == nil {
+		t.Fatal("ожидание при занятом локе должно прерываться отменой ctx")
+	}
+	// После освобождения лок достаётся.
+	got := make(chan error, 1)
+	go func() {
+		u, err := repo.LockPatient(ctx, pl)
+		if err == nil {
+			u()
+		}
+		got <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	unlock()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatalf("лок не получен после освобождения: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("терпеливое ожидание не получило освободившийся лок")
+	}
+}
+
 // Корректировка итога идёт под блокировкой периода: пока период занят (например, согласующий завершает этап), она ждёт.
 func TestLeApproval_AdjustWaitsForPeriodLock_PG(t *testing.T) {
 	f := leFlowFixture(t)

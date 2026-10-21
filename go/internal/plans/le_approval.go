@@ -66,6 +66,9 @@ type LeApprovalRepo interface {
 	// Lock берёт блокировку периода на время операции согласования: решения и завершение этапов по одному периоду идут по одному
 	// (иначе два согласующих, решающих одновременно, оба завершили бы этап). unlock обязателен.
 	Lock(ctx context.Context, plID int64) (unlock func(), err error)
+	// LockPatient — та же блокировка, но ждёт без ограничения по времени (только до отмены ctx): для действий, которые уже
+	// записаны и должны довести дело до конца (снятие согласий после ручного возврата этапа).
+	LockPatient(ctx context.Context, plID int64) (unlock func(), err error)
 	// OpenPeriods — периоды, у которых завершён этап 1.6 (кандидаты на завершение этапов 3 и 4).
 	OpenPeriods(ctx context.Context) ([]int64, error)
 }
@@ -386,7 +389,8 @@ func (s *LeApprovalService) OnStageReturn(ctx context.Context, plID int64, code,
 	if v, _ := ctx.Value(leReturnSkipKey{}).(bool); v || target == "4" {
 		return nil
 	}
-	unlock, err := s.repo.Lock(ctx, plID)
+	// Этап уже возвращён, поэтому отказ «период занят» здесь недопустим: согласия остались бы действующими. Ждём до отмены ctx.
+	unlock, err := s.repo.LockPatient(ctx, plID)
 	if err != nil {
 		return err
 	}

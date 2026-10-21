@@ -138,7 +138,17 @@ const leLockWait = 30 * time.Second
 // ожидания НЕ удерживается: ожидающие пробуют pg_try_advisory_lock и между попытками возвращают соединение, иначе при
 // нескольких согласующих пул заканчивался бы (держатель лока тоже ходит в БД другими соединениями) и вставал весь API.
 func (r *pgLeApproval) Lock(ctx context.Context, plID int64) (func(), error) {
-	deadline := time.Now().Add(leLockWait)
+	return r.lock(ctx, plID, leLockWait)
+}
+
+// LockPatient — Lock без предела ожидания: прерывается только отменой ctx.
+func (r *pgLeApproval) LockPatient(ctx context.Context, plID int64) (func(), error) {
+	return r.lock(ctx, plID, 0)
+}
+
+// lock: wait <= 0 — ждать до отмены ctx.
+func (r *pgLeApproval) lock(ctx context.Context, plID int64, wait time.Duration) (func(), error) {
+	deadline := time.Now().Add(wait)
 	for {
 		conn, err := r.pool.Acquire(ctx)
 		if err != nil {
@@ -164,7 +174,7 @@ func (r *pgLeApproval) Lock(ctx context.Context, plID int64) (func(), error) {
 			}, nil
 		}
 		conn.Release()
-		if time.Now().After(deadline) {
+		if wait > 0 && time.Now().After(deadline) {
 			return nil, errors.New("период обрабатывается другим пользователем: повторите через несколько секунд")
 		}
 		select {
