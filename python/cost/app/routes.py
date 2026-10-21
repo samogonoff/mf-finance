@@ -15,7 +15,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app import articul_replace, commercial, fot, fot_insights, fot_pptx, insight_agent, insights, llm_settings, margin, mocks, multipack, purchase, reg713
+from app import articul_replace, commercial, fot, fot_insights, fot_pptx, insight_agent, insights, llm_settings, margin, mocks, multipack, pfkss, purchase, reg713
 from app.db import (acquire, aggregate_plan_decors, aggregate_plan_materials, apply_plan_price_set, delete_plan_price_set, get_plan_price_set, list_plan_price_sets, save_plan_price_set, unapply_plan_price_set, add_mp_constants, apply_pending_changes, call_calc_sign_procedure, clear_pending_changes, clear_pending_changes_by_user, compute_mp_price, fetch_gpartner_internal_rate, fetch_gpartner_planned, fetch_olap_changes, get_cache_status, get_dwh_conn, get_gpartner_conn, get_latest_mp_constants, get_margin_targets, get_mssql_conn, get_olap_conn, get_pending_changes, get_pending_filter_options, list_mp_constants, load_cost_data_to_cache, pool, refresh_in_progress, acquire_or_reclaim_refresh_lock, save_margin_targets, upsert_pending_change, upsert_pending_changes_batch, checkout_calculation, save_version_draft, submit_version, approve_version, reject_version, get_active_version, delete_version, archive_versions_by_key, get_version_info, get_calc_state, reset_price_fields, delete_pending_by_key, delete_dwh_record, save_approval, save_approvals_batch, revoke_approval, revoke_approvals_batch, get_approval_status, get_raw_cache_rows, fetch_modeli_folders, fetch_models_catalog, list_versions, get_version_rows, create_version, get_prev_stage_prices, get_max_calc_cost, get_user_table_prefs, save_user_table_prefs, get_price_draft, upsert_price_draft_items, delete_price_draft, PRICE_DRAFT_MAX_ROWS, get_reopened_keys, reopen_dwh_calculation, reopen_dwh_calculations_batch, revoke_dwh_reopen, list_dwh_reopens, get_price_history, backfill_price_history_from_olap, create_manual_calc, list_manual_calcs, delete_manual_calc, CALC_SIGN_COPY_ALLOWED, row_comments_for, set_row_comment, DECOR_TYPES)
 from app.logship import log
 from app.db import get_source_change_flags
@@ -4652,6 +4652,131 @@ async def purchase_invoice_delete(inv_id: int, _: str | None = Depends(_PURCHASE
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"ok": True}
+
+
+@router.get("/plan-tasks")
+async def get_plan_tasks(
+    request: Request, _: str = Depends(_require_perm("cost:view"))
+) -> list[dict]:
+    """Задания плана для ручной подстановки в ПФКСС (664398, 21.10).
+
+    Тот же список, по которому бэкенд валидирует override-задание при
+    создании ПФКСС. Пустой или несуществующий план — пустой список,
+    не ошибка.
+    """
+    plan_id = (request.query_params.get("plan_id") or "").strip()
+    if _is_mock():
+        # Заглушка inline, как у /create-pfkss-from-source (mocks.py не
+        # трогаем): без живой базы список фиктивный, контракт тот же.
+        return [
+            {"task_number": "М26.7.3403", "calc_count": 2},
+            {"task_number": "М26.10.111", "calc_count": 1},
+        ] if plan_id else []
+    async with pool().acquire() as conn:
+        return await pfkss.get_plan_tasks(conn, plan_id)
+
+
+@router.post("/create-pfkss-from-source")
+async def create_pfkss_from_source(
+    payload: dict, user: str | None = Depends(_PURCHASE_EDIT)
+) -> dict:
+    """Создать калькуляцию ПФКСС копией плановой КПСС/ПКПСС (задача 664398).
+
+    Право — как у применения инвойса (создания ПФКСС по приходу), новое не
+    заводим. Тело — та же идентификация калькуляции, что у /raw-rows: model,
+    articul, calc_sign (КПСС или ПКПСС), plan_id, task_number, date. Дубль
+    ПФКСС с этим ключом — 409, носки (ЧНИ) — 400. План и задание переносятся
+    из исходника как есть; при пустых план/задание исходника их можно
+    подставить вручную: override_plan_id (+ опционально override_task_number
+    из заданий этого плана) — задание без плана или не из плана — 400.
+    """
+    if _is_mock():
+        # Заглушка, как у /calc-sign-copy: без живой базы записи нет,
+        # но контракт ответа тот же.
+        return {"success": True, "mock": True, "rows": 0, "batch_id": None,
+                "calc_sign": pfkss.PFKSS_CALC_SIGN, "plan_id": None,
+                "task_number": None,
+                "message": "заглушка: в mock-режиме записи нет"}
+    try:
+        result = await pfkss.create_pfkss_from_source(
+            model=str(payload.get("model") or ""),
+            articul=str(payload.get("articul") or ""),
+            plan_id=str(payload.get("plan_id") or ""),
+            calc_sign=str(payload.get("calc_sign") or ""),
+            task_number=str(payload.get("task_number") or ""),
+            calc_date=str(payload.get("date") or ""),
+            username=(user or "system").strip() or "system",
+            override_plan_id=str(payload.get("override_plan_id") or ""),
+            override_task_number=str(payload.get("override_task_number") or ""),
+        )
+    except pfkss.PfkssAlreadyExists as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"success": True, **result}
+
+
+@router.get("/pfkss-manual-info")
+async def pfkss_manual_info(
+    request: Request, _: str = Depends(_require_perm("cost:view"))
+) -> dict:
+    """Создана ли ПФКСС в вебе (664398, переделка 21.10).
+
+    По ключу строки (модель, артикул, план, задание) — есть ли строки с
+    признаком ПФКСС в cost_manual_calc. Фронт по этому решает, показывать
+    ли в окне «Исходные строки» блок правки плана/задания: править можно
+    только калькуляции, созданные приложением.
+    """
+    model = (request.query_params.get("model") or "").strip()
+    articul = (request.query_params.get("articul") or "").strip()
+    if not model or not articul:
+        raise HTTPException(400, "model and articul are required")
+    if _is_mock():
+        # Заглушка inline (mocks.py не трогаем): без живой базы записи нет,
+        # но контракт тот же — фронт в моке покажет блок правки.
+        return {"is_manual": True}
+    async with pool().acquire() as conn:
+        is_manual = await pfkss.is_manual_pfkss(
+            conn, model, articul,
+            (request.query_params.get("plan_id") or "").strip(),
+            (request.query_params.get("task_number") or "").strip(),
+        )
+    return {"is_manual": is_manual}
+
+
+@router.post("/pfkss-update-plan")
+async def pfkss_update_plan(
+    payload: dict, user: str | None = Depends(_PURCHASE_EDIT)
+) -> dict:
+    """Переписать план/задание созданной в вебе ПФКСС (664398, переделка).
+
+    Право — как у /create-pfkss-from-source. Тело: model, articul,
+    current_plan_id, current_task_number (ключ открытой строки окна),
+    new_plan_id, new_task_number. План пустой или «0» — 400; задание не
+    из нового плана — 400; ПФКСС не из веба — 400; под новым ключом уже
+    другая ПФКСС — 409.
+    """
+    if _is_mock():
+        # Заглушка, как у /create-pfkss-from-source: без живой базы записи
+        # нет, но контракт ответа тот же.
+        return {"success": True, "mock": True, "rows": 0,
+                "plan_id": None, "task_number": None,
+                "message": "заглушка: в mock-режиме записи нет"}
+    try:
+        result = await pfkss.update_pfkss_plan(
+            model=str(payload.get("model") or ""),
+            articul=str(payload.get("articul") or ""),
+            current_plan_id=str(payload.get("current_plan_id") or ""),
+            current_task_number=str(payload.get("current_task_number") or ""),
+            new_plan_id=str(payload.get("new_plan_id") or ""),
+            new_task_number=str(payload.get("new_task_number") or ""),
+            username=(user or "system").strip() or "system",
+        )
+    except pfkss.PfkssAlreadyExists as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"success": True, **result}
 
 
 # ── Справочник моделей (Gpartner S_MODELI) ───────────────────────────────────

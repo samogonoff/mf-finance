@@ -1207,8 +1207,68 @@
                     @click="exportRawRowsToExcel">
               <Icon name="lucide:download" /> Экспорт в Excel
             </button>
+            <!-- 664398: экономист при замене артикула раньше строил ПФКСС из плановой
+                 калькуляции руками. Кнопка — только для КПСС/ПКПСС и не для ЧНИ.
+                 План/задание исходника переносятся как есть (пустые — пустыми);
+                 поправить их можно затем в самой созданной ПФКСС — блок ниже. -->
+            <button v-if="canCreatePfkss" class="btn btn-ghost btn-sm"
+                    :disabled="pfkssBusy || rawRowsLoading"
+                    title="Создать новую калькуляцию ПФКСС копией строк этой плановой (задача 664398)"
+                    @click="createPfkssFromSource">
+              <Icon name="lucide:copy-plus" /> {{ pfkssBusy ? 'Создание…' : 'Создать ПФКСС на основании' }}
+            </button>
             <button class="modal-close" @click="showRawRowsModal = false">×</button>
           </div>
+        </div>
+        <div v-if="pfkssError" class="cost-error" style="margin:var(--sp-3) var(--sp-5);flex-shrink:0">
+          <Icon name="lucide:alert-triangle" />
+          <div>
+            <strong>{{ pfkssErrorTitle }}</strong>
+            <p>{{ pfkssError }}</p>
+          </div>
+          <button class="cost-error-x" @click="pfkssError = ''" aria-label="Закрыть">×</button>
+        </div>
+        <!-- 664398 (переделка 21.10): план и задание правятся в САМОЙ
+             созданной ПФКСС, а не при создании из основания. Блок — только
+             для ПФКСС, созданных в вебе (строки в cost_manual_calc — их
+             показывает /pfkss-manual-info): править плановые исходники и
+             ПФКСС по приходу приложение не может. -->
+        <div v-if="pfkssManual" class="raw-rows-banner pfkss-manual">
+          <strong>План и задание этой ПФКСС</strong>
+          <span class="pfkss-manual-hint">
+            ПФКСС создана в вебе — её план и задание можно поправить (значения
+            смотрят в ПФКСС первоначального артикула, автопоиска нет). Задание
+            можно оставить пустым: ПФКСС останется с планом без задания.
+          </span>
+          <div class="pfkss-manual-grid">
+            <div class="pfkss-manual-field">
+              <label>План *</label>
+              <CostMultiSelect
+                v-model="pfkssPlanSel"
+                :options="filterOptions['plan_id'] || []"
+                placeholder="Выберите план"
+                @change="onPfkssPlanPick"
+              />
+            </div>
+            <div class="pfkss-manual-field">
+              <label>Задание</label>
+              <CostMultiSelect
+                v-model="pfkssTaskSel"
+                :options="pfkssTaskOptions"
+                :disabled="!pfkssPlanSel.length"
+                :placeholder="!pfkssPlanSel.length
+                  ? 'Сначала выберите план'
+                  : (pfkssPlanTasksLoading ? 'Загрузка заданий…' : 'Без задания')"
+                @change="onPfkssTaskPick"
+              />
+            </div>
+          </div>
+          <button class="btn btn-primary btn-sm"
+                  :disabled="pfkssSaving || !pfkssPlanSel.length || pfkssPlanUnchanged"
+                  title="Сохранить новый план и задание для этой ПФКСС (задание можно оставить пустым)"
+                  @click="savePfkssPlan">
+            <Icon name="lucide:save" /> {{ pfkssSaving ? 'Сохранение…' : 'Сохранить план и задание' }}
+          </button>
         </div>
         <div class="raw-rows-banner" v-if="rawRowsData.length">
           <strong>Фильтры:</strong>
@@ -5208,7 +5268,217 @@ async function openRawRows(row: any) {
   detailsAggregatedRow.value = row;
   showRawRowsModal.value = true;
   lastError.value = '';
+  pfkssError.value = '';
+  resetPfkssForm();
+  void checkPfkssManual();
   await loadRawRows();
+}
+
+// ── ПФКСС (664398): создание на основании + правка плана/задания ───────────
+const pfkssBusy = ref(false);
+const pfkssError = ref('');
+/** Заголовок блока ошибок зависит от операции (создание vs правка плана). */
+const pfkssErrorTitle = ref('ПФКСС не создана');
+
+/** Правка плана/задания — в самой ПФКСС (переделка 21.10): CostMultiSelect —
+ * мультивыбор, а тут нужно ровно одно значение, поэтому держим массив
+ * длиной 0/1 и при повторном выборе оставляем последний. */
+const pfkssPlanSel = ref<string[]>([]);
+const pfkssTaskSel = ref<string[]>([]);
+const pfkssPlanTasks = ref<{ task_number: string; calc_count: number }[]>([]);
+const pfkssPlanTasksLoading = ref(false);
+
+/** Строка — созданная в вебе ПФКСС (is_manual из /pfkss-manual-info):
+ * показываем блок правки плана/задания только для неё. */
+const pfkssManual = ref(false);
+const pfkssSaving = ref(false);
+
+/** Задания выбранного плана с числом калькуляций — подпись в селекте. */
+const pfkssTaskOptions = computed(() =>
+  pfkssPlanTasks.value.map((t) => ({
+    value: t.task_number,
+    label: t.task_number,
+    description: `калькуляций: ${t.calc_count}`,
+  }))
+);
+
+/** Выбор плана: держим одиночное значение, грузим задания плана. */
+async function onPfkssPlanPick() {
+  if (pfkssPlanSel.value.length > 1) {
+    pfkssPlanSel.value = [pfkssPlanSel.value[pfkssPlanSel.value.length - 1]];
+  }
+  pfkssTaskSel.value = [];
+  pfkssPlanTasks.value = [];
+  const plan = pfkssPlanSel.value[0];
+  if (!plan) return;
+  pfkssPlanTasksLoading.value = true;
+  try {
+    const res = await $fetch<any>(
+      `${apiBase.value}/api/cost/plan-tasks?plan_id=${encodeURIComponent(plan)}`,
+      { headers: fetchHeaders.value }
+    );
+    pfkssPlanTasks.value = res || [];
+  } catch (e: any) {
+    pfkssError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    pfkssPlanTasksLoading.value = false;
+  }
+}
+
+function onPfkssTaskPick() {
+  if (pfkssTaskSel.value.length > 1) {
+    pfkssTaskSel.value = [pfkssTaskSel.value[pfkssTaskSel.value.length - 1]];
+  }
+}
+
+/** Сброс полей при открытии окна: план предвыбираем текущим (кроме «0» —
+ * технического «нет плана», заданий у плана 0 нет — выбор за экономистом).
+ * Задания грузятся позже, когда блок правки подтвердится (is_manual). */
+function resetPfkssForm() {
+  const plan = String(detailsAggregatedRow.value?.['PLAN_ID'] ?? '').trim();
+  pfkssPlanSel.value = plan && plan !== '0' ? [plan] : [];
+  pfkssTaskSel.value = [];
+  pfkssPlanTasks.value = [];
+}
+
+/** Тихо спросить, создана ли эта ПФКСС в вебе: блок правки — только для
+ * «своих» калькуляций (переделка 21.10). Ошибка запроса окну не мешает —
+ * блок просто не появится. */
+async function checkPfkssManual() {
+  pfkssManual.value = false;
+  const row = detailsAggregatedRow.value;
+  const sign = String(row?.['Признак калькуляции'] ?? '').trim();
+  if (sign !== 'ПФКСС') return;
+  if (!(can('cost:edit_materials') || can('cost:approve') || can('cost:admin'))) return;
+  try {
+    const res = await $fetch<{ is_manual: boolean }>(
+      `${apiBase.value}/api/cost/pfkss-manual-info`,
+      {
+        params: {
+          model: row['Модель'],
+          articul: row['Артикул'],
+          plan_id: String(row['PLAN_ID'] ?? '').trim(),
+          task_number: String(row['Номер задания производства'] ?? '').trim(),
+        },
+        headers: fetchHeaders.value,
+      }
+    );
+    pfkssManual.value = !!res?.is_manual;
+    if (pfkssManual.value && pfkssPlanSel.value.length) {
+      // Задания предвыбранного плана; текущее задание предвыбираем, если
+      // оно в списке (нет — селект остаётся пустым, «Без задания»).
+      const curTask = String(row['Номер задания производства'] ?? '').trim();
+      await onPfkssPlanPick();
+      if (curTask && pfkssPlanTasks.value.some((t) => t.task_number === curTask)) {
+        pfkssTaskSel.value = [curTask];
+      }
+    }
+  } catch (e: any) {
+    console.debug('[cost] pfkss-manual-info failed', e);
+  }
+}
+
+/** Кнопка сохранения неактивна, пока значения совпадают с текущими:
+ * предвыбор уже показывает их — «сохранить» нечего. */
+const pfkssPlanUnchanged = computed(() => {
+  const row = detailsAggregatedRow.value;
+  return (pfkssPlanSel.value[0] || '') === String(row?.['PLAN_ID'] ?? '').trim()
+    && (pfkssTaskSel.value[0] || '') === String(row?.['Номер задания производства'] ?? '').trim();
+});
+
+/** confirm → POST /pfkss-update-plan. Успех: окно закрывается, таблица
+ * перезагружается; ошибки (400/409) — в блок ошибок этого же окна. */
+async function savePfkssPlan() {
+  const row = detailsAggregatedRow.value;
+  if (!row || pfkssSaving.value) return;
+  const curPlan = String(row['PLAN_ID'] ?? '').trim();
+  const curTask = String(row['Номер задания производства'] ?? '').trim();
+  const newPlan = pfkssPlanSel.value[0] || '';
+  const newTask = pfkssTaskSel.value[0] || '';
+  if (!newPlan) return;
+  if (!confirm(`Изменить план и задание этой ПФКСС?\nплан: ${curPlan || '—'} → ${newPlan}, задание: ${curTask || '—'} → ${newTask || '—'}.`)) return;
+  pfkssSaving.value = true;
+  pfkssError.value = '';
+  pfkssErrorTitle.value = 'План и задание не сохранены';
+  peoBulkStatus.value = '';
+  try {
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/pfkss-update-plan`, {
+      method: 'POST',
+      headers: fetchHeaders.value,
+      body: {
+        model: row['Модель'],
+        articul: row['Артикул'],
+        current_plan_id: curPlan,
+        current_task_number: curTask,
+        new_plan_id: newPlan,
+        new_task_number: newTask,
+      },
+    });
+    showRawRowsModal.value = false;
+    // Сообщение — ПОСЛЕ перезагрузки, как у /calc-sign-copy: loadData() чистит
+    // статусные строки, и успех был бы тихим.
+    await loadData();
+    peoBulkStatus.value = `План и задание ПФКСС обновлены: строк ${resp?.rows ?? '—'} (план ${resp?.plan_id || '—'}, задание ${resp?.task_number || '—'})`;
+  } catch (e: any) {
+    pfkssError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    pfkssSaving.value = false;
+  }
+}
+
+/** Кнопка видна только у КПСС/ПКПСС вне ЧНИ и с правом инвойсных операций —
+ * то же проверяет сервер (право, признак, Level 01 строк). */
+const canCreatePfkss = computed(() => {
+  const row = detailsAggregatedRow.value;
+  const sign = String(row?.['Признак калькуляции'] ?? '').trim();
+  return (sign === 'КПСС' || sign === 'ПКПСС')
+    && !isChniRow(row)
+    && (can('cost:edit_materials') || can('cost:approve') || can('cost:admin'));
+});
+
+/** Подтверждение с суммаризацией, затем POST /create-pfkss-from-source.
+ * Успех: окно закрывается, таблица перезагружается. Ошибку (409 дубль, 400
+ * ЧНИ и прочее) показываем в этом же окне — пользователь не теряет контекст.
+ * План/задание исходника переносятся как есть (пустые — пустыми): правка
+ * плана/задания — в самой созданной ПФКСС, блок выше. */
+async function createPfkssFromSource() {
+  const row = detailsAggregatedRow.value;
+  if (!row || pfkssBusy.value) return;
+  const plan = String(row['PLAN_ID'] ?? '').trim();
+  const task = String(row['Номер задания производства'] ?? '').trim();
+  const rowsText = rawRowsData.value.length
+    ? `скопируется строк: ${rawRowsData.value.length}`
+    : 'строки скопируются целиком';
+  const planText = plan ? `план ${plan} — перенесётся` : 'план — останется пустым';
+  const taskText = task ? `задание ${task} — перенесётся` : 'задание — останется пустым';
+  if (!confirm(`Создать калькуляцию ПФКСС на основании этой плановой?\n${rowsText}, ${planText}, ${taskText}.`)) return;
+  pfkssBusy.value = true;
+  pfkssError.value = '';
+  pfkssErrorTitle.value = 'ПФКСС не создана';
+  peoBulkStatus.value = '';
+  try {
+    const resp: any = await $fetch(`${apiBase.value}/api/cost/create-pfkss-from-source`, {
+      method: 'POST',
+      headers: fetchHeaders.value,
+      body: {
+        model: row['Модель'],
+        articul: row['Артикул'],
+        calc_sign: row['Признак калькуляции'],
+        plan_id: plan,
+        task_number: task,
+        date: (row['дата расчета'] ?? '').toString().split('T')[0],
+      },
+    });
+    showRawRowsModal.value = false;
+    // Сообщение — ПОСЛЕ перезагрузки, как у /calc-sign-copy: loadData() чистит
+    // статусные строки, и успех был бы тихим.
+    await loadData();
+    peoBulkStatus.value = `Создана калькуляция ПФКСС: строк ${resp?.rows ?? '—'} (план ${resp?.plan_id || '—'}, задание ${resp?.task_number || '—'})`;
+  } catch (e: any) {
+    pfkssError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    pfkssBusy.value = false;
+  }
 }
 
 /** Переключить режим детализации и перезагрузить данные. */
@@ -11489,6 +11759,23 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   margin-left: auto;
   color: var(--text-muted);
   font-weight: var(--fw-medium);
+}
+/* Правка плана/задания ПФКСС (664398, переделка 21.10): та же полоса-баннер,
+   но вертикальная, с двумя полями; hint — пояснение, зачем это окно появилось. */
+.pfkss-manual { flex-direction: column; align-items: stretch; gap: var(--sp-2); }
+.pfkss-manual-hint { color: var(--text-muted); font-size: var(--fs-xs); }
+.pfkss-manual-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(180px, 260px);
+  gap: var(--sp-3);
+}
+.pfkss-manual-field { display: flex; flex-direction: column; gap: 4px; }
+.pfkss-manual-field label {
+  font-size: var(--fs-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: var(--fw-semibold);
 }
 .raw-rows-table-wrap {
   overflow: auto;
