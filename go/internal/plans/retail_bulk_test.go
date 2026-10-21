@@ -511,11 +511,12 @@ func TestBulk_BudgetingScenariosAndMissingBase(t *testing.T) {
 	}
 }
 
-func TestBulkMultiplierRequiresOneMonthAndFiniteNumber(t *testing.T) {
+func TestBulkMultiplierRequiresFiniteNumber(t *testing.T) {
 	ctx := bulkCtx([]RetailRow{{CodeCFO: 100, LFLEffective: LFLYes}}, NewRetailSeries(), nil)
 	base := RetailBulkRequest{Op: BulkCopyScenario, Scope: BulkScopeAll, Source: CopyFromStrategy,
 		Coefficient: 1.1, CoefficientSet: true, Months: []int{7, 8}}
-	if _, err := ApplyRetailBulk(base, ctx); err == nil || err.Error() != "копирование сценария применяется к одному выбранному месяцу" {
+	// Несколько целевых месяцев допустимы (до конца года): ошибка здесь — только про пустой источник, не про число месяцев.
+	if _, err := ApplyRetailBulk(base, ctx); err == nil || !strings.Contains(err.Error(), "нет данных за выбранный период (07–08.2026)") {
 		t.Errorf("два месяца: %v", err)
 	}
 	base.Months = []int{7}
@@ -590,5 +591,57 @@ func TestBulk_PayrollAndRentMovedOutOfSalesForm(t *testing.T) {
 		if err == nil {
 			t.Fatalf("операция %q обязана быть закрыта в форме продаж", op)
 		}
+	}
+}
+
+// Откуда копируем: год и месяц источника. Без них — тот же месяц (помесячно); с заданным месяцем он копируется во все
+// целевые месяцы; год источника у факта по умолчанию прошлый, но выбирается.
+func TestBulk_CopyScenarioSourceYearAndMonth(t *testing.T) {
+	ser := NewRetailSeries()
+	ser.AddFact([]RetailFactCell{
+		{CodeCFO: 100, Year: 2025, Month: 7, Amount: 100},
+		{CodeCFO: 100, Year: 2025, Month: 8, Amount: 200},
+		{CodeCFO: 100, Year: 2026, Month: 3, Amount: 50},
+	})
+	rows := []RetailRow{{CodeCFO: 100, LFLEffective: LFLYes}}
+	run := func(req RetailBulkRequest) (RetailBulkResult, error) {
+		req.Op, req.Scope, req.Source, req.Preview = BulkCopyScenario, BulkScopeAll, CopyFromFact, true
+		return ApplyRetailBulk(req, bulkCtx(rows, ser, nil))
+	}
+	after := func(res RetailBulkResult) map[int]float64 {
+		m := map[int]float64{}
+		for _, d := range res.Diff {
+			m[d.Month] = d.After
+		}
+		return m
+	}
+
+	// По умолчанию: каждый целевой месяц ← тот же месяц прошлого года.
+	res, err := run(RetailBulkRequest{Months: []int{7, 8}})
+	if err != nil || len(res.Diff) != 2 || after(res)[7] != 100 || after(res)[8] != 200 {
+		t.Fatalf("помесячно: %+v, %v", after(res), err)
+	}
+	// Месяц источника задан: июль прошлого года — во все целевые месяцы до конца года.
+	res, err = run(RetailBulkRequest{Months: []int{8, 9, 10}, SourceMonth: 7})
+	if err != nil || len(res.Diff) != 3 || after(res)[8] != 100 || after(res)[9] != 100 || after(res)[10] != 100 {
+		t.Fatalf("июль → август–октябрь: %+v, %v", after(res), err)
+	}
+	// Год источника: факт текущего года (март 2026) — в июль и август.
+	res, err = run(RetailBulkRequest{Months: []int{7, 8}, SourceYear: 2026, SourceMonth: 3})
+	if err != nil || len(res.Diff) != 2 || after(res)[7] != 50 || after(res)[8] != 50 {
+		t.Fatalf("март 2026 → июль–август: %+v, %v", after(res), err)
+	}
+	// Год вне диапазона и месяц вне 0–12 — понятные ошибки.
+	if _, err := run(RetailBulkRequest{Months: []int{7}, SourceYear: 2023}); err == nil || !strings.Contains(err.Error(), "год источника 2023 вне допустимого диапазона") {
+		t.Errorf("год 2023: %v", err)
+	}
+	for _, bad := range []int{-1, 13} {
+		if _, err := run(RetailBulkRequest{Months: []int{7}, SourceMonth: bad}); err == nil || !strings.Contains(err.Error(), "месяц источника") {
+			t.Errorf("месяц источника %d: %v", bad, err)
+		}
+	}
+	// Нет базы в выбранном месяце источника — явная ошибка, как и раньше.
+	if _, err := run(RetailBulkRequest{Months: []int{7}, SourceMonth: 11}); err == nil || !strings.Contains(err.Error(), "нет данных за выбранный период") {
+		t.Errorf("пустой месяц источника: %v", err)
 	}
 }
