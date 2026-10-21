@@ -39,56 +39,52 @@
         <NuxtLink v-if="card" :to="`/plans/exp/${card.pl_id}`" class="btn btn-ghost">
           <Icon name="lucide:arrow-left" /> К комплекту
         </NuxtLink>
-        <NuxtLink
-          :to="`/plans/exp-registry/${cardId}`"
-          class="btn btn-ghost"
-          title="Детальные таблицы ФОТ, командировок, логистики и ИТ: их итоги подставляются в статьи формы (24, 27, 30, 48, 51, 52). Если такие расходы вы вводите прямо в форме — реестры не нужны."
-        >
-          <Icon name="lucide:list-checks" /> Реестры
-        </NuxtLink>
-        <NuxtLink
-          :to="`/plans/exp-summary/${cardId}`"
-          class="btn btn-ghost"
-          title="Свод ЭТОЙ формы: план и факт по группам PL. Сравнить все четыре страны — «Свод 4 страны»."
-        >
-          <Icon name="lucide:layout-list" /> Свод формы
-        </NuxtLink>
-        <NuxtLink
-          v-if="card && (card.scope_key || '').startsWith('R-')"
-          :to="`/plans/exp-consolidated/${card.pl_id}`"
-          class="btn btn-ghost"
-          title="Расходы розницы по четырём странам в BYN: группы PL, факт для сравнения"
-        >
-          <Icon name="lucide:wallet" /> Свод 4 страны
-        </NuxtLink>
-        <NuxtLink
-          v-if="card && (card.scope_key === 'IM-BY' || card.scope_key === 'OPT')"
-          :to="`/plans/exp-consolidated/${card.pl_id}?channel=${card.scope_key === 'OPT' ? 'opt' : 'im'}`"
-          class="btn btn-ghost"
-          :title="card.scope_key === 'OPT' ? 'Расходы опта по странам РБ, РФ, УЗ в BYN: группы PL, факт для сравнения' : 'Расходы интернет-магазина в BYN: группы PL, факт для сравнения'"
-        >
-          <Icon name="lucide:wallet" /> {{ card.scope_key === "OPT" ? "Свод опта" : "Свод ИМ" }}
-        </NuxtLink>
-        <button class="btn btn-sm btn-ghost" @click="columnsOpen = !columnsOpen">
-          <Icon name="lucide:columns-3" /> Колонки
-        </button>
-        <a class="btn btn-sm btn-ghost" :href="exportHref" target="_blank" rel="noopener">
-          <Icon name="lucide:download" /> Экспорт
-        </a>
-        <button v-if="editable" class="btn btn-sm btn-ghost" :disabled="syncRunning" title="Перечитать состав строк и факт из источника затрат (OLAP). Процедура работает несколько минут." @click="runSync">
-          <Icon name="lucide:refresh-cw" :class="{ spin: syncRunning }" /> Обновить из источника
-        </button>
-        <button
-          class="btn btn-sm btn-ghost"
-          :disabled="busy"
-          title="Скачать пример .xlsx: колонки-ключи (код ЦФО и код статьи), месяцы плана и одна строка вашей формы. Заполните месяцы и загрузите файл кнопкой «Импорт»."
-          @click="downloadImportTemplate"
-        >
-          <Icon name="lucide:file-down" /> Пример импорта
-        </button>
-        <button class="btn btn-sm btn-ghost" :disabled="!editable" @click="importInput?.click()">
-          <Icon name="lucide:upload" /> Импорт
-        </button>
+        <div ref="moreRoot" class="more-menu">
+          <button class="btn btn-ghost" :aria-expanded="moreOpen" @click="moreOpen = !moreOpen">
+            <Icon name="lucide:ellipsis" /> Ещё
+          </button>
+          <div v-if="moreOpen" class="more-pop" @click="moreOpen = false">
+            <NuxtLink
+              :to="`/plans/exp-registry/${cardId}`"
+              class="more-item"
+              title="Детальные таблицы ФОТ, командировок, логистики и ИТ: их итоги подставляются в статьи формы (24, 27, 30, 48, 51, 52). Если такие расходы вы вводите прямо в форме — реестры не нужны."
+            ><Icon name="lucide:list-checks" /> Реестры</NuxtLink>
+            <NuxtLink
+              :to="`/plans/exp-summary/${cardId}`"
+              class="more-item"
+              title="Свод ЭТОЙ формы: план и факт по группам PL. Сравнить все четыре страны — «Свод 4 страны»."
+            ><Icon name="lucide:layout-list" /> Свод формы</NuxtLink>
+            <NuxtLink
+              v-if="card && (card.scope_key || '').startsWith('R-')"
+              :to="`/plans/exp-consolidated/${card.pl_id}`"
+              class="more-item"
+              title="Расходы розницы по четырём странам в BYN: группы PL, факт для сравнения"
+            ><Icon name="lucide:wallet" /> Свод 4 страны</NuxtLink>
+            <NuxtLink
+              v-if="card && (card.scope_key === 'IM-BY' || card.scope_key === 'OPT')"
+              :to="`/plans/exp-consolidated/${card.pl_id}?channel=${card.scope_key === 'OPT' ? 'opt' : 'im'}`"
+              class="more-item"
+              :title="card.scope_key === 'OPT' ? 'Расходы опта по странам РБ, РФ, УЗ в BYN: группы PL, факт для сравнения' : 'Расходы интернет-магазина в BYN: группы PL, факт для сравнения'"
+            ><Icon name="lucide:wallet" /> {{ card.scope_key === "OPT" ? "Свод опта" : "Свод ИМ" }}</NuxtLink>
+            <hr class="more-sep" />
+            <button class="more-item" @click="columnsOpen = !columnsOpen"><Icon name="lucide:columns-3" /> Колонки</button>
+            <a class="more-item" :href="exportHref" target="_blank" rel="noopener"><Icon name="lucide:download" /> Экспорт</a>
+            <button
+              v-if="editable"
+              class="more-item"
+              :disabled="syncRunning"
+              title="Перечитать состав строк и факт из источника затрат (OLAP). Процедура работает несколько минут."
+              @click="runSync"
+            ><Icon name="lucide:refresh-cw" :class="{ spin: syncRunning }" /> Обновить из источника</button>
+            <button
+              class="more-item"
+              :disabled="busy"
+              title="Скачать пример .xlsx: колонки-ключи (код ЦФО и код статьи), месяцы плана и одна строка вашей формы. Заполните месяцы и загрузите файл кнопкой «Импорт»."
+              @click="downloadImportTemplate"
+            ><Icon name="lucide:file-down" /> Пример импорта</button>
+            <button class="more-item" :disabled="!editable" @click="importInput?.click()"><Icon name="lucide:upload" /> Импорт</button>
+          </div>
+        </div>
         <input ref="importInput" type="file" accept=".xlsx" class="hidden-file" @change="onImportFile" />
         <button class="btn btn-sm btn-ghost" :disabled="checking" @click="check">
           <Icon name="lucide:shield-check" :class="{ spin: checking }" /> Проверить
@@ -593,6 +589,14 @@ const error = ref("");
 const note = ref("");
 // Время последнего сохранения в этой сессии и панель согласования карточки.
 const savedAt = ref("");
+// Меню «Ещё» в шапке: редкие действия и переходы, чтобы кнопки не уезжали за край экрана.
+const moreOpen = ref(false);
+const moreRoot = ref<HTMLElement | null>(null);
+const onDocClick = (e: MouseEvent) => {
+  if (moreOpen.value && moreRoot.value && !moreRoot.value.contains(e.target as Node)) moreOpen.value = false;
+};
+onMounted(() => document.addEventListener("click", onDocClick));
+onBeforeUnmount(() => document.removeEventListener("click", onDocClick));
 const processOpen = ref(false);
 const statusTone = (s: string) =>
   s === "approved" || s === "published" ? "badge-pos" : s === "returned" ? "badge-neg" : s === "on_approval" ? "badge-warn" : "badge-muted";
@@ -1378,6 +1382,12 @@ onBeforeRouteLeave(() => {
 </script>
 
 <style scoped>
+.more-menu { position: relative; }
+.more-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: var(--z-dropdown, 50); min-width: 230px; display: flex; flex-direction: column; padding: var(--sp-2); background: var(--surface, #fff); border: 1px solid var(--border); border-radius: var(--r-md, 8px); box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+.more-item { display: flex; align-items: center; gap: var(--sp-3); padding: 7px 10px; border: 0; background: none; border-radius: 6px; font-size: var(--fs-sm); color: var(--text); text-align: left; text-decoration: none; cursor: pointer; white-space: nowrap; }
+.more-item:hover:not(:disabled) { background: var(--bg-hover, rgba(0,0,0,.05)); }
+.more-item:disabled { opacity: .5; cursor: default; }
+.more-sep { border: 0; border-top: 1px solid var(--border); margin: var(--sp-2) 0; width: 100%; }
 /* Кнопок в шапке много: переносим на следующие строки, а не выталкиваем за край экрана. */
 .page-exp .page-actions { flex-wrap: wrap; flex: 1 1 100%; gap: var(--sp-2) var(--sp-3); }
 .page-exp .page-actions .btn { white-space: nowrap; }
