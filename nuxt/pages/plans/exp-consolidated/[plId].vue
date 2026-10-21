@@ -38,8 +38,12 @@
     <p v-if="data && failedCountries.length" class="banner banner-warn">
       Не удалось прочитать форму: {{ failedCountries.map((c) => `${c.country} (${c.error})`).join("; ") }}. Итог неполный.
     </p>
-    <p v-if="data?.syncing" class="banner banner-info">
+    <p v-if="data?.syncing && !pollExhausted" class="banner banner-info">
       Идёт загрузка данных из источника — таблица обновится сама. Пока показано то, что уже загружено.
+    </p>
+    <p v-else-if="data?.syncing" class="banner banner-warn">
+      Загрузка из источника идёт дольше обычного. Пока показано то, что уже загружено; обновите страницу чуть позже.
+      <button type="button" class="btn btn-sm btn-ghost" @click="load()">Обновить сейчас</button>
     </p>
     <p v-for="w in data?.warnings || []" :key="w" class="banner banner-warn">{{ w }}</p>
     <p v-if="data?.absent_channels?.length" class="banner banner-info">
@@ -249,6 +253,8 @@ let seq = 0;
 // Пока по какой-то карточке идёт загрузка из источника (свод сам её запускает), страница молча перечитывает свод.
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let polls = 0;
+// Опрос исчерпан, а загрузка всё ещё идёт: баннер перестаёт обещать автообновление.
+const pollExhausted = ref(false);
 const POLL_MS = 5000;
 const POLL_MAX = 60;
 const stopPoll = () => {
@@ -261,6 +267,7 @@ const load = async (opts?: { poll?: boolean }) => {
   if (!silent) {
     stopPoll();
     polls = 0;
+    pollExhausted.value = false;
     loading.value = true;
   }
   error.value = "";
@@ -271,6 +278,8 @@ const load = async (opts?: { poll?: boolean }) => {
       if (r.syncing && polls < POLL_MAX) {
         polls += 1;
         pollTimer = setTimeout(() => load({ poll: true }), POLL_MS);
+      } else if (r.syncing) {
+        pollExhausted.value = true;
       }
     }
   } catch (e) {
