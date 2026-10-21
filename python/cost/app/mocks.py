@@ -335,6 +335,12 @@ def aggregated(payload: dict | None = None) -> dict:
     if payload:
         rows = [r for r in rows if _match_filters(r, payload)]
     # Пересчитываем себестоимость как сумму 6 компонентов (как в детализации)
+    # Декор, наименование (666569): mock обязан рисовать ту же колонку, что бой —
+    # иначе на моке не проверить фильтр и экспорт. Наименования берём циклично из
+    # короткого набора по строкам, где декоры есть (сумма > 0); строки без
+    # декоров остаются без поля (None → фронт покажёт «—»).
+    _mock_decors = ("Печать тампонная", "Вышивка гладью", "Пластины", "Декор лиса")
+    _decor_i = 0
     for row in rows:
         row["sum_Себестоимость, руб."] = round(
             float(row.get("sum_Пошив, руб.", 0) or 0)
@@ -354,6 +360,9 @@ def aggregated(payload: dict | None = None) -> dict:
             + float(row.get("sum_Вспомогательные материалы, USD.", 0) or 0),
             2,
         )
+        if float(row.get("sum_Декоры, руб.", 0) or 0) > 0:
+            row["Декор, наименование"] = _mock_decors[_decor_i % len(_mock_decors)]
+            _decor_i += 1
     # Inject margin targets into each row
     for row in rows:
         l1 = (row.get("Level 01") or "").strip()
