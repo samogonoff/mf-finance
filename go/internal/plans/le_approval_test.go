@@ -395,6 +395,14 @@ func TestLeApproval_PolicyChangeCompletesStage_PG(t *testing.T) {
 	if got := f.stage(t, "3"); got != "completed" {
 		t.Fatalf("после смены правила этап должен завершиться, сейчас %q", got)
 	}
+	// Изменение списка согласующих после завершения не переоткрывает этап:
+	// решение уже принято, а новый маршрут применяется к следующему циклу.
+	if err := f.appr.SetApprovers(ctx, f.adminP, "3", "F", []int64{f.users[2]}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.stage(t, "3"); got != "completed" {
+		t.Fatalf("смена списка после завершения не должна переоткрывать этап: %q", got)
+	}
 }
 
 // Два согласующих решают одновременно: этап завершается один раз (одна запись согласования этапа в листе).

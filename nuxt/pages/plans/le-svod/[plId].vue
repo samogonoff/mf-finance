@@ -23,22 +23,25 @@
     <p v-if="data?.closed" class="banner banner-info">
       Период утверждён (этап 4): корректировки закрыты. Изменить итоги можно только после переоткрытия периода.
     </p>
-    <section v-if="data" class="card ready-card" :class="{ 'ready-bad': !data.ready }">
+    <section v-if="data" class="card ready-card" :class="{ 'ready-bad': appr?.stages['1.6'] !== 'completed' && !data.ready }">
       <div class="card-header">
         <span class="card-title">Готовность к этапу 1.6</span>
-        <span class="badge" :class="data.ready ? 'badge-pos' : 'badge-neg'">{{ data.ready ? "можно завершать" : "есть блокирующие замечания" }}</span>
+        <span v-if="appr?.stages['1.6'] === 'completed'" class="badge badge-pos">Согласовано</span>
+        <span v-else class="badge" :class="data.ready ? 'badge-pos' : 'badge-neg'">{{ data.ready ? "можно завершать" : "есть блокирующие замечания" }}</span>
       </div>
-      <ul v-if="data.readiness?.length" class="ready-list">
+      <ul v-if="appr?.stages['1.6'] !== 'completed' && data.readiness?.length" class="ready-list">
         <li v-for="(i, k) in data.readiness" :key="k">
           <span class="badge" :class="i.level === 'block' ? 'badge-neg' : 'badge-warn'">{{ i.level === "block" ? "блокирует" : "предупреждение" }}</span>
           {{ i.message }}
         </li>
       </ul>
-      <p v-else class="ready-ok">Все формы продаж и расходов утверждены, замечаний нет.</p>
+      <p v-else-if="appr?.stages['1.6'] !== 'completed'" class="ready-ok">Все формы продаж и расходов утверждены, замечаний нет.</p>
     </section>
 
     <!-- ===== Согласование ЮЛ (этап 3) и итоговое утверждение (этап 4) ===== -->
-    <section v-if="appr" class="card appr-card">
+    <details v-if="appr" class="card appr-card approval-fold">
+      <summary>Согласование бюджетов ЮЛ · этап 3 <span class="badge" :class="stageBadge('3')">{{ stageText('3') }}</span></summary>
+      <div class="approval-fold-body">
       <div class="card-header">
         <span class="card-title">Согласование бюджетов ЮЛ · этап 3</span>
         <span class="badge" :class="stageBadge('3')">{{ stageText("3") }}</span>
@@ -59,7 +62,7 @@
             <td>{{ sc.require_all ? "нужны все" : "достаточно одного" }}</td>
             <td>
               <span class="badge" :class="sc.satisfied ? 'badge-pos' : sc.no_approvers ? 'badge-neg' : 'badge-warn'">
-                {{ sc.satisfied ? "согласовано" : sc.no_approvers ? "нет согласующих" : "ждём" }}
+                {{ sc.satisfied ? "Согласовано" : sc.no_approvers ? "нет согласующих" : "ждём" }}
               </span>
             </td>
             <td class="appr-act">
@@ -71,9 +74,12 @@
           </tr>
         </tbody>
       </table>
-    </section>
+      </div>
+    </details>
 
-    <section v-if="appr" class="card appr-card">
+    <details v-if="appr" class="card appr-card approval-fold">
+      <summary>Итоговое утверждение · этап 4 <span class="badge" :class="stageBadge('4')">{{ stageText('4') }}</span></summary>
+      <div class="approval-fold-body">
       <div class="card-header">
         <span class="card-title">Итоговое утверждение · этап 4</span>
         <span class="badge" :class="stageBadge('4')">{{ stageText("4") }}</span>
@@ -86,7 +92,7 @@
             <td>{{ appr.stage4.require_all ? "нужны все" : "достаточно одного" }}</td>
             <td>
               <span class="badge" :class="appr.stage4.satisfied ? 'badge-pos' : appr.stage4.no_approvers ? 'badge-neg' : 'badge-warn'">
-                {{ appr.stage4.satisfied ? "утверждено" : appr.stage4.no_approvers ? "нет согласующих" : "ждём" }}
+                {{ appr.stage4.satisfied ? "Согласовано" : appr.stage4.no_approvers ? "нет согласующих" : "ждём" }}
               </span>
             </td>
             <td class="appr-act">
@@ -109,7 +115,8 @@
           </li>
         </ul>
       </details>
-    </section>
+      </div>
+    </details>
 
     <section class="card controls">
       <span class="view-lbl">Период расходов</span>
@@ -405,7 +412,7 @@ const loadAppr = async () => {
     error.value = apiError(e, "Состояние согласования не загружено");
   }
 };
-const STAGE_TEXT: Record<string, string> = { completed: "завершён", in_progress: "в работе", returned: "возвращён", pending: "ожидает" };
+const STAGE_TEXT: Record<string, string> = { completed: "Согласовано", in_progress: "в работе", returned: "возвращён", pending: "ожидает" };
 const stageText = (code: string) => STAGE_TEXT[appr.value?.stages[code] || "pending"] || "ожидает";
 const stageBadge = (code: string) => {
   const s = appr.value?.stages[code];
@@ -504,6 +511,11 @@ onMounted(() => {
 .page-lesvod { display: flex; flex-direction: column; gap: var(--sp-5); }
 .ready-card { padding-bottom: var(--sp-3); }
 .appr-card { padding-bottom: var(--sp-2); }
+.approval-fold > summary { display: flex; align-items: center; gap: var(--sp-3); cursor: pointer; list-style: none; padding: var(--sp-4); font-weight: 600; }
+.approval-fold > summary::-webkit-details-marker { display: none; }
+.approval-fold > summary::before { content: '▸'; color: var(--text-muted); }
+.approval-fold[open] > summary::before { content: '▾'; }
+.approval-fold-body { padding-top: var(--sp-1); }
 .appr-hint { margin: 0 var(--sp-4) var(--sp-2); color: var(--text-muted); font-size: var(--fs-sm); }
 .appr-act { display: flex; gap: var(--sp-2); justify-content: flex-end; }
 .appr-log { margin: var(--sp-2) var(--sp-4); font-size: var(--fs-sm); color: var(--text-secondary); }

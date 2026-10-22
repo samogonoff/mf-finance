@@ -78,7 +78,7 @@
               >
                 <div class="sc-top">
                   <span class="sc-code">{{ st.route_only ? "Шаг маршрута" : `Этап ${st.stage_code}` }}</span>
-                  <span class="badge" :class="statusBadge(st.status)">{{ statusLabel(st.status) }}</span>
+                  <span class="badge" :class="statusBadge(st.status)">{{ stageLabel(st) }}</span>
                 </div>
                 <div class="sc-name">{{ st.name }}</div>
                 <!-- Этапы 1.6, 3, 4 работают со сводом «Бюджет по ЮЛ»: заданий у них нет, поэтому вместо «0/0 заданий» — вход в свод. -->
@@ -660,6 +660,8 @@ const leOpenForms = computed(() =>
     .map((c) => `${c.title} — ${cardStatusText(c)}`));
 
 const statusLabel = (s: string) => planStatus.label(s);
+const stageLabel = (st: StageState) =>
+  isLeStage(st) && st.status === "completed" ? "Согласовано" : statusLabel(st.status);
 const statusBadge = (s: string) => planStatus.badge(s);
 
 const returnTargets = (from: string) => list.value.filter((s) => s.stage_code !== from).map((s) => ({ code: s.stage_code, name: s.name }));
