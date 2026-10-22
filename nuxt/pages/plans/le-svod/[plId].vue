@@ -53,7 +53,10 @@
       <p v-if="stage16NeedsReview" class="appr-hint">
         Этап завершён, но по некоторым каналам нет записанного согласия. Такое возможно, если период закрыли до появления согласования по каналам или список каналов изменился позже. Чтобы получить решения, верните этап 1.6 и согласуйте каналы заново.
       </p>
-      <p v-else-if="stage16ChangedApprovers" class="appr-hint">
+      <p v-if="stage16RevokedApprovals" class="appr-hint">
+        Ранее полученные согласия по некоторым каналам сняты после изменений. Этап 1.6 остался завершённым; причины снятия указаны в строках каналов.
+      </p>
+      <p v-if="stage16ChangedApprovers" class="appr-hint">
         После завершения этапа список согласующих изменился. Прежние согласия сохранены; новые назначения действуют при следующем согласовании.
       </p>
       <table class="data-table">
@@ -63,14 +66,15 @@
           <tr v-for="sc in appr.stage16" :key="sc.legal_entity">
             <td>{{ sc.legal_entity }}</td>
             <td v-if="appr.stages['1.6'] === 'completed' && !sc.satisfied">
-              <template v-if="completedChannelApproval(sc)">Ранее: {{ previousChannelApprovers(sc) }}<br></template>
+              <template v-if="channelApproval(sc)">Ранее: {{ channelApproval(sc)?.user_name || `#${channelApproval(sc)?.user_id}` }}<br></template>
               Сейчас: {{ sc.approvers.map((a) => a.user_name || `#${a.user_id}`).join(', ') || 'не назначен' }}
             </td>
             <td v-else><PlansApproverChips :scope="sc" /></td>
             <td>
-              <span class="badge" :class="sc.satisfied || completedChannelApproval(sc) ? 'badge-pos' : sc.no_approvers || stage16NeedsReview ? 'badge-neg' : 'badge-warn'">
-                {{ sc.satisfied ? "согласовано" : completedChannelApproval(sc) ? "согласовано ранее" : appr.stages['1.6'] === 'completed' ? "нет решения" : sc.no_approvers ? "нет согласующего" : "ждём" }}
+              <span class="badge" :class="sc.satisfied || completedChannelApproval(sc) ? 'badge-pos' : revokedChannelApproval(sc) ? 'badge-warn' : sc.no_approvers || stage16NeedsReview ? 'badge-neg' : 'badge-warn'">
+                {{ sc.satisfied ? "согласовано" : completedChannelApproval(sc) ? "согласовано ранее" : revokedChannelApproval(sc) ? "согласие снято" : appr.stages['1.6'] === 'completed' ? "нет решения" : sc.no_approvers ? "нет согласующего" : "ждём" }}
               </span>
+              <div v-if="revokedChannelApproval(sc)" class="appr-revoke-reason">{{ channelApproval(sc)?.revoke_reason || "Причина снятия не указана" }}</div>
             </td>
             <td class="appr-act">
               <template v-if="sc.can_decide">
@@ -339,7 +343,7 @@
 import SkeletonTable from "~/components/SkeletonTable.vue";
 import UserPicker from "~/components/plans/UserPicker.vue";
 import { MONTHS_SHORT } from "~/composables/useExpForm";
-import { useLeSvod, type LeAdjust, type LeApprovalStatus, type LeScope, type LeSvod, type LeSvodRow, type LeWindow } from "~/composables/useLeSvod";
+import { useLeSvod, type LeAdjust, type LeApprovalStatus, type LeDecision, type LeScope, type LeSvod, type LeSvodRow, type LeWindow } from "~/composables/useLeSvod";
 import { apiError } from "~/utils/apiError";
 import { num as fmtNum } from "~/utils/format";
 
@@ -483,15 +487,19 @@ const loadAppr = async () => {
   }
 };
 const STAGE_TEXT: Record<string, string> = { completed: "Согласовано", in_progress: "в работе", returned: "возвращён", pending: "ожидает" };
-const previousChannelApprovers = (scope: LeScope): string =>
-  appr.value?.decisions.filter((d) => d.stage_code === "1.6" && d.legal_entity === scope.legal_entity &&
-    d.decision === "approve" && !d.revoked).map((d) => d.user_name || `#${d.user_id}`).join(", ") || "—";
+const channelApproval = (scope: LeScope): LeDecision | undefined => {
+  const approvals = appr.value?.decisions.filter((d) => d.stage_code === "1.6" &&
+    d.legal_entity === scope.legal_entity && d.decision === "approve") || [];
+  return approvals.find((d) => !d.revoked) || approvals[approvals.length - 1];
+};
 const completedChannelApproval = (scope: LeScope): boolean =>
-  appr.value?.stages["1.6"] === "completed" && !!appr.value.decisions.some((d) =>
-    d.stage_code === "1.6" && d.legal_entity === scope.legal_entity && d.decision === "approve" && !d.revoked
-  );
+  appr.value?.stages["1.6"] === "completed" && channelApproval(scope)?.revoked === false;
+const revokedChannelApproval = (scope: LeScope): boolean =>
+  appr.value?.stages["1.6"] === "completed" && channelApproval(scope)?.revoked === true;
 const stage16NeedsReview = computed(() => appr.value?.stages["1.6"] === "completed" &&
-  appr.value.stage16.some((scope) => !scope.satisfied && !completedChannelApproval(scope)));
+  appr.value.stage16.some((scope) => !scope.satisfied && !channelApproval(scope)));
+const stage16RevokedApprovals = computed(() => appr.value?.stages["1.6"] === "completed" &&
+  appr.value.stage16.some((scope) => !scope.satisfied && revokedChannelApproval(scope)));
 const stage16ChangedApprovers = computed(() => appr.value?.stages["1.6"] === "completed" &&
   appr.value.stage16.some((scope) => !scope.satisfied && completedChannelApproval(scope)));
 const stageText = (code: string) => code === "1.6" && stage16NeedsReview.value
@@ -624,6 +632,7 @@ onMounted(() => {
 .approval-fold[open] > summary::before { content: '▾'; }
 .approval-fold-body { padding-top: var(--sp-1); }
 .appr-hint { margin: 0 var(--sp-4) var(--sp-2); color: var(--text-muted); font-size: var(--fs-sm); }
+.appr-revoke-reason { margin-top: var(--sp-1); color: var(--text-muted); font-size: var(--fs-xs); }
 .appr-act { display: flex; gap: var(--sp-2); justify-content: flex-end; flex-wrap: wrap; }
 .appr-log { margin: var(--sp-2) var(--sp-4); font-size: var(--fs-sm); color: var(--text-secondary); }
 .appr-log li.revoked { text-decoration: line-through; color: var(--text-muted); }
