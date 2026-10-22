@@ -800,11 +800,14 @@ METHODOLOGY_P9 = (
     "ФОТ = статьи «Заработная плата» в контурах P&L и «Производство (BS)» за выбранный "
     "месяц, не позже закрытого периода. Факт — сценарий «факт»; лимит — сценарий из среза "
     "«План» (Бюджет/Тактика/НовСтрат). «ФОТ % от выручки» = ФОТ / «Продажи без НДС» "
-    "(контур P&L; для лимита — тот же план-сценарий). Знаменатель по стране: KZ — продажи "
-    "KZ по кодам 1006/1012, UZ — все продажи UZ, остальное (BY/RU/микс) — вся выручка "
-    "группы; срезы ЦФО и юрлица на знаменатель не влияют. «% от выручки своей страны» в "
-    "матрице берёт страну строки из справочника ЦФО, у строк-смесей — вся выручка группы. "
-    "Численность — ставки на 1-е число выбранного месяца; «Числ. план (тактика)» — план "
+    "(контур P&L; для лимита — тот же план-сценарий), за выбранный месяц. Знаменатель "
+    "карточки и колонки «ФОТ, % от выручки» — уровень фильтра: одна страна — вся выручка "
+    "страны за месяц, сужение иерархии (Направление/Группа/Подгруппа/ЦФО) — объединение "
+    "целей правил ячеек среза, иначе — вся выручка группы. Колонка «% от выручки (правило "
+    "доли)» — правило строки «страна × направление → канал» (для BY и RU тоже страна/"
+    "канал, не ГК). Срезы ЦФО и юрлица на знаменатель не влияют, ВГО сужает. "
+    + fot_den_rules.methodology_text()
+    + " Численность — ставки на 1-е число выбранного месяца; «Числ. план (тактика)» — план "
     "численности PlanChisl по ЦФО (на юрлица не распределён, срез юрлица на него не "
     "влияет). Суммы — в выбранной валюте витрины (BYN/USD/RUB), без пересчёта. График — "
     "месяцы выбранного года с января по выбранный месяц."
@@ -1044,20 +1047,22 @@ def _den_branch(den: dict | list, country: str | None) -> dict:
 _FOT_CELL_PERIOD_KEYS = _HALF_VALUE_KEYS + ("f26_h2c", "p26_h2o")
 
 
-def _den_row(den: dict | list, parts: list[dict]) -> dict:
+def _den_row(den: dict | list, parts: list[dict],
+             period_keys: tuple = _FOT_CELL_PERIOD_KEYS) -> dict:
     """Знаменатель строки таблицы (ключи rv_*) — объединение целей правил всех
     ячеек ФОТ строки: часть строки = ячейка зерна с ФОТ ≠ 0 хотя бы в одном
     периоде ответа, сумма ячеек с дедупом (_den_sum). Строки, чьи части
     указывают на одну цель (Магазины + Отдел Розницы + Мерчендайзинг → одна
     розница), тройного счёта не дают. Объединение считается один раз для всех
-    периодов — Δ п.п. сравнивает доли с одной базой. Старый dict-формат den —
-    по стране строки (этап 0)."""
+    периодов — Δ п.п. сравнивает доли с одной базой. period_keys — имена
+    колонок частей с ФОТ (полугодия у сводных вкладок, fot_fact/fot_limit у
+    помесячной P9). Старый dict-формат den — по стране строки (этап 0)."""
     if isinstance(den, dict):
         return _den_branch(den, _row_country(parts))
     targets: list = []
     seen: set = set()
     for part in parts:
-        if not any((part.get(k) or 0) for k in _FOT_CELL_PERIOD_KEYS):
+        if not any((part.get(k) or 0) for k in period_keys):
             continue
         for pred in fot_den_rules.resolve(part.get("ctry"), part.get("dir"),
                                           part.get("g1")):
@@ -4129,6 +4134,21 @@ den AS (
     FROM fot_monthly m
     WHERE m.month_date = {p_md}{m_closed} AND {ic_sql}
 ),
+cells AS (
+    -- Ячейки месячной выручки для правил знаменателя (fot_den_rules):
+    -- страна витрины × канал × направление × группа ЦФО, без срезов панели.
+    SELECT m.country_code AS ctry,
+           m.kz_denominator AS kzf,
+           coalesce(c.sales_channel, '') AS chan,
+           coalesce(c.direction, '') AS dir,
+           coalesce(c.group_cfo1, '') AS g1,
+           {_rev_sum(fact)} AS rv_f,
+           {_rev_sum(p_scen)} AS rv_p
+    FROM fot_monthly m
+    LEFT JOIN fot_cfo c ON c.code_cfo = m.code_cfo
+    WHERE m.month_date = {p_md}{m_closed} AND {ic_sql}
+    GROUP BY 1, 2, 3, 4, 5
+),
 cards AS (
     SELECT
         {_fot_sum(fact)} AS fot_fact,
@@ -4247,7 +4267,7 @@ matrix_full AS (
         x.rev_fact / NULLIF(x.hc, 0) AS revenue_per_head
     FROM matrix x
     CROSS JOIN den d
-    ORDER BY x.fot_fact DESC NULLS LAST
+    ORDER BY x.fot_fact DESC NULLS LAST, x.label
     LIMIT {MATRIX_ROW_LIMIT + 1}
 )
 SELECT jsonb_build_object(
@@ -4264,6 +4284,8 @@ SELECT jsonb_build_object(
                                             'headcount', h2.q) ORDER BY y.ym)
         FROM months y LEFT JOIN hcm h2 ON h2.ym = y.ym
     ), '[]'::jsonb),
+    'cells', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM cells x), '[]'::jsonb),
+    'grain', COALESCE((SELECT jsonb_agg(to_jsonb(l)) FROM lvl l), '[]'::jsonb),
     'matrix', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM matrix_full x), '[]'::jsonb),
     'matrix_truncated', (SELECT count(*) FROM matrix_full) > {MATRIX_ROW_LIMIT}
 )::text AS payload
@@ -4277,13 +4299,40 @@ CROSS JOIN hc h
     # ── Постобработка: форма ответа для фронта ───────────────────────────────
     scenario_label = _SCENARIO_LABELS.get(p["scenario_plan"], p["scenario_plan"])
     cards_raw = payload["cards"] or {}
+
+    # Знаменатели долей — по правилам fot_den_rules (месяц): карточка и колонка
+    # «ФОТ, % от выручки» — уровень фильтра (одна страна — выручка страны,
+    # сужение иерархии — объединение целей ячеек среза, иначе вся ГК);
+    # «% от выручки (правило доли)» — правило строки «страна × направление →
+    # канал» (was: CASE KZ/UZ/GRP — BY и RU делились на всю ГК).
+    cells = _den_cells(payload.get("cells") or [])
+    lvl_rows = payload.get("grain") or []
+    sel_country = p["countries"][0] if len(p["countries"]) == 1 else None
+
+    def _den_pair(target) -> tuple:
+        s = _den_sum(cells, target)
+        return s.get("rv_f"), s.get("rv_p")
+
+    if any(p.get(k) for k in ("directions", "cfo_groups", "cfo_subgroups", "cfos")):
+        d = _den_row(cells, [{**g, "ctry": g.get("row_country") or ""} for g in lvl_rows],
+                     ("fot_fact", "fot_limit"))
+        cards_den = (d.get("rv_f"), d.get("rv_p"))
+    else:
+        cards_den = _den_pair(
+            fot_den_rules.country_target(sel_country)
+            if sel_country else fot_den_rules.TARGETS["grp"])
+
+    def _pct100(v, base):
+        return None if v is None or not base else 100.0 * float(v) / float(base)
+
+    fot_share_card = _pct100(cards_raw.get("fot_fact"), cards_den[0])
     cards = [
         {"key": "fot_fact", "label": "ФОТ факт за месяц",
          "value": _r2(cards_raw.get("fot_fact")), "unit": currency},
         {"key": "fot_limit", "label": "ФОТ лимит (%s)" % scenario_label,
          "value": _r2(cards_raw.get("fot_limit")), "unit": currency},
         {"key": "fot_share", "label": "ФОТ, % от выручки",
-         "value": _r2(cards_raw.get("fot_share_pct")), "unit": "%"},
+         "value": _r2(fot_share_card), "unit": "%"},
         {"key": "headcount", "label": "Численность",
          "value": _r2(cards_raw.get("headcount")), "unit": "ставок"},
         {"key": "fot_per_head", "label": "ФОТ на сотрудника",
@@ -4324,12 +4373,26 @@ CROSS JOIN hc h
         {"key": "fot_limit", "label": "ФОТ лимит", "unit": currency},
         {"key": "fot_share_pct", "label": "ФОТ, % от выручки", "unit": "%"},
         {"key": "limit_share_pct", "label": "Лимит, % от выручки", "unit": "%"},
-        {"key": "country_share_pct", "label": "% от выручки своей страны", "unit": "%"},
+        {"key": "country_share_pct", "label": "% от выручки (правило доли)", "unit": "%"},
         {"key": "fot_per_head", "label": "ФОТ на сотрудника", "unit": currency},
         {"key": "revenue_per_head", "label": "Выручка на сотрудника", "unit": currency},
     ]
-    rows = [
-        {
+    # Доли строк матрицы — части строки из зерна lvl (по пути дрилла и значению
+    # строки), знаменатель — правило строки; фильтро-уровневые доли — cards_den.
+    lvl_fields = {"group_cfo1": "g1", "group_cfo2": "g2",
+                  "direction": "dir", "code_cfo": "cfo"}
+    path_pairs = [(lvl_fields[MATRIX_LEVELS[i][0]], v) for i, v in
+                  enumerate(p["matrix_path"][: len(MATRIX_LEVELS) - 1])]
+    row_field = lvl_fields[level_key]
+    rows = []
+    for r in payload["matrix"][:MATRIX_ROW_LIMIT]:
+        # часть строки = ячейка зерна lvl; ctry для правил — из row_country
+        # (у смесей стран None → '' → знаменатель ГК)
+        parts = [{**g, "ctry": g.get("row_country") or ""} for g in lvl_rows
+                 if all((g.get(f) or "") == v for f, v in path_pairs)
+                 and (g.get(row_field) or "") == (r.get("drill_value") or "")]
+        d = _den_row(cells, parts, ("fot_fact", "fot_limit"))
+        rows.append({
             "label": r.get("label"),
             "drill_value": r.get("drill_value"),
             "headcount": _r2(r.get("headcount")),
@@ -4337,14 +4400,12 @@ CROSS JOIN hc h
             "headcount_dev": _r2(r.get("headcount_dev")),
             "fot_fact": _r2(r.get("fot_fact")),
             "fot_limit": _r2(r.get("fot_limit")),
-            "fot_share_pct": _r2(r.get("fot_share_pct")),
-            "limit_share_pct": _r2(r.get("limit_share_pct")),
-            "country_share_pct": _r2(r.get("country_share_pct")),
+            "fot_share_pct": _r2(_pct100(r.get("fot_fact"), cards_den[0])),
+            "limit_share_pct": _r2(_pct100(r.get("fot_limit"), cards_den[1])),
+            "country_share_pct": _r2(_pct100(r.get("fot_fact"), d.get("rv_f"))),
             "fot_per_head": _r2(r.get("fot_per_head")),
             "revenue_per_head": _r2(r.get("revenue_per_head")),
-        }
-        for r in payload["matrix"][:MATRIX_ROW_LIMIT]
-    ]
+        })
     tables = [{
         "key": "by_department",
         "label": "По подразделениям",
