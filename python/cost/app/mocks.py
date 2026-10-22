@@ -1991,18 +1991,23 @@ def _fot_p15_mock_payload() -> dict:
     fot_rows, h25, h26, plan = [], [], [], []
     for (label, f25_h1, f25_h2, b26_h1, f26_h1, b26_h2, t26_h2,
          pa, q26, q25) in _FOT_P15_MOCK:
-        fot_rows.append({"dir": label, "f25_h1": f25_h1 * 1000.0,
+        fot_rows.append({"ctry": "BY", "dir": label, "f25_h1": f25_h1 * 1000.0,
                          "f25_h2": f25_h2 * 1000.0,
                          "f25": (f25_h1 + f25_h2) * 1000.0,
                          "b26_h1": b26_h1 * 1000.0, "f26_h1": f26_h1 * 1000.0,
                          "b26_h2": b26_h2 * 1000.0, "t26_h2": t26_h2 * 1000.0})
         if q25 is not None:
-            h25.append({"dir": label, "v": q25})
+            h25.append({"ctry": "BY", "dir": label, "v": q25})
         if q26 is not None:
-            h26.append({"dir": label, "v": q26})
+            h26.append({"ctry": "BY", "dir": label, "v": q26})
         if pa:
-            plan.append({"dir": label, "v": pa})
-    return {"fot": fot_rows, "rev": {k: v * 1000.0 for k, v in _FOT_P15_RV_MOCK.items()},
+            plan.append({"ctry": "BY", "dir": label, "v": pa})
+    # ячейки den_grain: один BY-блок (все отделы мока — BY, канальных
+    # направлений среди меток нет → у каждого отдела цель «вся выручка BY»,
+    # как раньше вся выручка среза)
+    cells = [{"ctry": "BY", "kzf": False, "chan": "", "dir": "", "g1": "",
+              **{k: v * 1000.0 for k, v in _FOT_P15_RV_MOCK.items()}}]
+    return {"fot": fot_rows, "cells": cells,
             "h25": h25, "h26": h26, "plan": plan}
 
 
@@ -2021,7 +2026,7 @@ def _fot_p15_mock_dashboard(params: dict, tab: str) -> dict:
     cfg = fot._expect_cfg(_fot_mock_closed(), year_cur)
     payload = _fot_p15_mock_payload()
     _mock_expect_rows(payload["fot"], cfg["close_month"] or 8)
-    _mock_expect_rows([payload["rev"]], cfg["close_month"] or 8)
+    _mock_expect_rows(payload["cells"], cfg["close_month"] or 8)
     (cards, headcount, departments, tables, trends, banners,
      warning) = fot._p15_assemble(currency, payload, "BY", year_cur, year_prev, cfg)
     methodology = fot.METHODOLOGY_P15 if tab == "p15" else fot.METHODOLOGY_P16

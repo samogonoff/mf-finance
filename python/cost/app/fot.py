@@ -5238,13 +5238,16 @@ METHODOLOGY_P15 = (
     "по правилу деки (перерасход бюджета 1 ПГ или тактики к бюджету, рост/"
     "экономия к прошлому году, новое направление): в карточке три периода с Δ% к "
     "факту прошлого года («н/д» у направлений без базы, всегда зелёный), три круга "
-    "Δ доли ФОТ в выручке среза в п.п. (своей выручки у отделов нет — "
-    "знаменатель, как у беспродажных направлений P14, вся выручка среза) и "
+    "Δ доли ФОТ в выручке в п.п. (своей выручки у отделов нет — знаменатель "
+    "по правилу страны отдела: KZ → канал «Розница KZ», UZ → Розница UZ + "
+    "ОПТ УЗ + Производство UZ, BY/RU → вся выручка страны; правила — в "
+    "последнем абзаце) и "
     "ПЧ/ФЧ 1ПГ года с отклонением ФЧ к 1ПГ прошлого года (то же зерно, что у P12). Баннер "
     "«Тенденции и прогноз» генерируется по правилам из данных (топ "
     "перерасхода, тактика выше бюджета, новые направления, план-экономия), "
     "без языковой модели. Светофор по знаку: рост ФОТ/доли — красный, "
-    "снижение — зелёный, 0/н/д — нейтрально."
+    "снижение — зелёный, 0/н/д — нейтрально. "
+    + fot_den_rules.methodology_text()
 )
 
 METHODOLOGY_P16 = (
@@ -5257,7 +5260,9 @@ METHODOLOGY_P16 = (
     "«Второй приоритет контроля» — не попавшие в топ-внимания отделы с "
     "умеренным превышением бюджета 1 ПГ (> +3 %). Тексты баннеров собираются "
     "из данных детерминированно (без языковой модели). Численность в шапке — "
-    "свод по группе «Отдел» среза (ПЧ PlanChisl, ФЧ 30.06)."
+    "свод по группе «Отдел» среза (ПЧ PlanChisl, ФЧ 30.06). Знаменатель долей — "
+    "по правилу страны отдела (последний абзац). "
+    + fot_den_rules.methodology_text()
 )
 
 
@@ -5271,16 +5276,18 @@ def _ru_s(v, digits: int = 1, signed: bool = True) -> str:
 
 def _p15_sql(p: dict, periods: tuple = _HALF_PERIODS,
              year_cur: int = YEAR_PLAN, year_prev: int = YEAR_PREV) -> tuple[str, list]:
-    """Один запрос вкладок P15/P16: ФОТ отделов, выручка среза, численность.
+    """Один запрос вкладок P15/P16: ФОТ отделов, ячейки знаменателя, численность.
 
     Зерно — направление справочника внутри группы ЦФО «Отдел» (см.
-    _P15_DEPT_MERGE), период-суммы — параметр periods (вкладки годозависимы:
-    _b1_periods + _expect_periods, паттерн B1 — «тактика 2ПГ» незакрытого
-    полугодия = факт до закрытого месяца + тактика после). Численность —
-    факты 30.06 выбранного и предыдущего года (hc_prev/hc_curr).
-    Выручка среза (знаменатель долей) режется теми же условиями, что
-    числитель, — по всем строкам среза, не только отделам (доля сравнивает
-    числа одного среза, как у P14). Численность — то же зерно, что у P12
+    _P15_DEPT_MERGE) со страной ЦФО: правилам знаменателя (fot_den_rules)
+    нужен (ctry, dir, g1) каждой части строки. Период-суммы — параметр
+    periods (вкладки годозависимы: _b1_periods + _expect_periods, паттерн
+    B1 — «тактика 2ПГ» незакрытого полугодия = факт до закрытого месяца +
+    тактика после). Численность — факты 30.06 выбранного и предыдущего года
+    (hc_prev/hc_curr). Знаменатель долей — ячейки cells (den_grain: ctry ×
+    kzf × chan × dir × g1, без срезов панели), не выручка среза: доля отдела
+    мерится по правилу его страны («Отделы KZ → Розница KZ» и т.п.), срез
+    панели канальные цели обнулял бы. Численность — то же зерно, что у P12
     (факты 30.06 и план PlanChisl), в группировке по направлению; план, как
     у P12, срезом юрлица не режется.
     """
@@ -5306,48 +5313,58 @@ def _p15_sql(p: dict, periods: tuple = _HALF_PERIODS,
 
     sql = f"""
 WITH dim AS (
-    SELECT code_cfo, group_cfo1, direction
+    SELECT code_cfo, group_cfo1, direction, country_code
     FROM fot_cfo
     WHERE TRUE{dim_conds}
 ),
 fot AS (
-    SELECT coalesce(c.direction, '') AS dir,
+    SELECT coalesce(c.country_code, '') AS ctry,
+           coalesce(c.direction, '') AS dir,
            {fot_sums}
     FROM fot_monthly m
     LEFT JOIN dim c ON c.code_cfo = m.code_cfo
     WHERE {ic_sql}{m_legal}{hier_gate}{dept}
-    GROUP BY 1
+    GROUP BY 1, 2
 ),
-rev AS (
-    SELECT {rev_sums}
+cells AS (
+    SELECT m.country_code AS ctry,
+           m.kz_denominator AS kzf,
+           coalesce(c.sales_channel, '') AS chan,
+           coalesce(c.direction, '') AS dir,
+           coalesce(c.group_cfo1, '') AS g1,
+           {rev_sums}
     FROM fot_monthly m
-    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
-    WHERE {ic_sql}{m_legal}{hier_gate}
+    LEFT JOIN fot_cfo c ON c.code_cfo = m.code_cfo
+    WHERE {ic_sql}
+    GROUP BY 1, 2, 3, 4, 5
 ),
 h25 AS (
-    SELECT coalesce(c.direction, '') AS dir, sum(h.quantity) AS v
+    SELECT coalesce(c.country_code, '') AS ctry, coalesce(c.direction, '') AS dir,
+           sum(h.quantity) AS v
     FROM fot_headcount h
     LEFT JOIN dim c ON c.code_cfo = h.code_cfo
     WHERE h.month_date = DATE '{hc_prev.isoformat()}'{h_legal}{hier_gate}{dept}
-    GROUP BY 1
+    GROUP BY 1, 2
 ),
 h26 AS (
-    SELECT coalesce(c.direction, '') AS dir, sum(h.quantity) AS v
+    SELECT coalesce(c.country_code, '') AS ctry, coalesce(c.direction, '') AS dir,
+           sum(h.quantity) AS v
     FROM fot_headcount h
     LEFT JOIN dim c ON c.code_cfo = h.code_cfo
     WHERE h.month_date = DATE '{hc_curr.isoformat()}'{h_legal}{hier_gate}{dept}
-    GROUP BY 1
+    GROUP BY 1, 2
 ),
 plan AS (
-    SELECT coalesce(c.direction, '') AS dir, sum(p.plan_approved) AS v
+    SELECT coalesce(c.country_code, '') AS ctry, coalesce(c.direction, '') AS dir,
+           sum(p.plan_approved) AS v
     FROM fot_headcount_plan p
     LEFT JOIN dim c ON c.code_cfo = p.code_cfo
     WHERE TRUE{hier_gate}{dept}
-    GROUP BY 1
+    GROUP BY 1, 2
 )
 SELECT jsonb_build_object(
     'fot', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM fot x), '[]'::jsonb),
-    'rev', (SELECT to_jsonb(r) FROM rev r),
+    'cells', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM cells x), '[]'::jsonb),
     'h25', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h25 x), '[]'::jsonb),
     'h26', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM h26 x), '[]'::jsonb),
     'plan', COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM plan x), '[]'::jsonb)
@@ -5381,22 +5398,35 @@ def _p15_assemble(cur: str, payload: dict, sel_country: str | None,
     expect = bool(cfg and cfg.get("by_month"))
     h2_closed = expect and (cfg["close_month"] or 0) >= 12
     exp_word = "Факт" if h2_closed else "Ожидание"
-    # Зерно ФОТ по направлениям (с объединением пары деки); незакрытое 2ПГ —
-    # гибрид факт+тактика (подмена t26_h2/rv_t26_h2, паттерн B1).
-    by_dir: dict = {}
+    # Зерно ФОТ по отделам: (страна, направление с merge-парой); незакрытое
+    # 2ПГ — гибрид факт+тактика (подмена t26_h2, паттерн B1). Страна нужна
+    # правилам знаменателя (fot_den_rules): часть строки (ctry, dir, g1)
+    # резолвится в цель, отдел в нескольких странах объединяет цели с дедупом
+    # ячеек (_den_row).
+    by_key: dict = {}
     for r in payload.get("fot") or []:
-        d = _P15_DEPT_MERGE.get(r.get("dir") or "", r.get("dir") or "")
-        slot = by_dir.setdefault(d, {})
-        for key in _HALF_VALUE_KEYS:
-            v = r.get(key)
+        key = (r.get("ctry") or "",
+               _P15_DEPT_MERGE.get(r.get("dir") or "", r.get("dir") or ""))
+        slot = by_key.setdefault(key, {})
+        for key_ in _HALF_VALUE_KEYS:
+            v = r.get(key_)
             if v is not None:
-                slot[key] = slot.get(key, 0.0) + float(v)
+                slot[key_] = slot.get(key_, 0.0) + float(v)
         if expect:
-            for key in ("f26_h2c", "p26_h2o"):
-                v = r.get(key)
+            for key_ in ("f26_h2c", "p26_h2o"):
+                v = r.get(key_)
                 if v is not None:
-                    slot[key] = slot.get(key, 0.0) + float(v)
+                    slot[key_] = slot.get(key_, 0.0) + float(v)
         _apply_expect_sums(slot)
+        slot.setdefault("_parts", []).append({**r, "g1": _P15_DEPT_GROUP})
+    by_dir: dict = {}
+    parts_by_dir: dict = {}
+    for (_ctry, dkey), slot in by_key.items():
+        out = by_dir.setdefault(dkey, {})
+        for key_ in _HALF_VALUE_KEYS:
+            if slot.get(key_) is not None:
+                out[key_] = (out.get(key_) or 0.0) + slot[key_]
+        parts_by_dir.setdefault(dkey, []).extend(slot["_parts"])
     hc: dict = {}
     for src, key in (("h25", "q25"), ("h26", "q26"), ("plan", "pa")):
         for r in payload.get(src) or []:
@@ -5405,12 +5435,19 @@ def _p15_assemble(cur: str, payload: dict, sel_country: str | None,
             if v is not None:
                 hc.setdefault(d, {})[key] = hc.setdefault(d, {}).get(key, 0.0) + float(v)
 
-    rev = dict(payload.get("rev") or {})
-    if expect:
-        _apply_expect_den(rev)
-    rv = {key: float(rev[key]) for key in
-          ("rv_f25_h1", "rv_f25_h2", "rv_f25", "rv_f26_h1", "rv_t26_h2") if rev.get(key)}
-    rv_exp = _nsum([rv.get("rv_f26_h1"), rv.get("rv_t26_h2")])
+    # Знаменатель доли отдела — по правилу его страны: объединение целей
+    # частей строки (_den_row, дедуп ячеек), один расчёт на все периоды —
+    # Δ п.п. сравнивает доли с одной базой.
+    cells = payload.get("cells") or []
+    dens: dict = {}
+    for dkey, parts in parts_by_dir.items():
+        den = _den_row(cells, parts)
+        if expect:
+            _apply_expect_den(den)
+        rv = {key: float(den[key]) for key in
+              ("rv_f25_h1", "rv_f25_h2", "rv_f25", "rv_f26_h1", "rv_t26_h2")
+              if den.get(key)}
+        dens[dkey] = (rv, _nsum([rv.get("rv_f26_h1"), rv.get("rv_t26_h2")]))
 
     tot = {key: _nsum([v.get(key) for v in by_dir.values()]) for key in _HALF_VALUE_KEYS}
     tot_exp = _nsum([tot.get("f26_h1"), tot.get("t26_h2")])
@@ -5418,12 +5455,17 @@ def _p15_assemble(cur: str, payload: dict, sel_country: str | None,
 
     entries = sorted(
         by_dir.items(),
-        key=lambda kv: (bool(kv[0]), _nsum([kv[1].get("f26_h1"), kv[1].get("t26_h2")]) or 0.0),
+        # подпись в ключе — детерминированный порядок у строк с равной суммой
+        # (зерно идёт по (страна, направление), без tiebreak порядок ties
+        # плавал бы между прогонами, как у p18)
+        key=lambda kv: (bool(kv[0]), _nsum([kv[1].get("f26_h1"), kv[1].get("t26_h2")]) or 0.0,
+                        kv[0]),
         reverse=True,
     )
     scored: list = []
     for dkey, s in entries:
         h = hc.get(dkey) or {}
+        rv, rv_exp = dens.get(dkey, ({}, None))
         exp = _nsum([s.get("f26_h1"), s.get("t26_h2")])
         base_h1, base_h2, base_y = s.get("f25_h1"), s.get("f25_h2"), s.get("f25")
         # Δ% к базе считается только от положительной базы: нулевая — «нет
