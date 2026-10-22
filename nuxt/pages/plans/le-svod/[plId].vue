@@ -416,13 +416,13 @@ const stage3NeedsMe = computed(() => !!appr.value?.stage3.some((scope) => scope.
 const stage4NeedsMe = computed(() => !!appr.value?.stage4.can_decide);
 const stage3Open = ref(false);
 const stage4Open = ref(false);
-const approvalOpenInitialized = ref(false);
-watch(appr, (value) => {
-  if (value && !approvalOpenInitialized.value) {
-    stage3Open.value = stage3NeedsMe.value;
-    stage4Open.value = stage4NeedsMe.value;
-    approvalOpenInitialized.value = true;
-  }
+// Открываем блок при появлении нового доступного решения, в том числе после
+// завершения этапа 3. Обратный переход не закрывает результат принятого решения.
+watch(stage3NeedsMe, (needsMe, wasNeeded) => {
+  if (needsMe && !wasNeeded) stage3Open.value = true;
+});
+watch(stage4NeedsMe, (needsMe, wasNeeded) => {
+  if (needsMe && !wasNeeded) stage4Open.value = true;
 });
 const syncStage3Open = (event: Event) => { stage3Open.value = (event.target as HTMLDetailsElement).open; };
 const syncStage4Open = (event: Event) => { stage4Open.value = (event.target as HTMLDetailsElement).open; };
