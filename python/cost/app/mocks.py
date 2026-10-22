@@ -1240,20 +1240,25 @@ _FOT_HALF_TOTALS = {
 # три цвета Δ-колонок, а не только зелёный.
 _FOT_HALF_F25_CUT = {"401 — Магазин Алматы", "501 — Цех Наманган"}
 
-# Знаменатели долей в тыс., ключи как в den из _halfyear_sql: группа — из
-# контрольных долей; KZ — выручка по кодам 1006/1012; UZ — вся выручка UZ.
-_FOT_HALF_DEN = {
-    "dn_grp_rv_f25_h1": 590000, "dn_grp_rv_f25_h2": 658000, "dn_grp_rv_f25": 1248000,
-    "dn_grp_rv_f26_h1": 745000, "dn_grp_rv_t26_h2": 650000,
-    "dn_kz_rv_f25_h1": 38000, "dn_kz_rv_f25_h2": 42000, "dn_kz_rv_f25": 80000,
-    "dn_kz_rv_f26_h1": 95000, "dn_kz_rv_t26_h2": 90000,
-    "dn_uz_rv_f25_h1": 21000, "dn_uz_rv_f25_h2": 24000, "dn_uz_rv_f25": 45000,
-    "dn_uz_rv_f26_h1": 30000, "dn_uz_rv_t26_h2": 25000,
-}
+# Знаменатели долей в тыс., формат — ячейки den_grain из _halfyear_sql
+# (ctry × kzf × chan × dir × g1): группа — из контрольных долей; KZ — выручка
+# по кодам 1006/1012 (kzf=True); UZ — вся выручка UZ; строка BY — остаток
+# группы (grp − kz − uz), канал/направление на LEGACY-правила не влияют.
+_FOT_HALF_DEN_CELLS = (
+    {"ctry": "KZ", "kzf": True, "chan": "", "dir": "", "g1": "",
+     "rv_f25_h1": 38000, "rv_f25_h2": 42000, "rv_f25": 80000,
+     "rv_f26_h1": 95000, "rv_t26_h2": 90000},
+    {"ctry": "UZ", "kzf": False, "chan": "", "dir": "", "g1": "",
+     "rv_f25_h1": 21000, "rv_f25_h2": 24000, "rv_f25": 45000,
+     "rv_f26_h1": 30000, "rv_t26_h2": 25000},
+    {"ctry": "BY", "kzf": False, "chan": "", "dir": "", "g1": "",
+     "rv_f25_h1": 531000, "rv_f25_h2": 592000, "rv_f25": 1123000,
+     "rv_f26_h1": 620000, "rv_t26_h2": 535000},
+)
 
 
-def _fot_half_mock() -> tuple[list[dict], dict]:
-    """Зерно P10/P11/P13 и знаменатели долей.
+def _fot_half_mock() -> tuple[list[dict], list[dict]]:
+    """Зерно P10/P11/P13 и ячейки знаменателей долей (den_grain).
 
     Итоги заданы в тыс. (как в PBI) и умножаются на 1000 до сырых сумм
     витрины — сборщики app.fot (_t/_ms) дают те же контрольные числа. Вес
@@ -1281,7 +1286,10 @@ def _fot_half_mock() -> tuple[list[dict], dict]:
     for r in grain:
         r["f25"] = round(r["f25_h1"] + r["f25_h2"], 2)
         r["rv_f25"] = round(r["rv_f25_h1"] + r["rv_f25_h2"], 2)
-    den = {k: v * 1000.0 for k, v in _FOT_HALF_DEN.items()}
+    den = [
+        {k: (v * 1000.0 if k.startswith("rv_") else v) for k, v in cell.items()}
+        for cell in _FOT_HALF_DEN_CELLS
+    ]
     return grain, den
 
 
@@ -1961,8 +1969,9 @@ def _fot_p15_mock_dashboard(params: dict, tab: str) -> dict:
     return out
 
 
-def _mock_expect_keys(grain: list[dict], den: dict, c: int) -> None:
-    """Досчитывает помесячные ключи ожидания B1 в мок-зерно и знаменатели.
+def _mock_expect_keys(grain: list[dict], den: list[dict], c: int) -> None:
+    """Досчитывает помесячные ключи ожидания B1 в мок-зерно и мок-ячейки
+    знаменателей (den_grain).
 
     f26_h2c ≈ t26_h2 × (C−6)/6, p26_h2o ≈ t26_h2 × (12−C)/6 (для rv так же) —
     так что exp26 = f26_h1 + f26_h2c + p26_h2o ≈ f26_h1 + t26_h2 (контрольное
@@ -1977,12 +1986,12 @@ def _mock_expect_keys(grain: list[dict], den: dict, c: int) -> None:
         rv_t26 = r.get("rv_t26_h2")
         r["rv_f26_h2c"] = round(rv_t26 * w_fact, 2) if rv_t26 is not None else None
         r["rv_p26_h2o"] = round(rv_t26 * w_plan, 2) if rv_t26 is not None else None
-    for branch in ("grp", "kz", "uz"):
-        rv_t26 = den.get("dn_%s_rv_t26_h2" % branch)
+    for r in den:
+        rv_t26 = r.get("rv_t26_h2")
         if rv_t26 is None:
             continue
-        den["dn_%s_rv_f26_h2c" % branch] = round(rv_t26 * w_fact, 2)
-        den["dn_%s_rv_p26_h2o" % branch] = round(rv_t26 * w_plan, 2)
+        r["rv_f26_h2c"] = round(rv_t26 * w_fact, 2)
+        r["rv_p26_h2o"] = round(rv_t26 * w_plan, 2)
 
 
 def _fot_b1_mock_dashboard(params: dict) -> dict:

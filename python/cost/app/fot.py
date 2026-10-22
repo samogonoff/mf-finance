@@ -29,6 +29,7 @@ import os
 import time
 from datetime import date, datetime, timezone
 
+from app import fot_den_rules
 from app.db import acquire, get_olap_conn, pool
 from app.logship import log
 
@@ -859,12 +860,9 @@ _HALF_PERIODS = (
 
 # Ветки странового правила знаменателя долей (порт скрытой меры «_Выручка для
 # доли ФОТ»): grp — вся выручка группы (BY/RU/микс), kz — продажи KZ по кодам
-# 1006/1012 (флаг kz_denominator), uz — вся выручка UZ.
-_DEN_BRANCHES = (
-    ("grp", ""),
-    ("kz", " AND m.country_code = 'KZ' AND m.kz_denominator"),
-    ("uz", " AND m.country_code = 'UZ'"),
-)
+# 1006/1012 (флаг kz_denominator), uz — вся выручка UZ. С этапа 0 (663620)
+# ветки — данные в fot_den_rules.LEGACY_DEN_RULES, SQL-константа _DEN_BRANCHES
+# ушла вместе с колонками dn_<ветка>_* (выручка теперь лежит зерном den_grain).
 
 # Иерархии дрилла P11: текстбокс страницы — «группа ЦФО … → площадка →
 # подразделение» и «каналы сбыта».
@@ -986,11 +984,54 @@ def _row_country(parts: list[dict]) -> str | None:
     return countries.pop() if len(countries) == 1 else None
 
 
-def _den_branch(den: dict, country: str | None) -> dict:
-    """Знаменатели одной ветки странового правила: ключи dn_<ветка>_* → rv_*."""
-    branch = "kz" if country == "KZ" else ("uz" if country == "UZ" else "grp")
-    prefix = "dn_%s_" % branch
-    return {k[len(prefix):]: v for k, v in den.items() if k.startswith(prefix)}
+def _den_cells(den_grain: list[dict]) -> list[dict]:
+    """Нормализация строк den_grain в ячейки правил fot_den_rules: измерения —
+    коалесцированные строки (пустая страна/канал → ''), kzf — bool;
+    rv-периоды проходят как есть (в т.ч. None у пустых периодов)."""
+    cells: list = []
+    for r in den_grain or []:
+        cells.append({
+            "ctry": r.get("ctry") or "",
+            "kzf": bool(r.get("kzf")),
+            "chan": r.get("chan") or "",
+            "dir": r.get("dir") or "",
+            "g1": r.get("g1") or "",
+            **{k: v for k, v in r.items() if k.startswith("rv_")},
+        })
+    return cells
+
+
+def _den_sum(cells: list[dict], targets: tuple) -> dict:
+    """Сумма rv-периодов ячеек, подходящих хоть под один предикат цели.
+    Дедуп: ячейка считается один раз, даже если подходит под несколько
+    предикатов. Ключи — все rv-периоды зерна (пустое зерно → {}, потребители
+    читают через .get и видят None — как раньше NULL-колонки den)."""
+    picked: dict = {}
+    for cell in cells:
+        if not any(all(cell.get(f) == v for f, v in pred.items()) for pred in targets):
+            continue
+        picked[(cell["ctry"], cell["kzf"], cell["chan"], cell["dir"], cell["g1"])] = cell
+    keys: list = []
+    for cell in cells:
+        for k in cell:
+            if k.startswith("rv_") and k not in keys:
+                keys.append(k)
+    return {k: _nsum([c.get(k) for c in picked.values()]) for k in keys}
+
+
+def _den_branch(den: dict | list, country: str | None) -> dict:
+    """Знаменатели одной ветки странового правила: ключи rv_*.
+
+    Двойной формат (этап 0, 663620): старый dict den с колонками dn_<ветка>_*
+    разбирается по префиксу как раньше (моки до переезда и любые внешние
+    вызовы); список строк den_grain — ячейками по правилам fot_den_rules
+    (этап 0: resolve по стране = прежняя ветка grp/kz/uz, направление и
+    группа ЦФО появятся на этапе 1)."""
+    if isinstance(den, dict):
+        branch = "kz" if country == "KZ" else ("uz" if country == "UZ" else "grp")
+        prefix = "dn_%s_" % branch
+        return {k[len(prefix):]: v for k, v in den.items() if k.startswith(prefix)}
+    return _den_sum(_den_cells(den), fot_den_rules.resolve(country))
 
 
 def _half_derive(s: dict, d: dict, expect_by_month: bool = False) -> dict:
@@ -1601,10 +1642,11 @@ def _half_sum_sql(key: str, scen: str, year: int, m1: int, m2: int, fam: str, co
                   extra: str = "") -> str:
     """SUM FILTER по одному периоду; сценарий/год/месяцы — из _HALF_PERIODS.
 
-    *extra* (страновые ветки знаменателя KZ/UZ) — тоже ВНУТРИ скобки FILTER:
-    снаружи Postgres парсит его как `sum(...) FILTER (...) AND ...` и падает
-    с DatatypeMismatchError (число AND булево) — поймано живым прогоном,
-    мок SQL не исполняет и этого не видел.
+    *extra* — доп. условие ВНУТРИ скобки FILTER (этап 0: никто не передаёт;
+    сохранён для предикатов каналов этапа 1). Снаружи Postgres парсит его
+    как `sum(...) FILTER (...) AND ...` и падает с DatatypeMismatchError
+    (число AND булево) — поймано живым прогоном, мок SQL не исполняет и
+    этого не видел.
     """
     # fam="raw" (HR-бюджет P13) — без семейства: статью задают в WHERE.
     fam_sql = {"fot": _SQL_FOT_FAMILY, "rev": _SQL_REV_FAMILY}.get(fam, "TRUE")
@@ -1626,17 +1668,20 @@ def _halfyear_sql(p: dict, extra_periods: tuple = (), base_periods: tuple | None
 
     extra_periods — те же кортежи (key, scenario, year, m1, m2, measure) для
     помесячного ожидания B1: добавляются в grain_sums (measure=fot) и в
-    den_sums (measure=rev, по всем 3 веткам grp/kz/uz). По умолчанию пусто —
-    текущий путь P10/P11 не меняется.
+    den_grain_sums (measure=rev). По умолчанию пусто — текущий путь P10/P11
+    не меняется.
 
     base_periods — замена _HALF_PERIODS (для B1 с динамическим годом); по
     умолчанию None → _HALF_PERIODS (фикс. 2025/2026, P10/P11).
 
     dim — порт срезов dim_CFO (иерархия + страна режут числитель через
     справочник, как в PBI); при активном срезе «висячие» ЦФО отсекаются тем же
-    hier_gate, что у P9. den — 15 выручочных знаменателей (5 rv-периодов ×
-    ветки grp/kz/uz) БЕЗ срезов ЦФО/юрлица/страны — порт REMOVEFILTERS(dim_CFO,
-    dim_Company, dim_Country) в скрытых мерах «_Выручка …(доля)».
+    hier_gate, что у P9. den_grain — выручка-знаменатель мелким зерном
+    (страна витрины × kz_denominator × канал × направление × группа ЦФО ×
+    rv-периоды) БЕЗ срезов ЦФО/юрлица/страны — порт REMOVEFILTERS(dim_CFO,
+    dim_Company, dim_Country) в скрытых мерах «_Выручка …(доля)»; состав веток
+    знаменателя (grp/kz/uz, на этапе 1 — страна × направление → канал)
+    описывают правила fot_den_rules, суммы собирает _den_sum.
     """
     col = FOT_CURRENCIES[p["currency"]]
     sql_params: list = []
@@ -1650,9 +1695,8 @@ def _halfyear_sql(p: dict, extra_periods: tuple = (), base_periods: tuple | None
         _half_sum_sql(key, scen, year, m1, m2, fam, col)
         for key, scen, year, m1, m2, fam in base + tuple(extra_periods)
     )
-    den_sums = ",\n        ".join(
-        _half_sum_sql("dn_%s_%s" % (branch, key), scen, year, m1, m2, fam, col, extra)
-        for branch, extra in _DEN_BRANCHES
+    den_grain_sums = ",\n        ".join(
+        _half_sum_sql(key, scen, year, m1, m2, fam, col)
         for key, scen, year, m1, m2, fam in base + tuple(extra_periods)
         if fam == "rev"
     )
@@ -1660,7 +1704,7 @@ def _halfyear_sql(p: dict, extra_periods: tuple = (), base_periods: tuple | None
     sql = f"""
 WITH dim AS (
     -- Справочник со срезами: иерархия ЦФО и страна режут числитель (порт срезов
-    -- dim_CFO в PBI). Знаменатели (den) срезов ЦФО/юрлица/страны НЕ видят —
+    -- dim_CFO в PBI). Знаменатели (den_grain) срезов ЦФО/юрлица/страны НЕ видят —
     -- порт REMOVEFILTERS(dim_CFO, dim_Company, dim_Country).
     SELECT code_cfo, group_cfo1, group_cfo2, direction, cfo_name, cfo_label,
            sales_channel, country_code
@@ -1682,15 +1726,22 @@ grain AS (
     WHERE {ic_sql}{m_legal}{hier_gate}
     GROUP BY 1, 2, 3, 4, 5, 6, 7
 ),
-den AS (
+den_grain AS (
     SELECT
-        {den_sums}
+        m.country_code AS ctry,
+        m.kz_denominator AS kzf,
+        coalesce(c.sales_channel, '') AS chan,
+        coalesce(c.direction, '') AS dir,
+        coalesce(c.group_cfo1, '') AS g1,
+        {den_grain_sums}
     FROM fot_monthly m
+    LEFT JOIN fot_cfo c ON c.code_cfo = m.code_cfo
     WHERE {ic_sql}
+    GROUP BY 1, 2, 3, 4, 5
 )
 SELECT jsonb_build_object(
     'grain', COALESCE((SELECT jsonb_agg(to_jsonb(g)) FROM grain g), '[]'::jsonb),
-    'den', (SELECT to_jsonb(d) FROM den d)
+    'den_grain', COALESCE((SELECT jsonb_agg(to_jsonb(d)) FROM den_grain d), '[]'::jsonb)
 )::text AS payload
 """
     return sql, sql_params
@@ -1715,7 +1766,7 @@ async def _dashboard_p10(p: dict, meta: dict) -> dict:
     async with acquire() as pg:
         payload = json.loads(await pg.fetchval(sql, *sql_params))
     grain = payload["grain"] or []
-    den = payload["den"] or {}
+    den = payload["den_grain"] or []
     sel_country = p["countries"][0] if len(p["countries"]) == 1 else None
     cards, tables, warning = _p10_assemble(
         p["currency"], grain, den, sel_country, cfg, year_cur, year_prev)
@@ -1753,7 +1804,7 @@ async def _dashboard_p11(p: dict, meta: dict) -> dict:
         payload = json.loads(await pg.fetchval(sql, *sql_params))
         hc_payload = json.loads(await pg.fetchval(hc_sql, *hc_params))
     grain = payload["grain"] or []
-    den = payload["den"] or {}
+    den = payload["den_grain"] or []
     sel_country = p["countries"][0] if len(p["countries"]) == 1 else None
     cards, headcount, cards_by_country, tables, warning = _p11_assemble(
         p["currency"], grain, den, _p12_merge(hc_payload), sel_country,
@@ -2615,7 +2666,7 @@ async def _dashboard_b1(p: dict, meta: dict) -> dict:
         payload = json.loads(await pg.fetchval(sql, *sql_params))
         hc_payload = json.loads(await pg.fetchval(hc_sql, *hc_params))
     grain = payload["grain"] or []
-    den = payload["den"] or {}
+    den = payload["den_grain"] or []
     sel_country = p["countries"][0] if len(p["countries"]) == 1 else None
     data = _b1_assemble(p["currency"], grain, den, _p12_merge(hc_payload),
                         sel_country, cfg, year_cur, year_prev)
