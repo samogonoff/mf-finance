@@ -53,6 +53,25 @@ type Filters struct {
 	OnlyICO bool
 }
 
+// Aging — глубина задолженности: остаток на конец периода по возрасту ПРОСРОЧКИ.
+// Корзины FinDebt (SUM30/60/90/999): просрочка менее 30 дн., 30–60, 60–90, свыше 90.
+// Корзины в сумме НЕ равны остатку (проверено на OLAP: ≈9% ДЗ вне корзин) — разница
+// это задолженность без просрочки, она отдаётся полем Current = Closing − Σ корзин.
+// Значения положительные (КЗ во вьюхе отрицательна → репо переворачивает).
+type Aging struct {
+	Current float64 `json:"current"`
+	Lt30    float64 `json:"lt30"`
+	D30to60 float64 `json:"d30_60"`
+	D60to90 float64 `json:"d60_90"`
+	Gt90    float64 `json:"gt90"`
+}
+
+// withCurrent возвращает корзины с Current = closing − Σ корзин.
+func (a Aging) withCurrent(closing float64) Aging {
+	a.Current = closing - (a.Lt30 + a.D30to60 + a.D60to90 + a.Gt90)
+	return a
+}
+
 // DebtRow — плоская строка отчёта; UI сам группирует по
 // (Company → Partner → Account → Contract → Currency).
 type DebtRow struct {
@@ -86,8 +105,16 @@ type DebtRow struct {
 	ClosingDZ  float64 `json:"closing_dz"`
 	ClosingKZ  float64 `json:"closing_kz"`
 
+	// Глубина ДЗ/КЗ на конец периода (корзины просрочки). Сумма корзин = Closing*.
+	AgingDZ Aging `json:"aging_dz"`
+	AgingKZ Aging `json:"aging_kz"`
+
 	RevenuePeriod    float64 `json:"revenue_period"`
 	RevenueLastMonth float64 `json:"revenue_last_month"`
+	// Возвраты (отрицательные строки продаж), положительные числа. Заполняет только
+	// бэкенд arh; у остальных нули (источник FinDebt отдаёт продажи без разделения).
+	ReturnsPeriod    float64 `json:"returns_period"`
+	ReturnsLastMonth float64 `json:"returns_last_month"`
 }
 
 // DocumentRow — детализация по документу (drill-down под договором).

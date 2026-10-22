@@ -16,9 +16,15 @@
 // ============================================================================
 // ENV:
 //
-//	MODE                  — bootstrap | incremental | currency | debtarh | findwh | expcosts (дефолт bootstrap).
+//	MODE                  — bootstrap | incremental | currency | debtarh | findwh | expcosts | arh (дефолт bootstrap).
 //	                        expcosts — снимок затрат формы 1.5: процедура Budgeting → CH finance.exp_costs
 //	                        (EXP_COSTS_PROC, EXP_COSTS_AFTER_HOUR/BEFORE_HOUR, EXP_COSTS_FORCE=1).
+//	                        arh      — сырые Debt_arh/Docs/Wholesales_arh → CH fact_arh_debt/
+//	                        fact_arh_sales (DEBT_BACKEND=arh), та же реплика, что findwh:
+//	                        грузит только изменившиеся даты окна, пишет finance.findwh_etl_runs.
+//	                        ARH_FULL=1 — перезагрузить все даты окна, игнорируя отпечатки.
+//	                        Окно/границы: DEBTARH_RAW_MIN_DATE, ARH_WINDOW_DAYS, MSSQL_DOCS_FQN,
+//	                        MSSQL_DEBT_ARH_FQN, MSSQL_WHOLESALES_ARH_FQN (см. .env.example).
 //	                        currency — справочники курса (dim_valuta, currency_daily).
 //	                        debtarh  — сырые факты метода аналитика (debt_facts,
 //	                        turnover_facts) из Debt_arh/Wholesales_arh. Оба — для
@@ -59,6 +65,7 @@ import (
 	_ "github.com/microsoft/go-mssqldb"
 
 	"github.com/company/finance-api/internal/etl"
+	"github.com/company/finance-api/internal/reports/debt"
 )
 
 func mustEnv(k string) string {
@@ -90,6 +97,7 @@ func main() {
 	tables := etl.FinDebtTables{
 		Fin1FQN: "[" + db + "].[" + schema + "].[" + fin1 + "]",
 		Fin3FQN: "[" + db + "].[" + schema + "].[" + fin3 + "]",
+		Orgs:    entityINNsCLI(),
 	}
 
 	ctx := context.Background()
@@ -137,6 +145,8 @@ func main() {
 		if err == nil && !ran {
 			log.Printf("expcosts: заливка не нужна (уже загружено сегодня / вне окна; EXP_COSTS_FORCE=1 — принудительно)")
 		}
+	case "arh":
+		n, err = etl.RunFinDWHDaily(ctx, deps, arhOptsFromEnv())
 	default:
 		n, err = etl.RunBootstrapFinDebt(ctx, deps, opts)
 	}
@@ -172,6 +182,34 @@ func openMSSQL() *sql.DB {
 		log.Fatalf("mssql ping: %v", err)
 	}
 	return conn
+}
+
+// arhOptsFromEnv — параметры MODE=arh: только ARH-таблицы, принудительно (Force: без
+// проверок «уже загружено сегодня» и часа готовности — режим ручной).
+func arhOptsFromEnv() etl.FinDWHOpts {
+	orgs := make([]string, 0)
+	for _, e := range debt.Entities() {
+		orgs = append(orgs, e.INN)
+	}
+	window, _ := strconv.Atoi(envOr("ARH_WINDOW_DAYS", "45"))
+	batch, _ := strconv.Atoi(envOr("FINDWH_BATCH", "5000"))
+	return etl.FinDWHOpts{
+		BatchSize: batch,
+		Tables:    etl.FinDWHArhTables,
+		Force:     true,
+		Arh: etl.ArhOpts{
+			Tables: etl.ArhTables{
+				DebtFQN:       envOr("MSSQL_DEBT_ARH_FQN", "[Payments].[dbo].[Debt_arh]"),
+				DocsFQN:       envOr("MSSQL_DOCS_FQN", "[Payments].[dbo].[Docs]"),
+				WholesalesFQN: envOr("MSSQL_WHOLESALES_ARH_FQN", "[Payments].[dbo].[Wholesales_arh]"),
+				Orgs:          orgs,
+			},
+			MinDate:    envOr("DEBTARH_RAW_MIN_DATE", "2026-06-01"),
+			WindowDays: window,
+			Full:       os.Getenv("ARH_FULL") == "1",
+		},
+		TriggeredBy: "cli",
+	}
 }
 
 // finDWHOptsFromEnv — параметры MODE=findwh (те же переменные, что у воркера go-api).
@@ -216,4 +254,13 @@ func expCostsOptsFromEnv() etl.ExpCostsOpts {
 		Force:       os.Getenv("EXP_COSTS_FORCE") == "1",
 		TriggeredBy: "cli",
 	}
+}
+
+// entityINNsCLI — УНП наших ЮЛ из seed отчёта (сужение выборок оборотов/ARH по UNPOrg).
+func entityINNsCLI() []string {
+	out := make([]string, 0)
+	for _, e := range debt.Entities() {
+		out = append(out, e.INN)
+	}
+	return out
 }

@@ -65,7 +65,7 @@ func (h *Handler) Report(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.Report(r.Context(), f)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeErr(w, errStatus(err), err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -104,7 +104,7 @@ func (h *Handler) Drilldown(w http.ResponseWriter, r *http.Request) {
 	}
 	docs, err := h.svc.Drilldown(r.Context(), dq)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeErr(w, errStatus(err), err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, docs)
@@ -211,4 +211,14 @@ func collectList(q url.Values, key string) []string {
 		}
 	}
 	return out
+}
+
+// errStatus — HTTP-статус ошибки отчёта: «нет снэпшота на дату» (arh) — 422 с понятным
+// текстом, остальное — 400 как раньше.
+func errStatus(err error) int {
+	var ns *NoSnapshotError
+	if errors.As(err, &ns) {
+		return http.StatusUnprocessableEntity
+	}
+	return http.StatusBadRequest
 }

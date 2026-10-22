@@ -151,6 +151,11 @@ func main() {
 		}
 
 		switch cfg.DebtBackend {
+		case "findebt", "findebt-live", "findebt-docdate", "arh":
+		default:
+			log.Printf("debt: неизвестный DEBT_BACKEND=%q (допустимо: findebt, findebt-live, findebt-docdate, arh) — используется findebt", cfg.DebtBackend)
+		}
+		switch cfg.DebtBackend {
 		case "findebt-live":
 			// Прямое чтение вьюх Payments.report.FinDebt1/3 из MSSQL (без CH).
 			fdRepo, ferr := debt.NewFinDebtRepo(mssqlDB, cfg.PremasterPaymentsDatabase,
@@ -163,6 +168,19 @@ func main() {
 			}
 			premasterRepo = fdRepo
 			log.Printf("debt: backend=findebt-live (MSSQL Payments.report.FinDebt1/3)")
+		case "arh":
+			// Третий поток: остатки и продажи пересобраны из сырых Debt_arh/Docs/
+			// Wholesales_arh (CH fact_arh_debt/fact_arh_sales), BYN/USD по курсу на дату
+			// снэпшота/события (currency_daily, ASOF). Заливает воркер реплики FinDWH (ARH_SYNC=1).
+			arhRepo, aerr := debt.NewArhCHRepo(cfg.ClickHouseHTTPURL, cfg.ClickHouseUser, cfg.ClickHousePass)
+			if aerr != nil {
+				log.Fatalf("debt: arh init: %v", aerr)
+			}
+			if arhRepo == nil {
+				log.Fatalf("debt: DEBT_BACKEND=arh but CLICKHOUSE_HTTP_URL/USER not set")
+			}
+			premasterRepo = arhRepo
+			log.Printf("debt: backend=arh (ClickHouse fact_arh_debt/fact_arh_sales + currency_daily)")
 		case "findebt-docdate":
 			// Второй поток (метод аналитика): суммы из сырых Debt_arh/Wholesales_arh
 			// (CH debt_facts/turnover_facts), BYN/USD пересчитаны на дату документа
@@ -213,7 +231,9 @@ func main() {
 	// берёт watermark из CH; на findebt-live (без CH) воркер бессмысленен.
 	if mssqlDB != nil && cfg.DebtBackend != "findebt-live" {
 		fdTables := etl.FinDebtTables{
+			Fin1FQN: "[" + cfg.PremasterPaymentsDatabase + "].[" + cfg.DebtFinDebtSchema + "].[" + cfg.DebtFinDebt1Table + "]",
 			Fin3FQN: "[" + cfg.PremasterPaymentsDatabase + "].[" + cfg.DebtFinDebtSchema + "].[" + cfg.DebtFinDebt3Table + "]",
+			Orgs:    entityINNs(),
 		}
 		etl.NewFinDebtWorker(etl.Deps{
 			MSSQL:  mssqlDB,
@@ -271,6 +291,22 @@ func main() {
 		BatchSize:      cfg.FinDWHBatch,
 		ReadyCheck:     cfg.FinDWHReadyCheck,
 		ReadyAfterHour: cfg.FinDWHReadyAfterHour,
+	}
+	if cfg.DebtBackend == "arh" && !cfg.ArhSync {
+		log.Printf("debt: DEBT_BACKEND=arh, но ARH_SYNC=0 — fact_arh_* не заливаются воркером, отчёт будет пустым, пока их не зальют вручную (MODE=arh /findebt-etl)")
+	}
+	if cfg.ArhSync && cfg.FinDWHSyncInterval <= 0 {
+		log.Printf("debt: ARH_SYNC=1, но FINDWH_SYNC_INTERVAL=0 — воркер реплики выключен, arh_debt/arh_sales не загрузятся (отчёт DEBT_BACKEND=arh будет пустым)")
+	}
+	if cfg.ArhSync {
+		// Потоки отчёта ВГО DEBT_BACKEND=arh (Debt_arh/Docs/Wholesales_arh) идут в этом же воркере.
+		orgs := entityINNs()
+		fwOpts.Arh = etl.ArhOpts{
+			Tables: etl.ArhTables{
+				DebtFQN: cfg.DebtArhFQN, DocsFQN: cfg.DocsFQN, WholesalesFQN: cfg.WholesalesArhFQN, Orgs: orgs,
+			},
+			MinDate: cfg.ArhMinDate, WindowDays: cfg.ArhWindowDays, ReadyAfterHour: cfg.ArhReadyAfterHour,
+		}
 	}
 	var (
 		fwWorker   *etl.FinDWHWorker
@@ -835,4 +871,13 @@ func main() {
 	defer cancel()
 	_ = srv.Shutdown(ctx)
 	log.Println("finance-api stopped")
+}
+
+// entityINNs — УНП наших ЮЛ из seed отчёта: сужают выборки ETL до индекса по UNPOrg.
+func entityINNs() []string {
+	out := make([]string, 0, len(debt.Entities()))
+	for _, e := range debt.Entities() {
+		out = append(out, e.INN)
+	}
+	return out
 }
