@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -467,28 +469,38 @@ func dropArhDate(ctx context.Context, ch *chClient, s arhStream, day string) err
 	return nil
 }
 
+var arhStageSeq atomic.Uint64
+
+// arhStageTable returns an identifier private to one reload. The PID separates
+// CLI/worker processes, while time and the sequence separate goroutines and dates.
+func arhStageTable(base string) string {
+	return fmt.Sprintf("%s_%d_%d_%d", base, os.Getpid(), time.Now().UnixNano(), arhStageSeq.Add(1))
+}
+
 // reloadArhDate — полная замена одной даты:
-//  1. дата грузится в stage (основная таблица не тронута); ошибка → stage чистится, выход;
+//  1. дата грузится в stage (основная таблица не тронута); ошибка → stage удаляется, выход;
 //  2. число строк в stage сверяется с прочитанным из MSSQL;
 //  3. маркер «не загружена» в fact_arh_day_fp (оборванная дальше замена перепланируется);
 //  4. ALTER DELETE по дате в основной (синхронно) + INSERT SELECT из stage — секунды;
 //  5. отпечаток дня (MAX(DateChange), число строк источника) пишется ПОСЛЕ успеха.
 func reloadArhDate(ctx context.Context, src arhSource, ch *chClient, opts FinDWHOpts, s arhStream, day string, fp arhFP) (int64, error) {
-	if err := ch.exec(ctx, "TRUNCATE TABLE "+s.stage); err != nil {
-		return 0, fmt.Errorf("очистка %s: %w", s.stage, err)
+	stage := arhStageTable(s.stage)
+	if err := ch.exec(ctx, "CREATE TABLE "+stage+" AS "+s.table); err != nil {
+		return 0, fmt.Errorf("создание %s: %w", stage, err)
 	}
-	defer func() { _ = ch.exec(context.WithoutCancel(ctx), "TRUNCATE TABLE "+s.stage) }()
+	defer func() { _ = ch.exec(context.WithoutCancel(ctx), "DROP TABLE IF EXISTS "+stage) }()
 
-	n, err := streamArhDate(ctx, src, ch, opts, s, day)
+	n, err := streamArhDate(ctx, src, ch, opts, s, stage, day)
 	if err != nil {
 		return n, err
 	}
-	got, err := ch.queryString(ctx, "SELECT count() FROM "+s.stage)
+	dayFilter := fmt.Sprintf("%s = toDate('%s')", s.dateCol, sqlEscape(day))
+	got, err := ch.queryString(ctx, "SELECT count() FROM "+stage+" WHERE "+dayFilter)
 	if err != nil {
-		return n, fmt.Errorf("count %s: %w", s.stage, err)
+		return n, fmt.Errorf("count %s: %w", stage, err)
 	}
 	if got != fmt.Sprint(n) {
-		return n, fmt.Errorf("в %s %s строк, прочитано из MSSQL %d — замену не делаем", s.stage, got, n)
+		return n, fmt.Errorf("в %s %s строк, прочитано из MSSQL %d — замену не делаем", stage, got, n)
 	}
 	if err := writeArhFP(ctx, ch, s, day, "", 0, 0); err != nil {
 		return n, fmt.Errorf("маркер отпечатка: %w", err)
@@ -497,7 +509,7 @@ func reloadArhDate(ctx context.Context, src arhSource, ch *chClient, opts FinDWH
 		return n, fmt.Errorf("cleanup %s: %w", s.table, err)
 	}
 	if n > 0 {
-		if err := ch.execLong(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s", s.table, s.stage)); err != nil {
+		if err := ch.execLong(ctx, fmt.Sprintf("INSERT INTO %s SELECT * FROM %s WHERE %s", s.table, stage, dayFilter)); err != nil {
 			return n, fmt.Errorf("замена даты (insert select): %w", err)
 		}
 	}
@@ -508,7 +520,7 @@ func reloadArhDate(ctx context.Context, src arhSource, ch *chClient, opts FinDWH
 }
 
 // streamArhDate — курсор одного дня → батчи → stage-таблица (без накопления всего в памяти).
-func streamArhDate(ctx context.Context, src arhSource, ch *chClient, opts FinDWHOpts, s arhStream, day string) (int64, error) {
+func streamArhDate(ctx context.Context, src arhSource, ch *chClient, opts FinDWHOpts, s arhStream, stage, day string) (int64, error) {
 	batch := opts.BatchSize
 	if batch <= 0 || batch > 5000 {
 		batch = 5000
@@ -519,7 +531,7 @@ func streamArhDate(ctx context.Context, src arhSource, ch *chClient, opts FinDWH
 		if len(buf) == 0 {
 			return nil
 		}
-		if err := ch.insertRows(ctx, s.stage, buf); err != nil {
+		if err := ch.insertRows(ctx, stage, buf); err != nil {
 			return err
 		}
 		total += int64(len(buf))

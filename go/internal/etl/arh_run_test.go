@@ -18,10 +18,10 @@ import (
 // по датам и журнал отпечатков (ReplacingMergeTree по ver). Ведёт журнал операций.
 type fakeArhCH struct {
 	mu        sync.Mutex
-	stageRows int
+	stageRows map[string]int
 	main      map[string]int      // дата → строк в основной таблице
 	fp        map[string]arhFPRow // дата → последняя версия отпечатка
-	ops       []string            // журнал: TRUNCATE, STAGE+n, DELETE d, SWAP, FP d rows
+	ops       []string            // журнал: CREATE/DROP, STAGE+n, DELETE d, SWAP, FP d rows
 	failSwap  bool                // INSERT … SELECT из stage падает
 	lastDel   string
 }
@@ -29,10 +29,11 @@ type fakeArhCH struct {
 var (
 	reDelete = regexp.MustCompile(`DELETE WHERE \w+ = toDate\('([0-9-]+)'\)`)
 	reDate   = regexp.MustCompile(`toDate\('([0-9-]+)'\)`)
+	reStage  = regexp.MustCompile(`finance\.fact_arh_(?:debt|sales)_stage_[0-9]+_[0-9]+_[0-9]+`)
 )
 
 func newFakeCH() (*fakeArhCH, *chClient, func()) {
-	f := &fakeArhCH{main: map[string]int{}, fp: map[string]arhFPRow{}}
+	f := &fakeArhCH{stageRows: map[string]int{}, main: map[string]int{}, fp: map[string]arhFPRow{}}
 	srv := httptest.NewServer(f)
 	c, _ := newCHClient(srv.URL, "u", "p")
 	return f, c, srv.Close
@@ -47,9 +48,14 @@ func (f *fakeArhCH) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		q = string(body)
 	}
 	switch {
-	case strings.HasPrefix(q, "TRUNCATE TABLE"):
-		f.stageRows = 0
-		f.ops = append(f.ops, "TRUNCATE")
+	case strings.HasPrefix(q, "CREATE TABLE"):
+		stage := reStage.FindString(q)
+		f.stageRows[stage] = 0
+		f.ops = append(f.ops, "CREATE "+stage)
+	case strings.HasPrefix(q, "DROP TABLE IF EXISTS"):
+		stage := reStage.FindString(q)
+		delete(f.stageRows, stage)
+		f.ops = append(f.ops, "DROP "+stage)
 	case strings.HasPrefix(q, "INSERT INTO finance.fact_arh_day_fp"):
 		for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
 			var row arhFPRow
@@ -60,18 +66,20 @@ func (f *fakeArhCH) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.ops = append(f.ops, fmt.Sprintf("FP %s %d", row.Day, row.SrcRows))
 		}
 	case strings.HasPrefix(q, "INSERT INTO finance.fact_arh_debt_stage"):
+		stage := reStage.FindString(q)
 		n := len(strings.Split(strings.TrimSpace(string(body)), "\n"))
-		f.stageRows += n
+		f.stageRows[stage] += n
 		f.ops = append(f.ops, fmt.Sprintf("STAGE+%d", n))
 	case strings.Contains(q, "SELECT * FROM finance.fact_arh_debt_stage"):
 		if f.failSwap {
 			http.Error(w, "boom", http.StatusInternalServerError)
 			return
 		}
-		f.main[f.lastDel] = f.stageRows
+		stage := reStage.FindString(q)
+		f.main[f.lastDel] = f.stageRows[stage]
 		f.ops = append(f.ops, "SWAP "+f.lastDel)
 	case strings.HasPrefix(q, "SELECT count() FROM finance.fact_arh_debt_stage"):
-		_, _ = fmt.Fprint(w, f.stageRows)
+		_, _ = fmt.Fprint(w, f.stageRows[reStage.FindString(q)])
 	case strings.HasPrefix(q, "ALTER TABLE finance.fact_arh_debt DELETE"):
 		m := reDelete.FindStringSubmatch(q)
 		f.lastDel = m[1]
@@ -123,6 +131,32 @@ func arhTestOpts() FinDWHOpts {
 	return FinDWHOpts{BatchSize: 2, Arh: ArhOpts{Tables: testArhTables, MinDate: "2026-06-01", WindowDays: 1}}
 }
 
+func TestArhStageTableUniqueForConcurrentReloads(t *testing.T) {
+	const n = 100
+	names := make(chan string, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			names <- arhStageTable("finance.fact_arh_debt_stage")
+		}()
+	}
+	wg.Wait()
+	close(names)
+
+	seen := make(map[string]struct{}, n)
+	for name := range names {
+		if reStage.FindString(name) != name {
+			t.Fatalf("недопустимое имя stage-таблицы: %q", name)
+		}
+		if _, exists := seen[name]; exists {
+			t.Fatalf("повторное имя stage-таблицы: %q", name)
+		}
+		seen[name] = struct{}{}
+	}
+}
+
 // Обрыв посреди даты: основная таблица и отпечаток не тронуты, stage очищен, дата
 // перепланируется и на следующем прогоне загружается целиком.
 func TestRunArh_InterruptedDateIsRescheduled(t *testing.T) {
@@ -139,8 +173,8 @@ func TestRunArh_InterruptedDateIsRescheduled(t *testing.T) {
 	if f.main["2026-10-19"] != 5 {
 		t.Errorf("основная таблица тронута при обрыве: %d строк", f.main["2026-10-19"])
 	}
-	if f.fp["2026-10-19"].SrcRows != 5 || f.stageRows != 0 {
-		t.Errorf("отпечаток/stage: fp=%+v stage=%d", f.fp["2026-10-19"], f.stageRows)
+	if f.fp["2026-10-19"].SrcRows != 5 || len(f.stageRows) != 0 {
+		t.Errorf("отпечаток/stage: fp=%+v stage=%v", f.fp["2026-10-19"], f.stageRows)
 	}
 	for _, op := range f.ops {
 		if strings.HasPrefix(op, "DELETE") || strings.HasPrefix(op, "SWAP") {

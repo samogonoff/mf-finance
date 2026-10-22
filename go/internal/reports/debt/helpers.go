@@ -99,11 +99,19 @@ func bindIN(args []any, prefix string, values []string) ([]string, []any) {
 	return names, args
 }
 
-// quoteList — 'a','b','c' с экранированием кавычек (инлайн IN-списка для CH).
+// chEscape — содержимое строкового литерала ClickHouse. Backslash экранируется
+// первым: иначе вход `\\'` может поглотить добавленный escape кавычки и закрыть литерал.
+func chEscape(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s)
+}
+
+func chQuote(s string) string { return "'" + chEscape(s) + "'" }
+
+// quoteList — 'a','b','c' с экранированием строковых литералов для CH.
 func quoteList(vals []string) string {
 	q := make([]string, len(vals))
 	for i, v := range vals {
-		q[i] = "'" + strings.ReplaceAll(v, "'", "''") + "'"
+		q[i] = chQuote(v)
 	}
 	return strings.Join(q, ",")
 }

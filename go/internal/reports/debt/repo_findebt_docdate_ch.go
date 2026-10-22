@@ -245,10 +245,9 @@ func (r *findebtDocDateCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow
 // docDrilldownQuery — документы (DocID) договора/счёта из debt_facts, пересчитанные
 // на DocDate. Флаг is_opening: документ возник до начала периода.
 func docDrilldownQuery(companyINN, partnerINN, acc, from, to, lens string) string {
-	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
 	cpClause := ""
 	if strings.TrimSpace(partnerINN) != "" {
-		cpClause = " AND counterparty_id = '" + esc(partnerINN) + "'"
+		cpClause = " AND counterparty_id = " + chQuote(partnerINN)
 	}
 	conv := docDateConvExpr(lens, "amount")
 	return fmt.Sprintf(`
@@ -260,15 +259,15 @@ SELECT doc_id,
 FROM (
     SELECT df.doc_id AS doc_id, df.doc_description AS doc_description, df.doc_date AS doc_date,
            df.rate_date AS rate_date, df.amount AS amount, df.currency_kod AS currency_kod, df.usd_kod AS usd_kod,
-           (df.doc_date < toDate('%[4]s')) AS is_opening
+           (df.doc_date < toDate(%[4]s)) AS is_opening
     FROM (
         SELECT *, doc_date AS rate_date, toInt32(840) AS usd_kod
         FROM finance.debt_facts
-        WHERE company_id = '%[1]s' AND acc = '%[3]s'%[7]s AND doc_date <= toDate('%[5]s')
+        WHERE company_id = %[1]s AND acc = %[3]s%[7]s AND doc_date <= toDate(%[5]s)
     ) df
 ) f`+asofRates+`
 ORDER BY doc_id
-FORMAT JSONEachRow`, esc(companyINN), "", esc(acc), esc(from), esc(to), conv, cpClause)
+FORMAT JSONEachRow`, chQuote(companyINN), "", chQuote(acc), chQuote(from), chQuote(to), conv, cpClause)
 }
 
 // Drilldown — документная детализация (DocID) по (company, [counterparty], acc).

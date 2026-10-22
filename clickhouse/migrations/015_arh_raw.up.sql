@@ -22,7 +22,7 @@
 --
 -- Движок: ReplacingMergeTree(inserted_at). 1С перезаписывает прошлые даты, поэтому
 -- ЭТЛ перезагружает дату снэпшота/события ЦЕЛИКОМ и атомарно по смыслу: дата сначала
--- грузится в stage-таблицу (fact_arh_*_stage, та же структура), и только после полной
+-- грузится в уникальную stage-таблицу с той же структурой, и только после полной
 -- успешной загрузки в одной короткой операции заменяется в основной таблице
 -- (ALTER TABLE DELETE по дате + INSERT SELECT из stage). Оборванная загрузка основную
 -- таблицу не трогает.
@@ -95,11 +95,8 @@ PARTITION BY toYYYYMM(event_date)
 ORDER BY (company_id, event_date, counterparty_id, acc, doc_id, currency_kod, amount_sign)
 SETTINGS index_granularity = 8192;
 
--- Stage-таблицы: одна загружаемая дата, очищаются до и после загрузки. Структура и
--- ключ как у основных (CREATE TABLE AS копирует колонки, движок, партиции, ORDER BY).
-CREATE TABLE IF NOT EXISTS finance.fact_arh_debt_stage AS finance.fact_arh_debt;
-
-CREATE TABLE IF NOT EXISTS finance.fact_arh_sales_stage AS finance.fact_arh_sales;
+-- Stage-таблицу ETL создаёт для каждой замены даты с уникальным именем
+-- fact_arh_*_stage_<pid>_<unix_nano>_<seq> и удаляет после загрузки. Так CLI и воркер не делят общую stage-таблицу.
 
 CREATE TABLE IF NOT EXISTS finance.fact_arh_day_fp
 (

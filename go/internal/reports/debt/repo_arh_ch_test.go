@@ -260,8 +260,52 @@ func TestArhDrilldownQuery(t *testing.T) {
 	if !strings.Contains(noRef, "ASOF LEFT JOIN finance.currency_daily rSrc") {
 		t.Errorf("в линзе BYN документы пересчитываются по курсу:\n%s", noRef)
 	}
-	if !strings.Contains(arhDrilldownQuery("a'b", "b", "x", "", "2026-09-30", LensContract, 0), "company_id = 'a''b'") {
+	if !strings.Contains(arhDrilldownQuery("a'b", "b", "x", "", "2026-09-30", LensContract, 0), `company_id = 'a\'b'`) {
 		t.Errorf("значения должны экранироваться")
+	}
+	attack := `x\' OR 1=1 --`
+	if got, want := chQuote(attack), `'x\\\' OR 1=1 --'`; got != want {
+		t.Errorf("chQuote(%q) = %q, ожид. %q", attack, got, want)
+	}
+	if !strings.Contains(arhDrilldownQuery("6950135110", attack, attack, attack, "2026-09-30", LensContract, 0), "counterparty_id = "+chQuote(attack)) {
+		t.Errorf("drilldown должен экранировать backslash до кавычки")
+	}
+}
+
+func TestArhDrilldown_HistoricalDateDoesNotRequireOpeningSnapshot(t *testing.T) {
+	srv, seen := arhServer(t, "2026-08-31\t2026-07-31\n", "", "", "", 0)
+	repo, _ := NewArhCHRepo(srv.URL, "u", "p")
+	if _, err := repo.Drilldown(context.Background(), DrilldownQuery{
+		CompanyINN: "6950135110", PartnerINN: "690591512", Account: "62.01", DateTo: date(2026, 8, 31),
+	}); err != nil {
+		t.Fatalf("исторический drilldown: %v", err)
+	}
+	for _, q := range *seen {
+		if strings.Contains(q, "HAVING dateDiff('day'") && strings.Contains(q, "AND dateDiff('day', maxIf(snapshot_date, snapshot_date <") {
+			t.Fatalf("drilldown не должен проверять открывающий снэпшот:\n%s", q)
+		}
+	}
+}
+
+func TestArhReport_WithoutDateFromDoesNotRequireOpeningSnapshot(t *testing.T) {
+	srv, seen := arhServer(t, "2026-08-31\t2026-07-31\n", "", "", "", http.StatusNotFound)
+	repo, _ := NewArhCHRepo(srv.URL, "u", "p")
+	if _, err := repo.Report(context.Background(), Filters{DateTo: date(2026, 8, 31)}); err != nil {
+		t.Fatalf("отчёт без date_from: %v", err)
+	}
+	for _, q := range *seen {
+		if strings.Contains(q, "HAVING dateDiff('day'") && strings.Contains(q, "AND dateDiff('day', maxIf(snapshot_date, snapshot_date <") {
+			t.Fatalf("отчёт без date_from не должен проверять открывающий снэпшот:\n%s", q)
+		}
+	}
+}
+
+func TestArhDrilldown_RejectsUnknownCompany(t *testing.T) {
+	srv, _ := arhServer(t, "", "", "", "", 0)
+	repo, _ := NewArhCHRepo(srv.URL, "u", "p")
+	_, err := repo.Drilldown(context.Background(), DrilldownQuery{CompanyINN: `x\' OR 1=1 --`, Account: "62.01", DateTo: date(2026, 9, 30)})
+	if err == nil || !strings.Contains(err.Error(), "unknown company_inn") {
+		t.Fatalf("неизвестное ЮЛ должно отклоняться: %v", err)
 	}
 }
 

@@ -337,10 +337,9 @@ func decodeFinDebtReport(body []byte, lens string) ([]DebtRow, error) {
 // для (ЮЛ, контрагент, счёт, № договора). Срок оплаты (payment_date) и просрочка
 // (day_delay) — по ТЗ показываются именно здесь, на уровне документа.
 func findebtDrilldownQuery(companyINN, partnerINN, acc, docNumber, to, lens string) string {
-	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
 	docClause := ""
 	if strings.TrimSpace(docNumber) != "" {
-		docClause = " AND doc_number = '" + esc(docNumber) + "'"
+		docClause = " AND doc_number = " + chQuote(docNumber)
 	}
 	return fmt.Sprintf(`
 SELECT doc_number,
@@ -352,11 +351,11 @@ SELECT doc_number,
        toString(sum_d)                    AS sum_d,
        toString(sum_k)                    AS sum_k
 FROM finance.fact_findebt_ccy FINAL
-WHERE snapshot_date = (SELECT max(snapshot_date) FROM finance.fact_findebt_ccy WHERE snapshot_date <= toDate('%[4]s'))
-  AND cur_filter = '%[6]s'
-  AND company_id = '%[1]s' AND counterparty_id = '%[2]s' AND acc = '%[3]s'%[5]s
+WHERE snapshot_date = (SELECT max(snapshot_date) FROM finance.fact_findebt_ccy WHERE snapshot_date <= toDate(%[4]s))
+  AND cur_filter = %[6]s
+  AND company_id = %[1]s AND counterparty_id = %[2]s AND acc = %[3]s%[5]s
 ORDER BY doc_date, doc_number
-FORMAT JSONEachRow`, esc(companyINN), esc(partnerINN), esc(acc), esc(to), docClause, esc(lens))
+FORMAT JSONEachRow`, chQuote(companyINN), chQuote(partnerINN), chQuote(acc), chQuote(to), docClause, chQuote(lens))
 }
 
 // Drilldown — документная детализация договора. Дата оплаты и просрочка приходят

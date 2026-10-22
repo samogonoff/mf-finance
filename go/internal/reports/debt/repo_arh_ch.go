@@ -162,7 +162,7 @@ func arhSnapshotDatesQuery(inns []string, from, to string) string {
 FROM finance.fact_arh_debt WHERE snapshot_date <= toDate('%[2]s')%[3]s FORMAT TSV`, from, to, orgClause)
 }
 
-func (r *arhCHRepo) snapshotDates(ctx context.Context, inns []string, from, to string) (closeDt, openDt string, err error) {
+func (r *arhCHRepo) snapshotDates(ctx context.Context, inns []string, from, to string, checkOpen bool) (closeDt, openDt string, err error) {
 	body, err := r.post(ctx, arhSnapshotDatesQuery(inns, from, to))
 	if err != nil {
 		return "", "", err
@@ -178,7 +178,7 @@ func (r *arhCHRepo) snapshotDates(ctx context.Context, inns []string, from, to s
 		return s
 	}
 	closeDt, openDt = norm(parts[0]), norm(parts[1])
-	if err := r.checkCompanySnapshotFreshness(ctx, inns, from, to); err != nil {
+	if err := r.checkCompanySnapshotFreshness(ctx, inns, from, to, checkOpen); err != nil {
 		return "", "", err
 	}
 	return closeDt, openDt, nil
@@ -190,7 +190,7 @@ func (r *arhCHRepo) snapshotDates(ctx context.Context, inns []string, from, to s
 // the missing companies. Companies that have never had rows are ignored; for every company
 // present on or before the report date, both available period boundaries must be no more
 // than three days away from the requested dates.
-func (r *arhCHRepo) checkCompanySnapshotFreshness(ctx context.Context, inns []string, from, to string) error {
+func (r *arhCHRepo) checkCompanySnapshotFreshness(ctx context.Context, inns []string, from, to string, checkOpen bool) error {
 	if len(inns) == 0 {
 		for _, e := range Entities() {
 			inns = append(inns, e.INN)
@@ -199,6 +199,12 @@ func (r *arhCHRepo) checkCompanySnapshotFreshness(ctx context.Context, inns []st
 	if len(inns) == 0 {
 		return nil
 	}
+	having := `dateDiff('day', maxIf(snapshot_date, snapshot_date <= toDate('` + to + `')), toDate('` + to + `')) > ` + strconv.Itoa(arhMaxSnapshotGapDays)
+	if checkOpen {
+		having += `
+    OR (maxIf(snapshot_date, snapshot_date < toDate('` + from + `')) != toDate('` + arhNoDate + `')
+        AND dateDiff('day', maxIf(snapshot_date, snapshot_date < toDate('` + from + `')), toDate('` + from + `')) > ` + strconv.Itoa(arhMaxSnapshotGapDays) + `)`
+	}
 	q := `SELECT company_id,
        toString(maxIf(snapshot_date, snapshot_date <= toDate('` + to + `'))),
        toString(maxIf(snapshot_date, snapshot_date < toDate('` + from + `')))
@@ -206,9 +212,7 @@ FROM finance.fact_arh_debt
 WHERE snapshot_date <= toDate('` + to + `')
   AND company_id IN (` + quoteList(inns) + `)
 GROUP BY company_id
-HAVING dateDiff('day', maxIf(snapshot_date, snapshot_date <= toDate('` + to + `')), toDate('` + to + `')) > ` + strconv.Itoa(arhMaxSnapshotGapDays) + `
-    OR (maxIf(snapshot_date, snapshot_date < toDate('` + from + `')) != toDate('` + arhNoDate + `')
-        AND dateDiff('day', maxIf(snapshot_date, snapshot_date < toDate('` + from + `')), toDate('` + from + `')) > ` + strconv.Itoa(arhMaxSnapshotGapDays) + `)
+HAVING ` + having + `
 ORDER BY company_id
 FORMAT TSV`
 	body, err := r.post(ctx, q)
@@ -230,7 +234,7 @@ FORMAT TSV`
 			name += " (" + inn + ")"
 		}
 		dates := "закрытие " + ruDay(closeDay)
-		if openDay != arhNoDate && daysBetweenISO(openDay, from) > arhMaxSnapshotGapDays {
+		if checkOpen && openDay != arhNoDate && daysBetweenISO(openDay, from) > arhMaxSnapshotGapDays {
 			dates += ", открытие " + ruDay(openDay)
 		}
 		stale = append(stale, name+": "+dates)
@@ -470,13 +474,17 @@ func (r *arhCHRepo) Report(ctx context.Context, f Filters) ([]DebtRow, error) {
 		return nil, errors.New("debt.arh.Report: date_to required")
 	}
 	lens := normLens(f.Lens)
+	hasFrom := !f.DateFrom.IsZero()
 	from, to := asDate(f.DateFrom), asDate(f.DateTo)
-	if f.DateFrom.IsZero() {
+	if !hasFrom {
 		from = to
 	}
-	closeDt, openDt, err := r.snapshotDates(ctx, f.EntityINNs, from, to)
+	closeDt, openDt, err := r.snapshotDates(ctx, f.EntityINNs, from, to, hasFrom)
 	if err != nil {
 		return nil, err
+	}
+	if !hasFrom {
+		openDt = ""
 	}
 	if err := checkArhSnapshots(closeDt, openDt, from, to); err != nil {
 		return nil, err
@@ -695,25 +703,24 @@ func decodeArhSales(body []byte, lens string) ([]DebtRow, error) {
 // документа без договора (ContractRef строки свода); пусто → все документы счёта.
 // curKod != 0 → только строки этой валюты учёта (линза «В валюте договора»).
 func arhDrilldownQuery(companyINN, partnerINN, acc, contractRef, closeDt, lens string, curKod int) string {
-	esc := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
-	cond := " AND company_id = '" + esc(companyINN) + "' AND counterparty_id = '" + esc(partnerINN) + "'"
+	cond := " AND company_id = " + chQuote(companyINN) + " AND counterparty_id = " + chQuote(partnerINN)
 	switch ref := strings.TrimSpace(contractRef); ref {
 	case "": // без фильтра по договору
 	case arhNoContractRef: // группа «без договора»: пустой ключ
 		cond += " AND if(contract_id != '', contract_id, doc_id) = ''"
 	default:
-		cond += " AND if(contract_id != '', contract_id, doc_id) = '" + esc(ref) + "'"
+		cond += " AND if(contract_id != '', contract_id, doc_id) = " + chQuote(ref)
 	}
 	if curKod != 0 && lens == LensContract {
 		cond += fmt.Sprintf(" AND currency_kod = %d", curKod)
 	}
 	netRows := arhNetDebtRows(`FROM finance.fact_arh_debt FINAL
-    WHERE snapshot_date = toDate('`+esc(closeDt)+`')`+cond, false)
+    WHERE snapshot_date = toDate(`+chQuote(closeDt)+`)`+cond, false)
 	grain := `SELECT doc_id, any(doc_number) AS doc_number, max(doc_date) AS doc_date, any(doc_type) AS doc_type,
            any(contract_title) AS contract_title, max(payment_date) AS payment_date, max(delay) AS delay, currency_kod,
-           ` + arhAmtCols[0][1] + ` AS v_d, ` + arhAmtCols[1][1] + ` AS v_k, toDate('` + esc(closeDt) + `') AS rate_date, toInt32(840) AS usd_kod
+           ` + arhAmtCols[0][1] + ` AS v_d, ` + arhAmtCols[1][1] + ` AS v_k, toDate(` + chQuote(closeDt) + `) AS rate_date, toInt32(840) AS usd_kod
     FROM (` + netRows + `)
-    WHERE acc = '` + esc(acc) + `'
+    WHERE acc = ` + chQuote(acc) + `
     GROUP BY doc_id, currency_kod`
 	var inner string
 	if lens == LensContract {
@@ -753,8 +760,12 @@ func (r *arhCHRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Document
 	if q.DateTo.IsZero() {
 		return nil, errors.New("debt.arh.Drilldown: date_to required")
 	}
+	companyINN := strings.TrimSpace(q.CompanyINN)
+	if entityNameForINN(companyINN) == "" {
+		return nil, errors.New("debt.arh.Drilldown: unknown company_inn")
+	}
 	to := asDate(q.DateTo)
-	closeDt, _, err := r.snapshotDates(ctx, []string{strings.TrimSpace(q.CompanyINN)}, to, to)
+	closeDt, _, err := r.snapshotDates(ctx, []string{companyINN}, to, to, false)
 	if err != nil {
 		return nil, err
 	}
@@ -762,7 +773,7 @@ func (r *arhCHRepo) Drilldown(ctx context.Context, q DrilldownQuery) ([]Document
 		return nil, err
 	}
 	body, err := r.post(ctx, arhDrilldownQuery(
-		strings.TrimSpace(q.CompanyINN), strings.TrimSpace(q.PartnerINN), strings.TrimSpace(q.Account),
+		companyINN, strings.TrimSpace(q.PartnerINN), strings.TrimSpace(q.Account),
 		strings.TrimSpace(q.Contract), closeDt, normLens(q.Lens), isoCurrencyKod(q.Currency)))
 	if err != nil {
 		return nil, err
