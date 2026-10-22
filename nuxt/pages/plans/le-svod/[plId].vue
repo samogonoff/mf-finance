@@ -26,7 +26,7 @@
     <section v-if="data" class="card ready-card" :class="{ 'ready-bad': appr?.stages['1.6'] !== 'completed' && !data.ready }">
       <div class="card-header">
         <span class="card-title">Готовность к этапу 1.6</span>
-        <span v-if="appr?.stages['1.6'] === 'completed'" class="badge badge-pos">Согласовано</span>
+        <span v-if="appr?.stages['1.6'] === 'completed'" class="badge badge-pos">Формы утверждены</span>
         <span v-else class="badge" :class="data.ready ? 'badge-pos' : 'badge-neg'">{{ data.ready ? "можно завершать" : "есть блокирующие замечания" }}</span>
       </div>
       <ul v-if="appr?.stages['1.6'] !== 'completed' && data.readiness?.length" class="ready-list">
@@ -50,16 +50,26 @@
       <p v-if="appr.stages['1.5'] !== 'completed'" class="appr-hint">
         Согласование форм откроется после завершения этапа 1.5. Для каждого канала назначается один согласующий.
       </p>
+      <p v-if="stage16NeedsReview" class="appr-hint">
+        Этап завершён, но по некоторым каналам нет записанного согласия. Такое возможно, если период закрыли до появления согласования по каналам или список каналов изменился позже. Чтобы получить решения, верните этап 1.6 и согласуйте каналы заново.
+      </p>
+      <p v-else-if="stage16ChangedApprovers" class="appr-hint">
+        После завершения этапа список согласующих изменился. Прежние согласия сохранены; новые назначения действуют при следующем согласовании.
+      </p>
       <table class="data-table">
         <thead><tr><th>Канал</th><th>Согласующий</th><th>Статус</th><th></th></tr></thead>
         <tbody>
           <tr v-if="!appr.stage16.length"><td colspan="4" class="empty-cell">В своде нет каналов продаж.</td></tr>
           <tr v-for="sc in appr.stage16" :key="sc.legal_entity">
             <td>{{ sc.legal_entity }}</td>
-            <td><PlansApproverChips :scope="sc" /></td>
+            <td v-if="appr.stages['1.6'] === 'completed' && !sc.satisfied">
+              <template v-if="completedChannelApproval(sc)">Ранее: {{ previousChannelApprovers(sc) }}<br></template>
+              Сейчас: {{ sc.approvers.map((a) => a.user_name || `#${a.user_id}`).join(', ') || 'не назначен' }}
+            </td>
+            <td v-else><PlansApproverChips :scope="sc" /></td>
             <td>
-              <span class="badge" :class="sc.satisfied ? 'badge-pos' : sc.no_approvers ? 'badge-neg' : 'badge-warn'">
-                {{ sc.satisfied ? "согласовано" : sc.no_approvers ? "нет согласующего" : "ждём" }}
+              <span class="badge" :class="sc.satisfied || completedChannelApproval(sc) ? 'badge-pos' : sc.no_approvers || stage16NeedsReview ? 'badge-neg' : 'badge-warn'">
+                {{ sc.satisfied ? "согласовано" : completedChannelApproval(sc) ? "согласовано ранее" : appr.stages['1.6'] === 'completed' ? "нет решения" : sc.no_approvers ? "нет согласующего" : "ждём" }}
               </span>
             </td>
             <td class="appr-act">
@@ -473,9 +483,23 @@ const loadAppr = async () => {
   }
 };
 const STAGE_TEXT: Record<string, string> = { completed: "Согласовано", in_progress: "в работе", returned: "возвращён", pending: "ожидает" };
-const stageText = (code: string) => STAGE_TEXT[appr.value?.stages[code] || "pending"] || "ожидает";
+const previousChannelApprovers = (scope: LeScope): string =>
+  appr.value?.decisions.filter((d) => d.stage_code === "1.6" && d.legal_entity === scope.legal_entity &&
+    d.decision === "approve" && !d.revoked).map((d) => d.user_name || `#${d.user_id}`).join(", ") || "—";
+const completedChannelApproval = (scope: LeScope): boolean =>
+  appr.value?.stages["1.6"] === "completed" && !!appr.value.decisions.some((d) =>
+    d.stage_code === "1.6" && d.legal_entity === scope.legal_entity && d.decision === "approve" && !d.revoked
+  );
+const stage16NeedsReview = computed(() => appr.value?.stages["1.6"] === "completed" &&
+  appr.value.stage16.some((scope) => !scope.satisfied && !completedChannelApproval(scope)));
+const stage16ChangedApprovers = computed(() => appr.value?.stages["1.6"] === "completed" &&
+  appr.value.stage16.some((scope) => !scope.satisfied && completedChannelApproval(scope)));
+const stageText = (code: string) => code === "1.6" && stage16NeedsReview.value
+  ? "Требует проверки"
+  : STAGE_TEXT[appr.value?.stages[code] || "pending"] || "ожидает";
 const stageBadge = (code: string) => {
   const s = appr.value?.stages[code];
+  if (code === "1.6" && stage16NeedsReview.value) return "badge-warn";
   return s === "completed" ? "badge-pos" : s === "returned" ? "badge-neg" : s === "in_progress" ? "badge-warn" : "badge-muted";
 };
 const stage3NeedsMe = computed(() => !!appr.value?.stage3.some((scope) => scope.can_decide));
