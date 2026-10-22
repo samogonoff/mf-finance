@@ -327,6 +327,8 @@ GROUP BY
 # ставкой) → сегменты (LEAD) → ЦФО подразделения по частоте (ROW_NUMBER) →
 # декреты (leave_months обнуляют ставку). Проверен живым прогоном 13.10.2026:
 # 2026-06-01 SUM = 7 203,16 — контрольное число PBI.
+# Пустой state в 1С = Активный/Уволен по termination_date (выравнивание с правкой
+# запроса численности 22.10.2026): иначе пустые state молча выпадают из ЦФО-маппинга.
 SQL_FOT_HEADCOUNT = """
 SET NOCOUNT ON;
 WITH months AS (
@@ -365,7 +367,8 @@ dept_cfo AS (
                                                 ELSE TRY_CAST(cfo_code AS int)
                                            END) AS rn
         FROM onec_data.dbo.staff_registry
-        WHERE store_name IS NOT NULL AND state = N'Активный'
+        WHERE store_name IS NOT NULL
+          AND COALESCE(NULLIF(state, N''), CASE WHEN termination_date IS NULL THEN N'Активный' ELSE N'Уволен' END) = N'Активный'
           AND cfo_code IS NOT NULL AND cfo_code <> '0' AND cfo_code <> ''
           AND country IS NOT NULL AND country <> '0'
         GROUP BY store_name, country,
@@ -379,7 +382,8 @@ dept_cfo AS (
 dept_has_rb AS (
     SELECT store_name, MAX(CASE WHEN country = N'РБ' THEN 1 ELSE 0 END) AS has_rb
     FROM onec_data.dbo.staff_registry
-    WHERE store_name IS NOT NULL AND state = N'Активный'
+    WHERE store_name IS NOT NULL
+      AND COALESCE(NULLIF(state, N''), CASE WHEN termination_date IS NULL THEN N'Активный' ELSE N'Уволен' END) = N'Активный'
       AND cfo_code IS NOT NULL AND cfo_code <> '0' AND cfo_code <> ''
     GROUP BY store_name
 ),
@@ -399,7 +403,8 @@ dept_cfo_any AS (
                                            END) AS rn
         FROM onec_data.dbo.staff_registry s
         JOIN dept_has_rb hr ON s.store_name = hr.store_name
-        WHERE s.store_name IS NOT NULL AND s.state = N'Активный'
+        WHERE s.store_name IS NOT NULL
+          AND COALESCE(NULLIF(s.state, N''), CASE WHEN s.termination_date IS NULL THEN N'Активный' ELSE N'Уволен' END) = N'Активный'
           AND s.cfo_code IS NOT NULL AND s.cfo_code <> '0' AND s.cfo_code <> ''
         GROUP BY s.store_name,
                  CASE WHEN hr.has_rb = 1
