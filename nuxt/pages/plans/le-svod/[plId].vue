@@ -66,7 +66,7 @@
           <tr v-for="sc in appr.stage16" :key="sc.legal_entity">
             <td>{{ sc.legal_entity }}</td>
             <td v-if="appr.stages['1.6'] === 'completed' && !sc.satisfied">
-              <template v-if="channelApproval(sc)">Ранее: {{ channelApproval(sc)?.user_name || `#${channelApproval(sc)?.user_id}` }}<br></template>
+              <template v-if="channelApproval(sc)">Ранее: {{ previousChannelApprovers(sc) }}<br></template>
               Сейчас: {{ sc.approvers.map((a) => a.user_name || `#${a.user_id}`).join(', ') || 'не назначен' }}
             </td>
             <td v-else><PlansApproverChips :scope="sc" /></td>
@@ -487,10 +487,18 @@ const loadAppr = async () => {
   }
 };
 const STAGE_TEXT: Record<string, string> = { completed: "Согласовано", in_progress: "в работе", returned: "возвращён", pending: "ожидает" };
-const channelApproval = (scope: LeScope): LeDecision | undefined => {
-  const approvals = appr.value?.decisions.filter((d) => d.stage_code === "1.6" &&
+const channelApprovals = (scope: LeScope): LeDecision[] =>
+  appr.value?.decisions.filter((d) => d.stage_code === "1.6" &&
     d.legal_entity === scope.legal_entity && d.decision === "approve") || [];
+const channelApproval = (scope: LeScope): LeDecision | undefined => {
+  const approvals = channelApprovals(scope);
   return approvals.find((d) => !d.revoked) || approvals[approvals.length - 1];
+};
+const previousChannelApprovers = (scope: LeScope): string => {
+  const approvals = channelApprovals(scope);
+  const active = approvals.filter((d) => !d.revoked);
+  const visible = active.length ? active : approvals.slice(-1);
+  return visible.map((d) => d.user_name || `#${d.user_id}`).join(", ");
 };
 const completedChannelApproval = (scope: LeScope): boolean =>
   appr.value?.stages["1.6"] === "completed" && channelApproval(scope)?.revoked === false;
