@@ -20,6 +20,9 @@ import (
 //
 // Зерно выгрузки = ключ дедупа ReplacingMergeTree fact_arh_debt: дата × ЮЛ × контрагент
 // × счёт × DocID × валюта. Остальное (имя, № документа, срок) — MAX() внутри ключа.
+// На каждое ЮЛ, присутствующее в Debt_arh в этот день, добавляется нулевая служебная
+// строка __snapshot__. Она отличает корректный нулевой ВГО-баланс от остановившейся
+// выгрузки ЮЛ и отсекается отчётом по нулевой сумме.
 
 // ArhTables — FQN сырых таблиц OLAP.
 type ArhTables struct {
@@ -52,9 +55,9 @@ func arhOrgCond(alias string, orgs []string) string {
 
 // arhVGOCond — ВГО-контур остатков Debt_arh: Chnl или Folder = 'ГРУППА КОМПАНИЙ'. У РФ/РБ
 // они совпадают, у ЮЛ УЗ/КЗ Chnl пуст, а Folder заполнен: без Folder эти ЮЛ выпали бы целиком.
-// Сверка с FinDebt1 30.09.2026 (BYN): ЮЛ УЗ 305554644 сходится до единицы (после нетто по
-// DocID в отчёте), ЮЛ КЗ 141240004842 — нет: FinDebt сворачивает документ и МЕЖДУ счетами
-// (1210 ДЗ против 3310 КЗ), мы — внутри счёта (ДЗ 13.42 против 8.35 млн) — открытый вопрос.
+// Сверка с FinDebt1 30.09.2026 (BYN): ЮЛ УЗ 305554644 сходится после нетто по DocID;
+// ЮЛ КЗ 141240004842 сходится после межсчётного нетто документа в repo_arh_ch.go
+// (положительный итог остаётся на счёте ДЗ, отрицательный — на счёте КЗ).
 func arhVGOCond(alias string) string {
 	return "(" + alias + ".Chnl = @grp OR " + alias + ".Folder = @grp)"
 }
@@ -120,6 +123,8 @@ type factArhDebtRow struct {
 
 // arhDebtNonZero — отсекаем полностью нулевые строки (сумма и все корзины).
 const arhDebtNonZero = "(d.Sum <> 0 OR d.Sum30 <> 0 OR d.Sum60 <> 0 OR d.Sum90 <> 0 OR d.Sum999 <> 0)"
+
+const arhSnapshotMarker = "__snapshot__"
 
 // arhChg — момент изменения строки в источнике (DateChange; если пуст — сама дата).
 const arhChg = "ISNULL(d.DateChange, d.[Date])"
@@ -211,20 +216,43 @@ WHERE ` + arhDayRange("d.[Date]") + `
   AND ` + arhOrgCond("d", t.Orgs) + `
   AND ` + arhVGOCond("d") + `
   AND ` + arhDebtNonZero + `
-GROUP BY ` + arhDate("d.[Date]") + `, ` + org + `, ` + unp + `, ` + acc + `, ` + root + `, ` + docID + `, ` + cur
+GROUP BY ` + arhDate("d.[Date]") + `, ` + org + `, ` + unp + `, ` + acc + `, ` + root + `, ` + docID + `, ` + cur + `
+UNION ALL
+SELECT
+    ` + arhDate("d.[Date]") + `                             AS snapshot_date,
+    ` + org + `                                             AS company_id,
+    ''                                                      AS company,
+    ''                                                      AS counterparty_id,
+    ''                                                      AS counterparty,
+    '` + arhSnapshotMarker + `'                             AS acc,
+    '` + arhSnapshotMarker + `'                             AS acc_root,
+    '` + arhSnapshotMarker + `'                             AS doc_id,
+    ''                                                      AS doc_number,
+    '1970-01-01'                                            AS doc_date,
+    ''                                                      AS contract_id,
+    ''                                                      AS contract_number,
+    ''                                                      AS contract_title,
+    ''                                                      AS doc_type,
+    0                                                       AS delay,
+    NULL                                                    AS payment_date,
+    0                                                       AS currency_kod,
+    '0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
+    CONVERT(CHAR(19), MAX(` + arhChg + `), 120)             AS src_changed_at
+FROM ` + t.DebtFQN + ` d WITH (NOLOCK)
+WHERE ` + arhDayRange("d.[Date]") + `
+  AND ` + arhOrgCond("d", t.Orgs) + `
+GROUP BY ` + arhDate("d.[Date]") + `, ` + org
 }
 
-// extractArhDebtDatesSQL — отпечатки дней чанка [@from..@to]: MAX(DateChange) по дню.
-// По ним инкремент находит перезаписанные 1С даты (сравнение с src_changed_at в CH).
-// Фильтр строк тот же, что в extractArhDebtSQL, иначе отпечатки разойдутся.
+// extractArhDebtDatesSQL — отпечатки дней чанка [@from..@to]: MAX(DateChange) и число
+// всех строк наших ЮЛ. Более широкий контур нужен для служебных __snapshot__-строк:
+// изменение присутствия ЮЛ должно перепланировать день, даже когда его ВГО-баланс нулевой.
 func extractArhDebtDatesSQL(t ArhTables) string {
 	return `
 SELECT ` + arhDate("d.[Date]") + ` AS d, CONVERT(CHAR(19), MAX(` + arhChg + `), 120) AS changed_at, COUNT(*) AS n
 FROM ` + t.DebtFQN + ` d WITH (NOLOCK)
 WHERE ` + arhSpanRange("d.[Date]") + `
   AND ` + arhOrgCond("d", t.Orgs) + `
-  AND ` + arhVGOCond("d") + `
-  AND ` + arhDebtNonZero + `
 GROUP BY ` + arhDate("d.[Date]")
 }
 

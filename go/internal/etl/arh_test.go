@@ -30,7 +30,7 @@ func TestExtractArhDebtSQL(t *testing.T) {
 		"x.ID IN (SELECT DocID FROM Src)", "p.ID IN (SELECT ParentID FROM Doc",
 		"d.DocID IS NOT NULL AND d.DocID <> ''",
 		"MAX(CONVERT(INT, ISNULL(dc.Delay, 0)))", "AS payment_date", "AS src_changed_at",
-		"ISNULL(d.DateChange, d.[Date])", "GROUP BY",
+		"ISNULL(d.DateChange, d.[Date])", "GROUP BY", "UNION ALL", "'__snapshot__'",
 	} {
 		if !strings.Contains(q, want) {
 			t.Errorf("extractArhDebtSQL не содержит %q", want)
@@ -64,16 +64,20 @@ func TestArhOrgCond(t *testing.T) {
 	}
 }
 
-// Отпечатки дней: узкий чанк [@from..@to], тот же фильтр, что у основного extract'а.
+// Отпечатки дней: узкий чанк [@from..@to] и весь контур наших ЮЛ, чтобы заметить
+// появление/исчезновение служебной строки присутствия при нулевом ВГО-балансе.
 func TestExtractArhDebtDatesSQL(t *testing.T) {
 	q := extractArhDebtDatesSQL(testArhTables)
 	for _, want := range []string{
 		"MAX(ISNULL(d.DateChange, d.[Date]))", "CONVERT(date, @from, 112)", "DATEADD(day, 1, CONVERT(date, @to, 112))",
-		"d.UNPOrg IN (", "(d.Chnl = @grp OR d.Folder = @grp)", "GROUP BY",
+		"d.UNPOrg IN (", "GROUP BY",
 	} {
 		if !strings.Contains(q, want) {
 			t.Errorf("extractArhDebtDatesSQL не содержит %q", want)
 		}
+	}
+	if strings.Contains(q, "d.Chnl = @grp") || strings.Contains(q, arhDebtNonZero) {
+		t.Errorf("отпечаток должен учитывать присутствие ЮЛ вне ненулевого ВГО-контура:\n%s", q)
 	}
 }
 

@@ -5,9 +5,9 @@ import (
 	"context"
 	"errors"
 	"log"
-	"os"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -17,12 +17,15 @@ func arhServer(t *testing.T, snap, debt, sales, drill string, salesStatus int) (
 	t.Helper()
 	var seen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b := readBody(r)
+		b := readBodyFull(r)
 		seen = append(seen, b)
 		switch {
 		case strings.Contains(b, "FROM finance.currency_daily"):
 			_, _ = w.Write([]byte("42\n"))
-		case strings.Contains(b, "maxIf(snapshot_date"):
+		case strings.Contains(b, "HAVING dateDiff('day'"):
+			// По умолчанию все выбранные ЮЛ имеют свежий снэпшот.
+			_, _ = w.Write(nil)
+		case strings.Contains(b, "SELECT toString(maxIf(snapshot_date"):
 			_, _ = w.Write([]byte(snap))
 		case strings.Contains(b, "FROM finance.fact_arh_sales"):
 			if salesStatus != 0 {
@@ -59,11 +62,14 @@ func TestArhReportQuery_Contract(t *testing.T) {
 	q := arhReportQuery([]string{"690591512"}, []string{"62"}, "2026-09-30", "2026-08-31", LensContract)
 	for _, want := range []string{
 		"FROM finance.fact_arh_debt FINAL",
-		"snapshot_date IN (toDate('2026-09-30'), toDate('2026-08-31'))",
+		"maxIf(snapshot_date, snapshot_date <= toDate('2026-09-30')) AS close_dt",
+		"maxIf(snapshot_date, snapshot_date <= toDate('2026-08-31')) AS open_dt",
+		"snapshot_date = close_dt OR snapshot_date = open_dt",
+		"acc != '__snapshot__'",
 		"company_id IN ('690591512')", "acc_root IN ('62')",
 		"if(contract_id != '', contract_id, doc_id) AS contract_key",
 		"GROUP BY company_id, counterparty_id, acc, acc_root, contract_key, cur_kod",
-		"sumIf(s30_d, snapshot_date = toDate('2026-09-30'))", "sumIf(s999_k, snapshot_date = toDate('2026-09-30'))",
+		"sumIf(s30_d, is_close)", "sumIf(s999_k, is_close)",
 		"currency_kod AS cur_kod",
 	} {
 		if !strings.Contains(q, want) {
@@ -95,8 +101,8 @@ func TestArhReportQuery_Lenses(t *testing.T) {
 	if !strings.Contains(usd, "/ nullIf(toFloat64(rUsd.curr_rate), 0)") {
 		t.Errorf("USD должен делить на курс USD:\n%s", usd)
 	}
-	if strings.Contains(byn, "company_id IN (") || strings.Contains(byn, "acc_root IN (") {
-		t.Errorf("без фильтров не должно быть IN-условий")
+	if strings.Contains(byn, " AND company_id IN (") || strings.Contains(byn, " AND acc_root IN (") {
+		t.Errorf("без фильтров не должно быть фильтрующих IN-условий")
 	}
 }
 
@@ -139,8 +145,15 @@ func TestArhReport_Mapping(t *testing.T) {
 	if !approx(r.AgingKZ.Lt30, 50) || !approx(r.AgingKZ.Gt90, 125) || !approx(r.AgingKZ.Current, 300) {
 		t.Errorf("AgingKZ = %+v", r.AgingKZ)
 	}
-	// Даты снэпшотов подставлены в запрос из первого ответа.
-	if len(*seen) < 2 || !strings.Contains((*seen)[1], "toDate('2026-09-30'), toDate('2026-08-31')") {
+	// Границы снэпшотов подставлены в запрос свода после проверки свежести по ЮЛ.
+	var reportQuerySeen bool
+	for _, q := range *seen {
+		if strings.Contains(q, "toDate('2026-09-30')) AS close_dt") && strings.Contains(q, "toDate('2026-08-31')) AS open_dt") {
+			reportQuerySeen = true
+			break
+		}
+	}
+	if !reportQuerySeen {
 		t.Errorf("запрос свода не получил даты снэпшотов: %v", *seen)
 	}
 }
@@ -296,23 +309,37 @@ func TestIsoCurrency(t *testing.T) {
 	}
 }
 
-// Нетто по DocID (как у FinDebt): для непустого doc_id ДЗ/КЗ делятся по знаку нетто
-// sum_d + sum_k, корзины — нетто корзин на стороне нетто; строки без doc_id как есть.
+// Нетто по DocID (как у FinDebt): РБ/РФ/УЗ сворачиваются внутри счёта, КЗ — между
+// счетами с назначением итога счёту стороны своего знака. Корзины неттируются в том же
+// зерне; строки без doc_id сохраняют исходный счёт и не взаимозачитываются.
 func TestArhReportQuery_NetByDocID(t *testing.T) {
 	q := arhReportQuery(nil, nil, "2026-09-30", "2026-08-31", LensContract)
 	for _, want := range []string{
-		"sum(if(doc_id = '', sum_d, if((sum_d + sum_k) > 0, (sum_d + sum_k), toDecimal64(0, 2)))) AS v_d",
-		"sum(if(doc_id = '', sum_k, if((sum_d + sum_k) < 0, (sum_d + sum_k), toDecimal64(0, 2)))) AS v_k",
-		"sum(if(doc_id = '', sum999_d, if((sum_d + sum_k) >= 0, (sum999_d + sum999_k), toDecimal64(0, 2)))) AS v999_d",
-		"sum(if(doc_id = '', sum30_k, if((sum_d + sum_k) < 0, (sum30_d + sum30_k), toDecimal64(0, 2)))) AS v30_k",
+		"GROUP BY r.snapshot_date, r.company_id, r.counterparty_id, r.doc_id, r.net_acc, r.currency_kod",
+		"if(r.doc_id = '' OR NOT (r.company_id IN ('141240004842')), r.net_acc",
+		"argMaxIf(r.acc, tuple(r.sum_d, r.acc), r.sum_d > 0)",
+		"argMaxIf(r.acc, tuple(-r.sum_k, r.acc), r.sum_k < 0)",
+		"if(r.doc_id = '', sum(r.sum_d), if((sum(r.sum_d) + sum(r.sum_k)) > 0, (sum(r.sum_d) + sum(r.sum_k)), toDecimal64(0, 2))) AS sum_d",
+		"if(r.doc_id = '', sum(r.sum999_d), if((sum(r.sum_d) + sum(r.sum_k)) > 0 AND",
+		"(sum(r.sum30_d) + sum(r.sum30_k)) >= toDecimal64(0, 2) AND (sum(r.sum60_d) + sum(r.sum60_k)) >= toDecimal64(0, 2)",
+		"if(r.doc_id = '', sum(r.sum30_k), if((sum(r.sum_d) + sum(r.sum_k)) < 0 AND",
+		"(sum(r.sum90_d) + sum(r.sum90_k)) <= toDecimal64(0, 2) AND (sum(r.sum999_d) + sum(r.sum999_k)) <= toDecimal64(0, 2)",
+		"if(doc_id = '' OR NOT (company_id IN ('141240004842')), acc, '') AS net_acc",
 	} {
 		if !strings.Contains(q, want) {
 			t.Errorf("нет выражения нетто %q:\n%s", want, q)
 		}
 	}
-	// drill-down считает документ по тому же правилу
+	// Фильтр счёта применяется после межсчетного нетто, иначе КЗ снова раздуется.
+	filtered := arhReportQuery(nil, []string{"3310"}, "2026-09-30", "2026-08-31", LensContract)
+	if netAt, filterAt := strings.Index(filtered, "argMaxIf(r.acc"), strings.Index(filtered, "acc_root IN ('3310')"); netAt < 0 || filterAt < 0 || filterAt < netAt {
+		t.Errorf("фильтр счёта применён до нетто:\n%s", filtered)
+	}
+	// drill-down считает документ тем же подзапросом, затем выбирает назначенный счёт.
 	dq := arhDrilldownQuery("a", "b", "6315", "", "2026-09-30", LensContract, 0)
-	if !strings.Contains(dq, arhAmtCols[0][1]+" AS v_d") || !strings.Contains(dq, arhAmtCols[1][1]+" AS v_k") {
+	if !strings.Contains(dq, "argMaxIf(r.acc, tuple(r.sum_d, r.acc), r.sum_d > 0)") ||
+		!strings.Contains(dq, "WHERE acc = '6315'") ||
+		strings.Index(dq, "WHERE acc = '6315'") < strings.Index(dq, "argMaxIf(r.acc") {
 		t.Errorf("drill-down обязан использовать то же нетто:\n%s", dq)
 	}
 }
@@ -321,7 +348,7 @@ func TestArhReportQuery_NetByDocID(t *testing.T) {
 // со списком валют/дат; пустая currency_daily — отдельное явное сообщение.
 func TestArhReport_MissingRateKeepsRowAndLogs(t *testing.T) {
 	q := arhReportQuery(nil, nil, "2026-09-30", "2026-08-31", LensBYN)
-	if !strings.Contains(q, "HAVING sumIf(abs(n_d) + abs(n_k), snapshot_date IN (") {
+	if !strings.Contains(q, "HAVING sumIf(abs(n_d) + abs(n_k), is_close OR is_open)") {
 		t.Errorf("HAVING должен смотреть на родные суммы:\n%s", q)
 	}
 	if !strings.Contains(arhSalesQuery(nil, "2026-09-01", "2026-09-30", LensBYN), "HAVING sumIf(abs(n),") {
@@ -337,7 +364,9 @@ func TestArhReport_MissingRateKeepsRowAndLogs(t *testing.T) {
 		switch {
 		case strings.Contains(b, "FROM finance.currency_daily"):
 			_, _ = w.Write([]byte("42\n"))
-		case strings.Contains(b, "maxIf(snapshot_date"):
+		case strings.Contains(b, "HAVING dateDiff('day'"):
+			_, _ = w.Write(nil)
+		case strings.Contains(b, "SELECT toString(maxIf(snapshot_date"):
 			_, _ = w.Write([]byte("2026-09-30\t2026-08-31\n"))
 		case strings.Contains(b, "SELECT DISTINCT concat") && strings.Contains(b, "fact_arh_debt"):
 			_, _ = w.Write([]byte("643@2026-09-30\n"))
@@ -364,7 +393,9 @@ func TestArhReport_MissingRateKeepsRowAndLogs(t *testing.T) {
 		switch {
 		case strings.Contains(b, "FROM finance.currency_daily"):
 			_, _ = w.Write([]byte("0\n"))
-		case strings.Contains(b, "maxIf(snapshot_date"):
+		case strings.Contains(b, "HAVING dateDiff('day'"):
+			_, _ = w.Write(nil)
+		case strings.Contains(b, "SELECT toString(maxIf(snapshot_date"):
 			_, _ = w.Write([]byte("2026-09-30\t2026-08-31\n"))
 		case strings.Contains(b, "FROM finance.fact_arh_sales"):
 			http.Error(w, "no table", http.StatusNotFound)
@@ -422,8 +453,44 @@ func TestArhSnapshotDatesQuery_CompanyFilter(t *testing.T) {
 	}
 }
 
+// Частичный провал источника нельзя скрывать свежим снэпшотом другого ЮЛ: при отчёте
+// сразу по нескольким компаниям каждая ранее встречавшаяся компания проверяется отдельно.
+func TestArhReport_StaleCompanySnapshotIsError(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := readBody(r)
+		queries = append(queries, b)
+		switch {
+		case strings.Contains(b, "HAVING dateDiff('day'"):
+			_, _ = w.Write([]byte("6950135110\t2026-10-14\t2026-10-13\n9909349268\t2026-10-14\t2026-10-13\n"))
+		case strings.Contains(b, "SELECT toString(maxIf(snapshot_date"):
+			_, _ = w.Write([]byte("2026-10-21\t2026-10-13\n"))
+		default:
+			http.Error(w, "unexpected query", http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	repo, _ := NewArhCHRepo(srv.URL, "u", "p")
+	_, err := repo.Report(context.Background(), Filters{
+		DateFrom: date(2026, 10, 14), DateTo: date(2026, 10, 21),
+		EntityINNs: []string{"690591512", "6950135110", "9909349268"},
+	})
+	var ns *NoSnapshotError
+	if !errors.As(err, &ns) {
+		t.Fatalf("ожидалась NoSnapshotError, получено: %v", err)
+	}
+	for _, want := range []string{"6950135110", "9909349268", "14.10.2026", "21.10.2026"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("в ошибке нет %q: %v", want, err)
+		}
+	}
+	if len(queries) != 2 || !strings.Contains(queries[1], "company_id IN ('690591512','6950135110','9909349268')") {
+		t.Errorf("проверка свежести должна учитывать все выбранные ЮЛ: %v", queries)
+	}
+}
+
 // «(без договора)»: пустой ключ получает явный маркер, drill-down по маркеру фильтрует
-// contract_key = '', пустой contract — без фильтра (старые ссылки), пустой partner разрешён.
+// пустой contract_key, пустой contract — без фильтра (старые ссылки), пустой partner разрешён.
 func TestArhNoContractMarker(t *testing.T) {
 	debt := `{"company_id":"6950135110","company":"","counterparty_id":"","counterparty":"Без УНП","acc":"62.1","acc_root":"62","contract_key":"","contract_label":"","delay":0,"cur_kod":643,"close_dz":"7","close_kz":"0","open_dz":"0","open_kz":"0"}` + "\n"
 	srv, _ := arhServer(t, "2026-09-30\t2026-08-31\n", debt, "", "", http.StatusNotFound)
