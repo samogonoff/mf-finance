@@ -355,6 +355,9 @@ func TestLeApproval_TimelineReturnRevokesApprovals_PG(t *testing.T) {
 	if _, err := f.flow.StageAction(ctx, f.adminP, f.pl, 2090, 8, "BY", "4", "return", "1.6", "пересчитать"); err != nil {
 		t.Fatal(err)
 	}
+	if got := f.stage(t, "3"); got != "pending" {
+		t.Fatalf("после возврата с этапа 4 на 1.6 этап 3 должен ожидать нового согласования, сейчас %q", got)
+	}
 	status, err := f.appr.Status(ctx, f.pl, f.user(0))
 	if err != nil {
 		t.Fatal(err)

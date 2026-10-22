@@ -56,6 +56,20 @@ func stageDefByCode(code string) (StageDef, bool) {
 	return StageDef{}, false
 }
 
+// stageDependsOn проверяет транзитивную зависимость этапа от предшествующего.
+func stageDependsOn(code, predecessor string) bool {
+	def, ok := stageDefByCode(code)
+	if !ok {
+		return false
+	}
+	for _, dep := range def.DependsOn {
+		if dep == predecessor || stageDependsOn(dep, predecessor) {
+			return true
+		}
+	}
+	return false
+}
+
 // StageState — состояние этапа экземпляра PL.
 type StageState struct {
 	Code        string   `json:"stage_code"`
@@ -184,6 +198,9 @@ func applyStageAction(stages []StageState, code, action, target string) ([]Stage
 		for i := range out {
 			if out[i].Code == target {
 				out[i].Status = "in_progress"
+			} else if out[i].Code != code && stageDependsOn(code, out[i].Code) && stageDependsOn(out[i].Code, target) {
+				// Промежуточные этапы надо пройти заново после возврата к их предшественнику.
+				out[i].Status = "pending"
 			}
 		}
 	default:

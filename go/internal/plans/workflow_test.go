@@ -88,3 +88,27 @@ func TestApplyAction_UnknownStage(t *testing.T) {
 		t.Error("ожидалась ошибка: неизвестный этап")
 	}
 }
+
+func TestApplyAction_ReturnResetsIntermediateApproval(t *testing.T) {
+	stages := initStages(2026, 6, "RU", CalendarSeed(), nil)
+	for i := range stages {
+		switch stages[i].Code {
+		case "1.5", "1.6", "3", "4", "2.4":
+			stages[i].Status = "completed"
+		}
+	}
+	out, err := applyStageAction(stages, "4", "return", "1.6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for code, want := range map[string]string{
+		"1.5": "completed", "1.6": "in_progress", "3": "pending", "4": "returned", "2.4": "completed",
+	} {
+		if got := findStage(out, code).Status; got != want {
+			t.Errorf("после возврата на 1.6 этап %s: %q, ожидали %q", code, got, want)
+		}
+	}
+	if _, err := applyStageAction(out, "3", "approve", ""); err == nil {
+		t.Error("этап 3 нельзя согласовать до повторного завершения 1.6")
+	}
+}

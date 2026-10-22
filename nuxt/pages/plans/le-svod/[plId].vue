@@ -78,7 +78,7 @@
             </td>
             <td class="appr-act">
               <template v-if="sc.can_decide">
-                <button type="button" class="btn btn-sm btn-primary" @click="openDecide(sc, 'approve')">Согласовано</button>
+                <button v-if="canApproveScope(sc)" type="button" class="btn btn-sm btn-primary" @click="openDecide(sc, 'approve')">Согласовано</button>
                 <button type="button" class="btn btn-sm btn-ghost" @click="openDecide(sc, 'return')">Вернуть</button>
               </template>
             </td>
@@ -114,7 +114,7 @@
             </td>
             <td class="appr-act">
               <template v-if="sc.can_decide">
-                <button type="button" class="btn btn-sm btn-primary" @click="openDecide(sc, 'approve')">Согласовано</button>
+                <button v-if="canApproveScope(sc)" type="button" class="btn btn-sm btn-primary" @click="openDecide(sc, 'approve')">Согласовано</button>
                 <button type="button" class="btn btn-sm btn-ghost" @click="openDecide(sc, 'return')">Вернуть</button>
               </template>
             </td>
@@ -140,7 +140,7 @@
             </td>
             <td class="appr-act">
               <template v-if="appr.stage4.can_decide">
-                <button type="button" class="btn btn-sm btn-primary" @click="openDecide(appr.stage4, 'approve')">Согласовано</button>
+                <button v-if="canApproveScope(appr.stage4)" type="button" class="btn btn-sm btn-primary" @click="openDecide(appr.stage4, 'approve')">Согласовано</button>
                 <button type="button" class="btn btn-sm btn-ghost" @click="openDecide(appr.stage4, 'return')">Вернуть</button>
               </template>
             </td>
@@ -487,6 +487,8 @@ const loadAppr = async () => {
   }
 };
 const STAGE_TEXT: Record<string, string> = { completed: "Согласовано", in_progress: "в работе", returned: "возвращён", pending: "ожидает" };
+const canApproveScope = (scope: LeScope): boolean =>
+  scope.can_decide && !scope.satisfied && !scope.approvers.some((a) => a.mine && a.approved);
 const channelApprovals = (scope: LeScope): LeDecision[] =>
   appr.value?.decisions.filter((d) => d.stage_code === "1.6" &&
     d.legal_entity === scope.legal_entity && d.decision === "approve") || [];
