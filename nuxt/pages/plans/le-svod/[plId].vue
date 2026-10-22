@@ -23,18 +23,19 @@
     <p v-if="data?.closed" class="banner banner-info">
       Период утверждён (этап 4): корректировки закрыты. Изменить итоги можно только после переоткрытия периода.
     </p>
-    <section v-if="data" class="card ready-card" :class="{ 'ready-bad': !data.ready }">
+    <section v-if="data" class="card ready-card" :class="{ 'ready-bad': appr?.stages['1.6'] !== 'completed' && !data.ready }">
       <div class="card-header">
         <span class="card-title">Готовность к этапу 1.6</span>
-        <span class="badge" :class="data.ready ? 'badge-pos' : 'badge-neg'">{{ data.ready ? "можно завершать" : "есть блокирующие замечания" }}</span>
+        <span v-if="appr?.stages['1.6'] === 'completed'" class="badge badge-pos">Согласовано</span>
+        <span v-else class="badge" :class="data.ready ? 'badge-pos' : 'badge-neg'">{{ data.ready ? "можно завершать" : "есть блокирующие замечания" }}</span>
       </div>
-      <ul v-if="data.readiness?.length" class="ready-list">
+      <ul v-if="appr?.stages['1.6'] !== 'completed' && data.readiness?.length" class="ready-list">
         <li v-for="(i, k) in data.readiness" :key="k">
           <span class="badge" :class="i.level === 'block' ? 'badge-neg' : 'badge-warn'">{{ i.level === "block" ? "блокирует" : "предупреждение" }}</span>
           {{ i.message }}
         </li>
       </ul>
-      <p v-else class="ready-ok">Все формы продаж и расходов утверждены, замечаний нет.</p>
+      <p v-else-if="appr?.stages['1.6'] !== 'completed'" class="ready-ok">Все формы продаж и расходов утверждены, замечаний нет.</p>
     </section>
 
     <!-- ===== Согласование форм по каналам (этап 1.6) ===== -->
@@ -73,10 +74,10 @@
     </section>
 
     <!-- ===== Согласование ЮЛ (этап 3) и итоговое утверждение (этап 4) ===== -->
-    <section v-if="appr" class="card appr-card">
-      <div class="card-header">
-        <span class="card-title">Согласование бюджетов ЮЛ · этап 3</span>
-        <span class="badge" :class="stageBadge('3')">{{ stageText("3") }}</span>
+    <details v-if="appr" class="card appr-card approval-fold" :open="stage3Open" @toggle="syncStage3Open">
+      <summary>Согласование бюджетов ЮЛ · этап 3 <span class="badge" :class="stageBadge('3')">{{ stageText('3') }}</span></summary>
+      <div class="approval-fold-body">
+      <div v-if="appr.can_configure" class="card-header">
         <button v-if="appr.can_configure" type="button" class="btn btn-sm btn-ghost" @click="openConfig">
           <Icon name="lucide:settings-2" /> Настроить согласующих
         </button>
@@ -94,7 +95,7 @@
             <td>{{ sc.require_all ? "нужны все" : "достаточно одного" }}</td>
             <td>
               <span class="badge" :class="sc.satisfied ? 'badge-pos' : sc.no_approvers ? 'badge-neg' : 'badge-warn'">
-                {{ sc.satisfied ? "согласовано" : sc.no_approvers ? "нет согласующих" : "ждём" }}
+                {{ sc.satisfied ? "Согласовано" : sc.no_approvers ? "нет согласующих" : "ждём" }}
               </span>
             </td>
             <td class="appr-act">
@@ -106,13 +107,12 @@
           </tr>
         </tbody>
       </table>
-    </section>
-
-    <section v-if="appr" class="card appr-card">
-      <div class="card-header">
-        <span class="card-title">Итоговое утверждение · этап 4</span>
-        <span class="badge" :class="stageBadge('4')">{{ stageText("4") }}</span>
       </div>
+    </details>
+
+    <details v-if="appr" class="card appr-card approval-fold" :open="stage4Open" @toggle="syncStage4Open">
+      <summary>Итоговое утверждение · этап 4 <span class="badge" :class="stageBadge('4')">{{ stageText('4') }}</span></summary>
+      <div class="approval-fold-body">
       <p v-if="appr.stages['3'] !== 'completed'" class="appr-hint">Итоговое утверждение откроется после завершения этапа 3.</p>
       <table class="data-table">
         <tbody>
@@ -121,7 +121,7 @@
             <td>{{ appr.stage4.require_all ? "нужны все" : "достаточно одного" }}</td>
             <td>
               <span class="badge" :class="appr.stage4.satisfied ? 'badge-pos' : appr.stage4.no_approvers ? 'badge-neg' : 'badge-warn'">
-                {{ appr.stage4.satisfied ? "утверждено" : appr.stage4.no_approvers ? "нет согласующих" : "ждём" }}
+                {{ appr.stage4.satisfied ? "Согласовано" : appr.stage4.no_approvers ? "нет согласующих" : "ждём" }}
               </span>
             </td>
             <td class="appr-act">
@@ -144,7 +144,8 @@
           </li>
         </ul>
       </details>
-    </section>
+      </div>
+    </details>
 
     <section class="card controls">
       <span class="view-lbl">Период расходов</span>
@@ -471,12 +472,26 @@ const loadAppr = async () => {
     error.value = apiError(e, "Состояние согласования не загружено");
   }
 };
-const STAGE_TEXT: Record<string, string> = { completed: "завершён", in_progress: "в работе", returned: "возвращён", pending: "ожидает" };
+const STAGE_TEXT: Record<string, string> = { completed: "Согласовано", in_progress: "в работе", returned: "возвращён", pending: "ожидает" };
 const stageText = (code: string) => STAGE_TEXT[appr.value?.stages[code] || "pending"] || "ожидает";
 const stageBadge = (code: string) => {
   const s = appr.value?.stages[code];
   return s === "completed" ? "badge-pos" : s === "returned" ? "badge-neg" : s === "in_progress" ? "badge-warn" : "badge-muted";
 };
+const stage3NeedsMe = computed(() => !!appr.value?.stage3.some((scope) => scope.can_decide));
+const stage4NeedsMe = computed(() => !!appr.value?.stage4.can_decide);
+const stage3Open = ref(false);
+const stage4Open = ref(false);
+// Открываем блок при появлении нового доступного решения, в том числе после
+// завершения этапа 3. Обратный переход не закрывает результат принятого решения.
+watch(stage3NeedsMe, (needsMe, wasNeeded) => {
+  if (needsMe && !wasNeeded) stage3Open.value = true;
+});
+watch(stage4NeedsMe, (needsMe, wasNeeded) => {
+  if (needsMe && !wasNeeded) stage4Open.value = true;
+});
+const syncStage3Open = (event: Event) => { stage3Open.value = (event.target as HTMLDetailsElement).open; };
+const syncStage4Open = (event: Event) => { stage4Open.value = (event.target as HTMLDetailsElement).open; };
 
 const dec = ref<{ scope: LeScope; kind: "approve" | "return" } | null>(null);
 const decComment = ref("");
@@ -579,6 +594,11 @@ onMounted(() => {
 .page-lesvod { display: flex; flex-direction: column; gap: var(--sp-5); }
 .ready-card { padding-bottom: var(--sp-3); }
 .appr-card { padding-bottom: var(--sp-2); }
+.approval-fold > summary { display: flex; align-items: center; gap: var(--sp-3); cursor: pointer; list-style: none; padding: var(--sp-4); font-weight: 600; }
+.approval-fold > summary::-webkit-details-marker { display: none; }
+.approval-fold > summary::before { content: '▸'; color: var(--text-muted); }
+.approval-fold[open] > summary::before { content: '▾'; }
+.approval-fold-body { padding-top: var(--sp-1); }
 .appr-hint { margin: 0 var(--sp-4) var(--sp-2); color: var(--text-muted); font-size: var(--fs-sm); }
 .appr-act { display: flex; gap: var(--sp-2); justify-content: flex-end; flex-wrap: wrap; }
 .appr-log { margin: var(--sp-2) var(--sp-4); font-size: var(--fs-sm); color: var(--text-secondary); }
