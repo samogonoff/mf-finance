@@ -39,12 +39,10 @@
     </section>
 
     <!-- ===== Согласование ЮЛ (этап 3) и итоговое утверждение (этап 4) ===== -->
-    <details v-if="appr" class="card appr-card approval-fold">
+    <details v-if="appr" class="card appr-card approval-fold" :open="stage3NeedsMe">
       <summary>Согласование бюджетов ЮЛ · этап 3 <span class="badge" :class="stageBadge('3')">{{ stageText('3') }}</span></summary>
       <div class="approval-fold-body">
       <div class="card-header">
-        <span class="card-title">Согласование бюджетов ЮЛ · этап 3</span>
-        <span class="badge" :class="stageBadge('3')">{{ stageText("3") }}</span>
         <button v-if="appr.can_configure" type="button" class="btn btn-sm btn-ghost" @click="openConfig">
           <Icon name="lucide:settings-2" /> Настроить согласующих
         </button>
@@ -77,13 +75,9 @@
       </div>
     </details>
 
-    <details v-if="appr" class="card appr-card approval-fold">
+    <details v-if="appr" class="card appr-card approval-fold" :open="stage4NeedsMe">
       <summary>Итоговое утверждение · этап 4 <span class="badge" :class="stageBadge('4')">{{ stageText('4') }}</span></summary>
       <div class="approval-fold-body">
-      <div class="card-header">
-        <span class="card-title">Итоговое утверждение · этап 4</span>
-        <span class="badge" :class="stageBadge('4')">{{ stageText("4") }}</span>
-      </div>
       <p v-if="appr.stages['3'] !== 'completed'" class="appr-hint">Итоговое утверждение откроется после завершения этапа 3.</p>
       <table class="data-table">
         <tbody>
@@ -418,6 +412,8 @@ const stageBadge = (code: string) => {
   const s = appr.value?.stages[code];
   return s === "completed" ? "badge-pos" : s === "returned" ? "badge-neg" : s === "in_progress" ? "badge-warn" : "badge-muted";
 };
+const stage3NeedsMe = computed(() => !!appr.value?.stage3.some((scope) => scope.can_decide));
+const stage4NeedsMe = computed(() => !!appr.value?.stage4.can_decide);
 
 const dec = ref<{ scope: LeScope; kind: "approve" | "return" } | null>(null);
 const decComment = ref("");
