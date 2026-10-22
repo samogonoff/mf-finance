@@ -418,6 +418,9 @@ func runArh(ctx context.Context, src arhSource, ch *chClient, opts FinDWHOpts, t
 	if err != nil {
 		return ArhStats{}, err
 	}
+	if err := cleanupArhStages(ctx, ch, s); err != nil {
+		return ArhStats{}, fmt.Errorf("очистка старых stage-таблиц %s: %w", s.name, err)
+	}
 	cand, err := arhCandidateDates(table, today, a)
 	if err != nil {
 		return ArhStats{}, err
@@ -471,10 +474,68 @@ func dropArhDate(ctx context.Context, ch *chClient, s arhStream, day string) err
 
 var arhStageSeq atomic.Uint64
 
+const arhStageMaxAgeHours = 12
+
 // arhStageTable returns an identifier private to one reload. The PID separates
 // CLI/worker processes, while time and the sequence separate goroutines and dates.
 func arhStageTable(base string) string {
 	return fmt.Sprintf("%s_%d_%d_%d", base, os.Getpid(), time.Now().UnixNano(), arhStageSeq.Add(1))
+}
+
+// validArhStageName limits DROP targets to names produced by arhStageTable.
+// system.tables is trusted, but this validation keeps identifiers out of SQL
+// unless they exactly match the expected numeric suffix.
+func validArhStageName(base, name string) bool {
+	suffix := strings.TrimPrefix(name, base+"_")
+	if suffix == name {
+		return false
+	}
+	parts := strings.Split(suffix, "_")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, c := range part {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// cleanupArhStages removes tables left by killed/OOM-restarted ETL processes.
+// A generous age threshold avoids touching a concurrently running reload.
+func cleanupArhStages(ctx context.Context, ch *chClient, s arhStream) error {
+	const db = "finance"
+	base := strings.TrimPrefix(s.stage, db+".")
+	q := fmt.Sprintf(`SELECT name
+FROM system.tables
+WHERE database = '%s'
+  AND match(name, '^%s_[0-9]+_[0-9]+_[0-9]+$')
+  AND metadata_modification_time < now() - INTERVAL %d HOUR
+FORMAT TSVRaw`, db, base, arhStageMaxAgeHours)
+	body, err := ch.queryString(ctx, q)
+	if err != nil {
+		return err
+	}
+	if body == "" {
+		return nil
+	}
+	for _, line := range strings.Split(body, "\n") {
+		name := strings.TrimSpace(line)
+		if !validArhStageName(base, name) {
+			return fmt.Errorf("недопустимое имя %q из system.tables", name)
+		}
+		if err := ch.exec(ctx, "DROP TABLE IF EXISTS "+db+"."+name); err != nil {
+			return fmt.Errorf("drop %s.%s: %w", db, name, err)
+		}
+		log.Printf("etl: arh %s: удалена оставшаяся stage-таблица %s.%s", s.name, db, name)
+	}
+	return nil
 }
 
 // reloadArhDate — полная замена одной даты:

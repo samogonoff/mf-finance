@@ -17,13 +17,15 @@ import (
 // fakeArhCH — минимальный «ClickHouse» для сценариев RunFinDWHArh: stage, основная таблица
 // по датам и журнал отпечатков (ReplacingMergeTree по ver). Ведёт журнал операций.
 type fakeArhCH struct {
-	mu        sync.Mutex
-	stageRows map[string]int
-	main      map[string]int      // дата → строк в основной таблице
-	fp        map[string]arhFPRow // дата → последняя версия отпечатка
-	ops       []string            // журнал: CREATE/DROP, STAGE+n, DELETE d, SWAP, FP d rows
-	failSwap  bool                // INSERT … SELECT из stage падает
-	lastDel   string
+	mu         sync.Mutex
+	stageRows  map[string]int
+	staleStage map[string]bool
+	main       map[string]int      // дата → строк в основной таблице
+	fp         map[string]arhFPRow // дата → последняя версия отпечатка
+	ops        []string            // журнал: CREATE/DROP, STAGE+n, DELETE d, SWAP, FP d rows
+	failSwap   bool                // INSERT … SELECT из stage падает
+	lastDel    string
+	cleanupQ   string
 }
 
 var (
@@ -33,7 +35,7 @@ var (
 )
 
 func newFakeCH() (*fakeArhCH, *chClient, func()) {
-	f := &fakeArhCH{stageRows: map[string]int{}, main: map[string]int{}, fp: map[string]arhFPRow{}}
+	f := &fakeArhCH{stageRows: map[string]int{}, staleStage: map[string]bool{}, main: map[string]int{}, fp: map[string]arhFPRow{}}
 	srv := httptest.NewServer(f)
 	c, _ := newCHClient(srv.URL, "u", "p")
 	return f, c, srv.Close
@@ -48,6 +50,13 @@ func (f *fakeArhCH) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		q = string(body)
 	}
 	switch {
+	case strings.Contains(q, "FROM system.tables") && strings.Contains(q, "fact_arh_"):
+		f.cleanupQ = q
+		for stage, stale := range f.staleStage {
+			if stale {
+				_, _ = fmt.Fprintln(w, strings.TrimPrefix(stage, "finance."))
+			}
+		}
 	case strings.HasPrefix(q, "CREATE TABLE"):
 		stage := reStage.FindString(q)
 		f.stageRows[stage] = 0
@@ -55,6 +64,7 @@ func (f *fakeArhCH) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(q, "DROP TABLE IF EXISTS"):
 		stage := reStage.FindString(q)
 		delete(f.stageRows, stage)
+		delete(f.staleStage, stage)
 		f.ops = append(f.ops, "DROP "+stage)
 	case strings.HasPrefix(q, "INSERT INTO finance.fact_arh_day_fp"):
 		for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
@@ -154,6 +164,43 @@ func TestArhStageTableUniqueForConcurrentReloads(t *testing.T) {
 			t.Fatalf("повторное имя stage-таблицы: %q", name)
 		}
 		seen[name] = struct{}{}
+	}
+}
+
+func TestCleanupArhStagesDropsOnlyStaleTables(t *testing.T) {
+	f, ch, closeFn := newFakeCH()
+	defer closeFn()
+	stale := "finance.fact_arh_debt_stage_10_1700000000000000000_1"
+	recent := "finance.fact_arh_debt_stage_11_1700000000000000001_2"
+	f.stageRows[stale], f.stageRows[recent] = 5, 7
+	f.staleStage[stale] = true
+
+	s, _ := arhStreamFor(FinDWHArhDebt, testArhTables)
+	if err := cleanupArhStages(context.Background(), ch, s); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := f.stageRows[stale]; exists {
+		t.Errorf("старая stage-таблица не удалена: %v", f.stageRows)
+	}
+	if f.stageRows[recent] != 7 {
+		t.Errorf("свежая stage-таблица затронута: %v", f.stageRows)
+	}
+	if !strings.Contains(f.cleanupQ, "metadata_modification_time < now() - INTERVAL 12 HOUR") {
+		t.Errorf("в cleanup-запросе нет порога возраста: %s", f.cleanupQ)
+	}
+}
+
+func TestValidArhStageName(t *testing.T) {
+	base := "fact_arh_debt_stage"
+	if !validArhStageName(base, "fact_arh_debt_stage_10_1700000000000000000_1") {
+		t.Fatal("валидное имя отклонено")
+	}
+	for _, name := range []string{
+		"fact_arh_debt_stage", "fact_arh_debt_stage_1_2", "fact_arh_debt_stage_1_2_3;DROP", "fact_arh_sales_stage_1_2_3",
+	} {
+		if validArhStageName(base, name) {
+			t.Errorf("недопустимое имя принято: %q", name)
+		}
 	}
 }
 
