@@ -47,6 +47,66 @@ type payrollCalcSourceStub struct {
 	sales map[int]map[int]float64
 }
 
+type payrollExternalMustNotRead struct{ ExpDataSource }
+
+func (payrollExternalMustNotRead) SalesPlan(context.Context, string, int) (map[int]map[int]float64, error) {
+	panic("external sales source was read for retail payroll")
+}
+
+type payrollLocalSalesStub struct {
+	plID  int64
+	sales map[int]map[int]float64
+}
+
+func (s *payrollLocalSalesStub) RetailSalesPlan(_ context.Context, plID int64, country, currency string, year int) (map[int]map[int]float64, error) {
+	s.plID = plID
+	if country != "BY" || currency != "BYN" || year != 2026 {
+		panic("wrong retail sales scope")
+	}
+	return s.sales, nil
+}
+
+func TestExpServiceCalc_RetailUsesSalesFromCurrentPlan(t *testing.T) {
+	repo := &payrollCalcRepoStub{
+		row:    ExpRow{CodeCFO: 101, CodePL: ExpPLSalary, LegalEntity: "МАРК Формэль ООО"},
+		params: []ExpParamRow{{ParamCode: ExpParamPayrollShare, ScopeKind: "country", Value: 0.1}},
+	}
+	cards := NewCardService(payrollCalcCardStoreStub{card: Card{
+		ID: 7, PlID: 77, FormCode: TemplateExp, ScopeKey: "R-BY", Year: 2026, Month: 10,
+		Currency: "BYN", Status: CardDraft, StepCode: "1.5",
+	}})
+	local := &payrollLocalSalesStub{sales: map[int]map[int]float64{101: {11: 600}}}
+	svc := NewExpService(repo, cards, nil).WithSalesPlan(payrollExternalMustNotRead{}).WithRetailSalesPlan(local)
+	got, err := svc.Calc(context.Background(), adminP, 7, ExpCalcRequest{Op: ExpCalcPayroll, Months: []int{11}, Preview: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.plID != 77 || got.Changed != 1 || got.Diff[0].After != 60 {
+		t.Fatalf("payroll must use saved sales of plan 77: local=%d result=%+v", local.plID, got)
+	}
+}
+
+func TestExpServiceCalc_UnknownLegalEntityDoesNotUsePL24(t *testing.T) {
+	repo := &payrollCalcRepoStub{
+		row:    ExpRow{CodeCFO: 101, CodePL: 24, LegalEntity: "UNKNOWN"},
+		params: []ExpParamRow{{ParamCode: ExpParamPayrollShare, ScopeKind: "country", Value: 0.1}},
+	}
+	cards := NewCardService(payrollCalcCardStoreStub{card: Card{
+		ID: 7, FormCode: TemplateExp, ScopeKey: "R-BY", Year: 2026, Month: 10,
+		Currency: "BYN", Status: CardDraft, StepCode: "1.5",
+	}})
+	svc := NewExpService(repo, cards, nil).WithSalesPlan(payrollCalcSourceStub{
+		sales: map[int]map[int]float64{101: {11: 600}},
+	})
+	got, err := svc.Calc(context.Background(), adminP, 7, ExpCalcRequest{Op: ExpCalcPayroll, Months: []int{11}, Preview: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Changed != 0 || len(got.UnmatchedLegal) != 1 || got.UnmatchedLegal[0].CodeCFO != 101 {
+		t.Fatalf("unknown legal entity must be reported and not treated as PL 24: %+v", got)
+	}
+}
+
 func (s payrollCalcSourceStub) SalesPlan(context.Context, string, int) (map[int]map[int]float64, error) {
 	return s.sales, nil
 }
@@ -55,7 +115,7 @@ func TestExpServiceCalc_PersistsZeroWhenSalesPlanIsZero(t *testing.T) {
 	old := 100.0
 	base := 1000.0
 	repo := &payrollCalcRepoStub{
-		row: ExpRow{CodeCFO: 101, CodePL: ExpPLSalary, Values: []ExpValue{
+		row: ExpRow{CodeCFO: 101, CodePL: ExpPLSalary, LegalEntity: "МАРК Формэль ООО", Values: []ExpValue{
 			{Scenario: ExpScenarioFact, Month: 1, Amount: &base},
 			{Scenario: ExpScenarioPlan, Month: 1, Amount: &old},
 		}},

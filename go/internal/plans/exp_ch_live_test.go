@@ -61,6 +61,26 @@ func TestZZLiveExpCH_FormsAndBudgetPrefill(t *testing.T) {
 			cfos[c.CodeCFO] = true
 			countries[c.Country] = true
 		}
+		if f.kind == ExpKindRetail && cfos[40] {
+			t.Error("ЦФО 40 не должен попадать в розницу")
+		}
+		if f.kind == ExpKindIM {
+			if !cfos[40] {
+				t.Error("ЦФО 40 отсутствует в форме ИМ")
+			}
+			var hasWages, hasTax bool
+			for _, c := range cells {
+				if c.CodeCFO == 40 && c.CodePL == 79 {
+					hasWages = true
+				}
+				if c.CodeCFO == 40 && c.CodePL == 87 {
+					hasTax = true
+				}
+			}
+			if !hasWages || !hasTax {
+				t.Errorf("у ЦФО 40 должны быть PL 79/87: зарплата=%v, налоги=%v", hasWages, hasTax)
+			}
+		}
 		var ids []int
 		for id := range cfos {
 			ids = append(ids, id)

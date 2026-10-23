@@ -92,7 +92,7 @@ type chExpSource struct {
 	// planFromFinPL — стратегия и тактика (бюджет) розницы, ИМ и опта берутся из реплики P&L, а не из процедуры затрат;
 	// finPLStrategy / finPLTactic — допустимые названия сценариев в Table_Fin_PL (без учёта регистра): сценарий может быть
 	// записан и коротко («бюджет»), и названием из справочника Budgeting.dbo.Scenario («Стратегический бюджет»); по умолчанию —
-// подтверждённые названия.
+	// подтверждённые названия.
 	planFromFinPL              bool
 	finPLStrategy, finPLTactic []string
 }
@@ -230,7 +230,13 @@ func expCostsSQLScenario(kind, country string, years []int, scenario string) str
 	}
 	group1, group3 := expKindFilter(kind)
 	if group1 != "" {
-		w = append(w, "group_cfo1 = "+chLit(group1))
+		groupFilter := "group_cfo1 = " + chLit(group1)
+		if kind == ExpKindIM {
+			groupFilter = "(" + groupFilter + " OR code_cfo = 40)"
+		} else if kind == ExpKindRetail {
+			groupFilter += " AND code_cfo != 40"
+		}
+		w = append(w, groupFilter)
 	}
 	if len(group3) > 0 {
 		lits := make([]string, len(group3))
@@ -392,7 +398,13 @@ func expFinPLSQL(kind, country string, years []int, finScenarios []string, outSc
 	group1, group3 := expKindFilter(kind)
 	if group1 != "" {
 		// Группа ЦФО в справочнике бывает с номером («3.Магазины») и без («Магазины») — сравниваем без номера.
-		w = append(w, "replaceRegexpOne(group_cfo1, "+chLit(`^[0-9]+\.\s*`)+", '') = "+chLit(expStripGroupNumber(group1)))
+		groupFilter := "replaceRegexpOne(group_cfo1, " + chLit(`^[0-9]+\.\s*`) + ", '') = " + chLit(expStripGroupNumber(group1))
+		if kind == ExpKindIM {
+			groupFilter = "(" + groupFilter + " OR toInt32OrZero(code_cfo) = 40)"
+		} else if kind == ExpKindRetail {
+			groupFilter += " AND toInt32OrZero(code_cfo) != 40"
+		}
+		w = append(w, groupFilter)
 	}
 	if len(group3) > 0 {
 		lits := make([]string, len(group3))

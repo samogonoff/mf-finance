@@ -25,6 +25,14 @@ type ExpCalcDiff struct {
 	Note    string   `json:"note,omitempty"`
 }
 
+// ExpUnmatchedLegal identifies a salary row skipped because its legal entity
+// cannot be mapped to a payroll PL pair.
+type ExpUnmatchedLegal struct {
+	CodeCFO     int    `json:"code_cfo"`
+	CFO         string `json:"cfo,omitempty"`
+	LegalEntity string `json:"legal_entity,omitempty"`
+}
+
 // ExpCalcResult — отчёт расчёта.
 type ExpCalcResult struct {
 	Op      string `json:"op"`
@@ -34,8 +42,9 @@ type ExpCalcResult struct {
 	// Capped — в скольких строках сработало ограничение порогом (ТЗ §6.1).
 	Capped int `json:"capped"`
 	// NoBase — в скольких строках базы не нашлось: «порог не применён, нет базы».
-	NoBase int           `json:"no_base"`
-	Diff   []ExpCalcDiff `json:"diff"`
+	NoBase         int                 `json:"no_base"`
+	Diff           []ExpCalcDiff       `json:"diff"`
+	UnmatchedLegal []ExpUnmatchedLegal `json:"unmatched_legal,omitempty"`
 }
 
 // Виды расчёта.
@@ -62,6 +71,12 @@ type ExpCalcRequest struct {
 
 // WithSalesPlan подключает план продаж — вход расчёта §6.1.
 func (s *ExpService) WithSalesPlan(src ExpDataSource) *ExpService { s.sales = src; return s }
+
+// WithRetailSalesPlan uses the locally saved sales form for retail payroll.
+func (s *ExpService) WithRetailSalesPlan(src RetailSalesPlanSource) *ExpService {
+	s.retailSales = src
+	return s
+}
 
 // Params — параметры периода формы (ТЗ §6.1).
 func (s *ExpService) Params(ctx context.Context, p Principal, cardID int64) ([]ExpParamRow, error) {
@@ -114,7 +129,7 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 	if req.Op == ExpCalcFactFill {
 		return s.factFill(ctx, p, c, in, req, res)
 	}
-	if req.Op == ExpCalcPayroll && s.sales == nil {
+	if req.Op == ExpCalcPayroll && s.sales == nil && (in.FormKind != ExpKindRetail || s.retailSales == nil) {
 		return res, errors.New("план продаж недоступен — расчёт §6.1 не выполняется")
 	}
 
@@ -128,9 +143,16 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 	}
 	sales := map[int]map[int]float64{}
 	if req.Op == ExpCalcPayroll {
-		sales, err = s.sales.SalesPlan(ctx, in.Country, in.PlanYear)
+		if in.FormKind == ExpKindRetail && s.retailSales != nil {
+			sales, err = s.retailSales.RetailSalesPlan(ctx, c.PlID, in.Country, in.Currency, in.PlanYear)
+		} else {
+			sales, err = s.sales.SalesPlan(ctx, in.Country, in.PlanYear)
+		}
 		if err != nil {
 			return res, fmt.Errorf("план продаж не прочитан: %w", err)
+		}
+		if in.FormKind == ExpKindRetail && s.retailSales != nil && len(sales) == 0 {
+			return res, errors.New("план продаж розницы не заполнен в текущем тактическом плане")
 		}
 	}
 
@@ -185,14 +207,25 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 		return res, nil
 	}
 
+	unmatchedSeen := map[int]bool{}
 	for _, r := range rows {
 		// Расчёт §6.1 наполняет ЗАРПЛАТНУЮ статью пары по юридическому лицу
 		// (ответ 40). Налоги от выплат по ответу 38 — самостоятельные статьи со
 		// своими суммами, расчётом они не заполняются.
-		want := ExpPLSalary
-		if pair, ok := ExpPayrollPair(r.LegalEntity); ok {
-			want = pair[0]
+		if r.CodePL != 24 && r.CodePL != 78 && r.CodePL != 79 && r.CodePL != 80 && r.CodePL != 81 {
+			continue
 		}
+		pair, ok := ExpPayrollPair(r.LegalEntity)
+		if !ok {
+			if !unmatchedSeen[r.CodeCFO] {
+				res.UnmatchedLegal = append(res.UnmatchedLegal, ExpUnmatchedLegal{
+					CodeCFO: r.CodeCFO, CFO: r.CFO, LegalEntity: r.LegalEntity,
+				})
+				unmatchedSeen[r.CodeCFO] = true
+			}
+			continue
+		}
+		want := pair[0]
 		if r.CodePL != want {
 			continue
 		}

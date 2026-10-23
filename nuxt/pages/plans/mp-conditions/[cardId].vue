@@ -135,8 +135,9 @@
               <th class="col-num">Наценка</th>
               <th class="col-num">Наценка от общей сс</th>
               <th class="col-num">НДС</th>
-              <th v-for="b in costBlocks" :key="b.block" class="col-num" :title="b.name">
-                {{ b.short }}
+              <th v-for="b in costBlocks" :key="b.block" class="col-num">
+                {{ b.code }}
+                <span class="article-help" :title="b.name" :aria-label="`Статья ${b.code}: ${b.name}`" tabindex="0">?</span>
               </th>
               <th class="col-num">Σ долей</th>
               <th>Обоснование</th>
@@ -353,24 +354,24 @@ interface EditableRow extends MpConditionsRow {
   _origin: string;
 }
 
-// Короткие подписи статей: полное название — в title колонки.
-const COST_LABELS: Record<string, [string, string]> = {
-  cost_agent: ["Агент.", "Агентское (комиссионное) вознаграждение"],
-  cost_freight: ["Груз.экс", "Грузоперевозки экспорт"],
-  cost_log_transport: ["Развоз", "Грузоперевозки развоз и перемещение"],
-  cost_log_warehouse: ["Аренда", "Аренда помещений (стоянки)"],
-  cost_ads: ["Реклама", "РЕКЛАМА И МАРКЕТИНГ"],
-  cost_ads_social: ["Соцсети", "Реклама — социальные сети"],
-  cost_packaging: ["Упак.", "Расходы на упаковку (пакеты)"],
-  cost_acquiring: ["Эквайр.", "Эквайринг"],
-  cost_it: ["ИТ", "Расходы на IT обслуживание (ПО)"],
-  penalties: ["Штрафы", "Штрафы (факт приходит из отдельного источника)"],
-  cost_other: ["Прочие", "Прочие удержания и компенсации"]
+// Оба блока 66 публикуются одной статьёй: штрафы и прочие различаются внутри формы.
+const COST_LABELS: Record<string, [number, string]> = {
+  cost_agent: [64, "Агентское (комиссионное) вознаграждение"],
+  cost_freight: [51, "Грузоперевозки экспорт"],
+  cost_log_transport: [52, "Грузоперевозки развоз и перемещение"],
+  cost_log_warehouse: [54, "Аренда помещений (стоянки)"],
+  cost_ads: [13, "РЕКЛАМА И МАРКЕТИНГ"],
+  cost_ads_social: [15, "Реклама — социальные сети"],
+  cost_packaging: [45, "Расходы на упаковку (пакеты)"],
+  cost_acquiring: [58, "Эквайринг"],
+  cost_it: [48, "Расходы на IT обслуживание (ПО)"],
+  penalties: [66, "Штрафы"],
+  cost_other: [66, "Прочие удержания и компенсации"]
 };
 
 const costBlocks = COST_BLOCKS.map((b) => ({
   block: b,
-  short: COST_LABELS[b]?.[0] || b,
+  code: COST_LABELS[b]?.[0] || 0,
   name: COST_LABELS[b]?.[1] || b
 }));
 
@@ -660,6 +661,19 @@ onMounted(load);
 }
 .cond-table {
   min-width: 100%;
+}
+.article-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 3px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  cursor: help;
 }
 .sticky-col {
   position: sticky;

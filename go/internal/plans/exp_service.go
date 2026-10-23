@@ -46,6 +46,8 @@ type ExpService struct {
 	norms ExpTravelNorms
 	// sales — утверждённый план продаж: вход расчёта §6.1, только чтение.
 	sales ExpDataSource
+	// retailSales reads the saved sales form of the same tactical plan.
+	retailSales RetailSalesPlanSource
 	// scope — срез доступа пользователей (свод опта проверяет доступ к карточке); nil — без проверки.
 	scope ScopeStore
 	// svodWait — сколько свод расходов ждёт загрузки карточек из источника (0 — svodSyncWait).

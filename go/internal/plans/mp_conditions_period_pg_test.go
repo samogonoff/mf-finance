@@ -79,6 +79,7 @@ func TestMpConditionsPeriodAndSnapshotPG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	snapshot["vat_basis"] = map[string]MpVatBasis{"335": {Ratio: 1.2, FromPlan: true, Year: 2099, Month: 11}}
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -95,9 +96,12 @@ func TestMpConditionsPeriodAndSnapshotPG(t *testing.T) {
 	if _, err := conditions.SaveConditions(ctx, changed); err != nil {
 		t.Fatal(err)
 	}
-	frozen, _ := (&TaskStore{pool: pool}).mpClosedSnapshot(ctx, card, "RUB")
+	frozen, _, vatBasis := (&TaskStore{pool: pool}).mpClosedSnapshot(ctx, card, "RUB")
 	if frozen[335].Shares[BCostAds] != 0 {
 		t.Fatalf("закрытая версия изменилась: %+v", frozen[335].Shares)
+	}
+	if b := vatBasis[335]; b.Ratio != 1.2 || b.Year != 2099 || b.Month != 11 {
+		t.Fatalf("базис НДС закрытой версии изменился: %+v", b)
 	}
 
 	// Строка будущего периода с датой начала в ноябре не меняет ноябрь.
