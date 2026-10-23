@@ -126,11 +126,11 @@ func expNotSalesRowSQL(prefix string) string {
 	return "((" + strings.Join(conds, " AND ") + ") OR EXISTS (SELECT 1 FROM exp_instance xi WHERE xi.id = " + prefix + "instance_id AND xi.form_kind LIKE 'cfo:%'))"
 }
 
-// expNotRetailCFO40SQL keeps legacy rows in storage, including manual inputs
-// and their history, while preventing duplicate use after CFO 40 moves to IM.
+// expNotRetailCFO40SQL uses a persisted row marker. The marker survives a
+// draft's move to approval, while older approved cards retain their rows.
 func expNotRetailCFO40SQL(prefix string) string {
-	return "(" + prefix + "code_cfo <> 40 OR NOT EXISTS (" +
-		"SELECT 1 FROM exp_instance xi WHERE xi.id = " + prefix + "instance_id AND xi.form_kind = '" + ExpKindRetail + "'))"
+	return "(" + prefix + "code_cfo <> 40 OR NOT (" + prefix +
+		"attrs @> '{\"retail_cfo40_reassigned\":true}'::jsonb))"
 }
 
 // expVisibleRowSQL is shared by the form, totals, validation, svod and publish.

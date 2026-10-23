@@ -281,6 +281,22 @@ func (s *pgCardStore) SaveTransition(ctx context.Context, cardID int64, tr CardT
 			return Card{}, err
 		}
 	}
+	// Reopening or returning an old retail expense card is an explicit new
+	// editing cycle. Keep its historical snapshot above, then move CFO 40 to
+	// the internet shop for all subsequent reads and approvals of this card.
+	if (tr.Status == CardDraft || tr.Status == CardReturned) && !tr.Locked {
+		if _, err := tx.Exec(ctx, `
+			UPDATE exp_row r
+			   SET attrs = jsonb_set(r.attrs, '{retail_cfo40_reassigned}', 'true'::jsonb),
+			       updated_at = NOW()
+			  FROM exp_instance i JOIN form_card c ON c.id = i.card_id
+			 WHERE r.instance_id = i.id AND c.id = $1 AND c.form_code = $2
+			   AND i.form_kind = $3 AND r.code_cfo = 40
+			   AND NOT r.attrs @> '{"retail_cfo40_reassigned":true}'::jsonb`,
+			cardID, TemplateExp, ExpKindRetail); err != nil {
+			return Card{}, err
+		}
+	}
 
 	row := tx.QueryRow(ctx, `
 		UPDATE form_card
