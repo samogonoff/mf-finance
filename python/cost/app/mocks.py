@@ -1240,20 +1240,57 @@ _FOT_HALF_TOTALS = {
 # три цвета Δ-колонок, а не только зелёный.
 _FOT_HALF_F25_CUT = {"401 — Магазин Алматы", "501 — Цех Наманган"}
 
-# Знаменатели долей в тыс., ключи как в den из _halfyear_sql: группа — из
-# контрольных долей; KZ — выручка по кодам 1006/1012; UZ — вся выручка UZ.
-_FOT_HALF_DEN = {
-    "dn_grp_rv_f25_h1": 590000, "dn_grp_rv_f25_h2": 658000, "dn_grp_rv_f25": 1248000,
-    "dn_grp_rv_f26_h1": 745000, "dn_grp_rv_t26_h2": 650000,
-    "dn_kz_rv_f25_h1": 38000, "dn_kz_rv_f25_h2": 42000, "dn_kz_rv_f25": 80000,
-    "dn_kz_rv_f26_h1": 95000, "dn_kz_rv_t26_h2": 90000,
-    "dn_uz_rv_f25_h1": 21000, "dn_uz_rv_f25_h2": 24000, "dn_uz_rv_f25": 45000,
-    "dn_uz_rv_f26_h1": 30000, "dn_uz_rv_t26_h2": 25000,
-}
+# Знаменатели долей в тыс., формат — ячейки den_grain из _halfyear_sql
+# (ctry × kzf × chan × dir × g1), этап 1 (663620): BY/UZ разложены по каналам
+# под правила fot_den_rules (розница/МП/ИМ/картонаж/производство/опт/отдел),
+# итоги стран и группы — прежние контрольные (ГК 1 248 000 тыс = BY 1 123 +
+# KZ 80 + UZ 45), поэтому карточки ГК и уровень страны не меняются.
+_FOT_HALF_DEN_CELLS = (
+    {"ctry": "BY", "kzf": False, "chan": "Розница РБ", "dir": "Розница РБ",
+     "g1": "Магазины",
+     "rv_f25_h1": 400000, "rv_f25_h2": 440000, "rv_f25": 840000,
+     "rv_f26_h1": 430000, "rv_t26_h2": 380000},
+    {"ctry": "BY", "kzf": False, "chan": "Маркетплейсы", "dir": "Маркетплейсы",
+     "g1": "Отдел",
+     "rv_f25_h1": 60000, "rv_f25_h2": 70000, "rv_f25": 130000,
+     "rv_f26_h1": 80000, "rv_t26_h2": 75000},
+    {"ctry": "BY", "kzf": False, "chan": "Интернет-магазин РБ",
+     "dir": "Интернет-магазин", "g1": "5.Интернет-магазин",
+     "rv_f25_h1": 18000, "rv_f25_h2": 20000, "rv_f25": 38000,
+     "rv_f26_h1": 21000, "rv_t26_h2": 20000},
+    {"ctry": "BY", "kzf": False, "chan": "Картонажка",
+     "dir": "Производство картонажное", "g1": "Производство картонажное",
+     "rv_f25_h1": 3000, "rv_f25_h2": 4000, "rv_f25": 7000,
+     "rv_f26_h1": 4000, "rv_t26_h2": 5000},
+    {"ctry": "BY", "kzf": False, "chan": "Производство",
+     "dir": "Пошив,раскрой,печать", "g1": "Производство",
+     "rv_f25_h1": 20000, "rv_f25_h2": 22000, "rv_f25": 42000,
+     "rv_f26_h1": 25000, "rv_t26_h2": 15000},
+    {"ctry": "BY", "kzf": False, "chan": "Опт РБ", "dir": "ОПТ РБ",
+     "g1": "Отдел",
+     "rv_f25_h1": 10000, "rv_f25_h2": 16000, "rv_f25": 26000,
+     "rv_f26_h1": 20000, "rv_t26_h2": 10000},
+    {"ctry": "BY", "kzf": False, "chan": "Отдел",
+     "dir": "Складская логистика", "g1": "Отдел",
+     "rv_f25_h1": 20000, "rv_f25_h2": 20000, "rv_f25": 40000,
+     "rv_f26_h1": 40000, "rv_t26_h2": 30000},
+    {"ctry": "KZ", "kzf": True, "chan": "Розница KZ", "dir": "Розница KZ",
+     "g1": "Магазины",
+     "rv_f25_h1": 38000, "rv_f25_h2": 42000, "rv_f25": 80000,
+     "rv_f26_h1": 95000, "rv_t26_h2": 90000},
+    {"ctry": "UZ", "kzf": False, "chan": "Розница UZ", "dir": "Розница UZ",
+     "g1": "Магазины",
+     "rv_f25_h1": 15000, "rv_f25_h2": 17000, "rv_f25": 32000,
+     "rv_f26_h1": 20000, "rv_t26_h2": 17000},
+    {"ctry": "UZ", "kzf": False, "chan": "Производство",
+     "dir": "Пошив,раскрой,печать", "g1": "Производство",
+     "rv_f25_h1": 6000, "rv_f25_h2": 7000, "rv_f25": 13000,
+     "rv_f26_h1": 10000, "rv_t26_h2": 8000},
+)
 
 
-def _fot_half_mock() -> tuple[list[dict], dict]:
-    """Зерно P10/P11/P13 и знаменатели долей.
+def _fot_half_mock() -> tuple[list[dict], list[dict]]:
+    """Зерно P10/P11/P13 и ячейки знаменателей долей (den_grain).
 
     Итоги заданы в тыс. (как в PBI) и умножаются на 1000 до сырых сумм
     витрины — сборщики app.fot (_t/_ms) дают те же контрольные числа. Вес
@@ -1281,15 +1318,44 @@ def _fot_half_mock() -> tuple[list[dict], dict]:
     for r in grain:
         r["f25"] = round(r["f25_h1"] + r["f25_h2"], 2)
         r["rv_f25"] = round(r["rv_f25_h1"] + r["rv_f25_h2"], 2)
-    den = {k: v * 1000.0 for k, v in _FOT_HALF_DEN.items()}
+    den = [
+        {k: (v * 1000.0 if k.startswith("rv_") else v) for k, v in cell.items()}
+        for cell in _FOT_HALF_DEN_CELLS
+    ]
     return grain, den
+
+
+def _mock_expect_rows(rows: list[dict], c: int) -> None:
+    """Досчитывает ключи ожидания в мок-строки (grain/rev сборщиков p10/p14/p15):
+    t26_h2 → f26_h2c + p26_h2o, rv_t26_h2 → rv_f26_h2c + rv_p26_h2o (пропорции
+    как у _mock_expect_keys: факт (C−6)/6, тактика (12−C)/6 — контрольные
+    «Ожидания» сохраняются). Мутирует строки на месте."""
+    w_fact = (c - 6) / 6.0
+    w_plan = (12 - c) / 6.0
+    for r in rows:
+        t26 = r.get("t26_h2")
+        r["f26_h2c"] = round(t26 * w_fact, 2) if t26 is not None else None
+        r["p26_h2o"] = round(t26 * w_plan, 2) if t26 is not None else None
+        rv_t26 = r.get("rv_t26_h2")
+        if rv_t26 is not None:
+            r["rv_f26_h2c"] = round(rv_t26 * w_fact, 2)
+            r["rv_p26_h2o"] = round(rv_t26 * w_plan, 2)
+
+
+def _fot_mock_closed():
+    """date закрытого периода мока (для cfg ожидания и срезов факта P17)."""
+    from datetime import date
+    from app import fot
+    return fot._closed_from_meta({"closed_period": _FOT_MOCK_STATE["closed_period"]}) or date(2026, 8, 31)
 
 
 def _fot_half_mock_dashboard(tab: str, params: dict) -> dict:
     """Сборка P10/P11 мока теми же функциями, что и боевой ответ.
 
     app.fot._p10_assemble/_p11_assemble получают мок-зерно — формулы (доли,
-    Δ, светофор) и форма ответа не могут разойтись с боем. P11 берёт и мок
+    Δ, светофор) и форма ответа не могут разойтись с боем. P10 годозависим
+    (паттерн B1): зерно получает ключи ожидания (C=8), сборщику уходит cfg;
+    P11 остаётся на фиксированных полугодиях 2025/2026 и берёт мок
     численности P12 (_fot_hc_mock) для панели и карточек стран. Срезы на
     числа не влияют (это мок): страна карточек — None, пути дрилла берутся
     из запроса.
@@ -1306,9 +1372,23 @@ def _fot_half_mock_dashboard(tab: str, params: dict) -> dict:
         currency = "BYN"
     grain, den = _fot_half_mock()
     headcount = cards_by_country = None
+    expect_meta = None
     if tab == "p10":
-        cards, tables, warning = fot._p10_assemble(currency, grain, den, None)
+        year_cur = _fot_int(_fot_first(params.get("year"), fot.YEAR_PLAN), fot.YEAR_PLAN)
+        year_prev = year_cur - 1
+        cfg = fot._expect_cfg(_fot_mock_closed(), year_cur)
+        c = cfg["close_month"] or 8
+        _mock_expect_keys(grain, den, c)
+        cards, tables, warning = fot._p10_assemble(
+            currency, grain, den, None, cfg, year_cur, year_prev)
         methodology = fot.METHODOLOGY_P10
+        periods_meta = fot._periods_meta(year_cur)
+        expect_meta = {
+            "by_month": cfg["by_month"], "close_month": c,
+            "plan_scenario": cfg["scenario"],
+            "fact_months": ("07–%02d" % min(c, 12)) if c and c > 6 else None,
+            "plan_months": ("%02d–12" % (c + 1)) if c and c < 12 else None,
+        }
     else:
         cards, headcount, cards_by_country, tables, warning = fot._p11_assemble(
             currency, grain, den, _fot_hc_mock(), None,
@@ -1316,16 +1396,19 @@ def _fot_half_mock_dashboard(tab: str, params: dict) -> dict:
             fot._parse_str_list(params.get("channel_path")),
         )
         methodology = fot.METHODOLOGY_P11
+        periods_meta = fot._periods_meta()
     meta = {
         "tab": tab,
         "params": dict(params),
         "currency": currency,
-        "periods": fot._periods_meta(),
+        "periods": periods_meta,
         "closed_period": _FOT_MOCK_STATE["closed_period"],
         "stale": False,
         "refreshed_at": _FOT_MOCK_STATE["refreshed_at"],
         "methodology": methodology,
     }
+    if expect_meta is not None:
+        meta["expect"] = expect_meta
     meta.update(_FOT_MOCK_META)
     if warning:
         meta["warning"] = warning
@@ -1499,20 +1582,33 @@ def _fot_p12_mock_dashboard(params: dict) -> dict:
 
 
 def _fot_p17_mock_dashboard(params: dict) -> dict:
-    """P17 моком: боевой сборщик на мок-зерне с динамическими периодами."""
+    """P17 моком: боевой сборщик на мок-зерне с динамическими периодами.
+
+    Период — глобальные срезы year/half (как в бою: дефолт half — закрытое
+    полугодие закрытого периода мока, 2026-08-31 → 2ПГ); факт текущего года
+    при незакрытом периоде — срез на последний закрытый месяц (честная
+    подпись, см. fot._p17_fact_month)."""
     from app import fot
 
     currency = _fot_first(params.get("currency"), "BYN").upper()
     if currency not in fot.FOT_CURRENCIES:
         currency = "BYN"
+    closed = _fot_mock_closed()
     # Парсим как боевой _parse_int: "" → дефолт
-    _p17y = _fot_int(params.get("p17_year"), fot.YEAR_PLAN)
-    yr_plan = _p17y if _p17y >= 2024 else fot.YEAR_PLAN
+    _year = _fot_int(_fot_first(params.get("year"), fot.YEAR_PLAN), fot.YEAR_PLAN)
+    yr_plan = _year if _year >= 2024 else fot.YEAR_PLAN
     yr_prev = yr_plan - 1
-    half = _fot_int(params.get("p17_half"), 1)
+    half_default = 1 if (closed and closed.month <= 6) else 2
+    half = _fot_int(_fot_first(params.get("half"), half_default), half_default)
+    m_plan = fot._p17_fact_month(yr_plan, half, closed)
+    m_prev = fot._p17_fact_month(yr_prev, half, closed)
+    at_closed = m_plan != fot._p17_std_month(half)
+    month_lbl = ("%s %d" % (fot._HC_MONTHS_NOM[m_plan], yr_plan)
+                 if at_closed else fot._HC_MONTHS_NOM[m_plan])
     # Отдельное зерно P17 с g2/dir
     grain = _fot_p17_mock_grain()
-    cards, tables, warning = fot._p17_assemble(grain, yr_prev, yr_plan, half)
+    cards, tables, warning = fot._p17_assemble(
+        grain, yr_prev, yr_plan, half, month_lbl, at_closed)
 
     # Детали по каждой стране (слайд 4.2)
     by_cc: dict = {}
@@ -1523,9 +1619,19 @@ def _fot_p17_mock_dashboard(params: dict) -> dict:
         parts = by_cc.get(cc)
         if not parts:
             continue
-        country_details[cc] = fot._p17_country_detail(parts, cc, label, yr_prev, yr_plan, half)
+        country_details[cc] = fot._p17_country_detail(
+            parts, cc, label, yr_prev, yr_plan, half, month_lbl, at_closed)
 
     meta = _fot_mock_meta("p17", params, currency, fot.METHODOLOGY_P17)
+    meta["periods"] = fot._periods_meta(yr_plan)
+    meta["hc"] = {
+        "half": half,
+        "m_prev": m_prev, "m_plan": m_plan,
+        "fact_label_prev": "на конец %s %d" % (fot._HC_MONTHS_GEN[m_prev], yr_prev),
+        "fact_label_curr": "на конец %s %d" % (fot._HC_MONTHS_GEN[m_plan], yr_plan),
+        "at_closed_period": at_closed,
+        "note": "факт на конец закрытого периода" if at_closed else None,
+    }
     if warning:
         meta["warning"] = warning
     return {"cards": cards, "charts": [], "tables": tables,
@@ -1600,10 +1706,11 @@ def _fot_p13_mock_dashboard(params: dict) -> dict:
 # Направления BY (тыс. BYN; выручка — в тех же тыс., ставки): ФОТ-периоды и
 # численность сняты с листа 4 деки v16, выручка — собственная по ЦФО
 # направлений (живые пропорции: розница РБ ~116 млн 1ПГ25, опт/прочее ~140,
-# ИМ ~8, картонаж ~0,8; у производства своих продаж почти нет). Знаменатель
-# «беспродажных» направлений (производство, отделы) — вся выручка среза —
-# досчитывает боевой сборщик (fot._P14_OWN_REVENUE), поэтому их доли здесь
-# получаются «как в деке» (~12 % / ~9 %), а не от собственной выручки.
+# ИМ ~8, картонаж ~0,8; у производства своих продаж почти нет). Знаменатели —
+# правила fot_den_rules (этап 1): ячейки выручки _FOT_P14_MOCK_CELL_DIMS
+# подобраны так, что цели правил дают прежние базы (продающие — свой канал,
+# производство/отделы — вся выручка BY = сумма всех ячеек), доли остаются
+# «как в деке» (~12 % / ~9 %).
 # «Ожидание» — факт+тактика (формула витрины), с декой расходится на единицы
 # тыс: у деки слагаемые из разных кэшей.
 _FOT_P14_MOCK = (
@@ -1622,45 +1729,83 @@ _FOT_P14_MOCK = (
 )
 
 
+# Куда ложится выручка направления мока (этап 1): ячейка канала цели правила
+# fot_den_rules — канал/направление/группа ячейки выручки, у «беспродажных»
+# (производство, отделы) выручка лежит в опте/производстве, их цель — вся BY.
+_FOT_P14_MOCK_CELL_DIMS = {
+    "Магазины": ("Розница РБ", "Розница РБ", "Магазины"),
+    "Производство картонажное": ("Картонажка", "Производство картонажное",
+                                 "Производство картонажное"),
+    "Отделы": ("Опт РБ", "ОПТ РБ", "Отдел"),
+    "Интернет-магазин": ("Интернет-магазин РБ", "Интернет-магазин",
+                         "5.Интернет-магазин"),
+    "Производство": ("Производство", "Пошив,раскрой,печать", "Производство"),
+}
+
+
 def _fot_p14_mock_payload() -> dict:
-    """Ответ _p14_sql моком: зерно/выручка/численность по направлениям BY.
+    """Ответ _p14_sql моком: зерно/ячейки выручки/численность по направлениям
+    BY (этап 1: зерно — nb × направление × группа × страна, выручка — ячейки
+    ctry × kzf × chan × dir × g1 для правил fot_den_rules).
 
     ФОТ и выручка константы держат в тыс (как на листе деки), сюда приезжают
     сырыми суммами витрины (×1000) — те же единицы, что у SQL и боевых
     сборщиков; численность — ставки, без множителя."""
-    grain, rev, h25, h26, plan = [], [], [], [], []
+    grain, cells, h25, h26, plan = [], [], [], [], []
     for (label, f25_h1, f25_h2, b26_h1, f26_h1, b26_h2, t26_h2,
          rv1, rv2, rv3, rv4, rv5, pa, q26, q25) in _FOT_P14_MOCK:
-        grain.append({"dir": label, "f25_h1": f25_h1 * 1000.0,
+        g1 = {"Интернет-магазин": "5.Интернет-магазин",
+              "Отделы": "Отдел"}.get(label, label)
+        grain.append({"nb": label, "dir": label, "g1": g1, "ctry": "BY",
+                      "f25_h1": f25_h1 * 1000.0,
                       "f25_h2": f25_h2 * 1000.0,
                       "f25": (f25_h1 + f25_h2) * 1000.0, "b26_h1": b26_h1 * 1000.0,
                       "f26_h1": f26_h1 * 1000.0, "b26_h2": b26_h2 * 1000.0,
                       "t26_h2": t26_h2 * 1000.0})
-        rev.append({"dir": label, "rv_f25_h1": rv1 * 1000.0, "rv_f25_h2": rv2 * 1000.0,
-                    "rv_f25": rv3 * 1000.0, "rv_f26_h1": rv4 * 1000.0,
-                    "rv_t26_h2": rv5 * 1000.0})
-        h25.append({"dir": label, "q25": q25})
-        h26.append({"dir": label, "q26": q26})
-        plan.append({"dir": label, "pa": pa})
-    return {"grain": grain, "rev": rev, "h25": h25, "h26": h26, "plan": plan}
+        chan, cdir, cg1 = _FOT_P14_MOCK_CELL_DIMS[label]
+        cells.append({"ctry": "BY", "kzf": False, "chan": chan, "dir": cdir,
+                      "g1": cg1,
+                      "rv_f25_h1": rv1 * 1000.0, "rv_f25_h2": rv2 * 1000.0,
+                      "rv_f25": rv3 * 1000.0, "rv_f26_h1": rv4 * 1000.0,
+                      "rv_t26_h2": rv5 * 1000.0})
+        h25.append({"nb": label, "q25": q25})
+        h26.append({"nb": label, "q26": q26})
+        plan.append({"nb": label, "pa": pa})
+    return {"grain": grain, "cells": cells, "h25": h25, "h26": h26, "plan": plan}
 
 
 def _fot_p14_mock_dashboard(params: dict) -> dict:
     """P14 моком: боевой сборщик app.fot._p14_assemble на зерне листа 4 деки
     (контрольные числа — в комментарии к _FOT_P14_MOCK). Срезы на числа не
-    влияют (это мок): шапка листа — Беларусь BY."""
+    влияют (это мок): шапка листа — Беларусь BY. Вкладка годозависима
+    (паттерн B1): зерно получает ключи ожидания (C=8), сборщику уходят
+    year/cfg — контрольные «Ожидания» сохраняются (факт+тактика = тактика)."""
     from app import fot
 
     currency = _fot_first(params.get("currency"), "BYN").upper()
     if currency not in fot.FOT_CURRENCIES:
         currency = "BYN"
+    year_cur = _fot_int(_fot_first(params.get("year"), fot.YEAR_PLAN), fot.YEAR_PLAN)
+    year_prev = year_cur - 1
+    cfg = fot._expect_cfg(_fot_mock_closed(), year_cur)
+    payload = _fot_p14_mock_payload()
+    _mock_expect_rows(payload["grain"], cfg["close_month"] or 8)
+    _mock_expect_rows(payload["cells"], cfg["close_month"] or 8)
     cards, headcount, directions, tables, warning = fot._p14_assemble(
-        currency, _fot_p14_mock_payload(), "BY")
+        currency, payload, "BY", year_cur, year_prev, cfg)
     group_detail, _unused = fot._p14_detail_assemble(
         _fot_p14_detail_mock_payload())
     _unused, direction_detail = fot._p14_detail_assemble(
         _fot_p14_detail_mock_payload(_FOT_P14_S6_DIRS))
     meta = _fot_mock_meta("p14", params, currency, fot.METHODOLOGY_P14)
+    meta["periods"] = fot._periods_meta(year_cur)
+    c = cfg["close_month"]
+    meta["expect"] = {
+        "by_month": cfg["by_month"], "close_month": c,
+        "plan_scenario": cfg["scenario"],
+        "fact_months": ("07–%02d" % min(c, 12)) if c and c > 6 else None,
+        "plan_months": ("%02d–12" % (c + 1)) if c and c < 12 else None,
+    }
     meta["slide"] = {"cc": "BY", "label": "Беларусь"}
     if warning:
         meta["warning"] = warning
@@ -1711,13 +1856,13 @@ _FOT_P14_DETAIL_MOCK = (
      242, 300, 287, 275, 291, 299, None, None, None),
 )
 
-# Выручка «беспродажной» части среза (тыс.) — знаменатель беспродажных
-# строк = вся выручка среза минус выручка продавцов (в боевой сборке
-# знаменатель — сумма всех rev-строк, у мока продавцы уже заданы явно, эта
-# строка — остаток). Подобрана под бары листа 5: Пошив 10,7/8,9/7,5/8,2 %,
-# Хим 0,11, ЧНИ 1,3, общее 0,29. ВАЖНО: rv_exp (доля «Ожидание») беспродажных
-# строк тоже считается от этой строки, а не от пар продавцов — при
-# перебалансировке мока проверять доли всех четырёх периодов.
+# Выручка «беспродажной» части среза (тыс.) — ячейки каналов «Отдел» и
+# «Производство» (этап 1: знаменатели строк — правила fot_den_rules, у
+# «беспродажных» направлений цель — вся выручка BY, т.е. сумма всех ячеек).
+# Подобрана под бары листа 5: Пошив 10,7/8,9/7,5/8,2 %, Хим 0,11, ЧНИ 1,3,
+# общее 0,29. ВАЖНО: rv_exp (доля «Ожидание») беспродажных строк считается
+# от суммы ячеек — при перебалансировке мока проверять доли всех четырёх
+# периодов.
 _FOT_P14_DETAIL_RV_SLICE = {
     "rv_f25_h1": 37963, "rv_f25_h2": 40000, "rv_f25": 77963,
     "rv_f26_h1": 55770, "rv_t26_h2": 53310,
@@ -1729,18 +1874,30 @@ _FOT_P14_DETAIL_RV_MOCK = {
     ("Отдел", "ОПТ РБ"): (15760, 16600, 16230, 18890),
 }
 
+# Ячейки выручки продавцов (g1, dir) → (канал, направление, группа ячейки)
+# для правил знаменателя (этап 1).
+_FOT_P14_DETAIL_CELL_DIMS = {
+    ("Магазины", "Розница РБ"): ("Розница РБ", "Розница РБ", "Магазины"),
+    ("5.Интернет-магазин", "Интернет-магазин"): ("Интернет-магазин РБ",
+                                                 "Интернет-магазин",
+                                                 "5.Интернет-магазин"),
+    ("Отдел", "Маркетплейсы"): ("Маркетплейсы", "Маркетплейсы", "Отдел"),
+    ("Отдел", "ОПТ РБ"): ("Опт РБ", "ОПТ РБ", "Отдел"),
+}
+
 
 def _fot_p14_detail_mock_payload(dirs: tuple = ()) -> dict:
-    """Ответ _p14_detail_sql моком: зерно (группа × направление × ЦФО),
-    выручка по (группа × направление) и численность — числа листов 5–6 деки
-    (контрольные якоря — в комментарии к _FOT_P14_DETAIL_MOCK). *dirs* —
-    имитация фильтра «Направление» для слайда 6 (пустой кортеж — все)."""
-    grain, rev, h25, h26, plan = [], [], [], [], []
+    """Ответ _p14_detail_sql моком: зерно (группа × направление × ЦФО ×
+    страна), ячейки выручки (ctry × kzf × chan × dir × g1) и численность —
+    числа листов 5–6 деки (контрольные якоря — в комментарии к
+    _FOT_P14_DETAIL_MOCK). *dirs* — имитация фильтра «Направление» для
+    слайда 6 (пустой кортеж — все)."""
+    grain, cells, h25, h26, plan = [], [], [], [], []
     for (g1, d, cfo, cfon, f1, f2, b1, f3, b2, t26,
          pa, q26, q25) in _FOT_P14_DETAIL_MOCK:
         if dirs and d not in dirs:
             continue
-        grain.append({"g1": g1, "dir": d, "cfo": cfo, "cfon": cfon,
+        grain.append({"g1": g1, "dir": d, "cfo": cfo, "cfon": cfon, "ctry": "BY",
                       "f25_h1": f1 * 1000.0, "f25_h2": f2 * 1000.0,
                       "f25": (f1 + f2) * 1000.0, "b26_h1": b1 * 1000.0,
                       "f26_h1": f3 * 1000.0, "b26_h2": b2 * 1000.0,
@@ -1751,15 +1908,27 @@ def _fot_p14_detail_mock_payload(dirs: tuple = ()) -> dict:
             h26.append({"g1": g1, "dir": d, "q26": q26})
         if pa is not None:
             plan.append({"g1": g1, "dir": d, "pa": pa})
-    # выручка среза — строкой-«направлением» без группы (тыс → сырые суммы),
-    # сборщик свернёт её в знаменатель; продавцы — своими парами (g1, dir)
-    rev.append({"g1": "", "dir": "(срез)",
-                **{k: v * 1000.0 for k, v in _FOT_P14_DETAIL_RV_SLICE.items()}})
+    # «Беспродажная» выручка среза — двумя ячейками (каналы «Отдел» и
+    # «Производство»), продавцы — ячейками каналов целей правил (тыс → сырые
+    # суммы); ячейки в сумме дают прежнюю выручку среза.
+    cells.append({"ctry": "BY", "kzf": False, "chan": "Отдел",
+                  "dir": "Складская логистика", "g1": "Отдел",
+                  "rv_f25_h1": 18000 * 1000.0, "rv_f25_h2": 19000 * 1000.0,
+                  "rv_f25": 37000 * 1000.0, "rv_f26_h1": 26000 * 1000.0,
+                  "rv_t26_h2": 25000 * 1000.0})
+    cells.append({"ctry": "BY", "kzf": False, "chan": "Производство",
+                  "dir": "Пошив,раскрой,печать", "g1": "Производство",
+                  "rv_f25_h1": 19963 * 1000.0, "rv_f25_h2": 21000 * 1000.0,
+                  "rv_f25": 40963 * 1000.0, "rv_f26_h1": 29770 * 1000.0,
+                  "rv_t26_h2": 28310 * 1000.0})
     for (g1, d), (r1, r2, r4, r5) in _FOT_P14_DETAIL_RV_MOCK.items():
-        rev.append({"g1": g1, "dir": d, "rv_f25_h1": r1 * 1000.0,
-                    "rv_f25_h2": r2 * 1000.0, "rv_f25": (r1 + r2) * 1000.0,
-                    "rv_f26_h1": r4 * 1000.0, "rv_t26_h2": r5 * 1000.0})
-    return {"grain": grain, "rev": rev, "h25": h25, "h26": h26, "plan": plan}
+        chan, cdir, cg1 = _FOT_P14_DETAIL_CELL_DIMS[(g1, d)]
+        cells.append({"ctry": "BY", "kzf": False, "chan": chan, "dir": cdir,
+                      "g1": cg1,
+                      "rv_f25_h1": r1 * 1000.0, "rv_f25_h2": r2 * 1000.0,
+                      "rv_f25": (r1 + r2) * 1000.0, "rv_f26_h1": r4 * 1000.0,
+                      "rv_t26_h2": r5 * 1000.0})
+    return {"grain": grain, "cells": cells, "h25": h25, "h26": h26, "plan": plan}
 
 
 # Фильтр «Направление» листа 6 деки (продажный набор) — мок слайда 6
@@ -1822,34 +1991,54 @@ def _fot_p15_mock_payload() -> dict:
     fot_rows, h25, h26, plan = [], [], [], []
     for (label, f25_h1, f25_h2, b26_h1, f26_h1, b26_h2, t26_h2,
          pa, q26, q25) in _FOT_P15_MOCK:
-        fot_rows.append({"dir": label, "f25_h1": f25_h1 * 1000.0,
+        fot_rows.append({"ctry": "BY", "dir": label, "f25_h1": f25_h1 * 1000.0,
                          "f25_h2": f25_h2 * 1000.0,
                          "f25": (f25_h1 + f25_h2) * 1000.0,
                          "b26_h1": b26_h1 * 1000.0, "f26_h1": f26_h1 * 1000.0,
                          "b26_h2": b26_h2 * 1000.0, "t26_h2": t26_h2 * 1000.0})
         if q25 is not None:
-            h25.append({"dir": label, "v": q25})
+            h25.append({"ctry": "BY", "dir": label, "v": q25})
         if q26 is not None:
-            h26.append({"dir": label, "v": q26})
+            h26.append({"ctry": "BY", "dir": label, "v": q26})
         if pa:
-            plan.append({"dir": label, "v": pa})
-    return {"fot": fot_rows, "rev": {k: v * 1000.0 for k, v in _FOT_P15_RV_MOCK.items()},
+            plan.append({"ctry": "BY", "dir": label, "v": pa})
+    # ячейки den_grain: один BY-блок (все отделы мока — BY, канальных
+    # направлений среди меток нет → у каждого отдела цель «вся выручка BY»,
+    # как раньше вся выручка среза)
+    cells = [{"ctry": "BY", "kzf": False, "chan": "", "dir": "", "g1": "",
+              **{k: v * 1000.0 for k, v in _FOT_P15_RV_MOCK.items()}}]
+    return {"fot": fot_rows, "cells": cells,
             "h25": h25, "h26": h26, "plan": plan}
 
 
 def _fot_p15_mock_dashboard(params: dict, tab: str) -> dict:
     """P15/P16 моком: боевые сборщики на общем зерне _p15_assemble (контрольные
     числа — в комментарии к _FOT_P15_MOCK). Срезы на числа не влияют (это
-    мок): шапка листа — Беларусь BY."""
+    мок): шапка листа — Беларусь BY. Вкладки годозависимы (паттерн B1): зерно
+    получает ключи ожидания (C=8), контрольные «Ожидания» сохраняются."""
     from app import fot
 
     currency = _fot_first(params.get("currency"), "BYN").upper()
     if currency not in fot.FOT_CURRENCIES:
         currency = "BYN"
+    year_cur = _fot_int(_fot_first(params.get("year"), fot.YEAR_PLAN), fot.YEAR_PLAN)
+    year_prev = year_cur - 1
+    cfg = fot._expect_cfg(_fot_mock_closed(), year_cur)
+    payload = _fot_p15_mock_payload()
+    _mock_expect_rows(payload["fot"], cfg["close_month"] or 8)
+    _mock_expect_rows(payload["cells"], cfg["close_month"] or 8)
     (cards, headcount, departments, tables, trends, banners,
-     warning) = fot._p15_assemble(currency, _fot_p15_mock_payload(), "BY")
+     warning) = fot._p15_assemble(currency, payload, "BY", year_cur, year_prev, cfg)
     methodology = fot.METHODOLOGY_P15 if tab == "p15" else fot.METHODOLOGY_P16
     meta = _fot_mock_meta(tab, params, currency, methodology)
+    meta["periods"] = fot._periods_meta(year_cur)
+    c = cfg["close_month"]
+    meta["expect"] = {
+        "by_month": cfg["by_month"], "close_month": c,
+        "plan_scenario": cfg["scenario"],
+        "fact_months": ("07–%02d" % min(c, 12)) if c and c > 6 else None,
+        "plan_months": ("%02d–12" % (c + 1)) if c and c < 12 else None,
+    }
     meta["slide"] = {"cc": "BY", "label": "Беларусь"}
     if warning:
         meta["warning"] = warning
@@ -1864,8 +2053,9 @@ def _fot_p15_mock_dashboard(params: dict, tab: str) -> dict:
     return out
 
 
-def _mock_expect_keys(grain: list[dict], den: dict, c: int) -> None:
-    """Досчитывает помесячные ключи ожидания B1 в мок-зерно и знаменатели.
+def _mock_expect_keys(grain: list[dict], den: list[dict], c: int) -> None:
+    """Досчитывает помесячные ключи ожидания B1 в мок-зерно и мок-ячейки
+    знаменателей (den_grain).
 
     f26_h2c ≈ t26_h2 × (C−6)/6, p26_h2o ≈ t26_h2 × (12−C)/6 (для rv так же) —
     так что exp26 = f26_h1 + f26_h2c + p26_h2o ≈ f26_h1 + t26_h2 (контрольное
@@ -1880,12 +2070,12 @@ def _mock_expect_keys(grain: list[dict], den: dict, c: int) -> None:
         rv_t26 = r.get("rv_t26_h2")
         r["rv_f26_h2c"] = round(rv_t26 * w_fact, 2) if rv_t26 is not None else None
         r["rv_p26_h2o"] = round(rv_t26 * w_plan, 2) if rv_t26 is not None else None
-    for branch in ("grp", "kz", "uz"):
-        rv_t26 = den.get("dn_%s_rv_t26_h2" % branch)
+    for r in den:
+        rv_t26 = r.get("rv_t26_h2")
         if rv_t26 is None:
             continue
-        den["dn_%s_rv_f26_h2c" % branch] = round(rv_t26 * w_fact, 2)
-        den["dn_%s_rv_p26_h2o" % branch] = round(rv_t26 * w_plan, 2)
+        r["rv_f26_h2c"] = round(rv_t26 * w_fact, 2)
+        r["rv_p26_h2o"] = round(rv_t26 * w_plan, 2)
 
 
 def _fot_b1_mock_dashboard(params: dict) -> dict:
