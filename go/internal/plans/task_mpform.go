@@ -74,7 +74,7 @@ type MpTaskForm struct {
 	// строки «Норматив удержаний» и «Контроль норматива» на экране были нулями.
 	NormByCfo   map[int]float64 `json:"norm_by_cfo,omitempty"`
 	VatMixed    bool            `json:"vat_mixed"`
-	VatFromPlan bool               `json:"vat_from_plan"`
+	VatFromPlan bool            `json:"vat_from_plan"`
 	// VatMissing — площадки, по которым плана нет ни за месяц формы, ни за
 	// предыдущий: суммы посчитаны по аварийной ставке справочника, отправка на
 	// согласование заблокирована (МП-12).
@@ -112,6 +112,7 @@ type MpTaskForm struct {
 
 type mpVersionSnapshot struct {
 	Conditions map[int]MpConditions `json:"conditions"`
+	VatBasis   map[int]MpVatBasis   `json:"vat_basis"`
 	Values     []struct {
 		CodeCFO   int     `json:"code_cfo"`
 		BlockType string  `json:"block_type"`
@@ -120,17 +121,17 @@ type mpVersionSnapshot struct {
 	} `json:"values"`
 }
 
-func (s *TaskStore) mpClosedSnapshot(ctx context.Context, card Card, currency string) (map[int]MpConditions, map[int]map[string]float64) {
+func (s *TaskStore) mpClosedSnapshot(ctx context.Context, card Card, currency string) (map[int]MpConditions, map[int]map[string]float64, map[int]MpVatBasis) {
 	if card.ID == 0 || cardEditable(card) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var raw []byte
 	if err := s.pool.QueryRow(ctx, `SELECT payload FROM card_version WHERE card_id=$1 AND version_no <= $2 ORDER BY version_no DESC LIMIT 1`, card.ID, card.CurrentVersion).Scan(&raw); err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var snapshot mpVersionSnapshot
 	if json.Unmarshal(raw, &snapshot) != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	values := map[int]map[string]float64{}
 	lines := mpLineByBlock()
@@ -144,7 +145,7 @@ func (s *TaskStore) mpClosedSnapshot(ctx context.Context, card Card, currency st
 		}
 		values[row.CodeCFO][row.BlockType] = amount
 	}
-	return snapshot.Conditions, values
+	return snapshot.Conditions, values, snapshot.VatBasis
 }
 
 // seedPL — code_pl для подтяжки input-строк из источника (SUMIFS прототипа).
@@ -310,9 +311,10 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 			}
 		}
 	}
-	// Доли по умолчанию из стратегии — до снимка: утверждённая версия читает
-	// зафиксированные в ней доли, а не текущую стратегию.
-	if mode == CalcInverse {
+	// Доли из стратегии нужны только пока у карточки нет сохранённых условий.
+	// Утверждённая версия читает доли из своего снимка.
+	snapshotConditions, snapshotValues, snapshotVatBasis := s.mpClosedSnapshot(ctx, card, f.Currency)
+	if mode == CalcInverse && snapshotConditions == nil {
 		platforms := make([]MarketplaceRow, 0)
 		for _, mp := range MarketplaceSeed() {
 			if segment == "" || mp.Segment == segment {
@@ -321,7 +323,6 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 		}
 		condByCfo = s.shareDefaults.Attach(ctx, condByCfo, platforms, year, month)
 	}
-	snapshotConditions, snapshotValues := s.mpClosedSnapshot(ctx, card, f.Currency)
 	if snapshotConditions != nil {
 		condByCfo = snapshotConditions
 	} else if mode == CalcInverse {
@@ -391,13 +392,22 @@ func (s *TaskStore) MpFormData(ctx context.Context, taskID int64, currency, scop
 	// фолбэк (mpform_vat.go). Одного числа на всю форму не существует: у площадок
 	// ставки разные, поэтому шапка отдаёт и разрез VatByCfo, и признак VatMixed.
 	segList := distinctSegments(visibleSegments)
-	planLayer := mpPlanByBlock(ctx, s.fact, year, month, segList)
-	prevY, prevM := prevMonth(year, month)
-	planPrev := mpPlanByBlock(ctx, s.fact, prevY, prevM, segList)
+	var planLayer, planPrev map[string]float64
+	for _, p := range f.Platforms {
+		if _, ok := snapshotVatBasis[p.CodeCFO]; !ok {
+			planLayer = mpPlanByBlock(ctx, s.fact, year, month, segList)
+			prevY, prevM := prevMonth(year, month)
+			planPrev = mpPlanByBlock(ctx, s.fact, prevY, prevM, segList)
+			break
+		}
+	}
 	f.VatByCfo = map[int]MpVatBasis{}
 	rateByCfo := map[int]float64{}
 	for _, p := range f.Platforms {
-		b := mpVatBasis(planLayer, planPrev, p.CodeCFO, year, month, s.vatFor(ctx, p))
+		b, ok := snapshotVatBasis[p.CodeCFO]
+		if !ok {
+			b = mpVatBasis(planLayer, planPrev, p.CodeCFO, year, month, s.vatFor(ctx, p))
+		}
 		f.VatByCfo[p.CodeCFO] = b
 		rateByCfo[p.CodeCFO] = b.Rate()
 		f.VatFromPlan = f.VatFromPlan || b.FromPlan

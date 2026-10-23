@@ -19,7 +19,7 @@ func pastMonthsSvc(repo *payrollCalcRepoStub, sales map[int]map[int]float64) *Ex
 func TestExpServiceCalc_SkipsPastMonths(t *testing.T) {
 	base := 1000.0
 	repo := &payrollCalcRepoStub{
-		row: ExpRow{CodeCFO: 101, CodePL: ExpPLSalary, Values: []ExpValue{
+		row: ExpRow{CodeCFO: 101, CodePL: ExpPLSalary, LegalEntity: "МАРК Формэль ООО", Values: []ExpValue{
 			{Scenario: ExpScenarioFact, Month: 1, Amount: &base},
 			{Scenario: ExpScenarioFact, Month: 10, Amount: &base},
 		}},

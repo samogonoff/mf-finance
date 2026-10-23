@@ -44,8 +44,16 @@ func TestExpKindFilter(t *testing.T) {
 func TestExpCostsSQL_IMAndOpt(t *testing.T) {
 	im := expCostsSQL(ExpKindIM, "BY", []int{2025, 2026})
 	if !strings.Contains(im, "group_cfo1 = '5.Интернет-магазин'") || strings.Contains(im, "group_cfo3") ||
-		!strings.Contains(im, "toFloat64(amount) AS amount") {
+		!strings.Contains(im, "toFloat64(amount) AS amount") || !strings.Contains(im, "OR toInt32OrZero(code_cfo) = 40") {
 		t.Errorf("запрос ИМ:\n%s", im)
+	}
+	retail := expCostsSQL(ExpKindRetail, "BY", []int{2026})
+	if !strings.Contains(retail, "toInt32OrZero(code_cfo) != 40") {
+		t.Errorf("ЦФО 40 не должен дублироваться в рознице:\n%s", retail)
+	}
+	finPL := expAccrualFactSQL(ExpKindIM, "BY", []int{2026})
+	if !strings.Contains(finPL, "OR toInt32OrZero(code_cfo) = 40") {
+		t.Errorf("начисления ИМ должны включать ЦФО 40:\n%s", finPL)
 	}
 	opt := expCostsSQL(ExpKindOpt, "", []int{2026})
 	for _, want := range []string{"group_cfo3 IN ('ОПТ РБ', 'ОПТ РФ', 'ОПТ УЗ')", "toFloat64(amount_byn) AS amount"} {
@@ -55,6 +63,18 @@ func TestExpCostsSQL_IMAndOpt(t *testing.T) {
 	}
 	if strings.Contains(opt, "group_cfo1 =") || strings.Contains(opt, "country =") {
 		t.Errorf("опт: группа ЦФО 1 и страна не отбираются:\n%s", opt)
+	}
+}
+
+func TestExpGroupCfoAllowed_Cfo40(t *testing.T) {
+	if !expGroupCfoAllowed(ExpKindIM, "3.Магазины", 40) ||
+		expGroupCfoAllowed(ExpKindRetail, "3.Магазины", 40) ||
+		expGroupCfoAllowed(ExpKindOpt, "3.Магазины", 40) {
+		t.Fatal("ЦФО 40 должен входить только в форму ИМ")
+	}
+	if !expGroupCfoAllowed(ExpKindIM, "5.Интернет-магазин", 380) ||
+		expGroupCfoAllowed(ExpKindIM, "3.Магазины", 101) {
+		t.Fatal("остальные ЦФО должны отбираться по группе формы")
 	}
 }
 

@@ -109,6 +109,16 @@ func expKindFilter(kind string) (group1 string, group3 []string) {
 	return expKindGroup(kind), nil
 }
 
+// ЦФО 40 относится к интернет-магазину по бизнес-смыслу, хотя в источнике
+// помечен группой «Магазины». Он должен входить в ИМ и не дублироваться в рознице.
+func expGroupCfoAllowed(kind, group string, codeCFO int) bool {
+	if codeCFO == 40 {
+		return kind == ExpKindIM
+	}
+	want, _ := expKindFilter(kind)
+	return want == "" || group == want
+}
+
 // expKindInBYN — форма вводится в BYN по суммам источника в BYN (колонка AmountBYN), а не в
 // национальной валюте страны: у формы несколько стран с разными валютами (опт).
 func expKindInBYN(kind string) bool { return kind == ExpKindOpt }
@@ -231,7 +241,7 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 	for _, y := range years {
 		wantYear[y] = true
 	}
-	group, group3 := expKindFilter(kind)
+	_, group3 := expKindFilter(kind)
 	inBYN := expKindInBYN(kind)
 
 	// Процедура без параметров отдаёт весь бюджет (~1 млн строк, около 4 минут на
@@ -369,7 +379,7 @@ func (s *expSource) Costs(ctx context.Context, kind, country string, years []int
 			continue
 		}
 		c.GroupCFO1 = str("groupcfo1")
-		if group != "" && c.GroupCFO1 != group {
+		if !expGroupCfoAllowed(kind, c.GroupCFO1, int(num("codecfo"))) {
 			continue
 		}
 		if len(group3) > 0 && !slices.Contains(group3, str("groupcfo3")) {
@@ -487,7 +497,11 @@ func (s *expSource) Cfo(ctx context.Context, kind, country string) (map[int]ExpC
 	q := `SELECT [CodeCFO], [CFO], [GroupCFO1], [GroupCFO2], [Country],
 	             [CompanyMF], [TypeOfStore], [RegManager]
 	        FROM ` + table + `
-	       WHERE [GroupCFO1] IN (@p1, @p2)`
+	       WHERE ([GroupCFO1] IN (@p1, @p2)`
+	if kind == ExpKindIM {
+		q += ` OR TRY_CONVERT(int, [CodeCFO]) = 40`
+	}
+	q += `)`
 	args := []any{group, expGroupWithoutNumber(group)}
 	if country != "" {
 		q += ` AND [Country] = @p3`

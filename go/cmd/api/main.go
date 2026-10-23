@@ -598,6 +598,7 @@ func main() {
 		WithRegistries(plans.NewExpRegRepo(pool)).
 		WithTravelNorms(plans.NewExpTravelNorms(pool, plansRates)).
 		WithSalesPlan(plansExpSource).
+		WithRetailSalesPlan(plans.NewPGRetailSalesPlan(pool)).
 		WithRates(plansRates).
 		WithScope(plansScope)
 	// Публикация формы 1.5 (ТЗ §10). Ответы 34 и 11 перенесли сюда публикацию

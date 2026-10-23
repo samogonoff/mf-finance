@@ -63,6 +63,12 @@ type ExpCalcRequest struct {
 // WithSalesPlan подключает план продаж — вход расчёта §6.1.
 func (s *ExpService) WithSalesPlan(src ExpDataSource) *ExpService { s.sales = src; return s }
 
+// WithRetailSalesPlan uses the locally saved sales form for retail payroll.
+func (s *ExpService) WithRetailSalesPlan(src RetailSalesPlanSource) *ExpService {
+	s.retailSales = src
+	return s
+}
+
 // Params — параметры периода формы (ТЗ §6.1).
 func (s *ExpService) Params(ctx context.Context, p Principal, cardID int64) ([]ExpParamRow, error) {
 	_, in, err := s.access(ctx, cardID)
@@ -114,7 +120,7 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 	if req.Op == ExpCalcFactFill {
 		return s.factFill(ctx, p, c, in, req, res)
 	}
-	if req.Op == ExpCalcPayroll && s.sales == nil {
+	if req.Op == ExpCalcPayroll && s.sales == nil && (in.FormKind != ExpKindRetail || s.retailSales == nil) {
 		return res, errors.New("план продаж недоступен — расчёт §6.1 не выполняется")
 	}
 
@@ -128,9 +134,16 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 	}
 	sales := map[int]map[int]float64{}
 	if req.Op == ExpCalcPayroll {
-		sales, err = s.sales.SalesPlan(ctx, in.Country, in.PlanYear)
+		if in.FormKind == ExpKindRetail && s.retailSales != nil {
+			sales, err = s.retailSales.RetailSalesPlan(ctx, c.PlID, in.Country, in.Currency, in.PlanYear)
+		} else {
+			sales, err = s.sales.SalesPlan(ctx, in.Country, in.PlanYear)
+		}
 		if err != nil {
 			return res, fmt.Errorf("план продаж не прочитан: %w", err)
+		}
+		if in.FormKind == ExpKindRetail && s.retailSales != nil && len(sales) == 0 {
+			return res, errors.New("план продаж розницы не заполнен в текущем тактическом плане")
 		}
 	}
 
@@ -189,10 +202,15 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 		// Расчёт §6.1 наполняет ЗАРПЛАТНУЮ статью пары по юридическому лицу
 		// (ответ 40). Налоги от выплат по ответу 38 — самостоятельные статьи со
 		// своими суммами, расчётом они не заполняются.
-		want := ExpPLSalary
-		if pair, ok := ExpPayrollPair(r.LegalEntity); ok {
-			want = pair[0]
+		if r.CodePL != 24 && r.CodePL != 78 && r.CodePL != 79 && r.CodePL != 80 && r.CodePL != 81 {
+			continue
 		}
+		pair, ok := ExpPayrollPair(r.LegalEntity)
+		if !ok {
+			log.Printf("plans/exp: unknown payroll legal entity for CFO %d: %q", r.CodeCFO, r.LegalEntity)
+			continue
+		}
+		want := pair[0]
 		if r.CodePL != want {
 			continue
 		}
