@@ -143,7 +143,33 @@ func TestExpLegacyRetailCFO40Excluded_PG(t *testing.T) {
 	if err != nil || len(oldPub) != 1 {
 		t.Fatalf("historical publication must retain CFO 40: rows=%d err=%v", len(oldPub), err)
 	}
-	// Return is an explicit new editing cycle and atomically marks the row.
+	// Returning to an approval step keeps the historical row and its totals.
+	if _, err := NewCardStore(pool).SaveTransition(ctx, retailCard.ID,
+		CardTransition{Status: CardReturned, StepCode: "1.2", VersionBump: true}, []byte(`{}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	approvalRows, _, err := repo.Rows(ctx, retail.ID, ExpFilter{Limit: 100})
+	if err != nil || len(approvalRows) != 1 {
+		t.Fatalf("approval return must retain CFO 40: rows=%d err=%v", len(approvalRows), err)
+	}
+	approvalTotals, err := repo.GroupTotals(ctx, retail.ID)
+	if err != nil || approvalTotals["ВЫПЛАТЫ"] != 100 {
+		t.Fatalf("approval return changed old total: totals=%v err=%v", approvalTotals, err)
+	}
+	provider := NewExpCardProvider(repo, nil)
+	approvalSnapshot, err := provider.FormSnapshot(ctx, retailCard)
+	if err != nil || len(approvalSnapshot["values"].([]map[string]any)) != 1 {
+		t.Fatalf("approval return changed snapshot: snapshot=%v err=%v", approvalSnapshot, err)
+	}
+	approvalPub, err := provider.PublishRows(ctx, retailCard)
+	if err != nil || len(approvalPub) != 1 {
+		t.Fatalf("approval return changed publication: rows=%d err=%v", len(approvalPub), err)
+	}
+	// A later return to the fill step starts a new editing cycle and marks the
+	// row in the same transaction as the status change.
+	if _, err := pool.Exec(ctx, `UPDATE form_card SET status=$1, step_code='1.4' WHERE id=$2`, CardOnApproval, retailCard.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := NewCardStore(pool).SaveTransition(ctx, retailCard.ID,
 		CardTransition{Status: CardReturned, StepCode: "1.1", VersionBump: true}, []byte(`{}`), 0); err != nil {
 		t.Fatal(err)
