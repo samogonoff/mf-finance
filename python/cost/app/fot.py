@@ -323,142 +323,61 @@ GROUP BY
     CASE WHEN s.country_code = N'KZ' AND s.code_pl IN (N'1006', N'1012') THEN 1 ELSE 0 END
 """
 
-# Порт fact_HR.tmdl: каскад месяцы → ставки (LAG правит «Увольнение» с нулевой
-# ставкой) → сегменты (LEAD) → ЦФО подразделения по частоте (ROW_NUMBER) →
-# декреты (leave_months обнуляют ставку). Проверен живым прогоном 13.10.2026:
-# 2026-06-01 SUM = 7 203,16 — контрольное число PBI.
-# Пустой state в 1С = Активный/Уволен по termination_date (выравнивание с правкой
-# запроса численности 22.10.2026): иначе пустые state молча выпадают из ЦФО-маппинга.
+# Порт fact_HR из CFO_ALL_AGG_RS v24.10.26b: численность = последний снапшот
+# каждого месяца onec_data.dbo.staff_registry_snapshots; «Декрет» исключён
+# (state-фолбэк по termination_date); дедуп человек×месяц (страна+INN+табельный
+# номер) по максимальной ставке; ЦФО прямо из снапшота (РБ — без двух последних
+# символов cfo_code). Заменила каскад mot_personnel_history + staff_registry
+# (+декреты через staff_registry_history): кадровая история не видит часть
+# декретных (~51,5 ставки в RU каждым месяцем) и недогружена за 2025.
+# Живой прогон 23.10.2026: 2025-06-01 = 6 934,16; 2026-06-01 = 7 121,41.
 SQL_FOT_HEADCOUNT = """
 SET NOCOUNT ON;
 WITH months AS (
-    SELECT DISTINCT EOMONTH(period_date) AS month_end
-    FROM onec_data.dbo.mot_personnel_history
-    WHERE period_date >= '20250101' AND period_date <= EOMONTH(GETDATE())
+    SELECT EOMONTH(snapshot_date) AS month_end, MAX(snapshot_date) AS snap_date
+    FROM onec_data.dbo.staff_registry_snapshots
+    GROUP BY EOMONTH(snapshot_date)
+    HAVING EOMONTH(snapshot_date) >= '2025-01-01'
 ),
-fixed_rates AS (
-    SELECT id, country, organization_name, inn, employee_name, personnel_number,
-           department_name, period_date, operation_type,
-           CASE WHEN operation_type = N'Увольнение' AND (rate_value IS NULL OR rate_value = 0)
-                THEN LAG(CASE WHEN rate_value > 0 THEN rate_value END)
-                     OVER (PARTITION BY country, organization_name, inn, employee_name, personnel_number
-                           ORDER BY period_date, id)
-                ELSE rate_value
-           END AS rate_fixed
-    FROM onec_data.dbo.mot_personnel_history
+active AS (
+    SELECT m.month_end, s.src_title, s.inn, s.personnel_number, s.rate,
+           CASE WHEN s.src_title = N'РБ'
+                THEN TRY_CAST(NULLIF(LEFT(s.cfo_code, CASE WHEN LEN(s.cfo_code) > 2 THEN LEN(s.cfo_code) - 2 ELSE 0 END), '') AS int)
+                ELSE TRY_CAST(s.cfo_code AS int)
+           END AS CodeCFO
+    FROM onec_data.dbo.staff_registry_snapshots s
+    JOIN months m ON m.snap_date = s.snapshot_date
+    WHERE s.hire_date <= s.snapshot_date
+      AND (s.termination_date IS NULL OR s.termination_date >= s.snapshot_date)
+      AND COALESCE(NULLIF(s.state, N''), CASE WHEN s.termination_date IS NOT NULL THEN N'Уволен' ELSE N'Активный' END) <> N'Декрет'
 ),
-segments AS (
-    SELECT *, LEAD(period_date) OVER (PARTITION BY country, organization_name, inn, employee_name, personnel_number
-                                      ORDER BY period_date, id) AS next_date
-    FROM fixed_rates
-),
-dept_cfo AS (
-    SELECT store_name, country, codecfo
-    FROM (
-        SELECT store_name, country,
-               CASE WHEN country = N'РБ'
-                    THEN TRY_CAST(NULLIF(LEFT(cfo_code, CASE WHEN LEN(cfo_code) > 2 THEN LEN(cfo_code) - 2 ELSE 0 END), '') AS int)
-                    ELSE TRY_CAST(cfo_code AS int)
-               END AS codecfo,
-               ROW_NUMBER() OVER (PARTITION BY store_name, country
-                                  ORDER BY COUNT(*) DESC,
-                                           CASE WHEN country = N'РБ'
-                                                THEN TRY_CAST(NULLIF(LEFT(cfo_code, CASE WHEN LEN(cfo_code) > 2 THEN LEN(cfo_code) - 2 ELSE 0 END), '') AS int)
-                                                ELSE TRY_CAST(cfo_code AS int)
-                                           END) AS rn
-        FROM onec_data.dbo.staff_registry
-        WHERE store_name IS NOT NULL
-          AND COALESCE(NULLIF(state, N''), CASE WHEN termination_date IS NULL THEN N'Активный' ELSE N'Уволен' END) = N'Активный'
-          AND cfo_code IS NOT NULL AND cfo_code <> '0' AND cfo_code <> ''
-          AND country IS NOT NULL AND country <> '0'
-        GROUP BY store_name, country,
-                 CASE WHEN country = N'РБ'
-                      THEN TRY_CAST(NULLIF(LEFT(cfo_code, CASE WHEN LEN(cfo_code) > 2 THEN LEN(cfo_code) - 2 ELSE 0 END), '') AS int)
-                      ELSE TRY_CAST(cfo_code AS int)
-                 END
-    ) t
-    WHERE rn = 1
-),
-dept_has_rb AS (
-    SELECT store_name, MAX(CASE WHEN country = N'РБ' THEN 1 ELSE 0 END) AS has_rb
-    FROM onec_data.dbo.staff_registry
-    WHERE store_name IS NOT NULL
-      AND COALESCE(NULLIF(state, N''), CASE WHEN termination_date IS NULL THEN N'Активный' ELSE N'Уволен' END) = N'Активный'
-      AND cfo_code IS NOT NULL AND cfo_code <> '0' AND cfo_code <> ''
-    GROUP BY store_name
-),
-dept_cfo_any AS (
-    SELECT store_name, codecfo
-    FROM (
-        SELECT s.store_name,
-               CASE WHEN hr.has_rb = 1
-                    THEN TRY_CAST(NULLIF(LEFT(s.cfo_code, CASE WHEN LEN(s.cfo_code) > 2 THEN LEN(s.cfo_code) - 2 ELSE 0 END), '') AS int)
-                    ELSE TRY_CAST(s.cfo_code AS int)
-               END AS codecfo,
-               ROW_NUMBER() OVER (PARTITION BY s.store_name
-                                  ORDER BY COUNT(*) DESC,
-                                           CASE WHEN hr.has_rb = 1
-                                                THEN TRY_CAST(NULLIF(LEFT(s.cfo_code, CASE WHEN LEN(s.cfo_code) > 2 THEN LEN(s.cfo_code) - 2 ELSE 0 END), '') AS int)
-                                                ELSE TRY_CAST(s.cfo_code AS int)
-                                           END) AS rn
-        FROM onec_data.dbo.staff_registry s
-        JOIN dept_has_rb hr ON s.store_name = hr.store_name
-        WHERE s.store_name IS NOT NULL
-          AND COALESCE(NULLIF(s.state, N''), CASE WHEN s.termination_date IS NULL THEN N'Активный' ELSE N'Уволен' END) = N'Активный'
-          AND s.cfo_code IS NOT NULL AND s.cfo_code <> '0' AND s.cfo_code <> ''
-        GROUP BY s.store_name,
-                 CASE WHEN hr.has_rb = 1
-                      THEN TRY_CAST(NULLIF(LEFT(s.cfo_code, CASE WHEN LEN(s.cfo_code) > 2 THEN LEN(s.cfo_code) - 2 ELSE 0 END), '') AS int)
-                      ELSE TRY_CAST(s.cfo_code AS int)
-                 END
-    ) t
-    WHERE rn = 1
-),
-leave_months AS (
-    SELECT DISTINCT m.month_end, LTRIM(RTRIM(h.inn)) AS inn, LTRIM(RTRIM(h.personnel_number)) AS personnel_number
-    FROM months m
-    JOIN onec_data.dbo.staff_registry_history h
-      ON h.period_from <= m.month_end AND (h.period_to IS NULL OR h.period_to >= m.month_end)
-    WHERE h.state IN (
-        N'В отпуске по беременности и родам',
-        N'В отпуске по уходу за ребенком',
-        N'По уходу за ребенком до 3 лет (ребенком-инвалидом до 18 лет) по болезни матери',
-        N'Отпуск по беременности и родам',
-        N'Отпуск по уходу за ребенком')
-),
-with_cfo AS (
-    SELECT s.country, s.inn, m.month_end,
-           CASE WHEN lv.personnel_number IS NULL THEN s.rate_fixed ELSE 0 END AS rate_fixed,
-           COALESCE(dc.codecfo, dca.codecfo) AS CodeCFO
-    FROM months m
-    JOIN segments s
-      ON s.period_date <= m.month_end AND (s.next_date IS NULL OR s.next_date > m.month_end)
-     AND NOT (s.operation_type = N'Увольнение' AND s.period_date < m.month_end)
-    LEFT JOIN dept_cfo dc
-      ON s.department_name = dc.store_name AND (s.country = dc.country OR (s.country IS NULL AND dc.country IS NULL))
-    LEFT JOIN dept_cfo_any dca ON s.department_name = dca.store_name
-    LEFT JOIN leave_months lv
-      ON lv.inn = LTRIM(RTRIM(s.inn)) AND lv.personnel_number = LTRIM(RTRIM(s.personnel_number)) AND lv.month_end = m.month_end
+dedup AS (
+    SELECT a.month_end, a.src_title, a.inn, a.rate, a.CodeCFO,
+           ROW_NUMBER() OVER (PARTITION BY a.month_end, a.src_title,
+                              LTRIM(RTRIM(a.inn)), LTRIM(RTRIM(a.personnel_number))
+                              ORDER BY ISNULL(a.rate, 0) DESC) AS rn
+    FROM active a
 )
 SELECT
-    DATEFROMPARTS(YEAR(w.month_end), MONTH(w.month_end), 1) AS MonthDate,
-    ISNULL(CAST(w.CodeCFO AS nvarchar(20)), N'') AS CodeCFO,
+    DATEFROMPARTS(YEAR(d.month_end), MONTH(d.month_end), 1) AS MonthDate,
+    ISNULL(CAST(d.CodeCFO AS nvarchar(20)), N'') AS CodeCFO,
     ISNULL(NULLIF(cm.co, N''), N'(не указана)') AS CompanyID,
-    CASE w.country
+    CASE d.src_title
         WHEN N'РБ' THEN N'BY'
         WHEN N'РФ' THEN N'RU'
         WHEN N'КЗ' THEN N'KZ'
         WHEN N'УЗ' THEN N'UZ'
-        ELSE ISNULL(NULLIF(LTRIM(RTRIM(w.country)), N''), N'(не указана)')
+        ELSE ISNULL(NULLIF(LTRIM(RTRIM(d.src_title)), N''), N'(не указана)')
     END AS Country,
-    CAST(COALESCE(SUM(w.rate_fixed), 0) AS decimal(9,2)) AS Quantity
-FROM with_cfo w
+    CAST(SUM(ISNULL(d.rate, 0)) AS decimal(9,2)) AS Quantity
+FROM dedup d
 LEFT JOIN (
     SELECT LTRIM(RTRIM(UNP)) AS unp, MAX(LTRIM(RTRIM(CompanyMFNameFinDWH))) AS co
     FROM FinDWH.dbo.CompaniesMF
     GROUP BY LTRIM(RTRIM(UNP))
-) cm ON cm.unp = LTRIM(RTRIM(w.inn))
-GROUP BY w.month_end, w.CodeCFO, cm.co, w.country
+) cm ON cm.unp = LTRIM(RTRIM(d.inn))
+WHERE d.rn = 1
+GROUP BY d.month_end, d.CodeCFO, cm.co, d.src_title
 """
 
 # Порт fact_HRPlan.tmdl (Budgeting.dbo.PlanChisl).
