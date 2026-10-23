@@ -228,6 +228,8 @@ export interface ExpCalcResult {
   capped: number;
   /** В скольких строках базы не нашлось: «порог не применён, нет базы». */
   no_base: number;
+  /** Зарплатные строки, для которых юрлицо не сопоставлено с парой PL. */
+  unmatched_legal?: { code_cfo: number; cfo?: string; legal_entity?: string }[];
   diff: ExpCalcDiff[];
 }
 

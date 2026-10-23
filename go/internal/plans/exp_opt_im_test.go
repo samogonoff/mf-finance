@@ -44,11 +44,12 @@ func TestExpKindFilter(t *testing.T) {
 func TestExpCostsSQL_IMAndOpt(t *testing.T) {
 	im := expCostsSQL(ExpKindIM, "BY", []int{2025, 2026})
 	if !strings.Contains(im, "group_cfo1 = '5.Интернет-магазин'") || strings.Contains(im, "group_cfo3") ||
-		!strings.Contains(im, "toFloat64(amount) AS amount") || !strings.Contains(im, "OR toInt32OrZero(code_cfo) = 40") {
+		!strings.Contains(im, "toFloat64(amount) AS amount") || !strings.Contains(im, "OR code_cfo = 40") ||
+		strings.Contains(im, "toInt32OrZero(code_cfo)") {
 		t.Errorf("запрос ИМ:\n%s", im)
 	}
 	retail := expCostsSQL(ExpKindRetail, "BY", []int{2026})
-	if !strings.Contains(retail, "toInt32OrZero(code_cfo) != 40") {
+	if !strings.Contains(retail, "code_cfo != 40") || strings.Contains(retail, "toInt32OrZero(code_cfo)") {
 		t.Errorf("ЦФО 40 не должен дублироваться в рознице:\n%s", retail)
 	}
 	finPL := expAccrualFactSQL(ExpKindIM, "BY", []int{2026})

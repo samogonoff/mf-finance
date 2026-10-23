@@ -175,8 +175,21 @@
           <span class="badge badge-muted">строк: {{ calcResult.changed }}</span>
           <span v-if="calcResult.capped" class="badge badge-warn">ограничено порогом: {{ calcResult.capped }}</span>
           <span v-if="calcResult.no_base" class="badge badge-warn">без базы: {{ calcResult.no_base }}</span>
+          <span v-if="calcResult.unmatched_legal?.length" class="badge badge-warn">ФОТ без сопоставления ЮЛ: {{ calcResult.unmatched_legal.length }}</span>
           <button type="button" class="link-btn" @click="calcResult = null">закрыть</button>
         </div>
+        <p v-if="calcResult.unmatched_legal?.length" class="banner banner-warn">
+          ФОТ не рассчитан для этих ЦФО. Проверьте юрлицо в справочнике ЦФО.
+        </p>
+        <ul v-if="calcResult.unmatched_legal?.length" class="calc-ul">
+          <li v-for="r in calcResult.unmatched_legal?.slice(0, 20) || []" :key="r.code_cfo">
+            ЦФО {{ r.code_cfo }}<template v-if="r.cfo"> · {{ r.cfo }}</template>:
+            {{ r.legal_entity || "ЮЛ не указано" }}
+          </li>
+        </ul>
+        <p v-if="(calcResult.unmatched_legal?.length || 0) > 20" class="val-more">
+          …и ещё {{ (calcResult.unmatched_legal?.length || 0) - 20 }} ЦФО.
+        </p>
         <ul class="calc-ul">
           <li v-for="(d, i) in calcResult.diff.slice(0, 25)" :key="i">
             ЦФО {{ d.code_cfo }}<template v-if="d.cfo"> · {{ d.cfo }}</template> · месяц {{ d.month }}:
@@ -775,10 +788,13 @@ const runCalc = async (op: string, preview: boolean) => {
     if (preview) calcExtraUsed.value = extra;
     if (preview) {
       calcResult.value = r;
-      if (!r.changed) note.value = "Расчёт ничего не меняет: значения уже совпадают";
+      if (!r.changed) note.value = r.unmatched_legal?.length
+        ? `ФОТ не рассчитан для ${r.unmatched_legal.length} ЦФО: юрлицо не сопоставлено`
+        : "Расчёт ничего не меняет: значения уже совпадают";
     } else {
       calcResult.value = null;
-      note.value = `Расчёт применён, ячеек изменено: ${r.changed}`;
+      note.value = `Расчёт применён, ячеек изменено: ${r.changed}` +
+        (r.unmatched_legal?.length ? `. ФОТ пропущен для ${r.unmatched_legal.length} ЦФО без сопоставления ЮЛ.` : "");
       await reload({ keepFilter: true });
     }
   } catch (e) {

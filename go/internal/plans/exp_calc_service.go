@@ -25,6 +25,14 @@ type ExpCalcDiff struct {
 	Note    string   `json:"note,omitempty"`
 }
 
+// ExpUnmatchedLegal identifies a salary row skipped because its legal entity
+// cannot be mapped to a payroll PL pair.
+type ExpUnmatchedLegal struct {
+	CodeCFO     int    `json:"code_cfo"`
+	CFO         string `json:"cfo,omitempty"`
+	LegalEntity string `json:"legal_entity,omitempty"`
+}
+
 // ExpCalcResult — отчёт расчёта.
 type ExpCalcResult struct {
 	Op      string `json:"op"`
@@ -34,8 +42,9 @@ type ExpCalcResult struct {
 	// Capped — в скольких строках сработало ограничение порогом (ТЗ §6.1).
 	Capped int `json:"capped"`
 	// NoBase — в скольких строках базы не нашлось: «порог не применён, нет базы».
-	NoBase int           `json:"no_base"`
-	Diff   []ExpCalcDiff `json:"diff"`
+	NoBase         int                 `json:"no_base"`
+	Diff           []ExpCalcDiff       `json:"diff"`
+	UnmatchedLegal []ExpUnmatchedLegal `json:"unmatched_legal,omitempty"`
 }
 
 // Виды расчёта.
@@ -198,6 +207,7 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 		return res, nil
 	}
 
+	unmatchedSeen := map[int]bool{}
 	for _, r := range rows {
 		// Расчёт §6.1 наполняет ЗАРПЛАТНУЮ статью пары по юридическому лицу
 		// (ответ 40). Налоги от выплат по ответу 38 — самостоятельные статьи со
@@ -207,7 +217,12 @@ func (s *ExpService) Calc(ctx context.Context, p Principal, cardID int64, req Ex
 		}
 		pair, ok := ExpPayrollPair(r.LegalEntity)
 		if !ok {
-			log.Printf("plans/exp: unknown payroll legal entity for CFO %d: %q", r.CodeCFO, r.LegalEntity)
+			if !unmatchedSeen[r.CodeCFO] {
+				res.UnmatchedLegal = append(res.UnmatchedLegal, ExpUnmatchedLegal{
+					CodeCFO: r.CodeCFO, CFO: r.CFO, LegalEntity: r.LegalEntity,
+				})
+				unmatchedSeen[r.CodeCFO] = true
+			}
 			continue
 		}
 		want := pair[0]

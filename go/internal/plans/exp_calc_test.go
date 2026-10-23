@@ -102,8 +102,8 @@ func TestExpServiceCalc_UnknownLegalEntityDoesNotUsePL24(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Changed != 0 {
-		t.Fatalf("unknown legal entity must not be treated as PL 24: %+v", got)
+	if got.Changed != 0 || len(got.UnmatchedLegal) != 1 || got.UnmatchedLegal[0].CodeCFO != 101 {
+		t.Fatalf("unknown legal entity must be reported and not treated as PL 24: %+v", got)
 	}
 }
 

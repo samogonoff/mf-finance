@@ -111,7 +111,7 @@ func (s *expRepo) SyncRows(ctx context.Context, instanceID int64, rows []ExpRow)
 		}
 	}
 	var n int
-	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM exp_row WHERE instance_id = $1`, instanceID).Scan(&n)
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM exp_row WHERE instance_id = $1 AND `+expVisibleRowSQL(""), instanceID).Scan(&n)
 	return n, err
 }
 
@@ -126,11 +126,23 @@ func expNotSalesRowSQL(prefix string) string {
 	return "((" + strings.Join(conds, " AND ") + ") OR EXISTS (SELECT 1 FROM exp_instance xi WHERE xi.id = " + prefix + "instance_id AND xi.form_kind LIKE 'cfo:%'))"
 }
 
+// expNotRetailCFO40SQL keeps legacy rows in storage, including manual inputs
+// and their history, while preventing duplicate use after CFO 40 moves to IM.
+func expNotRetailCFO40SQL(prefix string) string {
+	return "(" + prefix + "code_cfo <> 40 OR NOT EXISTS (" +
+		"SELECT 1 FROM exp_instance xi WHERE xi.id = " + prefix + "instance_id AND xi.form_kind = '" + ExpKindRetail + "'))"
+}
+
+// expVisibleRowSQL is shared by the form, totals, validation, svod and publish.
+func expVisibleRowSQL(prefix string) string {
+	return expNotSalesRowSQL(prefix) + " AND " + expNotRetailCFO40SQL(prefix)
+}
+
 // expWhere — условия отбора (ТЗ §7.1) и их аргументы.
 func expWhere(instanceID int64, f ExpFilter) (string, []any) {
 	// Строки продаж, себестоимости, маржи и отгрузок — не расходы: если они уже попали в карточку (до исправления загрузки или
 	// с ручным вводом, который миграция не трогает), форма расходов их не показывает.
-	w := []string{"instance_id = $1", expNotSalesRowSQL("")}
+	w := []string{"instance_id = $1", expVisibleRowSQL("")}
 	args := []any{instanceID}
 	add := func(cond string, v any) {
 		args = append(args, v)
@@ -265,7 +277,7 @@ func (s *expRepo) SaveValues(ctx context.Context, instanceID int64, cells []ExpC
 		var rowID int64
 		err := tx.QueryRow(ctx, `
 			SELECT id FROM exp_row
-			 WHERE instance_id = $1 AND code_cfo = $2 AND code_pl = $3`,
+			 WHERE instance_id = $1 AND code_cfo = $2 AND code_pl = $3 AND `+expNotRetailCFO40SQL(""),
 			instanceID, c.CodeCFO, c.CodePL).Scan(&rowID)
 		if err != nil {
 			return 0, fmt.Errorf("строка ЦФО %d / статья %d не найдена в форме", c.CodeCFO, c.CodePL)
@@ -458,7 +470,7 @@ func (s *expRepo) GroupTotals(ctx context.Context, instanceID int64) (map[string
 		SELECT r.group_pl, COALESCE(SUM(v.amount), 0)
 		  FROM exp_row r
 		  LEFT JOIN exp_value v ON v.row_id = r.id AND v.scenario = 'plan'
-		 WHERE r.instance_id = $1 AND `+expNotSalesRowSQL("r.")+`
+		 WHERE r.instance_id = $1 AND `+expVisibleRowSQL("r.")+`
 		 GROUP BY r.group_pl`, instanceID)
 	if err != nil {
 		return nil, err
@@ -499,7 +511,7 @@ func nullID(id int64) any {
 
 // Groups - фактические группы PL экземпляра (по строкам, без строк продаж и маржи), по алфавиту.
 func (s *expRepo) Groups(ctx context.Context, instanceID int64) ([]string, error) {
-	rs, err := s.pool.Query(ctx, `SELECT DISTINCT group_pl FROM exp_row WHERE instance_id = $1 AND `+expNotSalesRowSQL("")+` ORDER BY group_pl`, instanceID)
+	rs, err := s.pool.Query(ctx, `SELECT DISTINCT group_pl FROM exp_row WHERE instance_id = $1 AND `+expVisibleRowSQL("")+` ORDER BY group_pl`, instanceID)
 	if err != nil {
 		return nil, err
 	}
