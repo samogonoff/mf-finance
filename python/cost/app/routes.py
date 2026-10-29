@@ -4391,12 +4391,16 @@ async def obsolete_set(
 ) -> dict:
     """Поставить или снять статус «Неактуальная модель/артикул».
 
-    Body: { model, articul, obsolete: bool, comment? }
+    Body: { model, articul, calc_sign?, plan_id?, task_number?, obsolete: bool, comment? }
 
-    Ключ — модель + артикул: статус ложится на все калькуляции изделия. Право
+    Ключ — модель + артикул + признак + план + задание (как у статуса ПЭО и
+    отметки о замене артикула): неактуальной помечается конкретная калькуляция —
+    у плана бывает несколько выгрузок ПФКСС с разными заданиями, для
+    ценообразования берётся максимальная себестоимость (задача Б24 668461,
+    26.10.2026; раньше статус ложился на всю пару модель+артикул). Право
     `cost:obsolete` — у калькулятора, ПЭО и Full Admin (миграция 0056). Ответ —
-    поля `obsolete_*`, как в строках /aggregated; фронт накладывает их на все
-    строки той же пары.
+    поля `obsolete_*`, как в строках /aggregated; фронт накладывает их на
+    строки того же ключа.
     """
     model = (payload.get("model") or "").strip()
     articul = (payload.get("articul") or "").strip()
@@ -4408,7 +4412,11 @@ async def obsolete_set(
     set_by = (user or payload.get("user") or "system").strip() or "system"
     comment = str(payload.get("comment") or "").strip()[:1000]
     return await obsolete.set_flag(
-        obsolete.make_key(model, articul), obsolete=flag, comment=comment, set_by=set_by,
+        obsolete.make_key(
+            model, articul,
+            payload.get("calc_sign"), payload.get("plan_id"), payload.get("task_number"),
+        ),
+        obsolete=flag, comment=comment, set_by=set_by,
     )
 
 

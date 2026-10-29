@@ -9193,21 +9193,25 @@ async function toggleReplace(row: any, ev: Event) {
   }
 }
 
-// ── Статус «Неактуальная модель/артикул» (09.09.2026) ───────────────────────
-// Ставят калькулятор и ПЭО (право cost:obsolete). Ключ — модель + артикул:
-// статус ложится на все калькуляции изделия, поэтому после ответа сервера
-// обновляем все строки той же пары, а не только ту, где стояла галочка.
+// ── Статус «Неактуальная модель/артикул» (09.09.2026; охват сужен 26.10.2026) ─
+// Ставят калькулятор и ПЭО (право cost:obsolete). Ключ — калькуляция: модель,
+// артикул, признак, план, задание (как у «нужна замена артикула»). У плана
+// бывает несколько выгрузок ПФКСС с разными заданиями, для ценообразования
+// берётся максимальная себестоимость — неактуальной помечают конкретную
+// калькуляцию с меньшей себестоимостью (Б24 668461), поэтому после ответа
+// сервера обновляем только строки того же ключа, а не всю пару.
 // Строка серая (tr.row-obsolete), в «Этапе» ⚫, в фильтре статусов — отдельное
 // значение (серверный peo_filter='obsolete').
-const OBSOLETE_HEADER_TITLE = 'Неактуальная модель/артикул. Отмечают калькулятор и ПЭО; статус ложится на все калькуляции этой модели и артикула, строки подсвечиваются серым';
+const OBSOLETE_HEADER_TITLE = 'Неактуальная модель/артикул. Отмечают калькулятор и ПЭО; статус ложится только на эту калькуляцию (план + задание), строка подсвечивается серым';
 const obsoleteBusy = reactive<Record<string, boolean>>({});
-const obsoleteKey = (row: any) => `${row?.['Модель'] || ''}\u0000${row?.['Артикул'] || ''}`;
+const obsoleteKey = (row: any) =>
+  `${row?.['Модель'] || ''}\u0000${row?.['Артикул'] || ''}\u0000${row?.['Признак калькуляции'] || ''}\u0000${row?.['PLAN_ID'] || ''}\u0000${row?.['Номер задания производства'] || ''}`;
 
 function obsoleteTitle(row: any): string {
   const fmtDt = (v: any) => (v ? new Date(v).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '');
   if (!row?.obsolete) {
     return can('cost:obsolete')
-      ? 'Отметить модель/артикул как неактуальные (для всех калькуляций пары)'
+      ? 'Отметить калькуляцию как неактуальную (план + задание)'
       : 'Статус «Неактуальная модель/артикул» ставят калькулятор и ПЭО';
   }
   let s = `Неактуальная модель/артикул — отметил(а) ${row.obsolete_set_by || '—'} ${fmtDt(row.obsolete_set_at)}`.trim();
@@ -9224,7 +9228,7 @@ async function toggleObsolete(row: any, ev: Event) {
   let comment = '';
   if (checked) {
     const c = window.prompt(
-      `Неактуальная модель/артикул: ${row['Модель'] || ''} / ${row['Артикул'] || ''}.\nСтатус ляжет на все калькуляции этой пары.\nКомментарий (можно оставить пустым):`,
+      `Неактуальная модель/артикул: ${row['Модель'] || ''} / ${row['Артикул'] || ''}.\nСтатус ляжет только на эту калькуляцию (план ${row['PLAN_ID'] || '—'}, задание ${row['Номер задания производства'] || '—'}).\nКомментарий (можно оставить пустым):`,
       row.obsolete_comment || '',
     );
     if (c === null) { input.checked = !!row.obsolete; return; }
@@ -9235,14 +9239,19 @@ async function toggleObsolete(row: any, ev: Event) {
     const res = await $fetch<any>(`${apiBase.value}/api/cost/obsolete`, {
       method: 'POST',
       headers: fetchHeaders.value,
-      body: { model: row['Модель'], articul: row['Артикул'], obsolete: checked, comment },
+      body: {
+        model: row['Модель'], articul: row['Артикул'],
+        calc_sign: row['Признак калькуляции'], plan_id: row['PLAN_ID'],
+        task_number: row['Номер задания производства'],
+        obsolete: checked, comment,
+      },
     });
     const patch = {
       obsolete: res.obsolete, obsolete_comment: res.obsolete_comment,
       obsolete_set_by: res.obsolete_set_by, obsolete_set_at: res.obsolete_set_at,
     };
     for (const r of allAggregated.value) {
-      if (r['Модель'] === row['Модель'] && r['Артикул'] === row['Артикул']) Object.assign(r, patch);
+      if (obsoleteKey(r) === k) Object.assign(r, patch);
     }
     Object.assign(row, patch);
   } catch (e: any) {
