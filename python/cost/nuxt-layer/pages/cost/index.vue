@@ -2492,6 +2492,46 @@
           </div>
           <div class="approval-body reg713-body">
             <div class="reg713-name muted">{{ reg713Target['Наименование модели'] || '' }}</div>
+            <!-- Цена изделия (задача Б24 666861): снимок карточки — выбор
+                 «Розничной наценки», как в главной таблице, фиксирует розницу и
+                 опт изделия; после «согласовано» эта цена показывается ПФКСС-строкам
+                 в главной таблице. Пока снимка нет — цены как в строке /aggregated. -->
+            <div class="reg713-block">
+              <div class="reg713-block-title">Цена изделия</div>
+              <div class="muted reg713-hint">
+                <template v-if="reg713Form.item_retail != null || reg713Form.item_wholesale != null">
+                  Снимок карточки<template v-if="reg713Form.item_markup"> (наценка {{ Number(reg713Form.item_markup).toFixed(1) }}%)</template>:
+                  розница <b>{{ reg713Form.item_retail != null ? fmt(reg713Form.item_retail) : '—' }}</b>, опт
+                  <b>{{ reg713Form.item_wholesale != null ? fmt(reg713Form.item_wholesale) : '—' }}</b>
+                </template>
+                <template v-else>
+                  Как в главной таблице: розница
+                  <b>{{ reg713Own?.retail != null ? fmt(reg713Own.retail) : '—' }}</b>, опт
+                  <b>{{ reg713Own?.wholesale != null ? fmt(reg713Own.wholesale) : '—' }}</b><template v-if="reg713Own?.level">, уровень цен {{ reg713Own.level }}</template>.
+                </template>
+              </div>
+              <div v-if="reg713MarkupOptions.length" class="reg713-prices">
+                <span class="approval-label">Розничная наценка:</span>
+                <select
+                  class="reg713-search-input"
+                  :value="reg713Form.item_markup || ''"
+                  :disabled="!can('cost:reg713')"
+                  @click.stop
+                  @change="onReg713MarkupSelect(($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="">—</option>
+                  <option v-for="opt in reg713MarkupOptions" :key="opt.value" :value="opt.value">
+                    {{ opt.label }}
+                  </option>
+                </select>
+                <button v-if="reg713Form.item_markup || reg713Form.item_retail != null || reg713Form.item_wholesale != null"
+                        class="btn btn-ghost btn-sm" type="button" :disabled="!can('cost:reg713')"
+                        @click="reg713Form.item_markup = null; reg713Form.item_retail = null; reg713Form.item_wholesale = null">
+                  сбросить
+                </button>
+              </div>
+              <div v-else class="muted reg713-hint">Наценку выбрать нельзя: среди уровней цен нет розницы этой строки.</div>
+            </div>
 
             <label class="reg713-check">
               <input type="checkbox" v-model="reg713Form.required" :disabled="!can('cost:reg713')" />
@@ -2503,6 +2543,32 @@
               <label class="reg713-radio"><input type="radio" value="price_increase" v-model="reg713Form.kind" :disabled="!can('cost:reg713')" /> Повышение цены</label>
               <label class="reg713-radio"><input type="radio" value="novelty" v-model="reg713Form.kind" :disabled="!can('cost:reg713')" /> Новинка</label>
               <button v-if="reg713Form.kind" class="btn btn-ghost btn-sm" type="button" :disabled="!can('cost:reg713')" @click="reg713Form.kind = null">сбросить</button>
+            </div>
+            <div v-if="reg713Form.kind" class="muted reg713-hint">{{ REG713_KIND_HINT[reg713Form.kind] }}</div>
+
+            <!-- Обоснование по виду (задача Б24 666631): колонки расчётного
+                 файла «Комментарий в чём новизна», «Планируемый объём
+                 реализации», «Производитель», «Розничная цена аналога других
+                 производителей». Обязательны при сохранении решения исполкома. -->
+            <div v-if="reg713Form.kind === 'novelty'" class="reg713-block">
+              <div class="reg713-block-title">Обоснование новинки</div>
+              <textarea class="reg713-comment" v-model="reg713Form.novelty_comment" :disabled="!can('cost:reg713')" rows="2" maxlength="1000" placeholder="В чём именно заключается новизна: новый вид сырья, новый состав сырья, усложнённая конструкция и т.п."></textarea>
+              <div class="reg713-prices">
+                <div class="reg713-price">
+                  <span class="approval-label">План. объём (внутр. рынок):</span>
+                  <input type="number" step="1" min="0" v-model="reg713Form.planned_volume" :disabled="!can('cost:reg713')" />
+                </div>
+              </div>
+            </div>
+            <div v-if="reg713Form.kind === 'price_increase'" class="reg713-block">
+              <div class="reg713-block-title">Конкурент</div>
+              <input type="text" class="reg713-doc" v-model="reg713Form.competitor_name" :disabled="!can('cost:reg713')" placeholder="Наименование производителя-конкурента" maxlength="200" />
+              <div class="reg713-prices">
+                <div class="reg713-price">
+                  <span class="approval-label">Розн. цена конкурента:</span>
+                  <input type="number" step="0.01" min="0" v-model="reg713Form.competitor_retail" :disabled="!can('cost:reg713')" />
+                </div>
+              </div>
             </div>
 
             <div class="reg713-block">
@@ -8717,6 +8783,14 @@ const lockReasonText = (row: any): string => {
     return 'Заявка на изменение цены ждёт согласования ПЭО. Пока она не согласована '
       + 'или не отклонена, править строку нельзя';
   }
+  if (row._lock_reason === 'reg713_pending') {
+    return 'Изделие отмечено на согласование с исполкомом (713 постановление). '
+      + 'До решения исполкома цену менять нельзя никому — карточка в колонке «713»';
+  }
+  if (row._lock_reason === 'reg713_approved') {
+    return 'Цена согласована исполкомом (713 постановление). Изменить её можно '
+      + 'только через новую карточку согласования — колонка «713»';
+  }
   if (row._has_audit) {
     return 'Цены уже переданы в DWH. Вернуть калькуляцию на корректировку может '
       + 'администратор раздела — кликом по значку 📤';
@@ -8729,6 +8803,9 @@ const lockReasonText = (row: any): string => {
 };
 
 const isRowLocked = (row: any): boolean => {
+  // Согласование 713 (Б24 669728) — без байпаса для админа: пока карточка на
+  // согласовании или цена согласована, правку цены ПФКСС не может делать никто.
+  if (row._reg713_lock) return true;
   if (can('cost:admin')) return false;
   if (row._lock_reason) return true;
   if (row._has_audit) return true;
@@ -9277,6 +9354,12 @@ const REG713_STATES: Record<Reg713State['key'], Reg713State> = {
 const REG713_LEGEND = 'Согласование цены с исполкомом по постановлению 713:\n' +
   '· — не требуется\n📋 — требуется, решения нет\n✅ — согласовано\n❌ — не согласовано\nКлик — открыть карточку';
 const REG713_KIND_LABEL: Record<string, string> = { price_increase: 'повышение цены', novelty: 'новинка' };
+// Подсказка по виду — что от бренда ждёт исполком (задача Б24 666631,
+// формулировки Стельмачёнок; поля обязательны при сохранении решения).
+const REG713_KIND_HINT: Record<string, string> = {
+  price_increase: 'Для «повышения цены» укажите наименование конкурента и его розничную цену — они обязательны для решения исполкома.',
+  novelty: 'Для «новинки» опишите, в чём именно заключается новизна (новый вид сырья, новый состав сырья, усложнённая конструкция и т.п.), и укажите планируемый объём реализации — оба поля обязательны для решения исполкома.',
+};
 const REG713_SOURCE_LABEL: Record<string, string> = {
   calc: 'последняя калькуляция аналога в CostHistory',
   dwh: 'утверждённая цена аналога в DWH',
@@ -9296,6 +9379,13 @@ function reg713Title(row: any): string {
   const parts = [s.label];
   if (row?.reg713_required) {
     if (row.reg713_kind) parts.push(`Вид: ${REG713_KIND_LABEL[row.reg713_kind] || row.reg713_kind}`);
+    if (row.reg713_novelty_comment) parts.push(`Новизна: ${row.reg713_novelty_comment}`);
+    if (row.reg713_planned_volume != null) parts.push(`План. объём: ${row.reg713_planned_volume}`);
+    if (row.reg713_competitor_name) {
+      let c = `Конкурент: ${row.reg713_competitor_name}`;
+      if (row.reg713_competitor_retail != null) c += ` (розница ${fmt(row.reg713_competitor_retail)})`;
+      parts.push(c);
+    }
     if (row.reg713_analog_articul) {
       let a = `Аналог: ${row.reg713_analog_articul}${row.reg713_analog_model ? ' / ' + row.reg713_analog_model : ''}`;
       const pr: string[] = [];
@@ -9313,10 +9403,60 @@ function reg713Title(row: any): string {
 const reg713Target = ref<any>(null);
 const reg713Form = reactive<any>({
   required: false, kind: null as string | null,
+  item_retail: null as number | string | null, item_wholesale: null as number | string | null, item_markup: null as string | null,
+  novelty_comment: '', planned_volume: null as number | string | null,
+  competitor_name: '', competitor_retail: null as number | string | null,
   analog_model: null as string | null, analog_articul: null as string | null, analog_name: null as string | null,
   analog_retail: null as number | string | null, analog_wholesale: null as number | string | null,
   analog_price_source: null as string | null,
   decision: null as string | null, decision_doc: '', comment: '',
+});
+
+/** Выбор «Розничной наценки» для изделия карточки — те же варианты, что в
+ *  главной таблице (getMarkupOptions): уровни, чья розница совпала с ценой
+ *  строки; выбор фиксирует опт уровня (задача Б24 666861). */
+const reg713MarkupOptions = computed(() => {
+  const row = reg713Target.value;
+  if (!row) return [] as { value: string; label: string; retail: number; wholesale: number }[];
+  const retailPrice = Number(row['avg_Розничная цена по уровню, руб.']);
+  const avgVat = Number(row['avg_Ставка НДС'] || 0);
+  if (!retailPrice || isNaN(retailPrice) || retailPrice <= 0) return [];
+  const map = new Map<string, { value: string; label: string; retail: number; wholesale: number }>();
+  for (const level of priceLevels.value || []) {
+    if (String(level.price_type3) !== String(retailPrice)) continue;
+    const w = Number(level.price_type1);
+    if (!w || isNaN(w) || w <= 0) continue;
+    const pct = ((retailPrice / (100 + avgVat) * 100) / w - 1) * 100;
+    const value = pct.toFixed(2);
+    if (!map.has(value)) map.set(value, { value, label: `${pct.toFixed(1)}%`, retail: retailPrice, wholesale: w });
+  }
+  return Array.from(map.values()).sort((a, b) => Number(a.value) - Number(b.value));
+});
+
+function onReg713MarkupSelect(value: string) {
+  const opt = reg713MarkupOptions.value.find((o) => o.value === value);
+  if (!opt) {
+    reg713Form.item_markup = null;
+    reg713Form.item_retail = null;
+    reg713Form.item_wholesale = null;
+    return;
+  }
+  reg713Form.item_markup = opt.value;
+  reg713Form.item_retail = opt.retail;
+  reg713Form.item_wholesale = opt.wholesale;
+}
+
+// Цены и уровень цен изделия — читаем из строки главной таблицы, чтобы числа
+// в карточке, отчёте и таблице совпадали (ключи ровно как в /aggregated:
+// у оптового поля нет точки в конце, у розничного — есть).
+const reg713Own = computed(() => {
+  const row = reg713Target.value;
+  if (!row) return null;
+  return {
+    retail: row['avg_Розничная цена по уровню, руб.'] ?? null,
+    wholesale: row['avg_Отпускная цена по уровню, руб'] ?? null,
+    level: String(row['Уровень цен'] || '').trim() || null,
+  };
 });
 const reg713History = ref<any[]>([]);
 const reg713Query = ref('');
@@ -9351,6 +9491,9 @@ async function openReg713(row: any) {
   reg713History.value = [];
   Object.assign(reg713Form, {
     required: !!row.reg713_required, kind: row.reg713_kind || null,
+    item_retail: row.reg713_item_retail ?? null, item_wholesale: row.reg713_item_wholesale ?? null, item_markup: row.reg713_item_markup || null,
+    novelty_comment: row.reg713_novelty_comment || '', planned_volume: row.reg713_planned_volume ?? null,
+    competitor_name: row.reg713_competitor_name || '', competitor_retail: row.reg713_competitor_retail ?? null,
     analog_model: row.reg713_analog_model || null, analog_articul: row.reg713_analog_articul || null,
     analog_name: row.reg713_analog_name || null,
     analog_retail: row.reg713_analog_retail ?? null, analog_wholesale: row.reg713_analog_wholesale ?? null,
@@ -9438,6 +9581,18 @@ async function saveReg713() {
     reg713Error.value = 'Укажите вид: повышение цены или новинка.';
     return;
   }
+  // Обоснование по виду обязательно при сохранении решения исполкома
+  // (сервер проверяет то же самое — reg713.KIND_REQUIRED).
+  if (reg713Form.decision && reg713Form.kind === 'novelty'
+      && (!String(reg713Form.novelty_comment || '').trim() || !Number(reg713Form.planned_volume))) {
+    reg713Error.value = 'Для решения по «новинке» заполните, в чём именно новизна, и планируемый объём реализации.';
+    return;
+  }
+  if (reg713Form.decision && reg713Form.kind === 'price_increase'
+      && (!String(reg713Form.competitor_name || '').trim() || !Number(reg713Form.competitor_retail))) {
+    reg713Error.value = 'Для решения по «повышению цены» заполните наименование конкурента и его розничную цену.';
+    return;
+  }
   reg713Saving.value = true;
   reg713Error.value = '';
   try {
@@ -9447,6 +9602,10 @@ async function saveReg713() {
       body: {
         ...reg713Key(row),
         required: !!reg713Form.required, kind: reg713Form.kind || null,
+        item_retail: num(reg713Form.item_retail), item_wholesale: num(reg713Form.item_wholesale),
+        item_markup: reg713Form.item_markup || null,
+        novelty_comment: reg713Form.novelty_comment || null, planned_volume: num(reg713Form.planned_volume),
+        competitor_name: reg713Form.competitor_name || null, competitor_retail: num(reg713Form.competitor_retail),
         analog_model: reg713Form.analog_model, analog_articul: reg713Form.analog_articul, analog_name: reg713Form.analog_name,
         analog_retail: num(reg713Form.analog_retail), analog_wholesale: num(reg713Form.analog_wholesale),
         analog_price_source: reg713Form.analog_articul ? (reg713Form.analog_price_source || 'manual') : null,
@@ -9462,6 +9621,9 @@ async function saveReg713() {
       if (rk.model !== k.model || rk.articul !== k.articul) continue;
       Object.assign(r, {
         reg713_required: !!c.required, reg713_kind: c.kind ?? null,
+        reg713_item_retail: c.item_retail ?? null, reg713_item_wholesale: c.item_wholesale ?? null, reg713_item_markup: c.item_markup ?? null,
+        reg713_novelty_comment: c.novelty_comment ?? null, reg713_planned_volume: c.planned_volume ?? null,
+        reg713_competitor_name: c.competitor_name ?? null, reg713_competitor_retail: c.competitor_retail ?? null,
         reg713_analog_model: c.analog_model ?? null, reg713_analog_articul: c.analog_articul ?? null, reg713_analog_name: c.analog_name ?? null,
         reg713_analog_retail: c.analog_retail ?? null, reg713_analog_wholesale: c.analog_wholesale ?? null,
         reg713_analog_price_source: c.analog_price_source ?? null,
@@ -10674,7 +10836,38 @@ async function applyUrlFilters() {
 onMounted(async () => {
   await Promise.all([loadFilters(), loadPriceLevels(), loadCacheStatus()]);
   await applyUrlFilters();
+  applyUrlReg713();
 });
+
+/** Открыть карточку 713 из отчёта «Согласование 713» (?reg713model=…&reg713articul=…,
+ *  задача Б24 666648: «из списка не могу провалиться в карточку»). Строки могли
+ *  ещё грузиться — опрашиваем выдачу, пока пара не найдётся; после открытия
+ *  параметры из URL убираем, чтобы F5 не открывал окно заново. */
+function applyUrlReg713() {
+  const route = useRoute();
+  const model = String(route.query.reg713model || '').trim();
+  const articul = String(route.query.reg713articul || '').trim();
+  if (!model || !articul) return;
+  const tryOpen = () => {
+    const row = allAggregated.value.find((r) => {
+      const k = reg713Key(r);
+      return k.model === model && k.articul === articul;
+    });
+    if (!row) return false;
+    openReg713(row);
+    const router = useRouter();
+    const q = { ...route.query };
+    delete q.reg713model;
+    delete q.reg713articul;
+    router.replace({ query: q });
+    return true;
+  };
+  if (tryOpen()) return;
+  let tries = 0;
+  const timer = setInterval(() => {
+    if (tryOpen() || ++tries > 60) clearInterval(timer);
+  }, 500);
+}
 
 // ── Raw rows helpers ────────────────────────────────────────────────────────
 

@@ -96,6 +96,18 @@ async def _can_approve_or_peo(user_email: str | None) -> bool:
 
 async def _check_calc_locks(user_email: str, model: str, articul: str, calc_sign, plan_id, date_str, task_number=None) -> None:
     """Raise 403 if the calculation is locked for this user."""
+    # Согласование 713 (Б24 669728) — ДО админ-байпаса: пока изделие на
+    # согласовании с исполкомом (или уже согласовано), цену ПФКСС не может
+    # изменить никто — только через новую карточку согласования.
+    if str(calc_sign or "").strip() == "ПФКСС":
+        try:
+            s713 = await reg713.lock_state(reg713.make_key(model, articul))
+        except Exception:
+            s713 = None
+        if s713 == "pending":
+            raise HTTPException(403, "Калькуляция заблокирована: изделие на согласовании в исполкоме по 713 постановлению")
+        if s713 == "approved":
+            raise HTTPException(403, "Калькуляция заблокирована: цена согласована исполкомом (713 постановление)")
     if await _is_cost_admin(user_email):
         return
     state = await get_calc_state(model, articul, calc_sign, plan_id, date_str, task_number)
@@ -568,11 +580,21 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         for row in data:
             row["replace_needed"] = False
 
-    # Статус «Неактуальная модель/артикул» (09.09.2026): ключ — модель + артикул,
-    # один статус на все калькуляции изделия. Накладывается до фильтра по
-    # статусу ниже, чтобы значение 'obsolete' в фильтре было чем отбирать.
+    # Статус «Неактуальная модель/артикул» (09.09.2026; охват сужен 26.10.2026,
+    # задача Б24 668461): ключ калькуляции — модель, артикул, признак, план,
+    # задание, как у отметки о замене артикула. У плана бывает несколько
+    # выгрузок ПФКСС с разными заданиями, для ценообразования берётся
+    # максимальная себестоимость — неактуальной помечают конкретную калькуляцию,
+    # а не всю пару. Накладывается до фильтра по статусу ниже, чтобы значение
+    # 'obsolete' в фильтре было чем отбирать.
     try:
-        obs_keys = [obsolete.make_key(r.get("Модель"), r.get("Артикул")) for r in data]
+        obs_keys = [
+            obsolete.make_key(
+                r.get("Модель"), r.get("Артикул"), r.get("Признак калькуляции"),
+                r.get("PLAN_ID"), r.get("Номер задания производства"),
+            )
+            for r in data
+        ]
         obsolete.apply_flags(data, await obsolete.flags_for(obs_keys))
     except Exception as exc:
         log(logging.WARNING, "не удалось наложить статус неактуальности", error=str(exc))
@@ -580,11 +602,17 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
             row.update(obsolete.EMPTY)
 
     # Карточки согласования по постановлению 713 (пожелание № 8): ключ —
-    # модель + артикул, одна карточка на все планы и этапы пары. Без карточки
-    # строка получает reg713_required=False и пустые поля.
+    # модель + артикул, одна карточка на все планы и этапы пары. Статус 713
+    # показываем только на ПФКСС-строках (задача Б24 669728, Данчук: отметка
+    # ПФКСС «подтягивалась» и на КПСС той же пары). Без карточки строка
+    # получает reg713_required=False и пустые поля.
     try:
-        reg_keys = [reg713.make_key(r.get("Модель"), r.get("Артикул")) for r in data]
-        reg713.apply_cards(data, await reg713.cards_for(reg_keys))
+        reg713_rows = [r for r in data if str(r.get("Признак калькуляции", "") or "").strip() == "ПФКСС"]
+        reg_keys = [reg713.make_key(r.get("Модель"), r.get("Артикул")) for r in reg713_rows]
+        reg713.apply_cards(reg713_rows, await reg713.cards_for(reg_keys))
+        for r in data:
+            if str(r.get("Признак калькуляции", "") or "").strip() != "ПФКСС":
+                r.update(reg713.REG713_EMPTY)
     except Exception as exc:
         log(logging.WARNING, "не удалось наложить карточки 713", error=str(exc))
         for row in data:
@@ -1086,6 +1114,25 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         # данных в DWH. Такое обязано быть видно в логах.
         print(f"[cost] наложение утверждённых цен не выполнено:\n{traceback.format_exc()}", flush=True)
 
+    # Согласованная исполкомом цена 713 (Б24 666861) — ПОСЛЕДНИЙ оверлей, главнее
+    # калькуляций, DWH и ручных цен: на ПФКСС-строках согласованной пары розница
+    # и опт равны снимку карточки, пока её не перевыпустят. Правку такой строки
+    # блокирует _reg713_lock (см. lock-state ниже).
+    try:
+        pf_rows = [r for r in data if str(r.get("Признак калькуляции", "") or "").strip() == "ПФКСС"]
+        ap_keys = [reg713.make_key(r.get("Модель"), r.get("Артикул")) for r in pf_rows]
+        approved713 = await reg713.approved_prices(ap_keys)
+        for r in pf_rows:
+            ap = approved713.get(reg713.make_key(r.get("Модель"), r.get("Артикул")))
+            if not ap:
+                continue
+            if ap["item_retail"] is not None:
+                r["avg_Розничная цена по уровню, руб."] = ap["item_retail"]
+            if ap["item_wholesale"] is not None:
+                r["avg_Отпускная цена по уровню, руб"] = ap["item_wholesale"]
+    except Exception as exc:
+        log(logging.WARNING, "не удалось наложить согласованную цену 713", error=str(exc))
+
     # ── Lock state: _has_pending / _has_audit / _lock_reason ────────────────
     try:
         lock_keys = set()
@@ -1166,6 +1213,17 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
             # само, как только цены установлены заново.
             reopened_keys = await get_reopened_keys(lock_list)
 
+            # 4. Согласование 713 (Б24 669728): ПФКСС-калькуляции пары, отмеченной
+            # на согласование с исполкомом (решения ещё нет) или уже согласованной,
+            # блокируются для правки цены ВСЕМ — изменить цену можно только через
+            # карточку 713 («Согласование 713» из отчёта или колонки «713»).
+            try:
+                reg_pairs = list({(m, a) for m, a, cs, _ in lock_list if cs == "ПФКСС"})
+                reg713_locks = await reg713.lock_states(reg_pairs)
+            except Exception as exc:
+                log(logging.WARNING, "не удалось получить статусы 713 для блокировки", error=str(exc))
+                reg713_locks = {}
+
             for row in data:
                 m = str(row.get("Модель", "") or "").strip()
                 a = str(row.get("Артикул", "") or "").strip()
@@ -1175,6 +1233,7 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 has_pending = (m, a, cs, pi) in pending_set
                 has_audit = (m, a, cs, pi) in audit_set or (m, a) in audit_legacy
                 is_reopened = (m, a, cs, pi) in reopened_keys
+                reg713_lock = reg713_locks.get((m, a)) if cs == "ПФКСС" else None
 
                 row["_has_pending"] = has_pending
                 # Значок «записано в DWH» оставляем — факт записи никуда не
@@ -1184,6 +1243,7 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 row["_has_audit"] = has_audit and not is_reopened
                 row["_in_dwh"] = has_audit
                 row["_reopened"] = is_reopened
+                row["_reg713_lock"] = reg713_lock
 
                 # Возвращённая на корректировку калькуляция НЕ блокируется
                 # незакрытой заявкой. Заявка там и остаётся специально: с
@@ -1194,6 +1254,8 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
                 is_returned = row.get("peo_status") == "returned"
                 if has_pending and not is_returned:
                     row["_lock_reason"] = "pending_changes"
+                elif reg713_lock:
+                    row["_lock_reason"] = f"reg713_{reg713_lock}"
                 else:
                     row["_lock_reason"] = None
     except Exception:
@@ -4491,10 +4553,14 @@ async def reg713_save_card(payload: dict, user: str | None = Depends(_require_pe
 
     Body: { model, articul,
             required?: bool, kind?: 'price_increase'|'novelty'|null,
+            novelty_comment?, planned_volume?,        # обоснование «новинки»
+            competitor_name?, competitor_retail?,     # обоснование «повышения цены»
             analog_model?, analog_articul?, analog_name?,
             analog_retail?, analog_wholesale?, analog_price_source?,
             decision?: 'approved'|'rejected'|null, decision_doc?, comment? }
     Передаются только меняемые поля; каждое сохранение пишется в журнал.
+    Сохранение РЕШЕНИЯ требует заполненного обоснования по виду
+    (KIND_REQUIRED, задача Б24 666631) — иначе 400.
     """
     key = _reg713_key_from(payload)
     fields = {k: v for k, v in payload.items() if k in reg713.EDITABLE}

@@ -68,14 +68,19 @@
           </thead>
           <tbody>
             <tr v-if="!loading && !filtered.length"><td :colspan="COLUMNS.length" class="muted center">Нет карточек по заданным условиям</td></tr>
-            <tr v-for="c in filtered" :key="c.id" :class="{ unmarked: !c.required }">
+            <tr v-for="c in filtered" :key="c.id" :class="{ unmarked: !c.required }" class="row-clickable" title="Открыть карточку согласования" @click="openCard(c)">
               <td class="date-col">{{ fmtDate(c.required_at || c.created_at) }}</td>
               <td class="mono">{{ c.model }}</td>
               <td class="mono">{{ c.articul }}</td>
               <td class="cell-ellipsis" :title="c.name || ''">{{ c.name || '—' }}</td>
               <td class="col-num num" :title="sourceTitle(c.price_source)">{{ fmt(c.retail) }}</td>
               <td class="col-num num" :title="sourceTitle(c.price_source)">{{ fmt(c.wholesale) }}</td>
+              <td class="cell-ellipsis" :title="c.price_level || ''">{{ c.price_level || '—' }}</td>
               <td>{{ KIND_LABEL[c.kind] || '—' }}</td>
+              <td class="cell-ellipsis" :title="c.novelty_comment || ''">{{ c.novelty_comment || '—' }}</td>
+              <td class="col-num num">{{ fmt(c.planned_volume) }}</td>
+              <td class="cell-ellipsis" :title="c.competitor_name || ''">{{ c.competitor_name || '—' }}</td>
+              <td class="col-num num">{{ fmt(c.competitor_retail) }}</td>
               <td class="mono">{{ c.analog_model || '—' }}</td>
               <td class="mono">{{ c.analog_articul || '—' }}</td>
               <td class="cell-ellipsis" :title="c.analog_name || ''">{{ c.analog_name || '—' }}</td>
@@ -127,6 +132,7 @@ const DECISION_LABEL: Record<string, string> = { pending: 'Не рассмотр
 const SOURCE_LABEL: Record<string, string> = {
   calc: 'последняя калькуляция в CostHistory', dwh: 'утверждённая цена в DWH',
   gpartner: 'плановая цена из S_MODELI', manual: 'введено вручную',
+  reg713: 'снимок карточки согласования (713)',
 }
 
 const COLUMNS = [
@@ -136,7 +142,12 @@ const COLUMNS = [
   { key: 'name', label: 'Наименование' },
   { key: 'retail', label: 'Розница', num: true, title: 'Розничная цена изделия по правилам главной таблицы' },
   { key: 'wholesale', label: 'Опт', num: true, title: 'Отпускная цена изделия по правилам главной таблицы' },
+  { key: 'price_level', label: 'Уровень цен' },
   { key: 'kind', label: 'Вид' },
+  { key: 'novelty_comment', label: 'Новизна (комментарий)', title: 'В чём именно заключается новизна — для вида «новинка»' },
+  { key: 'planned_volume', label: 'План. объём', num: true, title: 'Планируемый объём реализации на внутренний рынок — для вида «новинка»' },
+  { key: 'competitor_name', label: 'Конкурент', title: 'Производитель-конкурент — для вида «повышение цены»' },
+  { key: 'competitor_retail', label: 'Розн. цена конкурента', num: true, title: 'Розничная цена аналога других производителей — для вида «повышение цены»' },
   { key: 'analog_model', label: 'Аналог: модель' },
   { key: 'analog_articul', label: 'Аналог: артикул' },
   { key: 'analog_name', label: 'Аналог: наименование' },
@@ -167,7 +178,7 @@ const filtered = computed(() => {
   const needle = q.value.trim().toLowerCase()
   let rows = items.value.filter((c) => {
     if (needle) {
-      const hay = [c.model, c.articul, c.name, c.analog_model, c.analog_articul, c.analog_name, c.decision_doc, c.comment, c.updated_by]
+      const hay = [c.model, c.articul, c.name, c.novelty_comment, c.competitor_name, c.analog_model, c.analog_articul, c.analog_name, c.decision_doc, c.comment, c.updated_by]
         .map((v) => String(v || '').toLowerCase()).join(' ')
       if (!hay.includes(needle)) return false
     }
@@ -221,6 +232,12 @@ async function load() {
   }
 }
 
+/** Провалиться в карточку согласования из отчёта (задача Б24 666648): главная
+ *  таблица по параметру найдёт пару и откроет то же окно карточки. */
+function openCard(c: any) {
+  navigateTo({ path: '/cost', query: { reg713model: c.model, reg713articul: c.articul } })
+}
+
 /** Excel — как в остальном разделе: HTML-таблица под application/vnd.ms-excel
  *  (настоящий .xlsx в разделе не собирается нигде). Выгружается то, что
  *  отфильтровано и отсортировано на экране. */
@@ -231,7 +248,8 @@ function exportExcel() {
   const body = filtered.value.map((c) => {
     const cells = [
       fmtDate(c.required_at || c.created_at), c.model, c.articul, c.name || '',
-      num(c.retail), num(c.wholesale), KIND_LABEL[c.kind] || '',
+      num(c.retail), num(c.wholesale), c.price_level || '', KIND_LABEL[c.kind] || '',
+      c.novelty_comment || '', num(c.planned_volume), c.competitor_name || '', num(c.competitor_retail),
       c.analog_model || '', c.analog_articul || '', c.analog_name || '',
       num(c.analog_retail), num(c.analog_wholesale),
       DECISION_LABEL[decisionKey(c)], fmtDate(c.decision_at), c.decision_doc || '', c.comment || '', c.updated_by || '',
@@ -275,6 +293,8 @@ onMounted(load)
 .data-table th.sorted { color: var(--accent, #4338ca); }
 .data-table td { padding: 6px 10px; border-bottom: 1px solid var(--border, #eef0f3); white-space: nowrap; vertical-align: top; }
 .data-table tr.unmarked td { opacity: 0.55; }
+.data-table tbody tr.row-clickable { cursor: pointer; }
+.data-table tbody tr.row-clickable:hover td { background: color-mix(in srgb, var(--accent, #4338ca) 6%, transparent); }
 .col-num { text-align: right; }
 .num { font-variant-numeric: tabular-nums; font-family: 'JetBrains Mono', ui-monospace, monospace; }
 .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
