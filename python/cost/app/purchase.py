@@ -1107,14 +1107,58 @@ def _validate_header(payload: dict[str, Any]) -> dict[str, Any]:
     return h
 
 
+def _validate_kits(raw: Any) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Комплекты прихода из payload: нормализованный список + индекс по ref.
+
+    ref — клиентский ключ связи «строка → комплект», живёт только в запросе;
+    в БД у строки kit_id. Два комплекта с одной парой план+задание в инвойсе
+    запрещены — на применении они дрались бы за одну калькуляцию ПФКСС."""
+    if not raw:
+        return [], {}
+    if not isinstance(raw, list):
+        raise ValueError("kits должен быть списком")
+    kits: list[dict[str, Any]] = []
+    by_ref: dict[str, dict[str, Any]] = {}
+    seen: set[tuple[str, str, str, str]] = set()
+    for i, k in enumerate(raw, 1):
+        model, articul = _s(k.get("model")), _s(k.get("articul"))
+        if not model or not articul:
+            raise ValueError(f"комплект {i}: нужны модель и артикул")
+        qty = _f(k.get("qty"))
+        if not qty or qty <= 0:
+            raise ValueError(f"комплект {model}/{articul}: количество должно быть больше нуля")
+        plan_id, task_number = _s(k.get("plan_id")), _s(k.get("task_number"))
+        if (model, articul, plan_id, task_number) in seen:
+            raise ValueError(f"комплект {i}: {model}/{articul} с таким планом и заданием уже есть в инвойсе")
+        seen.add((model, articul, plan_id, task_number))
+        ref = _s(k.get("ref")) or f"k{i}"
+        if ref in by_ref:
+            raise ValueError(f"комплект {i}: ref «{ref}» уже занят другим комплектом")
+        kit = {"ref": ref, "line_no": i, "model": model, "articul": articul,
+               "plan_id": plan_id, "task_number": task_number,
+               "name": _s(k.get("name")) or None, "qty": qty}
+        by_ref[ref] = kit
+        kits.append(kit)
+    return kits, by_ref
+
+
 async def save_invoice(payload: dict[str, Any], user: str) -> dict[str, Any]:
-    """Создать или обновить черновик инвойса вместе со статьями и строками;
-    вернуть его с распределением. Применённый инвойс менять нельзя."""
+    """Создать или обновить черновик инвойса вместе со статьями, комплектами и
+    строками; вернуть его с распределением. Применённый инвойс менять нельзя.
+
+    Комплекты (Б24 668119) — группировка строк инвойса под ПФКСС комплекта:
+    строки прихода помечены клиентским ref'ом, при сохранении он превращается
+    в kit_id. Черновик переписывается целиком — как строки и статьи."""
     header = _validate_header(payload)
     lines_in = payload.get("lines") or []
     if not isinstance(lines_in, list):
         raise ValueError("lines должен быть списком")
+    kits, kit_by_ref = _validate_kits(payload.get("kits"))
     calc = distribute(header, lines_in)   # валидирует всё и считает раскладку
+    for ln in calc["lines"]:
+        ref = ln.get("kit_ref")
+        if ref and ref not in kit_by_ref:
+            raise ValueError(f"строка {ln['line_no']}: привязана к неизвестному комплекту")
     inv_id = payload.get("id")
 
     async with acquire() as conn:
@@ -1138,6 +1182,7 @@ async def save_invoice(payload: dict[str, Any], user: str) -> dict[str, Any]:
                 )
                 await conn.execute("DELETE FROM cost_purchase_invoice_line WHERE invoice_id = $1", int(inv_id))
                 await conn.execute("DELETE FROM cost_purchase_invoice_overhead WHERE invoice_id = $1", int(inv_id))
+                await conn.execute("DELETE FROM cost_purchase_invoice_kit WHERE invoice_id = $1", int(inv_id))
             else:
                 inv_id = await conn.fetchval(
                     """INSERT INTO cost_purchase_invoice
@@ -1158,13 +1203,25 @@ async def save_invoice(payload: dict[str, Any], user: str) -> dict[str, Any]:
                     int(inv_id), o["kind"], o["hs_code"], o["amount"], o["currency"], o["rate"],
                     o["amount_byn"], o["comment"],
                 )
+            # Комплекты раньше строк: строки ссылаются на них kit_id'ом.
+            kit_ids: dict[str, int] = {}
+            for k in kits:
+                kit_ids[k["ref"]] = int(await conn.fetchval(
+                    """INSERT INTO cost_purchase_invoice_kit
+                           (invoice_id, line_no, model, articul, plan_id, task_number, name, qty)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id""",
+                    int(inv_id), k["line_no"], k["model"], k["articul"], k["plan_id"],
+                    k["task_number"], k["name"], k["qty"],
+                ))
             for ln in calc["lines"]:
                 await conn.execute(
                     """INSERT INTO cost_purchase_invoice_line
-                           (invoice_id, line_no, model, articul, plan_id, task_number, name, color, hs_code, qty,
-                            unit_price_cur, price_byn, sum_byn, logistics_byn, customs_byn, cert_byn, total_byn, total_usd)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)""",
-                    int(inv_id), ln["line_no"], ln["model"], ln["articul"], ln["plan_id"], ln["task_number"],
+                           (invoice_id, line_no, kit_id, model, articul, plan_id, task_number, name, color, hs_code,
+                            qty, unit_price_cur, price_byn, sum_byn, logistics_byn, customs_byn, cert_byn,
+                            total_byn, total_usd)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)""",
+                    int(inv_id), ln["line_no"], kit_ids[ln["kit_ref"]] if ln.get("kit_ref") else None,
+                    ln["model"], ln["articul"], ln["plan_id"], ln["task_number"],
                     _s(ln.get("name")) or None, _s(ln.get("color")) or None, ln["hs_code"], ln["qty"],
                     ln["unit_price_cur"], ln["price_byn"], ln["sum_byn"], ln["logistics_byn"],
                     ln["customs_byn"], ln["cert_byn"], ln["total_byn"], ln["total_usd"],
@@ -1183,9 +1240,13 @@ async def get_invoice(inv_id: int) -> dict[str, Any] | None:
         overheads = await conn.fetch(
             "SELECT * FROM cost_purchase_invoice_overhead WHERE invoice_id = $1 ORDER BY kind, hs_code, id", inv_id,
         )
+        kits = await conn.fetch(
+            "SELECT * FROM cost_purchase_invoice_kit WHERE invoice_id = $1 ORDER BY line_no, id", inv_id,
+        )
     inv = _row(h)
     inv["lines"] = [_row(l) for l in lines]
     inv["overheads"] = [_row(o) for o in overheads]
+    inv["kits"] = [_row(k) for k in kits]
     return inv
 
 
@@ -1208,6 +1269,42 @@ async def delete_invoice(inv_id: int) -> None:
         await conn.execute("DELETE FROM cost_purchase_invoice WHERE id = $1", inv_id)
 
 
+# Основа строки ПФКСС — КПСС-строка той же калькуляции (из портала) по ключу
+# (модель, артикул, КПСС, план, задание).
+_BASE_CALC_SQL = """
+SELECT * FROM cost_data_all
+ WHERE trim("Модель") = $1 AND trim("Артикул") = $2
+   AND trim(COALESCE("Признак калькуляции", '')) = $3
+   AND trim(COALESCE("PLAN_ID", '')) = $4
+   AND trim(COALESCE("Номер задания производства", '')) = $5
+ ORDER BY is_manual DESC, "дата расчета" DESC NULLS LAST LIMIT 1"""
+
+# Раскладка в cost_purchase_cost по ключу калькуляции (uq_purchase_cost_key):
+# повторное применение переписывает её же строку, а не плодит дубли.
+_PC_UPSERT_SQL = """
+INSERT INTO cost_purchase_cost
+       (model, articul, calc_sign, plan_id, task_number, manual_calc_id, source, invoice_line_id,
+        currency, unit_price_cur, cur_to_byn, usd_to_byn, rate_date, qty,
+        price_usd, price_byn, logistics_usd, logistics_byn, customs_usd, customs_byn,
+        cert_usd, cert_byn, total_usd, total_byn, retail_byn, wholesale_byn, snapshot, created_by)
+VALUES ($1,$2,$3,$4,$5,$6,'invoice',NULL,
+        $7,$8,$9,$10,$11,$12,
+        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,$26)
+ON CONFLICT ON CONSTRAINT uq_purchase_cost_key DO UPDATE
+   SET manual_calc_id=EXCLUDED.manual_calc_id, source='invoice',
+       currency=EXCLUDED.currency, unit_price_cur=EXCLUDED.unit_price_cur,
+       cur_to_byn=EXCLUDED.cur_to_byn, usd_to_byn=EXCLUDED.usd_to_byn,
+       rate_date=EXCLUDED.rate_date, qty=EXCLUDED.qty,
+       price_usd=EXCLUDED.price_usd, price_byn=EXCLUDED.price_byn,
+       logistics_usd=EXCLUDED.logistics_usd, logistics_byn=EXCLUDED.logistics_byn,
+       customs_usd=EXCLUDED.customs_usd, customs_byn=EXCLUDED.customs_byn,
+       cert_usd=EXCLUDED.cert_usd, cert_byn=EXCLUDED.cert_byn,
+       total_usd=EXCLUDED.total_usd, total_byn=EXCLUDED.total_byn,
+       retail_byn=EXCLUDED.retail_byn, wholesale_byn=EXCLUDED.wholesale_byn,
+       snapshot=EXCLUDED.snapshot, updated_at=now()
+RETURNING id"""
+
+
 async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
     """Создать по строкам инвойса калькуляции ПФКСС и записи раскладки.
 
@@ -1216,6 +1313,13 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
     из распределения; в «Основные материалы» — итог в бел. рублях, остальные
     статьи нули. Если КПСС не найдена (строку добавили руками), строка
     собирается из полей инвойса. Повторное применение невозможно.
+
+    Комплекты (Б24 668119): строки с kit_id своих ПФКСС НЕ создают — калькуляцию
+    строит сам комплект по своему ключу (модель, артикул, план, задание):
+    «Основные материалы» = Σ (итог строки × количество строки) / количество
+    комплекта, выпуск шт — количество комплекта (введено вручную). Разбивка по
+    составляющим — в snapshot раскладки комплекта (аналог журнала сборок
+    мультипака); у строк комплекта manual_calc_id/purchase_cost_id — NULL.
     """
     inv = await get_invoice(inv_id)
     if not inv:
@@ -1232,14 +1336,32 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
                  or date.today())
     batch = uuid.uuid4()
     created = updated = 0
+
+    # ── комплекты: у каждого должны быть привязанные строки; строка входит
+    # максимум в один комплект. Составляющие своих ПФКСС не получают.
+    kit_by_id = {int(k["id"]): k for k in inv.get("kits") or []}
+    kit_lines: dict[int, list[dict[str, Any]]] = {}
+    plain_lines: list[dict[str, Any]] = []
+    for ln in calc["lines"]:
+        kid = ln.get("kit_id")
+        if kid is None:
+            plain_lines.append(ln)
+        else:
+            kit_lines.setdefault(int(kid), []).append(ln)
+    for kit in kit_by_id.values():
+        if not kit_lines.get(int(kit["id"])):
+            raise ValueError(f"комплект {kit['model']}/{kit['articul']}: не привязана ни одна строка инвойса")
+
     # Ставка НДС — из S_MODELI, как у КПСС из портала (источник выбран
     # заказчиком 09.09.2026). До 10.09.2026 строка ПФКСС брала ставку только из
     # КПСС-основы, а когда основы нет (план не из портала — 8355 на проде,
     # инвойс SCH260254 от 08.09.2026), оставалась без НДС, и наценка на ней
     # считалась «грязной»: 68 % вместо 40 %. Справочник недоступен — приход
     # всё равно применяем, ставку дозаполнит следующий «Импорт закупной».
+    pairs = ([(ln["model"], ln["articul"]) for ln in plain_lines]
+             + [(k["model"], k["articul"]) for k in kit_by_id.values()])
     try:
-        vat_by_pair = await vat_for_pairs([(ln["model"], ln["articul"]) for ln in calc["lines"]])
+        vat_by_pair = await vat_for_pairs(pairs)
     except Exception as exc:  # noqa: BLE001 — Gpartner за VPN
         log(logging.WARNING, "ПФКСС по приходу: ставка НДС из S_MODELI недоступна",
             invoice_id=inv_id, error=str(exc)[:300])
@@ -1248,13 +1370,13 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
     # CATALOG_FIELDS). Справочник недоступен — приход всё равно применяем, поля
     # дописывает scripts/backfill_invoice_catalog_fields.py.
     try:
-        catalog = await catalog_for_pairs([(ln["model"], ln["articul"]) for ln in calc["lines"]])
+        catalog = await catalog_for_pairs(pairs)
     except Exception as exc:  # noqa: BLE001 — Gpartner за VPN
         log(logging.WARNING, "ПФКСС по приходу: справочник моделей недоступен",
             invoice_id=inv_id, error=str(exc)[:300])
         catalog = {}
-    # Справочник уровней — чтобы подобрать уровень заново, а не унаследовать его
-    # от строки КПСС (см. ниже, у строки «Уровень цен»).
+    # Справочник уровней — чтобы подобрать уровень заново, а не унаследовать
+    # его от строки КПСС (см. pick_level ниже).
     try:
         levels = await price_levels()
     except Exception as exc:  # noqa: BLE001 — Gpartner за VPN
@@ -1262,24 +1384,90 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
             invoice_id=inv_id, error=str(exc)[:300])
         levels = []
 
+    usd = (lambda v: (round(v / usd_rate, 6) if usd_rate and v is not None else None))
+    snapshot_header = {k: (str(v) if isinstance(v, (date, datetime)) else v)
+                       for k, v in header.items() if k != "overheads"}
+
     async with acquire() as conn:
         cols = await _manual_columns(conn)
         col_types = dict(cols)
         data_cols = [c for c, _ in cols if c not in ("id", "batch_id", "source_calc_sign", "source_task",
                                                         "created_by", "created_at", "reason")]
-        async with conn.transaction():
-            for ln in calc["lines"]:
-                key = make_key(ln["model"], ln["articul"], INVOICE_CALC_SIGN, ln["plan_id"], ln["task_number"])
-                # Основа — строка КПСС той же калькуляции (из портала), если есть.
-                base = await conn.fetchrow(
-                    """SELECT * FROM cost_data_all
-                        WHERE trim("Модель") = $1 AND trim("Артикул") = $2
-                          AND trim(COALESCE("Признак калькуляции", '')) = $3
-                          AND trim(COALESCE("PLAN_ID", '')) = $4
-                          AND trim(COALESCE("Номер задания производства", '')) = $5
-                        ORDER BY is_manual DESC, "дата расчета" DESC NULLS LAST LIMIT 1""",
-                    ln["model"], ln["articul"], IMPORT_CALC_SIGN, ln["plan_id"], ln["task_number"],
+
+        async def base_calc(model: str, articul: str, plan_id: str, task_number: str):
+            """Основа — строка КПСС той же калькуляции (из портала), если есть."""
+            return await conn.fetchrow(_BASE_CALC_SQL, model, articul, IMPORT_CALC_SIGN, plan_id, task_number)
+
+        async def upsert_manual(row: dict[str, Any], key: PurchaseKey, reason: str) -> int:
+            nonlocal created, updated
+            values = [_cast(row.get(c), col_types[c]) for c in data_cols]
+            existing = await conn.fetchval(
+                """SELECT id FROM cost_manual_calc
+                    WHERE source_calc_sign = $1
+                      AND trim("Модель") = $2 AND trim("Артикул") = $3
+                      AND trim(COALESCE("Признак калькуляции", '')) = $4
+                      AND trim(COALESCE("PLAN_ID", '')) = $5
+                      AND trim(COALESCE("Номер задания производства", '')) = $6
+                    ORDER BY id LIMIT 1""",
+                INVOICE_SOURCE_SIGN, *key,
+            )
+            if existing:
+                sets = ", ".join(f'"{c}" = ${i + 2}' for i, c in enumerate(data_cols))
+                await conn.execute(f"UPDATE cost_manual_calc SET {sets} WHERE id = $1", existing, *values)
+                updated += 1
+                return int(existing)
+            col_list = ", ".join(f'"{c}"' for c in data_cols)
+            ph = ", ".join(f"${i + 1}" for i in range(len(data_cols)))
+            n = len(data_cols)
+            manual_id = await conn.fetchval(
+                f"""INSERT INTO cost_manual_calc ({col_list}, batch_id, source_calc_sign, source_task, created_by, reason)
+                    VALUES ({ph}, ${n + 1}, ${n + 2}, NULL, ${n + 3}, ${n + 4}) RETURNING id""",
+                *values, batch, INVOICE_SOURCE_SIGN, user, reason,
+            )
+            created += 1
+            return int(manual_id)
+
+        def pick_level(row: dict[str, Any]) -> None:
+            # Уровень цен и опт — заново по целевой наценке группы, а не
+            # унаследованно от строки КПСС. Причины две. Строка-основа могла
+            # быть импортирована старым правилом «первый по имени» (до
+            # 11.09.2026), и переприменить инвойс потом нельзя. И главное:
+            # в прейскурант Лисы PRICE_LEVEL_ID уходит ТОЛЬКО со строки
+            # ПФКСС (routes.apply_changes), поэтому исправленный уровень
+            # КПСС сам по себе до процедуры не доезжает.
+            row_vat = _f(row.get("Ставка НДС"))
+            row_retail = _f(row.get("Розничная цена по уровню, руб."))
+            if levels and row_retail and row_vat is not None:
+                opt, level_name = wholesale_from_retail(
+                    row_retail, levels, vat=row_vat, level01=row.get("Level 01"),
                 )
+                if opt and level_name:
+                    row["Уровень цен"] = level_name
+                    row["Отпускная цена по уровню, руб"] = opt
+                    row["Отпускная цена по уровню, USD."] = (
+                        round(opt / usd_rate, 6) if usd_rate else None
+                    )
+
+        async def upsert_cost(key: PurchaseKey, manual_id: int, unit: dict[str, Any],
+                              row: dict[str, Any], snapshot: dict[str, Any]) -> int:
+            return int(await conn.fetchval(
+                _PC_UPSERT_SQL,
+                *key, manual_id,
+                unit["currency"], unit["unit_price_cur"], cur_rate, usd_rate, rate_date, unit["qty"],
+                usd(unit["price_byn"]), unit["price_byn"],
+                usd(unit["logistics_byn"]), unit["logistics_byn"],
+                usd(unit["customs_byn"]), unit["customs_byn"],
+                usd(unit["cert_byn"]), unit["cert_byn"],
+                usd(unit["total_byn"]), unit["total_byn"],
+                _f(row.get("Розничная цена по уровню, руб.")), _f(row.get("Отпускная цена по уровню, руб")),
+                json.dumps(snapshot, ensure_ascii=False, default=str),
+                user,
+            ))
+
+        async with conn.transaction():
+            for ln in plain_lines:
+                key = make_key(ln["model"], ln["articul"], INVOICE_CALC_SIGN, ln["plan_id"], ln["task_number"])
+                base = await base_calc(ln["model"], ln["articul"], ln["plan_id"], ln["task_number"])
                 row: dict[str, Any] = {c: base[c] for c in data_cols if base is not None and c in base.keys()} if base else {}
                 total_byn, total_usd = ln["total_byn"], ln["total_usd"]
                 row.update({
@@ -1309,91 +1497,21 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
                 vat = vat_by_pair.get((_s(ln["model"]), _s(ln["articul"])))
                 if vat is not None:
                     row["Ставка НДС"] = vat
-                # Уровень цен и опт — заново по целевой наценке группы, а не
-                # снимком из строки КПСС. Причины две. Строка-основа могла быть
-                # импортирована старым правилом «первый по имени» (до
-                # 11.09.2026), и переприменить инвойс потом нельзя. И главное:
-                # в прейскурант Лисы PRICE_LEVEL_ID уходит ТОЛЬКО со строки
-                # ПФКСС (routes.apply_changes), поэтому исправленный уровень
-                # КПСС сам по себе до процедуры не доезжает.
-                row_vat = _f(row.get("Ставка НДС"))
-                row_retail = _f(row.get("Розничная цена по уровню, руб."))
-                if levels and row_retail and row_vat is not None:
-                    opt, level_name = wholesale_from_retail(
-                        row_retail, levels, vat=row_vat, level01=row.get("Level 01"),
-                    )
-                    if opt and level_name:
-                        row["Уровень цен"] = level_name
-                        row["Отпускная цена по уровню, руб"] = opt
-                        row["Отпускная цена по уровню, USD."] = (
-                            round(opt / usd_rate, 6) if usd_rate else None
-                        )
-                values = [_cast(row.get(c), col_types[c]) for c in data_cols]
-
-                existing = await conn.fetchval(
-                    """SELECT id FROM cost_manual_calc
-                        WHERE source_calc_sign = $1
-                          AND trim("Модель") = $2 AND trim("Артикул") = $3
-                          AND trim(COALESCE("Признак калькуляции", '')) = $4
-                          AND trim(COALESCE("PLAN_ID", '')) = $5
-                          AND trim(COALESCE("Номер задания производства", '')) = $6
-                        ORDER BY id LIMIT 1""",
-                    INVOICE_SOURCE_SIGN, *key,
+                pick_level(row)
+                manual_id = await upsert_manual(
+                    row, key,
+                    f"ПФКСС по приходу: инвойс {inv['number']} (id {inv_id}), строка {ln['line_no']}",
                 )
-                if existing:
-                    sets = ", ".join(f'"{c}" = ${i + 2}' for i, c in enumerate(data_cols))
-                    await conn.execute(f"UPDATE cost_manual_calc SET {sets} WHERE id = $1", existing, *values)
-                    manual_id = existing
-                    updated += 1
-                else:
-                    col_list = ", ".join(f'"{c}"' for c in data_cols)
-                    ph = ", ".join(f"${i + 1}" for i in range(len(data_cols)))
-                    n = len(data_cols)
-                    manual_id = await conn.fetchval(
-                        f"""INSERT INTO cost_manual_calc ({col_list}, batch_id, source_calc_sign, source_task, created_by, reason)
-                            VALUES ({ph}, ${n + 1}, ${n + 2}, NULL, ${n + 3}, ${n + 4}) RETURNING id""",
-                        *values, batch, INVOICE_SOURCE_SIGN, user,
-                        f"ПФКСС по приходу: инвойс {inv['number']} (id {inv_id}), строка {ln['line_no']}",
-                    )
-                    created += 1
-
-                usd = (lambda v: (round(v / usd_rate, 6) if usd_rate and v is not None else None))
-                pc_id = await conn.fetchval(
-                    """INSERT INTO cost_purchase_cost
-                           (model, articul, calc_sign, plan_id, task_number, manual_calc_id, source, invoice_line_id,
-                            currency, unit_price_cur, cur_to_byn, usd_to_byn, rate_date, qty,
-                            price_usd, price_byn, logistics_usd, logistics_byn, customs_usd, customs_byn,
-                            cert_usd, cert_byn, total_usd, total_byn, retail_byn, wholesale_byn, snapshot, created_by)
-                       VALUES ($1,$2,$3,$4,$5,$6,'invoice',NULL,
-                               $7,$8,$9,$10,$11,$12,
-                               $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25::jsonb,$26)
-                       ON CONFLICT ON CONSTRAINT uq_purchase_cost_key DO UPDATE
-                          SET manual_calc_id=EXCLUDED.manual_calc_id, source='invoice',
-                              currency=EXCLUDED.currency, unit_price_cur=EXCLUDED.unit_price_cur,
-                              cur_to_byn=EXCLUDED.cur_to_byn, usd_to_byn=EXCLUDED.usd_to_byn,
-                              rate_date=EXCLUDED.rate_date, qty=EXCLUDED.qty,
-                              price_usd=EXCLUDED.price_usd, price_byn=EXCLUDED.price_byn,
-                              logistics_usd=EXCLUDED.logistics_usd, logistics_byn=EXCLUDED.logistics_byn,
-                              customs_usd=EXCLUDED.customs_usd, customs_byn=EXCLUDED.customs_byn,
-                              cert_usd=EXCLUDED.cert_usd, cert_byn=EXCLUDED.cert_byn,
-                              total_usd=EXCLUDED.total_usd, total_byn=EXCLUDED.total_byn,
-                              retail_byn=EXCLUDED.retail_byn, wholesale_byn=EXCLUDED.wholesale_byn,
-                              snapshot=EXCLUDED.snapshot, updated_at=now()
-                       RETURNING id""",
-                    *key, manual_id,
-                    inv["currency"], ln["unit_price_cur"], cur_rate, usd_rate, rate_date, ln["qty"],
-                    ln.get("price_usd"), ln["price_byn"],
-                    usd(ln["logistics_byn"]), ln["logistics_byn"],
-                    usd(ln["customs_byn"]), ln["customs_byn"],
-                    usd(ln["cert_byn"]), ln["cert_byn"],
-                    total_usd, total_byn,
-                    _f(row.get("Розничная цена по уровню, руб.")), _f(row.get("Отпускная цена по уровню, руб")),
-                    json.dumps({"invoice_id": inv_id, "invoice": inv["number"], "line": ln,
-                                "overheads": calc["overheads"], "totals": calc["totals"],
-                                "header": {k: (str(v) if isinstance(v, (date, datetime)) else v)
-                                           for k, v in header.items() if k != "overheads"}},
-                               ensure_ascii=False, default=str),
-                    user,
+                pc_id = await upsert_cost(
+                    key, manual_id,
+                    {"currency": inv["currency"], "unit_price_cur": ln["unit_price_cur"], "qty": ln["qty"],
+                     "price_byn": ln["price_byn"], "logistics_byn": ln["logistics_byn"],
+                     "customs_byn": ln["customs_byn"], "cert_byn": ln["cert_byn"],
+                     "total_byn": total_byn},
+                    row,
+                    {"invoice_id": inv_id, "invoice": inv["number"], "line": ln,
+                     "overheads": calc["overheads"], "totals": calc["totals"],
+                     "header": snapshot_header},
                 )
                 await conn.execute(
                     """UPDATE cost_purchase_invoice_line
@@ -1403,6 +1521,70 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
                     inv_id, ln["line_no"], manual_id, pc_id, ln["price_byn"], ln["sum_byn"],
                     ln["logistics_byn"], ln["customs_byn"], ln["cert_byn"], total_byn, total_usd,
                 )
+
+            # ── комплекты: одна ПФКСС на комплект, у строк своих калькуляций нет ─
+            for kit in kit_by_id.values():
+                qty_k = _f(kit["qty"])
+                if not qty_k or qty_k <= 0:
+                    raise ValueError(f"комплект {kit['model']}/{kit['articul']}: количество должно быть больше нуля")
+                group = kit_lines[int(kit["id"])]
+                key = make_key(kit["model"], kit["articul"], INVOICE_CALC_SIGN, kit["plan_id"], kit["task_number"])
+                base = await base_calc(kit["model"], kit["articul"], kit["plan_id"], kit["task_number"])
+                row = {c: base[c] for c in data_cols if base is not None and c in base.keys()} if base else {}
+                # Деньги комплекта — Σ (статья строки × количество строки);
+                # себестоимость комплекта — деньги, делённые на его количество.
+                money = {f: sum(l[f] * l["qty"] for l in group)
+                         for f in ("price_byn", "logistics_byn", "customs_byn", "cert_byn", "total_byn")}
+                unit_byn = {f: round(v / qty_k, 6) for f, v in money.items()}
+                row.update({
+                    "Модель": kit["model"], "Артикул": kit["articul"],
+                    "Признак калькуляции": INVOICE_CALC_SIGN,
+                    "дата расчета": calc_date,
+                    "Курс на дату расчета": usd_rate,
+                    "Номер задания производства": kit["task_number"] or None,
+                    "PLAN_ID": kit["plan_id"] or None,
+                    "выпуск шт": qty_k,
+                    "Материал/операция/декор(призн)": INVOICE_ROW_SIGN,
+                    "Наименование": (f"Приход по инвойсу {inv['number']}"
+                                     + (f" ({inv['supplier']})" if inv.get("supplier") else "")
+                                     + f" · комплект {kit['model']}/{kit['articul']}"),
+                    "Норма": 1,
+                    "цена материала, руб.": unit_byn["price_byn"], "цена материала, USD.": usd(unit_byn["price_byn"]),
+                    "Основные материалы, руб.": unit_byn["total_byn"], "Основные материалы, USD.": usd(unit_byn["total_byn"]),
+                    "Вспомогательные материалы, руб.": 0, "Вспомогательные материалы, USD.": 0,
+                    "Пошив, руб.": 0, "Пошив, USD.": 0, "Раскрой, руб.": 0, "Раскрой, USD.": 0,
+                    "Декоры, руб.": 0, "Декоры, USD.": 0, "Вязание, руб.": 0, "Вязание, USD.": 0,
+                    "Себестоимость, руб.": unit_byn["total_byn"], "Себестоимость, USD.": usd(unit_byn["total_byn"]),
+                })
+                if kit.get("name"):
+                    row["Наименование модели"] = kit["name"]
+                # До подбора уровня цен: целевая наценка зависит от Level 01.
+                fill_from_catalog(row, catalog.get((_s(kit["model"]), _s(kit["articul"]))))
+                vat = vat_by_pair.get((_s(kit["model"]), _s(kit["articul"])))
+                if vat is not None:
+                    row["Ставка НДС"] = vat
+                pick_level(row)
+                manual_id = await upsert_manual(
+                    row, key,
+                    f"ПФКСС по приходу: инвойс {inv['number']} (id {inv_id}), "
+                    f"комплект {kit['model']}/{kit['articul']}",
+                )
+                pc_id = await upsert_cost(
+                    key, manual_id,
+                    {"currency": inv["currency"],
+                     "unit_price_cur": sum(l["unit_price_cur"] * l["qty"] for l in group) / qty_k,
+                     "qty": qty_k, **unit_byn},
+                    row,
+                    {"invoice_id": inv_id, "invoice": inv["number"], "kit": kit, "lines": group,
+                     "money_byn": {f: round(v, 2) for f, v in money.items()},
+                     "overheads": calc["overheads"], "totals": calc["totals"],
+                     "header": snapshot_header},
+                )
+                await conn.execute(
+                    """UPDATE cost_purchase_invoice_kit
+                          SET manual_calc_id=$2, purchase_cost_id=$3 WHERE id=$1""",
+                    int(kit["id"]), manual_id, pc_id,
+                )
             await conn.execute(
                 """UPDATE cost_purchase_invoice
                       SET status='applied', applied_by=$2, applied_at=now(), totals=$3::jsonb, updated_at=now()
@@ -1410,7 +1592,7 @@ async def apply_invoice(inv_id: int, user: str) -> dict[str, Any]:
                 inv_id, user, json.dumps(calc["totals"], ensure_ascii=False),
             )
     log(logging.INFO, "инвойс применён: созданы калькуляции ПФКСС", invoice_id=inv_id, number=inv["number"],
-        user=user, created=created, updated=updated)
+        user=user, created=created, updated=updated, kits=len(kit_by_id))
     result = await get_invoice(inv_id)
-    result["applied"] = {"created": created, "updated": updated}
+    result["applied"] = {"created": created, "updated": updated, "kits": len(kit_by_id)}
     return result

@@ -170,6 +170,7 @@
               </table>
               <div class="pinv-add">
                 <button class="btn btn-primary btn-sm" type="button" :disabled="!hitChecked.size" @click="addChecked">Добавить выбранные ({{ hitChecked.size }})</button>
+                <button class="btn btn-ghost btn-sm" type="button" :disabled="!hitChecked.size" @click="addCheckedAsKits" title="Каждая выбранная КПСС — отдельный комплект прихода">+ выбранные как комплекты ({{ hitChecked.size }})</button>
                 <button class="btn btn-ghost btn-sm" type="button" @click="addRows(searchHits); clearSearch()">Добавить все найденные ({{ searchHits.length }})</button>
                 <button class="btn btn-ghost btn-sm" type="button" @click="clearSearch">Очистить поиск</button>
               </div>
@@ -180,13 +181,13 @@
               <thead>
                 <tr>
                   <th>#</th><th>Модель</th><th>Артикул</th><th>Наименование</th><th>Цвет</th><th>План</th><th>Задание</th>
-                  <th>Код ТН ВЭД</th><th class="col-num">Кол-во</th><th class="col-num">Цена, {{ form.currency }}</th>
+                  <th>Комплект</th><th>Код ТН ВЭД</th><th class="col-num">Кол-во</th><th class="col-num">Цена, {{ form.currency }}</th>
                   <th class="col-num">Цена, BYN</th><th class="col-num">Логистика</th><th class="col-num">Таможня</th><th class="col-num">Сертиф.</th>
                   <th class="col-num">Итого, BYN</th><th class="col-num">Итого, $</th><th v-if="!readonly"></th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="!form.lines.length"><td :colspan="readonly ? 16 : 17" class="muted center">Добавьте строки: из таблицы по поиску, все из выборки или пустую</td></tr>
+                <tr v-if="!form.lines.length"><td :colspan="readonly ? 17 : 18" class="muted center">Добавьте строки: из таблицы по поиску, все из выборки или пустую</td></tr>
                 <tr v-for="(ln, i) in form.lines" :key="i">
                   <td class="muted">{{ i + 1 }}</td>
                   <td><input v-model="ln.model" class="cell mono" type="text" /></td>
@@ -195,6 +196,12 @@
                   <td><input v-model="ln.color" class="cell" type="text" /></td>
                   <td><input v-model="ln.plan_id" class="cell mono narrow" type="text" /></td>
                   <td><input v-model="ln.task_number" class="cell mono" type="text" /></td>
+                  <td>
+                    <select v-model="ln.kit_ref" class="cell" @change="clearPreview" title="Строки комплекта своей ПФКСС не получают — калькуляция собирается на комплект">
+                      <option value="">—</option>
+                      <option v-for="k in form.kits" :key="k.ref" :value="k.ref">{{ k.model || '…' }}/{{ k.articul || '…' }}</option>
+                    </select>
+                  </td>
                   <td><input v-model="ln.hs_code" class="cell mono" type="text" placeholder="ТН ВЭД" title="Код ТН ВЭД: подтягивается из S_MODELI, можно поправить" /></td>
                   <td><input v-model="ln.qty" class="cell num narrow" type="number" step="1" min="0" /></td>
                   <td><input v-model="ln.unit_price_cur" class="cell num narrow" type="number" step="0.0001" min="0" /></td>
@@ -209,6 +216,43 @@
               </tbody>
             </table>
           </div>
+        </fieldset>
+
+        <fieldset class="pinv-block" :disabled="readonly">
+          <legend>Комплекты прихода — ПФКСС создаётся на комплект, а не на его строки</legend>
+          <div class="pinv-table-wrap">
+            <table class="pinv-table pinv-kits">
+              <thead>
+                <tr>
+                  <th>Модель</th><th>Артикул</th><th>План</th><th>Задание</th>
+                  <th class="col-num" title="Количество комплектов в приходе — вручную">Кол-во</th>
+                  <th class="col-num">Строк</th>
+                  <th class="col-num">Σ строк, BYN</th>
+                  <th class="col-num" title="Σ итогов строк комплекта, делённая на количество комплектов">Себест. комплекта, BYN</th>
+                  <th v-if="!readonly"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!form.kits.length"><td :colspan="readonly ? 8 : 9" class="muted center">Комплектов нет — все строки уйдут в ПФКСС построчно. Заведите комплект и отметьте его у строк-составляющих.</td></tr>
+                <tr v-for="(k, i) in form.kits" :key="k.ref">
+                  <td><input v-model="k.model" class="cell mono" type="text" @change="autofillKit(k)" /></td>
+                  <td><input v-model="k.articul" class="cell mono" type="text" @change="autofillKit(k)" /></td>
+                  <td><input v-model="k.plan_id" class="cell mono narrow" type="text" /></td>
+                  <td><input v-model="k.task_number" class="cell mono" type="text" /></td>
+                  <td><input v-model="k.qty" class="cell num narrow" type="number" step="1" min="0" title="Количество комплектов в приходе — вручную" /></td>
+                  <td class="col-num num">{{ kitAgg(k.ref).count }}</td>
+                  <td class="col-num num">{{ fmt(kitAgg(k.ref).money) }}</td>
+                  <td class="col-num num strong">{{ fmt(kitAgg(k.ref).perUnit) }}</td>
+                  <td v-if="!readonly"><button class="btn-x" type="button" title="Убрать комплект (его строки останутся, но пойдут построчно)" @click="removeKit(i)">✕</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="pinv-add" v-if="!readonly">
+            <button class="btn btn-ghost btn-sm" type="button" @click="addKit()">+ комплект</button>
+            <span class="muted pinv-hint">Модель и артикул — как у комплекта в закупной КПСС: план и задание подтянутся сами (можно найти его в поиске выше и взять «как комплект»). Количество — вручную.</span>
+          </div>
+          <div class="muted pinv-hint">Строки, отмеченные комплектом, своей ПФКСС не получают: при применении по комплекту создаётся одна калькуляция — «Основные материалы» = Σ итогов его строк, выпуск шт — указанное здесь количество. Пошлина и накладные остаются распределёнными построчно, по кодам ТН ВЭД строк.</div>
         </fieldset>
 
         <div v-if="preview" class="pinv-totals">
@@ -304,7 +348,7 @@ const emptyForm = () => ({
   id: null as number | null, status: 'draft', number: '', invoice_date: '', arrival_date: '', contract: '',
   supplier: '', comment: '', currency: 'USD', cur_rate: '' as number | string, usd_rate: '' as number | string,
   rate_date: '', rates_source: 'nbrb',
-  overheads: [] as any[], lines: [] as any[], applied_at: null as string | null, applied_by: null as string | null,
+  overheads: [] as any[], lines: [] as any[], kits: [] as any[], applied_at: null as string | null, applied_by: null as string | null,
 })
 const form = reactive<any>(emptyForm())
 const readonly = computed(() => !props.canEdit || form.status === 'applied')
@@ -458,7 +502,7 @@ function lineFromRow(r: any) {
     plan_id: String(r['PLAN_ID'] || '').trim(), task_number: String(r['Номер задания производства'] || '').trim(),
     name: r['Наименование модели'] || '', color: r['color'] || '', hs_code: '',
     // Количество прихода — из инвойса, не из плана.
-    qty: '', unit_price_cur: '',
+    qty: '', unit_price_cur: '', kit_ref: '',
   }
 }
 function addRows(rows: any[]) {
@@ -476,7 +520,65 @@ function addRows(rows: any[]) {
   if (added) fetchHsCodes(false)
 }
 function addEmptyLine() {
-  form.lines.push({ model: '', articul: '', plan_id: '', task_number: '', name: '', color: '', hs_code: '', qty: '', unit_price_cur: '' })
+  form.lines.push({ model: '', articul: '', plan_id: '', task_number: '', name: '', color: '', hs_code: '', qty: '', unit_price_cur: '', kit_ref: '' })
+}
+
+// ── Комплекты прихода (Б24 668119): ПФКСС на комплект, а не на составляющие.
+// Строки помечены клиентским ref'ом (живёт только в запросе — сервер хранит
+// kit_id), комплект без строк применить нельзя, поэтому перед применением
+// оператору показывается Σ его строк. Количество комплектов — вручную.
+let kitSeq = 0
+const newKitRef = () => `new${++kitSeq}`
+
+function addKit(row?: any) {
+  form.kits.push({
+    ref: newKitRef(),
+    model: row ? String(row['Модель'] || '').trim() : '',
+    articul: row ? String(row['Артикул'] || '').trim() : '',
+    plan_id: row ? String(row['PLAN_ID'] || '').trim() : '',
+    task_number: row ? String(row['Номер задания производства'] || '').trim() : '',
+    name: row ? (row['Наименование модели'] || '') : '',
+    qty: '',
+  })
+  preview.value = null
+}
+
+/** Ручной ввод модели/артикула комплекта: подтянуть план, задание и наименование
+ *  из загруженных закупных КПСС, если пара там есть. */
+function autofillKit(k: any) {
+  if (!String(k.model).trim() || !String(k.articul).trim()) return
+  const hit = props.allRows.find((r: any) => isPurchaseKpss(r)
+    && String(r['Модель'] || '').trim() === String(k.model).trim()
+    && String(r['Артикул'] || '').trim() === String(k.articul).trim())
+  if (hit) {
+    k.plan_id = k.plan_id || String(hit['PLAN_ID'] || '').trim()
+    k.task_number = k.task_number || String(hit['Номер задания производства'] || '').trim()
+    k.name = k.name || hit['Наименование модели'] || ''
+  }
+}
+
+function removeKit(i: number) {
+  const ref = form.kits[i]?.ref
+  form.kits.splice(i, 1)
+  // Строки убранного комплекта остаются, но идут построчно.
+  for (const l of form.lines) if (l.kit_ref === ref) l.kit_ref = ''
+  preview.value = null
+}
+
+/** Агрегат по строкам комплекта из последнего распределения: сколько строк
+ *  привязано, ихΣ итогов в BYN и себестоимость одного комплекта. */
+function kitAgg(ref: string) {
+  const rows = (preview.value?.lines || []).filter((l: any) => l.kit_ref === ref)
+  const money = rows.reduce((s: number, l: any) => s + (Number(l.total_byn) || 0) * (Number(l.qty) || 0), 0)
+  const q = num(form.kits.find((k: any) => k.ref === ref)?.qty)
+  return { count: rows.length, money, perUnit: q && q > 0 ? money / q : null }
+}
+
+function clearPreview() { preview.value = null }
+
+function addCheckedAsKits() {
+  for (const r of searchHits.value.filter((r: any) => hitChecked.value.has(rowKey(r)))) addKit(r)
+  hitChecked.value = new Set()
 }
 
 function calcLine(i: number) { return preview.value?.lines?.[i] ?? null }
@@ -491,7 +593,11 @@ function payload() {
     overheads: form.overheads
       .filter((o: any) => num(o.amount))
       .map((o: any) => ({ kind: o.kind, hs_code: o.hs_code || '', amount: num(o.amount), currency: o.currency, rate: num(o.rate) })),
-    lines: form.lines.map((l: any) => ({ ...l, qty: num(l.qty), unit_price_cur: num(l.unit_price_cur) })),
+    lines: form.lines.map((l: any) => ({ ...l, kit_id: undefined, kit_ref: l.kit_ref || null, qty: num(l.qty), unit_price_cur: num(l.unit_price_cur) })),
+    kits: form.kits.map((k: any) => ({
+      ref: k.ref, model: k.model, articul: k.articul, plan_id: k.plan_id,
+      task_number: k.task_number, name: k.name, qty: num(k.qty),
+    })),
   }
 }
 
@@ -507,14 +613,20 @@ async function runPreview() {
 }
 
 function loadForm(inv: any) {
+  // ref'ы комплектов клиентские: у сохранённых берём из id, у строк восстанавливаем
+  // kit_ref по kit_id — связь строк с комплектами переживает пересохранение.
+  const kits = (inv.kits || []).map((k: any, i: number) => ({ ...k, ref: k.ref || `db${k.id ?? i}` }))
+  const refById = new Map(kits.filter((k: any) => k.id != null).map((k: any) => [k.id, k.ref]))
+  const lines = (inv.lines || []).map((l: any) => ({ ...l, kit_ref: (l.kit_id != null && refById.get(l.kit_id)) || '' }))
   Object.assign(form, emptyForm(), inv, {
     invoice_date: inv.invoice_date ? String(inv.invoice_date).slice(0, 10) : '',
     arrival_date: inv.arrival_date ? String(inv.arrival_date).slice(0, 10) : '',
     rate_date: inv.rate_date ? String(inv.rate_date).slice(0, 10) : '',
     overheads: (inv.overheads || []).map((o: any) => ({ ...o })),
-    lines: (inv.lines || []).map((l: any) => ({ ...l })),
+    kits,
+    lines,
   })
-  preview.value = inv.lines?.length && inv.totals?.sum_byn != null ? { lines: inv.lines, totals: inv.totals } : null
+  preview.value = lines.length && inv.totals?.sum_byn != null ? { lines, totals: inv.totals } : null
 }
 
 async function save(): Promise<boolean> {
@@ -534,12 +646,15 @@ async function save(): Promise<boolean> {
 async function applyInvoice() {
   if (!(await save())) return
   const t = preview.value?.totals
+  const kitCount = form.kits.length
+  const plainCount = form.lines.filter((l: any) => !l.kit_ref).length
   if (!confirm(
     `Применить инвойс № ${form.number}?\n\n` +
     `Строк: ${form.lines.length}, стоимость ${fmt(t?.sum_byn)} BYN, себестоимость партии ${fmt(t?.total_byn)} BYN` +
     (t?.total_usd ? ` (${fmt(t.total_usd)} $)` : '') + '.\n' +
-    'По каждой строке будет создана калькуляция ПФКСС с итогом в «Основных материалах» и раскладкой ' +
-    '(логистика, таможня, сертификация). После применения инвойс не редактируется.'
+    `Будет создано калькуляций ПФКСС: ${plainCount + kitCount} (из них на комплекты: ${kitCount}) — ` +
+    'с итогом в «Основных материалах» и раскладкой (логистика, таможня, сертификация). ' +
+    'Строки комплектов своих калькуляций не получают. После применения инвойс не редактируется.'
   )) return
   busy.value = true
   error.value = ''
@@ -548,7 +663,9 @@ async function applyInvoice() {
     loadForm(inv)
     await loadList()
     emit('applied', inv)
-    alert(`Создано калькуляций ПФКСС: ${inv.applied?.created ?? 0}, обновлено: ${inv.applied?.updated ?? 0}.\nНажмите «Загрузить данные», чтобы увидеть их в таблице.`)
+    alert(`Создано калькуляций ПФКСС: ${inv.applied?.created ?? 0}, обновлено: ${inv.applied?.updated ?? 0}` +
+      (inv.applied?.kits ? ` (из них на комплекты: ${inv.applied.kits})` : '') +
+      '.\nНажмите «Загрузить данные», чтобы увидеть их в таблице.')
   } catch (e: any) {
     error.value = e?.data?.detail || e?.message || String(e)
   } finally { busy.value = false }

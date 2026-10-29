@@ -4636,7 +4636,9 @@ async def purchase_invoice_save(payload: dict, user: str | None = Depends(_PURCH
             cur_to_usd, usd_to_rub?, usd_to_byn, rate_date?,
             customs_fee_rub, transport_rub, transport_usd, cert_rub, svh_rub,
             duty_rub: {"<код ТН ВЭД>": сумма_руб},
-            lines: [{ model, articul, plan_id?, task_number?, name?, color?, hs_code?, qty, unit_price_cur }] }
+            lines: [{ model, articul, plan_id?, task_number?, name?, color?, hs_code?, qty, unit_price_cur,
+                      kit_ref? — клиентский ref комплекта (Б24 668119) }],
+            kits: [{ ref?, model, articul, plan_id?, task_number?, name?, qty }] }
     """
     try:
         return await purchase.save_invoice(payload, (user or "system").strip() or "system")
