@@ -73,6 +73,9 @@
           <label>по
             <input v-model="dateTo" type="date" />
           </label>
+          <!-- 04.11.2026: база дат периода зависит от признака (ветвление
+               на бэкенде, см. _append_period_filter в routes.py). -->
+          <span class="period-basis-hint">ФКСС — по дате выпуска, остальное — по дате расчёта</span>
         </div>
 
         <div class="filters-grid">
@@ -1104,6 +1107,8 @@
         <div class="details-filters">
           <label>Дата от <input v-model="detailDateFrom" type="date" class="form-input" /></label>
           <label>Дата до <input v-model="detailDateTo" type="date" class="form-input" /></label>
+          <!-- Та же база дат, что у периода главной таблицы (см. выше). -->
+          <span class="period-basis-hint">ФКСС — по дате выпуска, остальное — по дате расчёта</span>
           <label>Признак калькуляции
             <CostMultiSelect
               v-model="detailCalcSign"
@@ -11155,6 +11160,13 @@ function heatBg(value: any, field: string): { backgroundColor?: string } {
   background: var(--bg-surface);
   border-radius: var(--rd-2);
   font-size: var(--fs-2xs, 11px);
+}
+
+/* Подсказка базы дат периода: ФКСС — выпуск, прочие признаки — расчёт. */
+.period-basis-hint {
+  font-size: var(--fs-2xs, 10px);
+  color: var(--text-muted);
+  padding-bottom: 2px;
 }
 
 .filters-grid {

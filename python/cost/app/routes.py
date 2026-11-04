@@ -258,12 +258,13 @@ async def load_data(payload: dict, _: str = Depends(_require_perm("cost:view")))
     params: list[Any] = []
     where_parts: list[str] = []
 
-    if payload.get("date_from"):
-        where_parts.append(f'"дата расчета" >= ${len(params) + 1}')
-        params.append(date.fromisoformat(payload["date_from"]))
-    if payload.get("date_to"):
-        where_parts.append(f'"дата расчета" <= ${len(params) + 1}')
-        params.append(date.fromisoformat(payload["date_to"]))
+    # Период по требованию заказчика 04.11.2026: ФКСС — по дате производства
+    # (как на дашборде маржи, см. _MARGIN_BASE в margin.py), остальные
+    # признаки — по дате расчета; NULL даты производства у ФКСС из периода
+    # выпадает сознательно. Подробности — в _append_period_filter.
+    _append_period_filter(
+        where_parts, params, payload.get("date_from") or "", payload.get("date_to") or ""
+    )
 
     for key, col in MULTI_FILTER_COLUMNS.items():
         values = payload.get(key) or []
@@ -407,12 +408,13 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     params: list[Any] = []
     where_parts: list[str] = []
 
-    if payload.get("date_from"):
-        where_parts.append(f'"дата расчета" >= ${len(params) + 1}')
-        params.append(date.fromisoformat(payload["date_from"]))
-    if payload.get("date_to"):
-        where_parts.append(f'"дата расчета" <= ${len(params) + 1}')
-        params.append(date.fromisoformat(payload["date_to"]))
+    # Период по требованию заказчика 04.11.2026: ФКСС — по дате производства
+    # (как на дашборде маржи, см. _MARGIN_BASE в margin.py), остальные
+    # признаки — по дате расчета; NULL даты производства у ФКСС из периода
+    # выпадает сознательно. Подробности — в _append_period_filter.
+    _append_period_filter(
+        where_parts, params, payload.get("date_from") or "", payload.get("date_to") or ""
+    )
 
     # Фильтр «только строки без оптовой цены» здесь НЕ применяется: цены не
     # хранятся в cost_data_cache, а накладываются на выдачу из pending/DWH ниже.
@@ -1399,12 +1401,11 @@ async def get_details(payload: dict) -> dict:
     date_to = (payload.get("date_to") or "").strip()
     calc_sign = payload.get("calc_sign") or []
 
-    if date_from:
-        where_parts.append(f'"дата расчета" >= ${len(params) + 1}')
-        params.append(date.fromisoformat(date_from))
-    if date_to:
-        where_parts.append(f'"дата расчета" <= ${len(params) + 1}')
-        params.append(date.fromisoformat(date_to))
+    # Период по требованию заказчика 04.11.2026: ФКСС — по дате производства
+    # (как на дашборде маржи, см. _MARGIN_BASE в margin.py), остальные
+    # признаки — по дате расчета; NULL даты производства у ФКСС из периода
+    # выпадает сознательно. Подробности — в _append_period_filter.
+    _append_period_filter(where_parts, params, date_from, date_to)
     if calc_sign:
         placeholders = ",".join(f"${len(params) + i + 1}" for i in range(len(calc_sign)))
         where_parts.append(f'TRIM("Признак калькуляции") IN ({placeholders})')
