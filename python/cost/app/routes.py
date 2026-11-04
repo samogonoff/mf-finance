@@ -246,6 +246,34 @@ MULTI_FILTER_COLUMNS: dict[str, str] = {
 }
 
 
+def _append_period_filter(
+    where_parts: list[str], params: list[Any], date_from: str, date_to: str
+) -> None:
+    """Условие периода: ФКСС — по «дате производства», прочие признаки — по «дате расчета».
+
+    Требование заказчика 04.11.2026: выпуск (ФКСС, см. commercial.VOLUME_SIGN)
+    относится к дате производства, плановые и предварительные расчёты — к дате
+    расчёта. Так же устроен дашборд маржи (см. _MARGIN_BASE в margin.py).
+    ФКСС с NULL «даты производства» из периода выпадает сознательно, фолбэка
+    на дату расчёта нет — «как в марже». Оба столбца — TIMESTAMPTZ: параметр
+    кастуется к ::date, иначе сравнение шло бы с полуночью и теряло строки со
+    временем суток; каст в обеих ветках держит единый вид плейсхолдера $N.
+    Каждый конец диапазона может приходить независимо.
+    """
+    sign = commercial.VOLUME_SIGN
+    for value, cmp in ((date_from, ">="), (date_to, "<=")):
+        if not value:
+            continue
+        n = len(params) + 1
+        params.append(date.fromisoformat(value))
+        where_parts.append(
+            f'((TRIM("Признак калькуляции") = \'{sign}\''
+            f' AND "дата производства"::date {cmp} ${n}::date)'
+            f' OR (coalesce(TRIM("Признак калькуляции"), \'\') <> \'{sign}\''
+            f' AND "дата расчета" {cmp} ${n}::date))'
+        )
+
+
 @router.post("/load-data")
 async def load_data(payload: dict, _: str = Depends(_require_perm("cost:view"))) -> dict:
     """Загружает сырые отфильтрованные данные из кеша с пагинацией."""
