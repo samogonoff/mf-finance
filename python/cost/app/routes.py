@@ -1177,65 +1177,12 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
         if lock_keys:
             lock_list = list(lock_keys)
 
-            # 1. Pending changes — full tuple match
-            # Батчами — тот же предел 32767 параметров, что и в наложении цен.
-            pend_rows = []
-            async with pool().acquire() as conn:
-                for batch in _key_batches(lock_list):
-                    pend_ph = ", ".join(
-                        f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
-                        for i in range(len(batch))
-                    )
-                    pend_params: list[str] = []
-                    for m, a, cs, pi in batch:
-                        pend_params.extend([m, a, cs, pi])
-                    pend_rows.extend(await conn.fetch(
-                        f"""SELECT DISTINCT "Модель", "Артикул", "Признак калькуляции", "PLAN_ID"
-                            FROM cost_price_pending
-                            WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {pend_ph})""",
-                        *pend_params,
-                    ))
-            pending_set: set[tuple[str, str, str, str]] = set()
-            for r in pend_rows:
-                pending_set.add((
-                    str(r["Модель"]).strip(), str(r["Артикул"]).strip(),
-                    str(r["Признак калькуляции"]).strip(), str(r["PLAN_ID"]).strip(),
-                ))
+            # 1. Pending changes — full tuple match (см. _pending_keys)
+            pending_set = await _pending_keys(lock_list)
 
-            # 2. Audit records — запись в DWH идёт по калькуляции целиком, поэтому
-            # сверяем полный ключ (model, articul, calc_sign, plan_id). Раньше
-            # сверялась только пара model+articul, и запись по КПСС (в DWH попадает
-            # только он) помечала «записано в DWH» и блокировала ПФКСС/ФКСС той же
-            # модели — там ни цены править, ни статус ПЭО поставить было нельзя.
-            #
-            # У записей до миграции 0022 признака и плана нет: для них оставляем
-            # прежнее поведение, иначе с легаси-строк блокировка исчезла бы вовсе.
-            audit_pairs = list(set((m, a) for m, a, _, _ in lock_list))
-            audit_rows = []
-            async with pool().acquire() as conn:
-                for batch in _key_batches(audit_pairs):
-                    audit_ph = ", ".join(
-                        f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(batch))
-                    )
-                    audit_params: list[str] = []
-                    for m, a in batch:
-                        audit_params.extend([m, a])
-                    audit_rows.extend(await conn.fetch(
-                        f"""SELECT DISTINCT model, articul, calc_sign, plan_id
-                            FROM cost_price_changes_audit
-                            WHERE (model, articul) IN (VALUES {audit_ph})""",
-                        *audit_params,
-                    ))
-            audit_set: set[tuple[str, str, str, str]] = set()
-            audit_legacy: set[tuple[str, str]] = set()
-            for r in audit_rows:
-                m_a = (str(r["model"] or "").strip(), str(r["articul"] or "").strip())
-                cs = str(r["calc_sign"] or "").strip()
-                pi = str(r["plan_id"] or "").strip()
-                if cs and pi:
-                    audit_set.add((*m_a, cs, pi))
-                else:
-                    audit_legacy.add(m_a)
+            # 2. Audit records (см. _audit_keys — там же про легаси-записи без
+            # признака и плана и про то, почему сверяется полный ключ)
+            audit_set, audit_legacy = await _audit_keys(lock_list)
 
             # 3. Переоткрытые админом калькуляции (миграция 0039). Запись в DWH
             # остаётся на месте, но блокировку с строки снимаем: админ разрешил
@@ -1902,6 +1849,92 @@ async def max_calc_cost(payload: dict, _: str = Depends(_require_perm("cost:view
 
 
 # ── Save changes ─────────────────────────────────────────────────────────────
+
+
+async def _pending_keys(
+    lock_list: list[tuple[str, str, str, str]],
+) -> set[tuple[str, str, str, str]]:
+    """Ключи калькуляций с несогласованной заявкой (cost_price_pending).
+
+    Та же проверка, по которой /aggregated ставит строке `_has_pending`.
+    Вынесена из выдачи, чтобы окно «Начатые расценки» (задача Б24 672276)
+    показывало тот же статус по ключам черновика, не дублируя SQL.
+    Батчами — тот же предел 32767 параметров, что и в наложении цен.
+    Соединение — pool().acquire() без таймаута, как было в выдаче до выноса:
+    DISTINCT по большой пачке ключей — тяжёлый запрос, а acquire() с
+    COST_POOL_ACQUIRE_TIMEOUT при пиковой нагрузке уронил бы наложение и
+    таблица молча потеряла бы значки заявок (см. доктрину в app/db.py).
+    """
+    pend_rows: list = []
+    async with pool().acquire() as conn:
+        for batch in _key_batches(lock_list):
+            pend_ph = ", ".join(
+                f"(${i*4+1}::text, ${i*4+2}::text, ${i*4+3}::text, ${i*4+4}::text)"
+                for i in range(len(batch))
+            )
+            pend_params: list[str] = []
+            for m, a, cs, pi in batch:
+                pend_params.extend([m, a, cs, pi])
+            pend_rows.extend(await conn.fetch(
+                f"""SELECT DISTINCT "Модель", "Артикул", "Признак калькуляции", "PLAN_ID"
+                    FROM cost_price_pending
+                    WHERE ("Модель", "Артикул", "Признак калькуляции", "PLAN_ID") IN (VALUES {pend_ph})""",
+                *pend_params,
+            ))
+    return {
+        (str(r["Модель"]).strip(), str(r["Артикул"]).strip(),
+         str(r["Признак калькуляции"]).strip(), str(r["PLAN_ID"]).strip())
+        for r in pend_rows
+    }
+
+
+async def _audit_keys(
+    lock_list: list[tuple[str, str, str, str]],
+) -> tuple[set[tuple[str, str, str, str]], set[tuple[str, str]]]:
+    """Ключи с записью в DWH: (полные ключи, легаси-пары model+articul).
+
+    Запись в DWH идёт по калькуляции целиком, поэтому сверяем полный ключ
+    (model, articul, calc_sign, plan_id). Раньше сверялась только пара
+    model+articul, и запись по КПСС (в DWH попадает только он) помечала
+    «записано в DWH» и блокировала ПФКСС/ФКСС той же модели — там ни цены
+    править, ни статус ПЭО поставить было нельзя.
+
+    У записей до миграции 0022 признака и плана нет: для них оставляем
+    прежнее поведение (пара model+articul), иначе с легаси-строк блокировка
+    исчезла бы вовсе.
+
+    Вынесено из /aggregated ради окна «Начатые расценки» (задача Б24 672276):
+    бейдж «Уже передано в DWH» там и в таблице обязан показываться одинаково.
+    Соединение — pool().acquire() без таймаута: как и в _pending_keys, это
+    тяжёлый запрос выдачи, acquire() с таймаутом здесь не место.
+    """
+    audit_pairs = list(set((m, a) for m, a, _, _ in lock_list))
+    audit_rows: list = []
+    async with pool().acquire() as conn:
+        for batch in _key_batches(audit_pairs):
+            audit_ph = ", ".join(
+                f"(${i*2+1}::text, ${i*2+2}::text)" for i in range(len(batch))
+            )
+            audit_params: list[str] = []
+            for m, a in batch:
+                audit_params.extend([m, a])
+            audit_rows.extend(await conn.fetch(
+                f"""SELECT DISTINCT model, articul, calc_sign, plan_id
+                    FROM cost_price_changes_audit
+                    WHERE (model, articul) IN (VALUES {audit_ph})""",
+                *audit_params,
+            ))
+    audit_set: set[tuple[str, str, str, str]] = set()
+    audit_legacy: set[tuple[str, str]] = set()
+    for r in audit_rows:
+        m_a = (str(r["model"] or "").strip(), str(r["articul"] or "").strip())
+        cs = str(r["calc_sign"] or "").strip()
+        pi = str(r["plan_id"] or "").strip()
+        if cs and pi:
+            audit_set.add((*m_a, cs, pi))
+        else:
+            audit_legacy.add(m_a)
+    return audit_set, audit_legacy
 
 
 async def _check_save_locks(
@@ -3668,6 +3701,78 @@ async def price_draft_delete_ep(
         raise HTTPException(400, "keys должен быть списком")
     deleted = await delete_price_draft(user_email or "", [str(k) for k in keys], all_rows)
     return {"success": True, "deleted": deleted}
+
+
+@router.post("/price-draft/status")
+async def price_draft_status_ep(
+    payload: dict, user_email: str | None = Depends(_require_perm("cost:edit_price"))
+) -> list[dict]:
+    """Статусы блокировки несохранённых правок из черновика (задача Б24 672276).
+
+    Диагноз инцидента: applyDraftToTable восстанавливает скрытые фильтром
+    строки черновика без проверки блокировок, а /save-batch при хоть одной
+    заблокированной строке отклоняет ВЕСЬ батч (403). Бренд-менеджер не мог
+    ни сохранить валидные строки, ни снять пометку с заблокированных —
+    «Сбросить введённые значения» сносил весь ввод. Окно «Начатые расценки»
+    показывает статус каждой правки независимо от фильтра таблицы; этот
+    эндпоинт даёт статусам ту же основу, что и сохранению:
+
+    - locked_reason — прямо из _check_save_locks: ровно та проверка, которая
+      валит /save-batch, чтобы статус в окне совпадал с исходом сохранения;
+    - pending — эквивалент флага _has_pending из /aggregated (_pending_keys);
+    - in_dwh — эквивалент _has_audit из /aggregated (_audit_keys) с учётом
+      переоткрытий: переоткрытая калькуляция в DWH записана, но правка
+      разрешена, поэтому in_dwh у неё снят (get_reopened_keys).
+
+    Тело: { items: [{ model, articul, calc_sign, plan_id, task_number }, ...] } —
+    до PRICE_DRAFT_MAX_ROWS позиций, как сам черновик. Ответ — массив в том же
+    порядке: [{ model, articul, calc_sign, plan_id, in_dwh, pending,
+    locked_reason }].
+    """
+    if _is_mock():
+        return []
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise HTTPException(400, "items должен быть списком")
+    if len(items) > PRICE_DRAFT_MAX_ROWS:
+        raise HTTPException(413, f"Один запрос не может быть больше {PRICE_DRAFT_MAX_ROWS} строк")
+    rows: list[dict] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        m = str(it.get("model", "") or "").strip()
+        a = str(it.get("articul", "") or "").strip()
+        cs = str(it.get("calc_sign", "") or "").strip()
+        pi = str(it.get("plan_id", "") or "").strip()
+        tn = str(it.get("task_number", "") or "").strip()
+        if m and a:
+            rows.append({"model": m, "articul": a, "calc_sign": cs, "plan_id": pi, "task_number": tn})
+    if not rows:
+        return []
+
+    locked = await _check_save_locks(user_email, rows) if user_email else []
+    locked_by_key = {
+        (l["model"], l["articul"], l["calc_sign"], l["plan_id"]): l["reason"]
+        for l in locked
+    }
+
+    lock_list = list({(r["model"], r["articul"], r["calc_sign"], r["plan_id"]) for r in rows})
+    pending_set = await _pending_keys(lock_list)
+    audit_set, audit_legacy = await _audit_keys(lock_list)
+    reopened_keys = await get_reopened_keys(lock_list)
+
+    out: list[dict] = []
+    for r in rows:
+        key4 = (r["model"], r["articul"], r["calc_sign"], r["plan_id"])
+        has_audit = key4 in audit_set or (r["model"], r["articul"]) in audit_legacy
+        out.append({
+            "model": r["model"], "articul": r["articul"],
+            "calc_sign": r["calc_sign"], "plan_id": r["plan_id"],
+            "in_dwh": has_audit and key4 not in reopened_keys,
+            "pending": key4 in pending_set,
+            "locked_reason": locked_by_key.get(key4),
+        })
+    return out
 
 
 @router.post("/calc-sign-copy")

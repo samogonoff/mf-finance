@@ -307,6 +307,18 @@
           </template>
           <template v-else>Сохранить изменения</template>
         </button>
+        <!-- «Начатые расценки» (Б24 672276): окно всех несохранённых правок с их
+             статусами — включая скрытые фильтром. Для заблокированных строк
+             (переданы в DWH / ждут ПЭО) это единственный способ снять пометку
+             точечно: «Сбросить введённые значения» сносит весь ввод целиком. -->
+        <button
+          v-if="can('cost:edit_price') && changedRows.size"
+          class="btn btn-ghost"
+          @click="openStartedModal"
+        >
+          <Icon name="lucide:clipboard-list" />
+          Начатые расценки ({{ changedRows.size }})
+        </button>
         <button
           v-if="can('cost:edit_price') || can('cost:admin') && changedRows.size"
           class="btn btn-ghost"
@@ -2400,6 +2412,97 @@
                 </button>
               </div>
             </template>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Окно «Начатые расценки» (Б24 672276): все несохранённые правки с их
+         статусами блокировки, независимо от фильтра таблицы. Источник —
+         changedRows, а не filteredAggregated: скрытые фильтром правки здесь
+         видны и обрабатываются. Открывается и автоматически, когда «Сохранить
+         изменения» упирается в 403 «Некоторые строки заблокированы». -->
+    <Teleport to="body">
+      <div v-if="startedOpen" class="modal-overlay" @click.self="closeStartedModal">
+        <div class="modal approval-modal started-modal">
+          <div class="modal-header">
+            <span>Начатые расценки</span>
+            <span class="modal-subtitle">несохранённые правки: {{ changedRows.size }} — включая скрытые фильтром</span>
+            <button class="modal-close" @click="closeStartedModal">✕</button>
+          </div>
+          <div class="approval-body">
+            <!-- Не пустое окно на время запроса: статусы приходят с сервера,
+                 без них непонятно, что выбирать для сохранения. -->
+            <div v-if="startedLoading" class="started-loading">
+              <span class="started-spinner" aria-hidden="true"></span>
+              Загружаем статусы строк…
+            </div>
+            <template v-else>
+              <div v-if="startedError" class="reg713-error">{{ startedError }}</div>
+              <label class="started-select-all">
+                <input type="checkbox" :checked="startedAllSelected" @change="startedToggleAll" />
+                Выбрать все
+              </label>
+              <div class="started-list">
+                <div v-for="g in startedGroups" :key="g.key" class="started-group">
+                  <div class="started-group-head">
+                    <input
+                      type="checkbox"
+                      :checked="startedGroupSelected(g)"
+                      :title="startedGroupSelected(g) ? 'Снять выделение группы' : 'Выбрать всю группу'"
+                      @change="startedToggleGroup(g)"
+                    />
+                    <button class="started-group-toggle" type="button" @click="startedToggleCollapse(g.key)">
+                      <span class="started-caret" :class="{ open: !startedCollapsed.has(g.key) }">▸</span>
+                      <b>{{ g.sign || '—' }}</b> · план {{ g.plan || '—' }} · {{ g.model || '—' }}
+                    </button>
+                    <span v-if="g.modelName" class="started-group-sub">{{ g.modelName }}</span>
+                    <span class="started-group-bm">{{ g.bm || '' }}</span>
+                    <span class="started-group-count" title="Несохранённых правок в калькуляции">{{ g.rows.length }}</span>
+                  </div>
+                  <div v-if="!startedCollapsed.has(g.key)" class="started-group-rows">
+                    <div v-for="item in g.rows" :key="item.key" class="started-row">
+                      <input
+                        type="checkbox"
+                        :checked="startedSelected.has(item.key)"
+                        @change="startedToggleKey(item.key)"
+                      />
+                      <span class="started-articul">{{ item.row['Артикул'] || '—' }}</span>
+                      <span class="started-price num">розн.: {{ fmt(item.row['avg_Розничная цена по уровню, руб.']) }}</span>
+                      <span class="started-price num">отп.: {{ fmt(item.row['avg_Отпускная цена по уровню, руб']) }}</span>
+                      <span
+                        v-if="priceRF[item.key] != null || priceKZ[item.key] != null || priceUZ[item.key] != null"
+                        class="started-price num"
+                      >РФ {{ fmt(priceRF[item.key] ?? 0) }} · КЗ {{ fmt(priceKZ[item.key] ?? 0) }} · УЗ {{ fmt(priceUZ[item.key] ?? 0) }}</span>
+                      <span
+                        class="started-status"
+                        :class="'started-status--' + item.status.code"
+                        :title="item.status.hint"
+                      >{{ item.status.label }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <div class="approval-actions started-actions">
+              <button class="btn btn-sm btn-ghost" :disabled="startedBusy" @click="closeStartedModal">Закрыть</button>
+              <button
+                class="btn btn-sm btn-danger"
+                :disabled="startedBusy || !startedSelected.size"
+                title="Убирает отметку «изменена» с выбранных строк и снимает их с серверного черновика — точечный сброс вместо «Сбросить введённые значения»"
+                @click="startedUnmarkSelected"
+              >Снять отметку с выбранного ({{ startedSelected.size }})</button>
+              <button
+                class="btn btn-sm btn-primary"
+                :disabled="startedBusy || startedLoading || !startedSelected.size"
+                @click="startedSaveSelected"
+              >{{ startedBusy ? 'Сохранение…' : `Сохранить выбранное (${startedSelected.size})` }}</button>
+            </div>
+            <p class="started-hint">
+              🔒 Строки, уже переданные в DWH, нельзя сохранить повторно: цена утверждена
+              и загружена в «Лису». Снять отметку или вернуть калькуляцию на корректировку
+              может администратор.
+            </p>
           </div>
         </div>
       </div>
@@ -8506,6 +8609,367 @@ function applyManualPrice() {
   scheduleDraftSync();
 }
 
+/** Сборка payload одной строки для /save-batch. Вынесено из saveAllChanges:
+ *  тот же список полей нужен окну «Начатые расценки» (Б24 672276), а держать
+ *  две копии сорокапольного сопоставления значило бы править их синхронно. */
+function changePayloadOf(key: string, row: any) {
+  return {
+    model: row["Модель"],
+    articul: row["Артикул"],
+    price_level: row["Уровень цен"],
+    // Ручная цена (задача 661209): сервер проверит право и признак ПФКСС и
+    // подберёт уровень заново по паре опт+розница.
+    price_manual: !!row._price_manual,
+    retail_rub: row["avg_Розничная цена по уровню, руб."],
+    wholesale_rub: row["avg_Отпускная цена по уровню, руб"],
+    retail_usd: row["avg_Розничная цена по уровню, USD."],
+    wholesale_usd: row["avg_Отпускная цена по уровню, USD."],
+    calc_sign: row["Признак калькуляции"],
+    plan_id: row["PLAN_ID"],
+    brand_manager: row["Бренд-менеджер"],
+    model_name: row["Наименование модели"],
+    task_number: row["Номер задания производства"],
+    date: row["дата расчета"],
+    country: row["Страна пр-ва"],
+    family: row["Семья"],
+    season: row["Сезон"],
+    level01: row["Level 01"],
+    level02: row["Level 02"],
+    level03: row["Level 03"],
+    level04: row["Level 04"],
+    level05: row["Level 05"],
+    materials_rub: row["sum_Основные материалы, руб."],
+    materials_usd: row["sum_Основные материалы, USD."],
+    aux_materials_rub: row["sum_Вспомогательные материалы, руб."],
+    aux_materials_usd: row["sum_Вспомогательные материалы, USD."],
+    sewing_rub: row["sum_Пошив, руб."],
+    sewing_usd: row["sum_Пошив, USD."],
+    cutting_rub: row["sum_Раскрой, руб."],
+    cutting_usd: row["sum_Раскрой, USD."],
+    decors_rub: row["sum_Декоры, руб."],
+    decors_usd: row["sum_Декоры, USD."],
+    knitting_rub: row["sum_Вязание, руб."],
+    knitting_usd: row["sum_Вязание, USD."],
+    cost_rub: row["sum_Себестоимость, руб."],
+    cost_usd: row["sum_Себестоимость, USD."],
+    price_rf: priceRF[key] || 0,
+    price_kz: priceKZ[key] || 0,
+    price_uz: priceUZ[key] || 0,
+    comment: comments[key] || "",
+  };
+}
+
+/** Отправка батча правок в /save-batch и разбор ответа — общий код кнопки
+ *  «Сохранить изменения» и окна «Начатые расценки» (Б24 672276).
+ *
+ *  Из списка правок убираем ТОЛЬКО сохранённое. Раньше здесь стоял
+ *  changedRows.clear() во всех ветках, включая ошибку, — введённые цены
+ *  пропадали, и человек вводил их заново. Теперь несохранённые строки
+ *  остаются изменёнными, и «Сохранить» можно нажать повторно.
+ *
+ *  Строки с прочерком не отправлялись — они обязаны остаться в changedRows,
+ *  иначе loadData вычистит введённые по ним цены РФ/КЗ/УЗ и комментарий при
+ *  первой же смене фильтра. Сохранённое черновику больше не нужно: ключи
+ *  снимаем явным удалением, иначе «несуществующая» правка вернулась бы после
+ *  перезагрузки. Возвращает ответ сервера. */
+async function submitSaveBatch(sent: [string, any][]) {
+  const changes = sent.map(([key, row]) => changePayloadOf(key, row));
+  const result = await $fetch<{
+    success: boolean; count: number; error?: string; mock?: boolean;
+    failed?: { model?: string; articul?: string; plan_id?: string; calc_sign?: string; reason?: string }[];
+  }>(
+    `${apiBase.value}/api/cost/save-batch`,
+    { method: "POST", body: { changes, author_name: user.value?.email || '' }, headers: fetchHeaders.value }
+  );
+  if (result.mock) mockMode.value = true;
+  const failedKeys = new Set(
+    (result.failed || []).map(f => calcRowKey({
+      'Модель': f.model, 'Артикул': f.articul,
+      'PLAN_ID': f.plan_id, 'Признак калькуляции': f.calc_sign,
+    }))
+  );
+  const sentKeys = new Set(sent.map(([key]) => key));
+  const droppedKeys: string[] = [];
+  for (const [key, row] of Array.from(changedRows.entries())) {
+    if (sentKeys.has(key) && !failedKeys.has(calcRowKey(row))) {
+      changedRows.delete(key);
+      droppedKeys.push(key);
+    }
+  }
+  void draftDeleteKeys(droppedKeys);
+  return result;
+}
+
+// ── Окно «Начатые расценки» (задача Б24 672276) ──────────────────────────────
+
+const startedOpen = ref(false);
+const startedLoading = ref(false);
+const startedBusy = ref(false);
+const startedError = ref('');
+/** Статусы с /price-draft/status: ключ changedRows → ответ сервера
+ *  (in_dwh / pending / locked_reason). Пусто, пока не загрузились. */
+const startedStatuses = ref<Record<string, any>>({});
+/** Выбранные ключи строк (calcRowKey). Дефолт — только «Готово к сохранению». */
+const startedSelected = reactive(new Set<string>());
+/** Свёрнутые группы (план + модель + признак калькуляции). */
+const startedCollapsed = reactive(new Set<string>());
+
+type StartedStatusCode = 'dwh' | 'pending' | 'peo' | 'noprice' | 'ok' | 'unknown';
+
+const STARTED_BADGES: Record<StartedStatusCode, { label: string; hint: string }> = {
+  dwh: {
+    label: '🔒 Уже передано в DWH',
+    hint: 'Цена утверждена и загружена в «Лису» — повторно сохранить нельзя. Снимите отметку или попросите администратора вернуть калькуляцию на корректировку',
+  },
+  pending: {
+    label: '⏳ На согласовании ПЭО',
+    hint: 'По строке уже есть заявка, она ждёт решения ПЭО',
+  },
+  peo: {
+    label: 'Только после согласования ПЭО',
+    hint: 'Бренд-менеджер может сохранить цену только после согласования ПЭО или возврата на корректировку',
+  },
+  noprice: {
+    label: 'Нет розничной цены — заявка не создаётся',
+    hint: HELD_NO_PRICE_HINT,
+  },
+  ok: {
+    label: '✓ Готово к сохранению',
+    hint: 'Строка не заблокирована — сохранение пройдёт',
+  },
+  unknown: {
+    label: '• Статус не проверен',
+    hint: 'Правок больше лимита черновика — статус этой строки сервер не проверял. Сохранение решит сервер',
+  },
+};
+
+/** Пройдёт ли строка сохранение — РЕШАЮЩИЙ критерий, тот же, что в save-batch:
+ *  причина блокировки от _check_save_locks (у Full Admin она пуста — сервер
+ *  и правда пропустит) плюс наличие розничной цены. in_dwh/pending — только
+ *  информационные бейджи и в выбор не входят: у админа, например, in_dwh
+ *  не мешает сохранению. unchecked — статус сервером не проверялся
+ *  (сверх лимита 500), дефолтно такую строку не выбираем. */
+function startedSavableOf(key: string, row: any): boolean {
+  const st = startedStatuses.value[key];
+  if (st?.unchecked) return false;
+  return !st?.locked_reason && hasRetailPrice(row);
+}
+
+/** Бейдж строки для окна: факты о DWH и заявке вперёд — их видно первым делом,
+ *  пригодность к сохранению (прочерк) последней. Пока статусы не пришли (mock
+ *  или сбой запроса), строки делятся только на «готово» и «прочерк». */
+function startedStatusOf(key: string, row: any): { code: StartedStatusCode; label: string; hint: string } {
+  const st = startedStatuses.value[key];
+  let code: StartedStatusCode;
+  if (st?.unchecked) {
+    code = 'unknown';
+  } else if (st) {
+    if (st.in_dwh) code = 'dwh';
+    else if (st.pending) code = 'pending';
+    // Матч по полной фразе, а не по слову «DWH»: текст причины — контракт
+    // _check_save_locks, при переформулировке ветку «peo» надо пересмотреть.
+    else if (st.locked_reason) code = String(st.locked_reason).includes('переданы в DWH') ? 'dwh' : 'peo';
+    else code = hasRetailPrice(row) ? 'ok' : 'noprice';
+  } else {
+    code = hasRetailPrice(row) ? 'ok' : 'noprice';
+  }
+  return { code, ...STARTED_BADGES[code] };
+}
+
+/** Группировка по калькуляции (план + модель + признак калькуляции) — тот же
+ *  состав, что у ключа цены, но без артикула: артикулы — строки внутри группы. */
+const startedGroups = computed(() => {
+  const groups: {
+    key: string; model: any; plan: any; sign: any;
+    modelName: any; bm: any; rows: { key: string; row: any; status: ReturnType<typeof startedStatusOf> }[];
+  }[] = [];
+  const byGroup = new Map<string, typeof groups[number]>();
+  for (const [key, row] of changedRows.entries()) {
+    const gk = [
+      (row?.['PLAN_ID'] ?? '').toString().trim(),
+      (row?.['Модель'] ?? '').toString().trim(),
+      (row?.['Признак калькуляции'] ?? '').toString().trim(),
+    ].join('\u0001');
+    let g = byGroup.get(gk);
+    if (!g) {
+      g = {
+        key: gk,
+        model: row?.['Модель'], plan: row?.['PLAN_ID'], sign: row?.['Признак калькуляции'],
+        modelName: row?.['Наименование модели'], bm: row?.['Бренд-менеджер'],
+        rows: [],
+      };
+      byGroup.set(gk, g);
+      groups.push(g);
+    }
+    g.rows.push({ key, row, status: startedStatusOf(key, row) });
+  }
+  return groups;
+});
+
+const startedGroupSelected = (g: { rows: { key: string }[] }) =>
+  g.rows.length > 0 && g.rows.every(r => startedSelected.has(r.key));
+
+const startedAllSelected = computed(() => {
+  let total = 0;
+  for (const g of startedGroups.value) total += g.rows.length;
+  return total > 0 && startedSelected.size >= total;
+});
+
+function startedToggleKey(key: string) {
+  if (startedSelected.has(key)) startedSelected.delete(key);
+  else startedSelected.add(key);
+}
+
+function startedToggleGroup(g: { rows: { key: string }[] }) {
+  const all = startedGroupSelected(g);
+  for (const r of g.rows) {
+    if (all) startedSelected.delete(r.key);
+    else startedSelected.add(r.key);
+  }
+}
+
+function startedToggleAll() {
+  if (startedAllSelected.value) {
+    startedSelected.clear();
+  } else {
+    for (const g of startedGroups.value) for (const r of g.rows) startedSelected.add(r.key);
+  }
+}
+
+function startedToggleCollapse(gk: string) {
+  if (startedCollapsed.has(gk)) startedCollapsed.delete(gk);
+  else startedCollapsed.add(gk);
+}
+
+/** Дефолт выбора — только «Готово к сохранению»: заблокированные строки не
+ *  должны попадать в повторное сохранение по умолчанию (суть Б24 672276 —
+ *  не отправлять заведомо отклоняемый батч). */
+function startedResetSelection() {
+  startedSelected.clear();
+  for (const [key, row] of changedRows.entries()) {
+    if (startedSavableOf(key, row)) startedSelected.add(key);
+  }
+}
+
+async function refreshStartedStatuses() {
+  const entries = Array.from(changedRows.entries());
+  if (!entries.length) {
+    startedStatuses.value = {};
+    startedResetSelection();
+    return;
+  }
+  startedLoading.value = true;
+  startedError.value = '';
+  try {
+    // Лимит сервера — PRICE_DRAFT_MAX_ROWS (500), как у самого черновика;
+    // сверх того статус и не нужен: черновик большего не хранит.
+    const items = entries.slice(0, DRAFT_MAX_KEYS).map(([, row]) => ({
+      model: row?.['Модель'],
+      articul: row?.['Артикул'],
+      calc_sign: row?.['Признак калькуляции'],
+      plan_id: row?.['PLAN_ID'],
+      task_number: row?.['Номер задания производства'],
+    }));
+    const res: any[] = await $fetch(`${apiBase.value}/api/cost/price-draft/status`, {
+      method: 'POST', body: { items }, headers: fetchHeaders.value,
+    });
+    // Ответ матчится через calcRowKey — тем же ключом, что ведёт changedRows.
+    const byKey = new Map<string, any>();
+    for (const st of res || []) {
+      byKey.set(calcRowKey({
+        'Модель': st.model, 'Артикул': st.articul,
+        'PLAN_ID': st.plan_id, 'Признак калькуляции': st.calc_sign,
+      }), st);
+    }
+    const map: Record<string, any> = {};
+    for (const [key, row] of changedRows.entries()) {
+      const st = byKey.get(calcRowKey(row));
+      if (st) map[key] = st;
+      // Правок больше лимита запроса: этим строкам даём честный «не проверен»
+      // вместо оптимистичного «готово» — иначе окно врало бы тем же образом,
+      // каким возник сам инцидент 672276 (совет «нажмите ещё раз»).
+      else if (entries.length > DRAFT_MAX_KEYS) map[key] = { unchecked: true };
+    }
+    startedStatuses.value = map;
+  } catch (e: any) {
+    console.warn('[cost] статусы начатых расценок не получены', e);
+    startedError.value = 'Не удалось получить статусы блокировки ('
+      + (e?.data?.detail || e?.message || e) + '). '
+      + 'Окно работает: сохранение сервер всё равно проверит сам.';
+  } finally {
+    startedLoading.value = false;
+    startedResetSelection();
+  }
+}
+
+function openStartedModal() {
+  if (!changedRows.size) return;
+  startedOpen.value = true;
+  void refreshStartedStatuses();
+}
+
+function closeStartedModal() {
+  startedOpen.value = false;
+}
+
+/** «Сохранить выбранное»: та же отправка, что у «Сохранить изменения», но
+ *  только для выбранных ключей. Заблокированные строки отфильтрованы на
+ *  клиенте по свежим статусам — иначе окно само воспроизводило бы инцидент
+ *  (одна строка «в DWH» — и 403 на весь батч); устаревший статус подстрахует
+ *  серверная проверка. Придержанные (прочерк) не отправляются, как и в
+ *  savableChanges. Окно остаётся открытым, статусы перечитываются. */
+async function startedSaveSelected() {
+  if (!startedSelected.size || startedBusy.value) return;
+  // Отсев по тому же критерию, по которому сервер примет строку (см.
+  // startedSavableOf): бейдж может быть и информационным (in_dwh у админа),
+  // а вот locked_reason — приговор от _check_save_locks, спорить с ним
+  // бессмысленно, это и есть проверка save-batch.
+  const sent = Array.from(changedRows.entries()).filter(([key, row]) =>
+    startedSelected.has(key) && startedSavableOf(key, row));
+  if (!sent.length) {
+    startedError.value = 'Среди выбранного нет строк, готовых к сохранению. '
+      + 'Заблокированные строки можно только снять с отметки — кнопка ниже.';
+    return;
+  }
+  startedBusy.value = true;
+  try {
+    const result = await submitSaveBatch(sent);
+    if (result.success) startedError.value = '';
+    else startedError.value = result.error || 'Часть строк не сохранена — они остались отмеченными';
+  } catch (e: any) {
+    console.error('[cost] save-batch (начатые расценки) failed', e);
+    startedError.value = e?.data?.detail || e?.message || String(e);
+  } finally {
+    startedBusy.value = false;
+    if (!changedRows.size) {
+      closeStartedModal();
+      return;
+    }
+    await refreshStartedStatuses();
+  }
+}
+
+/** «Снять отметку с выбранного»: точечный сброс вместо полного «Сбросить
+ *  введённые значения» — главный выход из тупика Б24 672276, когда часть
+ *  черновика уже передана в DWH. Отметка уходит и с серверного черновика,
+ *  иначе строка вернулась бы после перезагрузки; выдача перезагружается,
+ *  чтобы снятые строки вернулись к серверным ценам, а не висели с введёнными
+ *  значениями без пометки «изменена». */
+async function startedUnmarkSelected() {
+  if (!startedSelected.size || startedBusy.value) return;
+  const keys = Array.from(startedSelected);
+  startedBusy.value = true;
+  try {
+    for (const k of keys) changedRows.delete(k);
+    void draftDeleteKeys(keys);
+  } finally {
+    startedBusy.value = false;
+    startedSelected.clear();
+    loadData();
+    if (!changedRows.size) closeStartedModal();
+  }
+}
+
 const saveAllChanges = async () => {
   if (!savableChanges.value.length) return;
   saving.value = true;
@@ -8514,87 +8978,7 @@ const saveAllChanges = async () => {
     // разбирать ответ надо по тому набору, который реально ушёл.
     const sent = savableChanges.value;
     const heldCount = heldNoPriceCount.value;
-    const changes = sent.map(([key, row]) => {
-      return {
-        model: row["Модель"],
-        articul: row["Артикул"],
-        price_level: row["Уровень цен"],
-        // Ручная цена (задача 661209): сервер проверит право и признак ПФКСС и
-        // подберёт уровень заново по паре опт+розница.
-        price_manual: !!row._price_manual,
-        retail_rub: row["avg_Розничная цена по уровню, руб."],
-        wholesale_rub: row["avg_Отпускная цена по уровню, руб"],
-        retail_usd: row["avg_Розничная цена по уровню, USD."],
-        wholesale_usd: row["avg_Отпускная цена по уровню, USD."],
-        calc_sign: row["Признак калькуляции"],
-        plan_id: row["PLAN_ID"],
-        brand_manager: row["Бренд-менеджер"],
-        model_name: row["Наименование модели"],
-        task_number: row["Номер задания производства"],
-        date: row["дата расчета"],
-        country: row["Страна пр-ва"],
-        family: row["Семья"],
-        season: row["Сезон"],
-        level01: row["Level 01"],
-        level02: row["Level 02"],
-        level03: row["Level 03"],
-        level04: row["Level 04"],
-        level05: row["Level 05"],
-        materials_rub: row["sum_Основные материалы, руб."],
-        materials_usd: row["sum_Основные материалы, USD."],
-        aux_materials_rub: row["sum_Вспомогательные материалы, руб."],
-        aux_materials_usd: row["sum_Вспомогательные материалы, USD."],
-        sewing_rub: row["sum_Пошив, руб."],
-        sewing_usd: row["sum_Пошив, USD."],
-        cutting_rub: row["sum_Раскрой, руб."],
-        cutting_usd: row["sum_Раскрой, USD."],
-        decors_rub: row["sum_Декоры, руб."],
-        decors_usd: row["sum_Декоры, USD."],
-        knitting_rub: row["sum_Вязание, руб."],
-        knitting_usd: row["sum_Вязание, USD."],
-        cost_rub: row["sum_Себестоимость, руб."],
-        cost_usd: row["sum_Себестоимость, USD."],
-        price_rf: priceRF[key] || 0,
-        price_kz: priceKZ[key] || 0,
-        price_uz: priceUZ[key] || 0,
-        comment: comments[key] || "",
-      };
-    });
-    const result = await $fetch<{
-      success: boolean; count: number; error?: string; mock?: boolean;
-      failed?: { model?: string; articul?: string; plan_id?: string; calc_sign?: string; reason?: string }[];
-    }>(
-      `${apiBase.value}/api/cost/save-batch`,
-      { method: "POST", body: { changes, author_name: user.value?.email || '' }, headers: fetchHeaders.value }
-    );
-    if (result.mock) mockMode.value = true;
-    // Из списка правок убираем ТОЛЬКО сохранённое. Раньше здесь стоял
-    // changedRows.clear() во всех ветках, включая ошибку, — введённые цены
-    // пропадали, и человек вводил их заново. Теперь несохранённые строки
-    // остаются изменёнными, и «Сохранить» можно нажать повторно.
-    const failedKeys = new Set(
-      (result.failed || []).map(f => [
-        (f.model ?? '').toString().trim(),
-        (f.articul ?? '').toString().trim(),
-        (f.plan_id ?? '').toString().trim(),
-        (f.calc_sign ?? '').toString().trim(),
-      ].join(''))
-    );
-    // Убираем ТОЛЬКО то, что действительно отправляли и что не вернулось
-    // ошибкой. Строки с прочерком не отправлялись — они обязаны остаться в
-    // changedRows, иначе loadData вычистит введённые по ним цены РФ/КЗ/УЗ и
-    // комментарий при первой же смене фильтра.
-    const sentKeys = new Set(sent.map(([key]) => key));
-    const droppedKeys: string[] = [];
-    for (const [key, row] of Array.from(changedRows.entries())) {
-      if (sentKeys.has(key) && !failedKeys.has(calcRowKey(row))) {
-        changedRows.delete(key);
-        droppedKeys.push(key);
-      }
-    }
-    // Сохранённое черновику больше не нужно: ключи снимаем явным удалением,
-    // иначе «несуществующая» правка вернулась бы после перезагрузки.
-    void draftDeleteKeys(droppedKeys);
+    const result = await submitSaveBatch(sent);
     // Формулировка — СОСТОЯНИЕ, а не итог попытки: придержанные строки остаются
     // отмеченными и после сохранения, поэтому «не отправлено N» повторялось бы
     // из раза в раз и читалось как новая потеря.
@@ -8607,8 +8991,7 @@ const saveAllChanges = async () => {
     } else {
       lastError.value = result.error || "Не удалось сохранить изменения";
       alert(
-        `Сохранено ${result.count} записей, не сохранено ${result.failed?.length ?? 0}.
-`
+        `Сохранено ${result.count} записей, не сохранено ${result.failed?.length ?? 0}.\n`
         + "Несохранённые строки остались отмеченными — можно нажать «Сохранить изменения» ещё раз."
         + heldNote
       );
@@ -8617,8 +9000,19 @@ const saveAllChanges = async () => {
     // Ничего не стираем: значения остаются на экране и в списке изменений,
     // повторное нажатие «Сохранить» отправит их снова.
     console.error("[cost] save-batch failed", e);
-    lastError.value = (e?.data?.detail || e?.message || String(e))
-      + " — введённые значения сохранены на экране, попробуйте нажать «Сохранить изменения» ещё раз";
+    const detail = e?.data?.detail || e?.message || String(e);
+    // 403 «Некоторые строки заблокированы» — повтор того же батча бессмыслен:
+    // причина в самих строках (DWH / согласование ПЭО), а не в сети. Совет
+    // «нажмите ещё раз» здесь лгал бы; ведём в окно «Начатые расценки», где
+    // заблокированные видны и снимаются точечно (Б24 672276).
+    const status = e?.statusCode || e?.status || e?.response?.status;
+    if (status === 403 || /заблокированы/i.test(detail)) {
+      lastError.value = detail + ' — часть правок заблокирована: откройте «Начатые расценки»';
+      openStartedModal();
+    } else {
+      lastError.value = detail
+        + " — введённые значения сохранены на экране, попробуйте нажать «Сохранить изменения» ещё раз";
+    }
   } finally {
     saving.value = false;
   }
@@ -12280,6 +12674,67 @@ tr.row-obsolete.selected { background-color: color-mix(in srgb, #6b7280 34%, tra
 
 /* Закупная готовая продукция (пожелания № 6/7) */
 .state-badge--purchase { background: color-mix(in srgb, #0e7490 14%, transparent); }
+
+/* ── Окно «Начатые расценки» (Б24 672276) ───────────────────────────────── */
+.started-modal { max-width: 920px; width: 92vw; }
+.started-loading {
+  display: flex; align-items: center; gap: var(--sp-2, 8px);
+  color: var(--text-muted, #6b7280); padding: var(--sp-3, 12px) 0;
+}
+.started-spinner {
+  width: 14px; height: 14px; border-radius: 50%; flex: none;
+  border: 2px solid var(--border, #e5e7eb); border-top-color: var(--accent, #4338ca);
+  animation: started-spin 0.8s linear infinite;
+}
+@keyframes started-spin { to { transform: rotate(360deg); } }
+.started-select-all {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 0 0 var(--sp-2, 8px); font-size: var(--fs-sm, 13px); cursor: pointer;
+}
+.started-list { display: flex; flex-direction: column; gap: var(--sp-2, 8px); }
+.started-group { border: 1px solid var(--border, #e5e7eb); border-radius: 6px; overflow: hidden; }
+.started-group-head {
+  display: flex; align-items: center; gap: var(--sp-2, 8px);
+  padding: 6px 10px; background: color-mix(in srgb, var(--accent, #4338ca) 4%, #fff);
+}
+.started-group-toggle {
+  display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0;
+  background: none; border: none; padding: 2px 0; cursor: pointer;
+  font: inherit; color: inherit; text-align: left;
+}
+.started-group-toggle:hover { color: var(--accent, #4338ca); }
+.started-caret { display: inline-block; transition: transform 0.15s; color: var(--text-muted, #6b7280); }
+.started-caret.open { transform: rotate(90deg); }
+.started-group-sub {
+  color: var(--text-muted, #6b7280); font-size: var(--fs-sm, 13px);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.started-group-bm { color: var(--text-muted, #6b7280); font-size: var(--fs-sm, 13px); white-space: nowrap; }
+.started-group-count {
+  flex: none; min-width: 20px; text-align: center; border-radius: 10px;
+  background: #e5e7eb; color: #374151; font-size: 12px; padding: 1px 7px;
+}
+.started-group-rows { display: flex; flex-direction: column; }
+.started-row {
+  display: grid; align-items: center; gap: var(--sp-2, 8px);
+  grid-template-columns: 18px minmax(90px, 130px) repeat(3, minmax(110px, 1fr)) minmax(230px, 300px);
+  padding: 5px 10px; border-top: 1px solid var(--border, #e5e7eb); font-size: var(--fs-sm, 13px);
+}
+.started-articul { font-family: var(--font-mono, monospace); }
+.started-price { color: var(--text-muted, #6b7280); white-space: nowrap; }
+.started-status {
+  justify-self: start; display: inline-flex; align-items: center;
+  border-radius: 4px; padding: 2px 8px; font-size: 12px; cursor: help; white-space: nowrap;
+}
+/* Фиолетовый «в DWH» — тот же смысл, что у значка 📤 в таблице, но плашкой
+   с текстом: в окне статус — главное, а не дополнение. */
+.started-status--dwh { background: #ede9fe; color: #5b21b6; }
+.started-status--pending { background: #fef3c7; color: #92400e; }
+.started-status--peo { background: #f3f4f6; color: #374151; }
+.started-status--ok { background: #d1fae5; color: #065f46; }
+.started-status--noprice { background: #fff7ed; color: #9a3412; }
+.started-actions { margin-top: var(--sp-3, 12px); }
+.started-hint { margin: var(--sp-2, 8px) 0 0; font-size: var(--fs-sm, 13px); color: var(--text-muted, #6b7280); }
 .purchase-modal { width: 640px; max-width: calc(100vw - 32px); }
 .purchase-body { gap: 10px; }
 .purchase-src, .purchase-hint { font-size: 12px; }
