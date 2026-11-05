@@ -73,6 +73,17 @@ def _num(v: Any) -> float | None:
     return f if f > 0 else None
 
 
+def _rate(v: Any) -> float | None:
+    """Ставка в процентах: 0 — законное значение (у части ассортимента НДС нет),
+    поэтому, в отличие от `_num` цен, ноль не отбрасывается."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _iso(v: Any) -> str | None:
     if isinstance(v, datetime):
         return v.isoformat()
@@ -460,27 +471,31 @@ def _gpartner_prices_batch_sync(pairs: list[Pair]) -> dict[Pair, dict[str, Any]]
                     elif cands:
                         target = wholesale * 1.4 * (1 + float(nds or 0) / 100)
                         retail = min(cands, key=lambda c: abs(c - target))
-                out[(_s(m), _s(a))] = {"name": _s(name), "retail": retail, "wholesale": wholesale}
+                out[(_s(m), _s(a))] = {"name": _s(name), "retail": retail, "wholesale": wholesale,
+                                       "vat": _rate(nds)}
         return out
     finally:
         conn.close()
 
 
 async def prices_for_pairs(pairs: list[Pair]) -> dict[Pair, dict[str, Any]]:
-    """Розница и опт по правилам главной таблицы для набора пар модель+артикул.
+    """Розница, опт и ставка НДС по правилам главной таблицы для пар модель+артикул.
 
     1. Последняя калькуляция пары в CostHistory (`cost_data_all`): розница и
-       опт «по уровню», наименование, признак и план (ключ для шага 2).
+       опт «по уровню», ставка НДС (та же `AVG("Ставка НДС")`, из которой
+       /aggregated делает `avg_Ставка НДС`), наименование, признак и план
+       (ключ для шага 2).
     2. Утверждённая цена из DWH по ключу этой калькуляции (OLAP
        `CostHistory_Changes`, при недоступности — локальный аудит
        `cost_price_changes_audit`), как накладывается в `/aggregated`. Главнее.
-    3. Пары без цен — плановые из S_MODELI (см. _gpartner_prices_batch_sync).
-    На пару: {name, retail, wholesale, price_level, source, calc_sign, plan_id, calc_date}.
+    3. Пары без цен — плановые из S_MODELI (см. _gpartner_prices_batch_sync);
+       там же ставка НДС из `S_MODELI.NDS`.
+    На пару: {name, retail, wholesale, vat, price_level, source, calc_sign, plan_id, calc_date}.
     """
     uniq = list({(_s(m), _s(a)) for m, a in pairs if _s(m) and _s(a)})
     result: dict[Pair, dict[str, Any]] = {
-        p: {"name": None, "retail": None, "wholesale": None, "price_level": None, "source": None,
-            "calc_sign": None, "plan_id": None, "calc_date": None}
+        p: {"name": None, "retail": None, "wholesale": None, "vat": None, "price_level": None,
+            "source": None, "calc_sign": None, "plan_id": None, "calc_date": None}
         for p in uniq
     }
     if not uniq:
@@ -488,14 +503,15 @@ async def prices_for_pairs(pairs: list[Pair]) -> dict[Pair, dict[str, Any]]:
 
     async with acquire() as conn:
         rows = await conn.fetch(
-            """SELECT DISTINCT ON (m, a) m, a, cs, pi, d, name, level, retail, wholesale FROM (
+            """SELECT DISTINCT ON (m, a) m, a, cs, pi, d, name, level, retail, wholesale, vat FROM (
                    SELECT TRIM("Модель") AS m, TRIM("Артикул") AS a,
                           TRIM("Признак калькуляции") AS cs, TRIM("PLAN_ID") AS pi,
                           MAX("дата расчета") AS d,
                           MAX(TRIM("Наименование модели")) AS name,
                           MAX(TRIM("Уровень цен")) AS level,
                           AVG("Розничная цена по уровню, руб.") AS retail,
-                          AVG("Отпускная цена по уровню, руб") AS wholesale
+                          AVG("Отпускная цена по уровню, руб") AS wholesale,
+                          AVG("Ставка НДС") AS vat
                      FROM cost_data_all
                     WHERE (TRIM("Модель"), TRIM("Артикул")) IN (SELECT * FROM unnest($1::text[], $2::text[]))
                     GROUP BY 1, 2, 3, 4
@@ -510,6 +526,7 @@ async def prices_for_pairs(pairs: list[Pair]) -> dict[Pair, dict[str, Any]]:
             "name": r["name"], "calc_sign": r["cs"], "plan_id": r["pi"], "calc_date": _iso(r["d"]),
             "price_level": r["level"] or None,
             "retail": _num(r["retail"]), "wholesale": _num(r["wholesale"]),
+            "vat": _rate(r["vat"]),
         })
         if info["retail"] is not None or info["wholesale"] is not None:
             info["source"] = "calc"
@@ -567,6 +584,10 @@ async def prices_for_pairs(pairs: list[Pair]) -> dict[Pair, dict[str, Any]]:
             info = result[p]
             info["name"] = info["name"] or g["name"]
             info["retail"], info["wholesale"] = g["retail"], g["wholesale"]
+            if info["vat"] is None:
+                # Ставка НДС из справочника — только если калькуляций не было:
+                # у калькуляции она «своя», посчитанная в CostHistory.
+                info["vat"] = g.get("vat")
             if g["retail"] is not None or g["wholesale"] is not None:
                 info["source"] = "gpartner"
     return result
@@ -576,7 +597,8 @@ async def analog_prices(model: str, articul: str) -> dict[str, Any]:
     """Цены одной пары (аналога) — обёртка над prices_for_pairs."""
     model, articul = _s(model), _s(articul)
     base = {"model": model, "articul": articul, "name": None, "retail": None, "wholesale": None,
-            "price_level": None, "source": None, "calc_sign": None, "plan_id": None, "calc_date": None}
+            "vat": None, "price_level": None, "source": None, "calc_sign": None, "plan_id": None,
+            "calc_date": None}
     if not model or not articul:
         return base
     info = (await prices_for_pairs([(model, articul)])).get((model, articul)) or {}
@@ -600,6 +622,15 @@ async def list_cards(*, include_unmarked: bool = False) -> list[dict[str, Any]]:
     for c in cards:
         info = prices.get((c["model"], c["articul"])) or {}
         c["name"] = info.get("name")
+        # Расчётная цена — «как в главной таблице» — отдаётся ОТДЕЛЬНЫМИ полями
+        # даже когда её перекрывает снимок карточки. Окну карточки нужна именно
+        # она: «Розничную наценку» выбирают от актуальной розницы, а не от
+        # зафиксированной исполкомом, иначе повторный выбор закрепит устаревшую
+        # цену; и после «сбросить снимок» строка обязана показать расчёт, как
+        # после перезагрузки.
+        c["calc_retail"] = info.get("retail")
+        c["calc_wholesale"] = info.get("wholesale")
+        c["calc_source"] = info.get("source")
         # Снимок цены изделия из карточки главнее общего пересчёта: отчёт
         # показывает те цифры, что видел исполком (задача Б24 666861).
         if c.get("item_retail") is not None or c.get("item_wholesale") is not None:
@@ -613,4 +644,9 @@ async def list_cards(*, include_unmarked: bool = False) -> list[dict[str, Any]]:
         c["price_level"] = info.get("price_level")
         c["calc_sign"] = info.get("calc_sign")
         c["plan_id"] = info.get("plan_id")
+        # Ставка НДС изделия — для выбора «Розничной наценки» в окне карточки:
+        # проценты наценки считаются от опта без НДС (формула главной таблицы
+        # ((розница / (100 + НДС) × 100) / опт − 1) × 100). Без неё окно не
+        # может показать варианты, когда строки нет в выдаче главной таблицы.
+        c["vat"] = info.get("vat")
     return cards

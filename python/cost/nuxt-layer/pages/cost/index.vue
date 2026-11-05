@@ -2472,7 +2472,7 @@
                       <span class="started-price num">отп.: {{ fmt(item.row['avg_Отпускная цена по уровню, руб']) }}</span>
                       <span
                         v-if="priceRF[item.key] != null || priceKZ[item.key] != null || priceUZ[item.key] != null"
-                        class="started-price num"
+                        class="started-price started-price-rf num"
                       >РФ {{ fmt(priceRF[item.key] ?? 0) }} · КЗ {{ fmt(priceKZ[item.key] ?? 0) }} · УЗ {{ fmt(priceUZ[item.key] ?? 0) }}</span>
                       <span
                         class="started-status"
@@ -2586,173 +2586,25 @@
         </div>
       </div>
 
-      <!-- Карточка согласования по постановлению 713 (пожелание № 8) -->
-      <div v-if="reg713Target" class="modal-overlay" @click.self="closeReg713">
-        <div class="modal approval-modal reg713-modal">
-          <div class="modal-header">
-            <span>Согласование по постановлению 713</span>
-            <!-- Карточка одна на модель+артикул: признак и план в подзаголовке
-                 только сбивали бы с толку — решение действует на все. -->
-            <span class="modal-subtitle">
-              {{ reg713Target['Модель'] || '—' }} / {{ reg713Target['Артикул'] || '—' }}
-            </span>
-            <button class="modal-close" @click="closeReg713">✕</button>
-          </div>
-          <div class="approval-body reg713-body">
-            <div class="reg713-name muted">{{ reg713Target['Наименование модели'] || '' }}</div>
-            <!-- Цена изделия (задача Б24 666861): снимок карточки — выбор
-                 «Розничной наценки», как в главной таблице, фиксирует розницу и
-                 опт изделия; после «согласовано» эта цена показывается ПФКСС-строкам
-                 в главной таблице. Пока снимка нет — цены как в строке /aggregated. -->
-            <div class="reg713-block">
-              <div class="reg713-block-title">Цена изделия</div>
-              <div class="muted reg713-hint">
-                <template v-if="reg713Form.item_retail != null || reg713Form.item_wholesale != null">
-                  Снимок карточки<template v-if="reg713Form.item_markup"> (наценка {{ Number(reg713Form.item_markup).toFixed(1) }}%)</template>:
-                  розница <b>{{ reg713Form.item_retail != null ? fmt(reg713Form.item_retail) : '—' }}</b>, опт
-                  <b>{{ reg713Form.item_wholesale != null ? fmt(reg713Form.item_wholesale) : '—' }}</b>
-                </template>
-                <template v-else>
-                  Как в главной таблице: розница
-                  <b>{{ reg713Own?.retail != null ? fmt(reg713Own.retail) : '—' }}</b>, опт
-                  <b>{{ reg713Own?.wholesale != null ? fmt(reg713Own.wholesale) : '—' }}</b><template v-if="reg713Own?.level">, уровень цен {{ reg713Own.level }}</template>.
-                </template>
-              </div>
-              <div v-if="reg713MarkupOptions.length" class="reg713-prices">
-                <span class="approval-label">Розничная наценка:</span>
-                <select
-                  class="reg713-search-input"
-                  :value="reg713Form.item_markup || ''"
-                  :disabled="!can('cost:reg713')"
-                  @click.stop
-                  @change="onReg713MarkupSelect(($event.target as HTMLSelectElement).value)"
-                >
-                  <option value="">—</option>
-                  <option v-for="opt in reg713MarkupOptions" :key="opt.value" :value="opt.value">
-                    {{ opt.label }}
-                  </option>
-                </select>
-                <button v-if="reg713Form.item_markup || reg713Form.item_retail != null || reg713Form.item_wholesale != null"
-                        class="btn btn-ghost btn-sm" type="button" :disabled="!can('cost:reg713')"
-                        @click="reg713Form.item_markup = null; reg713Form.item_retail = null; reg713Form.item_wholesale = null">
-                  сбросить
-                </button>
-              </div>
-              <div v-else class="muted reg713-hint">Наценку выбрать нельзя: среди уровней цен нет розницы этой строки.</div>
-            </div>
+      <!-- Карточка согласования по постановлению 713 (пожелание № 8).
+           Окно — общий компонент с отчётом «Согласование 713» (задача Б24
+           666648): форма одна, правится в одном месте. Здесь nav не передаём —
+           листание нужно только в отчёте, где строки идут подряд. -->
+      <Reg713CardModal
+        v-if="reg713Target"
+        :model="reg713Target['Модель'] || ''"
+        :articul="reg713Target['Артикул'] || ''"
+        :name="reg713Target['Наименование модели']"
+        :retail="reg713Target['avg_Розничная цена по уровню, руб.']"
+        :wholesale="reg713Target['avg_Отпускная цена по уровню, руб']"
+        :price-level="reg713Target['Уровень цен']"
+        :vat="reg713Target['avg_Ставка НДС']"
+        :card="reg713CardOf(reg713Target)"
+        :price-levels="priceLevels"
+        @saved="onReg713Saved"
+        @close="reg713Target = null"
+      />
 
-            <label class="reg713-check">
-              <input type="checkbox" v-model="reg713Form.required" :disabled="!can('cost:reg713')" />
-              <span>Требуется согласование с исполкомом</span>
-            </label>
-
-            <div class="reg713-row">
-              <span class="approval-label">Вид:</span>
-              <label class="reg713-radio"><input type="radio" value="price_increase" v-model="reg713Form.kind" :disabled="!can('cost:reg713')" /> Повышение цены</label>
-              <label class="reg713-radio"><input type="radio" value="novelty" v-model="reg713Form.kind" :disabled="!can('cost:reg713')" /> Новинка</label>
-              <button v-if="reg713Form.kind" class="btn btn-ghost btn-sm" type="button" :disabled="!can('cost:reg713')" @click="reg713Form.kind = null">сбросить</button>
-            </div>
-            <div v-if="reg713Form.kind" class="muted reg713-hint">{{ REG713_KIND_HINT[reg713Form.kind] }}</div>
-
-            <!-- Обоснование по виду (задача Б24 666631): колонки расчётного
-                 файла «Комментарий в чём новизна», «Планируемый объём
-                 реализации», «Производитель», «Розничная цена аналога других
-                 производителей». Обязательны при сохранении решения исполкома. -->
-            <div v-if="reg713Form.kind === 'novelty'" class="reg713-block">
-              <div class="reg713-block-title">Обоснование новинки</div>
-              <textarea class="reg713-comment" v-model="reg713Form.novelty_comment" :disabled="!can('cost:reg713')" rows="2" maxlength="1000" placeholder="В чём именно заключается новизна: новый вид сырья, новый состав сырья, усложнённая конструкция и т.п."></textarea>
-              <div class="reg713-prices">
-                <div class="reg713-price">
-                  <span class="approval-label">План. объём (внутр. рынок):</span>
-                  <input type="number" step="1" min="0" v-model="reg713Form.planned_volume" :disabled="!can('cost:reg713')" />
-                </div>
-              </div>
-            </div>
-            <div v-if="reg713Form.kind === 'price_increase'" class="reg713-block">
-              <div class="reg713-block-title">Конкурент</div>
-              <input type="text" class="reg713-doc" v-model="reg713Form.competitor_name" :disabled="!can('cost:reg713')" placeholder="Наименование производителя-конкурента" maxlength="200" />
-              <div class="reg713-prices">
-                <div class="reg713-price">
-                  <span class="approval-label">Розн. цена конкурента:</span>
-                  <input type="number" step="0.01" min="0" v-model="reg713Form.competitor_retail" :disabled="!can('cost:reg713')" />
-                </div>
-              </div>
-            </div>
-
-            <div class="reg713-block">
-              <div class="reg713-block-title">Артикул аналога</div>
-              <div v-if="reg713Form.analog_articul" class="reg713-analog">
-                <div>
-                  <b>{{ reg713Form.analog_articul }}</b> / {{ reg713Form.analog_model || '—' }}
-                  <span class="muted">{{ reg713Form.analog_name || '' }}</span>
-                </div>
-                <button class="btn btn-ghost btn-sm" type="button" :disabled="!can('cost:reg713')" @click="clearReg713Analog">Сменить</button>
-              </div>
-              <div v-else class="reg713-search">
-                <input
-                  type="text"
-                  class="reg713-search-input"
-                  v-model="reg713Query"
-                  :disabled="!can('cost:reg713')"
-                  placeholder="Артикул, модель или наименование — от 2 символов"
-                  autocomplete="off"
-                  @input="onReg713QueryInput"
-                  @keydown.esc.prevent="reg713Results = []"
-                />
-                <div v-if="reg713Searching" class="muted reg713-hint">Ищу в справочнике…</div>
-                <div v-else-if="reg713Query.trim().length >= 2 && !reg713Results.length && reg713Searched" class="muted reg713-hint">Ничего не найдено</div>
-                <ul v-if="reg713Results.length" class="reg713-results">
-                  <li v-for="it in reg713Results" :key="it.item_id ?? (it.model + '|' + it.articul)" @click="pickReg713Analog(it)">
-                    <b>{{ it.articul }}</b> / {{ it.model }}
-                    <span class="muted">{{ it.name }}</span>
-                    <span v-if="it.archived" class="reg713-arch">архив</span>
-                  </li>
-                </ul>
-              </div>
-
-              <div class="reg713-prices">
-                <div class="reg713-price">
-                  <span class="approval-label">Розница:</span>
-                  <input type="number" step="0.01" min="0" v-model="reg713Form.analog_retail" :disabled="!can('cost:reg713')" @change="reg713Form.analog_price_source = 'manual'" />
-                </div>
-                <div class="reg713-price">
-                  <span class="approval-label">Опт:</span>
-                  <input type="number" step="0.01" min="0" v-model="reg713Form.analog_wholesale" :disabled="!can('cost:reg713')" @change="reg713Form.analog_price_source = 'manual'" />
-                </div>
-                <button class="btn btn-ghost btn-sm" type="button" :disabled="!reg713Form.analog_articul || reg713PricesLoading || !can('cost:reg713')" @click="fetchReg713Prices" title="Подтянуть цены аналога заново: последняя калькуляция → утверждённая цена → плановая">
-                  {{ reg713PricesLoading ? 'Загрузка…' : 'Обновить цены' }}
-                </button>
-              </div>
-              <div class="muted reg713-hint">{{ reg713SourceText }}</div>
-            </div>
-
-            <div class="reg713-block">
-              <div class="reg713-block-title">Решение исполкома</div>
-              <div class="reg713-row">
-                <label class="reg713-radio"><input type="radio" :value="null" v-model="reg713Form.decision" :disabled="!can('cost:reg713')" /> Не рассмотрено</label>
-                <label class="reg713-radio"><input type="radio" value="approved" v-model="reg713Form.decision" :disabled="!can('cost:reg713')" /> ✅ Согласовано</label>
-                <label class="reg713-radio"><input type="radio" value="rejected" v-model="reg713Form.decision" :disabled="!can('cost:reg713')" /> ❌ Не согласовано</label>
-              </div>
-              <input type="text" class="reg713-doc" v-model="reg713Form.decision_doc" :disabled="!can('cost:reg713')" placeholder="№ и дата письма исполкома (если есть)" maxlength="200" />
-              <textarea class="reg713-comment" v-model="reg713Form.comment" :disabled="!can('cost:reg713')" rows="2" placeholder="Комментарий" maxlength="1000"></textarea>
-            </div>
-
-            <div v-if="reg713Target.reg713_updated_by" class="muted reg713-hint">
-              Изменено: {{ reg713Target.reg713_updated_by }}
-              {{ reg713Target.reg713_updated_at ? new Date(reg713Target.reg713_updated_at).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '' }}
-              <template v-if="reg713History.length"> · записей в истории: {{ reg713History.length }}</template>
-            </div>
-            <div v-if="reg713Error" class="reg713-error">{{ reg713Error }}</div>
-
-            <div class="approval-actions">
-              <button class="btn btn-primary" type="button" :disabled="!can('cost:reg713') || reg713Saving" @click="saveReg713">
-                {{ reg713Saving ? 'Сохранение…' : 'Сохранить' }}
-              </button>
-              <button class="btn btn-ghost" type="button" @click="closeReg713">Закрыть</button>
-            </div>
-          </div>
-        </div>
-      </div>
 
       <div v-if="approvalTarget" class="modal-overlay" @click.self="closeApprovalPopup">
         <div class="modal approval-modal">
@@ -9753,18 +9605,8 @@ const REG713_STATES: Record<Reg713State['key'], Reg713State> = {
 const REG713_LEGEND = 'Согласование цены с исполкомом по постановлению 713:\n' +
   '· — не требуется\n📋 — требуется, решения нет\n✅ — согласовано\n❌ — не согласовано\nКлик — открыть карточку';
 const REG713_KIND_LABEL: Record<string, string> = { price_increase: 'повышение цены', novelty: 'новинка' };
-// Подсказка по виду — что от бренда ждёт исполком (задача Б24 666631,
-// формулировки Стельмачёнок; поля обязательны при сохранении решения).
-const REG713_KIND_HINT: Record<string, string> = {
-  price_increase: 'Для «повышения цены» укажите наименование конкурента и его розничную цену — они обязательны для решения исполкома.',
-  novelty: 'Для «новинки» опишите, в чём именно заключается новизна (новый вид сырья, новый состав сырья, усложнённая конструкция и т.п.), и укажите планируемый объём реализации — оба поля обязательны для решения исполкома.',
-};
-const REG713_SOURCE_LABEL: Record<string, string> = {
-  calc: 'последняя калькуляция аналога в CostHistory',
-  dwh: 'утверждённая цена аналога в DWH',
-  gpartner: 'плановая цена из справочника S_MODELI',
-  manual: 'введено вручную',
-};
+// Подсказка по виду и подписи источников цен живут в компоненте карточки
+// (components/Reg713CardModal.vue) — форма одна на главную и отчёт.
 
 function reg713State(row: any): Reg713State {
   if (!row?.reg713_required) return REG713_STATES.none;
@@ -9800,80 +9642,6 @@ function reg713Title(row: any): string {
 }
 
 const reg713Target = ref<any>(null);
-const reg713Form = reactive<any>({
-  required: false, kind: null as string | null,
-  item_retail: null as number | string | null, item_wholesale: null as number | string | null, item_markup: null as string | null,
-  novelty_comment: '', planned_volume: null as number | string | null,
-  competitor_name: '', competitor_retail: null as number | string | null,
-  analog_model: null as string | null, analog_articul: null as string | null, analog_name: null as string | null,
-  analog_retail: null as number | string | null, analog_wholesale: null as number | string | null,
-  analog_price_source: null as string | null,
-  decision: null as string | null, decision_doc: '', comment: '',
-});
-
-/** Выбор «Розничной наценки» для изделия карточки — те же варианты, что в
- *  главной таблице (getMarkupOptions): уровни, чья розница совпала с ценой
- *  строки; выбор фиксирует опт уровня (задача Б24 666861). */
-const reg713MarkupOptions = computed(() => {
-  const row = reg713Target.value;
-  if (!row) return [] as { value: string; label: string; retail: number; wholesale: number }[];
-  const retailPrice = Number(row['avg_Розничная цена по уровню, руб.']);
-  const avgVat = Number(row['avg_Ставка НДС'] || 0);
-  if (!retailPrice || isNaN(retailPrice) || retailPrice <= 0) return [];
-  const map = new Map<string, { value: string; label: string; retail: number; wholesale: number }>();
-  for (const level of priceLevels.value || []) {
-    if (String(level.price_type3) !== String(retailPrice)) continue;
-    const w = Number(level.price_type1);
-    if (!w || isNaN(w) || w <= 0) continue;
-    const pct = ((retailPrice / (100 + avgVat) * 100) / w - 1) * 100;
-    const value = pct.toFixed(2);
-    if (!map.has(value)) map.set(value, { value, label: `${pct.toFixed(1)}%`, retail: retailPrice, wholesale: w });
-  }
-  return Array.from(map.values()).sort((a, b) => Number(a.value) - Number(b.value));
-});
-
-function onReg713MarkupSelect(value: string) {
-  const opt = reg713MarkupOptions.value.find((o) => o.value === value);
-  if (!opt) {
-    reg713Form.item_markup = null;
-    reg713Form.item_retail = null;
-    reg713Form.item_wholesale = null;
-    return;
-  }
-  reg713Form.item_markup = opt.value;
-  reg713Form.item_retail = opt.retail;
-  reg713Form.item_wholesale = opt.wholesale;
-}
-
-// Цены и уровень цен изделия — читаем из строки главной таблицы, чтобы числа
-// в карточке, отчёте и таблице совпадали (ключи ровно как в /aggregated:
-// у оптового поля нет точки в конце, у розничного — есть).
-const reg713Own = computed(() => {
-  const row = reg713Target.value;
-  if (!row) return null;
-  return {
-    retail: row['avg_Розничная цена по уровню, руб.'] ?? null,
-    wholesale: row['avg_Отпускная цена по уровню, руб'] ?? null,
-    level: String(row['Уровень цен'] || '').trim() || null,
-  };
-});
-const reg713History = ref<any[]>([]);
-const reg713Query = ref('');
-const reg713Results = ref<any[]>([]);
-const reg713Searching = ref(false);
-const reg713Searched = ref(false);
-const reg713PricesLoading = ref(false);
-const reg713Saving = ref(false);
-const reg713Error = ref('');
-let reg713SearchTimer: ReturnType<typeof setTimeout> | null = null;
-let reg713SearchSeq = 0;
-
-const reg713SourceText = computed(() => {
-  if (!reg713Form.analog_articul) return 'Выберите аналог — цены подтянутся по правилам главной таблицы: последняя калькуляция, затем утверждённая цена, затем плановая.';
-  const src = reg713Form.analog_price_source;
-  if (!src) return 'Цены аналога не найдены ни в калькуляциях, ни в справочнике — введите вручную или нажмите «Обновить цены».';
-  return 'Источник цен: ' + (REG713_SOURCE_LABEL[src] || src) + '.';
-});
 
 // Ключ карточки — модель + артикул (решение заказчика 03.09.2026): исполком
 // согласует цену изделия, одно решение действует на все планы и этапы пары.
@@ -9881,160 +9649,50 @@ function reg713Key(row: any) {
   return { model: String(row['Модель'] || '').trim(), articul: String(row['Артикул'] || '').trim() };
 }
 
-async function openReg713(row: any) {
+/** Строка главной таблицы → карточка для окна Reg713CardModal: компонент ждёт
+ *  поля cost_reg713 без префикса, а в /aggregated они с `reg713_`. */
+function reg713CardOf(row: any) {
+  const out: Record<string, any> = {};
+  const fields = ('required kind item_retail item_wholesale item_markup ' +
+    'novelty_comment planned_volume competitor_name competitor_retail ' +
+    'analog_model analog_articul analog_name analog_retail analog_wholesale ' +
+    'analog_price_source decision decision_at decision_doc comment updated_by updated_at');
+  for (const f of fields.split(' ')) out[f] = row['reg713_' + f] ?? null;
+  return out;
+}
+
+/** Карточка открыта, форма — в общем компоненте (components/Reg713CardModal.vue):
+ *  то же окно открывает отчёт /cost/reg713. Здесь остаётся только наложение
+ *  сохранённого результата на строки таблицы. */
+function openReg713(row: any) {
   reg713Target.value = row;
-  reg713Error.value = '';
-  reg713Query.value = '';
-  reg713Results.value = [];
-  reg713Searched.value = false;
-  reg713History.value = [];
-  Object.assign(reg713Form, {
-    required: !!row.reg713_required, kind: row.reg713_kind || null,
-    item_retail: row.reg713_item_retail ?? null, item_wholesale: row.reg713_item_wholesale ?? null, item_markup: row.reg713_item_markup || null,
-    novelty_comment: row.reg713_novelty_comment || '', planned_volume: row.reg713_planned_volume ?? null,
-    competitor_name: row.reg713_competitor_name || '', competitor_retail: row.reg713_competitor_retail ?? null,
-    analog_model: row.reg713_analog_model || null, analog_articul: row.reg713_analog_articul || null,
-    analog_name: row.reg713_analog_name || null,
-    analog_retail: row.reg713_analog_retail ?? null, analog_wholesale: row.reg713_analog_wholesale ?? null,
-    analog_price_source: row.reg713_analog_price_source || null,
-    decision: row.reg713_decision || null, decision_doc: row.reg713_decision_doc || '', comment: row.reg713_comment || '',
-  });
-  // История — фоном, окно открывается сразу.
-  try {
-    const k = reg713Key(row);
-    const q = new URLSearchParams(k).toString();
-    const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/card?${q}`, { headers: fetchHeaders.value });
-    if (reg713Target.value === row) reg713History.value = res?.history || [];
-  } catch { /* история — украшение */ }
 }
 
-function closeReg713() {
-  reg713Target.value = null;
-  if (reg713SearchTimer) { clearTimeout(reg713SearchTimer); reg713SearchTimer = null; }
-}
-
-function onReg713QueryInput() {
-  if (reg713SearchTimer) clearTimeout(reg713SearchTimer);
-  const q = reg713Query.value.trim();
-  reg713Searched.value = false;
-  if (q.length < 2) { reg713Results.value = []; return; }
-  reg713SearchTimer = setTimeout(async () => {
-    const seq = ++reg713SearchSeq;
-    reg713Searching.value = true;
-    try {
-      const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/articuls?q=${encodeURIComponent(q)}&limit=30`, { headers: fetchHeaders.value });
-      if (seq !== reg713SearchSeq) return; // пришёл ответ на устаревший запрос
-      reg713Results.value = res?.items || [];
-      reg713Searched.value = true;
-    } catch (e: any) {
-      if (seq === reg713SearchSeq) { reg713Results.value = []; reg713Error.value = e?.data?.detail || e?.message || String(e); }
-    } finally {
-      if (seq === reg713SearchSeq) reg713Searching.value = false;
-    }
-  }, 350);
-}
-
-async function pickReg713Analog(it: any) {
-  reg713Form.analog_model = it.model;
-  reg713Form.analog_articul = it.articul;
-  reg713Form.analog_name = it.name;
-  reg713Form.analog_retail = null;
-  reg713Form.analog_wholesale = null;
-  reg713Form.analog_price_source = null;
-  reg713Results.value = [];
-  reg713Query.value = '';
-  await fetchReg713Prices();
-}
-
-function clearReg713Analog() {
-  reg713Form.analog_model = null;
-  reg713Form.analog_articul = null;
-  reg713Form.analog_name = null;
-  reg713Form.analog_retail = null;
-  reg713Form.analog_wholesale = null;
-  reg713Form.analog_price_source = null;
-}
-
-async function fetchReg713Prices() {
-  if (!reg713Form.analog_articul) return;
-  reg713PricesLoading.value = true;
-  reg713Error.value = '';
-  try {
-    const q = new URLSearchParams({ model: reg713Form.analog_model || '', articul: reg713Form.analog_articul }).toString();
-    const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/analog-prices?${q}`, { headers: fetchHeaders.value });
-    reg713Form.analog_retail = res?.retail ?? null;
-    reg713Form.analog_wholesale = res?.wholesale ?? null;
-    reg713Form.analog_price_source = res?.source || null;
-    if (res?.name && !reg713Form.analog_name) reg713Form.analog_name = res.name;
-  } catch (e: any) {
-    reg713Error.value = 'Не удалось получить цены аналога: ' + (e?.data?.detail || e?.message || String(e));
-  } finally {
-    reg713PricesLoading.value = false;
-  }
-}
-
-async function saveReg713() {
+/** После сохранения обновляем ВСЕ строки с этой парой модель+артикул: карточка
+ *  одна на изделие, а строк (планов, этапов, заданий) у него может быть много. */
+function onReg713Saved(c: any) {
   const row = reg713Target.value;
-  if (!row) return;
-  if (reg713Form.required && !reg713Form.kind) {
-    reg713Error.value = 'Укажите вид: повышение цены или новинка.';
-    return;
-  }
-  // Обоснование по виду обязательно при сохранении решения исполкома
-  // (сервер проверяет то же самое — reg713.KIND_REQUIRED).
-  if (reg713Form.decision && reg713Form.kind === 'novelty'
-      && (!String(reg713Form.novelty_comment || '').trim() || !Number(reg713Form.planned_volume))) {
-    reg713Error.value = 'Для решения по «новинке» заполните, в чём именно новизна, и планируемый объём реализации.';
-    return;
-  }
-  if (reg713Form.decision && reg713Form.kind === 'price_increase'
-      && (!String(reg713Form.competitor_name || '').trim() || !Number(reg713Form.competitor_retail))) {
-    reg713Error.value = 'Для решения по «повышению цены» заполните наименование конкурента и его розничную цену.';
-    return;
-  }
-  reg713Saving.value = true;
-  reg713Error.value = '';
-  try {
-    const num = (v: any) => (v === '' || v == null ? null : Number(v));
-    const res = await $fetch<any>(`${apiBase.value}/api/cost/reg713/card`, {
-      method: 'POST', headers: fetchHeaders.value,
-      body: {
-        ...reg713Key(row),
-        required: !!reg713Form.required, kind: reg713Form.kind || null,
-        item_retail: num(reg713Form.item_retail), item_wholesale: num(reg713Form.item_wholesale),
-        item_markup: reg713Form.item_markup || null,
-        novelty_comment: reg713Form.novelty_comment || null, planned_volume: num(reg713Form.planned_volume),
-        competitor_name: reg713Form.competitor_name || null, competitor_retail: num(reg713Form.competitor_retail),
-        analog_model: reg713Form.analog_model, analog_articul: reg713Form.analog_articul, analog_name: reg713Form.analog_name,
-        analog_retail: num(reg713Form.analog_retail), analog_wholesale: num(reg713Form.analog_wholesale),
-        analog_price_source: reg713Form.analog_articul ? (reg713Form.analog_price_source || 'manual') : null,
-        decision: reg713Form.decision || null, decision_doc: reg713Form.decision_doc || null, comment: reg713Form.comment || null,
-      },
+  reg713Target.value = null;
+  if (!row || !c) return;
+  const k = reg713Key(row);
+  for (const r of allAggregated.value) {
+    const rk = reg713Key(r);
+    if (rk.model !== k.model || rk.articul !== k.articul) continue;
+    Object.assign(r, {
+      reg713_required: !!c.required, reg713_kind: c.kind ?? null,
+      reg713_item_retail: c.item_retail ?? null, reg713_item_wholesale: c.item_wholesale ?? null,
+      reg713_item_markup: c.item_markup ?? null,
+      reg713_novelty_comment: c.novelty_comment ?? null, reg713_planned_volume: c.planned_volume ?? null,
+      reg713_competitor_name: c.competitor_name ?? null, reg713_competitor_retail: c.competitor_retail ?? null,
+      reg713_analog_model: c.analog_model ?? null, reg713_analog_articul: c.analog_articul ?? null,
+      reg713_analog_name: c.analog_name ?? null,
+      reg713_analog_retail: c.analog_retail ?? null, reg713_analog_wholesale: c.analog_wholesale ?? null,
+      reg713_analog_price_source: c.analog_price_source ?? null,
+      reg713_decision: c.decision ?? null, reg713_decision_at: c.decision_at ?? null,
+      reg713_decision_doc: c.decision_doc ?? null,
+      reg713_comment: c.comment ?? null, reg713_updated_by: c.updated_by ?? null,
+      reg713_updated_at: c.updated_at ?? null,
     });
-    const c = res?.card || {};
-    // Обновляем ВСЕ строки с этой парой модель+артикул: карточка одна на
-    // изделие, а строк (планов, этапов, заданий) у него может быть много.
-    const k = reg713Key(row);
-    for (const r of allAggregated.value) {
-      const rk = reg713Key(r);
-      if (rk.model !== k.model || rk.articul !== k.articul) continue;
-      Object.assign(r, {
-        reg713_required: !!c.required, reg713_kind: c.kind ?? null,
-        reg713_item_retail: c.item_retail ?? null, reg713_item_wholesale: c.item_wholesale ?? null, reg713_item_markup: c.item_markup ?? null,
-        reg713_novelty_comment: c.novelty_comment ?? null, reg713_planned_volume: c.planned_volume ?? null,
-        reg713_competitor_name: c.competitor_name ?? null, reg713_competitor_retail: c.competitor_retail ?? null,
-        reg713_analog_model: c.analog_model ?? null, reg713_analog_articul: c.analog_articul ?? null, reg713_analog_name: c.analog_name ?? null,
-        reg713_analog_retail: c.analog_retail ?? null, reg713_analog_wholesale: c.analog_wholesale ?? null,
-        reg713_analog_price_source: c.analog_price_source ?? null,
-        reg713_decision: c.decision ?? null, reg713_decision_at: c.decision_at ?? null, reg713_decision_doc: c.decision_doc ?? null,
-        reg713_comment: c.comment ?? null, reg713_updated_by: c.updated_by ?? null, reg713_updated_at: c.updated_at ?? null,
-      });
-    }
-    closeReg713();
-  } catch (e: any) {
-    reg713Error.value = e?.data?.detail || e?.message || String(e);
-  } finally {
-    reg713Saving.value = false;
   }
 }
 
@@ -11235,38 +10893,11 @@ async function applyUrlFilters() {
 onMounted(async () => {
   await Promise.all([loadFilters(), loadPriceLevels(), loadCacheStatus()]);
   await applyUrlFilters();
-  applyUrlReg713();
 });
 
-/** Открыть карточку 713 из отчёта «Согласование 713» (?reg713model=…&reg713articul=…,
- *  задача Б24 666648: «из списка не могу провалиться в карточку»). Строки могли
- *  ещё грузиться — опрашиваем выдачу, пока пара не найдётся; после открытия
- *  параметры из URL убираем, чтобы F5 не открывал окно заново. */
-function applyUrlReg713() {
-  const route = useRoute();
-  const model = String(route.query.reg713model || '').trim();
-  const articul = String(route.query.reg713articul || '').trim();
-  if (!model || !articul) return;
-  const tryOpen = () => {
-    const row = allAggregated.value.find((r) => {
-      const k = reg713Key(r);
-      return k.model === model && k.articul === articul;
-    });
-    if (!row) return false;
-    openReg713(row);
-    const router = useRouter();
-    const q = { ...route.query };
-    delete q.reg713model;
-    delete q.reg713articul;
-    router.replace({ query: q });
-    return true;
-  };
-  if (tryOpen()) return;
-  let tries = 0;
-  const timer = setInterval(() => {
-    if (tryOpen() || ++tries > 60) clearInterval(timer);
-  }, 500);
-}
+// Deep-link ?reg713model=…&reg713articul=… убран (задача Б24 666648): карточку
+// из отчёта открывает само окно отчёта (общий компонент Reg713CardModal), а не
+// мы ищем пару в выдаче главной таблицы — её там обычно и не было.
 
 // ── Raw rows helpers ────────────────────────────────────────────────────────
 
@@ -12651,32 +12282,33 @@ tr.row-obsolete.selected { background-color: color-mix(in srgb, #6b7280 34%, tra
 .reg713-badge.reg713-approved { background: color-mix(in srgb, var(--pos, #16a34a) 14%, transparent); }
 .reg713-badge.reg713-rejected { background: color-mix(in srgb, var(--neg, #dc2626) 14%, transparent); }
 .reg713-badge.reg713-readonly { cursor:help; }
-.reg713-modal { width: 560px; max-width: calc(100vw - 32px); }
-.reg713-body { gap: 10px; }
-.reg713-name { font-size: 13px; margin-top: -4px; }
-.reg713-check { display:flex; align-items:center; gap:8px; font-weight:500; cursor:pointer; }
-.reg713-row { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
-.reg713-radio { display:inline-flex; align-items:center; gap:6px; cursor:pointer; }
-.reg713-block { border:1px solid var(--border-color, #e5e7eb); border-radius:8px; padding:10px 12px; display:flex; flex-direction:column; gap:8px; }
-.reg713-block-title { font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color: var(--text-muted, #6b7280); }
-.reg713-analog { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-.reg713-search { position:relative; }
-.reg713-search-input, .reg713-doc, .reg713-comment { width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-size:13px; font-family:inherit; }
-.reg713-results { list-style:none; margin:4px 0 0; padding:0; max-height:220px; overflow-y:auto; border:1px solid var(--border-color, #d1d5db); border-radius:4px; background: var(--bg-surface, #fff); }
-.reg713-results li { padding:6px 8px; cursor:pointer; font-size:13px; display:flex; gap:6px; align-items:baseline; flex-wrap:wrap; }
-.reg713-results li:hover { background: var(--bg-tonal, #f3f4f6); }
-.reg713-arch { font-size:11px; color: var(--text-muted); border:1px solid var(--border-color, #d1d5db); border-radius:999px; padding:0 6px; }
-.reg713-prices { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
-.reg713-price { display:inline-flex; align-items:center; gap:6px; }
-.reg713-price input { width:110px; padding:4px 6px; border:1px solid var(--border-color, #d1d5db); border-radius:4px; font-variant-numeric: tabular-nums; }
-.reg713-hint { font-size:12px; }
+/* Окно карточки 713 — теперь компонент components/Reg713CardModal.vue;
+   его стили живут там. .reg713-error остаётся: им пользуются окна
+   «Начатые расценки» и закупной. */
 .reg713-error { color: var(--neg, #dc2626); font-size:13px; }
 
 /* Закупная готовая продукция (пожелания № 6/7) */
 .state-badge--purchase { background: color-mix(in srgb, #0e7490 14%, transparent); }
 
 /* ── Окно «Начатые расценки» (Б24 672276) ───────────────────────────────── */
-.started-modal { max-width: 920px; width: 92vw; }
+/* Селектор из трёх классов, а не одиночный `.started-modal`: у `.approval-modal`
+   специфичность та же (0,1,0), а объявлен он НИЖЕ по файлу — одиночный класс
+   проигрывал и модалка рендерилась шириной 400px, из-за чего грид строк
+   вылезал за её границы. Три класса выигрывают при любом порядке блоков.
+   `.modal` здесь ничего не переопределяет — это не «отменяющий» класс, он
+   нужен только для специфичности (в проекте он нигде не объявлен). */
+.modal.approval-modal.started-modal {
+  width: min(92vw, 1100px);
+  max-width: calc(100vw - var(--sp-6, 32px));
+  max-height: calc(100vh - var(--sp-6, 32px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Шапка, кнопки действий и подсказка остаются на месте — скроллится только
+   список групп (иначе на 40 калькуляциях окно уезжало за экран вместе с
+   кнопкой «Сохранить выбранное»). */
+.started-modal .approval-body { flex: 1; min-height: 0; overflow: hidden; }
 .started-loading {
   display: flex; align-items: center; gap: var(--sp-2, 8px);
   color: var(--text-muted, #6b7280); padding: var(--sp-3, 12px) 0;
@@ -12691,8 +12323,18 @@ tr.row-obsolete.selected { background-color: color-mix(in srgb, #6b7280 34%, tra
   display: inline-flex; align-items: center; gap: 6px;
   margin: 0 0 var(--sp-2, 8px); font-size: var(--fs-sm, 13px); cursor: pointer;
 }
-.started-list { display: flex; flex-direction: column; gap: var(--sp-2, 8px); }
-.started-group { border: 1px solid var(--border, #e5e7eb); border-radius: 6px; overflow: hidden; }
+.started-list {
+  display: flex; flex-direction: column; gap: var(--sp-2, 8px);
+  /* Скроллится только список: max-height через vh с запасом на шапку окна и
+     футер (шапка ~48px + «Выбрать все» + кнопки + подсказка ≈ 160px). */
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  max-height: 55vh;
+}
+/* flex: none — иначе группы, будучи flex-элементами списка, СЖИМАЮТСЯ под
+   max-height и scrollHeight остаётся равным clientHeight: список «влезает»,
+   но содержимое внутри групп режется. С flex: none они сохраняют высоту и
+   список честно уходит в скролл. */
+.started-group { border: 1px solid var(--border, #e5e7eb); border-radius: 6px; overflow: hidden; flex: none; }
 .started-group-head {
   display: flex; align-items: center; gap: var(--sp-2, 8px);
   padding: 6px 10px; background: color-mix(in srgb, var(--accent, #4338ca) 4%, #fff);
@@ -12733,8 +12375,19 @@ tr.row-obsolete.selected { background-color: color-mix(in srgb, #6b7280 34%, tra
 .started-status--peo { background: #f3f4f6; color: #374151; }
 .started-status--ok { background: #d1fae5; color: #065f46; }
 .started-status--noprice { background: #fff7ed; color: #9a3412; }
-.started-actions { margin-top: var(--sp-3, 12px); }
-.started-hint { margin: var(--sp-2, 8px) 0 0; font-size: var(--fs-sm, 13px); color: var(--text-muted, #6b7280); }
+.started-actions { margin-top: var(--sp-3, 12px); flex: none; align-items: center; flex-wrap: wrap; }
+.started-hint { margin: var(--sp-2, 8px) 0 0; font-size: var(--fs-sm, 13px); color: var(--text-muted, #6b7280); flex: none; }
+/* Узкий экран: шапка группы переносится, в строке схлопываются служебные
+   колонки (наименование модели и БМ уходят из головы, «РФ/КЗ/УЗ» — из строки),
+   чтобы грид помещался в ширину окна без горизонтального выезда. */
+@media (max-width: 900px) {
+  .started-modal .approval-body { padding: 12px; }
+  .started-group-head { flex-wrap: wrap; }
+  .started-group-sub { flex-basis: 100%; order: 5; }
+  .started-row { grid-template-columns: 18px minmax(80px, 110px) repeat(2, minmax(96px, 1fr)) minmax(150px, 200px); }
+  .started-row > .started-price-rf { display: none; }
+  .started-actions { gap: 6px; }
+}
 .purchase-modal { width: 640px; max-width: calc(100vw - 32px); }
 .purchase-body { gap: 10px; }
 .purchase-src, .purchase-hint { font-size: 12px; }

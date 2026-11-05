@@ -96,6 +96,30 @@
         </table>
       </div>
     </section>
+
+    <!-- Карточка согласования открывается ПРЯМО ЗДЕСЬ, поверх списка (задача
+         Б24 666648): бренд проходит все строки подряд, не уходя в главную
+         таблицу. Окно то же, что у колонки «713» на /cost — общий компонент.
+         Цены изделия берём расчётные (calc_*), а не снимок карточки: наценку
+         выбирают от актуальной розницы, снимок же нужен только для показа. -->
+    <Reg713CardModal
+      v-if="cardRow"
+      :key="cardRow.id ?? (cardRow.model + '|' + cardRow.articul)"
+      :model="cardRow.model"
+      :articul="cardRow.articul"
+      :name="cardRow.name"
+      :retail="cardRow.calc_retail"
+      :wholesale="cardRow.calc_wholesale"
+      :price-level="cardRow.price_level"
+      :vat="cardRow.vat"
+      :card="cardRow"
+      :price-levels="priceLevels"
+      :nav="cardNav"
+      @saved="onCardSaved"
+      @prev="step(-1)"
+      @next="step(1)"
+      @close="cardRow = null"
+    />
   </div>
 </template>
 
@@ -232,10 +256,87 @@ async function load() {
   }
 }
 
-/** Провалиться в карточку согласования из отчёта (задача Б24 666648): главная
- *  таблица по параметру найдёт пару и откроет то же окно карточки. */
+/** Провалиться в карточку согласования из отчёта (задача Б24 666648): окно
+ *  открывается поверх списка, deep-link на главную больше не используется —
+ *  пары обычно нет в её выдаче, и переход заканчивался пустым экраном. */
+const cardRow = ref<any>(null)
+
+/** Справочник уровней цен. Грузим ОДИН раз на страницу и передаём окну: оно
+ *  пересоздаётся на каждой строке, и без этого листание по десятку строк давало
+ *  десяток одинаковых запросов, а пока ответ не пришёл — мигала подсказка
+ *  «Наценку выбрать нельзя». Своя загрузка в компоненте остаётся запасной. */
+const priceLevels = ref<any[]>([])
+async function loadPriceLevels() {
+  try {
+    priceLevels.value = await $fetch<any[]>(`${apiBase.value}/api/cost/price-levels`, { headers: fetchHeaders.value })
+  } catch (e: any) {
+    console.error('[cost] price-levels load failed', e)
+  }
+}
+
+/** Открыть карточку строки. Снятые с согласования (required=false при
+ *  showAll) открываются так же: их правят повторно. */
 function openCard(c: any) {
-  navigateTo({ path: '/cost', query: { reg713model: c.model, reg713articul: c.articul } })
+  cardRow.value = c
+}
+
+const cardIndex = computed(() => (cardRow.value ? filtered.value.findIndex((c) => c === cardRow.value) : -1))
+const cardNav = computed(() => {
+  const i = cardIndex.value
+  if (i < 0) return null
+  return { hasPrev: i > 0, hasNext: i < filtered.value.length - 1, position: i + 1, total: filtered.value.length }
+})
+
+/** Листание по текущей сортировке `filtered`. На последней строке «Следующая»
+ *  просто закрывает окно: список кончился. */
+function step(delta: number) {
+  const i = cardIndex.value
+  if (i < 0) return
+  cardRow.value = filtered.value[i + delta] || null
+}
+
+/** Сохранение карточки: обновить строку списка из ответа сервера и перейти к
+ *  следующей — правка всех строк подряд без лишних кликов (задача Б24 666648).
+ *  На последней строке окно закрывается.
+ *
+ *  Соседа запоминаем ДО правки: сохранение может изменить ключ сортировки
+ *  («Решение исполкома», «Отмечено» у снятой строки, которую снова отметили), и
+ *  строка переезжает в `filtered` выше. Если брать следующую после — получим
+ *  предыдущую, и обход строк зациклится (A→B→C: с C на B, с B на A, с A на C…),
+ *  так и не дойдя до конца. */
+function onCardSaved(card: any) {
+  const row = cardRow.value
+  if (!row) return
+  const i = filtered.value.indexOf(row)
+  const next = i >= 0 ? (filtered.value[i + 1] ?? null) : null
+  if (card) {
+    applySavedCard(row, card)
+    // Снимок цены изделия главнее расчёта — та же логика, что в list_cards.
+    if (card.item_retail != null || card.item_wholesale != null) {
+      row.retail = card.item_retail ?? row.retail
+      row.wholesale = card.item_wholesale ?? row.wholesale
+      row.price_source = 'reg713'
+    } else {
+      // Снимок сбросили: показываем расчётную цену и её источник — иначе после
+      // F5 строка «похудеет» бы, а до перезагрузки держала бы цену снимка.
+      row.retail = row.calc_retail ?? null
+      row.wholesale = row.calc_wholesale ?? null
+      row.price_source = row.calc_source ?? null
+    }
+  }
+  cardRow.value = next
+}
+
+/** Поля карточки из ответа /reg713/card — в строку отчёта (ключи те же, без
+ *  префикса reg713_ — строка отчёта и есть карточка). */
+function applySavedCard(row: any, card: any) {
+  for (const f of ['required', 'kind', 'item_retail', 'item_wholesale', 'item_markup',
+    'novelty_comment', 'planned_volume', 'competitor_name', 'competitor_retail',
+    'analog_model', 'analog_articul', 'analog_name', 'analog_retail', 'analog_wholesale',
+    'analog_price_source', 'decision', 'decision_at', 'decision_doc', 'comment',
+    'updated_by', 'updated_at']) {
+    if (f in card) row[f] = card[f]
+  }
 }
 
 /** Excel — как в остальном разделе: HTML-таблица под application/vnd.ms-excel
@@ -268,7 +369,10 @@ function exportExcel() {
   URL.revokeObjectURL(url)
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadPriceLevels()
+})
 </script>
 
 <style scoped>
