@@ -2461,24 +2461,105 @@
                     <span class="started-group-count" title="Несохранённых правок в калькуляции">{{ g.rows.length }}</span>
                   </div>
                   <div v-if="!startedCollapsed.has(g.key)" class="started-group-rows">
-                    <div v-for="item in g.rows" :key="item.key" class="started-row">
-                      <input
-                        type="checkbox"
-                        :checked="startedSelected.has(item.key)"
-                        @change="startedToggleKey(item.key)"
-                      />
-                      <span class="started-articul">{{ item.row['Артикул'] || '—' }}</span>
-                      <span class="started-price num">розн.: {{ fmt(item.row['avg_Розничная цена по уровню, руб.']) }}</span>
-                      <span class="started-price num">отп.: {{ fmt(item.row['avg_Отпускная цена по уровню, руб']) }}</span>
-                      <span
-                        v-if="priceRF[item.key] != null || priceKZ[item.key] != null || priceUZ[item.key] != null"
-                        class="started-price started-price-rf num"
-                      >РФ {{ fmt(priceRF[item.key] ?? 0) }} · КЗ {{ fmt(priceKZ[item.key] ?? 0) }} · УЗ {{ fmt(priceUZ[item.key] ?? 0) }}</span>
-                      <span
-                        class="started-status"
-                        :class="'started-status--' + item.status.code"
-                        :title="item.status.hint"
-                      >{{ item.status.label }}</span>
+                    <div v-for="item in g.rows" :key="item.key" class="started-item">
+                      <div class="started-row">
+                        <!-- Разворот панели правки: ключ строки, а не индекс —
+                             loadData заменяет ссылки строк, индекс после этого
+                             указывал бы на чужую строку. -->
+                        <button
+                          class="started-expand"
+                          type="button"
+                          :aria-expanded="startedExpanded.has(item.key)"
+                          :aria-label="startedExpanded.has(item.key) ? 'Свернуть правку цены' : 'Править цену здесь'"
+                          :title="startedExpanded.has(item.key) ? 'Свернуть правку цены' : 'Править цену здесь'"
+                          @click="startedToggleEdit(item.key)"
+                        >
+                          <span class="started-caret" :class="{ open: startedExpanded.has(item.key) }">▸</span>
+                        </button>
+                        <input
+                          type="checkbox"
+                          :checked="startedSelected.has(item.key)"
+                          @change="startedToggleKey(item.key)"
+                        />
+                        <span class="started-articul">{{ item.row['Артикул'] || '—' }}</span>
+                        <span class="started-price num">розн.: {{ fmt(item.row['avg_Розничная цена по уровню, руб.']) }}</span>
+                        <span class="started-price num">отп.: {{ fmt(item.row['avg_Отпускная цена по уровню, руб']) }}</span>
+                        <span
+                          v-if="priceRF[item.key] != null || priceKZ[item.key] != null || priceUZ[item.key] != null"
+                          class="started-price started-price-rf num"
+                        >РФ {{ fmt(priceRF[item.key] ?? 0) }} · КЗ {{ fmt(priceKZ[item.key] ?? 0) }} · УЗ {{ fmt(priceUZ[item.key] ?? 0) }}</span>
+                        <span
+                          class="started-status"
+                          :class="'started-status--' + item.status.code"
+                          :title="item.status.hint"
+                        >{{ item.status.label }}</span>
+                      </div>
+                      <!-- Панель правки: селекты — те же, что в ячейках таблицы,
+                           и правят они через ТЕ ЖЕ обработчики (onRetailPriceSelect /
+                           onMarkupSelect). Своей ценовой логики здесь нет: обработчики
+                           мутируют общую reactive-строку и siblings, поэтому значения
+                           в таблице и в окне совпадают без перезагрузки. -->
+                      <div v-if="startedExpanded.has(item.key)" class="started-edit">
+                        <label class="started-edit-field">
+                          <span class="started-edit-label">Розница РБ</span>
+                          <select
+                            class="price-select"
+                            :class="{ 'price-select--no-wholesale': isRetailWithoutWholesale(item.row) }"
+                            :value="isRetailWithoutWholesale(item.row) ? '' : (Number(item.row['avg_Розничная цена по уровню, руб.']) || '')"
+                            :disabled="startedEditBlocked(item.row, item.status)"
+                            :title="startedEditTitle(item.row, item.status, true)"
+                            @change="startedOnRetailSelect(item, ($event.target as HTMLSelectElement).value)"
+                          >
+                            <option value="">{{ isRetailWithoutWholesale(item.row) ? `— (${fmt(item.row['avg_Розничная цена по уровню, руб.'])})` : '—' }}</option>
+                            <option v-if="isCustomRetail(item.row)" :value="Number(item.row['avg_Розничная цена по уровню, руб.'])">{{ fmt(item.row['avg_Розничная цена по уровню, руб.']) }} ✎</option>
+                            <option v-for="rp in uniqueRetailPrices" :key="rp" :value="rp">{{ fmt(rp) }}</option>
+                          </select>
+                        </label>
+                        <label class="started-edit-field">
+                          <span class="started-edit-label">Наценка</span>
+                          <select
+                            class="price-select"
+                            :value="markupSelections[item.key] || ''"
+                            :disabled="startedEditBlocked(item.row, item.status) || !Number(item.row['avg_Розничная цена по уровню, руб.'])"
+                            :title="startedEditTitle(item.row, item.status, false)"
+                            @change="onMarkupSelect(item.row, ($event.target as HTMLSelectElement).value)"
+                          >
+                            <option value="">—</option>
+                            <option v-for="opt in markupOptionsFor(item.row)" :key="opt.value" :value="opt.value">
+                              {{ opt.label }}
+                            </option>
+                          </select>
+                        </label>
+                        <div class="started-edit-field">
+                          <span class="started-edit-label">Опт РБ</span>
+                          <span class="started-edit-value num">{{ fmt(item.row['avg_Отпускная цена по уровню, руб']) }}</span>
+                        </div>
+                        <div class="started-edit-field">
+                          <span class="started-edit-label">Уровень цен</span>
+                          <span class="started-edit-value" :title="item.row['Уровень цен'] || ''">
+                            {{ item.row['Уровень цен'] || (item.row._price_manual ? 'без уровня ✎' : '—') }}
+                          </span>
+                        </div>
+                        <div class="started-edit-field">
+                          <span class="started-edit-label">Себестоимость</span>
+                          <span class="started-edit-value num">{{ fmt(item.row['sum_Себестоимость, руб.']) }}</span>
+                        </div>
+                        <div class="started-edit-field">
+                          <span class="started-edit-label">Рентабельность, руб.</span>
+                          <span class="started-edit-value num">{{ fmt(calc(item.row, false).markupRub) }}</span>
+                        </div>
+                        <div class="started-edit-field">
+                          <span class="started-edit-label">Рентабельность, %</span>
+                          <span
+                            class="started-edit-value num"
+                            :class="calc(item.row, false).markupPct >= 0 ? 'delta-pos' : 'delta-neg'"
+                          >{{ calc(item.row, false).markupPct.toFixed(1) }}%</span>
+                        </div>
+                        <div class="started-edit-field">
+                          <span class="started-edit-label">Маржинальность, %</span>
+                          <span class="started-edit-value num">{{ calc(item.row, false).marginPct.toFixed(1) }}%</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -6397,18 +6478,31 @@ function applyDraftToTable() {
   draftApplied.value = true;
   const doc = draftServer.value;
   if (!doc || !draftCanEdit.value) return;
-  const byKey = new Map<string, any>();
-  for (const r of allAggregated.value) byKey.set(calcRowKey(r), r);
+  // Все строки выдачи по ключу калькуляции, а не одна: цена у ключа общая,
+  // но задания (и прочие строки той же калькуляции) рендерятся отдельными tr.
+  // Пока сюда попадал только последний встреченный экземпляр, ближайший
+  // сосед показывал цену из базы, а не из черновика, — расхождение внутри
+  // одной калькуляции после перезагрузки.
+  const byKey = new Map<string, any[]>();
+  for (const r of allAggregated.value) {
+    const k = calcRowKey(r);
+    const list = byKey.get(k);
+    if (list) list.push(r);
+    else byKey.set(k, [r]);
+  }
   let n = 0;
   for (const [key, entry] of Object.entries(doc)) {
     const snap: any = (entry as any)?.snapshot || {};
     const srow: any = snap.row || {};
-    const live = byKey.get(key);
+    const live = byKey.get(key)?.[0];
     if (live) {
       // С тех пор по калькуляции появилась заявка или блокировка — ввод дожил
       // до назначения (или его ведёт другой процесс), черновик не накладываем.
       if (isRowLocked(live) || live._has_pending) continue;
-      for (const f of PRICE_DRAFT_FIELDS) if (srow[f] !== undefined) live[f] = srow[f];
+      for (const r of byKey.get(key)!) {
+        if (isRowLocked(r) || r._has_pending) continue;
+        for (const f of PRICE_DRAFT_FIELDS) if (srow[f] !== undefined) r[f] = srow[f];
+      }
       changedRows.set(key, live);
     } else {
       // Строки сейчас нет в выдаче — ровно то состояние, которое механизм
@@ -8565,6 +8659,9 @@ const startedStatuses = ref<Record<string, any>>({});
 const startedSelected = reactive(new Set<string>());
 /** Свёрнутые группы (план + модель + признак калькуляции). */
 const startedCollapsed = reactive(new Set<string>());
+/** Строки с развёрнутой панелью правки. Только по ключу калькуляции: после
+ *  loadData ссылки строк заменяются, индекс развернул бы чужую строку. */
+const startedExpanded = reactive(new Set<string>());
 
 type StartedStatusCode = 'dwh' | 'pending' | 'peo' | 'noprice' | 'ok' | 'unknown';
 
@@ -8670,6 +8767,45 @@ const startedAllSelected = computed(() => {
 function startedToggleKey(key: string) {
   if (startedSelected.has(key)) startedSelected.delete(key);
   else startedSelected.add(key);
+}
+
+/** Разворот панели правки строки (ключ калькуляции, не индекс). */
+function startedToggleEdit(key: string) {
+  if (startedExpanded.has(key)) startedExpanded.delete(key);
+  else startedExpanded.add(key);
+}
+
+/** Гейты правки в окне: те же, что у ячеек таблицы (ФКСС, право, замок ПЭО),
+ *  плюс специфика окна — строку, уже ушедшую в DWH или висящую на заявке,
+ *  сохранить нельзя, значит и править её здесь незачем (тот же смысл, что у
+ *  бейджа). Строки с прочерком (noprice) РЕДАКТИРУЕМЫ: это и есть строки,
+ *  которым розницу только предстоит выбрать. */
+function startedEditBlocked(row: any, status: { code: StartedStatusCode }): boolean {
+  return isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)
+    || status.code === 'dwh' || status.code === 'pending';
+}
+
+/** Подсказка к селекту панели: сначала приговор строки, потом причина запрета,
+ *  и только потом пояснение по самому полю. */
+function startedEditTitle(row: any, status: { code: StartedStatusCode }, retail: boolean): string {
+  if (isFkssRow(row)) return FKSS_HINT;
+  if (status.code === 'dwh' || status.code === 'pending') return status.hint;
+  if (!can('cost:edit_price')) return 'Нет права на изменение цен';
+  if (isRowLocked(row)) return lockReasonText(row);
+  if (!retail && !Number(row?.['avg_Розничная цена по уровню, руб.'])) return 'Сначала выберите розничную цену';
+  if (retail && isRetailWithoutWholesale(row)) return RETAIL_NO_WHOLESALE_HINT;
+  return '';
+}
+
+/** Правка розницы из окна: идёт тем же обработчиком, что ячейка таблицы, —
+ *  поэтому опт, уровень цен, РФ/КЗ/УЗ и siblings обновляются сами. Отдельно
+ *  ведём только галочку выбора: смена розницы меняет пригодность строки к
+ *  сохранению (прочерк ⇄ цена), и счётчик «Сохранить выбранное (N)» должен
+ *  отражать это сразу, не после переоткрытия окна. */
+function startedOnRetailSelect(item: { key: string; row: any }, value: string) {
+  onRetailPriceSelect(item.row, value);
+  if (startedStatusOf(item.key, item.row).code === 'ok') startedSelected.add(item.key);
+  else startedSelected.delete(item.key);
 }
 
 function startedToggleGroup(g: { rows: { key: string }[] }) {
@@ -12357,11 +12493,51 @@ tr.row-obsolete.selected { background-color: color-mix(in srgb, #6b7280 34%, tra
   background: #e5e7eb; color: #374151; font-size: 12px; padding: 1px 7px;
 }
 .started-group-rows { display: flex; flex-direction: column; }
+/* Строка окна двухуровневая: сводка (`.started-row`) и разворачиваемая под ней
+   панель правки (`.started-edit`). Обёртка `.started-item` держит их вместе и
+   рисует разделитель между строками. */
+.started-item { border-top: 1px solid var(--border); }
+.started-item:first-child { border-top: none; }
 .started-row {
   display: grid; align-items: center; gap: var(--sp-2, 8px);
-  grid-template-columns: 18px minmax(90px, 130px) repeat(3, minmax(110px, 1fr)) minmax(230px, 300px);
-  padding: 5px 10px; border-top: 1px solid var(--border, #e5e7eb); font-size: var(--fs-sm, 13px);
+  grid-template-columns: 18px 18px minmax(90px, 130px) repeat(3, minmax(110px, 1fr)) minmax(230px, 300px);
+  padding: 5px 10px; font-size: var(--fs-sm, 13px);
 }
+/* Кнопка разворота панели правки — та же каретка, что у группы. */
+.started-expand {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0;
+  border: none; background: none; cursor: pointer;
+  color: var(--text-muted); font-size: 11px; line-height: 1;
+}
+.started-expand:hover { color: var(--accent); }
+.started-expand:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--rd-2); }
+/* Панель правки: 2 ряда по 4 поля. Разворачивается ВНУТРИ скроллящегося
+   списка — так и задумано, окно при этом не растёт. */
+.started-edit {
+  display: grid; gap: var(--sp-2, 8px) var(--sp-3, 12px);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 6px 10px 8px 46px;
+  background: var(--bg-surface-2);
+  border-top: 1px dashed var(--border);
+}
+.started-edit-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.started-edit-label {
+  font-size: var(--fs-2xs); font-weight: var(--fw-semibold);
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.started-edit-value {
+  font-size: var(--fs-sm, 13px); color: var(--text-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.started-edit .price-select {
+  height: 24px; border: 1px solid var(--border); background: var(--bg-surface);
+  border-radius: var(--rd-2); font-size: var(--fs-xs); padding: 0 4px;
+  width: 100%; min-width: 0; color: var(--text-strong);
+}
+.started-edit .price-select:disabled { color: var(--text-muted); cursor: not-allowed; }
+.started-edit .price-select--no-wholesale { color: var(--text-muted); font-style: italic; }
 .started-articul { font-family: var(--font-mono, monospace); }
 .started-price { color: var(--text-muted, #6b7280); white-space: nowrap; }
 .started-status {
@@ -12384,8 +12560,9 @@ tr.row-obsolete.selected { background-color: color-mix(in srgb, #6b7280 34%, tra
   .started-modal .approval-body { padding: 12px; }
   .started-group-head { flex-wrap: wrap; }
   .started-group-sub { flex-basis: 100%; order: 5; }
-  .started-row { grid-template-columns: 18px minmax(80px, 110px) repeat(2, minmax(96px, 1fr)) minmax(150px, 200px); }
+  .started-row { grid-template-columns: 18px 18px minmax(80px, 110px) repeat(2, minmax(96px, 1fr)) minmax(150px, 200px); }
   .started-row > .started-price-rf { display: none; }
+  .started-edit { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-left: 10px; }
   .started-actions { gap: 6px; }
 }
 .purchase-modal { width: 640px; max-width: calc(100vw - 32px); }
