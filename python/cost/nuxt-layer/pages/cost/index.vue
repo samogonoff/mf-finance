@@ -2462,23 +2462,26 @@
                   </div>
                   <div v-if="!startedCollapsed.has(g.key)" class="started-group-rows">
                     <div v-for="item in g.rows" :key="item.key" class="started-item">
-                      <div class="started-row">
+                      <!-- Клик по сводке строки разворачивает/сворачивает панель
+                           правки — панель видна сразу, каретка не единственный путь. -->
+                      <div class="started-row" @click="startedToggleEdit(item.key)">
                         <!-- Разворот панели правки: ключ строки, а не индекс —
                              loadData заменяет ссылки строк, индекс после этого
                              указывал бы на чужую строку. -->
                         <button
                           class="started-expand"
                           type="button"
-                          :aria-expanded="startedExpanded.has(item.key)"
-                          :aria-label="startedExpanded.has(item.key) ? 'Свернуть правку цены' : 'Править цену здесь'"
-                          :title="startedExpanded.has(item.key) ? 'Свернуть правку цены' : 'Править цену здесь'"
-                          @click="startedToggleEdit(item.key)"
+                          :aria-expanded="!startedCollapsedRows.has(item.key)"
+                          :aria-label="startedCollapsedRows.has(item.key) ? 'Развернуть правку цены' : 'Свернуть правку цены'"
+                          :title="startedCollapsedRows.has(item.key) ? 'Развернуть правку цены' : 'Свернуть правку цены'"
+                          @click.stop="startedToggleEdit(item.key)"
                         >
-                          <span class="started-caret" :class="{ open: startedExpanded.has(item.key) }">▸</span>
+                          <span class="started-caret" :class="{ open: !startedCollapsedRows.has(item.key) }">▸</span>
                         </button>
                         <input
                           type="checkbox"
                           :checked="startedSelected.has(item.key)"
+                          @click.stop
                           @change="startedToggleKey(item.key)"
                         />
                         <span class="started-articul">{{ item.row['Артикул'] || '—' }}</span>
@@ -2499,7 +2502,7 @@
                            onMarkupSelect). Своей ценовой логики здесь нет: обработчики
                            мутируют общую reactive-строку и siblings, поэтому значения
                            в таблице и в окне совпадают без перезагрузки. -->
-                      <div v-if="startedExpanded.has(item.key)" class="started-edit">
+                      <div v-if="!startedCollapsedRows.has(item.key)" class="started-edit">
                         <label class="started-edit-field">
                           <span class="started-edit-label">Розница РБ</span>
                           <select
@@ -8659,9 +8662,10 @@ const startedStatuses = ref<Record<string, any>>({});
 const startedSelected = reactive(new Set<string>());
 /** Свёрнутые группы (план + модель + признак калькуляции). */
 const startedCollapsed = reactive(new Set<string>());
-/** Строки с развёрнутой панелью правки. Только по ключу калькуляции: после
- *  loadData ссылки строк заменяются, индекс развернул бы чужую строку. */
-const startedExpanded = reactive(new Set<string>());
+/** Строки со СВЁРНУТОЙ панелью правки (инверсия: по умолчанию панели развёрнуты —
+ *  поля правки видны сразу, без поиска каретки). Только по ключу калькуляции:
+ *  после loadData ссылки строк заменяются, индекс свернул бы чужую строку. */
+const startedCollapsedRows = reactive(new Set<string>());
 
 type StartedStatusCode = 'dwh' | 'pending' | 'peo' | 'noprice' | 'ok' | 'unknown';
 
@@ -8769,10 +8773,11 @@ function startedToggleKey(key: string) {
   else startedSelected.add(key);
 }
 
-/** Разворот панели правки строки (ключ калькуляции, не индекс). */
+/** Свёрнуть/развернуть панель правки строки (ключ калькуляции, не индекс).
+ *  По умолчанию панели развёрнуты — Set хранит только свёрнутые вручную. */
 function startedToggleEdit(key: string) {
-  if (startedExpanded.has(key)) startedExpanded.delete(key);
-  else startedExpanded.add(key);
+  if (startedCollapsedRows.has(key)) startedCollapsedRows.delete(key);
+  else startedCollapsedRows.add(key);
 }
 
 /** Гейты правки в окне: те же, что у ячеек таблицы (ФКСС, право, замок ПЭО),
@@ -12502,6 +12507,7 @@ tr.row-obsolete.selected { background-color: color-mix(in srgb, #6b7280 34%, tra
   display: grid; align-items: center; gap: var(--sp-2, 8px);
   grid-template-columns: 18px 18px minmax(90px, 130px) repeat(3, minmax(110px, 1fr)) minmax(230px, 300px);
   padding: 5px 10px; font-size: var(--fs-sm, 13px);
+  cursor: pointer; /* клик по сводке сворачивает/разворачивает панель правки */
 }
 /* Кнопка разворота панели правки — та же каретка, что у группы. */
 .started-expand {
