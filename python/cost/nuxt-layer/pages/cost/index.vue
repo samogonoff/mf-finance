@@ -851,7 +851,7 @@
                 <input class="comment-input" type="text"
                   :value="comments[calcRowKey(row)] ?? ''"
                   placeholder="..."
-                  :disabled="isFkssRow(row) || !can('cost:edit_price') || isRowLocked(row)"
+                  :disabled="isFkssRow(row) || !canComment()"
                   :title="isFkssRow(row) ? FKSS_HINT : ''"
                   @click.stop
                   @input="onCommentInput(row, ($event.target as HTMLInputElement).value)"
@@ -6681,8 +6681,19 @@ const onPriceUZInput = (row: any, value: string) => {
 // молча умирал при перезагрузке. Здесь changedRows не трогаем: комментарий
 // больше не «придерживает» строку в несохранённых, своё сохранение у него своё.
 // Сама отправка — дебаунсом, см. блок «Живые комментарии» рядом с loadData.
+// Право на комментарий (Б24 672814) — любое из прав работы с калькуляцией,
+// синхронно с бэкендом /row-comment: раньше гейт был только cost:edit_price,
+// и «Калькулятор» (прод-сид 0021: edit_price нет, peo_mark есть) не мог
+// написать комментарий ни на одной строке.
+const canComment = () =>
+  can('cost:edit_price') || can('cost:peo_mark') || can('cost:approve') || can('cost:admin');
+
+// Замок строки (согласование ПЭО / передача в DWH / 713) НЕ гейтит комментарий
+// (Б24 672814): он не меняет цену и живёт в cost_row_comments отдельно от цен —
+// иначе комментарий невозможен именно на несогласованных строках, где он нужнее
+// всего. Остаются те же правила, что у бэкенда: право + запрет ФКСС.
 const onCommentInput = (row: any, value: string) => {
-  if (!row || isRowLocked(row)) return;
+  if (!row || !canComment()) return;
   const k = calcRowKey(row);
   comments[k] = value || "";
   scheduleCommentSave(row, k, value || "");

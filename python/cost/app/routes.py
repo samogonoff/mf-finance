@@ -2467,7 +2467,10 @@ async def save_batch_changes(payload: dict, user_email: str | None = Depends(_re
 
 @router.post("/row-comment")
 async def save_row_comment(
-    payload: dict, user_email: str | None = Depends(_require_perm("cost:edit_price"))
+    payload: dict,
+    user_email: str | None = Depends(
+        _require_any_perm("cost:edit_price", "cost:peo_mark", "cost:approve", "cost:admin")
+    ),
 ) -> dict:
     """Сохранить комментарий строки сразу при вводе (задача Б24 664394).
 
@@ -2476,6 +2479,10 @@ async def save_row_comment(
     становилась и комментарий молча отбрасывался. Тело: model, articul,
     plan_id, calc_sign, comment. Пустой комментарий — осознанная пустота
     (запись-маркер перекрывает комментарий заявки и истории).
+
+    Право — любое из прав работы с калькуляцией (Б24 672814): раньше гейт был
+    только cost:edit_price, и «Калькулятор» (прод-сид 0021: edit_price нет,
+    есть peo_mark) не мог оставить комментарий ни на одной строке.
     """
     model = str(payload.get("model") or "").strip()
     articul = str(payload.get("articul") or "").strip()
