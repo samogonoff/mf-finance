@@ -2120,9 +2120,15 @@
             <table class="version-editor-table editor-main-table">
               <thead>
                 <tr>
-                  <th v-if="editingVersion.isEditing" class="col-chk"><input type="checkbox" @change="(e: any) => editingVersion?.rows.forEach(r => r._selected = (e.target as HTMLInputElement).checked)" /></th>
-                  <th :style="editorColStyle('type')" class="col-ellipsis">Материал/операция<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('type', $event)" @dblclick.stop.prevent="resetEditorColWidth('type')" title="Изменить ширину · двойной клик — сброс"></span></th>
-                  <th :style="editorColStyle('name')" class="col-ellipsis">Наименование<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('name', $event)" @dblclick.stop.prevent="resetEditorColWidth('name')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <!-- Закрепление слева (задача Б24 672935, письмо заказчика
+                       10:41): при горизонтальной прокрутке «Материал/операция»
+                       и «Наименование» остаются на экране — иначе строку
+                       опознавали только по артикулу. Чекбокс закреплён тоже,
+                       чтобы выделять строки было можно из любого места
+                       прокрутки. -->
+                  <th v-if="editingVersion.isEditing" class="col-chk sticky-cell" :style="editorStickyStyle('chk')"><input type="checkbox" @change="(e: any) => editingVersion?.rows.forEach(r => r._selected = (e.target as HTMLInputElement).checked)" /></th>
+                  <th :style="[editorColStyle('type'), editorStickyStyle('type')]" class="col-ellipsis sticky-cell">Материал/операция<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('type', $event)" @dblclick.stop.prevent="resetEditorColWidth('type')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <th :style="[editorColStyle('name'), editorStickyStyle('name')]" class="col-ellipsis sticky-cell is-last-sticky">Наименование<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('name', $event)" @dblclick.stop.prevent="resetEditorColWidth('name')" title="Изменить ширину · двойной клик — сброс"></span></th>
                   <th :style="editorColStyle('articul')" class="col-ellipsis">Артикул материала<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('articul', $event)" @dblclick.stop.prevent="resetEditorColWidth('articul')" title="Изменить ширину · двойной клик — сброс"></span></th>
                   <th :style="editorColStyle('prop')" class="col-ellipsis">Свойство<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('prop', $event)" @dblclick.stop.prevent="resetEditorColWidth('prop')" title="Изменить ширину · двойной клик — сброс"></span></th>
                   <!-- Цены предыдущих этапов калькулирования: слева от текущих,
@@ -2149,11 +2155,11 @@
               <tbody>
                 <tr v-for="(vr, vi) in editingVersion.rows" :key="vi"
                   :class="{ 'row-added': vr.change_type === 'added', 'row-modified': vr.change_type === 'modified', 'row-zero-cost': isZeroCostRow(vr), 'row-multipack': isMultipackRow(vr) }">
-                  <td v-if="editingVersion.isEditing"><input type="checkbox" v-model="vr._selected" /></td>
+                  <td v-if="editingVersion.isEditing" class="sticky-cell" :style="editorStickyStyle('chk')"><input type="checkbox" v-model="vr._selected" /></td>
                   <!-- Строки состава мультипака руками не правятся: их значения
                        приходят из калькуляций одиночек, и ручная правка пропала
                        бы при следующей пересборке. Меняется состав, а не строка. -->
-                  <td>
+                  <td class="sticky-cell" :style="editorStickyStyle('type')">
                     <select v-if="editingVersion.isEditing && editingTypeCell === vi && !isMultipackRow(vr)" :value="vr['Материал/операция/декор(призн)']" class="editor-select" autofocus @change="onVersionRowEdit(vr, $event, 'Материал/операция/декор(призн)')" @blur="editingTypeCell = -1">
                       <option value="Материал основной">Материал основной</option>
                       <option value="Материал вспомогательный">Материал вспомогательный</option>
@@ -2168,7 +2174,7 @@
                     <span v-else-if="editingVersion.isEditing" class="type-tag clickable" @click="editingTypeCell = vi">{{ typeDisplayValue(vr) || '—' }}</span>
                     <span v-else>{{ typeDisplayValue(vr) }}</span>
                   </td>
-                  <td><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else class="cell-ellipsis" :title="nameDisplayValue(vr) || ''">{{ nameDisplayValue(vr) || '—' }}</span></td>
+                  <td class="sticky-cell is-last-sticky" :style="editorStickyStyle('name')"><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else class="cell-ellipsis" :title="nameDisplayValue(vr) || ''">{{ nameDisplayValue(vr) || '—' }}</span></td>
                   <td><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else class="cell-ellipsis" :title="vr['артикул материала'] || ''">{{ vr['артикул материала'] }}</span></td>
                   <td>
                     <input
@@ -6513,6 +6519,18 @@ const editorColWidths = reactive<Record<string, number>>(loadEditorColWidths());
 function editorColStyle(key: string): Record<string, string> {
   const w = editorColWidths[key] + 'px';
   return { width: w, minWidth: w, maxWidth: w };
+}
+
+/** Отступ закреплённой колонки редактора (задача Б24 672935): сумма ширин
+ *  закреплённых колонок левее. Чекбокс есть только в режиме правки (32px,
+ *  ширина .col-chk); «Наименование» едет вслед за «Материал/операция».
+ *  Стиль ставится и на th, и на td: sticky у обеих — иначе тело строки
+ *  прокручивается под закреплённым заголовком. */
+const EDITOR_CHK_WIDTH = 32;
+function editorStickyStyle(key: 'chk' | 'type' | 'name'): Record<string, string> {
+  const chk = editingVersion.value?.isEditing ? EDITOR_CHK_WIDTH : 0;
+  const left = key === 'chk' ? 0 : key === 'type' ? chk : chk + editorColWidths.type;
+  return { left: left + 'px' };
 }
 
 let editorResizing: { key: string; startX: number; startW: number } | null = null;
@@ -12496,6 +12514,33 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .version-editor-table.editor-main-table .price-cell .editor-input {
   width: calc(100% - 62px);
   min-width: 40px;
+}
+/* Закреплённые слева колонки редактора (задача Б24 672935): при
+   горизонтальной прокрутке «Материал/операция» и «Наименование» (и чекбокс
+   в режиме правки) остаются на экране. Фон обязателен: без него
+   прокручиваемые ячейки просвечивают под закреплёнными. Специфичность выше
+   правила thead th { position: relative } выше — sticky перекрывает его,
+   но остаётся позиционированным контейнером для ручки ресайза. */
+.version-editor-table.editor-main-table th.sticky-cell,
+.version-editor-table.editor-main-table td.sticky-cell {
+  position: sticky;
+  background: var(--bg-surface, #fff);
+  z-index: 2;
+  box-shadow: inset -1px 0 0 var(--border-color, #e5e7eb);
+}
+.version-editor-table.editor-main-table th.sticky-cell { z-index: 5; }
+/* Последняя закреплённая («Наименование») — с тенью-разделителем, как в
+   главной таблице: стык с прокручиваемой частью читается сразу. */
+.version-editor-table.editor-main-table .sticky-cell.is-last-sticky {
+  box-shadow: inset -1px 0 0 var(--border-color, #e5e7eb), 3px 0 6px rgba(0, 0, 0, 0.06);
+}
+/* Фоны подсвеченных строк на закреплённых ячейках повторяем явно: фон
+   .sticky-cell специфичнее строчных .row-added/.row-modified/.row-multipack
+   и иначе съел бы подсветку на первых двух колонках. */
+.version-editor-table.editor-main-table tr.row-added td.sticky-cell { background: #ecfdf5; }
+.version-editor-table.editor-main-table tr.row-modified td.sticky-cell { background: #fefce8; }
+.version-editor-table.editor-main-table tr.row-multipack td.sticky-cell {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-surface, #fff));
 }
 
 /* Цены предыдущих этапов — справочные, поэтому визуально отделены от текущих */
