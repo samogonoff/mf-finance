@@ -418,6 +418,45 @@ def test_row_keys_guard() -> None:
               "выгрузка собралась с тихим пропуском")
 
 
+def test_extra_columns_tolerated() -> None:
+    """Дашборд шире листа деки (673259): лишние колонки не ломают выгрузку.
+
+    Регресс инцидента 06.11.2026: сборщик p17 добавил две колонки
+    («Δ% к факту», «Δ к факту, чел.»), шапка прототипа осталась семиколоночной,
+    и `_header_spec` падал IndexError на своде. Колонки листа задаёт дека
+    (COL_KEYS), новые поля дашборда — данные, не геометрия.
+    """
+    wide_cols = COLS[:2] + [
+        {"key": "plan_approveddevprev", "label": "Δ% к факту 1 ПГ 25", "unit": "%"},
+        {"key": "plan_approveddevprev_abs", "label": "Δ к факту, чел.", "unit": "чел."},
+    ] + COLS[2:]
+
+    def wide(r: dict) -> dict:
+        return dict(r, plan_approveddevprev=1.5, plan_approveddevprev_abs=12.0,
+                    plan_approveddevprev_color="up")
+
+    rows = [wide(row("Отдел А")), wide(row("Отдел Б"))]
+    data = payload({"BY": rows})
+    data["tables"][0]["columns"] = wide_cols
+    data["tables"][0]["rows"] = [wide(r) for r in data["tables"][0]["rows"]]
+    data["country_details"]["BY"]["table"]["columns"] = wide_cols
+    data["country_details"]["BY"]["table"]["rows"] = rows
+    try:
+        blob = render({"p17": data})
+    except Exception as exc:  # noqa: BLE001
+        check("(B5) лишние колонки дашборда не ломают выгрузку", False,
+              "%s: %s" % (type(exc).__name__, exc))
+        return
+    slides = slides_of(blob)
+    check("(B5) лишние колонки дашборда не ломают выгрузку", bool(slides),
+          "слайдов %d" % len(slides))
+    # шапка осталась семиколоночной, подписи — из деки, новых колонок нет
+    head = cell_texts(slides[0], "tbl_countries")[0]
+    check("(B5) шапка свода — 7 колонок деки", len(head) == len(COLS), "колонок %d" % len(head))
+    check("(B5) новых колонок в шапке нет",
+          all("Δ%" not in c and "к факту" not in c for c in head), "%r" % (head,))
+
+
 def test_asset_sha_guard() -> None:
     """(B7) Актив и манифест сверяются по sha256."""
     manifest = engine_mod.load_manifest()
@@ -454,6 +493,7 @@ def main() -> int:
     logging.disable(logging.CRITICAL)
     tests = (test_format_boundaries, test_layout_capacities, test_empty_slice,
              test_paging_and_style, test_kz_total_top, test_row_keys_guard,
+             test_extra_columns_tolerated,
              test_asset_sha_guard)
     for test in tests:
         try:
