@@ -1348,20 +1348,23 @@ def _half_row(label, drill_value, s: dict, dv: dict, full: bool,
     return row
 
 
-def _devprev_cols(columns: list[dict], cur: str, pairs: dict | None = None) -> list[dict]:
+def _devprev_cols(columns: list[dict], cur: str, year_prev: int,
+                  pairs: tuple = (("b26_h1", "1ПГ"), ("b26_h2", "2ПГ"))) -> list[dict]:
     """Вставить пары Δ к прошлому году сразу за плановыми колонками таблицы.
 
     columns — уже собранный список колонок (label + значения/Δ); вставляются
     `<ключ>devprev` (Δ%, unit «%») и `<ключ>devprev_abs` (Δ в тыс. валюты
-    таблицы). pairs — {ключ: подпись периода} («1ПГ25», «2ПГ25»); по умолчанию
-    бюджетные колонки b26_h1/b26_h2 с фиксированными подписями 2025.
-    Колонки — как их отдаёт API фронту: порядок «рядом с планом» (673259).
+    таблицы). *year_prev* — фактический год базы: подпись строится от него
+    («Δ% к 1ПГ26» при year=2027), а не от константы — иначе на годозависимых
+    вкладках (P14/P15) подпись врёт про год при верном значении (дефект 673259).
+    pairs — [(ключ плановой колонки, подпись полугодия)] в порядке вставки.
     """
-    pairs = pairs or {"b26_h1": "1ПГ25", "b26_h2": "2ПГ25"}
+    yy_p = str(year_prev)[-2:]
+    base_of = {key: half + yy_p for key, half in pairs}
     out: list[dict] = []
     for col in columns:
         out.append(col)
-        lbl = pairs.get(col.get("key"))
+        lbl = base_of.get(col.get("key"))
         if lbl is None:
             continue
         out.append({"key": col["key"] + "devprev", "label": "Δ%% к %s" % lbl, "unit": "%"})
@@ -1370,13 +1373,14 @@ def _devprev_cols(columns: list[dict], cur: str, pairs: dict | None = None) -> l
     return out
 
 
-def _prev_row(s: dict, keys: tuple, half1: str, half2: str, yy: str) -> dict:
+def _prev_row(s: dict, keys: tuple = ("b26_h1", "b26_h2")) -> dict:
     """Пары Δ плановых колонок строки к базе прошлого года (673259).
 
     keys — ключи плановых колонок (первый сверяется с 1ПГ, второй с 2ПГ);
-    half1/half2 — подписи полугодий для меток; yy — хвост года базы. База —
-    _prev_base(s, 'h1'|'h2'); значения — «сырые» суммы витрины, абсолют
-    приводится к тыс. (`_t`), как колонки таблиц.
+    база — _prev_base(s, 'h1'|'h2'), значения — «сырые» суммы витрины, абсолют
+    приводится к тыс. (`_t`), как колонки таблиц. Подписи колонок строит
+    _devprev_cols от фактического года базы — здесь их нет намеренно, чтобы
+    год не мог разойтись в двух местах.
     """
     out: dict = {}
     for key, half in zip(keys, ("h1", "h2")):
@@ -1424,11 +1428,12 @@ _SLIDE_VALUE_KEYS = (
 )
 
 
-def _country_slide_columns(cur: str) -> list[dict]:
+def _country_slide_columns(cur: str, year_prev: int = YEAR_PREV) -> list[dict]:
     """Колонки таблицы стран верхнего свода P11 — реплика листа 1 деки.
 
     После каждой бюджетной колонки — пара Δ к факту того же полугодия
-    прошлого года (673259), как у прочих таблиц вкладки.
+    прошлого года (673259), как у прочих таблиц вкладки; год базы — year_prev
+    (у P11/B1 он динамический из фильтра, у фикс-вкладок — 2025).
     """
     labels = (
         ("f25_h1", "Факт 1ПГ25"), ("f25_h2", "Факт 2ПГ25"), ("f25", "Итого Факт 2025"),
@@ -1436,7 +1441,8 @@ def _country_slide_columns(cur: str) -> list[dict]:
         ("b26_h2", "Бюджет 2ПГ26"), ("t26_h2", "Тактика 2ПГ26"), ("exp26", "Ожидание 2026"),
     )
     return [{"key": "label", "label": "Страна"}] + _devprev_cols(
-        [{"key": key, "label": lbl, "unit": "млн " + cur} for key, lbl in labels], cur)
+        [{"key": key, "label": lbl, "unit": "млн " + cur} for key, lbl in labels],
+        cur, year_prev)
 
 
 def _country_slide_row(label: str, parts: list[dict], total: bool = False) -> dict:
@@ -2239,8 +2245,8 @@ def _p12_columns() -> list[dict]:
     return [
         {"key": "label", "label": "Направление"},
         {"key": "plan_approved", "label": "Утв. страт.", "unit": "чел."},
-        {"key": "plan_approveddevprev", "label": "Δ% к факту 2025", "unit": "%"},
-        {"key": "plan_approveddevprev_abs", "label": "Δ к факту 2025", "unit": "чел."},
+        {"key": "plan_approveddevprev", "label": "Δ%% к факту %d" % YEAR_PREV, "unit": "%"},
+        {"key": "plan_approveddevprev_abs", "label": "Δ к факту %d" % YEAR_PREV, "unit": "чел."},
         {"key": "q25", "label": "Факт 1П25", "unit": "чел."},
         {"key": "q26", "label": "Факт 1П26", "unit": "чел."},
         {"key": "staff_pct", "label": "% ук.", "unit": "%"},
@@ -2442,22 +2448,29 @@ def _p18_row(label: str, r: dict) -> dict:
     return row
 
 
-def _p18_columns() -> list[dict]:
+def _p18_columns(yr_prev: int = YEAR_PREV, yr_plan: int = YEAR_PLAN) -> list[dict]:
     """Колонки таблиц P18; пары Δ к 2ПГ прошлого года — сразу за плановой
-    колонкой (673259). Δ% — процент, абсолют — тыс. (в конвенции таблицы)."""
+    колонкой (673259). Δ% — процент, абсолют — тыс. (в конвенции таблицы).
+
+    Годы в подписях — параметры вкладки (p18_year/p18_half): иначе при
+    year=2027 подпись базы оставалась «к 2ПГ25» при верном значении (дефект
+    673259). Числовые ключи колонок (f25_h1/b26_h2/…) исторически несут
+    «26»/«25» как имена полей и не переименовываются.
+    """
+    yy_p, yy_c = str(yr_prev)[-2:], str(yr_plan)[-2:]
     return [
         {"key": "label", "label": "Направление"},
-        {"key": "f25_h1", "label": "Факт 1ПГ25"},
-        {"key": "exp26", "label": "Ожидание 2026", "unit": "%" if False else ""},
-        {"key": "dev_26_25", "label": "Δ год к 2025", "unit": "%"},
-        {"key": "f26_h1", "label": "Факт 1ПГ26"},
-        {"key": "t26_h2", "label": "Тактика 2ПГ26"},
-        {"key": "t26_h2devprev", "label": "Δ% к 2ПГ25", "unit": "%"},
-        {"key": "t26_h2devprev_abs", "label": "Δ к 2ПГ25", "unit": "тыс."},
+        {"key": "f25_h1", "label": "Факт 1ПГ" + yy_p},
+        {"key": "exp26", "label": "Ожидание %d" % yr_plan, "unit": "%" if False else ""},
+        {"key": "dev_26_25", "label": "Δ год к %d" % yr_prev, "unit": "%"},
+        {"key": "f26_h1", "label": "Факт 1ПГ" + yy_c},
+        {"key": "t26_h2", "label": "Тактика 2ПГ" + yy_c},
+        {"key": "t26_h2devprev", "label": "Δ%% к 2ПГ%s" % yy_p, "unit": "%"},
+        {"key": "t26_h2devprev_abs", "label": "Δ к 2ПГ%s" % yy_p, "unit": "тыс."},
         {"key": "t26_h2_pct", "label": "ФОТ исп. такт.", "unit": "%"},
-        {"key": "b26_h2", "label": "Бюджет 2ПГ26"},
-        {"key": "b26_h2devprev", "label": "Δ% к 2ПГ25", "unit": "%"},
-        {"key": "b26_h2devprev_abs", "label": "Δ к 2ПГ25", "unit": "тыс."},
+        {"key": "b26_h2", "label": "Бюджет 2ПГ" + yy_c},
+        {"key": "b26_h2devprev", "label": "Δ%% к 2ПГ%s" % yy_p, "unit": "%"},
+        {"key": "b26_h2devprev_abs", "label": "Δ к 2ПГ%s" % yy_p, "unit": "тыс."},
         {"key": "b26_h2_pct", "label": "ФОТ исп. бюдж.", "unit": "%"},
     ]
 
@@ -2477,8 +2490,9 @@ def _p18_cards(by_year: list[dict], yr_plan: int, half_label: str) -> list[dict]
     ]
 
 
-def _p18_table(key: str, label: str, col_label: str, rows: list, meta_dim: str) -> dict:
-    cols = _p18_columns()
+def _p18_table(key: str, label: str, col_label: str, rows: list, meta_dim: str,
+               yr_prev: int = YEAR_PREV, yr_plan: int = YEAR_PLAN) -> dict:
+    cols = _p18_columns(yr_prev, yr_plan)
     cols[0]["label"] = col_label
     return {
         "key": key, "label": label, "columns": cols, "rows": rows,
@@ -2513,9 +2527,12 @@ def _p18_assemble(by_dir: list[dict], by_g1: list[dict], by_cfo: list[dict],
     cfo_rows = _rows(by_cfo, lambda r: r["dim"], lambda d: d)
 
     tables = [
-        _p18_table("p18_by_direction", "ФОТ по направлениям", "Направление", dir_rows, "direction"),
-        _p18_table("p18_by_group", "ФОТ по группам ЦФО", "Группа ЦФО", g1_rows, "group_cfo1"),
-        _p18_table("p18_by_dept", "ФОТ по подразделениям", "Подразделение", cfo_rows, "code_cfo"),
+        _p18_table("p18_by_direction", "ФОТ по направлениям", "Направление", dir_rows,
+                   "direction", yr_prev, yr_plan),
+        _p18_table("p18_by_group", "ФОТ по группам ЦФО", "Группа ЦФО", g1_rows,
+                   "group_cfo1", yr_prev, yr_plan),
+        _p18_table("p18_by_dept", "ФОТ по подразделениям", "Подразделение", cfo_rows,
+                   "code_cfo", yr_prev, yr_plan),
     ]
     return cards, tables, None
 
@@ -2979,6 +2996,7 @@ async def _dashboard_b1(p: dict, meta: dict) -> dict:
         "stale": meta.get("stale"), "refreshed_at": meta.get("refreshed_at"),
         "methodology": METHODOLOGY_B1,
         "expect": expect_meta,
+        "prev": _prev_meta(prev_cfg, year_prev),
     }
     warnings = [w for w in (cfg.get("warning"), data.get("warning")) if w]
     f25 = next((cc["value"] for cc in data.get("cards") or []
@@ -4039,6 +4057,7 @@ async def _dashboard_p12(p: dict, meta: dict) -> dict:
         "stale": meta.get("stale"),
         "refreshed_at": meta.get("refreshed_at"),
         "methodology": METHODOLOGY_P12,
+        "prev": _prev_meta(_prev_cfg(closed, YEAR_PREV), YEAR_PREV),
     }
     if warning:
         meta_out["warning"] = warning
@@ -4096,6 +4115,7 @@ async def _dashboard_p17(p: dict, meta: dict) -> dict:
             "at_closed_period": at_closed,
             "note": "факт на конец закрытого периода" if at_closed else None,
         },
+        "prev": _prev_meta(_prev_cfg(closed, yr_prev), yr_prev),
     }
     if warning:
         meta_out["warning"] = warning
@@ -5072,11 +5092,11 @@ def _p14_assemble(cur: str, payload: dict, sel_country: str | None,
     for key, _lbl in labels:
         v = tot_exp if key == "exp26" else tot.get(key)
         total_row[key] = _r1(_t(v))
-    total_row.update(_prev_row(tot, ("b26_h1", "b26_h2"), "1ПГ", "2ПГ", yy_p))
+    total_row.update(_prev_row(tot))
     value_keys = tuple(key for key, _lbl in labels)
     rows = [total_row] + [
         {"label": d["label"], **{k: d[k] for k in value_keys},
-         **_prev_row(d, ("b26_h1", "b26_h2"), "1ПГ", "2ПГ", yy_p)}
+         **_prev_row(d)}
         for d in directions
     ]
     table = {
@@ -5089,7 +5109,7 @@ def _p14_assemble(cur: str, payload: dict, sel_country: str | None,
         "meta": {"dim": "direction", "level_label": "Направление", "path": [],
                  "can_drill": False, "truncated": False, "row_limit": MATRIX_ROW_LIMIT},
     }
-    table["columns"] = _devprev_cols(table["columns"], cur)
+    table["columns"] = _devprev_cols(table["columns"], cur, year_prev)
 
     # Карточки — свод среза (для «Разбора ИИ» и KPI-фолбэка), численность шапки.
     dv = _half_derive(tot, {})
@@ -5175,6 +5195,7 @@ async def _dashboard_p14(p: dict, meta: dict) -> dict:
             "fact_months": ("07–%02d" % min(c, 12)) if c and c > 6 else None,
             "plan_months": ("%02d–12" % (c + 1)) if c and c < 12 else None,
         },
+        "prev": _prev_meta(prev_cfg, year_prev),
     }
     if warning:
         meta_out["warning"] = warning
@@ -5974,7 +5995,7 @@ def _p15_assemble(cur: str, payload: dict, sel_country: str | None,
     for key, _lbl in labels:
         v = tot_exp if key == "exp26" else tot.get(key)
         total_row[key] = _r1(_t(v))
-    total_row.update(_prev_row(tot, ("b26_h1", "b26_h2"), "1ПГ", "2ПГ", yy_p))
+    total_row.update(_prev_row(tot))
     value_keys = tuple(key for key, _lbl in labels)
     table = {
         "key": "departments",
@@ -5984,13 +6005,13 @@ def _p15_assemble(cur: str, payload: dict, sel_country: str | None,
         ],
         "rows": [total_row] + [
             {"label": d["label"], **{k: d[k] for k in value_keys},
-             **_prev_row(d, ("b26_h1", "b26_h2"), "1ПГ", "2ПГ", yy_p)}
+             **_prev_row(d)}
             for d in departments
         ],
         "meta": {"dim": "direction", "level_label": "Отдел", "path": [],
                  "can_drill": False, "truncated": False, "row_limit": MATRIX_ROW_LIMIT},
     }
-    table["columns"] = _devprev_cols(table["columns"], cur)
+    table["columns"] = _devprev_cols(table["columns"], cur, year_prev)
 
     # Карточки-свод (KPI-фолбэк и «Разбор ИИ») и численность шапки.
     dv = _half_derive(tot, {})
@@ -6110,6 +6131,8 @@ def _p15_meta(p: dict, meta: dict, methodology: str, tab: str,
             "fact_months": ("07–%02d" % min(c, 12)) if c and c > 6 else None,
             "plan_months": ("%02d–12" % (c + 1)) if c and c < 12 else None,
         }
+    if year_cur is not None:
+        meta_out["prev"] = _prev_meta(_prev_cfg(closed, year_cur - 1), year_cur - 1)
     return meta_out
 
 
