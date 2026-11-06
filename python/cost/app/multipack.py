@@ -688,6 +688,10 @@ def _component_row(template: dict, item: dict, bucket: str, row_type: str) -> di
     row["cost_factor_rub"] = None
     row["cost_factor_usd"] = None
     row["Декоры, наименование"] = None
+    # Единица измерения нормы (задача Б24 672935) — поле материала источника, к
+    # составу пака не относится: у свёртки нет своей единицы, а унаследованная от
+    # шаблона (у пака это «шт») соврала бы про кг/м. В редакторе — прочерк.
+    row["ед. изм."] = None
     for b in _ALL_BUCKETS:
         row[f"{b}, руб."] = 0
         row[f"{b}, USD."] = 0

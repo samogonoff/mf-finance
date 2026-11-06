@@ -2112,27 +2112,38 @@
             </div>
           </div>
           <div class="version-editor-table-wrap">
-            <table class="version-editor-table">
+            <!-- editor-main-table — модификатор ТОЛЬКО этой таблицы: переводит её
+                 на table-layout: fixed и включает ручки ширины (задача Б24
+                 672935). Общий класс .version-editor-table делят таблица норм
+                 Лисы и таблица «материалов прошлого этапа» — их раскладка не
+                 меняется. -->
+            <table class="version-editor-table editor-main-table">
               <thead>
                 <tr>
                   <th v-if="editingVersion.isEditing" class="col-chk"><input type="checkbox" @change="(e: any) => editingVersion?.rows.forEach(r => r._selected = (e.target as HTMLInputElement).checked)" /></th>
-                  <th>Материал/операция</th>
-                  <th>Наименование</th>
-                  <th>Артикул материала</th>
-                  <th>Свойство</th>
+                  <th :style="editorColStyle('type')" class="col-ellipsis">Материал/операция<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('type', $event)" @dblclick.stop.prevent="resetEditorColWidth('type')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <th :style="editorColStyle('name')" class="col-ellipsis">Наименование<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('name', $event)" @dblclick.stop.prevent="resetEditorColWidth('name')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <th :style="editorColStyle('articul')" class="col-ellipsis">Артикул материала<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('articul', $event)" @dblclick.stop.prevent="resetEditorColWidth('articul')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <th :style="editorColStyle('prop')" class="col-ellipsis">Свойство<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('prop', $event)" @dblclick.stop.prevent="resetEditorColWidth('prop')" title="Изменить ширину · двойной клик — сброс"></span></th>
                   <!-- Цены предыдущих этапов калькулирования: слева от текущих,
                        только для чтения. Ключ сопоставления — материал
-                       (наименование + артикул + три свойства). -->
+                       (наименование + артикул + три свойства). Ширина не
+                       настраивается: колонки появляются и исчезают вместе с
+                       историей калькуляции (см. EDITOR_COL_DEFAULT_WIDTHS). -->
                   <th v-for="sp in stagePrices" :key="'h-' + sp.stage" class="col-num stage-col"
                       :title="stageColHint(sp)">Цена {{ sp.stage }}, руб.</th>
-                  <th class="col-num" title="Фактически раскроено штук по карте кроя задания">Раскроено, шт</th>
-                  <th class="col-num">Норма</th>
-                  <th class="col-num" title="Цена в валюте строки: у части материалов ФКСС она в валюте закупки (узб. сумы, рос. рубли). Сумма считается в рублях по курсу.">Цена</th>
-                  <th class="col-num">Цена, USD</th>
-                  <th class="col-num">Курс</th>
-                  <th class="col-num">Сумма, руб.</th>
-                  <th class="col-num">Сумма, USD</th>
-                  <th>Комментарий</th>
+                  <th :style="editorColStyle('cut_qty')" class="col-num" title="Фактически раскроено штук по карте кроя задания">Раскроено, шт<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('cut_qty', $event)" @dblclick.stop.prevent="resetEditorColWidth('cut_qty')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <th :style="editorColStyle('norm')" class="col-num">Норма<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('norm', $event)" @dblclick.stop.prevent="resetEditorColWidth('norm')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <!-- Единица измерения нормы из источника (задача Б24 672935):
+                       кг/м/шт у материалов, «мин» у пошива и раскроя, «шт» у
+                       декора. Только чтение, в обоих режимах. -->
+                  <th :style="editorColStyle('unit')" title="Единица измерения нормы из расчёта: кг/м/шт у материалов, мин у операций. У расчётов, загруженных до появления колонки, — пусто">Ед.<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('unit', $event)" @dblclick.stop.prevent="resetEditorColWidth('unit')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <th :style="editorColStyle('price')" class="col-num" title="Цена в валюте строки: у части материалов ФКСС она в валюте закупки (узб. сумы, рос. рубли). Сумма считается в рублях по курсу.">Цена<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('price', $event)" @dblclick.stop.prevent="resetEditorColWidth('price')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <th :style="editorColStyle('price_usd')" class="col-num">Цена, USD<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('price_usd', $event)" @dblclick.stop.prevent="resetEditorColWidth('price_usd')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <th :style="editorColStyle('rate')" class="col-num">Курс<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('rate', $event)" @dblclick.stop.prevent="resetEditorColWidth('rate')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <th :style="editorColStyle('sum_rub')" class="col-num">Сумма, руб.<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('sum_rub', $event)" @dblclick.stop.prevent="resetEditorColWidth('sum_rub')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <th :style="editorColStyle('sum_usd')" class="col-num">Сумма, USD<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('sum_usd', $event)" @dblclick.stop.prevent="resetEditorColWidth('sum_usd')" title="Изменить ширину · двойной клик — сброс"></span></th>
+                  <th :style="editorColStyle('comment')" class="col-ellipsis">Комментарий<span class="col-resize-handle" @mousedown.stop.prevent="startEditorColResize('comment', $event)" @dblclick.stop.prevent="resetEditorColWidth('comment')" title="Изменить ширину · двойной клик — сброс"></span></th>
                 </tr>
               </thead>
               <tbody>
@@ -2157,8 +2168,8 @@
                     <span v-else-if="editingVersion.isEditing" class="type-tag clickable" @click="editingTypeCell = vi">{{ typeDisplayValue(vr) || '—' }}</span>
                     <span v-else>{{ typeDisplayValue(vr) }}</span>
                   </td>
-                  <td><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else>{{ nameDisplayValue(vr) || '—' }}</span></td>
-                  <td><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else>{{ vr['артикул материала'] }}</span></td>
+                  <td><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="nameDisplayValue(vr)" class="editor-input" @input="onVersionRowEdit(vr, $event, 'Наименование')" /><span v-else class="cell-ellipsis" :title="nameDisplayValue(vr) || ''">{{ nameDisplayValue(vr) || '—' }}</span></td>
+                  <td><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['артикул материала']" class="editor-input" @input="onVersionRowEdit(vr, $event, 'артикул материала')" /><span v-else class="cell-ellipsis" :title="vr['артикул материала'] || ''">{{ vr['артикул материала'] }}</span></td>
                   <td>
                     <input
                       v-if="editingVersion.isEditing && !isMultipackRow(vr)"
@@ -2168,7 +2179,10 @@
                       title="До трёх свойств через запятую — пишутся в свойство1/2/3"
                       @input="onVersionPropertyEdit(vr, $event)"
                     />
-                    <span v-else>{{ vr['Свойство'] }}</span>
+                    <!-- Полный текст — в подсказке: при table-layout: fixed и
+                         обрезке по многоточию длинные свойства иначе не прочесть
+                         (задача Б24 672935). -->
+                    <span v-else class="cell-ellipsis" :title="vr['Свойство'] || ''">{{ vr['Свойство'] }}</span>
                   </td>
                   <td v-for="sp in stagePrices" :key="'c-' + sp.stage" class="col-num num stage-col">
                     <template v-if="stagePriceOf(sp, vr) !== null">
@@ -2188,6 +2202,13 @@
                        задаётся суммой в колонках «Сумма» ниже. Поля скрыты намеренно —
                        если их заполнить, произведение затрёт сумму декора. -->
                   <td class="col-num"><span v-if="isDecorRow(vr)" class="muted" title="У декора нет нормы — стоимость задаётся суммой">—</span><input v-else-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Норма']" type="number" step="0.000001" class="editor-input col-num" :disabled="needsCurrency(vr)" :title="needsCurrency(vr) ? 'Сначала выберите валюту цены: без неё цена посчиталась бы как рублёвая' : ''" @input="onVersionRowEdit(vr, $event, 'Норма')" /><span v-else :title="isMultipackRow(vr) ? 'Количество штук в паке — меняется в составе' : ''">{{ fmtNorm(vr['Норма']) }}</span></td>
+                  <!-- Единица измерения нормы (задача Б24 672935): только чтение в
+                       обоих режимах. Ключ — ровно «ед. изм.», как в источнике;
+                       у расчётов, загруженных до появления колонки, пусто → «—».
+                       Обёртка с ellipsis: в источнике бывают и «рулон», и
+                       «вязание» (замер 06.11.2026) — без обрезки они упирались
+                       в границу «Цены» без многоточия. -->
+                  <td class="muted"><span class="cell-ellipsis" :title="vr['ед. изм.'] || ''">{{ vr['ед. изм.'] || '—' }}</span></td>
                   <td class="col-num price-cell"><span v-if="isDecorRow(vr)" class="muted">—</span><template v-else><input v-if="editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['цена материала, руб.']" type="number" step="any" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'цена материала, руб.')" /><span v-else :title="isMultipackRow(vr) ? 'Себестоимость статьи у одиночки за штуку' : ''">{{ fmtPriceFine(vr['цена материала, руб.']) }}</span><!--
                     Валюта цены — только у материалов: у операций цена — ставка минуты в рублях.
                     Сумма в рублях = норма × цена × коэффициент строки (см. versionRowSum). -->
@@ -2199,7 +2220,7 @@
                   <!-- Для декора сумма редактируется напрямую, для материала считается. -->
                   <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Декоры, руб.']" type="number" step="0.0001" class="editor-input col-num" title="Стоимость декора — задаётся суммой" @input="onVersionRowEdit(vr, $event, 'Декоры, руб.')" /><span v-else>{{ fmtPrice4(isMultipackRow(vr) && isDecorRow(vr) ? vr['Декоры, руб.'] : versionRowSum(vr, 'руб.')) }}</span></td>
                   <td class="col-num"><input v-if="isDecorRow(vr) && editingVersion.isEditing && !isMultipackRow(vr)" :value="vr['Декоры, USD.']" type="number" step="0.0001" class="editor-input col-num" @input="onVersionRowEdit(vr, $event, 'Декоры, USD.')" /><span v-else>{{ fmtPrice4(isMultipackRow(vr) && isDecorRow(vr) ? vr['Декоры, USD.'] : versionRowSum(vr, 'USD.')) }}</span></td>
-                  <td><input v-if="editingVersion.isEditing" :value="vr.row_comment" class="editor-input" placeholder="..." @input="onVersionRowEdit(vr, $event, 'row_comment')" /><span v-else>{{ vr.row_comment }}</span></td>
+                  <td><input v-if="editingVersion.isEditing" :value="vr.row_comment" class="editor-input" placeholder="..." @input="onVersionRowEdit(vr, $event, 'row_comment')" /><span v-else class="cell-ellipsis" :title="vr.row_comment || ''">{{ vr.row_comment }}</span></td>
                 </tr>
               </tbody>
             </table>
@@ -6429,6 +6450,103 @@ const savingDraft = ref(false);
 const submittingDraft = ref(false);
 const loadingVersionData = ref(false);
 
+// ── Ширины колонок модального редактора расчёта (задача Б24 672935) ──────────
+//
+// Колонка «Свойство» при table-layout: auto распиралась по содержимому (три
+// свойства через запятую — самая длинная ячейка строки) и выдавливала «Норму»
+// и «Цену» за экран. Ширины задаются мышью, как в главной таблице, но живут
+// ОТДЕЛЬНО от неё: набор колонок другой, и общий localStorage перепутал бы
+// ключи. На сервер эти ширины не уходят — это раскладка одной модалки, а не
+// настройка раздела (в главной таблице ширины синхронизируются через
+// /user-prefs, здесь такого требования нет).
+//
+// Ресайз только у СТАТИЧЕСКИХ колонок. Колонки цен предыдущих этапов
+// (stagePrices) появляются и исчезают в зависимости от истории калькуляции —
+// хранить их ширины по имени этапа значило бы копить мусор в localStorage, а
+// их содержимое короткое (цена с процентом). Чекбокс тоже без ресайза.
+const EDITOR_WIDTH_KEY = 'cost_editor_col_widths';
+/** Значения по умолчанию — по содержимому: «Наименование» и «Свойство» длиннее
+ *  всех, числа короткие. maxWidth тот же, что у главной таблицы, — общий
+ *  EDITOR_COL_MAX_WIDTH. */
+const EDITOR_COL_DEFAULT_WIDTHS: Record<string, number> = {
+  type: 150, name: 170, articul: 120, prop: 220, cut_qty: 90, norm: 90,
+  // 64, а не 50: в источнике встречаются «рулон» и «вязание» (замер
+  // 06.11.2026) — на 50px «вязание» обрезалось многоточием.
+  unit: 64, price: 150, price_usd: 90, rate: 70, sum_rub: 95, sum_usd: 90,
+  comment: 150,
+};
+/** Ниже этого колонку не сжать: заголовок «Наименование» в одну строку уже не
+ *  влезет, а с ellipsis содержимое всё равно читается по наведению. */
+const EDITOR_COL_MIN_WIDTHS: Record<string, number> = {
+  type: 90, name: 80, articul: 70, prop: 90, cut_qty: 60, norm: 60,
+  unit: 40, price: 70, price_usd: 70, rate: 55, sum_rub: 70, sum_usd: 70,
+  comment: 70,
+};
+const EDITOR_COL_MIN_WIDTH_DEFAULT = 50;
+const EDITOR_COL_MAX_WIDTH = 600;
+/** Порядок ключей — тот же, что у заголовков в шаблоне. Нужен только для
+ *  загрузки сохранённых ширин: чужие ключи из localStorage игнорируются. */
+const EDITOR_COL_KEYS = Object.keys(EDITOR_COL_DEFAULT_WIDTHS);
+
+function clampEditorColWidth(key: string, w: number): number {
+  return Math.max(
+    EDITOR_COL_MIN_WIDTHS[key] ?? EDITOR_COL_MIN_WIDTH_DEFAULT,
+    Math.min(EDITOR_COL_MAX_WIDTH, Math.round(w)),
+  );
+}
+function loadEditorColWidths(): Record<string, number> {
+  const out = { ...EDITOR_COL_DEFAULT_WIDTHS };
+  try {
+    const parsed = JSON.parse(localStorage.getItem(EDITOR_WIDTH_KEY) || '{}');
+    for (const k of EDITOR_COL_KEYS) {
+      const w = Number(parsed[k]);
+      if (Number.isFinite(w) && w > 0) out[k] = clampEditorColWidth(k, w);
+    }
+  } catch { /* остаёмся на значениях по умолчанию */ }
+  return out;
+}
+const editorColWidths = reactive<Record<string, number>>(loadEditorColWidths());
+
+/** Ширина колонки редактора. Как и в главной таблице: при table-layout: fixed
+ *  раскладку задаёт первая строка (заголовки), поэтому ширины достаточно
+ *  поставить на <th> — colgroup не нужен. */
+function editorColStyle(key: string): Record<string, string> {
+  const w = editorColWidths[key] + 'px';
+  return { width: w, minWidth: w, maxWidth: w };
+}
+
+let editorResizing: { key: string; startX: number; startW: number } | null = null;
+function startEditorColResize(key: string, e: MouseEvent) {
+  editorResizing = { key, startX: e.clientX, startW: editorColWidths[key] };
+  document.body.style.userSelect = 'none';
+  document.body.style.cursor = 'col-resize';
+  window.addEventListener('mousemove', onEditorColResizeMove);
+  window.addEventListener('mouseup', stopEditorColResize);
+}
+function onEditorColResizeMove(e: MouseEvent) {
+  if (!editorResizing) return;
+  editorColWidths[editorResizing.key] = clampEditorColWidth(
+    editorResizing.key,
+    editorResizing.startW + (e.clientX - editorResizing.startX),
+  );
+}
+function stopEditorColResize() {
+  if (!editorResizing) return;
+  editorResizing = null;
+  document.body.style.userSelect = '';
+  document.body.style.cursor = '';
+  window.removeEventListener('mousemove', onEditorColResizeMove);
+  window.removeEventListener('mouseup', stopEditorColResize);
+  persistEditorColWidths();
+}
+function resetEditorColWidth(key: string) {
+  editorColWidths[key] = EDITOR_COL_DEFAULT_WIDTHS[key];
+  persistEditorColWidths();
+}
+function persistEditorColWidths() {
+  try { localStorage.setItem(EDITOR_WIDTH_KEY, JSON.stringify(editorColWidths)); } catch { /* ignore */ }
+}
+
 /** Индекс строки, для которой открыт dropdown типа (-1 = ни одна). */
 const editingTypeCell = ref<number>(-1);
 
@@ -7718,6 +7836,10 @@ const addVersionRow = () => {
     template['свойство2'] = '';
     template['свойство3'] = '';
     template['Свойство'] = '';
+    // Единица измерения (задача Б24 672935) — тоже поле материала из источника:
+    // у новой строки источника нет, и унаследованный «кг» от первой строки был
+    // бы враньём. Пусто → в редакторе «—».
+    template['ед. изм.'] = '';
     template._propRaw = '';
     template['Норма'] = 0;
     template['цена материала, руб.'] = 0;
@@ -12292,6 +12414,89 @@ tr.row-audit { background-color: color-mix(in srgb, #059669 10%, transparent) !i
 .version-editor-table { width:100%; border-collapse:collapse; font-size:13px; }
 .version-editor-table th, .version-editor-table td { padding:4px 6px; border:1px solid var(--border-color, #e5e7eb); text-align:left; white-space:nowrap; }
 .version-editor-table .col-chk { width:32px; text-align:center; }
+
+/* Ширины колонок модального редактора расчёта (задача Б24 672935).
+   Модификатор editor-main-table — только у главной таблицы редактора: общий
+   .version-editor-table делят ещё таблица норм Лисы и таблица «материалов
+   прошлого этапа», и их раскладка (auto по содержимому) должна остаться как
+   была.
+
+   Почему fixed. При table-layout: auto браузер подбирает ширины под
+   содержимое, и заданное мышью значение остаётся лишь пожеланием: «Свойство»
+   (три свойства через запятую) распирало колонку и выдавливало «Норму» и
+   «Цену» за экран. При fixed раскладку задаёт первая строка — ширины на <th>,
+   см. editorColStyle.
+   Ширина таблицы — сумма заданных колонок (min-content), иначе браузер раздал
+   бы излишек всем колонкам поровну и заданное значение не соблюдалось бы
+   (тот же баг, что в главной таблице, проверен 27.08.2026). min-width: 100%
+   оставлено для случая, когда колонок мало и таблица иначе висела бы узкой
+   полосой у левого края. */
+.version-editor-table.editor-main-table {
+  table-layout: fixed;
+  width: min-content;
+  min-width: 100%;
+}
+/* Общее правило .version-editor-table th,td выше ставит min-width по
+   содержимому — для настраиваемой колонки это запрет на сужение. Снимаем,
+   нижняя граница теперь одна и в коде (EDITOR_COL_MIN_WIDTHS). */
+.version-editor-table.editor-main-table th,
+.version-editor-table.editor-main-table td { min-width: 0; }
+/* Ручка ресайза позиционируется от заголовка. overflow: hidden нужен, чтобы
+   длинный текст заголовка не вылезал на соседнюю колонку при сужении; ручку
+   при этом держим внутри правого края (right: 0), иначе она обрежется вместе
+   с текстом. */
+.version-editor-table.editor-main-table thead th {
+  position: relative;
+  overflow: hidden;
+}
+/* Ячейки — тоже с обрезкой: при fixed раскладке значение шире колонки иначе
+   вылезало бы поверх соседней (число в 20 знаков у numeric без масштаба).
+   Выпадающий список валюты это не ломает — он рисуется браузером вне потока. */
+.version-editor-table.editor-main-table tbody td { overflow: hidden; }
+.version-editor-table.editor-main-table .col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+  touch-action: none;
+}
+.version-editor-table.editor-main-table .col-resize-handle:hover {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+/* Заголовки текстовых колонок при сужении обрезаются с многоточием, а не
+   рвутся посередине слова: overflow: hidden у th уже стоит выше. */
+.version-editor-table.editor-main-table th.col-ellipsis { text-overflow: ellipsis; }
+/* Обрезка длинного текста по многоточию. Только у текстовых колонок и только в
+   режиме просмотра: в поле ввода обрезка мешала бы править значение. Полный
+   текст — в title (см. шаблон). */
+.version-editor-table.editor-main-table .cell-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+/* .editor-input в узких колонках не должен выпадать: width: 100% даёт
+   box-sizing самого поля (в редакторе он border-box), а max-width страхует от
+   числа в 20 знаков — Postgres отдаёт numeric без масштаба как есть.
+   Ячейка «Цена» исключена: там рядом с полем стоит выбор валюты, и поле во всю
+   ширину выдавило бы его за край. */
+.version-editor-table.editor-main-table .editor-input {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+/* Валюта цены стоит рядом с полем цены в одну строку — как и до перехода на
+   fixed. Поле цены занимает остаток ширины за вычетом выбора валюты: при
+   фиксированной ширине колонки (по умолчанию 150px) оба элемента помещаются,
+   а при сужении поле сжимается первым. */
+.version-editor-table.editor-main-table .price-cell .editor-input {
+  width: calc(100% - 62px);
+  min-width: 40px;
+}
 
 /* Цены предыдущих этапов — справочные, поэтому визуально отделены от текущих */
 .version-editor-table .stage-col {
