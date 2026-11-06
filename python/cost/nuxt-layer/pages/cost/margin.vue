@@ -7,7 +7,13 @@
           <span v-if="meta.cache_refreshed_at">Данные на {{ fmtDateTime(meta.cache_refreshed_at) }}</span>
           <span v-else class="warn">Свежесть кэша неизвестна</span>
           <span class="dot">·</span>
-          <span :class="{ warn: coveragePct < 80 }">
+          <!-- В режиме «только ГП» калькуляций нет вовсе: у поступления их не
+               бывает. «0 из 30 328 (0%)» читалось бы как потерянные данные, а
+               не как свойство режима. -->
+          <span v-if="gpMode === 'gp'" class="gp-only-note">
+            поступление товара — {{ fmtInt(meta.gp_rows_in_period) }} строк, калькуляций нет
+          </span>
+          <span v-else :class="{ warn: coveragePct < 80 }">
             в расчёте {{ fmtInt(tiles.calc_count) }} из {{ fmtInt(meta.calc_total) }}
             калькуляций {{ meta.volume_sign || 'ФКСС' }} ({{ coveragePct }}%)
           </span>
@@ -15,9 +21,22 @@
           <span>{{ fmtInt(tiles.model_count) }} моделей</span>
           <span class="dot">·</span>
           <!-- Что считается выпуском, обязано быть видно рядом с цифрами. -->
-          <span :title="`Выпуск — только калькуляции ${meta.volume_sign || 'ФКСС'} с объёмом; полуфабрикаты исключены`">
+          <span v-if="gpMode === 'gp'"
+                :title="'Сторонняя готовая продукция: купленный товар. Себестоимость — цена закупки без НДС, выручка — по учётной цене; норм и минут пошива у него нет'">
+            только ГП, калькуляций нет
+          </span>
+          <span v-else :title="`Выпуск — только калькуляции ${meta.volume_sign || 'ФКСС'} с объёмом; полуфабрикаты исключены`">
             только {{ meta.volume_sign || 'ФКСС' }}, полуфабрикаты исключены
           </span>
+          <!-- Подпись режима ГП: цифры «с ГП» и «без ГП» отличаются на проценты,
+               а выглядят одинаково. -->
+          <template v-if="gpMode === 'all'">
+            <span class="dot">·</span>
+            <span :title="`Сторонняя готовая продукция (поступление товара): ${fmtInt(meta.gp_rows_in_period)} строк в периоде`">
+              включая ГП<template
+                v-if="meta.gp_rows_in_period !== undefined"> ({{ fmtInt(meta.gp_rows_in_period) }} стр.)</template>
+            </span>
+          </template>
         </p>
       </div>
 
@@ -31,6 +50,15 @@
           <button v-for="b in (meta.cost_bases || [])" :key="b.key" class="btn btn-sm"
                   :class="b.key === costBasis ? 'btn-primary' : 'btn-ghost'"
                   @click="setBasis(b.key)">{{ b.key === 'fact' ? 'Факт' : 'Норматив' }}</button>
+        </div>
+        <!-- Сторонняя готовая продукция: своё производство, купленный товар или
+             всё вместе. В отчёте Power BI эти блоки склеены в одну таблицу, и
+             без ГП маржинальность дашборда с ним не сходится. -->
+        <div class="currency-switch" role="group" aria-label="Готовая продукция"
+             title="Сторонняя готовая продукция (поступление товара) — как в отчёте Power BI">
+          <button v-for="m in (meta.gp_modes || [])" :key="m.key" class="btn btn-sm"
+                  :class="m.key === gpMode ? 'btn-primary' : 'btn-ghost'"
+                  @click="setGpMode(m.key)">{{ GP_LABELS[m.key] || m.label }}</button>
         </div>
         <div class="currency-switch" role="group" aria-label="Валюта">
           <button v-for="c in ['BYN', 'USD']" :key="c" class="btn btn-sm"
@@ -320,9 +348,14 @@
                     :class="v.key === devView ? 'btn-primary' : 'btn-ghost'"
                     @click="devView = v.key">{{ v.label }}</button>
           </div>
-          <!-- Выгрузка — задача Б24 660908 (Журавская М.М., 30.09.2026). -->
-          <button class="btn btn-ghost btn-sm" :disabled="devExporting || loading"
-                  :title="`Выгрузить вкладку «${devViewLabel}» в Excel — все строки выборки, не только показанные`"
+          <!-- Выгрузка — задача Б24 660908 (Журавская М.М., 30.09.2026).
+               В режиме «только ГП» блокируем: лист отклонений считается по
+               калькуляциям, и /margin/deviations про режим не знает — выгрузил бы
+               полный лист собственного выпуска при пустой таблице на экране. -->
+          <button class="btn btn-ghost btn-sm" :disabled="devExporting || loading || gpMode === 'gp'"
+                  :title="gpMode === 'gp'
+                    ? 'Отклонения считаются только по собственному выпуску — переключите режим'
+                    : `Выгрузить вкладку «${devViewLabel}» в Excel — все строки выборки, не только показанные`"
                   @click="exportDeviations">
             <Icon name="lucide:download" /> {{ devExporting ? 'Готовлю…' : 'Excel' }}
           </button>
@@ -494,6 +527,29 @@ function setBasis(key: string) {
   reload()
 }
 
+/** Режим готовой продукции — см. GP_MODES в app/margin.py. Ходит на сервер:
+ * от него зависит, какие строки вообще попадут в расчёт. Короткие подписи — на
+ * кнопки, длинные (meta.gp_modes) — в подсказку. */
+type GpMode = 'all' | 'gp' | 'own'
+const GP_LABELS: Record<string, string> = { all: 'Все', gp: 'ГП', own: 'Без ГП' }
+const GP_STORAGE_KEY = 'cost.margin.gp'
+const gpMode = ref<GpMode>('all')
+function setGpMode(key: string) {
+  if (key !== 'all' && key !== 'gp' && key !== 'own') return
+  gpMode.value = key
+  try { localStorage.setItem(GP_STORAGE_KEY, key) } catch { /* ignore */ }
+  reload()
+}
+/** Выбор режима переживает перезагрузку страницы — как база себестоимости в
+ * коммерческом дашборде. Битое или чужое значение игнорируем: сервер всё равно
+ * отклонит неизвестный режим, а пустая страница читалась бы как поломка. */
+function restoreGpMode() {
+  try {
+    const saved = localStorage.getItem(GP_STORAGE_KEY)
+    if (saved === 'all' || saved === 'gp' || saved === 'own') gpMode.value = saved
+  } catch { /* ignore */ }
+}
+
 const loading = ref(false)
 const error = ref('')
 
@@ -523,6 +579,7 @@ function buildParams(defaultPeriod: boolean): string {
   for (const v of matrixPath.value) p.append('matrix_path', v)
   if (defaultPeriod) p.set('default_period', '1')
   p.set('cost_basis', costBasis.value)
+  p.set('gp', gpMode.value)
   return p.toString()
 }
 
@@ -562,7 +619,10 @@ function resetFilters() {
   reload(true)
 }
 
-onMounted(() => reload(true))
+onMounted(() => {
+  restoreGpMode()
+  reload(true)
+})
 
 // ── Фильтры и подписи ───────────────────────────────────────────────────────
 
@@ -788,6 +848,14 @@ const devExporting = ref(false)
 const devExportError = ref('')
 
 async function exportDeviations() {
+  // Кнопка в этом режиме disabled, но проверка нужна и здесь: выгрузка ходит на
+  // /margin/deviations, а он про режим ГП не знает и вернул бы полный лист
+  // собственного выпуска — при пустой таблице на экране это выглядело бы как
+  // «данные есть, просто не показаны».
+  if (gpMode.value === 'gp') {
+    devExportError.value = 'Отклонения считаются только по собственному выпуску — переключите режим'
+    return
+  }
   devExporting.value = true
   devExportError.value = ''
   try {
@@ -1336,6 +1404,7 @@ const insightContext = computed(() => {
     'Что показано на графиках': scope,
     'Валюта': currency.value,
     'База себестоимости': costBasis.value === 'fact' ? 'фактическая' : 'нормативная',
+    'Что считается выпуском': GP_LABELS[gpMode.value] || gpMode.value,
     ...(matrixPath.value.length ? { 'Путь матрицы': matrixPath.value.join(' → ') } : {}),
     ...active,
   }
@@ -1446,6 +1515,8 @@ const insightContextDeviations = computed(() => ({
 .dev-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 
 .basis { margin: 0; font-size: var(--fs-2xs); color: var(--text-muted); }
+/* В режиме «только ГП» калькуляций нет — это свойство режима, не потеря данных. */
+.gp-only-note { color: var(--text-muted); }
 
 .filters {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));

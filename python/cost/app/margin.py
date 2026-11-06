@@ -42,6 +42,30 @@
 валюте: доллар у нас пересчитан по курсу на дату расчёта строки, и отношение
 сумм в USD отличается от BYN на десятые доли процента — переключатель валюты,
 меняющий проценты, читался бы как ошибка. Валюта переключает только суммы.
+
+СТОРОННЯЯ ГОТОВАЯ ПРОДУКЦИЯ (ГП)
+================================
+Отчёт заказчика собран из двух блоков: собственный выпуск и «Поступление товара
+стороннего» — купленный товар, который перепродают. У покупного нет ни норм, ни
+минут пошива: себестоимость — цена закупки без НДС, выручка — по учётной цене
+(cost_ready_goods, миграция 0074). В PBIX блоки склеены в одну таблицу с
+колонкой-признаком, здесь — переключатель gp_mode:
+
+    all — выпуск и ГП вместе (как в отчёте Power BI, по умолчанию);
+    gp  — только ГП;
+    own — только собственный выпуск (как было до 06.11.2026).
+
+Признак строки — is_gp в src: он едет по всем агрегатам, поэтому «сколько строк
+ГП в периоде» отдаётся в meta без отдельного запроса. ГП не участвует в норме
+маржинальности (норма задана по Level 01 выпуска), в листе отклонений (он про
+калькуляции) и в полноте расчёта (calc_total) — там по-прежнему только ФКСС.
+Level 01…05 и страна для ГП лежат в самой таблице cost_ready_goods: их положил
+туда sync_ready_goods из Checks.dbo.Groups и s_modeli.COUNTRY — ровно оттуда,
+откуда их берёт Power BI. Брать иерархию из витрины выпуска нельзя: покупной
+товар не производили, и в cost_calc_mv его нет (совпадает 1 пара из 2 503).
+USD для ГП — BYN, делённые на средний курс месяца по витрине (курс НБ из
+строк выпуска): своего курса у поступления нет, а валютный переключатель обязан
+работать на всех строках одинаково.
 """
 
 from __future__ import annotations
@@ -131,6 +155,15 @@ COST_BASES: dict[str, str] = {
 }
 DEFAULT_COST_BASIS = "fact"
 
+# Сторонняя готовая продукция в дашборде — см. абзац про ГП в докстринге модуля.
+# Ключи и подписи уходят на фронт (meta.gp_modes), переключатель там же.
+GP_MODES: dict[str, str] = {
+    "all": "включая ГП",
+    "gp": "только ГП",
+    "own": "без ГП",
+}
+DEFAULT_GP_MODE = "all"
+
 # ГОДНОСТЬ ФАКТА. Источник считает «Себестоимость факт» даже там, где фактическая
 # ставка минуты в Лисе НЕ ЗАВЕДЕНА: минуты умножаются на ноль, и «факт» получается
 # равным нормативу минус пошив. У фирмы 166 констант *_MIN_F нет вовсе, у 152 и
@@ -177,22 +210,44 @@ _VALUE_COLS = (
     # тех, где факт есть. Иначе разница «факт − норматив» смешалась бы с разницей
     # состава строк. vol_f / rev_f — объём и выручка этих строк.
     "vol_f", "rev_f_b", "rev_f_u", "cost_f_b", "cost_f_u", "cost_n_b", "cost_n_u",
+    # Объём ТОЛЬКО собственного выпуска. Нужен знаменателю «доли годного факта»:
+    # у ГП факта нет вовсе (покупной товар не считают по минутам), и без этой
+    # колонки включение ГП показывало бы падение покрытия фактом там, где его
+    # никто не терял.
+    "vol_own",
 )
 _PERIODS = (("", "cur"), ("_pm", "pm"), ("_py", "py"))
 
 
-def _sums() -> str:
-    """Суммы величин по трём периодам + счётчики и целевая маржинальность."""
+def _sums(with_gp_rows: bool = False) -> str:
+    """Суммы величин по трём периодам + счётчики и целевая маржинальность.
+
+    with_gp_rows — добавить счётчик строк ГП. Нужен только плиткам (уходят в
+    meta), в разрезах это лишняя колонка на каждую строку ответа.
+    """
     parts = []
     for suffix, k in _PERIODS:
         parts += [f"sum({c}) FILTER (WHERE k = '{k}') AS {c}{suffix}" for c in _VALUE_COLS]
     parts += [
-        "count(*) FILTER (WHERE k = 'cur')              AS calc_count",
+        # Калькуляций в периоде. Только собственный выпуск: у поступления ГП
+        # калькуляции нет вовсе, а знаменатель (calc_total) считает именно
+        # калькуляции ФКСС — с ГП-строками «в расчёте 29 471 из 28 819 (102%)»
+        # читалось бы как ошибка полноты.
+        "count(*) FILTER (WHERE k = 'cur' AND NOT is_gp) AS calc_count",
         "count(DISTINCT model) FILTER (WHERE k = 'cur') AS model_count",
+    ]
+    if with_gp_rows:
+        # Сколько строк периода — сторонняя готовая продукция. Уходит в meta:
+        # «включая ГП» без этой цифры не отличить от «ГП в периоде нет».
+        parts.append("count(*) FILTER (WHERE k = 'cur' AND is_gp)    AS gp_rows")
+    parts += [
         # Норма маржинальности — из cost_margin_targets по Level 01, взвешенная
         # по выручке. Строки без нормы (0 в таблице = не задана) не входят ни в
         # числитель, ни в знаменатель; доля выручки с нормой отдаётся отдельно,
         # чтобы «норма 48%» при покрытии 30% не читалась как норма для всего.
+        # У ГП нормы нет вовсе (target_frac = NULL) — и это правильно: норма
+        # задана по Level 01 собственного выпуска, а покупной товар в неё не
+        # входит ни числителем, ни знаменателем.
         "sum(rev_b * target_frac) FILTER (WHERE k = 'cur' AND target_frac IS NOT NULL) AS target_num",
         "sum(rev_b)               FILTER (WHERE k = 'cur' AND target_frac IS NOT NULL) AS target_den",
     ]
@@ -257,8 +312,14 @@ def _derive(row: dict) -> dict:
         # Норматив против факта — на строках, где факт есть (см. _VALUE_COLS).
         # Доля выпуска с фактом обязана быть рядом с любой цифрой «по факту»:
         # до 2026 года она 0%, и «факт» там — это норматив.
+        #
+        # Знаменатель — объём СОБСТВЕННОГО выпуска (vol_own), а не всего
+        # периода: у сторонней ГП факта не бывает вовсе (покупной товар не
+        # считают по минутам пошива), и включение ГП занижало бы покрытие
+        # фактом на её долю — как будто факт пропал.
         vol_f = row.get(f"vol_f{suffix}")
-        out[f"fact_coverage_pct{suffix}"] = _pct(vol_f or 0, vol)
+        vol_own = row.get(f"vol_own{suffix}")
+        out[f"fact_coverage_pct{suffix}"] = _pct(vol_f or 0, vol_own)
         rev_f_b, cost_f_b, cost_n_b = (row.get(f"{x}{suffix}") for x in ("rev_f_b", "cost_f_b", "cost_n_b"))
         out[f"margin_pct_fact{suffix}"] = _pct(_sub(rev_f_b, cost_f_b), rev_f_b)
         out[f"margin_pct_norm{suffix}"] = _pct(_sub(rev_f_b, cost_n_b), rev_f_b)
@@ -282,6 +343,7 @@ def _derive(row: dict) -> dict:
             for x in ("rev_f", "cost_f", "cost_n"):
                 out.pop(f"{x}_{c}{suffix}", None)
         out.pop(f"vol_f{suffix}", None)
+        out.pop(f"vol_own{suffix}", None)
 
     # Отклонения: маржинальность — в процентных пунктах, суммы — в валюте,
     # себестоимость штуки — в процентах к прошлому периоду.
@@ -504,10 +566,23 @@ async def deviations(filters: dict, limit: int = DEVIATION_EXPORT_LIMIT) -> dict
     }
 
 
-async def _max_year(conn) -> str | None:
-    return await conn.fetchval(
-        f"SELECT to_char(max(production_date), 'YYYY') FROM cost_calc_mv WHERE {' AND '.join(_MARGIN_BASE)}"
+async def _max_year(conn, gp_mode: str = "own") -> str | None:
+    """Последний год с данными — для периода по умолчанию.
+
+    Считается по тем же веткам, что попадут в src: при gp=all — по объединению
+    (у поступлений бывает месяц позже последнего выпуска), при gp=gp — только
+    по поступлениям, при own — только по витрине. Иначе «последний год» брался
+    бы из ветки, которой в ответе нет, и первая загрузка показывала бы пустой
+    дашборд."""
+    if gp_mode == "gp":
+        return await conn.fetchval("SELECT to_char(max(month), 'YYYY') FROM cost_ready_goods")
+    sql = (
+        "SELECT to_char(max(d), 'YYYY') FROM ("
+        f" SELECT max(production_date) AS d FROM cost_calc_mv WHERE {' AND '.join(_MARGIN_BASE)}"
     )
+    if gp_mode != "own":
+        sql += " UNION ALL SELECT max(month) FROM cost_ready_goods"
+    return await conn.fetchval(sql + ") h")
 
 
 async def dashboard(
@@ -515,6 +590,7 @@ async def dashboard(
     matrix_path: list[str] | None = None,
     default_period: bool = False,
     cost_basis: str = DEFAULT_COST_BASIS,
+    gp_mode: str = DEFAULT_GP_MODE,
 ) -> dict:
     """Весь дашборд одним запросом.
 
@@ -525,21 +601,33 @@ async def dashboard(
 
     cost_basis — по какой себестоимости считать: fact (факт, где есть, иначе
     норматив) или norm. См. COST_BASES.
+
+    gp_mode — что считать выпуском: all (собственный выпуск и сторонняя готовая
+    продукция), gp (только ГП) или own (только свой выпуск). См. GP_MODES и
+    абзац про ГП в докстринге модуля.
     """
     if cost_basis not in COST_BASES:
         raise ValueError(f"недопустимая база себестоимости: {cost_basis}")
+    if gp_mode not in GP_MODES:
+        raise ValueError(f"недопустимый режим готовой продукции: {gp_mode}")
     if cost_basis == "fact":
         # Годный факт, иначе норматив — см. _FACT_OK.
         cost_expr_b, cost_expr_u = f"coalesce({_FACT_B}, cost_byn)", f"coalesce({_FACT_U}, cost_usd)"
     else:
         cost_expr_b, cost_expr_u = "cost_byn", "cost_usd"
 
+    # Какие строки попадают в src. own — как было (только витрина), gp — только
+    # поступления, all — объединение (как в отчёте Power BI, где блоки склеены
+    # Table.Combine).
+    with_own = gp_mode in ("all", "own")
+    with_gp = gp_mode in ("all", "gp")
+
     filters = {k: v for k, v in filters.items() if v}
     year_defaulted = False
 
     async with pool().acquire() as conn:
         if default_period and not filters.get("year"):
-            latest = await _max_year(conn)
+            latest = await _max_year(conn, gp_mode)
             if latest:
                 filters["year"] = [latest]
                 year_defaulted = True
@@ -582,21 +670,37 @@ async def dashboard(
 
         # Каскад вариантов фильтров — как в commercial.py: каждый список считается
         # без собственного условия, по строкам выпуска.
+        #
+        # Источник — base_rows (см. SQL): витрина под _MARGIN_BASE и, если ГП
+        # включена, поступления. Иначе фильтр «Модель» не увидел бы моделей,
+        # которые только покупают: у них нет ни цены, ни себестоимости расчёта,
+        # и условия _MARGIN_BASE отсекли бы их все.
         all_exprs = {**MARGIN_FILTERS, **{k: v.replace(_DATE, "production_date") for k, v in DATE_EXPRS.items()}}
+
+        def option_where(exclude: str) -> str:
+            """Условия для вариантов фильтра: измерения и даты, без _MARGIN_BASE —
+            она уже внутри base_rows (у ГП-ветки её аналога нет)."""
+            parts = [c for k, c in dim_conditions.items() if k != exclude]
+            parts += [c.replace(_DATE, "production_date")
+                      for k, c in date_conditions.items() if k != exclude]
+            return " AND ".join(parts) if parts else "TRUE"
+
         option_selects = ",\n            ".join(
             f"""'{key}', (SELECT coalesce(json_agg(v ORDER BY v), '[]'::json) FROM
-                (SELECT DISTINCT {expr} AS v FROM cost_calc_mv
-                 WHERE {where(exclude=key)} AND {expr} IS NOT NULL
+                (SELECT DISTINCT {expr} AS v FROM base_rows
+                 WHERE {expr} IS NOT NULL AND ({option_where(key)})
                  ORDER BY 1 LIMIT {FILTER_OPTIONS_LIMIT + 1}) o_{i})"""
             for i, (key, expr) in enumerate(all_exprs.items())
         )
 
         dims = ", ".join(_DIM_COLS)
         values = ", ".join(_VALUE_COLS)
+        # Плиткам — ещё и счётчик строк ГП (уходит в meta), разрезам он не нужен.
         sums = _sums()
+        tile_sums = _sums(with_gp_rows=True)
 
-        sql = f"""
-        WITH src AS MATERIALIZED (
+        # ── Собственный выпуск (как было) ────────────────────────────────────
+        own_src = f"""
             SELECT
                 date_trunc('month', c.production_date)::date AS m,
                 {dims},
@@ -619,18 +723,145 @@ async def dashboard(
                 volume_pcs * ({_FACT_U})                                       AS cost_f_u,
                 CASE WHEN {_FACT_OK} THEN volume_pcs * cost_byn END            AS cost_n_b,
                 CASE WHEN {_FACT_OK} THEN volume_pcs * cost_usd END            AS cost_n_u,
-                t.target_margin_pct / 100.0                             AS target_frac
+                t.target_margin_pct / 100.0                             AS target_frac,
+                volume_pcs                                              AS vol_own,
+                false                                                   AS is_gp
             FROM cost_calc_mv c
             LEFT JOIN cost_margin_targets t
                    ON t.level1 = c.level01 AND t.target_margin_pct > 0
             WHERE {where(with_dates=False)}
+        """
+
+        # ── Сторонняя готовая продукция ──────────────────────────────────────
+        # Полей расчёта у покупного товара нет вовсе: raw_*, sew_*, норматив и
+        # факт, норма маржинальности — NULL, а не ноль. Ноль означал бы «посчитали
+        # и вышло 0», и «доля годного факта» считала бы эти строки нормой.
+        #
+        # Level 01…05 и страна берутся из самой таблицы ГП: их положил туда
+        # sync_ready_goods из Checks.dbo.Groups и s_modeli.COUNTRY — ровно
+        # оттуда, откуда их берёт отчёт Power BI. Джойнить витрину выпуска по
+        # модели+артикулу бессмысленно: покупной товар не производили, и в
+        # cost_calc_mv он не встречается (совпадает 1 пара из 2 503).
+        #
+        # USD — BYN, делённые на средний курс месяца (usd_rate): своего курса у
+        # поступления нет, а валютный переключатель обязан работать на всех
+        # строках одинаково. Нет курса за месяц — USD пуст.
+        gp_where = " AND ".join([*dim_conditions.values(), "vol > 0"])
+        gp_src = f"""
+            SELECT
+                m, brand_manager, level01, level02, level03, level04, level05,
+                model_name, model, articul, country, season, zadanie,
+                vol, rev_b, rev_u, cost_b, cost_u, raw_b, raw_u, sew_min, sew_vol,
+                vol_f, rev_f_b, rev_f_u, cost_f_b, cost_f_u, cost_n_b, cost_n_u,
+                target_frac, vol_own, is_gp
+            FROM (
+                SELECT
+                    date_trunc('month', g.month)::date AS m,
+                    g.purch_manager                   AS brand_manager,
+                    g.level01, g.level02, g.level03, g.level04, g.level05,
+                    g.model_name, g.model, g.articul,
+                    g.country,
+                    -- Сезона у поступления нет: в Лисе он живёт на цвете модели,
+                    -- а покупной товар модели-цвета не имеет (в PBIX пусто).
+                    NULL::text                        AS season,
+                    NULL::text                        AS zadanie,
+                    -- № плана нужен фильтру (MARGIN_FILTERS), в строку не идёт:
+                    -- в src его нет и у собственного выпуска.
+                    g.plan_id::text                   AS plan_id,
+                    g.vol,
+                    g.rev_byn                         AS rev_b,
+                    g.rev_byn / nullif(r.rate, 0)      AS rev_u,
+                    g.cost_byn                        AS cost_b,
+                    g.cost_byn / nullif(r.rate, 0)     AS cost_u,
+                    NULL::numeric                     AS raw_b,
+                    NULL::numeric                     AS raw_u,
+                    NULL::numeric                     AS sew_min,
+                    NULL::numeric                     AS sew_vol,
+                    NULL::numeric                     AS vol_f,
+                    NULL::numeric                     AS rev_f_b,
+                    NULL::numeric                     AS rev_f_u,
+                    NULL::numeric                     AS cost_f_b,
+                    NULL::numeric                     AS cost_f_u,
+                    NULL::numeric                     AS cost_n_b,
+                    NULL::numeric                     AS cost_n_u,
+                    NULL::numeric                     AS target_frac,
+                    -- Собственного выпуска в этой строке нет — см. vol_own.
+                    NULL::numeric                     AS vol_own,
+                    true                              AS is_gp
+                FROM cost_ready_goods g
+                LEFT JOIN usd_rate r
+                       ON r.m = date_trunc('month', g.month)::date
+            ) x
+            WHERE {gp_where}
+        """
+
+        src_parts = []
+        if with_own:
+            src_parts.append(own_src)
+        if with_gp:
+            src_parts.append(gp_src)
+        src_select = "\n            UNION ALL\n".join(src_parts)
+
+        # CTE, нужный только при включённой ГП: средний курс месяца по витрине.
+        gp_ctes = ""
+        if with_gp:
+            gp_ctes = """
+        -- Средний курс месяца по витрине (BYN за USD): своего курса у поступления
+        -- нет, а суммы в долларах должны быть на той же основе, что у выпуска.
+        usd_rate AS (
+            SELECT date_trunc('month', production_date)::date AS m,
+                   avg(wholesale_price_byn / nullif(wholesale_price_usd, 0)) AS rate
+            FROM cost_calc_mv
+            WHERE wholesale_price_usd > 0 AND wholesale_price_byn > 0
+            GROUP BY 1
+        ),"""
+
+        # Источник вариантов фильтров: витрина и (при включённой ГП) поступления.
+        # Материализуется один раз — вариантов тринадцать, и раньше каждый считался
+        # отдельным проходом по витрине.
+        opt_parts = []
+        if with_own:
+            opt_parts.append(f"""
+                SELECT production_date, brand_manager, level01, level02, level03,
+                       level04, level05, model_name, model, articul, country, season, plan_id
+                FROM cost_calc_mv WHERE {' AND '.join(_MARGIN_BASE)}""")
+        if with_gp:
+            opt_parts.append("""
+                SELECT g.month AS production_date, g.purch_manager AS brand_manager,
+                       g.level01, g.level02, g.level03, g.level04, g.level05,
+                       g.model_name, g.model, g.articul, g.country,
+                       NULL::text AS season, g.plan_id::text AS plan_id
+                FROM cost_ready_goods g
+                WHERE g.vol > 0""")
+        opt_select = "\n                UNION ALL".join(opt_parts)
+
+        # Горизонт — по объединению: у поступлений бывает месяц позже последнего
+        # выпуска, и без этого ноябрьская ГП осталась бы без сравнений. Ветки —
+        # ровно те же, что в src (with_own/with_gp): в режиме «только ГП» own-ветка
+        # в src не попадает, и её full-scan витрины здесь был бы впустую.
+        horizon_parts = []
+        if with_own:
+            horizon_parts.append(f"""
+                SELECT date_trunc('month', max(production_date))::date AS m
+                FROM cost_calc_mv WHERE {' AND '.join(_MARGIN_BASE)}""")
+        if with_gp:
+            horizon_parts.append("""
+                SELECT date_trunc('month', max(month))::date AS m FROM cost_ready_goods""")
+        horizon_sql = "\n                UNION ALL".join(horizon_parts)
+
+        sql = f"""
+        WITH{gp_ctes}
+        base_rows AS MATERIALIZED ({opt_select}
         ),
-        -- Горизонт данных: последний месяц с выпуском по всей витрине (без фильтров
+        src AS MATERIALIZED (
+            {src_select}
+        ),
+        -- Горизонт данных: последний месяц с данными по всей витрине (без фильтров
         -- измерений — иначе у бренд-менеджера, чей выпуск кончился в марте, горизонт
-        -- уехал бы на март).
+        -- уехал бы на март). При включённой ГП — максимум по объединению.
         horizon AS (
-            SELECT date_trunc('month', max(production_date))::date AS m
-            FROM cost_calc_mv WHERE {' AND '.join(_MARGIN_BASE)}
+            SELECT max(m) AS m FROM ({horizon_sql}
+            ) h
         ),
         -- Три копии строк: текущая и сдвинутые вперёд на месяц и на год. Фильтр
         -- по году/месяцу ниже накладывается на метку m — см. докстринг модуля.
@@ -641,20 +872,23 @@ async def dashboard(
         -- 2025 и против декабря 2025 - июля 2026. Та же отсечка в витрине Superset.
         shifted AS MATERIALIZED (
             SELECT * FROM (
-                SELECT m,                                'cur' AS k, {dims}, {values}, target_frac FROM src
+                SELECT m,                                'cur' AS k, {dims}, {values}, target_frac, is_gp FROM src
                 UNION ALL
-                SELECT (m + interval '1 month')::date,  'pm',       {dims}, {values}, target_frac FROM src
+                SELECT (m + interval '1 month')::date,  'pm',       {dims}, {values}, target_frac, is_gp FROM src
                 UNION ALL
-                SELECT (m + interval '1 year')::date,   'py',       {dims}, {values}, target_frac FROM src
+                SELECT (m + interval '1 year')::date,   'py',       {dims}, {values}, target_frac, is_gp FROM src
             ) u
             WHERE u.m <= (SELECT m FROM horizon)
         ),
         period AS (SELECT * FROM shifted{on_label()}),
         -- Лист «Отклонения по артикулам» — строки ТЕКУЩЕГО периода, текст
-        -- общий с выгрузкой в Excel (deviations()).
-        {_deviation_ctes(where(), DEVIATION_ROW_LIMIT)},
+        -- общий с выгрузкой в Excel (deviations()). Только собственный выпуск:
+        -- лист про калькуляции, а у поступления ГП калькуляции нет. В режиме
+        -- «только ГП» он поэтому пуст, и берём заведомо ложное условие —
+        -- _deviation_ctes читает витрину, а не src, и сам о ГП не знает.
+        {_deviation_ctes(f"{where()} AND FALSE" if gp_mode == "gp" else where(), DEVIATION_ROW_LIMIT)},
         tiles AS (
-            SELECT {sums}
+            SELECT {tile_sums}
             FROM period
         ),
         -- Динамика по месяцам: фильтр «месяц» не применяется (это и есть разрез
@@ -722,6 +956,8 @@ async def dashboard(
 
     payload = _as_dict(row["payload"])
     payload["tiles"] = _derive(payload.get("tiles") or {})
+    # Строки ГП в периоде — служебный счётчик для meta, в плитках ему не место.
+    gp_rows = int(payload["tiles"].pop("gp_rows", 0) or 0)
     for key in ("months", "by_bm", "by_level01", "matrix"):
         payload[key] = [_derive(r) for r in payload.get(key) or []]
 
@@ -759,6 +995,16 @@ async def dashboard(
         "cost_basis": cost_basis,
         "cost_basis_label": COST_BASES[cost_basis],
         "cost_bases": [{"key": k, "label": v} for k, v in COST_BASES.items()],
+        # Что считается выпуском: свой, ГП или всё вместе. Подпись обязана быть
+        # на странице — цифры режимов отличаются на десятки процентов, а
+        # выглядят одинаково.
+        "gp_mode": gp_mode,
+        "gp_mode_label": GP_MODES[gp_mode],
+        "gp_modes": [{"key": k, "label": v} for k, v in GP_MODES.items()],
+        # Сколько строк периода — поступления. Без этого «включая ГП» читалось бы
+        # как «ГП учтена», даже когда её в периоде нет.
+        "gp_rows_in_period": gp_rows,
+        "gp_enabled": with_gp,
         # Состояние проваливания по матрице.
         "matrix_dim": matrix_dim,
         "matrix_label": MATRIX_LEVELS[len(path)][1],

@@ -1638,6 +1638,10 @@ async def margin_dashboard(
 
     cost_basis — база себестоимости: fact (фактическая стоимость минуты, где
     есть, иначе норматив; по умолчанию) или norm (нормативная).
+
+    gp — что считается выпуском: all (свой выпуск и сторонняя готовая продукция;
+    по умолчанию), gp (только ГП) или own (только свой выпуск). См. GP_MODES в
+    app/margin.py.
     """
     if _is_mock():
         return mocks.margin_dashboard()
@@ -1650,6 +1654,7 @@ async def margin_dashboard(
             matrix_path=qp.getlist("matrix_path"),
             default_period=qp.get("default_period") in ("1", "true"),
             cost_basis=(qp.get("cost_basis") or margin.DEFAULT_COST_BASIS).strip(),
+            gp_mode=(qp.get("gp") or margin.DEFAULT_GP_MODE).strip(),
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))

@@ -813,6 +813,11 @@ async def set_cache_completed(row_count: int) -> None:
     # логично: дашборд сравнивает их с себестоимостью из кэша, и расхождение
     # свежести читалось бы как расхождение данных.
     await sync_plan_prices()
+    # Сторонняя готовая продукция (миграция 0074) — тоже внешний справочник из
+    # Gpartner, и по тем же причинам обновляется вместе с кэшем: в дашборде она
+    # складывается с выпуском, и «выпуск на 06.11, а ГП на 01.11» читалось бы
+    # как пропавшие поступления.
+    await sync_ready_goods()
 
 
 async def sync_plan_prices() -> int:
@@ -880,6 +885,163 @@ async def sync_plan_prices() -> int:
             )
     with_price = sum(1 for _, _, p in rows if p is not None)
     print(f"[cost] плановые цены обновлены: {len(rows)} пар, с ценой {with_price}", flush=True)
+    return len(rows)
+
+
+def _level_text(value: str | None) -> str | None:
+    """Уровень иерархии из Checks.dbo.Groups: пустой уровень там записан дефисом.
+
+    В витрине выпуска пустой уровень — NULL, а в справочнике Groups
+    незаполненные group5/group6 заполнены символом «-». Оставлять дефис нельзя:
+    он попал бы в выпадающий список фильтров отдельным значением и в матрицу
+    отдельной строкой, которой нет у собственного выпуска (там NULL → «»).
+    """
+    text = (value or "").strip()
+    return None if text in ("", "-") else text
+
+
+async def sync_ready_goods() -> int:
+    """Сторонняя готовая продукция из Gpartner — блок «Поступление товара
+    стороннего» отчёта Power BI «Маржа выпуска Трикотаж» (миграция 0074).
+
+    Заказчик складывает в одном отчёте собственный выпуск и КУПЛЕННЫЙ товар:
+    у покупного нет ни норм, ни минут пошива, себестоимость — цена закупки без
+    НДС, выручка — по учётной цене. Без этого блока маржинальность дашборда
+    расходилась с PBIX на несколько пунктов.
+
+    Запрос повторяет M-запрос отчёта 1:1: «Поступление товара» со STATUS = 0 и
+    исключением служебных ветвей справочника (импорт, тара, упаковка,
+    косметика). План и закупщик — из той же связки, что в PBIX
+    (doc_modeli.OSN_ID → zak_tovar.PLAN_ID → plan_proizv.PURCH_MANAGER, плюс
+    искусственная таблица планов ГП из olap.Procurement); в дашборде закупщик
+    играет роль бренд-менеджера.
+
+    Иерархия — из Checks.dbo.Groups по MODEL_ID (в отчёте это group1…group6):
+    покупной товар не производили, и в витрине выпуска его нет (по
+    модель+артикул совпадает 1 пара из 2 503), поэтому классификацию взять
+    больше негде. Страна — s_modeli.COUNTRY.
+
+    Месяц считается здесь, а не в источнике: T-SQL EOMONTH вернул бы последний
+    день, а дашборд группирует по первому (date_trunc). Гранулярность строки —
+    месяц + документ + модель + артикул.
+
+    Ошибка Gpartner НЕ валит обновление кэша: прежние поступления остаются, а
+    расхождение свежести видно по synced_at. Возвращает число строк, 0 —
+    синхронизация не удалась (или источник пуст, тогда таблицу не трогаем).
+    """
+    try:
+        conn = get_gpartner_conn()
+    except Exception as exc:  # noqa: BLE001 — источник за VPN, причин отказа много
+        print(f"[cost] ВНИМАНИЕ: готовая продукция не синхронизирована, нет связи с Gpartner: {exc}", flush=True)
+        return 0
+    try:
+        cursor = conn.cursor()
+        # plan_gp — ровно как в M-запросе PBIX: план закупки берётся либо из
+        # заказа, которым оформлено поступление, либо из «искусственной»
+        # таблицы планов ГП в olap.Procurement (её ведут примечаниями, когда
+        # заказа в Лисе нет). UNION ALL, а не UNION: у документа бывает план из
+        # обоих источников, и в PBIX побеждает первый по порядку — при наших
+        # MIN() ниже это не важно, но состав строк обязан совпадать.
+        cursor.execute(
+            """
+            WITH plan_gp AS (
+                SELECT dm.ITEM_ID, zt.PLAN_ID
+                  FROM [dbo].[doc_modeli] dm
+                  JOIN [dbo].[zak_tovar]  zt ON dm.OSN_ID = zt.ITEM_ID
+                UNION ALL
+                SELECT DOC_MODEL, PLAN_ID
+                  FROM olap.Procurement.dbo.doc_mod_gp_hystory
+            )
+            SELECT
+                CAST(pm.DATA AS date)              AS d,
+                CAST(pm.DOC_MODELI AS varchar(32)) AS doc_modeli,
+                RTRIM(sm.MODEL)                    AS model,
+                RTRIM(sm.ART)                      AS articul,
+                MIN(sm.NAIM)                       AS model_name,
+                -- Классификация — из Groups, а не из витрины: покупного товара
+                -- в выпуске нет. В PBIX те же колонки называются group1…group6
+                -- (COUNTRY_NAIM приходит из справочника моделей).
+                MIN(RTRIM(g.group1))               AS level01,
+                MIN(RTRIM(g.group2))               AS level02,
+                MIN(RTRIM(g.group3))               AS level03,
+                MIN(RTRIM(g.group4))               AS level04,
+                MIN(RTRIM(g.group5))               AS level05,
+                MIN(RTRIM(sm.COUNTRY))             AS country,
+                SUM(pm.KOL)                        AS vol,
+                SUM(pm.SUMMA_DOC - pm.SUMMA_NDS)   AS cost_byn,
+                SUM(pm.KOL * sm.PRICE_UCH)         AS rev_byn,
+                MIN(p.PLAN_ID)                     AS plan_id,
+                MIN(RTRIM(pp.PURCH_MANAGER))       AS purch_manager
+              FROM [dbo].[prix_modeli] pm
+              JOIN [dbo].[doc_modeli] dm ON pm.DOC_MODELI = dm.ITEM_ID AND dm.STATUS = 0
+              LEFT JOIN [dbo].[S_MODELI] sm ON pm.MODEL_ID = sm.ITEM_ID
+              LEFT JOIN [Checks].[dbo].[Groups] g ON pm.MODEL_ID = g.ITEM_ID
+              LEFT JOIN plan_gp p        ON pm.DOC_MODELI = p.ITEM_ID
+              LEFT JOIN [dbo].[plan_proizv] pp ON p.PLAN_ID = pp.ITEM_ID
+             WHERE pm.OPERAC = N'Поступление товара'
+               AND sm.FULL_PATH NOT LIKE N'Я-импорт%'
+               AND sm.FULL_PATH NOT LIKE N'Тара%'
+               AND sm.FULL_PATH NOT LIKE N'Упаковка%'
+               AND sm.FULL_PATH NOT LIKE N'Косм%'
+               AND pm.SUMMA_DOC > 0
+             GROUP BY CAST(pm.DATA AS date), CAST(pm.DOC_MODELI AS varchar(32)),
+                      RTRIM(sm.MODEL), RTRIM(sm.ART)
+            """
+        )
+        rows = []
+        for (d, doc_modeli, model, articul, name, l1, l2, l3, l4, l5, country,
+             vol, cost_byn, rev_byn, plan_id, manager) in cursor.fetchall():
+            if not model or not articul or vol is None or not float(vol):
+                # Строка без модели или без количества бесполезна: джойниться к
+                # витрине нечем, а объём — знаменатель всех показателей строки.
+                continue
+            rows.append((
+                datetime.date(d.year, d.month, 1),
+                doc_modeli or "",
+                model,
+                articul,
+                (name or "").strip() or None,
+                _level_text(l1), _level_text(l2), _level_text(l3), _level_text(l4), _level_text(l5),
+                (country or "").strip() or None,
+                float(vol),
+                float(cost_byn or 0),
+                float(rev_byn or 0),
+                int(plan_id) if plan_id is not None else None,
+                (manager or "").strip() or None,
+            ))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cost] ВНИМАНИЕ: запрос готовой продукции к Gpartner упал: {exc}", flush=True)
+        return 0
+    finally:
+        conn.close()
+
+    if not rows:
+        print("[cost] ВНИМАНИЕ: поступлений стороннего товара нет — таблицу ГП не трогаем", flush=True)
+        return 0
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # Сбой записи в PG ловим так же, как сбой источника: справочник ГП — не
+    # причина валить обновление кэша, которое уже завершилось успешно. Прежние
+    # поступления при этом остаются (транзакция откатится целиком — TRUNCATE и
+    # copy в одной транзакции, полупустой таблицы не будет).
+    try:
+        async with pool().acquire() as pg:
+            async with pg.transaction():
+                # Полная замена, как у плановых цен: документ могли сторнировать
+                # (STATUS у doc_modeli снимается), и оставшаяся у нас строка была
+                # бы призраком в марже.
+                await pg.execute("TRUNCATE TABLE cost_ready_goods")
+                await pg.copy_records_to_table(
+                    "cost_ready_goods",
+                    records=[(*r, now) for r in rows],
+                    columns=["month", "doc_modeli", "model", "articul", "model_name",
+                             "level01", "level02", "level03", "level04", "level05", "country",
+                             "vol", "cost_byn", "rev_byn", "plan_id", "purch_manager", "synced_at"],
+                )
+    except Exception as exc:  # noqa: BLE001 — сбой записи не валит refresh кэша
+        print(f"[cost] ВНИМАНИЕ: готовая продукция не записана: {exc}", flush=True)
+        return 0
+    print(f"[cost] готовая продукция обновлена: {len(rows)} строк", flush=True)
     return len(rows)
 
 

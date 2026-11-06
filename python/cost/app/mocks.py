@@ -932,6 +932,15 @@ def margin_dashboard() -> dict:
             "cost_basis": margin.DEFAULT_COST_BASIS,
             "cost_basis_label": margin.COST_BASES[margin.DEFAULT_COST_BASIS],
             "cost_bases": [{"key": k, "label": v} for k, v in margin.COST_BASES.items()],
+            # ГП в моке нет: таблица cost_ready_goods наполняется из Gpartner, а
+            # мок-режим как раз и означает «внешних баз нет». Режим по умолчанию —
+            # all (как в бою), но строк ГП ноль, и подпись на фронте честно
+            # скажет «включая ГП» при нулевом счётчике.
+            "gp_mode": margin.DEFAULT_GP_MODE,
+            "gp_mode_label": margin.GP_MODES[margin.DEFAULT_GP_MODE],
+            "gp_modes": [{"key": k, "label": v} for k, v in margin.GP_MODES.items()],
+            "gp_rows_in_period": 0,
+            "gp_enabled": True,
             "matrix_dim": "level01",
             "matrix_label": "Level 01",
             "matrix_path": [],
