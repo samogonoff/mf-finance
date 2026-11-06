@@ -457,7 +457,13 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
             where_parts.append(f'TRIM("{col}") IN ({placeholders})')
             params.extend(values)
 
-    # ── Только закупная готовая продукция ──────────────────────────────────
+    # ── Закупная готовая продукция: три состояния (Б24 671483) ─────────────
+    # Заказчик утвердил вместо галочки «🛒 Только закупная» выбор из трёх
+    # режимов — «Все» / «Без закупных» / «Только закупные». На сервер уходят
+    # два взаимоисключающих флага: purchased_only (как было) и purchased_exclude
+    # (новый). Оба по-прежнему необязательные: клиенты, которые шлют только
+    # purchased_only, работают как раньше.
+    #
     # Галочка «🛒 Только закупная» была клиентской: сервер считал и отдавал весь
     # период (замер 04.09.2026: 13 723 строки, 35,9 МБ, 6–9 с), а нужны из него
     # были 123 строки. Теперь условие уходит в WHERE, и выигрыш не в том, что
@@ -476,6 +482,23 @@ async def get_aggregated(payload: dict, _: str = Depends(_require_perm("cost:vie
     if payload.get("purchased_only"):
         where_parts.append(
             f"cd.manual_source_sign IN (${len(params) + 1}, ${len(params) + 2})"
+        )
+        params.extend([purchase.PORTAL_SOURCE_SIGN, purchase.INVOICE_SOURCE_SIGN])
+    elif payload.get("purchased_exclude"):
+        # «Без закупных» — обратный предикат. Ускорения ждать НЕ надо: здесь
+        # нужна почти вся выборка, поэтому оптимизация «отсечь ветку кэша»
+        # (см. выше) не работает — планировщик читает весь период и вычитает
+        # из него сотню строк закупных. Запрос по времени такой же, как без
+        # фильтра вовсе; выигрыш только в том, что до клиента не доезжают
+        # закупные строки и не накладываются их оверлеи.
+        #
+        # IS DISTINCT FROM, а не NOT IN: у обычных (не закупных) строк
+        # manual_source_sign = NULL, и `NOT IN` вернул бы для них NULL, то есть
+        # выбросил бы их все — фильтр показал бы пустую таблицу. Именно
+        # NULL-строки тут и должны остаться.
+        where_parts.append(
+            f"cd.manual_source_sign IS DISTINCT FROM ${len(params) + 1}"
+            f" AND cd.manual_source_sign IS DISTINCT FROM ${len(params) + 2}"
         )
         params.extend([purchase.PORTAL_SOURCE_SIGN, purchase.INVOICE_SOURCE_SIGN])
 

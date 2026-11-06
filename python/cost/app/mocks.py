@@ -274,6 +274,28 @@ def _make_row(i: int, overrides: dict | None = None) -> dict[str, Any]:
         "avg_Раскрой, минуты": round(8 + (i % 15) * 1.8, 1),
         "avg_Курс на дату расчета": round(90 + (i % 11) * 0.5, 2),
     }
+    # Закупная готовая продукция (Б24 671483): в бою признак строки — это
+    # source_calc_sign в cost_manual_calc ('ПОРТАЛ' / 'ПРИХОД'), а на выдачу он
+    # приходит уже наложенным флагом purchase_source (routes.py,
+    # purchase.apply_flags). Мок повторяет ВЫДАЧУ, а не внутренности вьюхи:
+    # фильтр трёх состояний проверяет именно purchase_source, поэтому здесь
+    # достаточно пометить каждую двадцатую/тридцатую строку, как это сделал бы
+    # наложенный флаг. Ставим до overrides — точечные правки строки главнее.
+    if i % 20 == 0 or i % 30 == 0:
+        source = "portal" if i % 20 == 0 else "invoice"
+        total = round(cost, 2)
+        row.update({
+            "Признак калькуляции": "КПСС" if source == "portal" else "ПФКСС",
+            "purchase_source": source,
+            "purchase_total_byn": total,
+            "purchase_price_byn": round(total * 0.78, 2),
+            "purchase_logistics_byn": round(total * 0.09, 2),
+            "purchase_customs_byn": round(total * 0.08, 2),
+            "purchase_cert_byn": round(total * 0.05, 2),
+            "purchase_rate": 3.27,
+        })
+    else:
+        row["purchase_source"] = None
     if overrides:
         row.update(overrides)
     return row
@@ -312,6 +334,18 @@ def _match_filters(row: dict, payload: dict) -> bool:
             row_val = str(row.get(col, "")).strip()
             if row_val not in vals:
                 return False
+
+    # Закупная готовая продукция (Б24 671483). Повторяет серверный предикат по
+    # manual_source_sign из routes.py: в выдаче «закупность» — это непустой
+    # purchase_source. Взаимоисключающие флаги, как и в бою; если клиент прислал
+    # оба, приоритет у purchased_only.
+    is_purchase = bool(row.get("purchase_source"))
+    if payload.get("purchased_only"):
+        if not is_purchase:
+            return False
+    elif payload.get("purchased_exclude"):
+        if is_purchase:
+            return False
     return True
 
 

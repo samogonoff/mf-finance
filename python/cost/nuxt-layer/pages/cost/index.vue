@@ -106,14 +106,20 @@
             </span>
           </label>
 
-          <label class="filter-checkbox"
-                 title="Только закупная готовая продукция — калькуляции из портала БМ и расчёты по приходу.
-Фильтр серверный: выдача перезагрузится и придут только закупные строки (это быстро — сотня строк вместо всего периода).">
-            <input v-model="purchasedOnly" type="checkbox" @change="onPurchasedOnlyChange" />
-            <span>
-              🛒 Только закупная
-              <template v-if="purchasedCount"> ({{ purchasedCount }})</template>
-            </span>
+          <!-- Закупная готовая продукция (Б24 671483): вместо галочки «только
+               закупная» — три состояния. Экономистам закупные («китайские»)
+               модели мешают в общей выдаче, но прятать их наглухо нельзя:
+               бухгалтерии нужен и обратный срез. Фильтр СЕРВЕРНЫЙ, см.
+               purchasedMode в скрипте. -->
+          <label class="peo-filter-label"
+                 title="Закупная готовая продукция — калькуляции из портала БМ (КПСС) и расчёты по приходу (ПФКСС).
+Фильтр серверный: «Только закупные» перезагружает выдачу и читает лишь таблицу закупных калькуляций (сотня строк вместо всего периода), «Без закупных» — весь период без них. Выбор запоминается за вами.">
+            Закупная продукция
+            <select v-model="purchasedMode" class="peo-filter-select" @change="onPurchasedModeChange">
+              <option value="all">Все</option>
+              <option value="exclude">Без закупных</option>
+              <option value="only">🛒 Только закупные{{ purchasedCountSuffix }}</option>
+            </select>
           </label>
 
           <label class="filter-checkbox"
@@ -3294,6 +3300,7 @@ function collectPrefs() {
     filtersOpen: filtersOpen.value,
     hideDwhSent: hideDwhSentManual.value,
     hideObsolete: hideObsolete.value,
+    purchasedMode: purchasedMode.value,
     filters: collectFilterPrefs(),
   };
 }
@@ -3353,6 +3360,21 @@ function applyPrefs(doc: any) {
     hideObsolete.value = doc.hideObsolete;
     try { localStorage.setItem(HIDE_OBSOLETE_STORAGE_KEY, doc.hideObsolete ? '1' : '0'); } catch { /* ignore */ }
   }
+  // Режим закупной продукции (Б24 671483) — персистентная настройка, как
+  // соседние галочки: сброс фильтров её не снимает, на сервере главнее сервер
+  // (документ приходит с другого устройства). Незнакомое значение игнорируем —
+  // документ мог быть записан более новой версией фронта.
+  //
+  // Порядок важен: на этом устройстве режим уже восстановлен из localStorage
+  // СИНХРОННО (loadPurchasedMode), поэтому сюда попадает только расхождение.
+  // Если выдача к этому моменту успела загрузиться (серверный документ пришёл
+  // позже автозагрузки по URL-фильтрам), её надо перезапросить: иначе таблица
+  // показывала бы строки, посчитанные без режима, и счётчик фильтров врал бы.
+  if (isPurchasedMode(doc.purchasedMode) && doc.purchasedMode !== purchasedMode.value) {
+    const wasLoaded = allAggregated.value.length > 0 || totalAllRecords.value > 0;
+    setPurchasedMode(doc.purchasedMode);
+    if (wasLoaded && !loading.value) void loadData();
+  }
   // Фильтры с сервера — только когда на этом устройстве их ещё нет.
   //
   // Здесь сервер НЕ главнее, в отличие от колонок: последний набор фильтров —
@@ -3372,17 +3394,24 @@ function applyPrefs(doc: any) {
   }
 }
 
+/** Промис загрузки серверных настроек: автозагрузка по URL-фильтрам ждёт его,
+ *  чтобы режим закупной продукции попал в ПЕРВЫЙ /aggregated (см. applyPrefs). */
+let prefsLoadPromise: Promise<void> | null = null;
+
 onMounted(async () => {
-  try {
-    const resp: any = await $fetch(`${apiBase.value}/api/cost/table-prefs`, { headers: fetchHeaders.value });
-    applyPrefs(resp?.prefs);
-  } catch (e) {
-    console.warn('[cost] настройки таблицы с сервера не получены, работаем на локальных', e);
-  } finally {
-    // Разрешаем запись только после попытки чтения — иначе первый же отложенный
-    // пуш мог бы отправить дефолты и затереть сохранённое.
-    prefsReady.value = true;
-  }
+  prefsLoadPromise = (async () => {
+    try {
+      const resp: any = await $fetch(`${apiBase.value}/api/cost/table-prefs`, { headers: fetchHeaders.value });
+      applyPrefs(resp?.prefs);
+    } catch (e) {
+      console.warn('[cost] настройки таблицы с сервера не получены, работаем на локальных', e);
+    } finally {
+      // Разрешаем запись только после попытки чтения — иначе первый же отложенный
+      // пуш мог бы отправить дефолты и затереть сохранённое.
+      prefsReady.value = true;
+    }
+  })();
+  await prefsLoadPromise;
 });
 
 function loadColumnVisibility(): Record<string, boolean> {
@@ -3607,7 +3636,7 @@ const activeFilterCount = computed(() => {
   if (dateFrom.value || dateTo.value) n += 1;
   if (noWholesaleOnly.value) n += 1;
   if (peoFilter.value !== 'all') n += 1;
-  if (purchasedOnly.value) n += 1;
+  if (purchasedMode.value !== 'all') n += 1;
   return n;
 });
 
@@ -3768,24 +3797,69 @@ const fetchHeaders = computed(() => {
 const noWholesaleOnly = ref(false);
 /** «Только мультипаки» — клиентский фильтр по пометке из /aggregated. */
 const multipackOnly = ref(false);
-/** «Только закупная» — СЕРВЕРНЫЙ фильтр: уходит в тело /aggregated как
- *  purchased_only, и сервер отдаёт только закупные калькуляции.
+/** Режим показа закупной готовой продукции — СЕРВЕРНЫЙ фильтр с тремя
+ *  состояниями (Б24 671483, решение заказчика): 'all' — как есть, 'exclude' —
+ *  спрятать закупные, 'only' — оставить только их. Уходит в тело /aggregated
+ *  как purchased_exclude / purchased_only соответственно.
  *
- *  Раньше галочка фильтровала уже загруженные строки, и это было её главным
+ *  Раньше здесь была галочка «только закупная», и это было её главным
  *  недостатком: сервер всё равно считал и отдавал весь период (замер
  *  04.09.2026 — 13 723 строки и 35,9 МБ за 6–9 с), а нужны были 123 строки.
- *  Теперь переключение перезагружает выдачу; включённый фильтр отвечает почти
- *  мгновенно, потому что запрос уходит только в таблицу закупных калькуляций.
- *  Предикат в filteredRows оставлен подстраховкой на случай, когда строки уже
- *  загружены без флага. */
-const purchasedOnly = ref(false);
-const purchasedCount = computed(() => allAggregated.value.filter((r: any) => r.purchase_source).length);
+ *  Теперь переключение перезагружает выдачу; 'only' отвечает почти мгновенно,
+ *  потому что запрос уходит только в таблицу закупных калькуляций. У 'exclude'
+ *  такого выигрыша нет и не будет — он читает весь период минус закупные
+ *  (в routes.py это написано прямо, чтобы не искали несуществующее ускорение).
+ *  Предикат в filteredAggregated оставлен подстраховкой на случай, когда строки
+ *  уже загружены без флага.
+ *
+ *  Дефолт 'all': у тех, кто настройку не трогал, картина базы не меняется. */
+type PurchasedMode = 'all' | 'exclude' | 'only';
+const PURCHASED_MODE_STORAGE_KEY = 'cost_purchased_mode';
+/** Порядок для applyPrefs: незнакомую строку из чужого документа игнорируем. */
+const PURCHASED_MODES: PurchasedMode[] = ['all', 'exclude', 'only'];
 
-function onPurchasedOnlyChange() {
+function isPurchasedMode(v: any): v is PurchasedMode {
+  return typeof v === 'string' && (PURCHASED_MODES as string[]).includes(v);
+}
+
+/** Восстанавливаем СИНХРОННО, до первых запросов: режим должен попасть в самый
+ *  первый /aggregated, иначе таблица мигнёт полной выдачей, а при 'only'
+ *  человек ждал бы секунды вместо миллисекунд. Тот же довод, что у фильтров
+ *  (см. FILTERS_STORAGE_KEY и комментарий про каскад). */
+function loadPurchasedMode(): PurchasedMode {
+  try {
+    const raw = localStorage.getItem(PURCHASED_MODE_STORAGE_KEY);
+    if (isPurchasedMode(raw)) return raw;
+  } catch { /* приватный режим — остаёмся на дефолте */ }
+  return 'all';
+}
+
+const purchasedMode = ref<PurchasedMode>(loadPurchasedMode());
+
+function setPurchasedMode(mode: PurchasedMode) {
+  if (!isPurchasedMode(mode)) return;
+  purchasedMode.value = mode;
+  try { localStorage.setItem(PURCHASED_MODE_STORAGE_KEY, mode); } catch { /* ignore */ }
+  schedulePrefsPush();
+}
+
+function onPurchasedModeChange() {
+  if (!isPurchasedMode(purchasedMode.value)) purchasedMode.value = 'all';
+  try { localStorage.setItem(PURCHASED_MODE_STORAGE_KEY, purchasedMode.value); } catch { /* ignore */ }
+  schedulePrefsPush();
   // Данные ещё не грузили — не дёргаем сервер: человек только настраивает фильтры.
   if (!allAggregated.value.length && !loading.value) return;
   loadData();
 }
+
+const purchasedCount = computed(() => allAggregated.value.filter((r: any) => r.purchase_source).length);
+
+/** Цифра рядом с пунктом «Только закупные». Показываем только там, где она
+ *  осмысленна: при 'exclude' закупных в выдаче нет по определению, и «(0)»
+ *  читалось бы как поломка фильтра. */
+const purchasedCountSuffix = computed(() =>
+  purchasedMode.value !== 'exclude' && purchasedCount.value ? ` (${purchasedCount.value})` : ''
+);
 
 const approvalTarget = ref<any>(null);
 const approvalComment = ref('');
@@ -4097,7 +4171,10 @@ const filteredAggregated = computed(() => {
     // Мультипаки среди тысяч калькуляций иначе не найти: в фильтрах раздела
     // нет ни модели, ни артикула, а паков на группу — единицы.
     if (multipackOnly.value && !row.is_multipack) return false;
-    if (purchasedOnly.value && !row.purchase_source) return false;
+    // Закупная (Б24 671483): подстраховка на случай, когда строки пришли без
+    // серверного флага. 'exclude' прячет закупные, 'only' — всё, что не закупное.
+    if (purchasedMode.value === 'only' && !row.purchase_source) return false;
+    if (purchasedMode.value === 'exclude' && row.purchase_source) return false;
     return columnFilterConfig.every((cfg) => {
       const sel = columnFilters[cfg.key];
       if (!sel || sel.length === 0) return true;
@@ -4246,9 +4323,11 @@ async function loadData() {
   try {
     const payload = buildFilters();
     if (peoFilter.value !== 'all') payload.peo_filter = peoFilter.value;
-    // Серверный фильтр закупной продукции: отсекает ветку кэша в cost_data_all,
-    // поэтому выдача приходит за единицы миллисекунд вместо секунд.
-    if (purchasedOnly.value) payload.purchased_only = true;
+    // Серверный фильтр закупной продукции (Б24 671483, три состояния): 'only'
+    // отсекает ветку кэша в cost_data_all и отвечает за единицы миллисекунд;
+    // 'exclude' просто вычитает закупные из полной выборки — ускорения там нет.
+    if (purchasedMode.value === 'only') payload.purchased_only = true;
+    else if (purchasedMode.value === 'exclude') payload.purchased_exclude = true;
     const result = await $fetch<{ data: any[]; count: number; mp_formula_inputs: MpFormulaInputs | null }>(
       `${apiBase.value}/api/cost/aggregated`,
       { method: "POST", body: payload, headers: fetchHeaders.value }
@@ -9930,7 +10009,7 @@ async function runPurchaseImport() {
     });
     alert(`Импорт завершён за ${res.seconds} с.\nСоздано: ${res.created}, обновлено: ${res.updated}, пропущено: ${res.skipped}.\n` +
       (res.vat_filled ? `Ставка НДС дозаполнена у закупных строк без неё: ${res.vat_filled}.\n` : '') +
-      'Нажмите «Загрузить данные», чтобы увидеть строки (фильтр «🛒 Только закупная»).');
+      'Нажмите «Загрузить данные», чтобы увидеть строки (в фильтре «Закупная продукция» выберите «🛒 Только закупные»).');
   } catch (e: any) {
     lastError.value = 'Импорт закупной не выполнен: ' + (e?.data?.detail || e?.message || String(e));
   } finally {
@@ -11044,6 +11123,12 @@ async function applyUrlFilters() {
 
 onMounted(async () => {
   await Promise.all([loadFilters(), loadPriceLevels(), loadCacheStatus()]);
+  // Настройки с сервера ждём ДО первой загрузки выдачи: режим закупной
+  // продукции (Б24 671483) — часть запроса, и пришедший с опозданием документ
+  // заставил бы таблицу сначала отработать полный период, а потом перезапросить
+  // его с фильтром. Промис уже запущен своим onMounted выше и не блокирует
+  // отрисовку: ждём только здесь, где начинаются запросы за данными.
+  if (prefsLoadPromise) await prefsLoadPromise;
   await applyUrlFilters();
 });
 
