@@ -1358,6 +1358,10 @@ def _fot_half_mock() -> tuple[list[dict], list[dict]]:
     for r in grain:
         r["f25"] = round(r["f25_h1"] + r["f25_h2"], 2)
         r["rv_f25"] = round(r["rv_f25_h1"] + r["rv_f25_h2"], 2)
+        # База «факт (ожидаемый) прошлого года» (673259): 2025 в моке закрыт,
+        # поэтому весь остаток 2ПГ — факт (pv_h2o пуст).
+        r["pv_h2c"] = r["f25_h2"]
+        r["pv_h2o"] = None
     den = [
         {k: (v * 1000.0 if k.startswith("rv_") else v) for k, v in cell.items()}
         for cell in _FOT_HALF_DEN_CELLS
@@ -1369,7 +1373,11 @@ def _mock_expect_rows(rows: list[dict], c: int) -> None:
     """Досчитывает ключи ожидания в мок-строки (grain/rev сборщиков p10/p14/p15):
     t26_h2 → f26_h2c + p26_h2o, rv_t26_h2 → rv_f26_h2c + rv_p26_h2o (пропорции
     как у _mock_expect_keys: факт (C−6)/6, тактика (12−C)/6 — контрольные
-    «Ожидания» сохраняются). Мутирует строки на месте."""
+    «Ожидания» сохраняются). Мутирует строки на месте.
+
+    pv_h2c/pv_h2o (673259) — база прошлого года для Δ плана к факту: мок
+    считает 2025 полностью закрытым (C=12), поэтому pv_h2c = f25_h2.
+    """
     w_fact = (c - 6) / 6.0
     w_plan = (12 - c) / 6.0
     for r in rows:
@@ -1380,6 +1388,9 @@ def _mock_expect_rows(rows: list[dict], c: int) -> None:
         if rv_t26 is not None:
             r["rv_f26_h2c"] = round(rv_t26 * w_fact, 2)
             r["rv_p26_h2o"] = round(rv_t26 * w_plan, 2)
+        if r.get("f25_h2") is not None:
+            r["pv_h2c"] = r["f25_h2"]
+            r["pv_h2o"] = None
 
 
 def _fot_mock_closed():
@@ -1516,7 +1527,11 @@ _FOT_HR_T26 = {"224": 1.05, "604": 1.00, "324": 1.02, "346": 0.95, "208": 1.00, 
 
 
 def _fot_hr_mock() -> list[dict]:
-    """Строки HR-бюджета P13 (код ЦФО × статья) в сырых суммах витрины."""
+    """Строки HR-бюджета P13 (код ЦФО × статья) в сырых суммах витрины.
+
+    pv_h2c/pv_h2o (673259) — остаток 2ПГ прошлого года: у мока 2025 закрыт
+    (C=12), поэтому вся база — факт 2ПГ (pv_h2c = f25_h2, pv_h2o = None).
+    """
     from app import fot
 
     hr_by_code = {code: ctry for ctry, codes in fot.HR_CFO_CODES.items() for code in codes}
@@ -1527,6 +1542,8 @@ def _fot_hr_mock() -> list[dict]:
         for key, k in _FOT_HR_SCALE.items():
             row[key] = round(f26 * k * 1000.0, 2)
         row["t26_h2"] = round(f26 * _FOT_HR_T26[code] * 1000.0, 2)
+        row["pv_h2c"] = row.get("f25_h2")
+        row["pv_h2o"] = None
         rows.append(row)
     return rows
 
@@ -1704,6 +1721,13 @@ def _fot_p18_mock_dashboard(params: dict) -> dict:
         {"dim": "ЦФО-401", "f25_h1": 2000, "f26_h1": 2400, "t26_h2": 2500, "b26_h2": 2300},
         {"dim": "ЦФО-501", "f25_h1": 3000, "f26_h1": 3700, "t26_h2": 3800, "b26_h2": 3500},
     ]
+    # База прошлого года по тем же строкам (673259): мок считает 2025
+    # закрытым (C=12) — весь остаток 2ПГ факт, pv_h2o пуст. f25_h2 берём как
+    # половину годового факта, чтобы Δ плана к факту был содержательным.
+    for _rows in (_MOCK_DIRS, _MOCK_G1, _MOCK_CFO):
+        for _r in _rows:
+            _r["pv_h2c"] = _r["f25_h1"]
+            _r["pv_h2o"] = None
 
     cards, tables, warning = fot._p18_assemble(
         _MOCK_DIRS, _MOCK_G1, _MOCK_CFO,
@@ -2093,16 +2117,24 @@ def _fot_p15_mock_dashboard(params: dict, tab: str) -> dict:
     return out
 
 
-def _mock_expect_keys(grain: list[dict], den: list[dict], c: int) -> None:
+def _mock_expect_keys(grain: list[dict], den: list[dict], c: int,
+                      prev_c: int | None = 12) -> None:
     """Досчитывает помесячные ключи ожидания B1 в мок-зерно и мок-ячейки
     знаменателей (den_grain).
 
     f26_h2c ≈ t26_h2 × (C−6)/6, p26_h2o ≈ t26_h2 × (12−C)/6 (для rv так же) —
     так что exp26 = f26_h1 + f26_h2c + p26_h2o ≈ f26_h1 + t26_h2 (контрольное
     «Ожидание 2026» мока сохраняется). Мутирует grain и den на месте.
+
+    prev_c (673259) — закрытый месяц ПРОШЛОГО года для базы «факт (ожидаемый)
+    прошлого года»: pv_h2c ≈ f25_h2 × (prev_c−6)/6, pv_h2o ≈ f25_h2 ×
+    (12−prev_c)/6, чтобы pv_h2c + pv_h2o = f25_h2 (у закрытого прошлого года
+    база = чистый факт, у незакрытого видно реальное расщепление факт/тактика).
     """
     w_fact = (c - 6) / 6.0
     w_plan = (12 - c) / 6.0
+    pw_fact = (prev_c - 6) / 6.0 if prev_c else 1.0
+    pw_plan = (12 - prev_c) / 6.0 if prev_c else 0.0
     for r in grain:
         t26 = r.get("t26_h2")
         r["f26_h2c"] = round(t26 * w_fact, 2) if t26 is not None else None
@@ -2110,6 +2142,9 @@ def _mock_expect_keys(grain: list[dict], den: list[dict], c: int) -> None:
         rv_t26 = r.get("rv_t26_h2")
         r["rv_f26_h2c"] = round(rv_t26 * w_fact, 2) if rv_t26 is not None else None
         r["rv_p26_h2o"] = round(rv_t26 * w_plan, 2) if rv_t26 is not None else None
+        f25_h2 = r.get("f25_h2")
+        r["pv_h2c"] = round(f25_h2 * pw_fact, 2) if f25_h2 is not None else None
+        r["pv_h2o"] = round(f25_h2 * pw_plan, 2) if f25_h2 is not None else None
     for r in den:
         rv_t26 = r.get("rv_t26_h2")
         if rv_t26 is None:

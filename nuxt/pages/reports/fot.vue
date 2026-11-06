@@ -1147,7 +1147,7 @@
                 <!-- Итого (видимые позиции) -->
                 <div v-if="p17CountryTotal" class="hc-total-bar">
                   <span class="hc-total-label">Итого:</span>
-                  <span v-for="k in ['plan_approved','q25','q26','staff_pct','delta_25','delta_appr']" :key="k" class="hc-total-val">
+                  <span v-for="k in ['plan_approved','plan_approveddevprev','plan_approveddevprev_abs','q25','q26','staff_pct','delta_25','delta_appr']" :key="k" class="hc-total-val">
                     {{ hcTotalVal(p17CountryTotal, k) }}
                   </span>
                 </div>
@@ -1854,7 +1854,10 @@ function hcCell(row: any, col: any): string {
   const v = row[col.key]
   if (v == null) return '—'
   if (col.key === 'label') return String(v)
+  // Δ плана к факту прошлого года (673259): процент — знаковый, абсолют — чел.
   if (col.key.startsWith('delta')) return fmtHcSigned(v)
+  if (col.key.endsWith('devprev')) return fmtHcSigned(v) + '%'
+  if (col.key.endsWith('devprev_abs')) return fmtHcSigned(v)
   if (col.key === 'staff_pct') return v != null ? fmt0(v) + '%' : '—'
   return fmt1(v)
 }
@@ -1872,12 +1875,18 @@ function hcTotalVal(total: any, key: string): string {
   const v = total?.[key]
   if (v == null) return '—'
   if (key.startsWith('delta')) return fmtHcSigned(v)
+  // Δ плана к факту прошлого года (673259) — те же правила, что в hcCell
+  if (key.endsWith('devprev')) return fmtHcSigned(v) + '%'
+  if (key.endsWith('devprev_abs')) return fmtHcSigned(v)
   if (key === 'staff_pct') return fmt0(v) + '%'
   return fmt1(v)
 }
 /** Класс ячейки HC: светофор укомплектованности + знак Δ */
 function hcCellClass(row: any, col: any): string {
   if (col.key === 'staff_pct' && row.staff_pct_color) return row.staff_pct_color
+  // Δ плана к прошлому году приходит с готовым цветом (сервер, _sign_color)
+  const hex = String(row?.[col.key + '_color'] || '').trim().toUpperCase()
+  if (hex) return DELTA_COLOR_CLASS[hex] || ''
   if (col.key.startsWith('delta')) {
     const v = row[col.key]
     if (v != null) return Number(v) >= 0 ? 'cf-pos' : 'cf-neg'

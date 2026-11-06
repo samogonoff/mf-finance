@@ -35,6 +35,22 @@ COL_KEYS = ("label", "plan_approved", "q25", "q26", "staff_pct",
 #: из сборщика дашборда (выгрузка красит по своим токенам, поле игнорируется).
 ROW_META_KEYS = frozenset({"total", "staff_pct_color"})
 
+#: Подписи шапки деки по ключам колонок — фолбэк, если сборщик не прислал
+#: `label` (сам набор колонок листа задан COL_KEYS, а не полями payload'а).
+DECK_HEADERS = {
+    "label": "Подразделение",
+    "plan_approved": "Утв. страт.",
+    "q25": "Факт 1П25",
+    "q26": "Факт 1П26",
+    "staff_pct": "% ук.",
+    "delta_25": "Δ25",
+    "delta_appr": "Δутв",
+}
+
+#: Уже залогированные «лишние» ключи строки: дашборд растёт колонками, и
+#: писать одну и ту же строку на каждый запрос незачем.
+_EXTRA_LOGGED: set = set()
+
 #: Подпись среза факта в подзаголовке свода (полугодие → как в деке).
 HL_LABELS = {0: "года", 1: "1 ПГ", 2: "2 ПГ"}
 
@@ -121,25 +137,29 @@ def _cell_pair(key: str, value, cfg: dict, bands: dict | None = None):
 
 
 def _check_row_keys(row: dict, where: str) -> None:
-    """Набор ключей строки обязан совпасть с набором колонок деки (B5).
+    """Строка обязана содержать ВСЕ колонки деки; лишние — только лог.
 
     Опечатка в ключе данных (`dleta_25` вместо `delta_25`) иначе дала бы тихий
-    пропуск: ячейка получила бы «н/д», а строка выглядела бы нормальной. Такая
-    ошибка должна падать с именем прототипа и списком лишних/недостающих
-    ключей, а не уезжать в выгрузку.
+    пропуск: ячейка получила бы «н/д», а строка выглядела бы нормальной —
+    недостающие ключи падают с именем прототипа и списком.
+
+    Лишние ключи ошибкой НЕ являются: набор колонок листа задаёт дека
+    (COL_KEYS), а дашборд независимо растёт своими колонками (673259 добавил
+    «Δ% к факту» и «Δ к факту, чел.»). Выгрузка «1:1» остаётся семиколоночной,
+    новые поля игнорируются — но факт их появления пишется в лог: иначе
+    расхождение дашборда и деки проходит незамеченным.
     """
     got = set(row or {}) - ROW_META_KEYS
-    extra = sorted(got - set(COL_KEYS))
     missing = sorted(set(COL_KEYS) - got)
-    if not extra and not missing:
-        return
-    detail = []
     if missing:
-        detail.append("нет ключей: %s" % ", ".join(missing))
-    if extra:
-        detail.append("лишние ключи: %s" % ", ".join(extra))
-    raise RuntimeError("fot_deck: %s — строка не соответствует колонкам деки (%s)"
-                       % (where, "; ".join(detail)))
+        raise RuntimeError(
+            "fot_deck: %s — строка не соответствует колонкам деки (нет ключей: %s)"
+            % (where, ", ".join(missing)))
+    extra = tuple(sorted(got - set(COL_KEYS)))
+    if extra and extra not in _EXTRA_LOGGED:
+        _EXTRA_LOGGED.add(extra)
+        log(logging.INFO, "fot_deck: колонки дашборда шире листа деки — игнорируются",
+            where=where, extra=", ".join(extra))
 
 
 def _row_cells(row: dict, cfg: dict, bands: dict | None = None) -> list[list[str]]:
@@ -178,21 +198,42 @@ def _body_style(idx: int) -> str:
 
 
 def _header_spec(frame, columns: list[dict]) -> dict:
-    """Строка-шапка: подписи колонок по абзацам-прототипам ячеек."""
-    n_paras = _header_para_counts(frame, len(columns))
-    return {"style": "header",
-            "cells": [_header_lines(col.get("label"), n_paras[i])
-                      for i, col in enumerate(columns)]}
+    """Строка-шапка: подписи колонок ДЕКИ по абзацам-прототипам ячеек.
+
+    Колонки берутся из `COL_KEYS` — это набор колонок листа деки, а не набор
+    полей payload'а: дашборд со временем получает новые колонки (673259:
+    «Δ% к факту» и «Δ к факту, чел.»), и выгрузка «1:1» обязана остаться
+    семиколоночной, как лист заказчика. Подпись ищется по ключу колонки,
+    поэтому порядок полей в payload'е на шапку не влияет.
+    """
+    by_key = {str(c.get("key")): c for c in columns if c.get("key")}
+    n_cells, n_paras = _header_proto(frame)
+    if n_cells != len(COL_KEYS):
+        raise RuntimeError(
+            "прототип %r: в шапке %d колонок, а в COL_KEYS %d — актив деки "
+            "разошёлся с биндером" % (frame.name, n_cells, len(COL_KEYS)))
+    cells = []
+    for key, n in zip(COL_KEYS, n_paras):
+        col = by_key.get(key) or {}
+        cells.append(_header_lines(col.get("label") or DECK_HEADERS.get(key, ""), n))
+    return {"style": "header", "cells": cells}
 
 
-def _header_para_counts(frame, n_cols: int) -> list[int]:
-    """Число абзацев в ячейках шапки прототипа (дека ломает их на две строки)."""
+def _header_proto(frame) -> tuple[int, list[int]]:
+    """Число колонок шапки прототипа и число абзацев в каждой её ячейке.
+
+    Абзацы деки — её типографика: где подпись ломается на две строки, там в
+    прототипе два абзаца. Список абзацев может быть короче числа колонок
+    (усечённый прототип) — тогда недостающие считаются однострочными, а не
+    роняют сборку индексацией.
+    """
     tbl = frame._element.find(".//" + shapes.A + "tbl")
-    first_tr = tbl.find(shapes.A + "tr")
+    first_tr = tbl.find(shapes.A + "tr") if tbl is not None else None
     if first_tr is None:
         raise RuntimeError("таблица %r: нет строки-шапки" % frame.name)
-    return [len(tc.findall(shapes.A + "txBody/" + shapes.A + "p"))
-            for tc in first_tr.findall(shapes.A + "tc")[:n_cols]]
+    tcs = first_tr.findall(shapes.A + "tc")
+    paras = [len(tc.findall(shapes.A + "txBody/" + shapes.A + "p")) for tc in tcs]
+    return len(tcs), (paras + [1] * len(COL_KEYS))[:len(COL_KEYS)]
 
 
 # ─── Шапка слайда (общая часть пяти прототипов) ──────────────────────────────
