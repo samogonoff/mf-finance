@@ -1,0 +1,236 @@
+{
+  "source_deck": "deck_src.pptx",
+  "source_sha256": "e8dbd297aac22cb2ab2087332372bfadc66f753955e826e4efbaba8527010401",
+  "asset_sha256": "81516d06823c5ec32ee4953ad9608e319f82e593e7f566331d5b898721f592b6",
+  "created_utc": "2026-11-06T11:35:28Z",
+  "deck_slides": 46,
+  "asset_slides": 5,
+  "dropped_slides": 41,
+  "first_slide_num": 1,
+  "prototypes": {
+    "hc_summary": {
+      "slide_sp_order": 0,
+      "source_slide": 23,
+      "tables": {
+        "tbl_countries": {
+          "capacity": 4,
+          "capacity_basis": "body_rows",
+          "total_rows": 1,
+          "deck_rows": 6,
+          "row_protos": [
+            "header",
+            "body_tinted",
+            "body_plain",
+            "total"
+          ]
+        }
+      },
+      "format": {
+        "kpi_group": false,
+        "cell_group": true,
+        "pct_digits": 1,
+        "total_pct_digits": 1,
+        "note_tail_space": false
+      },
+      "consts": {
+        "obs_bullet": "•  "
+      }
+    },
+    "hc_country_by": {
+      "slide_sp_order": 1,
+      "source_slide": 24,
+      "tables": {
+        "tbl_dept_a": {
+          "capacity": 17,
+          "capacity_basis": "body_rows",
+          "total_rows": 0,
+          "deck_rows": 18,
+          "row_protos": [
+            "header",
+            "body_tinted",
+            "body_plain"
+          ]
+        },
+        "tbl_dept_b": {
+          "capacity": 16,
+          "capacity_basis": "body_rows",
+          "total_rows": 0,
+          "deck_rows": 17,
+          "row_protos": [
+            "header",
+            "body_tinted",
+            "body_plain"
+          ]
+        }
+      },
+      "format": {
+        "kpi_group": false,
+        "cell_group": true,
+        "pct_digits": 0,
+        "total_pct_digits": 1,
+        "note_tail_space": false
+      }
+    },
+    "hc_country_ru": {
+      "slide_sp_order": 2,
+      "source_slide": 25,
+      "tables": {
+        "tbl_dept_a": {
+          "capacity": 11,
+          "capacity_basis": "body_rows",
+          "total_rows": 0,
+          "deck_rows": 12,
+          "row_protos": [
+            "header",
+            "body_tinted",
+            "body_plain"
+          ]
+        },
+        "tbl_dept_b": {
+          "capacity": 11,
+          "capacity_basis": "body_rows",
+          "total_rows": 0,
+          "deck_rows": 12,
+          "row_protos": [
+            "header",
+            "body_tinted",
+            "body_plain"
+          ]
+        }
+      },
+      "format": {
+        "kpi_group": false,
+        "cell_group": true,
+        "pct_digits": 1,
+        "total_pct_digits": 1,
+        "note_tail_space": false
+      }
+    },
+    "hc_country_kz": {
+      "slide_sp_order": 3,
+      "source_slide": 26,
+      "tables": {
+        "tbl_dept_a": {
+          "capacity": 8,
+          "capacity_basis": "body_rows",
+          "total_rows": 1,
+          "deck_rows": 10,
+          "row_protos": [
+            "header",
+            "total_top",
+            "body_tinted",
+            "body_plain"
+          ]
+        }
+      },
+      "format": {
+        "kpi_group": false,
+        "cell_group": true,
+        "pct_digits": 1,
+        "total_pct_digits": 1,
+        "note_tail_space": true
+      }
+    },
+    "hc_country_uz": {
+      "slide_sp_order": 4,
+      "source_slide": 27,
+      "tables": {
+        "tbl_dept_a": {
+          "capacity": 10,
+          "capacity_basis": "body_rows",
+          "total_rows": 0,
+          "deck_rows": 11,
+          "row_protos": [
+            "header",
+            "body_tinted",
+            "body_plain"
+          ]
+        },
+        "tbl_dept_b": {
+          "capacity": 10,
+          "capacity_basis": "body_rows",
+          "total_rows": 0,
+          "deck_rows": 11,
+          "row_protos": [
+            "header",
+            "body_tinted",
+            "body_plain"
+          ]
+        }
+      },
+      "format": {
+        "kpi_group": true,
+        "cell_group": true,
+        "pct_digits": 1,
+        "total_pct_digits": 1,
+        "note_tail_space": false
+      }
+    }
+  },
+  "sign_colors": {
+    "delta_up": "C0392B",
+    "delta_down": "1C8A5A",
+    "delta_up_light": "FF9E9E",
+    "delta_down_light": "8FDDB0",
+    "bar_neutral": "EDE3E6",
+    "na_text": "6B7280",
+    "body_text": "6B3347",
+    "total_text": "FFFFFF",
+    "header_text": "FFFFFF"
+  },
+  "pct_bands": {
+    "down_max": 97.0,
+    "up_min": 100.0,
+    "neutral_min": 95.3,
+    "neutral_values": [
+      95.3,
+      97.2,
+      98.0,
+      98.6,
+      99.0
+    ],
+    "samples": {
+      "green": 28,
+      "neutral": 6,
+      "red": 55
+    }
+  },
+  "row_colors": {
+    "header": "9B5A70",
+    "body_tinted": "F8EDF0",
+    "body_plain": "FFFFFF",
+    "total": "6B3347"
+  },
+  "total_bar_colors": [
+    "FFFFFF",
+    "EDE3E6",
+    "FFFFFF",
+    "FF9E9E",
+    "8FDDB0"
+  ],
+  "placeholders": {
+    "title": "{{subtitle}}",
+    "kpi": [
+      "{{kpiN_label}}",
+      "{{kpiN_value}}"
+    ],
+    "badge": "{{badge}}",
+    "note": "{{note}}",
+    "page": "{{page}}",
+    "obs": [
+      "{{obs_header}}",
+      "{{obs_bullet}}",
+      "{{obs_subject}}",
+      "{{obs_text}}"
+    ],
+    "total_bar": [
+      "{{total_label}}",
+      "{{total_part1}}",
+      "{{total_part2}}",
+      "{{total_part3}}",
+      "{{total_part4}}"
+    ],
+    "table_header": "{{h_cN}}",
+    "table_body": "{{cN}}"
+  }
+}

@@ -6,4 +6,7 @@ pyodbc==5.1.0
 python-dotenv==1.0.1
 httpx==0.27.2
 python-pptx==1.0.2
-
+# lxml закреплён явно: обход XML актива деки (app/fot_deck_export/shapes.py)
+# опирается на поведение lxml (deepcopy элементов, порядок дочерних узлов,
+# сериализация a:t), а python-pptx тянет его транзитивно без гарантии версии.
+lxml==6.1.3

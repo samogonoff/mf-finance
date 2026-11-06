@@ -1,0 +1,359 @@
+"""Работа с XML актива деки: клонирование слайдов, замена ранов, таблицы.
+
+Актив `app/assets/fot_deck/fot_deck_template.pptx` — обезличенная обрезка деки
+заказчика. Экспорт не рисует слайды заново, а клонирует слайд-прототип
+целиком (deepcopy spTree) и подставляет живые значения в плейсхолдеры — так
+вёрстка, шрифты, заливки и геометрия остаются 1:1 с декой.
+
+Инварианты, на которых держится подход:
+  * прототипы чистые: ни в одном дереве нет r:id / r:embed (картинок, диаграмм,
+    связей нет) — проверяется при клонировании, иначе клон унаследовал бы
+    rels исходного слайда и развалился;
+  * текст меняется ТОЛЬКО по ранам (rPr сохраняется): прямое
+    text_frame.text = … стирает форматы, а в деке весь вид живёт в rPr;
+  * цвета УФ не хардкодятся: их источник — manifest.json, снятый при сборке
+    актива с самих прототипов.
+"""
+
+from __future__ import annotations
+
+import json
+from copy import deepcopy
+from pathlib import Path
+
+from lxml import etree
+
+try:
+    from pptx import Presentation  # noqa: F401 - проверка наличия python-pptx
+except ImportError as exc:  # python-pptx — опциональная зависимость образа
+    Presentation = None
+    PPTX_IMPORT_ERROR = str(exc)
+else:
+    PPTX_IMPORT_ERROR = None
+
+ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "fot_deck"
+TEMPLATE_PATH = ASSET_DIR / "fot_deck_template.pptx"
+MANIFEST_PATH = ASSET_DIR / "manifest.json"
+
+_P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+_A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+
+#: Префиксы неймспейсов DrawingML/PresentationML для прямых выборок из XML
+#: (в биндерах и тестах: `el.find(shapes.A + "tc")`).
+A = _A_NS
+P = _P_NS
+
+#: Префикс имени выходного слайда: «fot:p17:hc_country_by:2» — по нему в
+#: PowerPoint и в отладке видно, из какого прототипа и страницы слайд собран.
+SLIDE_NAME_PREFIX = "fot:"
+
+
+def load_manifest(path: Path | None = None) -> dict:
+    """manifest.json актива (кеша нет: файл читается один раз на запрос)."""
+    return json.loads((path or MANIFEST_PATH).read_text(encoding="utf-8"))
+
+
+# ─── Клонирование ────────────────────────────────────────────────────────────
+
+def _assert_no_rel_refs(spTree, where: str) -> None:
+    """Прототип обязан быть чистым: любые r:id/r:embed — повод упасть."""
+    refs = [f"{el.tag}({k}={v})" for el in spTree.iter()
+            for k, v in el.attrib.items() if k.startswith(_R_NS)]
+    if refs:
+        raise RuntimeError("%s: в дереве шейпов есть связи с частями пакета: %s"
+                           % (where, ", ".join(refs[:5])))
+
+
+def clone_slide(prs, proto_slide, name: str):
+    """Добавляет в конец презентации клон прототипа; возвращает новый слайд.
+
+    Копируется только cSld/spTree (чистый XML без связей) — новый слайд
+    получает layout прототипа, а rels у него свои.
+    """
+    proto_cSld = proto_slide._element.find(_P_NS + "cSld")
+    proto_tree = proto_cSld.find(_P_NS + "spTree")
+    _assert_no_rel_refs(proto_tree, "прототип %s" % proto_cSld.get("name"))
+
+    new = prs.slides.add_slide(proto_slide.slide_layout)
+    new_cSld = new._element.find(_P_NS + "cSld")
+    # add_slide кладёт пустой spTree с placeholders layout'а — наполняем его
+    # детьми прототипа (поэлементно: replace() корневого элемента оставлял
+    # в Slide.shapes старый узел)
+    new_tree = new_cSld.find(_P_NS + "spTree")
+    for child in list(new_tree):
+        new_tree.remove(child)
+    for child in proto_tree:
+        new_tree.append(deepcopy(child))
+    # фон слайда (p:bg) — часть cSld, но не spTree: переносим отдельно
+    proto_bg = proto_cSld.find(_P_NS + "bg")
+    if proto_bg is not None:
+        for old_bg in new_cSld.findall(_P_NS + "bg"):
+            new_cSld.remove(old_bg)
+        new_cSld.insert(0, deepcopy(proto_bg))
+    new_cSld.set("name", name)
+    return new
+
+
+def delete_slide(prs, slide) -> None:
+    """Удаляет слайд из презентации вместе со связью (rels)."""
+    sldIdLst = prs.slides._sldIdLst
+    for sldId in list(sldIdLst):
+        if prs.part.related_part(sldId.get(_R_NS + "id")) is slide.part:
+            prs.part.drop_rel(sldId.get(_R_NS + "id"))
+            sldIdLst.remove(sldId)
+            return
+    raise RuntimeError("слайд не найден в sldIdLst — удаление не удалось")
+
+
+def delete_shape(shape) -> None:
+    """Удаляет шейп из дерева слайда (по XML-элементу)."""
+    el = shape._element
+    el.getparent().remove(el)
+
+
+def find_shape(slide, name: str):
+    """Шейп слайда по имени (семантические имена проставляет сборка актива)."""
+    for sh in slide.shapes:
+        if sh.name == name:
+            return sh
+    return None
+
+
+def require_shape(slide, name: str):
+    sh = find_shape(slide, name)
+    if sh is None:
+        raise RuntimeError("в слайде %r нет шейпа %r"
+                           % (slide._element.find(_P_NS + "cSld").get("name"), name))
+    return sh
+
+
+# ─── Текст по ранам ──────────────────────────────────────────────────────────
+
+def set_text(shape, pairs) -> None:
+    """Заменяет тексты конкретных ранов: [(индекс_рана, текст), …].
+
+    Первый абзац шейпа; rPr каждого рана сохраняется как есть. Прямое
+    `text_frame.text = …` запрещено — оно сносит форматы ранов, на которых
+    держится весь вид деки.
+    """
+    para = shape.text_frame.paragraphs[0]
+    runs = para.runs
+    for idx, text in pairs:
+        if idx >= len(runs):
+            raise RuntimeError("шейп %r: нет рана %d (ранов %d)"
+                               % (shape.name, idx, len(runs)))
+        runs[idx].text = text
+
+
+def set_run(shape, idx: int, text: str) -> None:
+    """Один ран одним значением (обёртка над set_text)."""
+    set_text(shape, [(idx, text)])
+
+
+def set_text_raw(shape, pairs, para_idx: int = 0) -> None:
+    """Заменяет тексты ранов напрямую в a:t — без экранирования символов.
+
+    `run.text = …` из python-pptx экранирует управляющие символы
+    («\\n» → «_x000A_»), а дека хранит перевод строки в тексте рана как есть:
+    на нём держится разрыв строк блока наблюдений (каждый абзац, кроме
+    последнего, закрыт «\\n»). Для таких текстов пишем узел a:t напрямую —
+    иначе вместо разрыва в выгрузке окажется мусорная последовательность.
+    """
+    runs = shape.text_frame.paragraphs[para_idx].runs
+    for idx, text in pairs:
+        if idx >= len(runs):
+            raise RuntimeError("шейп %r: нет рана %d (ранов %d)"
+                               % (shape.name, idx, len(runs)))
+        r = runs[idx]._r
+        t = r.find(_A_NS + "t")
+        if t is None:
+            t = etree.SubElement(r, _A_NS + "t")
+        t.text = text
+
+
+def run_color(shape, para_idx: int = 0, run_idx: int = 0) -> str | None:
+    """HEX цвета рана (для сверки с manifest в тестах)."""
+    runs = shape.text_frame.paragraphs[para_idx].runs
+    if run_idx >= len(runs):
+        return None
+    rPr = runs[run_idx]._r.find(_A_NS + "rPr")
+    if rPr is None:
+        return None
+    clr = rPr.find(_A_NS + "solidFill/" + _A_NS + "srgbClr")
+    return clr.get("val") if clr is not None else None
+
+
+def paint_run(shape, hex_color: str, para_idx: int = 0, run_idx: int = 0) -> None:
+    """Красит ран: цвет УФ берётся из manifest, не из литерала."""
+    runs = shape.text_frame.paragraphs[para_idx].runs
+    if run_idx >= len(runs):
+        raise RuntimeError("шейп %r: нет рана %d для покраски" % (shape.name, run_idx))
+    rPr = runs[run_idx]._r.get_or_add_rPr()
+    for old in rPr.findall(_A_NS + "solidFill"):
+        rPr.remove(old)
+    fill = etree.Element(_A_NS + "solidFill")
+    clr = etree.SubElement(fill, _A_NS + "srgbClr")
+    clr.set("val", hex_color)
+    rPr.insert(0, fill)
+
+
+# ─── Таблицы ─────────────────────────────────────────────────────────────────
+
+def _cell_paras(tc) -> list:
+    """Абзацы ячейки таблицы (a:tc/a:txBody/a:p)."""
+    txBody = tc.find(_A_NS + "txBody")
+    return txBody.findall(_A_NS + "p") if txBody is not None else []
+
+
+def _write_cell(tc, lines) -> None:
+    """Пишет текст в ячейку по абзацам-прототипам, сохраняя их rPr.
+
+    lines — список строк: первая идёт в первый абзац, каждая следующая — в
+    свой (шапка деки двухстрочная: «Утвержд. числ.» / «страт. 2026»). Если
+    строк больше, чем абзацев в прототипе, лишние склеиваются в первый;
+    лишние абзацы прототипа остаются пустыми (формат шапки сохраняется).
+    """
+    ps = _cell_paras(tc)
+    if not ps:
+        raise RuntimeError("ячейка без абзацев — прототип таблицы испорчен")
+    texts = list(lines) or [""]
+    for pi, p in enumerate(ps):
+        runs = p.findall(_A_NS + "r")
+        if not runs:
+            raise RuntimeError("абзац ячейки без ранов — прототип таблицы испорчен")
+        for r in runs[1:]:
+            p.remove(r)
+        t = runs[0].find(_A_NS + "t")
+        if t is None:
+            t = etree.SubElement(runs[0], _A_NS + "t")
+        t.text = texts[pi] if pi < len(texts) else ""
+
+
+def fill_table(graphic_frame, rows_spec, row_protos, sign,
+               proto_row_count: int | None = None) -> None:
+    """Пересобирает таблицу: строки-прототипы + живые значения + высота фрейма.
+
+    rows_spec — [{'style': 'header'|'body_tinted'|'body_plain'|'total'|'total_top',
+                  'cells': [[строка, …], …],
+                  'signs': [None|'up'|'down'|'#RRGGBB', …] (по колонкам)}].
+    row_protos — {стиль: a:tr} из актива (клонируются deepcopy).
+    sign — {'delta_up', 'delta_down', 'delta_up_light', 'delta_down_light'};
+    какие цвета брать (светлые — на тёмной полосе итога) решает знак `light`
+    в спецификации строки. Элемент `signs` может быть и готовым HEX (например
+    «н/д» — приглушённый серый деки): тогда он применяется как есть.
+    proto_row_count — сколько строк было в прототипе (len(row_protos)): по нему
+    высота фрейма масштабируется пропорционально, как в деке.
+    """
+    tbl = graphic_frame._element.find(".//" + _A_NS + "tbl")
+    if tbl is None:
+        raise RuntimeError("graphicFrame %r: внутри нет a:tbl" % graphic_frame.name)
+    ext = graphic_frame._element.find(_P_NS + "xfrm/" + _A_NS + "ext")
+    if ext is None:
+        raise RuntimeError("graphicFrame %r: нет p:xfrm/a:ext — прототип таблицы "
+                           "испорчен" % graphic_frame.name)
+    # авторская высота прототипа — снимается до замены строк, её и масштабируем
+    proto_cy = int(ext.get("cy") or 0)
+
+    trs = tbl.findall(_A_NS + "tr")
+    for tr in trs:
+        tbl.remove(tr)
+
+    light = {True: {"up": sign["delta_up_light"], "down": sign["delta_down_light"]},
+             False: {"up": sign["delta_up"], "down": sign["delta_down"]}}
+
+    for row in rows_spec:
+        proto = row_protos[row["style"]]
+        tr = deepcopy(proto)
+        cells = tr.findall(_A_NS + "tc")
+        specs = row["cells"]
+        if len(specs) != len(cells):
+            raise RuntimeError("таблица %r: колонок %d, значений %d"
+                               % (graphic_frame.name, len(cells), len(specs)))
+        for tc, lines, sign_key in zip(cells, specs,
+                                       row.get("signs") or [None] * len(cells)):
+            _write_cell(tc, lines if isinstance(lines, (list, tuple)) else [lines])
+            if sign_key is None:
+                continue
+            if sign_key in ("up", "down"):
+                color = light[bool(row.get("light"))][sign_key]
+            else:
+                # готовый HEX («н/д» и подобные константы оформления деки)
+                color = sign_key
+            for p in _cell_paras(tc):
+                for run in p.findall(_A_NS + "r"):
+                    rPr = run.find(_A_NS + "rPr")
+                    if rPr is None:
+                        continue
+                    for old in rPr.findall(_A_NS + "solidFill"):
+                        rPr.remove(old)
+                    fill = etree.Element(_A_NS + "solidFill")
+                    clr = etree.SubElement(fill, _A_NS + "srgbClr")
+                    clr.set("val", color)
+                    rPr.insert(0, fill)
+        tbl.append(tr)
+
+    # Высота graphicFrame. В деке cy пропорционален числу строк (≈214 тыс. EMU
+    # на строку у слайда 24), но НЕ равен их сумме (3852672 против 3160170):
+    # авторский «воздух» строк в a:tr/@h не заложен. В активе осталось 3–4
+    # строки-прототипа при неизменном cy, поэтому высоту восстанавливаем по
+    # числу строк деки: cy = (cy_актива / deck_rows) × строк_в_выгрузке.
+    proto_rows = proto_row_count or len(rows_spec)
+    if proto_cy and proto_rows:
+        ext.set("cy", str(int(round(proto_cy * len(rows_spec) / proto_rows))))
+
+
+def table_protos(graphic_frame, row_proto_names, row_colors=None) -> dict:
+    """Снимает копии строк-прототипов таблицы: {стиль: a:tr}.
+
+    Строки сопоставляются по ПОРЯДКУ из манифеста — сборка актива оставила в
+    каждой таблице ровно строки-прототипы, и записала их в физическом порядке
+    (у KZ «total_top» идёт второй строкой, сразу после шапки). Если передан
+    row_colors ({стиль: HEX заливки} из манифеста), для каждой строки сверяется
+    заливка первой ячейки: несовпадение = рассинхрон манифеста и актива, и
+    лучше упасть, чем молча отдать чужие цвета текста (баг 663620).
+    """
+    tbl = graphic_frame._element.find(".//" + _A_NS + "tbl")
+    trs = tbl.findall(_A_NS + "tr")
+    if len(trs) != len(row_proto_names):
+        raise RuntimeError("таблица %r: строк %d, прототипов в манифесте %d (%r)"
+                           % (graphic_frame.name, len(trs),
+                              len(row_proto_names), row_proto_names))
+    if row_colors:
+        for name, tr in zip(row_proto_names, trs):
+            tc = tr.find(_A_NS + "tc")
+            tcPr = tc.find(_A_NS + "tcPr") if tc is not None else None
+            clr = (tcPr.find(_A_NS + "solidFill/" + _A_NS + "srgbClr")
+                   if tcPr is not None else None)
+            got = clr.get("val") if clr is not None else None
+            want = row_colors.get(name if name != "total_top" else "total")
+            if want and got != want:
+                raise RuntimeError(
+                    "таблица %r: строка-прототип %r имеет заливку %s, манифест "
+                    "ждёт %s — манифест рассинхронизирован с активом"
+                    % (graphic_frame.name, name, got, want))
+    return {name: tr for name, tr in zip(row_proto_names, trs)}
+
+
+
+def clone_paragraph(shape, src_idx: int):
+    """Клонирует абзац-прототип шейпа в конец его текста; возвращает индекс.
+
+    Нужно для списков наблюдений: в активе оставлен ровно один абзац-буллет с
+    тремя ранами (маркер / код страны / текст), остальные строятся из него.
+    """
+    txBody = shape.text_frame._txBody
+    src = shape.text_frame.paragraphs[src_idx]._p
+    new = deepcopy(src)
+    # a:p — последние дочерние элементы txBody: bodyPr и lstStyle идут раньше
+    txBody.append(new)
+    return len(shape.text_frame.paragraphs) - 1
+
+
+
+__all__ = [
+    "A", "ASSET_DIR", "MANIFEST_PATH", "P", "SLIDE_NAME_PREFIX", "TEMPLATE_PATH",
+    "clone_paragraph", "clone_slide", "delete_shape", "delete_slide",
+    "fill_table", "find_shape", "load_manifest", "paint_run", "require_shape",
+    "run_color", "set_run", "set_text", "table_protos",
+]

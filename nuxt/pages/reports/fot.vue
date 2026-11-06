@@ -14,6 +14,9 @@
           <select v-model="pptxMode" class="select" aria-label="Режим презентации">
             <option value="full">Полная</option>
             <option value="short">Краткая</option>
+            <!-- «1:1» — выгрузка слайдами-прототипами самой деки (вкладка p17);
+                 остальные режимы рисуют слайды кодом на бэкенде. -->
+            <option value="deck">1:1 — Численность ГК</option>
           </select>
           <button class="btn btn-ghost btn-sm" :disabled="pptxBusy" @click="exportPptx">
             <Icon name="lucide:presentation" />
@@ -1296,7 +1299,17 @@ function api<T = any>(path: string, opts: Record<string, any> = {}): Promise<T> 
   return $fetch<T>(`${apiBase.value}/api/cost${path}`, { ...opts, headers: fetchHeaders.value })
 }
 function errText(e: any): string {
-  return e?.data?.detail || e?.message || String(e)
+  // detail бывает объектом (выгрузка-дека отдаёт {message, supported} для
+  // неподдержанной вкладки) — иначе пользователь увидел бы «[object Object]»
+  const detail = e?.data?.detail
+  if (detail && typeof detail === 'object') {
+    const msg = detail.message || detail.msg || ''
+    const supported = Array.isArray(detail.supported) && detail.supported.length
+      ? ` (доступно: ${detail.supported.join(', ')})`
+      : ''
+    return (msg || String(e)) + supported
+  }
+  return detail || e?.message || String(e)
 }
 
 // ── Вкладки ──────────────────────────────────────────────────────────────────
@@ -2293,7 +2306,7 @@ function exportCsv(t: any) {
 
 /** Режим деки: full — все слайды, short — сводный. Значения — контракт
  *  эндпоинта (mode: "full" | "short"), имя файла строит и сервер. */
-const pptxMode = ref<'full' | 'short'>('full')
+const pptxMode = ref<'full' | 'short' | 'deck'>('full')
 const pptxBusy = ref(false)
 const pptxNote = ref('')
 
@@ -2318,21 +2331,38 @@ async function exportPptx() {
   pptxBusy.value = true
   pptxNote.value = ''
   try {
+    // deck — выгрузка «1:1 как в деке»: сервер собирает её из слайдов-прототипов
+    // вкладки p17 (пока единственной размеченной), поэтому список вкладок
+    // передаётся явно; full/short рисуются кодом и tabs не принимают.
+    const deckMode = pptxMode.value === 'deck'
     const blob = await api<Blob>('/fot/export/pptx', {
       method: 'POST',
       responseType: 'blob',
-      body: {
-        mode: pptxMode.value,
-        filters: insightContext.value,
-        observations: collectObservations(),
-      },
+      body: deckMode
+        // half не входит в insightContext (это срез панели, а не контекста
+        // ИИ-разбора), но заголовки слайдов и месяц факта деки считаются по
+        // нему: без него выгрузка за 1 ПГ была бы подписана «2 ПГ».
+        ? {
+            mode: pptxMode.value,
+            tabs: ['p17'],
+            filters: { ...insightContext.value, half: half.value },
+          }
+        : {
+            mode: pptxMode.value,
+            filters: insightContext.value,
+            observations: collectObservations(),
+          },
     })
     const now = new Date()
     const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `ФОТ_2026_${pptxMode.value}_${stamp}.pptx`
+    // имя файла совпадает с серверным Content-Disposition (кириллица — как есть,
+    // браузер берёт её из filename*=UTF-8'' ; тут дублируем для локального имени)
+    a.download = deckMode
+      ? `ФОТ_1x1_Численность_${stamp}.pptx`
+      : `ФОТ_2026_${pptxMode.value}_${stamp}.pptx`
     document.body.appendChild(a)
     a.click()
     a.remove()
