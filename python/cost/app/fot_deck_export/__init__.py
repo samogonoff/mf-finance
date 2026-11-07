@@ -14,7 +14,7 @@
   engine.py   — сборка одной презентации на запрос.
 """
 
-from app.fot_deck_export import collect
+from app.fot_deck_export import collect, registry
 from app.fot_deck_export.engine import (
     AssetMismatch,
     DeckEngine,
@@ -26,4 +26,4 @@ from app.fot_deck_export.engine import (
 )
 
 __all__ = ["AssetMismatch", "DeckEngine", "EmptySlice", "collect", "export_deck",
-           "load_manifest", "load_template", "reset_cache"]
+           "load_manifest", "load_template", "registry", "reset_cache"]

@@ -1,4 +1,4 @@
-"""Сбор данных для выгрузки «1:1 как в деке» (вкладка p17).
+"""Сбор данных для выгрузки «1:1 как в деке».
 
 Модуль — единственная граница между движком рендера и данными: биндеры НЕ
 ходят в SQL и не знают про витрины, они получают готовый payload отсюда.
@@ -14,9 +14,18 @@ import logging
 from app import fot_insights
 from app.logship import log
 
-#: Вкладки, которые фаза 1 умеет выгружать «1:1» (дека пока размечена только
-#: по листам численности ГК). Расширение — новая запись в registry.SHEETS.
-SUPPORTED_TABS = ("p17",)
+#: Вкладки, которые выгрузка умеет собирать «1:1» (дека размечена по листам
+#: 1–3, 7, 8 и 23–27). Расширение — новая запись в registry.SHEETS.
+SUPPORTED_TABS = ("b1", "p15", "p16", "p17")
+
+#: Вкладки, у которых срез «страна» сужает ВСЮ выгрузку: на листах 7/8 дека
+#: показывает одну страну на лист, поэтому вариант строится по срезу, а не по
+#: перечню стран из ответа.
+COUNTRY_SLICED = frozenset({"p15", "p16"})
+
+#: Страны присутствия в порядке деки — из них строятся варианты листов 7/8,
+#: когда пользователь не сузил срез одной страной.
+COUNTRY_ORDER = ("BY", "RU", "KZ", "UZ")
 
 
 class UnsupportedTab(ValueError):
@@ -40,19 +49,67 @@ async def collect(tab: str, filters: dict) -> dict:
     if tab not in SUPPORTED_TABS:
         raise UnsupportedTab(tab)
     params = fot_insights._params_from_context(filters or {})
-    # «half» не входит в _SCALAR_PARAM_KEYS (это срез панели, а не контекста
-    # ИИ-разбора), но для деки он обязателен: от него зависят заголовки
-    # слайдов и месяц факта. Без него сборщик уходит в дефолт «2 ПГ» и
-    # выгрузка за 1 ПГ подписана как 2 ПГ. Пустое значение — дефолт сборщика.
-    if params.get("half") in (None, ""):
-        half = (filters or {}).get("half")
-        if half not in (None, ""):
-            params["half"] = half
+    _ensure_half(params, filters)
+    if tab in COUNTRY_SLICED:
+        _ensure_single_country(tab, params, filters)
     data = await fot_insights._fot_dashboard(tab, params)
     log(logging.INFO, "fot_deck: данные вкладки собраны", tab=tab,
         cards=len(data.get("cards") or []),
+        depts=len(data.get("cards_by_department") or []),
+        slides=len(data.get("slides") or []),
         details=len(data.get("country_details") or {}))
     return data
 
 
-__all__ = ["SUPPORTED_TABS", "UnsupportedTab", "collect"]
+def _ensure_half(params: dict, filters: dict) -> None:
+    """Переносит срез «half» в параметры сборщика.
+
+    «half» не входит в _SCALAR_PARAM_KEYS (это срез панели, а не контекста
+    ИИ-разбора), но для деки он обязателен: от него зависят заголовки слайдов
+    и месяц факта. Без него сборщик уходит в дефолт «2 ПГ» и выгрузка за 1 ПГ
+    подписана как 2 ПГ. Пустое значение — дефолт сборщика.
+    """
+    if params.get("half") in (None, ""):
+        half = (filters or {}).get("half")
+        if half not in (None, ""):
+            params["half"] = half
+
+
+def _ensure_single_country(tab: str, params: dict, filters: dict) -> None:
+    """Сужает срез листов 7/8 до ОДНОЙ страны — иначе вариантов не построить.
+
+    Дека показывает «Отделы» по стране, а сборщик при нескольких странах
+    отдаёт свод группы без `meta.slide.cc`, и лист остался бы без шапки.
+    Берём первую страну среза в порядке запроса.
+
+    Ключ среза — `country` (так его зовёт /fot/dashboard и кладёт фронт);
+    `countries` — внутреннее имя параметра сборщика. Принимаем оба, иначе
+    фильтр страны молча игнорировался и «срез BY» возвращал группу.
+    """
+    countries = params.get("countries") or []
+    if len(countries) <= 1:
+        return
+    params["countries"] = countries[:1]
+    log(logging.INFO, "fot_deck: срез стран сужен до одной для листа отделов",
+        tab=tab, was=",".join(countries), now=params["countries"][0])
+
+
+async def collect_country(tab: str, filters: dict, cc: str) -> dict:
+    """Payload листа 7/8 для ОДНОЙ страны: срез страны добавляется к фильтрам.
+
+    Декa печатает «Отделы» постранично по странам присутствия, а сборщик без
+    среза отдаёт свод группы (`meta.slide.cc` пуст). Поэтому вариант страны
+    собирается отдельным запросом: `country=[cc]` — тот же ключ среза, что у
+    /fot/dashboard. Страны без единого отдела дают пустой payload, и движок
+    пропускает прототип.
+    """
+    scoped = dict(filters or {})
+    scoped["country"] = [cc]
+    data = await collect(tab, scoped)
+    log(logging.INFO, "fot_deck: данные листа по стране", tab=tab, cc=cc,
+        depts=len(data.get("cards_by_department") or []))
+    return data
+
+
+__all__ = ["COUNTRY_ORDER", "COUNTRY_SLICED", "SUPPORTED_TABS", "UnsupportedTab",
+           "collect", "collect_country"]

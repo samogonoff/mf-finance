@@ -1816,7 +1816,9 @@ async def fot_export_pptx(
         raise HTTPException(400, "filters должен быть объектом")
 
     if mode == "deck":
-        tabs = body.get("tabs") or ["p17"]
+        # без `tabs` — ВСЕ листы реестра в порядке деки (b1 → p15 → p16 → p17):
+        # пользователь ждёт «весь дашборд», а не один лист численности
+        tabs = body.get("tabs") or list(fot_deck_export.registry.ALL_TABS)
         if not isinstance(tabs, list):
             raise HTTPException(400, "tabs должен быть списком вкладок")
         try:
@@ -1837,7 +1839,12 @@ async def fot_export_pptx(
             log(logging.ERROR, "fot_deck: выгрузка невозможна", tabs=tabs,
                 error=str(exc)[:300])
             raise HTTPException(503, str(exc)) from exc
-        fname = "ФОТ_1x1_Численность_%s.pptx" % date.today().strftime("%Y%m%d")
+        # имя файла: «1:1 — все листы» (запрос БЕЗ tabs) — это весь дашборд по
+        # деке, поэтому и имя «дашборд». Явный tabs = точечная выгрузка листов
+        # численности, у неё остаётся прежнее имя
+        fname = ("ФОТ_1x1_Численность_%s.pptx" % date.today().strftime("%Y%m%d")
+                 if body.get("tabs") else
+                 "ФОТ_1x1_дашборд_%s.pptx" % date.today().strftime("%Y%m%d"))
         return StreamingResponse(
             iter([blob]),
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",

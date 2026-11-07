@@ -130,14 +130,14 @@ def require_shape(slide, name: str):
 
 # ─── Текст по ранам ──────────────────────────────────────────────────────────
 
-def set_text(shape, pairs) -> None:
+def set_text(shape, pairs, para_idx: int = 0) -> None:
     """Заменяет тексты конкретных ранов: [(индекс_рана, текст), …].
 
-    Первый абзац шейпа; rPr каждого рана сохраняется как есть. Прямое
-    `text_frame.text = …` запрещено — оно сносит форматы ранов, на которых
-    держится весь вид деки.
+    Параграф по умолчанию первый; rPr каждого рана сохраняется как есть.
+    Прямое `text_frame.text = …` запрещено — оно сносит форматы ранов, на
+    которых держится весь вид деки.
     """
-    para = shape.text_frame.paragraphs[0]
+    para = shape.text_frame.paragraphs[para_idx]
     runs = para.runs
     for idx, text in pairs:
         if idx >= len(runs):
@@ -350,10 +350,55 @@ def clone_paragraph(shape, src_idx: int):
     return len(shape.text_frame.paragraphs) - 1
 
 
+def clone_run(shape, para_idx: int, src_idx: int):
+    """Клонирует ран-прототип абзаца в его конец; возвращает индекс рана.
+
+    Баннеры листов 7/8 перечисляют отделы парами ранов (имя — жирным, пояснение
+    обычным), и число пар задаёт данные. В активе остаётся ОДНА пара-прототип,
+    остальные строятся её копиями (rPr сохраняется — оформление деки).
+    """
+    para = shape.text_frame.paragraphs[para_idx]
+    src = para.runs[src_idx]._r
+    new = deepcopy(src)
+    # клон добавляется в КОНЕЦ абзаца, а не сразу за источником: биндер
+    # клонирует пару по ранам 0 и 1 подряд, и при вставке «за источником»
+    # второй клон копировал бы уже ПЕРВЫЙ клон (индексы съезжают), а порядок
+    # ранов становился бы «имя, имя, пояснение, пояснение». В деке это
+    # выглядело как один отдел, повторённый восемь раз
+    runs = para.runs
+    runs[-1]._r.addnext(new)
+    return len(para.runs) - 1
+
+
+# ─── Обводка фигур (круги «п.п.») ────────────────────────────────────────────
+
+def paint_outline(shape, hex_color: str) -> None:
+    """Красит ОБВОДКУ фигуры (круг «п.п.» — цвет рамки, не заливки).
+
+    У кругов деки цвет несёт линия (заливка белая), и он кодирует знак
+    отклонения: красная рамка — рост доли, зелёная — снижение, серая — ноль или
+    «н/д». Толщину и прочие свойства линии оставляем как в прототипе: меняется
+    только a:srgbClr, поэтому рамка остаётся той же толщины, что у деки.
+    """
+    spPr = shape._element.find(_P_NS + "spPr")
+    if spPr is None:
+        raise RuntimeError("шейп %r: нет p:spPr для обводки" % shape.name)
+    ln = spPr.find(_A_NS + "ln")
+    if ln is None:
+        raise RuntimeError("шейп %r: нет a:ln — это не обведённая фигура" % shape.name)
+    fill = ln.find(_A_NS + "solidFill")
+    if fill is None:
+        raise RuntimeError("шейп %r: обводка без a:solidFill" % shape.name)
+    for old in fill.findall(_A_NS + "srgbClr"):
+        fill.remove(old)
+    clr = etree.SubElement(fill, _A_NS + "srgbClr")
+    clr.set("val", hex_color)
+
 
 __all__ = [
     "A", "ASSET_DIR", "MANIFEST_PATH", "P", "SLIDE_NAME_PREFIX", "TEMPLATE_PATH",
-    "clone_paragraph", "clone_slide", "delete_shape", "delete_slide",
-    "fill_table", "find_shape", "load_manifest", "paint_run", "require_shape",
-    "run_color", "set_run", "set_text", "table_protos",
+    "clone_paragraph", "clone_run", "clone_slide", "delete_shape",
+    "delete_slide", "fill_table", "find_shape", "load_manifest", "paint_outline",
+    "paint_run", "require_shape", "run_color", "set_run", "set_text",
+    "set_text_raw", "table_protos",
 ]

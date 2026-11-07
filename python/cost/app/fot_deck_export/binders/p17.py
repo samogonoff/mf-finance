@@ -239,9 +239,16 @@ def _header_proto(frame) -> tuple[int, list[int]]:
 # ─── Шапка слайда (общая часть пяти прототипов) ──────────────────────────────
 
 def _fill_head(slide, subtitle: str, badge: str, cards: list[dict],
-               cfg: dict) -> None:
-    """Подзаголовок, бейдж и пять KPI — одинаково у свода и у стран."""
-    shapes.set_run(shapes.require_shape(slide, "title"), 1, subtitle)
+               cfg: dict, brand: str | None = None) -> None:
+    """Подзаголовок, бейдж и пять KPI — одинаково у свода и у стран.
+
+    `brand` — константа деки («ГК «МАРК ФОРМЭЛЬ»  ») из манифеста: она стоит
+    первым раном заголовка, и без её записи в выгрузке остался бы токен актива.
+    """
+    title = shapes.require_shape(slide, "title")
+    if brand:
+        shapes.set_run(title, 0, brand)
+    shapes.set_run(title, 1, subtitle)
     shapes.set_run(shapes.require_shape(slide, "badge"), 0, badge)
     by_key = {c.get("key"): c for c in cards if c.get("key")}
     for num, key in enumerate(KPI_KEYS, 1):
@@ -268,6 +275,12 @@ def _fill_note(slide, text: str, cfg: dict) -> None:
                    ("чел. " + body if body else "") + tail)
 
 
+def _brand(ctx) -> str | None:
+    """Бренд деки из consts прототипа (None — актив без константы)."""
+    meta = ctx._engine.manifest["prototypes"][ctx.proto_name]  # noqa: SLF001
+    return (meta.get("consts") or {}).get("title_lead")
+
+
 def _drop(slide, name: str) -> None:
     sh = shapes.find_shape(slide, name)
     if sh is not None:
@@ -284,7 +297,8 @@ def bind_summary(ctx, payload: dict, variant=None) -> None:
     half = _half(payload)
     subtitle = "Численность персонала %s — свод по группе (на конец %s)" % (
         year if year else "", HL_LABELS.get(half, HL_LABELS[2]))
-    _fill_head(slide, subtitle, "чел.", payload.get("cards") or [], cfg)
+    _fill_head(slide, subtitle, "чел.", payload.get("cards") or [], cfg,
+               _brand(ctx))
 
     table = next((t for t in payload.get("tables") or []
                   if t.get("key") == "hc_countries"), {}) or {}
@@ -396,7 +410,7 @@ def bind_country(ctx, detail: dict, variant=None) -> None:
         slide = ctx.slide(page_idx)
         last = page_idx == len(pages) - 1
         _fill_head(slide, title + (CONT_SUFFIX if page_idx else ""), cc,
-                   detail.get("cards") or [], ctx.fmt)
+                   detail.get("cards") or [], ctx.fmt, _brand(ctx))
         # таблицы панелей: i-я панель получает свой кусок строк; итог — только
         # на последней странице (строка итога относится ко всей стране)
         for pane_idx, name in enumerate(panes):

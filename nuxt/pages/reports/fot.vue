@@ -14,9 +14,10 @@
           <select v-model="pptxMode" class="select" aria-label="Режим презентации">
             <option value="full">Полная</option>
             <option value="short">Краткая</option>
-            <!-- «1:1» — выгрузка слайдами-прототипами самой деки (вкладка p17);
-                 остальные режимы рисуют слайды кодом на бэкенде. -->
-            <option value="deck">1:1 — Численность ГК</option>
+            <!-- «1:1» — выгрузка слайдами-прототипами самой деки: все листы
+                 реестра в порядке деки (b1 → p15 → p16 → p17); остальные
+                 режимы рисуют слайды кодом на бэкенде. -->
+            <option value="deck">1:1 — все листы</option>
           </select>
           <button class="btn btn-ghost btn-sm" :disabled="pptxBusy" @click="exportPptx">
             <Icon name="lucide:presentation" />
@@ -2341,8 +2342,8 @@ async function exportPptx() {
   pptxNote.value = ''
   try {
     // deck — выгрузка «1:1 как в деке»: сервер собирает её из слайдов-прототипов
-    // вкладки p17 (пока единственной размеченной), поэтому список вкладок
-    // передаётся явно; full/short рисуются кодом и tabs не принимают.
+    // ВСЕХ размеченных листов в порядке деки, поэтому список вкладок не
+    // передаётся (дефолт реестра); full/short рисуются кодом и tabs не принимают.
     const deckMode = pptxMode.value === 'deck'
     const blob = await api<Blob>('/fot/export/pptx', {
       method: 'POST',
@@ -2353,7 +2354,6 @@ async function exportPptx() {
         // нему: без него выгрузка за 1 ПГ была бы подписана «2 ПГ».
         ? {
             mode: pptxMode.value,
-            tabs: ['p17'],
             filters: { ...insightContext.value, half: half.value },
           }
         : {
@@ -2370,7 +2370,7 @@ async function exportPptx() {
     // имя файла совпадает с серверным Content-Disposition (кириллица — как есть,
     // браузер берёт её из filename*=UTF-8'' ; тут дублируем для локального имени)
     a.download = deckMode
-      ? `ФОТ_1x1_Численность_${stamp}.pptx`
+      ? `ФОТ_1x1_дашборд_${stamp}.pptx`
       : `ФОТ_2026_${pptxMode.value}_${stamp}.pptx`
     document.body.appendChild(a)
     a.click()

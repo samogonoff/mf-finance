@@ -489,12 +489,216 @@ def test_asset_sha_guard() -> None:
         engine_mod.reset_cache()
 
 
+# --- Листы 1-3 и 7-8 деки (b1, p15, p16) -----------------------------------
+
+def _b1_payload(year: int = 2026) -> dict:
+    """DTO листов 1-3: KPI, карточки стран, панель численности, таблица."""
+    cards = [{"key": k, "label": "KPI %d" % i, "value": 100.0 + i,
+              "unit": "млн BYN"} for i, k in enumerate(
+        ("fot_fact_2025", "fot_share_2025", "fot_expect_2026", "fot_dev_year",
+         "fot_share_2026", "revenue_dev_year"), 1)]
+    cc_cards = [{"cc": cc, "label": cc, "exp26": 100.0, "dev_year": 5.0,
+                 "dev_abs": 4.0, "rev_share_2026": 20.0,
+                 "rev_share_2025": 21.0, "fot_share": 60.0,
+                 "plan_approved": 10.0, "fact_h1_2026": 9.0, "hc_var": -1.0,
+                 "share_delta_pp": -0.4}
+                for cc in ("BY", "RU", "KZ", "UZ")]
+    keys = ("f25_h1", "f25_h2", "f25", "b26_h1", "f26_h1", "b26_h2", "t26_h2",
+            "exp26")
+    table = {"key": "by_country", "label": "", "columns": [], "rows": [
+        {"label": "BY (Беларусь)", **{k: 10.0 for k in keys}},
+        {"label": "Общий итог", "total": True,
+         **{k: 10.0 for k in keys}},
+    ]}
+    hc = {"plan_approved": 10.0, "fact_2025": 9.0, "fact_2026": 8.0,
+          "var_plan": -1.0, "var_2025": 1.0}
+    half_cards = [{"key": k, "label": "KPI %d" % i, "value": 100.0 + i,
+                   "unit": "млн BYN"} for i, k in enumerate(
+        ("fot_value_prev", "fot_share_prev", "fot_value", "fot_dev",
+         "fot_share_cur", "revenue_dev"), 1)]
+    return {"cards": cards, "headcount": hc, "cards_by_country": cc_cards,
+            "tables": [table], "observations": [],
+            "slides": [
+                {"key": "s1", "period": "h1", "title": "", "cards": half_cards,
+                 "headcount": hc, "cards_by_country": cc_cards,
+                 "table": table},
+                {"key": "s2", "period": "h2", "title": "", "cards": half_cards,
+                 "headcount": hc, "cards_by_country": cc_cards,
+                 "table": table}],
+            "meta": {"tab": "b1", "params": {"year": year},
+                     "periods": {"year_plan": year}}}
+
+
+def _dept_payload(cc: str, count: int, *, attention: int = 6,
+                  with_table: bool = True) -> dict:
+    """DTO листа отделов одной страны (лист 7 - с таблицей, лист 8 - без)."""
+    keys = ("f25_h1", "f25_h2", "f25", "b26_h1", "f26_h1", "b26_h2", "t26_h2",
+            "exp26")
+    depts = []
+    for i in range(1, count + 1):
+        d = {"label": "Отдел %d" % i, "f26_h1": 100.0 + i, "t26_h2": 90.0 + i,
+             "exp26": 190.0 + i, "dev_h1_pct": 5.0, "dev_h1_abs": 4.0,
+             "dev_h2_pct": 4.0, "dev_h2_abs": 3.0, "dev_year_pct": 6.0,
+             "dev_year_abs": 7.0, "hc_plan": 10.0, "hc_fact": 9.0,
+             "hc_staffing": 90.0, "hc_dev": -1.0, "pp_h1": -0.1,
+             "pp_h2": 0.2, "pp_year": 0.0}
+        if i <= attention:
+            d["attention"] = True
+            d["attn_rank"] = i
+        else:
+            d["attention"] = False
+        depts.append(d)
+    tables = []
+    if with_table:
+        # тело таблицы — те же отделы, что в карточках: пагинация листа 7
+        # считается по строкам таблицы, а не по карточкам внимания
+        rows = [{"label": d["label"],
+                 **{k: 100.0 for k in keys}} for d in depts]
+        rows.append({"label": "Итого Отделы", "total": True,
+                     **{k: 100.0 for k in keys}})
+        tables = [{"key": "departments", "label": "", "columns": [], "rows": rows}]
+    return {"cards": [], "headcount": {"plan_approved": 800.0,
+                                       "fact_2026": 790.0, "staffing": 96.0},
+            "cards_by_department": depts, "tables": tables,
+            "dept_trends": ["тренд"] if with_table else [],
+            "dept_banners": {},
+            "meta": {"tab": "p15" if with_table else "p16",
+                     "params": {"year": 2026}, "periods": {"year_plan": 2026},
+                     "slide": {"cc": cc, "label": cc}}}
+
+
+def _slide_names(blob: bytes) -> list[str]:
+    return [s._element.find(P + "cSld").get("name") for s in slides_of(blob)]
+
+
+def _page_texts(shape) -> list[str]:
+    """Все a:t шейпа `page` — номер страницы движок пишет в первый ран."""
+    return [t.text or "" for t in shape._element.iter(A + "t")]
+
+
+def test_registry_order() -> None:
+    """(A1) Порядок листов «все листы» = порядок деки."""
+    from app.fot_deck_export import registry
+    check("(A1) вкладки идут в порядке деки",
+          registry.ALL_TABS == ("b1", "p15", "p16", "p17"),
+          "%r" % (registry.ALL_TABS,))
+    for tab in ("b1", "p15", "p16", "p17"):
+        check("(A1) вкладка %r есть в реестре" % tab,
+              tab in registry.SHEETS_BY_TAB)
+    check("(A1) b1 - три листа деки",
+          len(registry.sheet_for("b1").slides) == 3)
+    payloads = {"b1": _b1_payload(), "p15": _dept_payload("BY", 3),
+                "p16": _dept_payload("BY", 3, with_table=False)}
+    names = _slide_names(render(payloads))
+    check("(A1) b1 даёт три слайда подряд",
+          names[:3] == ["fot:b1:b1_year:0", "fot:b1:b1_h1:0", "fot:b1:b1_h2:0"],
+          "%r" % (names[:3],))
+    check("(A1) p15 идёт после b1",
+          "fot:p15:dept_summary:0" in names
+          and names.index("fot:p15:dept_summary:0") > 2, "%r" % (names,))
+    check("(A1) p16 идёт после p15",
+          "fot:p16:dept_cards:0" in names
+          and names.index("fot:p16:dept_cards:0")
+          > names.index("fot:p15:dept_summary:0"), "%r" % (names,))
+
+
+def test_country_variants() -> None:
+    """(A2) Листы 7/8: вариант на страну; срез страны - один лист."""
+    from app.fot_deck_export.binders import dept
+    variants = dept.country_variants(_dept_payload("BY", 3))
+    check("(A2) сужённый срез даёт один вариант", len(variants) == 1,
+          "%d" % len(variants))
+    check("(A2) вариант несёт код страны", variants[0][0]["cc"] == "BY",
+          "%r" % (variants[0][0],))
+    group = _dept_payload("", 4)
+    group["meta"]["slide"] = {"cc": None, "label": "Группа"}
+    group["cards_by_department"] = [
+        dict(d, cc=cc) for d, cc in zip(group["cards_by_department"],
+                                        ("RU", "BY", "UZ", "KZ"))]
+    order = [v[0]["cc"] for v in dept.country_variants(group)]
+    check("(A2) свод группы разворачивается по странам",
+          order == ["BY", "RU", "KZ", "UZ"], "%r" % (order,))
+    empty = {"cards_by_department": [], "meta": {"slide": {"cc": None}}}
+    check("(A2) без отделов вариантов нет", dept.country_variants(empty) == [])
+
+
+def test_p16_grid_overflow() -> None:
+    """(A2) Сетка листа 8: <=16 без продолжения, 17 - второй слайд."""
+    fits = _slide_names(render({"p16": _dept_payload("BY", 16,
+                                                    with_table=False)}))
+    check("(A2) 16 отделов - один слайд", len(fits) == 1, "%r" % (fits,))
+    over_blob = render({"p16": _dept_payload("BY", 17, with_table=False)})
+    over = _slide_names(over_blob)
+    check("(A2) 17 отделов - слайд-продолжение", len(over) == 2, "%r" % (over,))
+    check("(A2) продолжение помечено «(продолжение)»",
+          any("продолжение" in t for t in texts(slides_of(over_blob)[1])))
+    few_blob = render({"p16": _dept_payload("BY", 5, with_table=False)})
+    cards = [sh for sh in slides_of(few_blob)[0].shapes
+             if sh.name.startswith("card") and sh.name.endswith("_bg")]
+    check("(A2) меньше 16 - лишние карточки удалены", len(cards) == 5,
+          "карточек %d" % len(cards))
+
+
+def test_p15_pagination() -> None:
+    """(A2) Таблица отделов сверх ёмкости - продолжение, карточки в конце."""
+    caps = engine_mod.load_manifest()["prototypes"]["dept_summary"]["tables"]
+    capacity = int(next(iter(caps.values()))["capacity"])
+    blob = render({"p15": _dept_payload("BY", capacity + 3)})
+    slides = slides_of(blob)
+    check("(A2) таблица сверх ёмкости - два слайда", len(slides) == 2,
+          "%d при ёмкости %d" % (len(slides), capacity))
+    first, last = texts(slides[0]), texts(slides[1])
+    check("(A2) карточки внимания - только на последнем слайде",
+          not any("ТРЕБУЮЩИЕ ВНИМАНИЯ" in t.upper() for t in first)
+          and any("ТРЕБУЮЩИЕ ВНИМАНИЯ" in t.upper() for t in last))
+
+
+def test_b1_three_slides() -> None:
+    """(A2) b1 всегда три листа (год, 1 ПГ, 2 ПГ) и 4 карточки стран."""
+    slides = slides_of(render({"b1": _b1_payload()}))
+    check("(A2) b1 - три слайда", len(slides) == 3, "%d" % len(slides))
+    for idx, slide in enumerate(slides, 1):
+        cards = [sh for sh in slide.shapes
+                 if sh.name.startswith("card") and sh.name.endswith("_bg")]
+        check("(A2) b1 слайд %d: четыре карточки стран" % idx,
+              len(cards) == 4, "карточек %d" % len(cards))
+        ph = [t for t in texts(slide) if "{{" in t]
+        check("(A2) b1 слайд %d: без плейсхолдеров" % idx, not ph,
+              "%r" % (ph[:2],))
+
+
+def test_no_placeholders_all_sheets() -> None:
+    """(A3) Во всех листах реестра нет «{{» и нумерация сквозная."""
+    payloads = {"b1": _b1_payload(), "p15": _dept_payload("BY", 4),
+                "p16": _dept_payload("BY", 4, with_table=False),
+                "p17": payload({"BY": [row("A"), row("B")]})}
+    blob = render(payloads)
+    slides = slides_of(blob)
+    leftovers = [(sh.name, t) for s in slides for sh in s.shapes
+                 for t in texts(s) if "{{" in t]
+    check("(A3) ни одного «{{» во всех листах", not leftovers,
+          "%r" % (leftovers[:2],))
+    nums = []
+    for s in slides:
+        page = shape_named(s, "page")
+        # номер страницы — ЕДИНСТВЕННЫЙ текст шейпа `page` (не текст слайда:
+        # у шейпа может быть несколько ранов, и склейка даёт пустую строку)
+        nums.append("".join(t for t in _page_texts(page)) if page is not None
+                    else None)
+    digits = [int(n) for n in nums if n and str(n).isdigit()]
+    check("(A3) нумерация страниц сквозная 1..N",
+          digits == list(range(1, len(slides) + 1)), "%r" % (nums,))
+
+
 def main() -> int:
     logging.disable(logging.CRITICAL)
     tests = (test_format_boundaries, test_layout_capacities, test_empty_slice,
              test_paging_and_style, test_kz_total_top, test_row_keys_guard,
-             test_extra_columns_tolerated,
-             test_asset_sha_guard)
+             test_extra_columns_tolerated, test_asset_sha_guard,
+             # листы 1-3 и 7-8 деки (партия A)
+             test_registry_order, test_country_variants,
+             test_p16_grid_overflow, test_p15_pagination,
+             test_b1_three_slides, test_no_placeholders_all_sheets)
     for test in tests:
         try:
             test()

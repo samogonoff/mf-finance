@@ -33,6 +33,8 @@
 
 from __future__ import annotations
 
+import re
+
 NBSP = " "  # неразрывный пробел — разделитель разрядов деки
 MINUS = "−"  # типографский минус
 NA = "н/д"  # пустое значение
@@ -42,10 +44,24 @@ TOKEN_UP = "up"
 TOKEN_DOWN = "down"
 TOKEN_NEUTRAL = "neutral"
 TOKEN_NA = "na"
+#: Ровно ноль — на листах 1–3/7–8 он НЕ светофор: круг «0,00» в деке серый,
+#: ячейка таблицы остаётся базовым цветом строки. В p17 ноль — зелёный
+#: (`delta` возвращает down), поэтому токен отдельный, а не переиспользован.
+TOKEN_ZERO = "zero"
 
 #: Формат по умолчанию: разряды группируются, проценты с одним знаком.
 DEFAULT_FORMAT = {"kpi_group": True, "cell_group": True, "pct_digits": 1,
-                  "total_pct_digits": 1, "note_tail_space": False}
+                  "total_pct_digits": 1, "note_tail_space": False,
+                  # листы 1–3/7–8 деки: значения таблиц — млн с одним знаком
+                  # (b1) либо целые тыс. (p15/p16); знаки «п.п.» на кругах — до
+                  # двух, хвостовые нули срезаются («−0,35», но ноль — «0,00»)
+                  "cell_digits": 1, "pp_digits": 2,
+                  # знаки РОВНОГО нуля круга: у листов 7/8 «0,00», у листа 3
+                  # деки «0,0» — точность своя у каждого листа
+                  "pp_zero_digits": 2,
+                  # пара «ПЧ/ФЧ» в карточках отделов: дека пишет её с ТОЧКОЙ
+                  # («372.4/348.9») — это её типографика, а не наш формат
+                  "hc_dot": True}
 
 
 def _group(value: float, digits: int, group: bool = True) -> str:
@@ -187,6 +203,208 @@ def fmt_of(meta: dict | None) -> dict:
     return out
 
 
+# ─── Листы 1–3/7–8: деньги в млн/тыс., «п.п.» и пара ПЧ/ФЧ ───────────────────
+
+def money(value, group: bool = True, digits: int = 1,
+          plus: bool = True, nbsp: bool = True) -> tuple[str, str | None]:
+    """Денежное значение листа: «147,1» / «7 300» / «+8,2».
+
+    В отличие от `num`/`delta`, знаки после запятой задаёт прототип: у карточек
+    и таблиц b1 это млн с одним знаком, у p15/p16 — целые тыс. (`cell_digits` из
+    манифеста). Ноль печатается БЕЗ плюса («0,0»), как в деке, а не «+0,0».
+
+    `plus=False` — значение без плюса у положительных: так дека печатает СУММЫ
+    («87,0 млн»), плюс остаётся только у отклонений (динамика). Один и тот же
+    формат, два смысла — поэтому флаг, а не вторая функция.
+
+    Токен — ``None``: денежные значения на этих листах не красятся (цвет несут
+    отдельные шейпы подписей-динамик и круги «п.п.»).
+
+    `nbsp=False` — разряды обычным пробелом: так дека печатает пару ПЧ/ФЧ в
+    карточке страны («ПЧ: 4 537,7»), тогда как панель численности того же
+    листа держит там неразрывный. Разница видна только побайтово, на глаз
+    строки одинаковы, поэтому флаг, а не «примерно так же».
+    """
+    n = _as_float(value)
+    if n is None:
+        return NA, TOKEN_NA
+    shown = _rounded(n, digits)
+    sign = MINUS if shown < 0 else ("+" if (plus and shown > 0) else "")
+    text = _group(shown, digits, group)
+    if group and not nbsp:
+        text = text.replace(NBSP, " ")
+    return sign + text, None
+
+
+def signed(value, digits: int = 1, group: bool = True,
+           token_zero: str = TOKEN_ZERO) -> tuple[str, str | None]:
+    """Отклонение листов 1–3/7–8: знак + токен, НОЛЬ — не светофор.
+
+    `delta` (p17) нулевое отклонение красит зелёным — так размечена таблица
+    численности. На листах 1–3/7–8 ноль нейтрален: круг «0,00» деки серый
+    (6B7280), ячейка таблицы остаётся базовым цветом строки, подпись «0,0» —
+    тоже. Поэтому токен нуля отдельный (``TOKEN_ZERO``), а биндер решает, красить
+    ли его вообще.
+    """
+    n = _as_float(value)
+    if n is None:
+        return NA, TOKEN_NA
+    shown = _rounded(n, digits)
+    if shown > 0:
+        return "+" + _group(shown, digits, group), TOKEN_UP
+    if shown < 0:
+        return MINUS + _group(shown, digits, group), TOKEN_DOWN
+    return _group(0.0, digits, group), token_zero
+
+
+def pp(value, digits: int = 2, zero_digits: int | None = None
+       ) -> tuple[str, str | None]:
+    """Круг «доля ФОТ в выручке, п.п.»: «−0,35» / «+0,24» / «0,00» / «н/д».
+
+    Хвостовые нули дека срезает до одного знака («−0,1», «+0,1»), но ровно ноль
+    печатает ПОЛНЫМ числом знаков — и это число своё у каждого листа: на
+    листах 7/8 это «0,00», а на листе 3 деки — «0,0» (проверено по дампу).
+    Поэтому точность нуля приходит отдельным параметром (`zero_digits`), а
+    `digits` задаёт точность расчёта: срезать хвост у нуля нельзя, иначе на
+    листе 8 вместо «0,00» окажется «0,0».
+
+    Токен — как у `signed` (ноль не светофор).
+    """
+    n = _as_float(value)
+    if n is None:
+        return NA, TOKEN_NA
+    shown = _rounded(n, digits)
+    if shown == 0:
+        zd = digits if zero_digits is None else zero_digits
+        return _group(0.0, zd, True), TOKEN_ZERO
+    text = (MINUS if shown < 0 else "+") + _group(shown, digits, True)
+    # хвостовой ноль срезается: «−0,10» → «−0,1», «+0,20» → «+0,2»
+    if digits > 1 and text.endswith("0"):
+        text = text[:-1]
+    return text, (TOKEN_UP if shown > 0 else TOKEN_DOWN)
+
+
+def hc_pair(plan, fact, digits: int = 1, dot: bool = False) -> str:
+    """Пара «ПЧ/ФЧ» карточки отдела: «372.4/348.9» (дека — с точкой).
+
+    Разделитель дробной части у пары свой: листы 7/8 пишут её ТОЧКОЙ, хотя все
+    прочие числа листа — запятой. Разряды дека в паре не группирует (значения
+    < 1000), поэтому NBSP здесь не ставится. Нет данных — «н/д» на позиции.
+    """
+    sep = "." if dot else ","
+    def one(v) -> str:
+        n = _as_float(v)
+        if n is None:
+            return NA
+        shown = _rounded(n, digits)
+        text = f"{abs(shown):.{digits}f}".replace(".", sep)
+        return (MINUS if shown < 0 else "") + text
+    return "%s/%s" % (one(plan), one(fact))
+
+
+# ─── Подписи деки: шаблоны с прорезями ───────────────────────────────────────
+
+#: Прорезь шаблона: ``{year}``, ``{prev}``, ``{y2}``, ``{p2}``, ``{vN}``.
+_SLOT_RE = re.compile(r"\{([a-z]+\d*)\}")
+
+
+def fill_label(slots: list[dict], *, year=None, prev=None, country=None,
+               values=()) -> list[list[str]]:
+    """Подпись-шаблон прототипа → абзацы готового текста ([[ран, …], …]).
+
+    Шаблон снимается с деки при сборке актива (`scripts/build_fot_deck_template`):
+    формулировки, разбивка на абзацы и раны — декины, а годы, страна и значения
+    в нём стоят прорезями. Так правка деки (другая подпись, другой год) не
+    требует правки кода биндера — это и есть «1:1 с декой» в части подписей.
+
+    Прорези:
+      * ``{year}`` / ``{prev}`` — годы отчётного и прошлого периода (полные);
+      * ``{y2}`` / ``{p2}`` — их двузначные хвосты («1ПГ26»);
+      * ``{country}`` — название страны листа («Беларусь»);
+      * ``{vN}`` — N-е значение из `values` (нумерация сквозная по шейпу).
+
+    Незаполненная прорезь — исключение, а не пустая строка: тихо отданная
+    подпись «Доля ФОТ в выручке гр. (): » выглядит как баг вёрстки, и заметить
+    её на слайде почти невозможно.
+    """
+    ctx = {"year": year, "prev": prev, "country": country,
+           "y2": (str(year)[-2:] if year is not None else None),
+           "p2": (str(prev)[-2:] if prev is not None else None)}
+    numbered = {i: v for i, v in enumerate(values, 1)}
+    out: list[list[str]] = []
+    for slot in slots:
+        para: list[str] = []
+        for run in slot["runs"]:
+            para.append(_fill_slots(run["text"], ctx, numbered))
+        out.append(para)
+    return out
+
+
+def fill_header_labels(cells: list[dict], *, year=None, prev=None, country=None,
+                       values=()) -> list[list[str]]:
+    """Подписи шапки таблицы из манифеста → [колонка][абзац].
+
+    В подписях колонок тоже стоят прорези: «Факт / {v1}ПГ {prev}» — номер
+    полугодия и год. Поэтому `values` принимаются так же, как у подписей
+    шейпов, и нумерация сквозная по всей шапке (дека нумеровала их подряд,
+    слева направо).
+    """
+    numbered = {i: v for i, v in enumerate(values, 1)}
+    ctx = {"year": year, "prev": prev, "country": country,
+           "y2": (str(year)[-2:] if year else None),
+           "p2": (str(prev)[-2:] if prev else None)}
+    out: list[list[str]] = []
+    for cell in cells:
+        paras = []
+        for text in cell.get("paragraphs") or []:
+            paras.append(_fill_slots(text, ctx, numbered))
+        out.append(paras)
+    return out
+
+
+def slot_names(text: str) -> list[str]:
+    """Имена прорезей в шаблоне подписи: ``['v1', 'v2', 'year']``.
+
+    Нужно биндеру, чтобы понять, что именно требует подпись: у пятого блока
+    ленты KPI подпись полугодий несёт ещё и номер полугодия, а у года — нет.
+    Считать это по тексту деки в биндере нельзя, поэтому спрашиваем шаблон.
+    """
+    return _SLOT_RE.findall(text or "")
+
+
+def _fill_slots(text: str, ctx: dict, numbered: dict) -> str:
+    """Подставляет прорези шаблона; неизвестная или пустая — RuntimeError."""
+    na_values: set[int] = set()
+
+    def sub(m: re.Match) -> str:
+        key = m.group(1)
+        if key.startswith("v") and key[1:].isdigit():
+            idx = int(key[1:])
+            if idx not in numbered:
+                raise RuntimeError(
+                    "fot_deck: подпись деки ждёт значение {v%d}, а биндер передал "
+                    "их %d — состав подписи и данных разошёлся (шаблон: %r)"
+                    % (idx, len(numbered), text))
+            if str(numbered[idx]) == NA:
+                na_values.add(idx)
+            return str(numbered[idx])
+        value = ctx.get(key)
+        if value in (None, ""):
+            raise RuntimeError(
+                "fot_deck: в подписи деки не заполнена прорезь {%s} — "
+                "биндер не передал %s (текст: %r)" % (key, key, text))
+        return str(value)
+
+    out = _SLOT_RE.sub(sub, text)
+    # «н/д» уже означает «значения нет»: единица сразу за ним («н/д%») —
+    # ложная точность, и дека так не печатает. Снимаем её, только если
+    # ближайшая прорезь подставила NA (иначе «н/д» могло быть текстом деки).
+    if na_values:
+        out = re.sub(re.escape(NA) + r"(\s*)(%|млн|тыс\.[^ ]*)", NA, out)
+    return out
+
+
 __all__ = ["DEFAULT_FORMAT", "MINUS", "NA", "NBSP", "TOKEN_DOWN", "TOKEN_NA",
-           "TOKEN_NEUTRAL", "TOKEN_UP", "cell", "delta", "fmt_of", "kpi", "num",
-           "pct", "total_value"]
+           "TOKEN_NEUTRAL", "TOKEN_UP", "TOKEN_ZERO", "cell", "delta",
+           "fill_header_labels", "fill_label", "fmt_of", "hc_pair", "kpi",
+           "money", "num", "pct", "pp", "signed", "slot_names", "total_value"]

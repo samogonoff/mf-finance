@@ -33,7 +33,7 @@ from pathlib import Path
 
 from app.fot_deck_export import collect as collect_mod
 from app.fot_deck_export import format as format_mod
-from app.fot_deck_export import shapes
+from app.fot_deck_export import registry, shapes
 from app.fot_deck_export.errors import AssetMismatch, EmptySlice
 from app.fot_deck_export.registry import SHEETS, sheet_for
 from app.logship import log
@@ -205,6 +205,21 @@ class SlideContext:
         meta = self._engine.manifest["prototypes"][self.proto_name]["tables"]
         return int(meta[table]["deck_rows"])
 
+    def card_count(self, proto: str | None = None) -> int:
+        """Сколько карточек в сетке прототипа (из манифеста).
+
+        Сетки карточек листов 7/8 раскладывают отделы по местам, и биндер
+        обязан покрыть КАЖДУЮ ячейку: данных меньше — лишние ячейки удаляются,
+        больше — открывается страница-продолжение. Число ячеек — свойство
+        прототипа (4×4 у листа 8, 6 у листа 7), поэтому оно в манифесте.
+        """
+        meta = self._engine.manifest["prototypes"][proto or self.proto_name]
+        count = meta.get("card_count")
+        if not count:
+            raise RuntimeError("в манифесте прототипа %r нет card_count"
+                               % (proto or self.proto_name))
+        return int(count)
+
     def is_total_row(self, table: str) -> bool:
         """Есть ли у таблицы строка-прототип итога (у KZ — вверху таблицы)."""
         return any(name.startswith("total") for name in self.proto_rows(table))
@@ -222,6 +237,52 @@ class SlideContext:
         """Флаги типографики прототипа (разряды, знаки процентов) — из манифеста."""
         meta = self._engine.manifest["prototypes"][proto or self.proto_name]
         return format_mod.fmt_of(meta.get("format"))
+
+    # подписи-шаблоны
+    def label(self, name: str, *, year=None, prev=None, country=None,
+              values=(), proto: str | None = None) -> list[list[str]]:
+        """Подпись шейпа по шаблону деки: абзацы → раны, готовые к записи.
+
+        В манифесте подписи лежат прорезями («Динамика, п.п. ({v1}ПГ{y2}/…): »):
+        так формулировка остаётся декиной, а год и значения подставляет биндер.
+        Возвращает [[текст рана, …], …] — по абзацам, чтобы биндер писал раны
+        как есть и не собирал подпись сам (правка деки не потребует правки кода).
+
+        Прорези: ``{year}``/``{prev}`` — полные годы отчётного/прошлого периода,
+        ``{y2}``/``{p2}`` — их двузначные хвосты, ``{country}`` — страна листа,
+        ``{vN}`` — значения из `values` по порядку (сквозная нумерация по шейпу).
+        """
+        meta = self._engine.manifest["prototypes"][proto or self.proto_name]
+        slots = (meta.get("labels") or {}).get(name)
+        if slots is None:
+            raise RuntimeError("в манифесте прототипа %r нет подписи %r"
+                               % (proto or self.proto_name, name))
+        try:
+            return format_mod.fill_label(slots, year=year, prev=prev,
+                                         country=country, values=values)
+        except RuntimeError as exc:
+            raise RuntimeError("%s/%s: %s" % (proto or self.proto_name, name, exc))
+
+    def has_label(self, name: str, proto: str | None = None) -> bool:
+        """Есть ли у прототипа снятая подпись (для необязательных подписей)."""
+        meta = self._engine.manifest["prototypes"][proto or self.proto_name]
+        return name in (meta.get("labels") or {})
+
+    def header_labels(self, table: str, *, year=None, prev=None, country=None,
+                      values=(), proto: str | None = None) -> list[list[str]]:
+        """Подписи шапки таблицы по шаблонам деки: [колонка][абзац].
+
+        Дека ломает подписи на абзацы («Факт» / «1 ПГ 2025») — это её
+        типографика, и биндер обязан писать по строке на абзац, иначе узкая
+        колонка поедет. Годы подставляются те же, что и в подписях шейпов.
+        """
+        meta = self._engine.manifest["prototypes"][proto or self.proto_name]
+        cells = (meta.get("header_labels") or {}).get(table)
+        if cells is None:
+            raise RuntimeError("в манифесте прототипа %r нет шапки таблицы %r"
+                               % (proto or self.proto_name, table))
+        return format_mod.fill_header_labels(cells, year=year, prev=prev,
+                                             country=country, values=values)
 
 
 class DeckEngine:
@@ -318,17 +379,34 @@ class DeckEngine:
         тексте его не найти — сверяем множество токенов актива с манифестом.
         """
         declared = set()
-        for names in (self.manifest.get("placeholders") or {}).values():
-            for name in (names if isinstance(names, list) else [names]):
-                # «{{kpiN_label}}» / «{{cN}}»: N — номер колонки или KPI, в
-                # активе он уже развёрнут в конкретную цифру (c0… c6)
-                declared.add(re.sub(r"\d+", "*", str(name)).replace("N", "*"))
+        # манифест хранит ОБЩИЙ список токенов актива (строки «{{cardN_p1}}»):
+        # номера в них свёрнуты, поэтому и найденные токены сворачиваются так
+        # же — иначе card1…card16 не совпали бы ни с одной записью
+        raw = self.manifest.get("placeholders") or []
+        for name in (raw if isinstance(raw, list) else list(raw.values())):
+            declared.add(re.sub(r"\d+", "*", str(name)).replace("N", "*"))
         found = set()
         for proto_slide in self._proto_slides.values():
             for sh in proto_slide.shapes:
                 for text in _shape_texts(sh):
                     for token in re.findall(r"\{\{([^}]+)\}\}", text):
-                        found.add("{{%s}}" % re.sub(r"\d+", "*", token))
+                        base = re.sub(r"\d+", "*", token)
+                        # манифест объявляет токены по ИМЕНАМ ШЕЙПОВ
+                        # ({{banner_good}}, {{cardN_cc_dev}}), а обезличивание
+                        # кладёт в текст токены ЧАСТЕЙ шейпа:
+                        # {{banner_good_lead}}, {{cardN_cc_dev_r0}},
+                        # {{cardN_pp1_text_p0_r0}}, {{total_part*}}. Отрезаем
+                        # хвост до первого «_», если сам шейп объявлен: так
+                        # остаётся настоящая проверка «в активе есть шейп, до
+                        # которого биндер не дотянулся»
+                        head = base.strip("{}").split("_")
+                        while head:
+                            cand = "{{%s}}" % "_".join(head)
+                            if cand in declared:
+                                base = cand
+                                break
+                            head.pop()
+                        found.add(base)
         unknown = sorted(found - declared)
         if unknown:
             raise RuntimeError(
@@ -362,6 +440,11 @@ def _shape_texts(shape) -> list[str]:
                     shapes.A + "r/" + shapes.A + "t")))
         return out
     txBody = el.find(shapes.A + "txBody")
+    if txBody is None:
+        # у фигур (p:sp) контейнер текста живёт в PresentationML, а не в
+        # DrawingML: `find(A+"txBody")` его не видит, и проверка на «{{»
+        # молча проходила по пустому списку — плейсхолдер мог уехать в файл
+        txBody = el.find(shapes.P + "txBody")
     if txBody is not None:
         for p in txBody.findall(shapes.A + "p"):
             out.append("".join(t.text or "" for t in p.findall(
@@ -369,11 +452,28 @@ def _shape_texts(shape) -> list[str]:
     return out
 
 
+def _has_country_filter(filters: dict) -> bool:
+    """Сузил ли пользователь срез одной страной (тогда лист один, не постранично)."""
+    value = filters.get("country")
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple)):
+        return len([v for v in value if str(v).strip()]) == 1
+    return False
+
+
 async def export_deck(tabs: list[str] | None, filters: dict | None) -> bytes:
-    """Точка входа роута: собирает данные вкладок и рендерит pptx."""
-    wanted = [str(t).strip().lower() for t in (tabs or ["p17"]) if str(t).strip()]
+    """Точка входа роута: собирает данные вкладок и рендерит pptx.
+
+    `tabs` пустой/None — ВСЕ листы реестра в порядке деки (это и есть режим
+    «1:1 — все листы» на фронте): пользователь просит выгрузку дашборда, а
+    состав листов определяет дека. Явный список (`["p17"]`) остаётся для
+    точечной выгрузки одной вкладки и работает как раньше.
+    """
+    wanted = ([str(t).strip().lower() for t in tabs if str(t).strip()]
+              if tabs else list(registry.ALL_TABS))
     if not wanted:
-        wanted = ["p17"]
+        wanted = list(registry.ALL_TABS)
     unknown = [t for t in wanted if t not in collect_mod.SUPPORTED_TABS]
     if unknown:
         raise collect_mod.UnsupportedTab(unknown[0])
@@ -381,6 +481,24 @@ async def export_deck(tabs: list[str] | None, filters: dict | None) -> bytes:
     engine = DeckEngine(load_template(), load_manifest())
     try:
         for tab in wanted:
+            if tab in collect_mod.COUNTRY_SLICED and _has_country_filter(
+                    filters or {}):
+                # срез уже сужен пользователем: один лист на эту страну
+                payload = await collect_mod.collect(tab, filters or {})
+                engine.build_tab(tab, payload)
+                continue
+            if tab in collect_mod.COUNTRY_SLICED:
+                # листы 7/8 дека печатает ПОСТРАНИЧНО по странам присутствия:
+                # свод группы без `meta.slide.cc` не даёт шапки и подписей
+                for cc in collect_mod.COUNTRY_ORDER:
+                    payload = await collect_mod.collect_country(tab, filters or {},
+                                                                cc)
+                    if not (payload.get("cards_by_department") or []):
+                        log(logging.INFO, "fot_deck: страна без отделов — лист "
+                            "пропущен", tab=tab, cc=cc)
+                        continue
+                    engine.build_tab(tab, payload)
+                continue
             payload = await collect_mod.collect(tab, filters or {})
             engine.build_tab(tab, payload)
         return engine.finish()
