@@ -1,11 +1,11 @@
 {
   "source_deck": "deck_src.pptx",
   "source_sha256": "e8dbd297aac22cb2ab2087332372bfadc66f753955e826e4efbaba8527010401",
-  "asset_sha256": "20d56dc63411a18b2546738cd9b83479ff6a7a652a5f989a7f8fe2f5a9b13792",
-  "created_utc": "2026-11-07T15:00:34Z",
+  "asset_sha256": "35239d1d147cbfa186b6dd02d5a2b2ebd1bfa89eac2408a52c77d19032727585",
+  "created_utc": "2026-11-08T00:45:45Z",
   "deck_slides": 46,
-  "asset_slides": 10,
-  "dropped_slides": 36,
+  "asset_slides": 13,
+  "dropped_slides": 33,
   "first_slide_num": 1,
   "prototypes": {
     "b1_year": {
@@ -30,10 +30,12 @@
         "cell_group": true,
         "pct_digits": 1,
         "total_pct_digits": 1,
+        "card_pct_digits": 1,
         "note_tail_space": false,
         "cell_digits": 1,
         "pp_digits": 2,
-        "pp_zero_digits": 2
+        "pp_zero_digits": 2,
+        "hc_dot": true
       },
       "card_count": 4,
       "card_slots": [
@@ -464,10 +466,12 @@
         "cell_group": true,
         "pct_digits": 1,
         "total_pct_digits": 1,
+        "card_pct_digits": 1,
         "note_tail_space": false,
         "cell_digits": 1,
         "pp_digits": 2,
-        "pp_zero_digits": 2
+        "pp_zero_digits": 2,
+        "hc_dot": true
       },
       "card_count": 4,
       "card_slots": [
@@ -889,10 +893,12 @@
         "cell_group": true,
         "pct_digits": 1,
         "total_pct_digits": 1,
+        "card_pct_digits": 1,
         "note_tail_space": false,
         "cell_digits": 1,
         "pp_digits": 2,
-        "pp_zero_digits": 1
+        "pp_zero_digits": 1,
+        "hc_dot": true
       },
       "card_count": 4,
       "card_slots": [
@@ -1313,8 +1319,1814 @@
         "{{unit_label}}"
       ]
     },
-    "dept_summary": {
+    "nb_summary": {
       "slide_sp_order": 3,
+      "source_slide": 4,
+      "tables": {
+        "tbl_directions": {
+          "capacity": 5,
+          "capacity_basis": "body_rows",
+          "total_rows": 1,
+          "deck_rows": 7,
+          "row_protos": [
+            "header",
+            "total_top",
+            "body_tinted",
+            "body_plain"
+          ]
+        }
+      },
+      "format": {
+        "kpi_group": true,
+        "cell_group": true,
+        "pct_digits": 1,
+        "total_pct_digits": 1,
+        "card_pct_digits": 0,
+        "note_tail_space": false,
+        "cell_digits": 0,
+        "pp_digits": 2,
+        "pp_zero_digits": 2,
+        "hc_dot": false
+      },
+      "charts": {
+        "chart_donut": {
+          "type": "pie",
+          "series": 1,
+          "points": 5,
+          "point_colors": [
+            "7A1F3D",
+            "F4A6C1",
+            "C2185B",
+            "E85D75",
+            "FFC845"
+          ],
+          "series_name": "Ожидание 2026",
+          "num_fmt": "0.0%",
+          "show_percent": true,
+          "show_val": false
+        },
+        "card1_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.0\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "Факт 1ПГ{p2}",
+            "Факт 1ПГ{y2}",
+            "Такт.2ПГ{y2}",
+            "Ожид.{year}"
+          ]
+        },
+        "card2_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.0\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "Факт 1ПГ{p2}",
+            "Факт 1ПГ{y2}",
+            "Такт.2ПГ{y2}",
+            "Ожид.{year}"
+          ]
+        },
+        "card3_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.0\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "Факт 1ПГ{p2}",
+            "Факт 1ПГ{y2}",
+            "Такт.2ПГ{y2}",
+            "Ожид.{year}"
+          ]
+        },
+        "card4_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.0\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "Факт 1ПГ{p2}",
+            "Факт 1ПГ{y2}",
+            "Такт.2ПГ{y2}",
+            "Ожид.{year}"
+          ]
+        },
+        "card5_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.0\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "Факт 1ПГ{p2}",
+            "Факт 1ПГ{y2}",
+            "Такт.2ПГ{y2}",
+            "Ожид.{year}"
+          ]
+        }
+      },
+      "card_count": 5,
+      "consts": {
+        "title_lead": "ГК «МАРК ФОРМЭЛЬ»  ",
+        "unit_note": "тыс. BYN",
+        "donut_head": "ДОЛЯ ФОТ ПО НАПРАВЛЕНИЯМ,",
+        "bars_head": "ДОЛЯ ФОТ В ВЫРУЧКЕ ПО НАПРАВЛЕНИЯМ, %"
+      },
+      "labels": {
+        "title": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{country} — ФОТ по направлениям бизнеса: свод, структура и динамика",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "hc_note": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "Числ. страны (ПЧ/ФЧ 1ПГ{y2}): ",
+                "filled": 0
+              },
+              {
+                "text": "{v1}/{v2}",
+                "filled": 2
+              },
+              {
+                "text": ", {v3}% укомпл.",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "donut_head": [
+          {
+            "para": 1,
+            "runs": [
+              {
+                "text": "ОЖИДАНИЕ {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_pp1_cap": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "к факту 1П{p2}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_pp2_cap": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "к факту 2П{p2}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_pp3_cap": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "Ожид.{y2} / Факт.год{p2}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p1_label": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "1 ПГ {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p1_value": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1} тыс. BYN",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "cardN_p2_label": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "ТАКТИКА 2 ПГ {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p2_value": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1} тыс. BYN",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "cardN_p3_label": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "ОЖИДАНИЕ, ГОД {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p3_value": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1} тыс. BYN",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "cardN_hc_line": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "ПЧ/ФЧ 1ПГ {year}: ",
+                "filled": 0
+              },
+              {
+                "text": "{v1}/{v2}",
+                "filled": 2
+              },
+              {
+                "text": ", {v3}% укомпл.",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "cardN_hc_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "Откл. ФЧ к 1ПГ{p2}: ",
+                "filled": 0
+              },
+              {
+                "text": "{v1}",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "card1_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card2_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card3_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card4_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card5_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "+",
+                "filled": 0
+              },
+              {
+                "text": "{v1}",
+                "filled": 1
+              },
+              {
+                "text": "% к факту {prev} (+",
+                "filled": 0
+              },
+              {
+                "text": "{v2}",
+                "filled": 1
+              },
+              {
+                "text": ")",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "card1_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card2_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card3_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card4_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card5_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}",
+                "filled": 1
+              },
+              {
+                "text": "% к факту {prev} (",
+                "filled": 0
+              },
+              {
+                "text": "{v2}",
+                "filled": 1
+              },
+              {
+                "text": ")",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "card1_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card2_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card3_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card4_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card5_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "+",
+                "filled": 0
+              },
+              {
+                "text": "{v1}",
+                "filled": 1
+              },
+              {
+                "text": "% к факту {prev} (+",
+                "filled": 0
+              },
+              {
+                "text": "{v2}",
+                "filled": 1
+              },
+              {
+                "text": ")",
+                "filled": 0
+              }
+            ]
+          }
+        ]
+      },
+      "header_labels": {
+        "tbl_directions": [
+          {
+            "col": 0,
+            "paragraphs": [
+              "Направление"
+            ]
+          },
+          {
+            "col": 1,
+            "paragraphs": [
+              "Факт",
+              "1 ПГ {prev}"
+            ]
+          },
+          {
+            "col": 2,
+            "paragraphs": [
+              "Факт",
+              "2 ПГ {prev}"
+            ]
+          },
+          {
+            "col": 3,
+            "paragraphs": [
+              "Итого",
+              "Факт {prev}"
+            ]
+          },
+          {
+            "col": 4,
+            "paragraphs": [
+              "Бюджет",
+              "1 ПГ {year}"
+            ]
+          },
+          {
+            "col": 5,
+            "paragraphs": [
+              "Факт",
+              "1 ПГ {year}"
+            ]
+          },
+          {
+            "col": 6,
+            "paragraphs": [
+              "Бюджет",
+              "2 ПГ {year}"
+            ]
+          },
+          {
+            "col": 7,
+            "paragraphs": [
+              "Тактика",
+              "2 ПГ {year}"
+            ]
+          },
+          {
+            "col": 8,
+            "paragraphs": [
+              "Ожидание",
+              "{year}"
+            ]
+          }
+        ]
+      },
+      "placeholders": [
+        "{{badge}}",
+        "{{bars_head}}",
+        "{{cN}}",
+        "{{cardN_bg}}",
+        "{{cardN_hc_dev}}",
+        "{{cardN_hc_line}}",
+        "{{cardN_hr1}}",
+        "{{cardN_hr2}}",
+        "{{cardN_p1_dev}}",
+        "{{cardN_p1_label}}",
+        "{{cardN_p1_value}}",
+        "{{cardN_p2_dev}}",
+        "{{cardN_p2_label}}",
+        "{{cardN_p2_value}}",
+        "{{cardN_p3_dev}}",
+        "{{cardN_p3_label}}",
+        "{{cardN_p3_value}}",
+        "{{cardN_pp1_cap}}",
+        "{{cardN_pp1_circle}}",
+        "{{cardN_pp1_text}}",
+        "{{cardN_pp2_cap}}",
+        "{{cardN_pp2_circle}}",
+        "{{cardN_pp2_text}}",
+        "{{cardN_pp3_cap}}",
+        "{{cardN_pp3_circle}}",
+        "{{cardN_pp3_text}}",
+        "{{cardN_title}}",
+        "{{donut_head}}",
+        "{{h_cN}}",
+        "{{hc_note}}",
+        "{{page}}",
+        "{{tbl_directions}}",
+        "{{title}}",
+        "{{unit_note}}"
+      ]
+    },
+    "nb_prod": {
+      "slide_sp_order": 4,
+      "source_slide": 5,
+      "tables": {
+        "tbl_units": {
+          "capacity": 5,
+          "capacity_basis": "body_rows",
+          "total_rows": 1,
+          "deck_rows": 7,
+          "row_protos": [
+            "header",
+            "total_top",
+            "body_tinted",
+            "body_plain"
+          ]
+        }
+      },
+      "format": {
+        "kpi_group": true,
+        "cell_group": true,
+        "pct_digits": 0,
+        "total_pct_digits": 1,
+        "card_pct_digits": 1,
+        "note_tail_space": false,
+        "cell_digits": 0,
+        "pp_digits": 2,
+        "pp_zero_digits": 2,
+        "hc_dot": false
+      },
+      "charts": {
+        "chart_donut": {
+          "type": "pie",
+          "series": 1,
+          "points": 5,
+          "point_colors": [
+            "7A1F3D",
+            "F4A6C1",
+            "C2185B",
+            "E85D75",
+            "FFC845"
+          ],
+          "series_name": "Ожидание 2026",
+          "num_fmt": "0.0%",
+          "show_percent": true,
+          "show_val": false
+        },
+        "card1_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.0\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "Факт 1ПГ{p2}",
+            "Факт 1ПГ{y2}",
+            "Такт.2ПГ{y2}",
+            "Ожид.{year}"
+          ]
+        },
+        "card2_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.00\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "Факт 1ПГ{p2}",
+            "Факт 1ПГ{y2}",
+            "Такт.2ПГ{y2}",
+            "Ожид.{year}"
+          ]
+        },
+        "card3_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.00\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "Факт 1ПГ{p2}",
+            "Факт 1ПГ{y2}",
+            "Такт.2ПГ{y2}",
+            "Ожид.{year}"
+          ]
+        },
+        "card4_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.0\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "Факт 1ПГ{p2}",
+            "Факт 1ПГ{y2}",
+            "Такт.2ПГ{y2}",
+            "Ожид.{year}"
+          ]
+        },
+        "card5_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.00\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "Факт 1ПГ{p2}",
+            "Факт 1ПГ{y2}",
+            "Такт.2ПГ{y2}",
+            "Ожид.{year}"
+          ]
+        }
+      },
+      "card_count": 5,
+      "consts": {
+        "title_lead": "ГК «МАРК ФОРМЭЛЬ»  ",
+        "badge_block": "ПРОИЗВ.",
+        "unit_note": "тыс. BYN",
+        "donut_head": "ДОЛЯ ФОТ ПО ПОДРАЗДЕЛЕНИЯМ,",
+        "bars_head": "ДОЛЯ ФОТ В ВЫРУЧКЕ ПО ПОДРАЗДЕЛЕНИЯМ, %"
+      },
+      "labels": {
+        "title": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{country} — {group}: структура ФОТ по подразделениям и динамика",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "hc_note": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "Числ. направления (ПЧ/ФЧ 1ПГ{y2}): ",
+                "filled": 0
+              },
+              {
+                "text": "{v1}/{v2}",
+                "filled": 2
+              },
+              {
+                "text": ", {v3}% укомпл.",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "donut_head": [
+          {
+            "para": 1,
+            "runs": [
+              {
+                "text": "ОЖИДАНИЕ {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_pp1_cap": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "к факту 1П{p2}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_pp2_cap": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "к факту 2П{p2}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p1_label": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "1 ПГ {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p1_value": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1} тыс. BYN",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "cardN_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "cardN_p2_label": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "ТАКТИКА 2 ПГ {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p2_value": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1} тыс. BYN",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "cardN_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "cardN_p3_label": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "ОЖИДАНИЕ, ГОД {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p3_value": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1} тыс. BYN",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "cardN_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {prev} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "cardN_pp3_cap": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "Ожид.{y2} / Факт.год{p2}",
+                "filled": 0
+              }
+            ]
+          }
+        ]
+      },
+      "header_labels": {
+        "tbl_units": [
+          {
+            "col": 0,
+            "paragraphs": [
+              "Подразделение"
+            ]
+          },
+          {
+            "col": 1,
+            "paragraphs": [
+              "Факт",
+              "1 ПГ {prev}"
+            ]
+          },
+          {
+            "col": 2,
+            "paragraphs": [
+              "Факт",
+              "2 ПГ {prev}"
+            ]
+          },
+          {
+            "col": 3,
+            "paragraphs": [
+              "Итого",
+              "Факт {prev}"
+            ]
+          },
+          {
+            "col": 4,
+            "paragraphs": [
+              "Бюджет",
+              "1 ПГ {year}"
+            ]
+          },
+          {
+            "col": 5,
+            "paragraphs": [
+              "Факт",
+              "1 ПГ {year}"
+            ]
+          },
+          {
+            "col": 6,
+            "paragraphs": [
+              "Бюджет",
+              "2 ПГ {year}"
+            ]
+          },
+          {
+            "col": 7,
+            "paragraphs": [
+              "Тактика",
+              "2 ПГ {year}"
+            ]
+          },
+          {
+            "col": 8,
+            "paragraphs": [
+              "Ожидание",
+              "{year}"
+            ]
+          }
+        ]
+      },
+      "placeholders": [
+        "{{badge}}",
+        "{{bars_head}}",
+        "{{cN}}",
+        "{{cardN_bg}}",
+        "{{cardN_hr1}}",
+        "{{cardN_hr2}}",
+        "{{cardN_p1_dev}}",
+        "{{cardN_p1_label}}",
+        "{{cardN_p1_value}}",
+        "{{cardN_p2_dev}}",
+        "{{cardN_p2_label}}",
+        "{{cardN_p2_value}}",
+        "{{cardN_p3_dev}}",
+        "{{cardN_p3_label}}",
+        "{{cardN_p3_value}}",
+        "{{cardN_pp1_cap}}",
+        "{{cardN_pp1_circle}}",
+        "{{cardN_pp1_text}}",
+        "{{cardN_pp2_cap}}",
+        "{{cardN_pp2_circle}}",
+        "{{cardN_pp2_text}}",
+        "{{cardN_pp3_cap}}",
+        "{{cardN_pp3_circle}}",
+        "{{cardN_pp3_text}}",
+        "{{cardN_title}}",
+        "{{donut_head}}",
+        "{{h_cN}}",
+        "{{hc_note}}",
+        "{{page}}",
+        "{{tbl_units}}",
+        "{{title}}",
+        "{{unit_note}}"
+      ]
+    },
+    "nb_sales": {
+      "slide_sp_order": 5,
+      "source_slide": 6,
+      "tables": {
+        "tbl_channels": {
+          "capacity": 8,
+          "capacity_basis": "body_rows",
+          "total_rows": 1,
+          "deck_rows": 13,
+          "row_protos": [
+            "header",
+            "total_top",
+            "group",
+            "body_tinted",
+            "body_plain"
+          ]
+        }
+      },
+      "format": {
+        "kpi_group": true,
+        "cell_group": true,
+        "pct_digits": 0,
+        "total_pct_digits": 1,
+        "card_pct_digits": 1,
+        "note_tail_space": false,
+        "cell_digits": 0,
+        "pp_digits": 2,
+        "pp_zero_digits": 2,
+        "hc_dot": false
+      },
+      "charts": {
+        "chart_donut": {
+          "type": "pie",
+          "series": 1,
+          "points": 7,
+          "point_colors": [
+            "F4A6C1",
+            "C2185B",
+            "FFC845",
+            "7A1F3D",
+            "9B5A70",
+            "E85D75",
+            "6B3347"
+          ],
+          "series_name": "Ожидание 2026",
+          "num_fmt": "0.0%",
+          "show_percent": true,
+          "show_val": false
+        },
+        "card1_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.00\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "1ПГ{p2}",
+            "1ПГ{y2}",
+            "Т.2ПГ{y2}",
+            "Ож.{y2}"
+          ]
+        },
+        "card2_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.00\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "1ПГ{p2}",
+            "1ПГ{y2}",
+            "Т.2ПГ{y2}",
+            "Ож.{y2}"
+          ]
+        },
+        "card3_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.00\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "1ПГ{p2}",
+            "1ПГ{y2}",
+            "Т.2ПГ{y2}",
+            "Ож.{y2}"
+          ]
+        },
+        "card4_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.0\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "1ПГ{p2}",
+            "1ПГ{y2}",
+            "Т.2ПГ{y2}",
+            "Ож.{y2}"
+          ]
+        },
+        "card5_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.0\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "1ПГ{p2}",
+            "1ПГ{y2}",
+            "Т.2ПГ{y2}",
+            "Ож.{y2}"
+          ]
+        },
+        "card6_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.00\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "1ПГ{p2}",
+            "1ПГ{y2}",
+            "Т.2ПГ{y2}",
+            "Ож.{y2}"
+          ]
+        },
+        "card7_chart": {
+          "type": "column_clustered",
+          "series": 1,
+          "points": 4,
+          "point_colors": [
+            null,
+            "6B3347",
+            "9B5A70",
+            "C27B92"
+          ],
+          "series_name": "Доля ФОТ в выручке",
+          "num_fmt": "0.0\"%\"",
+          "show_percent": false,
+          "show_val": true,
+          "categories": [
+            "1ПГ{p2}",
+            "1ПГ{y2}",
+            "Т.2ПГ{y2}",
+            "Ож.{y2}"
+          ]
+        }
+      },
+      "card_count": 7,
+      "consts": {
+        "title_lead": "ГК «МАРК ФОРМЭЛЬ»  ",
+        "badge_block": "ПРОД.",
+        "unit_note": "тыс. BYN. «Развитие розницы» включено в группу «Отделы» (Розница РБ)",
+        "donut_head": "ДОЛЯ ФОТ ПО КАНАЛАМ,",
+        "bars_head": "ДОЛЯ ФОТ В ВЫРУЧКЕ ПО КАНАЛАМ, %  (своя выручка для РБ-розницы, интернет-магазина, маркетплейсов и ОПТ)"
+      },
+      "labels": {
+        "title": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{country} — Продажи: структура ФОТ по каналам и динамика",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "hc_note": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "Числ. направления (ПЧ/ФЧ 1ПГ{y2}): ",
+                "filled": 0
+              },
+              {
+                "text": "{v1}/{v2}",
+                "filled": 2
+              },
+              {
+                "text": ", {v3}% укомпл.",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "donut_head": [
+          {
+            "para": 1,
+            "runs": [
+              {
+                "text": "ОЖИДАНИЕ {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_pp1_cap": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "к факту {p2}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_pp2_cap": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "к факту 2П{p2}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p1_label": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "1 ПГ {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p1_value": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1} тыс. BYN",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "cardN_p2_label": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "ТАКТИКА 2 ПГ {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p2_value": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1} тыс. BYN",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "cardN_p3_label": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "ОЖИДАНИЕ, ГОД {year}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "cardN_p3_value": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1} тыс. BYN",
+                "filled": 1
+              }
+            ]
+          }
+        ],
+        "cardN_pp3_cap": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "Ожид.{y2}/Год{p2}",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "card1_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card2_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card3_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card4_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card6_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card7_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card5_p1_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "+",
+                "filled": 0
+              },
+              {
+                "text": "{v1}",
+                "filled": 1
+              },
+              {
+                "text": "% к факту {prev} (+",
+                "filled": 0
+              },
+              {
+                "text": "{v2}",
+                "filled": 1
+              },
+              {
+                "text": ")",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "card1_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card2_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card3_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card4_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card6_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card7_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card5_p2_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}",
+                "filled": 1
+              },
+              {
+                "text": "% к факту {prev} (",
+                "filled": 0
+              },
+              {
+                "text": "{v2}",
+                "filled": 1
+              },
+              {
+                "text": ")",
+                "filled": 0
+              }
+            ]
+          }
+        ],
+        "card1_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card2_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card3_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card4_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card6_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card7_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{v1}% к факту {p2} ({v2})",
+                "filled": 2
+              }
+            ]
+          }
+        ],
+        "card5_p3_dev": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "+",
+                "filled": 0
+              },
+              {
+                "text": "{v1}",
+                "filled": 1
+              },
+              {
+                "text": "% к факту {prev} (+",
+                "filled": 0
+              },
+              {
+                "text": "{v2}",
+                "filled": 1
+              },
+              {
+                "text": ")",
+                "filled": 0
+              }
+            ]
+          }
+        ]
+      },
+      "header_labels": {
+        "tbl_channels": [
+          {
+            "col": 0,
+            "paragraphs": [
+              "Канал"
+            ]
+          },
+          {
+            "col": 1,
+            "paragraphs": [
+              "Факт",
+              "1 ПГ {prev}"
+            ]
+          },
+          {
+            "col": 2,
+            "paragraphs": [
+              "Факт",
+              "2 ПГ {prev}"
+            ]
+          },
+          {
+            "col": 3,
+            "paragraphs": [
+              "Итого",
+              "Факт {prev}"
+            ]
+          },
+          {
+            "col": 4,
+            "paragraphs": [
+              "Бюджет",
+              "1 ПГ {year}"
+            ]
+          },
+          {
+            "col": 5,
+            "paragraphs": [
+              "Факт",
+              "1 ПГ {year}"
+            ]
+          },
+          {
+            "col": 6,
+            "paragraphs": [
+              "Бюджет",
+              "2 ПГ {year}"
+            ]
+          },
+          {
+            "col": 7,
+            "paragraphs": [
+              "Тактика",
+              "2 ПГ {year}"
+            ]
+          },
+          {
+            "col": 8,
+            "paragraphs": [
+              "Ожидание",
+              "{year}"
+            ]
+          }
+        ]
+      },
+      "placeholders": [
+        "{{badge}}",
+        "{{bars_head}}",
+        "{{cN}}",
+        "{{cardN_bg}}",
+        "{{cardN_hr1}}",
+        "{{cardN_hr2}}",
+        "{{cardN_p1_dev}}",
+        "{{cardN_p1_label}}",
+        "{{cardN_p1_value}}",
+        "{{cardN_p2_dev}}",
+        "{{cardN_p2_label}}",
+        "{{cardN_p2_value}}",
+        "{{cardN_p3_dev}}",
+        "{{cardN_p3_label}}",
+        "{{cardN_p3_value}}",
+        "{{cardN_pp1_cap}}",
+        "{{cardN_pp1_circle}}",
+        "{{cardN_pp1_text}}",
+        "{{cardN_pp2_cap}}",
+        "{{cardN_pp2_circle}}",
+        "{{cardN_pp2_text}}",
+        "{{cardN_pp3_cap}}",
+        "{{cardN_pp3_circle}}",
+        "{{cardN_pp3_text}}",
+        "{{cardN_title}}",
+        "{{donut_head}}",
+        "{{h_cN}}",
+        "{{hc_note}}",
+        "{{page}}",
+        "{{tbl_channels}}",
+        "{{title}}",
+        "{{unit_note}}"
+      ]
+    },
+    "dept_summary": {
+      "slide_sp_order": 6,
       "source_slide": 7,
       "tables": {
         "tbl_depts": {
@@ -1335,10 +3147,12 @@
         "cell_group": true,
         "pct_digits": 1,
         "total_pct_digits": 1,
+        "card_pct_digits": 1,
         "note_tail_space": false,
         "cell_digits": 0,
         "pp_digits": 2,
-        "pp_zero_digits": 2
+        "pp_zero_digits": 2,
+        "hc_dot": true
       },
       "card_count": 6,
       "consts": {
@@ -1742,7 +3556,7 @@
       ]
     },
     "dept_cards": {
-      "slide_sp_order": 4,
+      "slide_sp_order": 7,
       "source_slide": 8,
       "tables": {},
       "format": {
@@ -1750,10 +3564,12 @@
         "cell_group": true,
         "pct_digits": 1,
         "total_pct_digits": 1,
+        "card_pct_digits": 1,
         "note_tail_space": false,
         "cell_digits": 0,
         "pp_digits": 2,
-        "pp_zero_digits": 2
+        "pp_zero_digits": 2,
+        "hc_dot": true
       },
       "card_count": 16,
       "consts": {
@@ -2609,7 +4425,7 @@
       ]
     },
     "hc_summary": {
-      "slide_sp_order": 5,
+      "slide_sp_order": 8,
       "source_slide": 23,
       "tables": {
         "tbl_countries": {
@@ -2630,10 +4446,12 @@
         "cell_group": true,
         "pct_digits": 1,
         "total_pct_digits": 1,
+        "card_pct_digits": 1,
         "note_tail_space": false,
         "cell_digits": 1,
         "pp_digits": 2,
-        "pp_zero_digits": 2
+        "pp_zero_digits": 2,
+        "hc_dot": true
       },
       "consts": {
         "title_lead": "ГК «МАРК ФОРМЭЛЬ»  ",
@@ -2847,7 +4665,7 @@
       ]
     },
     "hc_country_by": {
-      "slide_sp_order": 6,
+      "slide_sp_order": 9,
       "source_slide": 24,
       "tables": {
         "tbl_dept_a": {
@@ -2878,16 +4696,28 @@
         "cell_group": true,
         "pct_digits": 0,
         "total_pct_digits": 1,
+        "card_pct_digits": 1,
         "note_tail_space": false,
         "cell_digits": 1,
         "pp_digits": 2,
-        "pp_zero_digits": 2
+        "pp_zero_digits": 2,
+        "hc_dot": true
       },
       "consts": {
         "title_lead": "ГК «МАРК ФОРМЭЛЬ»  "
       },
       "labels": {
-        "title": [],
+        "title": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{country} — численность персонала по подразделениям (на конец 1 ПГ)",
+                "filled": 0
+              }
+            ]
+          }
+        ],
         "kpi1_label": [
           {
             "para": 0,
@@ -3122,7 +4952,7 @@
       ]
     },
     "hc_country_ru": {
-      "slide_sp_order": 7,
+      "slide_sp_order": 10,
       "source_slide": 25,
       "tables": {
         "tbl_dept_a": {
@@ -3153,16 +4983,28 @@
         "cell_group": true,
         "pct_digits": 1,
         "total_pct_digits": 1,
+        "card_pct_digits": 1,
         "note_tail_space": false,
         "cell_digits": 1,
         "pp_digits": 2,
-        "pp_zero_digits": 2
+        "pp_zero_digits": 2,
+        "hc_dot": true
       },
       "consts": {
         "title_lead": "ГК «МАРК ФОРМЭЛЬ»  "
       },
       "labels": {
-        "title": [],
+        "title": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{country} — численность персонала по подразделениям (на конец 1 ПГ)",
+                "filled": 0
+              }
+            ]
+          }
+        ],
         "kpi1_label": [
           {
             "para": 0,
@@ -3397,7 +5239,7 @@
       ]
     },
     "hc_country_kz": {
-      "slide_sp_order": 8,
+      "slide_sp_order": 11,
       "source_slide": 26,
       "tables": {
         "tbl_dept_a": {
@@ -3418,16 +5260,28 @@
         "cell_group": true,
         "pct_digits": 1,
         "total_pct_digits": 1,
+        "card_pct_digits": 1,
         "note_tail_space": true,
         "cell_digits": 1,
         "pp_digits": 2,
-        "pp_zero_digits": 2
+        "pp_zero_digits": 2,
+        "hc_dot": true
       },
       "consts": {
         "title_lead": "ГК «МАРК ФОРМЭЛЬ»  "
       },
       "labels": {
-        "title": [],
+        "title": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{country} — численность персонала по подразделениям (на конец 1 ПГ)",
+                "filled": 0
+              }
+            ]
+          }
+        ],
         "kpi1_label": [
           {
             "para": 0,
@@ -3611,7 +5465,7 @@
       ]
     },
     "hc_country_uz": {
-      "slide_sp_order": 9,
+      "slide_sp_order": 12,
       "source_slide": 27,
       "tables": {
         "tbl_dept_a": {
@@ -3642,16 +5496,28 @@
         "cell_group": true,
         "pct_digits": 1,
         "total_pct_digits": 1,
+        "card_pct_digits": 1,
         "note_tail_space": false,
         "cell_digits": 1,
         "pp_digits": 2,
-        "pp_zero_digits": 2
+        "pp_zero_digits": 2,
+        "hc_dot": true
       },
       "consts": {
         "title_lead": "ГК «МАРК ФОРМЭЛЬ»  "
       },
       "labels": {
-        "title": [],
+        "title": [
+          {
+            "para": 0,
+            "runs": [
+              {
+                "text": "{country} — численность персонала по подразделениям (на конец 1 ПГ)",
+                "filled": 0
+              }
+            ]
+          }
+        ],
         "kpi1_label": [
           {
             "para": 0,
@@ -3940,6 +5806,25 @@
       "border": "C27B92"
     }
   },
+  "nb_colors": {
+    "card_bg": "F1F1F3",
+    "card_border": "9B5A70",
+    "divider": "D9C3CB",
+    "circle_fill": "FFFFFF",
+    "muted": "6B7280",
+    "pie_palette": [
+      "7A1F3D",
+      "F4A6C1",
+      "C2185B",
+      "E85D75",
+      "FFC845",
+      "9E6B0F",
+      "9B5A70",
+      "C27B92",
+      "6B3347"
+    ],
+    "pie_rest": "C9AEB6"
+  },
   "total_bar_colors": [
     "FFFFFF",
     "EDE3E6",
@@ -3955,6 +5840,7 @@
     "{{banner_warn_bg}}",
     "{{banner_warn}}",
     "{{banner}}",
+    "{{bars_head}}",
     "{{cN}}",
     "{{cardN_bg}}",
     "{{cardN_cc_code}}",
@@ -3994,6 +5880,7 @@
     "{{cardN_pp_text}}",
     "{{cardN_title}}",
     "{{cards_head}}",
+    "{{donut_head}}",
     "{{h_cN}}",
     "{{hcN_div}}",
     "{{hcN_label}}",
@@ -4006,10 +5893,13 @@
     "{{obs_bg}}",
     "{{obs}}",
     "{{page}}",
+    "{{tbl_channels}}",
     "{{tbl_countries}}",
     "{{tbl_dept_a}}",
     "{{tbl_dept_b}}",
     "{{tbl_depts}}",
+    "{{tbl_directions}}",
+    "{{tbl_units}}",
     "{{title}}",
     "{{total_bar}}",
     "{{total_bg}}",

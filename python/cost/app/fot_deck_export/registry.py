@@ -2,9 +2,9 @@
 
 Декларативная карта: вкладка → прототипы актива в порядке слайдов выгрузки.
 Порядок записей = порядок слайдов в pptx, а порядок ВКЛАДОК — порядок деки:
-b1 (листы 1–3) → p15 (7) → p16 (8) → p17 (23–27). Будущие блоки вставляются
-в этот же кортеж на своё место в деке (p14 — между b1 и p15, b3 — после p17),
-и полная выгрузка «все листы» соберётся в порядке деки без правок движка.
+b1 (листы 1–3) → p14 (4–6) → p15 (7) → p16 (8) → p17 (23–27). Будущие блоки
+вставляются в этот же кортеж на своё место в деке (b3 — после p17), и полная
+выгрузка «все листы» соберётся в порядке деки без правок движка.
 
 Вариант(ы) прототипа (например, страны одного и того же листа «по отделам»)
 задаёт функция `variants` — движок клонирует прототип на каждый вариант.
@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from app.fot_deck_export.binders import b1, dept, p17
+from app.fot_deck_export.binders import b1, dept, nb, p17
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,15 @@ SHEETS: tuple[SheetSpec, ...] = (
         SlideSpec("b1_year", b1.bind_year),
         SlideSpec("b1_h1", b1.bind_h1),
         SlideSpec("b1_h2", b1.bind_h2),
+    )),
+    # Листы 4–6 деки: свод направлений, по листу на группу ЦФО и детализация
+    # направлений. Варианты — по странам среза и (у листа 5) по группам ЦФО:
+    # дека печатает эти листы постранично, а не сводом.
+    SheetSpec("p14", (
+        SlideSpec("nb_summary", nb.bind_summary,
+                  variants=nb.country_variants),
+        SlideSpec("nb_prod", nb.bind_prod, variants=nb.section_variants),
+        SlideSpec("nb_sales", nb.bind_sales, variants=nb.detail_variants),
     )),
     # Листы 7/8 деки: срез отделов ОДНОЙ страны на лист (у деки — BY). Срез
     # приходит уже отфильтрованным, вариант даёт только код страны для шапки.

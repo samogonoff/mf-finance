@@ -64,6 +64,12 @@ PROTOS = (
     (1, "b1_year", ("2026",)),
     (2, "b1_h1", ("1 ПГ", "2026")),
     (3, "b1_h2", ("2 ПГ", "2026")),
+    # ФОТ по направлениям бизнеса (слайды 4–6 деки): свод направлений,
+    # производство по группам ЦФО, продажи по каналам. Прототипы BY-структуры:
+    # для других стран меняются только заголовок и бейдж.
+    (4, "nb_summary", ("BY",)),
+    (5, "nb_prod", ("BY", "ПРОИЗВ.")),
+    (6, "nb_sales", ("BY", "ПРОД.")),
     # отделы страны: свод (7) и анализ по подразделениям (8)
     (7, "dept_summary", ("BY", "ОТДЕЛЫ")),
     (8, "dept_cards", ("BY", "ОТДЕЛЫ")),
@@ -85,6 +91,12 @@ B1_PROTOS = ("b1_year", "b1_h1", "b1_h2")
 #: этих прототипов отдельно и кладутся в манифест как `dept_colors`.
 DEPT_PROTOS = ("dept_summary", "dept_cards")
 
+#: Слайды направлений бизнеса (p14, листы 4–6 деки). Раскладка у них своя:
+#: карточка направления несёт ТРИ круга Δ доли (а не два, как у отделов), у
+#: листа 6 карточка уже (160 против 226), а данные рисуются ещё и диаграммами
+#: (донат + мини-бары), которых нет ни у одного прототипа партии A.
+NB_PROTOS = ("nb_summary", "nb_prod", "nb_sales")
+
 #: Ожидаемые тексты KPI-лейблов (по ним же сверяется версия деки).
 KPI_LABELS = (
     "УТВЕРЖД. ЧИСЛ., СТРАТ. 2026",
@@ -104,12 +116,16 @@ KIND_TEXT = "text"          # шейп с непустым текстом
 KIND_ROUNDRECT = "roundrect"  # автофигура roundRect без текста (подложка)
 KIND_ELLIPSE = "ellipse"    # круг без текста (круги Δ п.п. листов 1–3/7–8)
 KIND_LINE = "line"          # линия-разделитель без текста
-#: Заливка первой ячейки строки → стиль строки (в деке ровно эти четыре).
+KIND_CHART = "chart"        # диаграмма (graphicFrame с c:chart)
+#: Заливка первой ячейки строки → стиль строки (в деке ровно эти пять).
 FILL_STYLES = {
     "9B5A70": "header",
     "F8EDF0": "body_tinted",
     "FFFFFF": "body_plain",
     "6B3347": "total",
+    # строка-ГРУППА таблицы листа 6 («Отделы*», «ОПТ РБ»): своя заливка и
+    # жирный текст. В вебе такой строке соответствует kind="direction".
+    "E8D2D9": "group",
 }
 
 #: Таблицы прототипов в порядке документа.
@@ -120,6 +136,11 @@ TABLE_NAMES = {
     "b1_year": ("tbl_countries",),
     "b1_h1": ("tbl_countries",),
     "b1_h2": ("tbl_countries",),
+    # листы 4–6: «направление/подразделение/канал × периоды», итог — ПЕРВОЙ
+    # строкой (total_top), у листа 6 ещё и строки-группы (group)
+    "nb_summary": ("tbl_directions",),
+    "nb_prod": ("tbl_units",),
+    "nb_sales": ("tbl_channels",),
     # лист 7: таблица «отдел × периоды», итог — ПЕРВОЙ строкой (total_top)
     "dept_summary": ("tbl_depts",),
     # лист 8 — сетка карточек, таблиц нет вовсе
@@ -158,6 +179,10 @@ def _shape_kind(shape) -> str:
                 break
     if has_text:
         return KIND_TEXT
+    # диаграмма живёт не в p:sp, а в p:graphicFrame и своего текста не имеет;
+    # проверяем ДО геометрии — у graphicFrame prstGeom нет вовсе
+    if el.find(".//" + qn("c:chart")) is not None:
+        return KIND_CHART
     if prst is not None and prst.get("prst") == "roundRect":
         return KIND_ROUNDRECT
     if prst is not None and prst.get("prst") == "ellipse":
@@ -384,6 +409,8 @@ def _resolve(slide, proto_name: str, badge) -> dict:
     # (B1_KPI_LABELS) — разбираются в _resolve_b1_extra вместе с карточками.
     if proto_name in B1_PROTOS:
         _resolve_b1_extra(proto_name, take, shapes)
+    elif proto_name in NB_PROTOS:
+        pass        # раскладка листов 4–6 своя — _resolve_nb_extra
     elif proto_name in DEPT_PROTOS:
         _resolve_dept_extra(proto_name, take, shapes)
     else:
@@ -391,7 +418,9 @@ def _resolve(slide, proto_name: str, badge) -> dict:
             take(spec_id, name + "_label", KIND_TEXT, is_label(KPI_LABELS[idx]))
             take(str(int(spec_id) + 1), name + "_value", KIND_TEXT, is_kpi_value)
 
-    if proto_name in B1_PROTOS or proto_name in DEPT_PROTOS:
+    if proto_name in NB_PROTOS:
+        _resolve_nb_extra(proto_name, take, shapes)
+    elif proto_name in B1_PROTOS or proto_name in DEPT_PROTOS:
         pass
     elif proto_name == "hc_summary":
         take("17", "note", KIND_TEXT, is_note)
@@ -417,7 +446,7 @@ def _resolve(slide, proto_name: str, badge) -> dict:
 
 #: Префиксы семантических имён, которые проставляет аннотация. Имена деки
 #: остаются вида «Shape 5» / «Text 6» / «Table 0» — по ним и различаем.
-SEMANTIC_PREFIXES = ("card", "kpi", "hc", "banner", "tbl_")
+SEMANTIC_PREFIXES = ("card", "kpi", "hc", "banner", "tbl_", "chart")
 
 
 def _is_semantic_name(name: str) -> bool:
@@ -432,7 +461,7 @@ def _is_semantic_name(name: str) -> bool:
 _SEMANTIC_EXACT = frozenset({
     "title", "subtitle", "badge", "note", "page", "obs", "obs_bg",
     "total_bar", "total_bg", "cards_head", "unit_note", "hc_note",
-    "unit_label",
+    "unit_label", "donut_head", "bars_head",
 })
 
 
@@ -525,6 +554,91 @@ DEPT8_ROLES = (
 
 #: Число шейпов карточки листа 8 (см. DEPT8_ROLES).
 DEPT8_SHAPES = len(DEPT8_ROLES)
+
+# ─── Листы 4–6 деки (p14): направления бизнеса ────────────────────────────────
+
+#: Роли шейпов БОЛЬШОЙ карточки направления (лист 4 деки, 226×244). Порядок
+#: ДОКУМЕНТА (снят инвентарём slide4.xml), и он НЕ такой, как у карточек
+#: отделов: сначала идут ТРИ КРУГА Δ доли с подписями, потом заголовок и блоки
+#: «метка / значение / отклонение» с разделителями, затем две строки численности.
+#:
+#:   рамка, 3× (круг / значение / подпись), 3× (метка / значение / дельта)
+#:   с разделителями ПЕРЕД вторым и третьим блоками, две строки численности.
+NB_CARD_ROLES = (
+    "bg",          # рамка roundRect
+    "pp1_circle",  # круг Δ доли ФОТ в выручке, п.п.
+    "pp1_text",    # «−1,6» / «п.п.» — два абзаца круга
+    "pp1_cap",     # «к факту 1П25»
+    "pp2_circle",
+    "pp2_text",
+    "pp2_cap",     # «к факту 2П25»
+    "pp3_circle",
+    "pp3_text",
+    "pp3_cap",     # «Ожид.26 / Факт.год25»
+    "p1_label",    # «1 ПГ 2026»
+    "p1_value",    # «32 123 тыс. BYN»
+    "p1_dev",      # «+4,0% к факту 2025 (+1 243)»
+    "hr1",         # разделитель перед вторым блоком
+    "p2_label",    # «ТАКТИКА 2 ПГ 2026»
+    "p2_value",
+    "p2_dev",
+    "hr2",
+    "p3_label",    # «ОЖИДАНИЕ, ГОД 2026»
+    "p3_value",
+    "p3_dev",
+    "hc_line",     # «ПЧ/ФЧ 1ПГ 2026: 2 441,9/2 342,2, 96% укомпл.»
+    "hc_dev",      # «Откл. ФЧ к 1ПГ25: +58,3»
+)
+
+#: Роли карточки листов 5 и 6 (та же ширина 226 у листа 5 и 160 у листа 6).
+#: Порядок ДРУГОЙ: у этих карточек вверху только ДВА круга, третий замыкает
+#: карточку после третьего блока значений, а строк численности в карточке нет
+#: вовсе (численность листа стоит в шапке).
+NB_CARD_ROLES_UNITS = (
+    "bg",
+    "pp1_circle",
+    "pp1_text",
+    "pp1_cap",
+    "pp2_circle",
+    "pp2_text",
+    "pp2_cap",
+    "p1_label",
+    "p1_value",
+    "p1_dev",
+    "hr1",
+    "p2_label",
+    "p2_value",
+    "p2_dev",
+    "hr2",
+    "p3_label",
+    "p3_value",
+    "p3_dev",
+    "pp3_circle",
+    "pp3_text",
+    "pp3_cap",
+)
+
+#: Строки отклонения карточки: их генератор деки однажды вынес ИЗ блока.
+#: У пятой карточки листа 6 («Интернет-магазин») три шейпа отклонений лежат в
+#: самом конце spTree, а не внутри карточки (так собрал генератор деки; на
+#: картинке они стоят на своих местах). Актив обязан повторить деку 1:1,
+#: поэтому такие шейпы размечаются ролями отклонений ПОСЛЕ разметки сетки.
+NB_DEV_ROLES = ("p1_dev", "p2_dev", "p3_dev")
+
+#: Роли карточки листов 4–6, которых может не быть в конкретной ячейке.
+#: У листа 6 карточка «Интернет-магазин» короче карты на три строки отклонений
+#: (они вынесены в конец листа, см. NB_DEV_ROLES), а её блок вдобавок обрезан
+#: номером страницы. Остальные роли обязательны: их отсутствие — другая дека.
+NB_OPTIONAL_ROLES = frozenset(NB_DEV_ROLES)
+
+#: Суффикс имени ПОДЛОЖКИ карточки направления у всех трёх листов («Shape 7»):
+#: генератор деки начинает сетку одним и тем же номером, дальше подложки идут
+#: с шагом карточки (24 у листа 4, 22 у листа 5, 23 у листа 6), поэтому границы
+#: блоков берутся по РАЗМЕРУ подложки, а не по суффиксу.
+NB_CARD_BG_ID = "7"
+
+#: Число шейпов карточки направления (см. NB_CARD_ROLES).
+NB_CARD_SHAPES = len(NB_CARD_ROLES)
 
 #: Карточка страны на листе 1 (год): 4 страны × 11 шейпов, суффиксы подряд от
 #: 23 (рамка — «Shape 23»). У ГОДА три строки долей (доля в ФОТ группы + две
@@ -849,6 +963,193 @@ def _resolve_dept8(take, shapes: list) -> None:
     take("405", "page", KIND_TEXT, _is_page_num)
 
 
+# ─── Листы 4–6 деки (p14): направления бизнеса ────────────────────────────────
+
+#: Тексты-признаки листов 4–6 (по ним же сверяется версия деки).
+NB_DONUT_HEADS = ("ДОЛЯ ФОТ ПО НАПРАВЛЕНИЯМ,", "ДОЛЯ ФОТ ПО ПОДРАЗДЕЛЕНИЯМ,",
+                  "ДОЛЯ ФОТ ПО КАНАЛАМ,")
+NB_BAR_HEADS = ("ДОЛЯ ФОТ В ВЫРУЧКЕ ПО НАПРАВЛЕНИЯМ, %",
+                "ДОЛЯ ФОТ В ВЫРУЧКЕ ПО ПОДРАЗДЕЛЕНИЯМ, %",
+                "ДОЛЯ ФОТ В ВЫРУЧКЕ ПО КАНАЛАМ, %")
+
+
+def _resolve_nb_extra(proto_name: str, take, shapes: list) -> None:
+    """Листы 4–6: диаграммы, подписи блоков, сетка карточек, страница.
+
+    Раскладка листов 4–6 отличается от листов 7/8 сразу по трём осям, и каждая
+    ломает «слепое» переиспользование:
+
+      * у карточки направления ТРИ круга Δ доли (а не два), и у листа 4 они
+        идут ПЕРВЫМИ в документе — до первого блока значений;
+      * блоки значений собраны иначе: у листа 4 после третьего блока идут
+        строки численности, у листов 5/6 третий круг замыкает карточку;
+      * данные рисуются ещё и диаграммами, которых нет у прототипов партии A:
+        донат структуры под двухстрочным заголовком и лента мини-баров, где у
+        КАЖДОЙ карточки своя диаграмма, а над первой — заголовок ленты.
+
+    Подписи диаграмм (заголовок доната и ленты) — не данные, а формулировки
+    деки, поэтому у барабанной ленты текст остаётся в активе («static»), а
+    заголовок доната уходит в шаблон подписей: в нём стоит год среза. Сами
+    диаграммы размечаются как `chart_donut` и `cardN_chart` и попадают в
+    манифест слотами (тип, число точек, цвета dPt — снятые с деки).
+    """
+    # Сноска под таблицей: у листа 4 это «тыс. BYN», у листов 5/6 — сноска
+    # методики («Развитие розницы» включено в группу «Отделы»). Формулировка
+    # деки, данных в ней нет — текст остаётся в активе как константа.
+    take("3", "unit_note", KIND_TEXT, _is_unit_note)
+    # Строка численности в шапке: у этих листов БЕЗ числового суффикса
+    # («Text CTHC804», «Text HC905»), поэтому адресуется по тексту.
+    _take_named(shapes, "hc_note", _is_nb_hc_note, "строка «Числ. …»")
+    # Двухстрочный заголовок доната: «ДОЛЯ ФОТ ПО НАПРАВЛЕНИЯМ,» / «ОЖИДАНИЕ 2026»
+    take("4", "donut_head", KIND_TEXT, _is_nb_donut_head)
+    # Диаграмма доната — ПЕРВАЯ в документе (заголовок стоит над ней, до ленты
+    # мини-баров). Индекс нулевой: `_take_chart` считает в порядке документа.
+    donut = _take_chart(shapes, "chart_donut", 0)
+    # Заголовок ленты мини-баров (у листа 6 он с пояснением методики в скобках)
+    take("5", "bars_head", KIND_TEXT, _is_nb_bars_head)
+    # Номер страницы — ДО сетки: он лежит в блоке последней карточки (у листа 4
+    # сразу за её строками), и без имени попал бы в «хвост» карточки.
+    _take_named(shapes, "page", _is_page_num, "номер страницы")
+    _resolve_nb_grid(proto_name, shapes, donut)
+
+
+def _is_nb_hc_note(sh, got) -> bool:
+    """Строка численности шапки: «Числ. страны …» (лист 4) / «Числ. направления …»."""
+    return got.strip().startswith(("Числ. страны", "Числ. направления"))
+
+
+def _is_nb_donut_head(sh, got) -> bool:
+    return got.strip().upper().startswith(NB_DONUT_HEADS)
+
+
+def _is_nb_bars_head(sh, got) -> bool:
+    return got.strip().upper().startswith(NB_BAR_HEADS)
+
+
+def _take_chart(shapes: list, semantic: str, index: int):
+    """N-я диаграмма слайда в порядке документа → семантическое имя.
+
+    Диаграмма — graphicFrame с c:chart: аннотация шейпов её не видит (у неё нет
+    текста), поэтому имя ставится здесь. Индекс — по порядку документа, а не по
+    имени деки («Chart 3»): имена диаграмм у слайдов 4–6 сплошные, но опираться
+    на них значило бы зависеть от того, сколько объектов удалили в редакторе.
+    """
+    charts = [sh for sh in shapes if _shape_kind(sh) == KIND_CHART]
+    if len(charts) <= index:
+        raise AssertionError("на слайде %d диаграмм, а нужна №%d (%s)"
+                             % (len(charts), index + 1, semantic))
+    sh = charts[index]
+    sh.name = semantic
+    return sh
+
+
+def _resolve_nb_grid(proto_name: str, shapes: list, donut) -> None:
+    """Сетка карточек направления + имена и мини-бары.
+
+    Карточка направления НЕ содержит ни своей диаграммы, ни своего имени: лента
+    мини-баров лежит отдельной строкой ВЫШЕ сетки (на карточку — ровно одна
+    диаграмма, у листа 6 их семь), а имя стоит шейпом перед диаграммой. Поэтому
+    разметка идёт в два прохода:
+
+      1. имена ленты — i-я диаграмма и шейп непосредственно ПЕРЕД ней;
+      2. блоки карточек по подложкам — роли внутри блока.
+
+    Блок карточки по подложкам захватывает и шапку СЛЕДУЮЩЕЙ карточки (имя и
+    диаграмма стоят после содержимого предыдущей), поэтому остаток блока — это
+    уже названные на первом проходе шейпы.
+
+    Отдельная беда листа 6: у пятой карточки («Интернет-магазин») три строки
+    отклонений генератор деки вынес в самый конец spTree — на картинке они на
+    своих местах, а в документе лежат после номера страницы. В блок такой
+    карточки они не попали, поэтому размечаются ПО ГЕОМЕТРИИ: безымянный
+    текстовый шейп получает недостающую роль отклонения той карточки, в чей
+    прямоугольник попадает его центр. Это часть деки, а не дефект актива:
+    актив обязан повторить её 1:1, иначе слайд разъедется.
+    """
+    roles = (NB_CARD_ROLES if proto_name == "nb_summary"
+             else NB_CARD_ROLES_UNITS)
+    bars = [sh for sh in shapes if _shape_kind(sh) == KIND_CHART
+            and sh.name != donut.name]
+    # 1) лента: диаграмма + имя перед ней
+    for i, chart in enumerate(bars, 1):
+        chart.name = "card%d_chart" % i
+        title = _shape_before(shapes, chart)
+        if title is None or _shape_kind(title) != KIND_TEXT:
+            raise AssertionError("прототип %s: перед диаграммой карточки %d нет "
+                                 "шейпа с именем канала" % (proto_name, i))
+        title.name = "card%d_title" % i
+    spans = _card_spans(shapes, NB_CARD_BG_ID)
+    if not spans:
+        raise AssertionError("прототип %s: карточки не размечены (нет подложки "
+                             "с суффиксом %s)" % (proto_name, NB_CARD_BG_ID))
+    if len(bars) != len(spans):
+        raise AssertionError(
+            "прототип %s: карточек %d, диаграмм ленты %d — раскладка листа "
+            "изменилась, разметка не сходится"
+            % (proto_name, len(spans), len(bars)))
+    # 2) блоки карточек; `missing[i]` — роли, которых в блоке не оказалось
+    boxes: list[tuple[int, int, int, int]] = []
+    missing: dict[int, list[str]] = {}
+    for i, (name, block) in enumerate(spans, 1):
+        skipped: list[str] = []
+        _annotate_card(block, roles, "card%d_" % i, proto_name, name,
+                       optional=NB_OPTIONAL_ROLES, skipped=skipped)
+        if skipped:
+            missing[i] = skipped
+        boxes.append((i, _box_of(block[0])))
+    # 3) вынесенные за блок шейпы: по геометрии — в карточку, чей прямоугольник
+    #    накрывает центр шейпа; роль — первая недостающая роль отклонения.
+    #    Шейпы без текста вне карточек (подложка круга бейджа) не трогаем: они
+    #    и у листов 7/8 остаются с именем деки.
+    order = {id(sh._element): i for i, sh in enumerate(shapes)}
+    loose = sorted((sh for sh in shapes
+                    if " " in str(sh.name) and _shape_kind(sh) == KIND_TEXT),
+                   key=lambda sh: order[id(sh._element)])
+    for sh in loose:
+        idx = _card_at(boxes, sh)
+        if idx is None:
+            raise AssertionError(
+                "прототип %s: текстовый шейп %r (%r) не размечен и не попадает "
+                "ни в одну карточку — раскладка листа изменилась"
+                % (proto_name, sh.name, _text_of(sh)[:40]))
+        pool = missing.get(idx) or []
+        if not pool:
+            raise AssertionError(
+                "прототип %s: шейп %r (%r) лежит в карточке %d, но у неё нет "
+                "незанятых ролей — раскладка листа изменилась"
+                % (proto_name, sh.name, _text_of(sh)[:40], idx))
+        sh.name = "card%d_%s" % (idx, pool.pop(0))
+    if missing:
+        left = {k: v for k, v in missing.items() if v}
+        if left:
+            raise AssertionError(
+                "прототип %s: у карточек %s пропущены роли %s, а вынесенных "
+                "шейпов на листе не хватило — раскладка листа изменилась"
+                % (proto_name, ", ".join(str(k) for k in sorted(left)),
+                   "; ".join("%d: %s" % (k, ",".join(v))
+                             for k, v in sorted(left.items()))))
+
+
+def _card_at(boxes: list, shape) -> int | None:
+    """Номер карточки, в чей прямоугольник попадает центр шейпа (или None)."""
+    x, y, cx, cy = _box_of(shape)
+    px, py = x + cx // 2, y + cy // 2
+    for idx, (bx, by, bcx, bcy) in boxes:
+        if bx <= px <= bx + bcx and by <= py <= by + bcy:
+            return idx
+    return None
+
+
+def _shape_before(shapes: list, target):
+    """Шейп, стоящий в документе непосредственно перед `target` (или None)."""
+    prev = None
+    for sh in shapes:
+        if sh._element is target._element:
+            return prev
+        prev = sh
+    return None
+
+
 def _resolve_grid(shapes: list, take, start: int, roles: tuple, prefix: str,
                   proto: str) -> int:
     """Сетка карточек: card{i}_{роль} по паттерну «шаг = число ролей».
@@ -909,26 +1210,41 @@ OPTIONAL_CARD_ROLES = frozenset({"hc_line", "hc_dev"})
 
 
 def _annotate_card(block: list, roles: tuple, prefix: str, proto: str,
-                   bg_name: str) -> None:
+                   bg_name: str, optional: frozenset | None = None,
+                   skipped: list | None = None) -> list:
     """Раскладывает один блок карточки по ролям, пропуская необязательные.
 
     Роли идут в порядке документа; блок может быть короче карты на
-    OPTIONAL_CARD_ROLES. Несовпадение типа шейпа на любой другой роли —
-    AssertionError с именем карточки: это признак другой версии деки.
+    `optional` (по умолчанию OPTIONAL_CARD_ROLES). Несовпадение типа шейпа на
+    любой другой роли — AssertionError с именем карточки: это признак другой
+    версии деки.
+
+    `skipped` (если передан) наполняется ролями, которых в блоке не оказалось:
+    у листа 6 так теряются три строки отклонений пятой карточки (генератор деки
+    вынес их за пределы блока), и по этому списку `_resolve_nb_grid` понимает,
+    какой карточке отдать «хвостовые» шейпы.
+
+    Возвращает шейпы блока, до которых карта НЕ дотянулась. У листов 7/8 это
+    шапка следующей карточки, уже получившая имя на первом проходе разметки.
     """
+    optional = OPTIONAL_CARD_ROLES if optional is None else optional
     idx = 0
     for role in roles:
         kind = _role_kind(role)
         if idx >= len(block):
-            if role in OPTIONAL_CARD_ROLES:
+            if role in optional:
+                if skipped is not None:
+                    skipped.append(role)
                 continue
             raise AssertionError("прототип %s: карточка %r короче карты — нет "
                                  "роли %r" % (proto, bg_name, role))
         sh = block[idx]
         got = _shape_kind(sh)
         if got != kind:
-            if role in OPTIONAL_CARD_ROLES:
-                # карточка без численности: роль пропускается, шейп не съеден
+            if role in optional:
+                # роли нет в блоке: шейп не съеден
+                if skipped is not None:
+                    skipped.append(role)
                 continue
             raise AssertionError(
                 "прототип %s: карточка %r, роль %r ждёт %s, а шейп %r — %s"
@@ -938,6 +1254,7 @@ def _annotate_card(block: list, roles: tuple, prefix: str, proto: str,
                                  "текст" % (proto, bg_name, role))
         sh.name = prefix + role
         idx += 1
+    return block[idx:]
 
 
 # ─── Снятие цветов УФ с прототипов ───────────────────────────────────────────
@@ -1157,7 +1474,8 @@ def _cell_group(slide_list: list) -> bool:
     return False
 
 
-def _deck_format(shapes: dict, tables: dict, cell_group: bool) -> dict:
+def _deck_format(shapes: dict, tables: dict, cell_group: bool,
+                 proto_name: str = "") -> dict:
     """Флаги типографики прототипа, снятые с самой деки.
 
     Дека писалась не одним генератором: в своде и в BY/RU значения KPI идут без
@@ -1179,6 +1497,7 @@ def _deck_format(shapes: dict, tables: dict, cell_group: bool) -> dict:
 
     # «% укомпл.»: знаков после запятой в теле таблицы И в полосе итога
     pct_digits, total_pct_digits = 1, 1
+    card_pct_digits = 1
     for gf in tables.values():
         tbl = gf.table
         digits = set()
@@ -1206,6 +1525,13 @@ def _deck_format(shapes: dict, tables: dict, cell_group: bool) -> dict:
                 if "%" in token:
                     total_pct_digits = 1 if "," in token else 0
 
+    # «% укомпл.» листов 4–6 живёт НЕ в таблице, а в строке численности шапки и
+    # карточек, и знаки у неё свои: в шапке «96,6%» (один знак), в карточках
+    # «96%» (целое). Признак берётся из текста — табличную эвристику выше он
+    # не повторяет, потому что таблицы этих листов процентов не несут вовсе.
+    if proto_name in NB_PROTOS:
+        pct_digits, card_pct_digits = _nb_pct_digits(shapes)
+
     # примечание: в KZ дека оставила хвостовой пробел — часть её типографики
     note = shapes.get("note")
     note_text = ""
@@ -1218,9 +1544,82 @@ def _deck_format(shapes: dict, tables: dict, cell_group: bool) -> dict:
     cell_digits, pp_digits, pp_zero_digits = _number_digits(shapes, tables)
     return {"kpi_group": kpi_group, "cell_group": cell_group,
             "pct_digits": pct_digits, "total_pct_digits": total_pct_digits,
+            # знаки «% укомпл.» в СТРОКЕ КАРТОЧКИ листов 4–6: у деки они свои
+            # («96%» в карточке против «96,6%» в шапке того же листа)
+            "card_pct_digits": card_pct_digits,
             "note_tail_space": note_text.endswith(" "),
             "cell_digits": cell_digits, "pp_digits": pp_digits,
-            "pp_zero_digits": pp_zero_digits}
+            "pp_zero_digits": pp_zero_digits,
+            # знак дробной части в паре «ПЧ/ФЧ»: листы 7/8 пишут её ТОЧКОЙ,
+            # листы 4–6 — запятой, как все прочие числа листа
+            "hc_dot": _hc_dot(shapes)}
+
+
+def _nb_pct_digits(shapes: dict) -> tuple[int, int]:
+    """Знаки «% укомпл.» листов 4–6: (шапка листа, карточки).
+
+    Дека печатает процент укомплектованности по-разному в одной и той же
+    строке листа: в шапке — с одним знаком («96,6% укомпл.»), в карточке — без
+    него («96% укомпл.»). Поэтому знаки снимаются с фактических текстов двух
+    шейпов, а не одним флагом на лист: заголовок `hc_note` и строка карточки
+    `cardN_hc_line` — разные места деки.
+    """
+    import re as _re
+    pct = _re.compile(r"(\d[\d\xa0 ]*(?:,\d+)?)\s*%\s*укомпл")
+
+    def probe(name: str, default: int) -> int:
+        sh = shapes.get(name)
+        if sh is None:
+            return default
+        m = pct.search(_text_of(sh))
+        if not m:
+            return default
+        return 1 if "," in m.group(1) else 0
+
+    cards = 1
+    for name in shapes:
+        if name.endswith("hc_line"):
+            cards = probe(name, 1)
+            break
+    return probe("hc_note", 1), cards
+
+
+def _hc_dot(shapes: dict) -> bool:
+    """Пишет ли дека пару «ПЧ/ФЧ» точкой (листы 7/8) или запятой (листы 4–6).
+
+    Признак — сам текст ПАРЫ: у карточек отделов «372.4/348.9», у карточек
+    направлений «2 441,9/2 342,2». Разряды в паре не группируются, поэтому
+    точка внутри пары — всегда десятичная. Подпись перед парой («ПЧ/ФЧ 1ПГ
+    2026: ») тоже содержит слэш, и по ней признак не снять: берём только
+    фрагмент, где слэш стоит МЕЖДУ числами.
+    """
+    pair = re.compile(r"(\d[\d.,\s\xa0]*)/(\d[\d.,\s\xa0]*)")
+
+    def probe(name: str) -> bool | None:
+        sh = shapes.get(name)
+        if sh is None:
+            return None
+        txBody = sh._element.find(qn("p:txBody"))
+        if txBody is None:
+            return None
+        for t in txBody.iter(qn("a:t")):
+            m = pair.search(t.text or "")
+            if m:
+                return "." in m.group(0)
+        return None
+
+    # у листов 7/8 пара стоит в карточках (`hc_line`), у листов 4–6 карточки
+    # численности не несут — там она только в шапке (`hc_note`). Карточка
+    # приоритетнее: в шапке листов 7/8 пара всегда с ЗАПЯТОЙ, и по ней признак
+    # снялся бы неверно.
+    for name in sorted(shapes, key=lambda n: (not n.endswith("hc_line"),
+                                              n != "hc_note")):
+        if not (name.endswith("hc_line") or name == "hc_note"):
+            continue
+        got = probe(name)
+        if got is not None:
+            return got
+    return True
 
 
 #: Регулярка числа деки в текстовом шейпе: «147,1 млн», «7 300 тыс. BYN»,
@@ -1299,15 +1698,17 @@ def _number_digits(shapes: dict, tables: dict) -> tuple[int, int, int]:
     return cell_digits, pp_digits, pp_zero_digits
 
 
-#: Двузначный «хвост» года в текстах деки: «1ПГ25», «к факту 25», «Факт 1П25».
-#: Хвост не должен продолжаться цифрой и не должен быть дробной частью
-#: («25,6%», «21.2») — иначе значение доли превратилось бы в прорезь года.
-_Y2_RE = re.compile(r"(?<![\d.,])(\d{2})(?!\d)(?!,\d)(?!\.\d)")
+#: Двузначный «хвост» года в текстах деки: «1ПГ25», «к факту 25», «Факт 1П25»,
+#: «Ож.26». Хвост не должен продолжаться цифрой и не должен быть дробной
+#: частью («25,6%», «21.2»): исключается и запятая, и ТОЧКА ПОСЛЕ ЦИФРЫ —
+#: но не точка-сокращение («Ож.26», «Т.2ПГ26»), где перед ней стоит буква.
+_Y2_RE = re.compile(r"(?<![\d,])(?<!\d\.)(\d{2})(?!\d)(?!,\d)(?!\.\d)")
 #: Признак того, что двузначное число — ГОД, а не значение: слева маркер
 #: периода («факт», «к», «ПГ», «год», «Δ»), справа — «%», «подразделениям»,
 #: « п.п.». Без такого соседства «26» в «ПЧ/ФЧ: 28.5/26» — это факт 26 чел.
 _YEAR2_LEFT_RE = re.compile(
-    r"([12]\s*П(?:Г)?|факт\w*|год\w*|Δ|к)\s*[.:]?\s*$", re.IGNORECASE)
+    r"([12]\s*П(?:Г)?|факт\w*|год\w*|Δ|к|ож\w*|ожид\w*|такт\w*)\s*[.:]?\s*$",
+    re.IGNORECASE)
 _YEAR2_RIGHT_RE = re.compile(r"^\s*(%|п\.п\.|подраздел\w*|тыс|млн|г\.)", re.IGNORECASE)
 #: Полный год в текстах деки («2026», «2025»); запятая после него допустима —
 #: «…к ФАКТУ 2025, ФОТ» — это перечисление в подписи, а не число.
@@ -1381,7 +1782,9 @@ def _label_templates(shapes: dict, consts: dict, proto_name: str) -> dict:
             numbered = {"n": 0}
             out[name] = _slot_list(paras, year_cur, year_prev, numbered,
                                    skip_first_run=not rest,
-                                   country_slot=(name == "title"))
+                                   country_slot=(name == "title"),
+                                   group_slot=(name == "title"
+                                               and proto_name == "nb_prod"))
             continue
         paras = _paragraph_runs_xml(sh)
         numbered = {"n": 0}
@@ -1394,6 +1797,8 @@ def _label_templates(shapes: dict, consts: dict, proto_name: str) -> dict:
                                             numbered)
                 if name == "title":
                     text = _country_slot(text)
+                    if proto_name == "nb_prod":
+                        text = _group_slot(text)
                 # подпись нужна в манифесте и тогда, когда в ране не было
                 # ЧИСЕЛ, а только годы («Динамика, п.п. (2026/2025): »):
                 # биндер берёт из неё формулировку, а не собирает свою
@@ -1504,12 +1909,12 @@ def _period_badge_slots(paras: list[dict], year_cur: int,
 
 
 def _slot_list(paras, year_cur, year_prev, numbered, skip_first_run=False,
-               country_slot=False):
+               country_slot=False, group_slot=False):
     """Абзацы прототипа → список шаблонов (общий для шейпов и заголовка).
 
-    country_slot=True заменяет название страны листа прорезью ``{country}``:
-    подпись листа отделов зависит от среза, и текстом деки в манифесте ей
-    быть нельзя.
+    country_slot=True заменяет название страны листа прорезью ``{country}``,
+    group_slot=True — название группы ЦФО прорезью ``{group}``: обе подписи
+    зависят от среза, и текстом деки в манифесте им быть нельзя.
     """
     slots: list[dict] = []
     for pi, para in enumerate(paras):
@@ -1521,6 +1926,8 @@ def _slot_list(paras, year_cur, year_prev, numbered, skip_first_run=False,
             text, filled = _template_of(run["text"], year_cur, year_prev, numbered)
             if country_slot:
                 text = _country_slot(text)
+            if group_slot:
+                text = _group_slot(text)
             runs.append({"text": text, "filled": filled})
             changed = changed or filled > 0 or text != run["text"]
         if changed:
@@ -1535,17 +1942,43 @@ _SLOT_STRIP_RE = re.compile(r"\{[a-z]+\d*\}|[^A-Za-zА-Яа-яЁё]+")
 def _country_slot(text: str) -> str:
     """«Беларусь — Отделы: …» → «{country} — Отделы: …» (страна — прорезь).
 
-    Заголовки листов 7/8 построены как «<Страна> — <блок>», и название страны
+    Заголовки листов деки построены как «<Страна> — <блок>», и название страны
     зависит от среза. Оставлять его текстом нельзя: манифест стал бы
     обезличенным не полностью, а выгрузка другой страны унаследовала бы
-    «Беларусь» из актива. Признак листа отделов — «Отделы» в подписи: у b1
-    заголовок другой («Бюджет ФОТ — свод по странам группы»), и прорези
-    страны там быть не должно.
+    «Беларусь» из актива. Признак — известное название страны перед « — »: у
+    листов 1–3 заголовок другой («Бюджет ФОТ — свод по странам группы»), и
+    прорези страны там быть не должно.
     """
-    if " — " not in text or not text.split(" — ", 1)[1].lstrip().startswith("Отделы"):
+    if " — " not in text:
         return text
     head, rest = text.split(" — ", 1)
-    return "{country} — " + rest if head.strip() else text
+    if head.strip() in DECK_COUNTRIES:
+        return "{country} — " + rest
+    return text
+
+
+#: Названия стран, которыми дека подписывает листы (первое слово заголовка).
+#: Их место в подписи занимает прорезь ``{country}``: страна листа зависит от
+#: среза, а не от актива.
+DECK_COUNTRIES = frozenset({
+    "Беларусь", "Россия", "Казахстан", "Узбекистан",
+    "Belarus", "Russia", "Kazakhstan", "Uzbekistan",
+})
+
+
+def _group_slot(text: str) -> str:
+    """«Беларусь — Производство: структура ФОТ …» → «… — {group}: …».
+
+    Лист 5 деки — один из листов «по группам ЦФО»: подпись листа называет
+    группу («Производство»), и на других группах она другая. Прорезь ставится
+    только у этого прототипа: у листов 4 и 6 слово перед двоеточием — название
+    блока деки («ФОТ по направлениям бизнеса», «Продажи»), а не данные.
+    """
+    if " — " not in text or ":" not in text:
+        return text
+    head, rest = text.split(" — ", 1)
+    before, after = rest.split(":", 1)
+    return "%s — {group}:%s" % (head, after)
 
 
 def _collapse_cards(labels: dict) -> dict:
@@ -1749,6 +2182,19 @@ def _total_bar_colors(slides: dict) -> list[str]:
 CONST_SHAPES = frozenset({"unit_label"})
 
 
+def _const_text_shapes(proto_name: str) -> frozenset:
+    """Шейпы прототипа, чей текст — константа оформления, а не данные.
+
+    У листов 4–6 так подписаны сноска под таблицей («тыс. BYN», у листа 6 ещё
+    и оговорка о методике) и заголовок ленты мини-баров («ДОЛЯ ФОТ В ВЫРУЧКЕ
+    ПО НАПРАВЛЕНИЯМ, %»). Это формулировки деки: от среза они не зависят, и
+    биндер их не пишет — иначе токен остался бы незаполненным.
+    """
+    if proto_name in NB_PROTOS:
+        return frozenset({"unit_note", "bars_head"})
+    return frozenset()
+
+
 def _obfuscate_shapes(shapes: dict, proto_name: str) -> dict:
     """Тексты адресуемых шейпов → плейсхолдеры. Возвращает текстовые константы.
 
@@ -1770,11 +2216,18 @@ def _obfuscate_shapes(shapes: dict, proto_name: str) -> dict:
     копиями рана-образца.
     """
     consts: dict = {}
+    static = _const_text_shapes(proto_name)
     for name, sh in shapes.items():
         if _shape_kind(sh) != KIND_TEXT:
             continue
         if name in CONST_SHAPES:
             consts[name] = _text_of(sh).strip()
+            continue
+        if name in static:
+            # сноска и заголовок ленты листов 4–6: формулировка деки, данных в
+            # ней нет — текст остаётся в активе, токена не ставим
+            consts[name] = _text_of(sh).strip()
+            continue
         if name in BANNER_SHAPES:
             consts.update(_banner_consts(sh, name))
             continue
@@ -1783,6 +2236,19 @@ def _obfuscate_shapes(shapes: dict, proto_name: str) -> dict:
             continue
         if name == "total_bar":
             _obfuscate_runs(sh, name, count=5, prefix_reuse=True)
+            continue
+        if name == "donut_head":
+            # двухстрочный заголовок доната: первая строка — формулировка деки
+            # («ДОЛЯ ФОТ ПО НАПРАВЛЕНИЯМ,»), вторая — «ОЖИДАНИЕ 2026», и год в
+            # ней зависит от фильтра. Первая строка уходит в consts, вторая
+            # становится шаблоном подписи (токен на ран)
+            consts[name] = _first_para_text(sh)
+            txBody = sh._element.find(qn("p:txBody"))
+            for p in list(txBody.findall(qn("a:p")))[1:]:
+                for i, run in enumerate(p.findall(qn("a:r"))):
+                    t = run.find(qn("a:t"))
+                    if t is not None:
+                        t.text = "{{%s_r%d}}" % (name, i)
             continue
         if _is_static_label(name):
             # подпись-константа деки («Δ план»): токен снимать НЕЛЬЗЯ —
@@ -1870,6 +2336,17 @@ def _banner_consts(shape, name: str) -> dict:
     _set_text(paras[0].runs[0], "{{%s_lead}}" % name)
     consts[name + "_pairs"] = pairs
     return consts
+
+
+def _first_para_text(shape) -> str:
+    """Текст ПЕРВОГО абзаца шейпа (без обращения к text_frame)."""
+    txBody = shape._element.find(qn("p:txBody"))
+    if txBody is None:
+        return ""
+    paras = txBody.findall(qn("a:p"))
+    if not paras:
+        return ""
+    return "".join(t.text or "" for t in paras[0].findall(qn("a:r") + "/" + qn("a:t")))
 
 
 def _obfuscate_runs(shape, name: str, count: int | None = None,
@@ -2011,7 +2488,10 @@ def _obfuscate_tables(tables: dict, proto_name: str, dump: dict,
         total_top = len(styles) > 1 and styles[1] == "total"
 
         keep: dict[int, str] = {0: "header"}
-        for style in ("body_tinted", "body_plain"):
+        # строки-ГРУППЫ листа 6 («Розница РБ», «ОПТ РБ») — своя заливка и жирный
+        # текст; в вебе им соответствует kind="direction". В активе нужен один
+        # образец: без него биндер не смог бы напечатать групповую строку
+        for style in ("group", "body_tinted", "body_plain"):
             for i, st in enumerate(styles):
                 if st == style:
                     keep[i] = style
@@ -2023,7 +2503,8 @@ def _obfuscate_tables(tables: dict, proto_name: str, dump: dict,
 
         if dump is not None:
             dump[tbl_name] = {
-                "capacity": sum(1 for s in styles if s in ("body_tinted", "body_plain")),
+                "capacity": sum(1 for s in styles
+                                if s in ("body_tinted", "body_plain")),
                 # порядок прототипов = ФИЗИЧЕСКИЙ порядок строк в активе
                 # (sorted по исходному индексу): у KZ итог стоит второй строкой,
                 # и движок сопоставляет стили строкам по этому списку
@@ -2048,9 +2529,11 @@ def _obfuscate_tables(tables: dict, proto_name: str, dump: dict,
                 tbl._tbl.remove(trs[i])
 
         out[tbl_name] = {
-            # capacity — ТОЛЬКО строки тела (tinted + plain): шапка и итог в
-            # неё не входят. Так пагинация не съезжает: у KZ в деке было
-            # header + total + 8 body = 10 строк, и 8 — это именно body
+            # capacity — ТОЛЬКО строки тела (tinted + plain): шапка, итог и
+            # строки-группы в неё не входят. Так пагинация не съезжает: у KZ в
+            # деке было header + total + 8 body = 10 строк, и 8 — это body.
+            # Групповая строка листа 6 («Розница РБ») — тоже НЕ тело: она
+            # печатается из данных, а не занимает место расшифровки.
             "capacity": sum(1 for s in styles if s in ("body_tinted", "body_plain")),
             "capacity_basis": "body_rows",
             "total_rows": sum(1 for s in styles if s == "total"),
@@ -2084,6 +2567,129 @@ def _normalize_cell_colors(tables: dict, sign: dict) -> None:
                     for run in p.runs:
                         if "{{" in (run.text or ""):
                             _set_run_color(run, base)
+
+
+# ─── Диаграммы листов 4–6: обезличивание данных и слоты манифеста ────────────
+
+#: Цвет точки, которую дека НЕ красит: она наследует заливку серии (первый
+#: мини-бар). В манифест уходит как None — биндер обязан сохранить разницу.
+NB_BAR_POINT_UNTINTED = None
+
+
+def _chart_ser(shape):
+    """Первая `c:ser` диаграммы (дека рисует ровно одну серию)."""
+    chart = shape.chart
+    space = chart._chartSpace
+    return space.find(".//" + qn("c:ser")), space
+
+
+def _chart_point_colors(shape) -> list[str | None]:
+    """Цвета `c:dPt` по индексам точек (None — точка красится серией)."""
+    ser, _space = _chart_ser(shape)
+    if ser is None:
+        return []
+    out: list[str | None] = []
+    for dpt in ser.findall(qn("c:dPt")):
+        idx_el = dpt.find(qn("c:idx"))
+        idx = int(idx_el.get("val")) if idx_el is not None else len(out)
+        clr = dpt.find(".//" + qn("a:srgbClr"))
+        while len(out) < idx:
+            out.append(None)
+        if len(out) == idx:
+            out.append(clr.get("val") if clr is not None else None)
+        else:
+            out[idx] = clr.get("val") if clr is not None else None
+    return out
+
+
+def _chart_series_name(shape) -> str:
+    """Имя серии из `c:tx` — формулировка деки («Доля ФОТ в выручке»)."""
+    ser, _space = _chart_ser(shape)
+    if ser is None:
+        return ""
+    tx = ser.find(qn("c:tx"))
+    if tx is None:
+        return ""
+    for v in tx.iter(qn("c:v")):
+        return v.text or ""
+    return ""
+
+
+def _chart_num_fmt(shape) -> str | None:
+    """Формат подписей `c:dLbls/c:numFmt` («0.0%», «0.0\\"%\\"»)."""
+    ser, _space = _chart_ser(shape)
+    if ser is None:
+        return None
+    dLbls = ser.find(qn("c:dLbls"))
+    if dLbls is None:
+        return None
+    nf = dLbls.find(qn("c:numFmt"))
+    return nf.get("formatCode") if nf is not None else None
+
+
+def _chart_meta(shape) -> dict:
+    """Слот манифеста по диаграмме прототипа (тип, точки, цвета, подписи)."""
+    ser, space = _chart_ser(shape)
+    if ser is None:
+        raise AssertionError("диаграмма %r: нет c:ser — нечего описывать" % shape.name)
+    n_ser = len(space.findall(".//" + qn("c:ser")))
+    cats = [str(c) for c in shape.chart.plots[0].categories]
+    colors = _chart_point_colors(shape)
+    dLbls = ser.find(qn("c:dLbls"))
+    kind = str(shape.chart.chart_type).split(" ")[0].lower()
+    meta = {
+        "type": kind,
+        "series": n_ser,
+        "points": len(cats),
+        # цвета dPt — ПОЗИЦИОННЫЕ, снятые с деки: None — точка без своей
+        # заливки (первый мини-бар наследует цвет серии)
+        "point_colors": colors,
+        "series_name": _chart_series_name(shape),
+        "num_fmt": _chart_num_fmt(shape),
+        # какие подписи рисует дека: у доната доля, у мини-баров значение
+        "show_percent": (dLbls is not None
+                         and dLbls.find(qn("c:showPercent")) is not None
+                         and dLbls.find(qn("c:showPercent")).get("val") == "1"),
+        "show_val": (dLbls is not None
+                     and dLbls.find(qn("c:showVal")) is not None
+                     and dLbls.find(qn("c:showVal")).get("val") == "1"),
+    }
+    if kind != "pie":
+        # подписи КАТЕГОРИЙ мини-баров — формулировки деки с ГОДАМИ («Факт
+        # 1ПГ25», «Ожид.2026»), и год в них из фильтра: в манифест они идут
+        # шаблоном, как подписи шейпов. У доната категории — НАЗВАНИЯ
+        # направлений: это данные среза, и в манифест они попадать не должны
+        numbered: dict = {"n": 0}
+        year_cur, year_prev = _DECK_YEARS
+        meta["categories"] = [_template_of(c, year_cur, year_prev, numbered)[0]
+                              for c in cats]
+    return meta
+
+
+def _scrub_chart(shape) -> None:
+    """Заменяет данные диаграммы заглушкой, сохраняя ВСЁ оформление.
+
+    `replace_data` переписывает категории/значения и встроенную книгу, а
+    оформление (заливка серии, цвета `c:dPt`, подписи `c:dLbls`, имя серии)
+    оставляет. Поэтому в активе остаются нули и текстовые категории, а цвета
+    точек, формат подписей и легенда — декины: актив обезличен, вёрстка цела.
+    """
+    from pptx.chart.data import CategoryChartData
+    ser, _space = _chart_ser(shape)
+    meta = _chart_meta(shape)
+    data = CategoryChartData()
+    data.categories = ["к%d" % (i + 1) for i in range(meta["points"])]
+    data.add_series(meta["series_name"] or "серия",
+                    tuple(0.0 for _ in range(meta["points"])))
+    shape.chart.replace_data(data)
+    # после подстановки число точек то же (заглушка строится по прототипу),
+    # поэтому цвета и подписи пересобирать не надо — но проверим это, иначе
+    # актив молча потеряет окрас секторов
+    if _chart_point_colors(shape) != meta["point_colors"]:
+        raise AssertionError(
+            "диаграмма %r: после обезличивания цвета dPt изменились (%r → %r) — "
+            "replace_data больше не сохраняет оформление"
+            % (shape.name, meta["point_colors"], _chart_point_colors(shape)))
 
 
 # ─── Чистка пакета ───────────────────────────────────────────────────────────
@@ -2217,6 +2823,124 @@ def _dept_colors(by_proto: dict) -> dict:
     return out
 
 
+def _nb_colors(by_proto: dict, prs) -> dict:
+    """Цвета листов 4–6: подложка карточки направления, рамка и разделители.
+
+    Карточка направления залита F1F1F3 с рамкой 9B5A70 и внутренними
+    разделителями D9C3CB — это ТРЕТЬЯ палитра деки (у стран F8EDF0/E6D2D9,
+    у отделов F8F5F6). Круги Δ доли держат цвет на ОБВОДКЕ, а единицу «п.п.» и
+    подпись круга дека печатает приглушённым серым — он тоже здесь, иначе
+    биндер взял бы цвет из другого листа.
+
+    Палитры доната и мини-баров снимаются с САМИХ диаграмм: они лежат в
+    манифесте слотами (`charts[].point_colors`), а не здесь, потому что у
+    листов 4/5 и 6 порядок цветов разный.
+    """
+    slide = by_proto["nb_summary"]
+    card_bg = card_border = divider = muted = circle_fill = None
+    for sh in slide.shapes:
+        kind = _shape_kind(sh)
+        spPr = sh._element.find(qn("p:spPr"))
+        if kind == KIND_ROUNDRECT and card_bg is None:
+            fill = spPr.find(qn("a:solidFill") + "/" + qn("a:srgbClr"))
+            bg = fill.get("val") if fill is not None else None
+            ln = spPr.find(qn("a:ln") + "/" + qn("a:solidFill") + "/" + qn("a:srgbClr"))
+            if bg is not None:
+                card_bg, card_border = bg, (ln.get("val") if ln is not None else None)
+        elif kind == KIND_LINE and divider is None:
+            ln = spPr.find(qn("a:ln") + "/" + qn("a:solidFill") + "/" + qn("a:srgbClr"))
+            divider = ln.get("val") if ln is not None else None
+        elif kind == KIND_ELLIPSE:
+            fill = spPr.find(qn("a:solidFill") + "/" + qn("a:srgbClr"))
+            color = fill.get("val") if fill is not None else None
+            # круг Δ доли залит БЕЛЫМ (цвет несёт обводка), круг бейджа — нет;
+            # берём именно белый, иначе в палитру попадёт заливка бейджа
+            if color == "FFFFFF" and circle_fill is None:
+                circle_fill = color
+    # приглушённый серый деки — цвет ЕДИНИЦЫ «п.п.»: у круга Δ доли два абзаца,
+    # значение (светофорное) и единица (всегда серая). Ищем шейп, у которого
+    # второй абзац — ровно «п.п.», и снимаем цвет его рана
+    for sh in slide.shapes:
+        if _shape_kind(sh) != KIND_TEXT:
+            continue
+        txBody = sh._element.find(qn("p:txBody"))
+        if txBody is None:
+            continue
+        paras = txBody.findall(qn("a:p"))
+        if len(paras) < 2:
+            continue
+        unit = "".join(t.text or "" for t in paras[1].findall(qn("a:r") + "/"
+                                                             + qn("a:t")))
+        if unit.strip() != "п.п.":
+            continue
+        for run in paras[1].findall(qn("a:r")):
+            color = _run_color(run)
+            if color:
+                muted = color
+                break
+        if muted:
+            break
+    out = {"card_bg": card_bg, "card_border": card_border, "divider": divider,
+           "circle_fill": circle_fill, "muted": muted,
+           # палитра доната — ПРАВИЛО ВЕБА (capDonut): цвета по индексу
+           # показанного сегмента, свёрнутые — нейтральным. Порядок задаёт
+           # экран, но каждый цвет обязан существовать в деке (проверка ниже)
+           "pie_palette": list(NB_PIE_ORDER), "pie_rest": NB_PIE_REST}
+    missing = [k for k, v in out.items() if not v]
+    if missing:
+        raise AssertionError("не сняты цвета листов 4–6: %r" % (missing,))
+    _assert_palette_in_deck(prs)
+    return out
+
+
+#: Порядок палитры доната — ПРАВИЛО ВЕБА (capDonut в nuxt/pages/reports/fot.vue):
+#: цвета назначаются ПО ИНДЕКСУ показанного сегмента после свёртки, поэтому
+#: порядок здесь и есть контракт с экраном. Часть цветов взята с диаграмм деки
+#: и проверяется по ней (ниже); остальные экран добавил сам, чтобы девяти
+#: сегментам хватило различимых оттенков — они помечены `NB_PIE_WEB_ONLY`.
+NB_PIE_ORDER = ("7A1F3D", "F4A6C1", "C2185B", "E85D75", "FFC845",
+                "9E6B0F", "9B5A70", "C27B92", "6B3347")
+#: Цвета палитры, которых в деке НЕТ: их добавил веб, чтобы различить больше
+#: сегментов (палитра `_P14_PIE_COLORS` в app/fot.py). Держим их списком, чтобы
+#: проверка «палитра опирается на деку» оставалась честной.
+NB_PIE_WEB_ONLY = frozenset({"9E6B0F"})
+#: Цвет свёрнутых сегментов («Прочие») — нейтральный, как на экране.
+NB_PIE_REST = "C9AEB6"
+
+
+def _assert_palette_in_deck(prs) -> None:
+    """Каждый цвет палитры доната обязан встречаться в деке.
+
+    Экран назначает цвета по индексу показанного сегмента, и его палитра — это
+    правило отчёта, а не вольная роспись: цвета взяты с диаграмм деки (dPt
+    секторов и заливки серий). Проверка ловит случай, когда палитру правили
+    руками и она разъехалась с исходником.
+    """
+    seen: set[str] = set()
+    for slide in prs.slides:
+        for sh in slide.shapes:
+            if _shape_kind(sh) != KIND_CHART:
+                continue
+            for color in _chart_point_colors(sh):
+                if color:
+                    seen.add(color)
+            ser, _space = _chart_ser(sh)
+            if ser is None:
+                continue
+            spPr = ser.find(qn("c:spPr"))
+            if spPr is not None:
+                for clr in spPr.iter(qn("a:srgbClr")):
+                    seen.add(clr.get("val"))
+    # «Прочие» — цвет заливки СЕРИИ мини-баров (нейтральный столбик деки)
+    want = [c for c in NB_PIE_ORDER + (NB_PIE_REST,) if c not in NB_PIE_WEB_ONLY]
+    missing = [c for c in want if c not in seen]
+    if missing:
+        raise AssertionError(
+            "палитра доната листов 4–6 разошлась с декой: цветов %r в ней нет — "
+            "правило capDonut и палитра экрана должны опираться на деку"
+            % (missing,))
+
+
 def _banner_box(slide, lead: str) -> dict | None:
     """Цвета баннера-подложки по началу его текста («ЛУЧШАЯ ТЕНДЕНЦИЯ…»).
 
@@ -2336,10 +3060,15 @@ def _placeholders_of(slide) -> list[str]:
 
     Имена берутся из САМОГО СЛАЙДА (а не из карты аннотации): сетки карточек
     переименовываются напрямую, минуя `take`, и карта про них не знает.
+
+    Диаграммы пропускаются: у них нет текста, и токенов они не несут — данные
+    диаграммы живут в отдельной части пакета и подставляются не плейсхолдером.
     """
     import re as _re
     out: list[str] = []
     for sh in slide.shapes:
+        if _shape_kind(sh) == KIND_CHART:
+            continue
         token = _re.sub(r"^card\d+_", "cardN_", sh.name)
         token = _re.sub(r"^kpi\d+_", "kpiN_", token)
         token = _re.sub(r"^hc\d+_", "hcN_", token)
@@ -2385,6 +3114,7 @@ def build(src: Path, out: Path, manifest_path: Path,
     # блоков), не совпадающий с p17 — снимаются с их прототипов отдельно.
     b1_colors = _b1_colors(by_proto)
     dept_colors = _dept_colors(by_proto)
+    nb_colors = _nb_colors(by_proto, prs)
 
     # разряды в таблицах — свойство генератора деки, а не прототипа: снимаем по
     # всем прототипам сразу (см. _cell_group)
@@ -2428,11 +3158,17 @@ def build(src: Path, out: Path, manifest_path: Path,
         table_dump: dict = {}
         # типографика прототипа — ДО обезличивания таблиц: после него в ячейках
         # стоят плейсхолдеры, и образцов разрядов/знаков процентов уже нет
-        deck_format = _deck_format(shapes, tables, cell_group)
+        deck_format = _deck_format(shapes, tables, cell_group, proto_name)
         # подписи с прорезями — тоже ДО обезличивания: шаблон снимается с
         # живого текста деки, в котором ещё есть годы и числа
         consts: dict = {}
         labels = _label_templates(shapes, consts, proto_name)
+        # слоты диаграмм — ДО обезличивания данных: цвета dPt, имя серии и
+        # формат подписей снимаются с деки (после replace_data они те же, но
+        # категории и значения уже заглушки)
+        chart_slots = {sh.name: _chart_meta(sh) for sh in slide.shapes
+                       if _shape_kind(sh) == KIND_CHART}
+        slide_dump["charts"] = chart_slots
         # карта «место карточки → страна» (BY/RU/KZ/UZ по местам) — тоже ДО
         # обезличивания: в активе на месте кода уже токен {{cardN_cc_code}}
         card_slots = _card_slots(shapes)
@@ -2444,6 +3180,10 @@ def build(src: Path, out: Path, manifest_path: Path,
 
         consts.update(_obfuscate_shapes(shapes, proto_name))
         _normalize_cell_colors(tables, sign)
+        # данные диаграмм → заглушка: актив обезличен, оформление цело
+        for sh in slide.shapes:
+            if _shape_kind(sh) == KIND_CHART:
+                _scrub_chart(sh)
 
         meta: dict = {
             "slide_sp_order": order,
@@ -2451,6 +3191,11 @@ def build(src: Path, out: Path, manifest_path: Path,
             "tables": table_meta,
             "format": deck_format,
         }
+        # слоты диаграмм: тип, число серий/точек и цвета dPt прототипа. Данные
+        # в них НЕ хранятся — только оформление; биндер подставляет значения
+        # через `fot_deck_export.charts.set_data`
+        if chart_slots:
+            meta["charts"] = chart_slots
         # число ячеек сетки карточек: биндер по нему удаляет лишние или
         # открывает вторую страницу (см. DEPT7_SHAPES / DEPT8_SHAPES)
         cards = _count_cards(slide)
@@ -2515,6 +3260,7 @@ def build(src: Path, out: Path, manifest_path: Path,
         "row_colors": row_colors,
         "b1_colors": b1_colors,
         "dept_colors": dept_colors,
+        "nb_colors": nb_colors,
         "total_bar_colors": bar_colors,
         # сводный список токенов по всем прототипам: движок сверяет его с
         # текстом актива (B5), неизвестный токен = незакрытый биндер.

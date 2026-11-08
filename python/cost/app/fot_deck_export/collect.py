@@ -15,13 +15,13 @@ from app import fot_insights
 from app.logship import log
 
 #: Вкладки, которые выгрузка умеет собирать «1:1» (дека размечена по листам
-#: 1–3, 7, 8 и 23–27). Расширение — новая запись в registry.SHEETS.
-SUPPORTED_TABS = ("b1", "p15", "p16", "p17")
+#: 1–3, 4–6, 7, 8 и 23–27). Расширение — новая запись в registry.SHEETS.
+SUPPORTED_TABS = ("b1", "p14", "p15", "p16", "p17")
 
-#: Вкладки, у которых срез «страна» сужает ВСЮ выгрузку: на листах 7/8 дека
+#: Вкладки, у которых срез «страна» сужает ВСЮ выгрузку: на листах 4–8 дека
 #: показывает одну страну на лист, поэтому вариант строится по срезу, а не по
 #: перечню стран из ответа.
-COUNTRY_SLICED = frozenset({"p15", "p16"})
+COUNTRY_SLICED = frozenset({"p14", "p15", "p16"})
 
 #: Страны присутствия в порядке деки — из них строятся варианты листов 7/8,
 #: когда пользователь не сузил срез одной страной.
@@ -95,21 +95,34 @@ def _ensure_single_country(tab: str, params: dict, filters: dict) -> None:
 
 
 async def collect_country(tab: str, filters: dict, cc: str) -> dict:
-    """Payload листа 7/8 для ОДНОЙ страны: срез страны добавляется к фильтрам.
+    """Payload листа по ОДНОЙ стране: срез страны добавляется к фильтрам.
 
-    Декa печатает «Отделы» постранично по странам присутствия, а сборщик без
+    Декa печатает листы 4–8 постранично по странам присутствия, а сборщик без
     среза отдаёт свод группы (`meta.slide.cc` пуст). Поэтому вариант страны
     собирается отдельным запросом: `country=[cc]` — тот же ключ среза, что у
-    /fot/dashboard. Страны без единого отдела дают пустой payload, и движок
-    пропускает прототип.
+    /fot/dashboard. Страны без единой строки дают пустой payload, и движок
+    пропускает прототип (см. `has_rows`).
     """
     scoped = dict(filters or {})
     scoped["country"] = [cc]
     data = await collect(tab, scoped)
     log(logging.INFO, "fot_deck: данные листа по стране", tab=tab, cc=cc,
-        depts=len(data.get("cards_by_department") or []))
+        depts=len(data.get("cards_by_department") or []),
+        directions=len(data.get("directions") or []))
     return data
 
 
+def has_rows(tab: str, payload: dict) -> bool:
+    """Есть ли в payload'е страны данные для её листа (иначе лист пропускается).
+
+    Признак СВОЙ у каждой вкладки: у листов 7/8 это отделы страны, у листов
+    4–6 — направления свода. Пустой лист дека не печатает, и выгрузка тоже не
+    должна: у страны без строк иначе появилась бы страница с «н/д».
+    """
+    if tab == "p14":
+        return bool(payload.get("directions") or [])
+    return bool(payload.get("cards_by_department") or [])
+
+
 __all__ = ["COUNTRY_ORDER", "COUNTRY_SLICED", "SUPPORTED_TABS", "UnsupportedTab",
-           "collect", "collect_country"]
+           "collect", "collect_country", "has_rows"]

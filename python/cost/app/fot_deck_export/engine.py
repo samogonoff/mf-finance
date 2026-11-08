@@ -205,6 +205,34 @@ class SlideContext:
         meta = self._engine.manifest["prototypes"][self.proto_name]["tables"]
         return int(meta[table]["deck_rows"])
 
+    # диаграммы
+    def chart_slot(self, name: str, proto: str | None = None) -> dict:
+        """Слот диаграммы из манифеста: тип, серии, точки, цвета dPt, подписи.
+
+        Данные диаграммы живут не в шейпе, а в отдельной части пакета, поэтому
+        плейсхолдеров у неё нет: оформление (цвета точек, формат подписей, имя
+        серии) снимается при сборке актива, а значения биндер подставляет через
+        `fot_deck_export.charts.set_data`.
+        """
+        meta = self._engine.manifest["prototypes"][proto or self.proto_name]
+        slots = meta.get("charts") or {}
+        if name not in slots:
+            raise RuntimeError("в манифесте прототипа %r нет диаграммы %r"
+                               % (proto or self.proto_name, name))
+        return slots[name]
+
+    def chart_names(self, proto: str | None = None) -> list[str]:
+        """Имена диаграмм прототипа в порядке документа."""
+        meta = self._engine.manifest["prototypes"][proto or self.proto_name]
+        return list((meta.get("charts") or {}).keys())
+
+    def colors(self, key: str) -> dict:
+        """Набор цветов листа из манифеста (`b1_colors`, `dept_colors`, …)."""
+        colors = self._engine.manifest.get(key)
+        if not isinstance(colors, dict):
+            raise RuntimeError("в манифесте нет набора цветов %r" % (key,))
+        return colors
+
     def card_count(self, proto: str | None = None) -> int:
         """Сколько карточек в сетке прототипа (из манифеста).
 
@@ -240,7 +268,7 @@ class SlideContext:
 
     # подписи-шаблоны
     def label(self, name: str, *, year=None, prev=None, country=None,
-              values=(), proto: str | None = None) -> list[list[str]]:
+              group=None, values=(), proto: str | None = None) -> list[list[str]]:
         """Подпись шейпа по шаблону деки: абзацы → раны, готовые к записи.
 
         В манифесте подписи лежат прорезями («Динамика, п.п. ({v1}ПГ{y2}/…): »):
@@ -250,7 +278,8 @@ class SlideContext:
 
         Прорези: ``{year}``/``{prev}`` — полные годы отчётного/прошлого периода,
         ``{y2}``/``{p2}`` — их двузначные хвосты, ``{country}`` — страна листа,
-        ``{vN}`` — значения из `values` по порядку (сквозная нумерация по шейпу).
+        ``{group}`` — группа ЦФО листа (лист 5 деки), ``{vN}`` — значения из
+        `values` по порядку (сквозная нумерация по шейпу).
         """
         meta = self._engine.manifest["prototypes"][proto or self.proto_name]
         slots = (meta.get("labels") or {}).get(name)
@@ -259,7 +288,8 @@ class SlideContext:
                                % (proto or self.proto_name, name))
         try:
             return format_mod.fill_label(slots, year=year, prev=prev,
-                                         country=country, values=values)
+                                         country=country, group=group,
+                                         values=values)
         except RuntimeError as exc:
             raise RuntimeError("%s/%s: %s" % (proto or self.proto_name, name, exc))
 
@@ -488,13 +518,13 @@ async def export_deck(tabs: list[str] | None, filters: dict | None) -> bytes:
                 engine.build_tab(tab, payload)
                 continue
             if tab in collect_mod.COUNTRY_SLICED:
-                # листы 7/8 дека печатает ПОСТРАНИЧНО по странам присутствия:
+                # листы 4–8 дека печатает ПОСТРАНИЧНО по странам присутствия:
                 # свод группы без `meta.slide.cc` не даёт шапки и подписей
                 for cc in collect_mod.COUNTRY_ORDER:
                     payload = await collect_mod.collect_country(tab, filters or {},
                                                                 cc)
-                    if not (payload.get("cards_by_department") or []):
-                        log(logging.INFO, "fot_deck: страна без отделов — лист "
+                    if not collect_mod.has_rows(tab, payload):
+                        log(logging.INFO, "fot_deck: страна без строк — лист "
                             "пропущен", tab=tab, cc=cc)
                         continue
                     engine.build_tab(tab, payload)

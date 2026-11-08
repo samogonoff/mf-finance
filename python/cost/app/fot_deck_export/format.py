@@ -52,6 +52,9 @@ TOKEN_ZERO = "zero"
 #: Формат по умолчанию: разряды группируются, проценты с одним знаком.
 DEFAULT_FORMAT = {"kpi_group": True, "cell_group": True, "pct_digits": 1,
                   "total_pct_digits": 1, "note_tail_space": False,
+                  # знаки «% укомпл.» в строке КАРТОЧКИ: у листов 4–6 они свои
+                  # («96%» в карточке против «96,6%» в шапке того же листа)
+                  "card_pct_digits": 1,
                   # листы 1–3/7–8 деки: значения таблиц — млн с одним знаком
                   # (b1) либо целые тыс. (p15/p16); знаки «п.п.» на кругах — до
                   # двух, хвостовые нули срезаются («−0,35», но ноль — «0,00»)
@@ -309,7 +312,7 @@ _SLOT_RE = re.compile(r"\{([a-z]+\d*)\}")
 
 
 def fill_label(slots: list[dict], *, year=None, prev=None, country=None,
-               values=()) -> list[list[str]]:
+               group=None, values=()) -> list[list[str]]:
     """Подпись-шаблон прототипа → абзацы готового текста ([[ран, …], …]).
 
     Шаблон снимается с деки при сборке актива (`scripts/build_fot_deck_template`):
@@ -321,13 +324,14 @@ def fill_label(slots: list[dict], *, year=None, prev=None, country=None,
       * ``{year}`` / ``{prev}`` — годы отчётного и прошлого периода (полные);
       * ``{y2}`` / ``{p2}`` — их двузначные хвосты («1ПГ26»);
       * ``{country}`` — название страны листа («Беларусь»);
+      * ``{group}`` — название группы ЦФО листа («Производство»);
       * ``{vN}`` — N-е значение из `values` (нумерация сквозная по шейпу).
 
     Незаполненная прорезь — исключение, а не пустая строка: тихо отданная
     подпись «Доля ФОТ в выручке гр. (): » выглядит как баг вёрстки, и заметить
     её на слайде почти невозможно.
     """
-    ctx = {"year": year, "prev": prev, "country": country,
+    ctx = {"year": year, "prev": prev, "country": country, "group": group,
            "y2": (str(year)[-2:] if year is not None else None),
            "p2": (str(prev)[-2:] if prev is not None else None)}
     numbered = {i: v for i, v in enumerate(values, 1)}

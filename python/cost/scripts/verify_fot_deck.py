@@ -580,22 +580,37 @@ def test_registry_order() -> None:
     """(A1) Порядок листов «все листы» = порядок деки."""
     from app.fot_deck_export import registry
     check("(A1) вкладки идут в порядке деки",
-          registry.ALL_TABS == ("b1", "p15", "p16", "p17"),
+          registry.ALL_TABS == ("b1", "p14", "p15", "p16", "p17"),
           "%r" % (registry.ALL_TABS,))
-    for tab in ("b1", "p15", "p16", "p17"):
+    for tab in ("b1", "p14", "p15", "p16", "p17"):
         check("(A1) вкладка %r есть в реестре" % tab,
               tab in registry.SHEETS_BY_TAB)
     check("(A1) b1 - три листа деки",
           len(registry.sheet_for("b1").slides) == 3)
-    payloads = {"b1": _b1_payload(), "p15": _dept_payload("BY", 3),
+    check("(A1) p14 - листы 4/5/6 деки",
+          [s.proto for s in registry.sheet_for("p14").slides]
+          == ["nb_summary", "nb_prod", "nb_sales"],
+          "%r" % ([s.proto for s in registry.sheet_for("p14").slides],))
+    payloads = {"b1": _b1_payload(), "p14": _nb_payload(),
+                "p15": _dept_payload("BY", 3),
                 "p16": _dept_payload("BY", 3, with_table=False)}
     names = _slide_names(render(payloads))
     check("(A1) b1 даёт три слайда подряд",
           names[:3] == ["fot:b1:b1_year:0", "fot:b1:b1_h1:0", "fot:b1:b1_h2:0"],
           "%r" % (names[:3],))
+    check("(A1) p14 идёт после b1",
+          "fot:p14:nb_summary:0" in names
+          and names.index("fot:p14:nb_summary:0") > 2, "%r" % (names,))
+    check("(A1) листы 4-6 идут в порядке деки",
+          [n.split(":")[2] for n in names
+           if n.startswith("fot:p14:")] == ["nb_summary", "nb_prod", "nb_sales"],
+          "%r" % ([n for n in names if n.startswith("fot:p14:")],))
     check("(A1) p15 идёт после b1",
           "fot:p15:dept_summary:0" in names
           and names.index("fot:p15:dept_summary:0") > 2, "%r" % (names,))
+    check("(A1) p15 идёт после p14",
+          names.index("fot:p15:dept_summary:0")
+          > names.index("fot:p14:nb_sales:0"), "%r" % (names,))
     check("(A1) p16 идёт после p15",
           "fot:p16:dept_cards:0" in names
           and names.index("fot:p16:dept_cards:0")
@@ -667,9 +682,217 @@ def test_b1_three_slides() -> None:
               "%r" % (ph[:2],))
 
 
+# --- Листы 4-6 деки (p14: свод, группы ЦФО, детализация) -------------------
+
+_NB_COLS = ("f25_h1", "f25_h2", "f25", "b26_h1", "f26_h1", "b26_h2",
+            "t26_h2", "exp26")
+
+
+def _nb_card(label: str, exp26: float, *, color: str | None = None,
+             pie: float | None = None) -> dict:
+    """Строка-направление листов 4-6: значения, Δ, доли, круги, численность."""
+    card = {"label": label, "exp26": exp26,
+            "dev_h1_pct": 5.0, "dev_h1_abs": 4.0,
+            "dev_h2_pct": 4.0, "dev_h2_abs": 3.0,
+            "dev_year_pct": 6.0, "dev_year_abs": 7.0,
+            "share_h1_25": 10.0, "share_h1_26": 11.0,
+            "share_h2_tac": 12.0, "share_exp": 13.0,
+            "pp_h1": -0.1, "pp_h2": 0.2, "pp_year": 0.0,
+            "hc_plan": 10.0, "hc_fact": 9.0, "hc_staffing": 90.0,
+            "hc_dev": -1.0}
+    for key in _NB_COLS:
+        card.setdefault(key, exp26 / 2)
+    if color is not None:
+        card["color"] = color
+    if pie is not None:
+        card["pie_pct"] = pie
+    return card
+
+
+def _nb_payload(*, segments: int = 3, directions: int = 5,
+                seg_colors: bool = False) -> dict:
+    """DTO вкладки p14: свод направлений + группа ЦФО + детализация каналов.
+
+    `segments` задаёт число сегментов доната листа 6 (проверка capDonut),
+    `directions` — число направлений листа 4 (его донат НЕ сворачивается),
+    `seg_colors` — сборщик уже покрасил сегменты листа 6 (`_P14_PIE_COLORS`,
+    цвета с решёткой): экран такие цвета игнорирует и красит по индексу.
+    """
+    dirs = [_nb_card("Направление %d" % i, 1000.0 / (i + 1),
+                     color="7A1F3D", pie=100.0 / directions)
+            for i in range(directions)]
+    total = {"label": "Общий итог", "total": True,
+             **{k: 1000.0 for k in _NB_COLS}}
+    body = [{"label": d["label"], **{k: d[k] for k in _NB_COLS}} for d in dirs]
+    hc = {"plan_approved": 100.0, "fact_2026": 90.0, "staffing": 96.6}
+    section_rows = [{"label": "Итого Производство", "kind": "total",
+                     **{k: 500.0 for k in _NB_COLS}}]
+    section_rows += [{"label": "Подразделение %d" % i, "kind": "detail",
+                      **{k: 100.0 for k in _NB_COLS}} for i in range(3)]
+    for row_ in section_rows[1:]:
+        row_.update({k: v for k, v in _nb_card("", 100.0).items()
+                     if k not in ("label", "exp26")})
+    detail_rows = [{"label": "Итого Продажи", "kind": "total",
+                    **{k: 800.0 for k in _NB_COLS}},
+                   {"label": "Группа каналов", "kind": "direction",
+                    **{k: 400.0 for k in _NB_COLS}}]
+    detail_rows += [{"label": "Канал %d" % i, "kind": "detail",
+                     **{k: 100.0 for k in _NB_COLS}} for i in range(3)]
+    segs = [{"label": "Сегмент %02d" % i, "value": float(100 - i),
+             "pct": 100.0 * (100 - i) / sum(range(100 - segments + 1, 101))}
+            for i in range(segments)]
+    if seg_colors:
+        # как `_P14_PIE_COLORS` сборщика: серверная палитра обрезана на 7-м
+        # цвете, поэтому листья за её концом красились бы одним цветом
+        palette = ("#7A1F3D", "#F4A6C1", "#C2185B", "#E85D75", "#FFC845",
+                   "#9E6B0F", "#9B5A70")
+        for i, seg in enumerate(segs):
+            seg["color"] = palette[min(i, len(palette) - 1)]
+    return {
+        "directions": dirs, "headcount": hc,
+        "cards": [],
+        "charts": [],
+        "tables": [{"key": "by_direction", "label": "", "columns": [],
+                    "rows": [total] + body}],
+        "group_detail": {"sections": [{
+            "label": "Производство", "rows": section_rows, "headcount": hc,
+            "donut": [{"label": "Цех %d" % i, "value": float(10 - i),
+                       "pct": 10.0 - i} for i in range(4)],
+            "bars": []}]},
+        "direction_detail": {"rows": detail_rows, "donut": segs, "bars": [],
+                             "cards": [_nb_card("Канал %d" % i, 100.0)
+                                       for i in range(3)],
+                             "headcount": hc},
+        "meta": {"tab": "p14", "params": {"year": 2026, "half": 1},
+                 "periods": {"year_plan": 2026, "year_prev": 2025},
+                 "expect": {"close_month": 6},
+                 "slide": {"cc": "BY", "label": "Беларусь"}},
+    }
+
+
+def _donut(slide, name: str = "chart_donut"):
+    """(категории, значения, цвета) доната слайда — только данные диаграммы."""
+    from app.fot_deck_export import charts
+    sh = shape_named(slide, name)
+    if sh is None:
+        return None
+    return (charts.categories(sh), charts.values(sh), charts.point_colors(sh))
+
+
+def test_nb_donut_cap() -> None:
+    """(B1) Донат листов 5/6 сворачивается как capDonut на экране."""
+    from app.fot_deck_export.binders import nb
+    slides = slides_of(render({"p14": _nb_payload(segments=14, directions=12)}))
+    names = [s._element.find(P + "cSld").get("name") for s in slides]
+    detail_idx = names.index("fot:p14:nb_sales:0")
+    cats, vals, colors = _donut(slides[detail_idx])
+    check("(B1) донат листа 6: топ-9 + «Прочие»",
+          len(cats) == nb.DONUT_MAX + 1, "%d сегментов (%r)" % (len(cats), cats))
+    check("(B1) последний сегмент — «Прочие»",
+          cats[-1] == "Прочие", "%r" % (cats[-1],))
+    rest_color = None
+    manifest = engine_mod.load_manifest()
+    rest_color = (manifest.get("nb_colors") or {}).get("pie_rest")
+    check("(B1) «Прочие» красится нейтральным цветом",
+          colors[-1] == rest_color, "%r против %r" % (colors[-1], rest_color))
+    check("(B1) цвета первых сегментов — палитра деки",
+          len(set(c for c in colors[:nb.DONUT_MAX] if c)) == nb.DONUT_MAX,
+          "%r" % (colors,))
+
+    # доля «Прочих» = сумма долей отброшенных сегментов; значения в тыс.
+    segs = _nb_payload(segments=14)["direction_detail"]["donut"]
+    pos = [s["pct"] for s in segs if s["pct"] > 0]
+    norm = [p / sum(pos) * 100 for p in pos]
+    top = sorted(norm, reverse=True)[:nb.DONUT_MAX]
+    check("(B1) доля «Прочих» = остаток после свёртки",
+          abs(vals[-1] - (sum(norm) - sum(top))) < 0.01,
+          "%r против %r" % (vals[-1], sum(norm) - sum(top)))
+
+
+def test_nb_summary_donut_uncapped() -> None:
+    """(B1) Донат листа 4 идёт БЕЗ свёртки (правило экрана `pieSegs`)."""
+    from app.fot_deck_export.binders import nb
+    slides = slides_of(render({"p14": _nb_payload(directions=12)}))
+    cats, vals, colors = _donut(slides[0])
+    check("(B1) донат листа 4 не сворачивается",
+          len(cats) == 12 and "Прочие" not in cats, "%r" % (cats,))
+    check("(B1) донат листа 4 красится цветом направления",
+          set(c for c in colors if c) == {"7A1F3D"}, "%r" % (colors,))
+    check("(B1) доли листа 4 — проценты, а не тыс.",
+          abs(sum(vals) - 100.0) < 0.1, "сумма %r" % (sum(vals),))
+    check("(B1) свёртка не тронула лист 4", nb.DONUT_MAX < len(cats))
+
+
+def test_nb_donut_colors() -> None:
+    """(B1) Цвета точек: палитра экрана по индексу и hex без решётки.
+
+    Сборщик красит сегменты серверной палитрой, обрезанной на седьмом цвете,
+    и с `#` впереди. Экран такой цвет игнорирует (`capDonut` красит по
+    индексу), а `srgbClr/@val` решётку не принимает вовсе — PowerPoint считает
+    файл повреждённым. Оба правила проверяются на 14 сегментах: цвета обязаны
+    быть девятью РАЗНЫМИ цветами деки.
+    """
+    from app.fot_deck_export.binders import nb
+
+    manifest = engine_mod.load_manifest()
+    rest_color = (manifest.get("nb_colors") or {}).get("pie_rest")
+    palette = (manifest["prototypes"]["nb_sales"]["charts"]["chart_donut"]
+               .get("point_colors") or []) + (manifest["nb_colors"]
+                                              .get("pie_palette") or [])
+    palette = [c for i, c in enumerate(palette) if c and c not in palette[:i]]
+    slides = slides_of(render({"p14": _nb_payload(segments=14, seg_colors=True)}))
+    names = [s._element.find(P + "cSld").get("name") for s in slides]
+    cats, _vals, colors = _donut(slides[names.index("fot:p14:nb_sales:0")])
+    check("(B1) цвета сегментов — палитра экрана по индексу",
+          colors[:nb.DONUT_MAX] == palette[:nb.DONUT_MAX],
+          "%r против %r" % (colors, palette[:nb.DONUT_MAX]))
+    check("(B1) «Прочие» — нейтральный цвет, а не цвет седьмого сегмента",
+          colors[-1] == rest_color, "%r против %r" % (colors[-1], rest_color))
+    check("(B1) свёрнутый донат не слипается: цветов столько же, сколько сегментов",
+          len(set(colors[:nb.DONUT_MAX])) == nb.DONUT_MAX, "%r" % (colors,))
+    check("(B1) в диаграмме нет цвета с решёткой",
+          all(c and not c.startswith("#") for c in colors), "%r" % (colors,))
+
+
+def test_nb_bar_captions() -> None:
+    """(B1) Подписи мини-баров берут год из фильтра, а не из деки."""
+    from app.fot_deck_export import charts
+
+    def caps_for(year: int) -> list[str]:
+        data = _nb_payload()
+        data["meta"]["params"]["year"] = year
+        data["meta"]["periods"] = {"year_plan": year, "year_prev": year - 1}
+        slides = slides_of(render({"p14": data}))
+        return charts.categories(shape_named(slides[0], "card1_chart"))
+
+    caps26, caps27 = caps_for(2026), caps_for(2027)
+    check("(B1) подписи мини-бара подставлены годом",
+          all("{" not in c for c in caps26), "%r" % (caps26,))
+    check("(B1) смена года меняет подписи мини-бара",
+          caps26 != caps27 and any("27" in c for c in caps27)
+          and any("26" in c for c in caps26),
+          "%r против %r" % (caps26, caps27))
+
+
+def test_nb_h2_closed() -> None:
+    """(B1) Закрытое 2 ПГ меняет подписи листов 5/6 («Факт» вместо «Тактики»)."""
+    open_payload = _nb_payload()
+    closed_payload = _nb_payload()
+    closed_payload["meta"]["expect"] = {"close_month": 12}
+    open_texts = texts(slides_of(render({"p14": open_payload}))[0])
+    closed_texts = texts(slides_of(render({"p14": closed_payload}))[0])
+    check("(B1) до закрытия 2 ПГ подписи «Тактика»",
+          any("Такт" in t for t in open_texts),
+          "%r" % ([t for t in open_texts if "Такт" in t][:2],))
+    check("(B1) после закрытия 2 ПГ подписи «Факт»",
+          not any("Такт" in t for t in closed_texts),
+          "%r" % ([t for t in closed_texts if "Такт" in t][:2],))
+
+
 def test_no_placeholders_all_sheets() -> None:
     """(A3) Во всех листах реестра нет «{{» и нумерация сквозная."""
-    payloads = {"b1": _b1_payload(), "p15": _dept_payload("BY", 4),
+    payloads = {"b1": _b1_payload(), "p14": _nb_payload(),
+                "p15": _dept_payload("BY", 4),
                 "p16": _dept_payload("BY", 4, with_table=False),
                 "p17": payload({"BY": [row("A"), row("B")]})}
     blob = render(payloads)
@@ -698,7 +921,12 @@ def main() -> int:
              # листы 1-3 и 7-8 деки (партия A)
              test_registry_order, test_country_variants,
              test_p16_grid_overflow, test_p15_pagination,
-             test_b1_three_slides, test_no_placeholders_all_sheets)
+             test_b1_three_slides,
+             # листы 4-6 деки: чарты и подписи
+             test_nb_donut_cap, test_nb_donut_colors,
+             test_nb_summary_donut_uncapped,
+             test_nb_bar_captions, test_nb_h2_closed,
+             test_no_placeholders_all_sheets)
     for test in tests:
         try:
             test()

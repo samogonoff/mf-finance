@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 
@@ -30,6 +31,7 @@ except ImportError as exc:  # python-pptx — опциональная зави�
     PPTX_IMPORT_ERROR = str(exc)
 else:
     PPTX_IMPORT_ERROR = None
+    from pptx.opc.package import XmlPart
 
 ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "fot_deck"
 TEMPLATE_PATH = ASSET_DIR / "fot_deck_template.pptx"
@@ -38,6 +40,7 @@ MANIFEST_PATH = ASSET_DIR / "manifest.json"
 _P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 _A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 _R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_C_NS = "{http://schemas.openxmlformats.org/drawingml/2006/chart}"
 
 #: Префиксы неймспейсов DrawingML/PresentationML для прямых выборок из XML
 #: (в биндерах и тестах: `el.find(shapes.A + "tc")`).
@@ -56,27 +59,101 @@ def load_manifest(path: Path | None = None) -> dict:
 
 # ─── Клонирование ────────────────────────────────────────────────────────────
 
-def _assert_no_rel_refs(spTree, where: str) -> None:
-    """Прототип обязан быть чистым: любые r:id/r:embed — повод упасть."""
-    refs = [f"{el.tag}({k}={v})" for el in spTree.iter()
-            for k, v in el.attrib.items() if k.startswith(_R_NS)]
-    if refs:
-        raise RuntimeError("%s: в дереве шейпов есть связи с частями пакета: %s"
-                           % (where, ", ".join(refs[:5])))
+#: Разрешённые типы связей прототипа и способ их переноса в клон:
+#:   image — часть переиспользуется (картинка неизменяема, две ссылки на одну
+#:           часть — норма OPC), клону заводится своя связь с тем же rId-слотом;
+#:   chart — часть КОПИРУЕТСЯ целиком под каждого потребителя: `replace_data`
+#:           мутирует XML части, и общая часть отдала бы данные прошлого слайда.
+#: Всё остальное — ошибка сборки актива: молча унаследованная связь дала бы
+#: слайд, ссылающийся на чужую часть.
+REL_IMAGE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+REL_CHART = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+
+
+def _rel_refs(spTree) -> list[tuple[str, str]]:
+    """Ссылки на части пакета в дереве шейпов: [(rId, имя атрибута), …]."""
+    out: list[tuple[str, str]] = []
+    for el in spTree.iter():
+        for k, v in el.attrib.items():
+            if k.startswith(_R_NS):
+                out.append((v, k))
+    return out
+
+
+def _next_partname(package, partname) -> str:
+    """Свободное имя части того же вида: «/ppt/charts/chart7.xml» → «chart8»."""
+    m = re.match(r"^(.*?)(\d*)(\.[A-Za-z0-9]+)$", str(partname))
+    if not m:
+        raise RuntimeError("не разобрать имя части %r — копирование невозможно"
+                           % str(partname))
+    return package.next_partname(m.group(1) + "%d" + m.group(3))
+
+
+def _copy_part(part, package):
+    """Глубокая копия части пакета со ВСЕМИ её связями (диаграмма + её xlsx).
+
+    Копируется и XML, и вложенный xlsx (`c:externalData`): PowerPoint считает
+    данные диаграммы из встроенной книги, и без своей копии книги вторая
+    диаграмма показывала бы данные первой (или падала на «нет данных»).
+    """
+    partname = _next_partname(package, part.partname)
+    if isinstance(part, XmlPart):
+        new = type(part)(partname, part.content_type, package,
+                         element=deepcopy(part._element))
+    else:
+        new = type(part).load(partname, part.content_type, package, part.blob)
+    rid_map: dict[str, str] = {}
+    for rId, rel in list(part.rels.items()):
+        if rel.is_external:
+            rid_map[rId] = new.relate_to(rel.target_ref, rel.reltype, is_external=True)
+        else:
+            rid_map[rId] = new.relate_to(_copy_part(rel.target_part, package),
+                                         rel.reltype)
+    if isinstance(new, XmlPart) and rid_map:
+        _rewrite_rel_ids(new._element, rid_map)
+    return new
+
+
+def _rewrite_rel_ids(el, rid_map: dict[str, str]) -> None:
+    """Переписывает r:id / r:embed в поддереве по карте соответствия."""
+    for node in el.iter():
+        for k, v in list(node.attrib.items()):
+            if k.startswith(_R_NS) and v in rid_map:
+                node.set(k, rid_map[v])
 
 
 def clone_slide(prs, proto_slide, name: str):
     """Добавляет в конец презентации клон прототипа; возвращает новый слайд.
 
-    Копируется только cSld/spTree (чистый XML без связей) — новый слайд
-    получает layout прототипа, а rels у него свои.
+    Копируется cSld/spTree, а ссылки на части пакета (r:id / r:embed) получают
+    у клона СВОИ связи: картинки переиспользуются, диаграммы копируются
+    (см. REL_IMAGE / REL_CHART). Без этого клон унаследовал бы rId прототипа и
+    показывал чужую диаграмму — или падал при открытии в PowerPoint.
     """
     proto_cSld = proto_slide._element.find(_P_NS + "cSld")
     proto_tree = proto_cSld.find(_P_NS + "spTree")
-    _assert_no_rel_refs(proto_tree, "прототип %s" % proto_cSld.get("name"))
 
     new = prs.slides.add_slide(proto_slide.slide_layout)
     new_cSld = new._element.find(_P_NS + "cSld")
+    # карта «rId прототипа → rId клона»: связи заводятся ДО вставки дерева,
+    # чтобы копии шейпов сразу содержали правильные идентификаторы
+    rid_map: dict[str, str] = {}
+    for rId, _attr in _rel_refs(proto_tree):
+        if rId in rid_map:
+            continue
+        rel = proto_slide.part.rels[rId]
+        if rel.reltype == REL_IMAGE:
+            # картинка неизменяема: клон ссылается на ту же часть пакета
+            rid_map[rId] = new.part.relate_to(rel.target_part, rel.reltype)
+        elif rel.reltype == REL_CHART:
+            rid_map[rId] = new.part.relate_to(
+                _copy_part(rel.target_part, prs.part.package), rel.reltype)
+        else:
+            raise RuntimeError(
+                "прототип %s: связь %r типа %s не поддержана клонированием "
+                "(разрешены картинка и диаграмма) — расширьте clone_slide"
+                % (proto_cSld.get("name"), rId, rel.reltype))
+
     # add_slide кладёт пустой spTree с placeholders layout'а — наполняем его
     # детьми прототипа (поэлементно: replace() корневого элемента оставлял
     # в Slide.shapes старый узел)
@@ -85,6 +162,8 @@ def clone_slide(prs, proto_slide, name: str):
         new_tree.remove(child)
     for child in proto_tree:
         new_tree.append(deepcopy(child))
+    if rid_map:
+        _rewrite_rel_ids(new_tree, rid_map)
     # фон слайда (p:bg) — часть cSld, но не spTree: переносим отдельно
     proto_bg = proto_cSld.find(_P_NS + "bg")
     if proto_bg is not None:
