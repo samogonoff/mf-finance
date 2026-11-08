@@ -252,6 +252,23 @@ class SlideContext:
         """Есть ли у таблицы строка-прототип итога (у KZ — вверху таблицы)."""
         return any(name.startswith("total") for name in self.proto_rows(table))
 
+    def card_grid(self, proto: str | None = None) -> dict:
+        """Геометрия сетки карточек: мест в ряду, шаг по X/Y, начало сетки.
+
+        Нужна биндерам, которые РАЗВОРАЧИВАЮТ сетку: у блока 3 живых строк
+        бывает больше, чем мест в деке (у направления до пяти стран, у статей
+        до шести групп), и блок последней карточки клонируется на свободное
+        место. Шаг сетки снят с деки при сборке актива: у свода четыре
+        карточки в ряд, у статей 3 + 2, и шаги у них разные — держать числа в
+        коде значило бы разъехаться с декой при правке её геометрии.
+        """
+        meta = self._engine.manifest["prototypes"][proto or self.proto_name]
+        grid = meta.get("card_grid")
+        if not grid:
+            raise RuntimeError("в манифесте прототипа %r нет card_grid — "
+                               "пересоберите актив" % (proto or self.proto_name))
+        return dict(grid)
+
     def const(self, proto: str, key: str) -> str:
         """Текстовая константа деки, снятая при сборке актива («•  » и т. п.)."""
         meta = self._engine.manifest["prototypes"][proto]
@@ -268,7 +285,8 @@ class SlideContext:
 
     # подписи-шаблоны
     def label(self, name: str, *, year=None, prev=None, country=None,
-              group=None, values=(), proto: str | None = None) -> list[list[str]]:
+              group=None, dept=None, cur=None,
+              values=(), proto: str | None = None) -> list[list[str]]:
         """Подпись шейпа по шаблону деки: абзацы → раны, готовые к записи.
 
         В манифесте подписи лежат прорезями («Динамика, п.п. ({v1}ПГ{y2}/…): »):
@@ -278,8 +296,9 @@ class SlideContext:
 
         Прорези: ``{year}``/``{prev}`` — полные годы отчётного/прошлого периода,
         ``{y2}``/``{p2}`` — их двузначные хвосты, ``{country}`` — страна листа,
-        ``{group}`` — группа ЦФО листа (лист 5 деки), ``{vN}`` — значения из
-        `values` по порядку (сквозная нумерация по шейпу).
+        ``{group}`` — группа ЦФО листа (лист 5 деки), ``{dept}`` —
+        подразделение листа b3, ``{cur}`` — код валюты среза, ``{vN}`` —
+        значения из `values` по порядку (сквозная нумерация по шейпу).
         """
         meta = self._engine.manifest["prototypes"][proto or self.proto_name]
         slots = (meta.get("labels") or {}).get(name)
@@ -289,7 +308,7 @@ class SlideContext:
         try:
             return format_mod.fill_label(slots, year=year, prev=prev,
                                          country=country, group=group,
-                                         values=values)
+                                         dept=dept, cur=cur, values=values)
         except RuntimeError as exc:
             raise RuntimeError("%s/%s: %s" % (proto or self.proto_name, name, exc))
 
@@ -346,10 +365,18 @@ class DeckEngine:
         return slide
 
     def build_tab(self, tab: str, payload: dict) -> None:
-        """Строит слайды одной вкладки по реестру (порядок записей = порядок)."""
+        """Строит слайды одной вкладки по реестру (порядок записей = порядок).
+
+        Ключ `_only` (ставит `export_deck` для блока 3) ограничивает сборку
+        ОДНИМ прототипом: у b3 свод и статьи — разные срезы данных, поэтому
+        каждый строится своим payload'ом, а не одним на вкладку.
+        """
         self.tab = tab
+        only = payload.get("_only")
         for spec in sheet_for(tab).slides:
             self.proto = spec.proto
+            if only and spec.proto != only:
+                continue
             proto_slide = self._proto_slides.get(spec.proto)
             if proto_slide is None:
                 raise RuntimeError("в активе нет прототипа %r" % spec.proto)
@@ -511,6 +538,9 @@ async def export_deck(tabs: list[str] | None, filters: dict | None) -> bytes:
     engine = DeckEngine(load_template(), load_manifest())
     try:
         for tab in wanted:
+            if tab == "b3":
+                await _build_b3(engine, filters or {})
+                continue
             if tab in collect_mod.COUNTRY_SLICED and _has_country_filter(
                     filters or {}):
                 # срез уже сужен пользователем: один лист на эту страну
@@ -538,6 +568,59 @@ async def export_deck(tabs: list[str] | None, filters: dict | None) -> bytes:
         log(logging.ERROR, "fot_deck: сборка не удалась", tabs=wanted,
             tab=engine.tab, proto=engine.proto, error=str(exc)[:300])
         raise
+
+
+async def _build_b3(engine: "DeckEngine", filters: dict) -> None:
+    """Листы блока 3: свод на КАЖДОЕ подразделение и статьи на каждую страну.
+
+    Перебор двойной и упорядоченный так же, как у деки: сначала свод
+    подразделения, за ним листы статей его стран присутствия, затем следующее
+    подразделение. Список подразделений задаёт `collect.b3_depts`: пустой срез
+    «Направление» — все направления из `dept_options` (живьём 19), суженный —
+    ровно выбранное. Это правило ВЫГРУЗКИ, а не серверного среза: на самом
+    дашборде b3 глобальный «Направление» не действует (METHODOLOGY_B3), и
+    пользователь на экране видит выбранное селектором вкладки подразделение.
+
+    Каждая страница — свой запрос к сборщику (≈0,3 с на живой витрине), поэтому
+    полная выгрузка блока 3 стоит несколько секунд даже без сети.
+    """
+    engine.tab = "b3"
+    base = await collect_mod.collect("b3", filters)
+    depts = collect_mod.b3_depts(base, filters)
+    if not depts:
+        raise EmptySlice("b3: в срезе нет подразделений, присутствующих в ≥2 "
+                         "странах — свод не строится")
+    for dept in depts:
+        summary = await collect_mod.collect("b3", dict(filters, b3_dept=dept))
+        if not (summary.get("cards_by_country") or []):
+            log(logging.INFO, "fot_deck: подразделение без стран — свод "
+                "пропущен", dept=dept)
+            continue
+        engine.build_tab("b3", _only(engine, "b3_summary", summary))
+        for cc in [str(c.get("cc") or "")
+                   for c in summary["cards_by_country"]]:
+            if not cc:
+                continue
+            art = await collect_mod.collect(
+                "b3", dict(filters, b3_dept=dept, b3_country=cc))
+            if not (art.get("articles") or []):
+                log(logging.INFO, "fot_deck: у страны нет статей — лист 30 "
+                    "пропущен", dept=dept, cc=cc)
+                continue
+            engine.build_tab("b3", _only(engine, "b3_country", art))
+
+
+def _only(engine: "DeckEngine", proto: str, payload: dict) -> dict:
+    """Payload одной страницы: движок строит только запрошенный прототип.
+
+    `build_tab` проходит ВСЕ прототипы вкладки, а у блока 3 свод и статьи —
+    разные срезы (свод по подразделению, статьи по стране). Поэтому payload
+    помечается ключом `_only`, и `build_tab` пропускает чужие прототипы.
+    """
+    data = dict(payload)
+    data["_only"] = proto
+    return data
+
 
 
 __all__ = ["AssetMismatch", "DeckEngine", "EmptySlice", "SlideContext",

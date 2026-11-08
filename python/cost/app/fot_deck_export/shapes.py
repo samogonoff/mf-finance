@@ -449,6 +449,101 @@ def clone_run(shape, para_idx: int, src_idx: int):
     return len(para.runs) - 1
 
 
+# ─── Клонирование блоков шейпов и сдвиг ─────────────────────────────────────
+
+def _next_shape_id(slide) -> int:
+    """Свободный cNvPr/@id слайда (PowerPoint требует уникальности в слайде)."""
+    top = 0
+    for el in slide._element.iter(_P_NS + "cNvPr"):
+        try:
+            top = max(top, int(el.get("id") or 0))
+        except ValueError:
+            continue
+    return top + 1
+
+
+def _xfrm_of(shape):
+    """p:spPr/a:xfrm шейпа, а для graphicFrame — p:xfrm (или None)."""
+    el = shape._element
+    if el.tag == _P_NS + "graphicFrame":
+        return el.find(_P_NS + "xfrm")
+    return el.find(_P_NS + "spPr/" + _A_NS + "xfrm")
+
+
+def shape_offset(shape) -> tuple[int, int]:
+    """(x, y) шейпа в EMU; нет трансформации — нули."""
+    xfrm = _xfrm_of(shape)
+    if xfrm is None:
+        return 0, 0
+    off = xfrm.find(_A_NS + "off")
+    if off is None:
+        return 0, 0
+    return int(off.get("x") or 0), int(off.get("y") or 0)
+
+
+def move_shape(shape, dy: int = 0, dx: int = 0) -> None:
+    """Сдвигает шейп на (dx, dy) EMU, сохраняя остальную геометрию."""
+    if not dx and not dy:
+        return
+    xfrm = _xfrm_of(shape)
+    if xfrm is None:
+        raise RuntimeError("шейп %r: нет xfrm — сдвинуть нельзя" % shape.name)
+    off = xfrm.find(_A_NS + "off")
+    if off is None:
+        raise RuntimeError("шейп %r: нет a:off — сдвинуть нельзя" % shape.name)
+    x, y = shape_offset(shape)
+    off.set("x", str(x + dx))
+    off.set("y", str(y + dy))
+
+
+def _wrap_shape(slide, element):
+    """Объект python-pptx для только что вставленного элемента дерева."""
+    from pptx.shapes.autoshape import Shape
+    from pptx.shapes.graphfrm import GraphicFrame
+    if element.tag == _P_NS + "graphicFrame":
+        return GraphicFrame(element, slide.shapes)
+    return Shape(element, slide.shapes)
+
+
+def clone_shapes(slide, protos, prefix_src: str, prefix_dst: str,
+                 dy: int = 0, dx: int = 0) -> list:
+    """Клонирует блок шейпов карточки под новое имя и сдвигает копии.
+
+    Зачем: у дек часть сеток фиксирована (на листе 28 деки четыре карточки
+    стран, на листе 30 — пять карточек статей), а живых строк бывает больше
+    (у направления до пяти стран, у статей — до шести групп: в деке шестой
+    карточки нет вовсе, потому что у HR «Вложений» не было). Тогда блок
+    последнего места клонируется на свободное место сетки: вёрстка карточки
+    остаётся декиной (её же XML), а не собирается кодом.
+
+    Имя клона — `prefix_dst` + роль источника (`card1_p1_label` →
+    `card5_p1_label`): биндер пишет по роли и не знает, что место в сетке
+    новое. Идентификаторы cNvPr делаются уникальными.
+    """
+    tree = slide._element.find(_P_NS + "cSld").find(_P_NS + "spTree")
+    if tree is None:
+        raise RuntimeError("слайд %r: нет spTree — клонировать некуда"
+                           % slide._element.find(_P_NS + "cSld").get("name"))
+    next_id = _next_shape_id(slide)
+    made = []
+    for sh in protos:
+        if not sh.name.startswith(prefix_src):
+            raise RuntimeError("шейп %r не принадлежит блоку %r"
+                               % (sh.name, prefix_src))
+        role = sh.name[len(prefix_src):]
+        el = deepcopy(sh._element)
+        cnv = el.find(".//" + _P_NS + "cNvPr")
+        if cnv is not None:
+            cnv.set("id", str(next_id))
+            cnv.set("name", prefix_dst + role)
+        next_id += 1
+        tree.append(el)
+        made.append(_wrap_shape(slide, el))
+    for sh in made:
+        move_shape(sh, dy=dy, dx=dx)
+    return made
+
+
 # ─── Обводка фигур (круги «п.п.») ────────────────────────────────────────────
 
 def paint_outline(shape, hex_color: str) -> None:
@@ -476,8 +571,8 @@ def paint_outline(shape, hex_color: str) -> None:
 
 __all__ = [
     "A", "ASSET_DIR", "MANIFEST_PATH", "P", "SLIDE_NAME_PREFIX", "TEMPLATE_PATH",
-    "clone_paragraph", "clone_run", "clone_slide", "delete_shape",
-    "delete_slide", "fill_table", "find_shape", "load_manifest", "paint_outline",
-    "paint_run", "require_shape", "run_color", "set_run", "set_text",
-    "set_text_raw", "table_protos",
+    "clone_paragraph", "clone_run", "clone_shapes", "clone_slide",
+    "delete_shape", "delete_slide", "fill_table", "find_shape", "load_manifest",
+    "move_shape", "paint_outline", "paint_run", "require_shape", "run_color",
+    "set_run", "set_text", "set_text_raw", "shape_offset", "table_protos",
 ]

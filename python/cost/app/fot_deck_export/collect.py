@@ -16,7 +16,7 @@ from app.logship import log
 
 #: Вкладки, которые выгрузка умеет собирать «1:1» (дека размечена по листам
 #: 1–3, 4–6, 7, 8 и 23–27). Расширение — новая запись в registry.SHEETS.
-SUPPORTED_TABS = ("b1", "p14", "p15", "p16", "p17")
+SUPPORTED_TABS = ("b1", "p14", "p15", "p16", "p17", "b3")
 
 #: Вкладки, у которых срез «страна» сужает ВСЮ выгрузку: на листах 4–8 дека
 #: показывает одну страну на лист, поэтому вариант строится по срезу, а не по
@@ -50,6 +50,7 @@ async def collect(tab: str, filters: dict) -> dict:
         raise UnsupportedTab(tab)
     params = fot_insights._params_from_context(filters or {})
     _ensure_half(params, filters)
+    _ensure_b3_local(params, filters)
     if tab in COUNTRY_SLICED:
         _ensure_single_country(tab, params, filters)
     data = await fot_insights._fot_dashboard(tab, params)
@@ -73,6 +74,23 @@ def _ensure_half(params: dict, filters: dict) -> None:
         half = (filters or {}).get("half")
         if half not in (None, ""):
             params["half"] = half
+
+
+def _ensure_b3_local(params: dict, filters: dict) -> None:
+    """Переносит локальные селекторы вкладки b3 (`b3_dept`/`b3_country`).
+
+    У блока 3 свои селекторы: подразделение (`b3_dept`) заменяет глобальный
+    срез «Направление», страна (`b3_country`) открывает вид статей. В
+    `_SCALAR_PARAM_KEYS` ИИ-разбора их нет — это параметры ВКЛАДКИ, а не
+    контекста, — поэтому выгрузка передаёт их явно: без этого биндер получал
+    дефолт сборщика (первое из dept_options) и выгрузка одного подразделения
+    молча превращалась в выгрузку другого.
+    """
+    for key in ("b3_dept", "b3_country"):
+        if params.get(key) in (None, ""):
+            value = (filters or {}).get(key)
+            if value not in (None, ""):
+                params[key] = str(value).strip()
 
 
 def _ensure_single_country(tab: str, params: dict, filters: dict) -> None:
@@ -124,5 +142,45 @@ def has_rows(tab: str, payload: dict) -> bool:
     return bool(payload.get("cards_by_department") or [])
 
 
+def b3_direction(filters: dict) -> str:
+    """Направление, которым сужен срез «Направление» панели (или "").
+
+    У блока 3 глобальный срез «Направление» на САМ дашборд не действует — его
+    заменяет селектор вкладки (METHODOLOGY_B3). Но для ВЫГРУЗКИ он остаётся
+    правилом отбора: пользователь, сузив панель до одного направления, ждёт
+    один свод, а не девятнадцать. Это правило выгрузки, а не серверного среза,
+    поэтому оно живёт здесь, а не в сборщике вкладки.
+    """
+    value = (filters or {}).get("direction")
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        items = [str(v).strip() for v in value if str(v).strip()]
+        return items[0] if len(items) == 1 else ""
+    return ""
+
+
+def b3_depts(payload: dict, filters: dict) -> list[str]:
+    """Подразделения, под которые строятся варианты выгрузки блока 3.
+
+    Пустой фильтр направления — ВСЕ подразделения сборщика (`dept_options`:
+    направления, присутствующие в ≥2 странах; живьём их 19). Один вариант
+    выгрузки = свод этого подразделения плюс лист статей на каждую его страну,
+    поэтому у полной выгрузки блок 3 даёт десятки слайдов — это осознанно:
+    пользователь просит «все листы», и декa тоже печатает по слайду на срез.
+    """
+    options = [str(o.get("dept") or "") for o in
+               (payload.get("meta") or {}).get("dept_options") or []]
+    options = [o for o in options if o]
+    chosen = b3_direction(filters)
+    if chosen:
+        if chosen not in options:
+            # направление вне «≥2 стран»: у него нет ни карточек, ни статей —
+            # лист не строится, и это не ошибка пользователя
+            return []
+        return [chosen]
+    return options
+
+
 __all__ = ["COUNTRY_ORDER", "COUNTRY_SLICED", "SUPPORTED_TABS", "UnsupportedTab",
-           "collect", "collect_country", "has_rows"]
+           "b3_depts", "b3_direction", "collect", "collect_country", "has_rows"]

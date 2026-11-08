@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from app.fot_deck_export.binders import b1, dept, nb, p17
+from app.fot_deck_export.binders import b1, b3, dept, nb, p17
 
 
 @dataclass(frozen=True)
@@ -83,6 +83,15 @@ SHEETS: tuple[SheetSpec, ...] = (
                   variants=p17.country_variants("KZ")),
         SlideSpec("hc_country_uz", p17.bind_country,
                   variants=p17.country_variants("UZ")),
+    )),
+    # Блок 3 (листы 28 и 30 деки): свод подразделения и статьи каждой страны
+    # его присутствия. Страницу задаёт ПАРА «подразделение × страна», поэтому
+    # варианты строит движок выгрузки (engine.export_deck): на вебе селектор
+    # `b3_dept` выбирает одно подразделение, а выгрузка перебирает все (или
+    # одно, если срез «Направление» сужен) — дека печатает по слайду на срез.
+    SheetSpec("b3", (
+        SlideSpec("b3_summary", b3.bind_summary),
+        SlideSpec("b3_country", b3.bind_country),
     )),
 )
 

@@ -580,9 +580,9 @@ def test_registry_order() -> None:
     """(A1) Порядок листов «все листы» = порядок деки."""
     from app.fot_deck_export import registry
     check("(A1) вкладки идут в порядке деки",
-          registry.ALL_TABS == ("b1", "p14", "p15", "p16", "p17"),
+          registry.ALL_TABS == ("b1", "p14", "p15", "p16", "p17", "b3"),
           "%r" % (registry.ALL_TABS,))
-    for tab in ("b1", "p14", "p15", "p16", "p17"):
+    for tab in ("b1", "p14", "p15", "p16", "p17", "b3"):
         check("(A1) вкладка %r есть в реестре" % tab,
               tab in registry.SHEETS_BY_TAB)
     check("(A1) b1 - три листа деки",
@@ -889,12 +889,343 @@ def test_nb_h2_closed() -> None:
           "%r" % ([t for t in closed_texts if "Такт" in t][:2],))
 
 
+# --- Листы 28/30 деки (b3: свод подразделения и статьи страны) --------------
+
+def _b3_card(cc: str, exp: float, *, d1=10.0, d2=20.0, dyear=30.0) -> dict:
+    """Карточка страны листа 28: ожидание и три Δ% (сборщик отдаёт числа)."""
+    return {"cc": cc, "label": {"BY": "Беларусь", "RU": "Россия",
+                               "KZ": "Казахстан", "UZ": "Узбекистан",
+                               "TR": "Турция"}.get(cc, cc),
+            "exp": exp, "d1": d1, "d1_abs": 1.0,
+            "d2": d2, "d2_abs": 2.0, "dyear": dyear, "dyear_abs": 3.0}
+
+
+def _b3_article(label: str, v1: float, *, base=1.0, pct=10.0) -> dict:
+    """Статья листа 30: три периода (значение, база, Δ%)."""
+    out = {"label": label}
+    for i in (1, 2, 3):
+        out["v%d" % i] = v1 * i
+        out["b%d" % i] = base * i
+        out["d%d" % i] = pct * i
+    return out
+
+
+def _b3_payload(*, depts: tuple[str, ...] = ("HR",), countries=None,
+                articles: int = 5, exp_by_dept: dict | None = None) -> dict:
+    """DTO вкладки b3: свод одного подразделения + статьи одной страны.
+
+    `depts` — что вернёт `dept_options` (от него зависит перебор выгрузки),
+    `countries` — карточки стран свода, `articles` — число статей листа 30.
+    """
+    countries = countries or ("BY", "RU", "KZ", "UZ")
+    exp_by_dept = exp_by_dept or {}
+    cards = {"f25_h1": 1000.0, "f26_h1": 1100.0, "d1": 10.0, "d1_abs": 100.0,
+             "f25_h2": 1200.0, "t26_h2": 1300.0, "d2": 8.3, "d2_abs": 100.0,
+             "exp": 2400.0, "dyear": 9.1, "dyear_abs": 200.0}
+    hc = {"plan_approved": 40.0, "fact_prev": 42.0, "fact_cur": 41.0,
+          "d_plan": -1.0, "d_year": 1.0}
+    names = ("ОСНОВНЫЕ РАСХОДЫ", "ВЫПЛАТЫ РАБОТНИКАМ",
+             "ВСПОМОГАТЕЛЬНЫЕ РАСХОДЫ", "ПРОЧИЕ РАСХОДЫ", "ВЛОЖЕНИЯ",
+             "АМОРТИЗАЦИЯ")
+    return {"cards": cards, "headcount": hc,
+            "cards_by_country": [_b3_card(cc, 500.0 + i * 100,
+                                          d1=10.0 + i, d2=-5.0 * i,
+                                          dyear=2.0 * i)
+                                 for i, cc in enumerate(countries)],
+            "articles": [_b3_article(names[i % len(names)], 100.0 + i,
+                                     base=50.0 + i, pct=5.0 * (i + 1))
+                         for i in range(articles)],
+            "meta": {"tab": "b3", "params": {"year": 2026},
+                     "periods": {"year_plan": 2026}, "currency": "BYN",
+                     "sel_dept": depts[0] if depts else "",
+                     "sel_country": "BY",
+                     "dept_options": [{"dept": d, "countries": 2}
+                                      for d in depts]}}
+
+
+def test_b3_registry() -> None:
+    """(C1) b3 в реестре после p17: свод и статьи, варианты строит движок."""
+    from app.fot_deck_export import registry
+    sheet = registry.sheet_for("b3")
+    check("(C1) b3 идёт последней вкладкой деки",
+          registry.ALL_TABS[-1] == "b3", "%r" % (registry.ALL_TABS,))
+    check("(C1) у b3 два прототипа: свод и статьи",
+          [s.proto for s in sheet.slides] == ["b3_summary", "b3_country"],
+          "%r" % ([s.proto for s in sheet.slides],))
+    check("(C1) варианты b3 строит движок, а не реестр",
+          all(s.variants is None for s in sheet.slides))
+
+
+def test_b3_depts_iteration() -> None:
+    """(C1) Пустой срез «Направление» — все dept_options, суженный — один."""
+    base = _b3_payload(depts=("HR", "ФЭО", "Логистика"))
+    check("(C1) пустой фильтр — все подразделения сборщика",
+          collect_mod.b3_depts(base, {}) == ["HR", "ФЭО", "Логистика"],
+          "%r" % (collect_mod.b3_depts(base, {}),))
+    check("(C1) суженный срез — ровно выбранное направление",
+          collect_mod.b3_depts(base, {"direction": ["ФЭО"]}) == ["ФЭО"])
+    check("(C1) направление вне «≥2 стран» листов не даёт",
+          collect_mod.b3_depts(base, {"direction": ["Нет такого"]}) == [],
+          "%r" % (collect_mod.b3_depts(base, {"direction": ["Нет такого"]}),))
+    check("(C1) несколько направлений в срезе = полный перебор",
+          collect_mod.b3_depts(base, {"direction": ["ФЭО", "HR"]})
+          == ["HR", "ФЭО", "Логистика"])
+    check("(C1) одиночная строка направления тоже сужает",
+          collect_mod.b3_direction({"direction": "HR"}) == "HR")
+    check("(C1) пустой срез направления — пустая строка",
+          collect_mod.b3_direction({}) == ""
+          and collect_mod.b3_direction({"direction": []}) == "")
+
+
+def test_b3_variants_rendered() -> None:
+    """(C1) Перебор: один свод на подразделение + лист статей на каждую страну."""
+    dirs = {"calls": []}
+
+    def fake_collect(tab: str, filters: dict) -> dict:
+        """Сборщик-пустышка: фиксирует фильтры и отдаёт нужный срез."""
+        dirs["calls"].append((tab, dict(filters or {})))
+        data = _b3_payload(depts=("HR", "ФЭО"))
+        dept = (filters or {}).get("b3_dept")
+        if dept:
+            data["meta"]["sel_dept"] = dept
+        cc = (filters or {}).get("b3_country")
+        if cc:
+            data["meta"]["sel_country"] = cc
+        else:
+            data["articles"] = []
+        return data
+
+    async def fake(tab: str, filters: dict) -> dict:
+        return fake_collect(tab, filters)
+
+    original = collect_mod.collect
+    collect_mod.collect = fake
+    try:
+        blob = asyncio.run(engine_mod.export_deck(["b3"], {}))
+    finally:
+        collect_mod.collect = original
+    names = _slide_names(blob)
+    summaries = [n for n in names if "b3_summary" in n]
+    countries = [n for n in names if "b3_country" in n]
+    check("(C1) свод — один слайд на подразделение", len(summaries) == 2,
+          "%r" % (names,))
+    check("(C1) статьи — слайд на каждую страну каждого подразделения",
+          len(countries) == 2 * 4, "%r" % (names,))
+    # нумерация страниц у каждой сборки своя (страница = позиция в биндере),
+    # поэтому порядок проверяется по позициям прототипов в списке слайдов
+    kinds = ["S" if "b3_summary" in n else "C" for n in names]
+    check("(C1) порядок деки: свод, затем страны, затем следующий свод",
+          kinds == ["S"] + ["C"] * 4 + ["S"] + ["C"] * 4, "%r" % (kinds,))
+    check("(C1) сборщик получил b3_dept и b3_country",
+          any(f.get("b3_dept") == "ФЭО" and f.get("b3_country") == "KZ"
+              for _t, f in dirs["calls"]),
+          "%r" % (dirs["calls"][:3],))
+
+
+def test_b3_direction_and_country_narrow() -> None:
+    """(C1) Срез «Направление» сужает перебор; страна — только её статьи."""
+    def fake(tab: str, filters: dict) -> dict:
+        data = _b3_payload(depts=("HR", "ФЭО"))
+        cc = (filters or {}).get("b3_country")
+        if not cc:
+            data["articles"] = []
+        return data
+
+    async def run(tab: str, filters: dict) -> dict:
+        return fake(tab, filters)
+
+    original = collect_mod.collect
+    collect_mod.collect = run
+    try:
+        one = asyncio.run(engine_mod.export_deck(
+            ["b3"], {"direction": ["ФЭО"]}))
+        bad = None
+        try:
+            asyncio.run(engine_mod.export_deck(
+                ["b3"], {"direction": ["Нет такого"]}))
+        except engine_mod.EmptySlice:
+            bad = "EmptySlice"
+        except Exception as exc:  # noqa: BLE001 - важен тип
+            bad = type(exc).__name__
+    finally:
+        collect_mod.collect = original
+    names = _slide_names(one)
+    check("(C1) сужение направления даёт один свод",
+          len([n for n in names if "b3_summary" in n]) == 1, "%r" % (names,))
+    check("(C1) направление вне «≥2 стран» — EmptySlice (роут отдаёт 422)",
+          bad == "EmptySlice", "получено %r" % (bad,))
+
+
+def test_b3_card_cloning() -> None:
+    """(C2) Сетки деки: 4 карточки стран → 5, 5 статей → 6 (и обратно)."""
+    five = slides_of(render({"b3": _b3_payload(
+        countries=("BY", "RU", "KZ", "UZ", "TR"))}))
+    summary = [s for s in five
+               if s._element.find(P + "cSld").get("name").endswith("b3_summary:0")][0]
+    bgs = [sh.name for sh in summary.shapes
+           if sh.name.startswith("card") and sh.name.endswith("_bg")]
+    check("(C2) пятая страна разворачивает клон карточки", len(bgs) == 5,
+          "%r" % (bgs,))
+    # клон получает геометрию следующего места сетки, а не копию исходного
+    first = shape_named(summary, "card4_bg")
+    cloned = shape_named(summary, "card5_bg")
+    check("(C2) клон сдвинут на шаг сетки деки",
+          cloned is not None and first is not None
+          and cloned.left != first.left and cloned.top != first.top,
+          "card4=%s card5=%s" % (first and (first.left, first.top),
+                                 cloned and (cloned.left, cloned.top)))
+
+    six = slides_of(render({"b3": _b3_payload(articles=6)}))
+    country = [s for s in six
+               if s._element.find(P + "cSld").get("name").endswith("b3_country:0")][0]
+    arts = [sh.name for sh in country.shapes
+            if sh.name.startswith("card") and sh.name.endswith("_bg")]
+    check("(C2) шестая статья разворачивает клон карточки", len(arts) == 6,
+          "%r" % (arts,))
+
+    two = slides_of(render({"b3": _b3_payload(countries=("BY", "RU"),
+                                              articles=2)}))
+    summary2 = [s for s in two
+                if s._element.find(P + "cSld").get("name").endswith("b3_summary:0")][0]
+    left = [sh.name for sh in summary2.shapes
+            if sh.name.startswith("card") and sh.name.endswith("_bg")]
+    check("(C2) лишние места сетки удалены, а не оставлены пустыми",
+          left == ["card1_bg", "card2_bg"], "%r" % (left,))
+
+
+def test_b3_labels_and_signs() -> None:
+    """(C2) Подписи деки: год в заголовке, валюта, знак и цвет Δ%."""
+    blob = render({"b3": _b3_payload()})
+    slides = slides_of(blob)
+    summary = [s for s in slides
+               if s._element.find(P + "cSld").get("name").endswith("b3_summary:0")][0]
+    all_text = " ".join(texts(summary))
+    check("(C2) заголовок свода несёт подразделение и год",
+          "HR" in all_text and "2026" in all_text, "%r" % (all_text[:120],))
+    check("(C2) подпись единицы — тыс. BYN",
+          any("тыс. BYN" in t for t in texts(summary)),
+          "%r" % ([t for t in texts(summary) if "тыс." in t][:2],))
+    check("(C2) подпись карточки страны — отбивка между кодом и названием",
+          any(t.startswith("BY  Беларусь") for t in texts(summary)),
+          "%r" % ([t for t in texts(summary) if "Беларус" in t][:2],))
+    dev = shape_named(summary, "card1_d1")
+    runs = [r.text for r in dev.text_frame.paragraphs[0].runs] if dev is not None else []
+    check("(C2) Δ% карточки: подпись периода + значение",
+          len(runs) >= 2 and "1 ПГ" in "".join(runs), "%r" % (runs,))
+    # Подпись периода остаётся СЕРОЙ, цветной только ран значения: иначе
+    # реставрация деки даёт ~250 px расхождения на строку.
+    gray = engine_mod.load_manifest()["sign_colors"]["na_text"]
+    up = engine_mod.load_manifest()["sign_colors"]["delta_up"]
+    down = engine_mod.load_manifest()["sign_colors"]["delta_down"]
+    check("(C2) подпись периода Δ% остаётся серой",
+          run_color(summary, "card1_d1", 0) == gray,
+          "%r" % (run_color(summary, "card1_d1", 0),))
+    check("(C2) ран значения Δ% красится по знаку",
+          run_color(summary, "card1_d1", len(runs) - 1) == up
+          and run_color(summary, "card2_d2", 1) == down,
+          "card1_d1=%r card2_d2=%r" % (run_color(summary, "card1_d1", len(runs) - 1),
+                                       run_color(summary, "card2_d2", 1)))
+
+    country = [s for s in slides
+               if s._element.find(P + "cSld").get("name").endswith("b3_country:0")][0]
+    ctext = " ".join(texts(country))
+    check("(C2) заголовок статей несёт страну, подразделение и валюту",
+          "Беларусь" in ctext and "HR" in ctext and "BYN" in ctext,
+          "%r" % (ctext[:140],))
+    check("(C2) круг Δ% статьи печатает процент внутри",
+          any(t.endswith("%") and t[0] in "+−" for t in texts(country)),
+          "%r" % ([t for t in texts(country) if t.endswith("%")][:3],))
+
+
+def test_b3_year_slots() -> None:
+    """(C2) Смена года в фильтре меняет подписи листов 28/30."""
+    def texts_for(year: int) -> str:
+        data = _b3_payload()
+        data["meta"]["params"]["year"] = year
+        data["meta"]["periods"] = {"year_plan": year}
+        slides = slides_of(render({"b3": data}))
+        return " ".join(texts(slides[0]))
+
+    y26, y27 = texts_for(2026), texts_for(2027)
+    check("(C2) год подставлен в подписи свода",
+          "2026" in y26 and "2027" in y27, "%r / %r" % (y26[:80], y27[:80]))
+    check("(C2) предыдущий год сдвигается вместе с текущим",
+          "1 ПГ 2025" in y26 and "1 ПГ 2026" in y27,
+          "%r" % ([t for t in y27.split(" ") if t.startswith("20")][:4],))
+
+
+def test_b3_empty_slice() -> None:
+    """(C3) Нет подразделений/стран/статей — EmptySlice, а не пустой слайд."""
+    from app.fot_deck_export.binders import b3 as b3_binder
+
+    empty_dept = _b3_payload(depts=())
+    empty_dept["cards_by_country"] = []
+    empty_art = _b3_payload(articles=0)
+
+    def fake_empty(tab: str, filters: dict) -> dict:
+        return empty_dept if not (filters or {}).get("b3_country") else empty_art
+
+    async def run(tab: str, filters: dict) -> dict:
+        return fake_empty(tab, filters)
+
+    original = collect_mod.collect
+    collect_mod.collect = run
+    try:
+        kinds = []
+        for filters in ({}, {"direction": ["Нет такого"]}):
+            try:
+                asyncio.run(engine_mod.export_deck(["b3"], filters))
+            except engine_mod.EmptySlice:
+                kinds.append("EmptySlice")
+            except Exception as exc:  # noqa: BLE001 - важен тип
+                kinds.append(type(exc).__name__)
+        # свод без стран: биндер обязан упасть EmptySlice, а не собрать пусто
+        try:
+            engine = engine_mod.DeckEngine(engine_mod.load_template(),
+                                           engine_mod.load_manifest())
+            engine.build_tab("b3", dict(empty_dept, _only="b3_summary"))
+            engine.finish()
+        except engine_mod.EmptySlice:
+            kinds.append("EmptySlice")
+        except RuntimeError:
+            kinds.append("EmptySlice")
+        except Exception as exc:  # noqa: BLE001
+            kinds.append(type(exc).__name__)
+    finally:
+        collect_mod.collect = original
+    check("(C3) пустой срез блока 3 — EmptySlice", kinds == ["EmptySlice"] * 3,
+          "%r" % (kinds,))
+
+
+def test_b3_nd_rule() -> None:
+    """(C3) Без значения или база ≤ 0 — «н/д», а не «−190%»."""
+    from app.fot_deck_export.binders import b3 as b3_binder
+    text, token = b3_binder._pct_nd(None)
+    check("(C3) нет значения — «н/д»", text == fmt.NA and token == fmt.TOKEN_NA,
+          "%r/%r" % (text, token))
+    text, token = b3_binder._pct_nd(12.34)
+    check("(C3) значение — знак и один разряд", text == "+12,3"
+          and token == fmt.TOKEN_UP, "%r/%r" % (text, token))
+    check("(C3) отрицательное — типографский минус",
+          b3_binder._pct_nd(-4.0)[0] == "−4,0",
+          "%r" % (b3_binder._pct_nd(-4.0)[0],))
+    payload = _b3_payload(countries=("BY",))
+    payload["cards_by_country"][0].update({"d1": None, "d2": None, "dyear": None})
+    slides = slides_of(render({"b3": payload}))
+    summary = [s for s in slides
+               if s._element.find(P + "cSld").get("name").endswith("b3_summary:0")][0]
+    nd = [t for t in texts(summary) if fmt.NA in t]
+    check("(C3) «н/д» печатается в подписи Δ% карточки", len(nd) >= 3,
+          "%r" % (nd[:4],))
+
+
 def test_no_placeholders_all_sheets() -> None:
     """(A3) Во всех листах реестра нет «{{» и нумерация сквозная."""
     payloads = {"b1": _b1_payload(), "p14": _nb_payload(),
                 "p15": _dept_payload("BY", 4),
                 "p16": _dept_payload("BY", 4, with_table=False),
-                "p17": payload({"BY": [row("A"), row("B")]})}
+                "p17": payload({"BY": [row("A"), row("B")]}),
+                "b3": _b3_payload()}
     blob = render(payloads)
     slides = slides_of(blob)
     leftovers = [(sh.name, t) for s in slides for sh in s.shapes
@@ -926,6 +1257,11 @@ def main() -> int:
              test_nb_donut_cap, test_nb_donut_colors,
              test_nb_summary_donut_uncapped,
              test_nb_bar_captions, test_nb_h2_closed,
+             # листы 28/30 деки: свод подразделения и статьи страны
+             test_b3_registry, test_b3_depts_iteration,
+             test_b3_variants_rendered, test_b3_direction_and_country_narrow,
+             test_b3_card_cloning, test_b3_labels_and_signs,
+             test_b3_year_slots, test_b3_empty_slice, test_b3_nd_rule,
              test_no_placeholders_all_sheets)
     for test in tests:
         try:

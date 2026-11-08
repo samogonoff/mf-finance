@@ -312,7 +312,7 @@ _SLOT_RE = re.compile(r"\{([a-z]+\d*)\}")
 
 
 def fill_label(slots: list[dict], *, year=None, prev=None, country=None,
-               group=None, values=()) -> list[list[str]]:
+               group=None, dept=None, cur=None, values=()) -> list[list[str]]:
     """Подпись-шаблон прототипа → абзацы готового текста ([[ран, …], …]).
 
     Шаблон снимается с деки при сборке актива (`scripts/build_fot_deck_template`):
@@ -325,6 +325,8 @@ def fill_label(slots: list[dict], *, year=None, prev=None, country=None,
       * ``{y2}`` / ``{p2}`` — их двузначные хвосты («1ПГ26»);
       * ``{country}`` — название страны листа («Беларусь»);
       * ``{group}`` — название группы ЦФО листа («Производство»);
+      * ``{dept}`` — подразделение листа b3 («Складская логистика»);
+      * ``{cur}`` — код валюты среза («BYN»);
       * ``{vN}`` — N-е значение из `values` (нумерация сквозная по шейпу).
 
     Незаполненная прорезь — исключение, а не пустая строка: тихо отданная
@@ -332,6 +334,7 @@ def fill_label(slots: list[dict], *, year=None, prev=None, country=None,
     её на слайде почти невозможно.
     """
     ctx = {"year": year, "prev": prev, "country": country, "group": group,
+           "dept": dept, "cur": cur,
            "y2": (str(year)[-2:] if year is not None else None),
            "p2": (str(prev)[-2:] if prev is not None else None)}
     numbered = {i: v for i, v in enumerate(values, 1)}
