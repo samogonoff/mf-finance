@@ -357,10 +357,12 @@
                      aria-label="Детализация по выбранным направлениям и ЦФО Отделов">
               <header class="slide-hdr">
                 <h2 class="slide-title">ГК «МАРК ФОРМЭЛЬ»</h2>
-                <span class="slide-subtitle">{{ slideCountryLabel }} — детализация по выбранным направлениям и ЦФО Отделов: структура ФОТ и динамика</span>
+                <span class="slide-subtitle">{{ slideCountryLabel }} — {{ directionFiltered
+                  ? 'детализация по выбранным направлениям и ЦФО Отделов: структура ФОТ и динамика'
+                  : 'Продажи: структура ФОТ по каналам и динамика' }}</span>
                 <span class="slide-year p14-geo" aria-hidden="true">{{ slideCountryCc }}</span>
                 <span v-if="directionDetail.headcount" class="slide-note">
-                  Числ. направлений (ПЧ/ФЧ 1ПГ{{ yr2(yearPlan) }}):
+                  Числ. {{ directionFiltered ? 'направлений' : 'каналов' }} (ПЧ/ФЧ 1ПГ{{ yr2(yearPlan) }}):
                   <b>{{ fmt1(directionDetail.headcount.plan) }}/{{ fmt1(directionDetail.headcount.fact) }}</b>,
                   {{ fmt0(directionDetail.headcount.staffing) }}% укомпл.
                 </span>
@@ -369,7 +371,7 @@
               <div class="p14-top">
                 <section class="card s56-table">
                   <div class="card-head">
-                    <h3 class="card-title">Направления и ЦФО Отделов, тыс {{ currency }}</h3>
+                    <h3 class="card-title">{{ directionFiltered ? 'Направления и ЦФО Отделов' : 'Каналы' }}, тыс {{ currency }}</h3>
                   </div>
                   <div class="table-wrap">
                     <table class="stable p14-stable s56-stable">
@@ -430,7 +432,7 @@
               </section>
 
               <template v-if="(directionDetail.cards || []).length">
-                <h3 class="grid-caption">Направления и ЦФО Отделов: {{ yearPlan }} к факту {{ yearPrev }}</h3>
+                <h3 class="grid-caption">{{ directionFiltered ? 'Направления и ЦФО Отделов' : 'Каналы' }}: {{ yearPlan }} к факту {{ yearPrev }}</h3>
                 <section class="p14-cards">
                   <article v-for="(c, ci) in directionDetail.cards"
                            :key="(c.code || c.parent || '') + '|' + c.label + '|' + ci" class="p14card"
@@ -1539,12 +1541,25 @@ const slideCountryCc = computed(() => slideCountryLabel.value === 'Группа'
 const slideTable14 = computed<any>(() =>
   isP14.value ? tables.value.find((t: any) => t.key === 'by_direction') || null : null)
 
-/** Слайды 5-6 деки (задача 663620): «Направления выбранных групп ЦФО» и
- *  «Детализация по выбранным направлениям + ЦФО Отделов» — отдельные блоки
- *  ответа p14 (group_detail/direction_detail), рендер под слайдом листа 4.
- *  Формулы те же, что у направлений p14: записи в тыс., светофор по знаку. */
-const groupSections = computed<any[]>(() => dash.value?.group_detail?.sections || [])
-const directionDetail = computed<any>(() => dash.value?.direction_detail || null)
+/** Слайды 5-6 деки (задача 663620): блоки group_detail/sales_detail ответа p14,
+ *  рендер под слайдом листа 4. Формулы те же, что у направлений p14: записи
+ *  в тыс., светофор по знаку.
+ *  Лист 5 — только производственные группы: продажи идут одним блоком листа 6,
+ *  отделы — вкладкой «Отделы» (замечание заказчика 09.11.2026). */
+const groupSections = computed<any[]>(() => {
+  const sections = dash.value?.group_detail?.sections || []
+  return sections.filter((s: any) => (s.kind
+    ? s.kind === 'production'
+    : String(s.label || '').startsWith('Производство')))
+})
+/** Без среза «Направление» лист 6 показывает все продажи вместе (sales_detail,
+ *  как лист 6 деки), со срезом — детализацию выбранных направлений. */
+const directionFiltered = computed(() => (selected.direction || []).length > 0)
+const directionDetail = computed<any>(() => {
+  const d: any = dash.value || {}
+  return ((directionFiltered.value ? d.direction_detail
+    : (d.sales_detail || d.direction_detail)) || null)
+})
 /** Колонки таблиц слайдов 5-6: периоды листов деки + Δ к факту 2025 (на листе 4
  *  Δ живут в карточках; здесь карточки только у слайда 6). */
 const s56Cols = computed(() => [

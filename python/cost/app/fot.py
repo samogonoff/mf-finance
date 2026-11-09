@@ -5221,17 +5221,12 @@ async def _dashboard_p14(p: dict, meta: dict) -> dict:
 #: «Картонажка») и отделы («Отдел»). Классифицируем по СПРАВОЧНИКУ, а не по
 #: именам направлений: имена групп и направлений в справочнике и в деке
 #: расходятся («Хим. цех» деки — направление «Производство» справочника).
-_P14_SALES_CHANNEL_PREFIXES = ("Розница", "Опт", "Маркетплейс",
-                               "Интернет-магазин")
+_SALES_CHANNEL_PREFIXES = ("Розница", "Опт", "Маркетплейс",
+                           "Интернет-магазин")
 
 #: Каналы сбыта производства: группы «Производство» и «Производство
 #: картонажное» (лист 5 деки — только они, продажи и отделы туда не идут).
 _P14_PROD_CHANNELS = ("Производство", "Картонажка")
-
-#: Направления, которые дека относит к продажам, хотя канал у них «Отдел»:
-#: сноска листа 6 — «Развитие розницы» включено в группу «Отделы»
-#: (Розница РБ), и на листе отделов (7) его строки нет.
-_P14_SALES_DIRS_EXTRA = ("Развитие розницы",)
 
 #: Подписи подразделений деки, которые в справочнике срезов называются иначе:
 #: (страна, группа ЦФО, направление) → подпись деки. «Хим. цех» листа 5 BY —
@@ -5523,18 +5518,21 @@ def _p14_detail_assemble(payload: dict, country: str | None = None) -> tuple:
         if (g1.startswith("Производство")
                 or (chans and chans <= set(_P14_PROD_CHANNELS))):
             return "production"
-        if chans and all(chan.startswith(_P14_SALES_CHANNEL_PREFIXES)
+        if chans and all(chan.startswith(_SALES_CHANNEL_PREFIXES)
                          for chan in chans):
             return "sales"
         return "dept"
 
     def _is_sales_dir(dkey: str) -> bool:
-        """Направление — канал продаж (лист 6 деки), а не цех или отдел."""
+        """Направление — канал продаж (лист 6 деки), а не цех или отдел.
+
+        Продажи — строго по каналу сбыта справочника. «Развитие розницы»
+        (канал «Отдел») сюда не входит: заказчик 09.11.2026 вернул его в
+        блок «Отделы» вместе с «д.Снеги» и «Группой аналитиков ассортимента».
+        """
         if not dkey or dkey == "(не указано)":
             return False
-        if dkey in _P14_SALES_DIRS_EXTRA:
-            return True
-        return any(chan.startswith(_P14_SALES_CHANNEL_PREFIXES)
+        return any(chan.startswith(_SALES_CHANNEL_PREFIXES)
                    for (_g1, d, _c), chan in chan_by.items() if d == dkey and chan)
 
     # ── Слайд 5 «Направления выбранных Групп ЦФО»: секции по группам ────────
@@ -5843,7 +5841,13 @@ def _p15_sql(p: dict, periods: tuple = _HALF_PERIODS,
     hier_gate = " AND c.code_cfo IS NOT NULL" if dim_conds else ""
     m_legal = _legal_cond(p, sql_params)
     h_legal = _legal_cond(p, sql_params, "h.legal_entity")
-    dept = " AND c.group_cfo1 = '%s'" % _P15_DEPT_GROUP
+    # «Отделы» — только непродающие: управления розницы, опта и маркетплейсов
+    # дека печатает в блоке «Продажи» (замечание заказчика 09.11.2026).
+    # «Развитие розницы», «д.Снеги» и «Группа аналитиков ассортимента» идут с
+    # каналом «Отдел» — остаются здесь, как решил заказчик.
+    dept = (" AND c.group_cfo1 = '%s'" % _P15_DEPT_GROUP
+            + "".join(" AND coalesce(c.sales_channel, '') NOT LIKE '%s%%'"
+                      % prefix for prefix in _SALES_CHANNEL_PREFIXES))
     hc_prev = date(year_prev, 6, 1)
     hc_curr = date(year_cur, 6, 1)
 
@@ -5858,7 +5862,7 @@ def _p15_sql(p: dict, periods: tuple = _HALF_PERIODS,
 
     sql = f"""
 WITH dim AS (
-    SELECT code_cfo, group_cfo1, direction, country_code
+    SELECT code_cfo, group_cfo1, direction, country_code, sales_channel
     FROM fot_cfo
     WHERE TRUE{dim_conds}
 ),
