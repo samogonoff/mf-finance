@@ -1866,10 +1866,10 @@ def _fot_p14_mock_dashboard(params: dict) -> dict:
     _mock_expect_rows(payload["cells"], cfg["close_month"] or 8)
     cards, headcount, directions, tables, warning = fot._p14_assemble(
         currency, payload, "BY", year_cur, year_prev, cfg)
-    group_detail, _unused = fot._p14_detail_assemble(
-        _fot_p14_detail_mock_payload())
-    _unused, direction_detail = fot._p14_detail_assemble(
-        _fot_p14_detail_mock_payload(_FOT_P14_S6_DIRS))
+    group_detail, _dir_all, sales_detail = fot._p14_detail_assemble(
+        _fot_p14_detail_mock_payload(), "BY")
+    _unused, direction_detail, _sales_s6 = fot._p14_detail_assemble(
+        _fot_p14_detail_mock_payload(_FOT_P14_S6_DIRS), "BY")
     meta = _fot_mock_meta("p14", params, currency, fot.METHODOLOGY_P14)
     meta["periods"] = fot._periods_meta(year_cur)
     c = cfg["close_month"]
@@ -1884,7 +1884,8 @@ def _fot_p14_mock_dashboard(params: dict) -> dict:
         meta["warning"] = warning
     return {"cards": cards, "headcount": headcount, "directions": directions,
             "charts": [], "tables": tables, "meta": meta,
-            "group_detail": group_detail, "direction_detail": direction_detail}
+            "group_detail": group_detail, "direction_detail": direction_detail,
+            "sales_detail": sales_detail}
 
 
 # ── Слайды 5–6 деки (P14, задача 663620): зерно под числа листов 5–6 ──────────
@@ -1958,6 +1959,18 @@ _FOT_P14_DETAIL_CELL_DIMS = {
     ("Отдел", "ОПТ РБ"): ("Опт РБ", "ОПТ РБ", "Отдел"),
 }
 
+# Канал сбыта зерна мока (fot_cfo.sales_channel): по нему сборщик отделяет
+# продажи листа 6 от цехов листа 5 и отделов листа 7. Производство — канал
+# «Производство» у всей группы, остальные пары — как в живом справочнике.
+_FOT_P14_DETAIL_CHAN_MOCK = {
+    ("Магазины", "Розница РБ"): "Розница РБ",
+    ("Отдел", "Розница РБ"): "Розница РБ",
+    ("5.Интернет-магазин", "Интернет-магазин"): "Интернет-магазин РБ",
+    ("Отдел", "Маркетплейсы"): "Маркетплейсы",
+    ("Отдел", "Развитие розницы"): "Отдел",
+    ("Отдел", "ОПТ РБ"): "Опт РБ",
+}
+
 
 def _fot_p14_detail_mock_payload(dirs: tuple = ()) -> dict:
     """Ответ _p14_detail_sql моком: зерно (группа × направление × ЦФО ×
@@ -1970,7 +1983,10 @@ def _fot_p14_detail_mock_payload(dirs: tuple = ()) -> dict:
          pa, q26, q25) in _FOT_P14_DETAIL_MOCK:
         if dirs and d not in dirs:
             continue
-        grain.append({"g1": g1, "dir": d, "cfo": cfo, "cfon": cfon, "ctry": "BY",
+        chan = _FOT_P14_DETAIL_CHAN_MOCK.get(
+            (g1, d), "Производство" if g1.startswith("Производство") else "")
+        grain.append({"g1": g1, "dir": d, "cfo": cfo, "cfon": cfon,
+                      "chan": chan, "ctry": "BY",
                       "f25_h1": f1 * 1000.0, "f25_h2": f2 * 1000.0,
                       "f25": (f1 + f2) * 1000.0, "b26_h1": b1 * 1000.0,
                       "f26_h1": f3 * 1000.0, "b26_h2": b2 * 1000.0,

@@ -196,28 +196,18 @@ def _money(value, cfg: dict) -> str:
     return text
 
 
-def _paginate(rows: list[dict], capacity: int,
-              group_rows: bool = False) -> list[list[dict]]:
-    """Раскладка строк по страницам ёмкости прототипа (пустой — одна).
-
-    `group_rows` считает групповые строки листа 6 НЕ занимающими место: у деки
-    они печатаются прототипом `group`, и ёмкость таблицы (`capacity` в
-    манифесте) посчитана только по строкам тела. Без этого правила таблица
-    листа 6 рвалась на продолжение при 10 строках, хотя дека печатает их на
-    одном слайде.
-    """
+def _paginate(rows: list[dict], capacity: int) -> list[list[dict]]:
+    """Раскладка строк по страницам ёмкости прототипа (пустой — одна)."""
     cap = int(capacity or 0) or max(len(rows), 1)
     pages: list[list[dict]] = []
     page: list[dict] = []
     used = 0
     for row in rows:
-        is_group = group_rows and row.get("kind") == "direction"
-        if page and used >= cap and not is_group:
+        if page and used >= cap:
             pages.append(page)
             page, used = [], 0
         page.append(row)
-        if not is_group:
-            used += 1
+        used += 1
     pages.append(page)
     return pages or [[]]
 
@@ -228,6 +218,32 @@ def _pad(pages: list[list], count: int) -> list[list]:
     while len(out) < count:
         out.append([])
     return out
+
+
+def _pages_by_leaves(rows: list[dict], leaves: list[dict],
+                     per_page: int) -> list[list[dict]]:
+    """Страницы строк таблицы, выровненные со страницами карточек.
+
+    Карточки пагинируются по местам сетки, а таблица — по ёмкости строк тела;
+    когда листьев больше, чем мест (у листа 6 их 7, а листьев с расшифровками
+    бывает 8+), таблица уходила вперёд и продолжение оставалось с ПУСТОЙ
+    таблицей. Поэтому страница режется по `per_page` листьев (минимум из двух
+    ёмкостей), а каждая строка попадает на страницу своего листа: строка-группа
+    с расшифровками — на страницу первой расшифровки.
+    """
+    if not rows:
+        return [[]]
+    step = max(int(per_page or 1), 1)
+    leaf_page = {id(leaf): idx // step for idx, leaf in enumerate(leaves)}
+    count = max(1, (len(leaves) + step - 1) // step)
+    pages: list[list[dict]] = [[] for _ in range(count)]
+    for row in rows:
+        page = leaf_page.get(id(row))
+        if page is None:
+            page = next((leaf_page[id(leaf)] for leaf in leaves
+                         if leaf.get("parent") == row.get("label")), 0)
+        pages[page].append(row)
+    return pages
 
 
 # ─── Шапка листов 4–6 ───────────────────────────────────────────────────────
@@ -287,8 +303,12 @@ def _fill_hc_note(ctx, slide, hc: dict, year, prev) -> None:
     """Строка «Числ. страны (ПЧ/ФЧ 1ПГ26): 4 537,7/4 383,8, 96,6% укомпл.»."""
     if not hc:
         return
-    plan, fact = _hc_pair(hc.get("plan_approved"), hc.get("fact_2026"),
-                          ctx.fmt).split("/", 1)
+    # у свода листа 4 ключи сборщика (plan_approved/fact_2026), у секций и
+    # листа 6 — короткие (plan/fact): веб читает их напрямую, поэтому биндер
+    # понимает оба вида, иначе шапка листов 5/6 печатала «н/д/н/д»
+    plan_raw = hc["plan_approved"] if "plan_approved" in hc else hc.get("plan")
+    fact_raw = hc["fact_2026"] if "fact_2026" in hc else hc.get("fact")
+    plan, fact = _hc_pair(plan_raw, fact_raw, ctx.fmt).split("/", 1)
     # знаки процента — из манифеста, и ноль здесь значим: у листов 5/6 дека
     # печатает «96% укомпл.», у листа 4 — «96,6%». `or 1` превратил бы ноль
     # в один знак и разъехался бы с декой
@@ -729,7 +749,10 @@ def bind_prod(ctx, payload: dict, variant=None) -> None:
     total = next((r for r in rows if r.get("kind") == "total"), None)
     body = [r for r in rows if r.get("kind") != "total"]
     table_name = ctx.table_names()[0]
-    table_pages = _paginate(body, ctx.capacity(table_name))
+    # строки и карточки листа 5 — один и тот же список, поэтому страницы
+    # совпадают по построению (обе ёмкости в деке равны)
+    per_page = min(ctx.capacity(table_name), ctx.card_count())
+    table_pages = _pages_by_leaves(body, body, per_page)
     card_pages = _paginate(body, ctx.card_count())
     count = max(len(table_pages), len(card_pages))
     table_pages, card_pages = _pad(table_pages, count), _pad(card_pages, count)
@@ -773,9 +796,12 @@ def bind_sales(ctx, payload: dict, variant=None) -> None:
     body = [r for r in rows if r.get("kind") != "total"]
     cards = detail.get("cards") or []
     table_name = ctx.table_names()[0]
-    # групповые строки (kind='direction') места в таблице не занимают: их
-    # печатает прототип `group`, а ёмкость посчитана по строкам тела
-    table_pages = _paginate(body, ctx.capacity(table_name), group_rows=True)
+    # Групповые строки (kind='direction') места в таблице не занимают — их
+    # печатает прототип `group`, а карточки (листья) занимают место в сетке.
+    # Страница режется по первому исчерпанному лимиту, поэтому продолжение
+    # листа 6 не остаётся с пустой таблицей, когда карточек больше, чем мест.
+    per_page = min(ctx.capacity(table_name), ctx.card_count())
+    table_pages = _pages_by_leaves(body, cards, per_page)
     card_pages = _paginate(cards, ctx.card_count())
     count = max(len(table_pages), len(card_pages))
     table_pages, card_pages = _pad(table_pages, count), _pad(card_pages, count)
@@ -825,9 +851,31 @@ def country_variants(payload: dict):
     return [({"cc": code}, payload) for code in present]
 
 
+def _production(section: dict) -> bool:
+    """Секция — производство (лист 5 деки), а не продажи и не отделы.
+
+    Признак `kind` ставит сборщик по каналу сбыта справочника (fot_cfo.
+    sales_channel); payload'ы без поля (старые моки, проверочные фикстуры)
+    опознаются по имени группы — у деки это «Производство» и «Производство
+    картонажное».
+    """
+    kind = section.get("kind")
+    if kind:
+        return kind == "production"
+    return str(section.get("label") or "").startswith("Производство")
+
+
 def section_variants(payload: dict):
-    """Варианты листа 5: слайд на КАЖДУЮ группу ЦФО среза."""
-    sections = (payload.get("group_detail") or {}).get("sections") or []
+    """Варианты листа 5: слайд на каждую ПРОИЗВОДСТВЕННУЮ группу ЦФО среза.
+
+    Лист 5 деки — только производство: продажные каналы печатает лист 6
+    (nb_sales), отделы — листы 7/8 (вкладки p15/p16). Раньше слайд строился
+    на КАЖДУЮ группу ЦФО, и в производственную секцию попадали отделы,
+    магазины и интернет-магазин.
+    """
+    sections = [s for s in
+                (payload.get("group_detail") or {}).get("sections") or []
+                if _production(s)]
     if not sections:
         return []
     return [({"cc": variant.get("cc"), "section": section}, data)
@@ -836,8 +884,18 @@ def section_variants(payload: dict):
 
 
 def detail_variants(payload: dict):
-    """Варианты листа 6: детализация по каждой стране среза."""
-    detail = payload.get("direction_detail")
+    """Варианты листа 6: детализация ПРОДАЖ по каждой стране среза.
+
+    Сборщик кладёт sales_detail — те же строки, что у direction_detail, но
+    только по каналам продаж (розница/опт/маркетплейсы/интернет-магазин):
+    лист 6 деки «Продажи» не печатает ни цеха, ни отделы. Ключ есть всегда,
+    когда payload собран новым сборщиком: None означает «в срезе нет
+    продажных направлений», и лист не строится (у деки так у Турции).
+    Payload'ы без ключа (моки, проверочные фикстуры) — прежний
+    direction_detail.
+    """
+    detail = (payload["sales_detail"] if "sales_detail" in payload
+              else payload.get("direction_detail"))
     if not detail or not (detail.get("rows") or []):
         return []
     return [({"cc": variant.get("cc"), "detail": detail}, data)

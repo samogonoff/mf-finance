@@ -5173,7 +5173,8 @@ async def _dashboard_p14(p: dict, meta: dict) -> dict:
     sel_country = p["countries"][0] if len(p["countries"]) == 1 else None
     cards, headcount, directions, tables, warning = _p14_assemble(
         p["currency"], payload, sel_country, year_cur, year_prev, cfg)
-    group_detail, direction_detail = _p14_detail_assemble(detail)
+    group_detail, direction_detail, sales_detail = _p14_detail_assemble(
+        detail, sel_country)
     country_label = dict(COUNTRY_OPTIONS).get(sel_country)
     c = cfg["close_month"]
     meta_out = {
@@ -5203,7 +5204,8 @@ async def _dashboard_p14(p: dict, meta: dict) -> dict:
         meta_out["warning"] = " ".join(w for w in (meta_out.get("warning"), cfg["warning"]) if w)
     return {"cards": cards, "headcount": headcount, "directions": directions,
             "charts": [], "tables": tables, "meta": meta_out,
-            "group_detail": group_detail, "direction_detail": direction_detail}
+            "group_detail": group_detail, "direction_detail": direction_detail,
+            "sales_detail": sales_detail}
 
 
 # ── Слайды 5–6 деки: направления групп ЦФО и детализация направлений ──────────
@@ -5212,6 +5214,30 @@ async def _dashboard_p14(p: dict, meta: dict) -> dict:
 # (этап 1, 663620); прежний список продавцов direction-разреза («Розница РБ»
 # в группе «Магазины», «Маркетплейсы»/«ОПТ РБ» в группе «Отдел», живая
 # сверка 20.10.2026) заменён данными правил.
+
+#: Каналы сбыта (fot_cfo.sales_channel), которыми дека считает ПРОДАЖИ —
+#: лист 6 деки и блок «Продажи» листа 4: розница, опт, маркетплейсы и
+#: интернет-магазин. Остальные каналы — производство («Производство»,
+#: «Картонажка») и отделы («Отдел»). Классифицируем по СПРАВОЧНИКУ, а не по
+#: именам направлений: имена групп и направлений в справочнике и в деке
+#: расходятся («Хим. цех» деки — направление «Производство» справочника).
+_P14_SALES_CHANNEL_PREFIXES = ("Розница", "Опт", "Маркетплейс",
+                               "Интернет-магазин")
+
+#: Каналы сбыта производства: группы «Производство» и «Производство
+#: картонажное» (лист 5 деки — только они, продажи и отделы туда не идут).
+_P14_PROD_CHANNELS = ("Производство", "Картонажка")
+
+#: Направления, которые дека относит к продажам, хотя канал у них «Отдел»:
+#: сноска листа 6 — «Развитие розницы» включено в группу «Отделы»
+#: (Розница РБ), и на листе отделов (7) его строки нет.
+_P14_SALES_DIRS_EXTRA = ("Развитие розницы",)
+
+#: Подписи подразделений деки, которые в справочнике срезов называются иначе:
+#: (страна, группа ЦФО, направление) → подпись деки. «Хим. цех» листа 5 BY —
+#: это ЦФО 222 «Красильное» (направление справочника «Производство»);
+#: значения строки совпадают с декой до тыс. (сверка 09.11.2026).
+_P14_DECK_LABELS = {("BY", "Производство", "Производство"): "Хим. цех"}
 
 
 def _p14_detail_sql(p: dict, periods: tuple, year_cur: int) -> tuple[str, list]:
@@ -5255,18 +5281,19 @@ WITH dim AS (
     FROM fot_cfo
     WHERE TRUE{dim_conds}
 ),
-grain AS (
-    SELECT coalesce(c.group_cfo1, '') AS g1,
-           coalesce(c.direction, '') AS dir,
-           coalesce(c.code_cfo, '') AS cfo,
-           coalesce(c.cfo_name, '') AS cfon,
-           coalesce(c.country_code, '') AS ctry,
-           {fot_sums}
-    FROM fot_monthly m
-    LEFT JOIN dim c ON c.code_cfo = m.code_cfo
-    WHERE {grain_where}
-    GROUP BY 1, 2, 3, 4, 5
-),
+    grain AS (
+        SELECT coalesce(c.group_cfo1, '') AS g1,
+               coalesce(c.direction, '') AS dir,
+               coalesce(c.code_cfo, '') AS cfo,
+               coalesce(c.cfo_name, '') AS cfon,
+               coalesce(c.sales_channel, '') AS chan,
+               coalesce(c.country_code, '') AS ctry,
+               {fot_sums}
+        FROM fot_monthly m
+        LEFT JOIN dim c ON c.code_cfo = m.code_cfo
+        WHERE {grain_where}
+        GROUP BY 1, 2, 3, 4, 5, 6
+    ),
 cells AS (
     SELECT m.country_code AS ctry,
            m.kz_denominator AS kzf,
@@ -5376,7 +5403,7 @@ def _p14_slide_bars(entry: dict) -> dict:
     ]}
 
 
-def _p14_detail_assemble(payload: dict) -> tuple:
+def _p14_detail_assemble(payload: dict, country: str | None = None) -> tuple:
     """Слайды 5–6 деки из ответа _p14_detail_sql.
 
     group_detail (слайд 5) — секции по группам ЦФО среза: строки-направления
@@ -5388,13 +5415,19 @@ def _p14_detail_assemble(payload: dict) -> tuple:
     расшифровки + строки ЦФО группы «Отдел», не вошедшие в направления»;
     донат/мини-бары/карточки — по листьевым строкам (top-строки с
     расшифровками в них не входят, чтобы доли не дублировались).
+    sales_detail — та же таблица, но только по каналам продаж: лист 6 деки
+    «Продажи» не печатает ни производство, ни отделы (дека разводит их по
+    листам 5 и 7), а direction_detail на вебе показывает весь срез.
 
     Знаменатель доли строки (этап 1, 663620) — объединение целей правил
     fot_den_rules по ячейкам ФОТ строки (страна × направление/группа): у
     «Итого группы» — цели всех строк группы, у ЦФО-расшифровок — цель
     направления-родителя, у «Итого» слайда 6 — цели всех показанных строк
     (при активном фильтре «Направление» срез уже сужен — база narrowed, не
-    страна/ГК). Возвращает (group_detail, direction_detail).
+    страна/ГК). `country` — код страны листа: по нему берутся дековые подписи
+    подразделений (_P14_DECK_LABELS). Возвращает (group_detail,
+    direction_detail, sales_detail); sales_detail = None, если в срезе нет
+    ни одного продажного направления.
     """
     grain = payload.get("grain") or []
 
@@ -5422,11 +5455,13 @@ def _p14_detail_assemble(payload: dict) -> tuple:
     fot_by: dict = {}
     parts_by: dict = {}
     cfon_by: dict = {}
+    chan_by: dict = {}
     for r in grain:
         key3 = (r.get("g1") or "", r.get("dir") or "", r.get("cfo") or "")
         _add(fot_by.setdefault(key3, _blank()), r)
         parts_by.setdefault(key3, []).append(r)
         cfon_by[key3] = r.get("cfon") or ""
+        chan_by[key3] = r.get("chan") or ""
         _apply_expect(fot_by[key3])
     cells = payload.get("cells") or []
     for cell in cells:
@@ -5448,7 +5483,7 @@ def _p14_detail_assemble(payload: dict) -> tuple:
         # Пара деки «Складская + Транспортная» — одной строкой, как на листе 7.
         if g1 == _P15_DEPT_GROUP:
             return _P15_DEPT_MERGE.get(dkey, dkey)
-        return dkey
+        return _P14_DECK_LABELS.get((country or "", g1, dkey), dkey)
 
     def _exp_of(s: dict) -> float:
         return _nsum([s.get("f26_h1"), s.get("t26_h2")]) or 0.0
@@ -5469,6 +5504,38 @@ def _p14_detail_assemble(payload: dict) -> tuple:
                 if v is not None:
                     out[key] = out.get(key, 0.0) + float(v)
         return out
+
+    def _group_chans(g1: str) -> set:
+        """Каналы сбыта, которыми помечены ЦФО группы (fot_cfo.sales_channel)."""
+        return {chan for (gg, _d, _c), chan in chan_by.items()
+                if gg == g1 and chan}
+
+    def _section_kind(g1: str) -> str:
+        """Лист деки, на который идёт группа ЦФО: 5, 6 или 7.
+
+        Имя группы «Производство …» важнее канала: у RU направление
+        «Производство Ногинск» частично помечено каналом «Отдел», но дека
+        печатает его на листе производства. Группа «Отдел» — лист 7 даже
+        когда часть её направлений продажная (розница/опт/маркетплейсы):
+        продажные направления уходят на лист 6 поштучно, а не всей группой.
+        """
+        chans = _group_chans(g1)
+        if (g1.startswith("Производство")
+                or (chans and chans <= set(_P14_PROD_CHANNELS))):
+            return "production"
+        if chans and all(chan.startswith(_P14_SALES_CHANNEL_PREFIXES)
+                         for chan in chans):
+            return "sales"
+        return "dept"
+
+    def _is_sales_dir(dkey: str) -> bool:
+        """Направление — канал продаж (лист 6 деки), а не цех или отдел."""
+        if not dkey or dkey == "(не указано)":
+            return False
+        if dkey in _P14_SALES_DIRS_EXTRA:
+            return True
+        return any(chan.startswith(_P14_SALES_CHANNEL_PREFIXES)
+                   for (_g1, d, _c), chan in chan_by.items() if d == dkey and chan)
 
     # ── Слайд 5 «Направления выбранных Групп ЦФО»: секции по группам ────────
     dirs_by_group: dict = {}
@@ -5515,6 +5582,9 @@ def _p14_detail_assemble(payload: dict) -> tuple:
         bars = [_p14_slide_bars(e) for e in entries]
         sections.append({
             "label": g1 or "(без группы)",
+            # лист деки, на который печатается секция: 5 — производство,
+            # 6 — продажи, 7 — отделы (выгрузка берёт отсюда лист 5)
+            "kind": _section_kind(g1),
             "rows": [total_row] + entries,
             "headcount": {
                 "plan": _r2(hc.get("pa")), "fact": _r2(hc.get("q26")),
@@ -5532,124 +5602,152 @@ def _p14_detail_assemble(payload: dict) -> tuple:
         d["g1s"].add(g1)
         _add(d["fot"], s)
         d["parts"].extend(parts_by[key3])
-    top_keys = sorted(by_dir, key=lambda d: (bool(d), _exp_of(by_dir[d]["fot"])),
-                      reverse=True)
 
-    rows: list = []
-    leaves: list = []
-    shown_parts: list = []      # ячейки показанных строк — база «Итого» слайда
-    shown_dirs: set = set()
-    for dkey in top_keys:
-        d = by_dir[dkey]
-        top_label = str(dkey) or "(не указано)"
-        hc = {key: _nsum([hc_by.get((g1, dkey), {}).get(key) for g1 in d["g1s"]])
-              for key in ("q25", "q26", "pa")}
-        if not _has_data(d["fot"], hc):
-            continue
-        shown_dirs.add(dkey)
-        shown_parts.extend(d["parts"])
-        top_den = _row_den(d["parts"])
-        top = _p14_slide_entry(
-            top_label, "direction", d["fot"], top_den, hc)
-        # Расшифровки направления: ЦФО группы «Отдел» — по каждому ЦФО
-        # (дека: мерч/продажи РБ, мерч/продажи ОПТ); остальные группы —
-        # свёрнуты в строку группы (дека: «Магазины»). Знаменатель доли:
-        # у ЦФО-строк — цель направления-родителя, у свёрнутых строк группы —
-        # цель своих ячеек (правила fot_den_rules, этап 1).
-        det_sums: dict = {}
-        det_parts: dict = {}
-        for key3, s in fot_by.items():
-            if key3[1] != dkey:
+    def _slide6(keep_dir, with_dept: bool):
+        """Строки/листья/численность/база «Итого» листа 6 по фильтру направлений.
+
+        `keep_dir` отбирает направления: веб показывает все, выгрузка-дека —
+        только каналы продаж. `with_dept` добавляет строки ЦФО группы «Отдел»,
+        не вошедшие в направления: на вебе без них часть отделов исчезла бы из
+        таблицы, а лист 6 деки печатает только каналы.
+        """
+        rows: list = []
+        leaves: list = []
+        shown_parts: list = []   # ячейки показанных строк — база «Итого»
+        shown_dirs: set = set()
+        for dkey in sorted(by_dir,
+                           key=lambda d: (bool(d), _exp_of(by_dir[d]["fot"])),
+                           reverse=True):
+            if not keep_dir(dkey):
                 continue
-            if key3[0] == _P15_DEPT_GROUP:
-                dkey3 = ("cfo", key3[2])
-            else:
-                dkey3 = ("g1", key3[0])
-            _add(det_sums.setdefault(dkey3, _blank()), s)
-            det_parts.setdefault(dkey3, []).extend(parts_by[key3])
-        det: list = []
-        for dkey3, s in det_sums.items():
-            if not _has_data(s, {}):
+            d = by_dir[dkey]
+            top_label = str(dkey) or "(не указано)"
+            hc = {key: _nsum([hc_by.get((g1, dkey), {}).get(key)
+                              for g1 in d["g1s"]])
+                  for key in ("q25", "q26", "pa")}
+            if not _has_data(d["fot"], hc):
                 continue
-            if dkey3[0] == "cfo":
-                label = (cfon_by.get((_P15_DEPT_GROUP, dkey, dkey3[1]))
-                         or "ЦФО %s" % dkey3[1])
-                det.append(_p14_slide_entry(
-                    label, "detail", s, top_den, {},
-                    parent=top_label, code=dkey3[1]))
+            shown_dirs.add(dkey)
+            shown_parts.extend(d["parts"])
+            top_den = _row_den(d["parts"])
+            top = _p14_slide_entry(
+                top_label, "direction", d["fot"], top_den, hc)
+            # Расшифровки направления: ЦФО группы «Отдел» — по каждому ЦФО
+            # (дека: мерч/продажи РБ, мерч/продажи ОПТ); остальные группы —
+            # свёрнуты в строку группы (дека: «Магазины»). Знаменатель доли:
+            # у ЦФО-строк — цель направления-родителя, у свёрнутых строк
+            # группы — цель своих ячеек (правила fot_den_rules, этап 1).
+            det_sums: dict = {}
+            det_parts: dict = {}
+            for key3, s in fot_by.items():
+                if key3[1] != dkey:
+                    continue
+                if key3[0] == _P15_DEPT_GROUP:
+                    dkey3 = ("cfo", key3[2])
+                else:
+                    dkey3 = ("g1", key3[0])
+                _add(det_sums.setdefault(dkey3, _blank()), s)
+                det_parts.setdefault(dkey3, []).extend(parts_by[key3])
+            det: list = []
+            for dkey3, s in det_sums.items():
+                if not _has_data(s, {}):
+                    continue
+                if dkey3[0] == "cfo":
+                    label = (cfon_by.get((_P15_DEPT_GROUP, dkey, dkey3[1]))
+                             or "ЦФО %s" % dkey3[1])
+                    det.append(_p14_slide_entry(
+                        label, "detail", s, top_den, {},
+                        parent=top_label, code=dkey3[1]))
+                else:
+                    det.append(_p14_slide_entry(
+                        dkey3[1] or "(без группы)", "detail", s,
+                        _row_den(det_parts[dkey3]), {}, parent=top_label))
+            rows.append(top)
+            if len(det) > 1:
+                # Одна расшифровка == само направление — не показываем (дека:
+                # ИМ/МП листом-каналом без родителя). Порядок расшифровок —
+                # детерминированный по подписи: зерно (g1 × dir × cfo × ctry)
+                # группируется без ORDER BY, порядок строк БД не гарантируется.
+                det.sort(key=lambda e: (e["label"], e["code"] or ""))
+                rows.extend(det)
+                leaves.extend(det)
             else:
-                det.append(_p14_slide_entry(
-                    dkey3[1] or "(без группы)", "detail", s,
-                    _row_den(det_parts[dkey3]), {}, parent=top_label))
-        rows.append(top)
-        if len(det) > 1:
-            # Одна расшифровка == само направление — не показываем (дека:
-            # ИМ/МП листом-каналом без родителя). Порядок расшифровок —
-            # детерминированный по подписи: зерно (g1 × dir × cfo × ctry)
-            # группируется без ORDER BY, порядок строк БД не гарантируется.
-            det.sort(key=lambda e: (e["label"], e["code"] or ""))
-            rows.extend(det)
-            leaves.extend(det)
-        else:
-            leaves.append(top)
+                leaves.append(top)
 
-    # Строки ЦФО группы «Отдел», не вошедшие в направления слайда (как
-    # беспродажные направления p15, с парой деки «Складская + Транспортная»);
-    # знаменатель — правила по их ячейкам.
-    dept: dict = {}
-    dept_parts: dict = {}
-    for key3, s in fot_by.items():
-        if key3[0] == _P15_DEPT_GROUP and key3[1] not in shown_dirs:
-            label = _label(key3[0], key3[1])
-            _add(dept.setdefault(label, _blank()), s)
-            dept_parts.setdefault(label, []).extend(parts_by[key3])
-    dept_hc: dict = {}
-    for (g1, dkey), h in hc_by.items():
-        if g1 == _P15_DEPT_GROUP and dkey not in shown_dirs:
-            slot = dept_hc.setdefault(_label(g1, dkey), {})
-            for key in ("q25", "q26", "pa"):
-                if h.get(key) is not None:
-                    slot[key] = slot.get(key, 0.0) + float(h[key])
-    dept_rows = sorted(
-        (_p14_slide_entry(str(d), "dept", s, _row_den(dept_parts.get(d) or []),
-                          dept_hc.get(d, {}))
-         for d, s in dept.items() if _has_data(s, dept_hc.get(d, {}))),
-        key=lambda e: (bool(e["label"] != "(не указано)"), e["exp26"] or 0.0),
-        reverse=True)
-    rows.extend(dept_rows)
-    leaves.extend(dept_rows)
-    shown_parts.extend(r for rows in dept_parts.values() for r in rows)
+        if with_dept:
+            # Строки ЦФО группы «Отдел», не вошедшие в направления слайда (как
+            # беспродажные направления p15, с парой деки «Складская +
+            # Транспортная»); знаменатель — правила по их ячейкам.
+            dept: dict = {}
+            dept_parts: dict = {}
+            for key3, s in fot_by.items():
+                if key3[0] == _P15_DEPT_GROUP and key3[1] not in shown_dirs:
+                    label = _label(key3[0], key3[1])
+                    _add(dept.setdefault(label, _blank()), s)
+                    dept_parts.setdefault(label, []).extend(parts_by[key3])
+            dept_hc: dict = {}
+            for (g1, dkey), h in hc_by.items():
+                if g1 == _P15_DEPT_GROUP and dkey not in shown_dirs:
+                    slot = dept_hc.setdefault(_label(g1, dkey), {})
+                    for key in ("q25", "q26", "pa"):
+                        if h.get(key) is not None:
+                            slot[key] = slot.get(key, 0.0) + float(h[key])
+            dept_rows = sorted(
+                (_p14_slide_entry(str(d), "dept", s,
+                                  _row_den(dept_parts.get(d) or []),
+                                  dept_hc.get(d, {}))
+                 for d, s in dept.items() if _has_data(s, dept_hc.get(d, {}))),
+                key=lambda e: (bool(e["label"] != "(не указано)"),
+                               e["exp26"] or 0.0),
+                reverse=True)
+            rows.extend(dept_rows)
+            leaves.extend(dept_rows)
+            shown_parts.extend(r for rows in dept_parts.values() for r in rows)
 
-    # Итог слайда — по листьевым строкам: сумма листьев = итог таблицы
-    # (записи в тыс., зерно — в сырых суммах, поэтому ×1000); знаменатель —
-    # объединение целей показанных строк (при фильтре «Направление» срез уже
-    # сужен — база narrowed, не страна/ГК).
-    tot_slide = _blank()
-    for e in leaves:
-        for key in _HALF_VALUE_KEYS:
-            if e.get(key) is not None:
-                tot_slide[key] = (tot_slide[key] or 0.0) + float(e[key]) * 1000.0
-    total_row = _p14_slide_entry("Итого", "total", tot_slide,
-                                 _row_den(shown_parts), {})
-    hc_slide = {key: _nsum([hc_by.get((g1, d), {}).get(key)
-                            for (g1, d) in hc_by if d in shown_dirs])
-                for key in ("q25", "q26", "pa")}
-    tot_exp = total_row["exp26"] or 0.0
-    donut = [{"label": e["label"], "value": e["exp26"],
-              "pct": _r1(_pct(_div(e["exp26"], tot_exp)))} for e in leaves]
-    for i, seg in enumerate(donut):
-        seg["color"] = _P14_PIE_COLORS[min(i, len(_P14_PIE_COLORS) - 1)]
-    direction_detail = {
-        "rows": [total_row] + rows,
-        "donut": donut,
-        "bars": [_p14_slide_bars(e) for e in leaves],
-        "cards": leaves,
-        "headcount": {
-            "plan": _r2(hc_slide.get("pa")), "fact": _r2(hc_slide.get("q26")),
-            "staffing": _r1(_pct(_div(hc_slide.get("q26"), hc_slide.get("pa")))),
-        },
-    }
-    return group_detail, direction_detail
+        hc_slide = {key: _nsum([hc_by.get((g1, d), {}).get(key)
+                                for (g1, d) in hc_by if d in shown_dirs])
+                    for key in ("q25", "q26", "pa")}
+        return rows, leaves, hc_slide, shown_parts
+
+    def _slide6_detail(rows: list, leaves: list, hc_slide: dict,
+                       shown_parts: list, total_label: str = "Итого") -> dict:
+        """Payload листа 6: итог первой строкой, донат, бары и карточки.
+
+        Итог — по листьевым строкам: сумма листьев = итог таблицы (записи в
+        тыс., зерно — в сырых суммах, поэтому ×1000); знаменатель —
+        объединение целей показанных строк (при фильтре «Направление» срез уже
+        сужен — база narrowed, не страна/ГК).
+        """
+        tot_slide = _blank()
+        for e in leaves:
+            for key in _HALF_VALUE_KEYS:
+                if e.get(key) is not None:
+                    tot_slide[key] = (tot_slide[key] or 0.0) + float(e[key]) * 1000.0
+        total_row = _p14_slide_entry(total_label, "total", tot_slide,
+                                     _row_den(shown_parts), {})
+        tot_exp = total_row["exp26"] or 0.0
+        donut = [{"label": e["label"], "value": e["exp26"],
+                  "pct": _r1(_pct(_div(e["exp26"], tot_exp)))} for e in leaves]
+        for i, seg in enumerate(donut):
+            seg["color"] = _P14_PIE_COLORS[min(i, len(_P14_PIE_COLORS) - 1)]
+        return {
+            "rows": [total_row] + rows,
+            "donut": donut,
+            "bars": [_p14_slide_bars(e) for e in leaves],
+            "cards": leaves,
+            "headcount": {
+                "plan": _r2(hc_slide.get("pa")),
+                "fact": _r2(hc_slide.get("q26")),
+                "staffing": _r1(_pct(_div(hc_slide.get("q26"),
+                                          hc_slide.get("pa")))),
+            },
+        }
+
+    direction_detail = _slide6_detail(*_slide6(lambda _d: True, True))
+    sales = _slide6(_is_sales_dir, False)
+    sales_detail = (_slide6_detail(*sales, total_label="Итого Продажи")
+                    if sales[0] else None)
+    return group_detail, direction_detail, sales_detail
 
 
 # ── Вкладки P15/P16 «Отделы» (листы 7–8 деки «Бюджет ФОТ 2026») ──────────────

@@ -890,6 +890,52 @@ def test_nb_h2_closed() -> None:
           "%r" % ([t for t in closed_texts if "Такт" in t][:2],))
 
 
+def test_nb_prod_only_production() -> None:
+    """(B2) Лист 5 печатает только производственные группы ЦФО.
+
+    Продажи и отделы дека печатает другими листами (6 и 7): до этой проверки
+    слайд строился на КАЖДУЮ группу среза, и в производственную секцию
+    попадали магазины, интернет-магазин и отделы.
+    """
+    payload = _nb_payload()
+    template = payload["group_detail"]["sections"][0]
+    payload["group_detail"]["sections"] = [
+        dict(template, label="Производство", kind="production"),
+        dict(template, label="Отдел", kind="dept"),
+        dict(template, label="Магазины", kind="sales"),
+    ]
+    slides = slides_of(render({"p14": payload}))
+    names = [s._element.find(P + "cSld").get("name") for s in slides]
+    prod = [n for n in names if n.startswith("fot:p14:nb_prod")]
+    check("(B2) лист 5 — один слайд на производственную группу",
+          len(prod) == 1, "%r" % (names,))
+
+
+def test_nb_sales_uses_sales_detail() -> None:
+    """(B2) Лист 6 берёт sales_detail, а не весь direction_detail.
+
+    В продажи деки не попадают ни цеха, ни отделы: строки листа 6 — только
+    каналы продаж (розница/опт/маркетплейсы/интернет-магазин).
+    """
+    payload = _nb_payload()
+    payload["sales_detail"] = {
+        "rows": [{"label": "Итого Продажи", "kind": "total",
+                  **{k: 500.0 for k in _NB_COLS}},
+                 {"label": "Канал продаж", "kind": "detail",
+                  **{k: 500.0 for k in _NB_COLS}}],
+        "donut": [{"label": "Канал продаж", "value": 500.0, "pct": 100.0}],
+        "bars": [], "cards": [],
+        "headcount": {"plan": 100.0, "fact": 90.0, "staffing": 96.6}}
+    slides = slides_of(render({"p14": payload}))
+    names = [s._element.find(P + "cSld").get("name") for s in slides]
+    detail = texts(slides[names.index("fot:p14:nb_sales:0")])
+    check("(B2) лист 6 печатает строки sales_detail",
+          any("Канал продаж" in t for t in detail), "%r" % (detail[:3],))
+    check("(B2) строк direction_detail в продажах нет",
+          not any("Группа каналов" in t for t in detail),
+          "%r" % ([t for t in detail if "канал" in t.lower()][:3],))
+
+
 # --- Листы 28/30 деки (b3: свод подразделения и статьи страны) --------------
 
 def _b3_card(cc: str, exp: float, *, d1=10.0, d2=20.0, dyear=30.0) -> dict:
@@ -1410,6 +1456,7 @@ def main() -> int:
              test_nb_donut_cap, test_nb_donut_colors,
              test_nb_summary_donut_uncapped,
              test_nb_bar_captions, test_nb_h2_closed,
+             test_nb_prod_only_production, test_nb_sales_uses_sales_detail,
              # листы 28/30 деки: свод подразделения и статьи страны
              test_b3_registry, test_b3_depts_iteration,
              test_b3_variants_rendered, test_b3_direction_and_country_narrow,
