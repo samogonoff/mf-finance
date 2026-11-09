@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -1244,6 +1245,158 @@ def test_no_placeholders_all_sheets() -> None:
           digits == list(range(1, len(slides) + 1)), "%r" % (nums,))
 
 
+def test_collect_parallel() -> None:
+    """(D1) Срезы собираются ПАРАЛЛЕЛЬНО и не вычерпывают пул БД.
+
+    Сравниваем два прогона одного и того же запроса: с семафором 1 и с рабочим.
+    Заглушка сборщика спит фиксированное время, поэтому разница времён — это
+    ровно выигрыш от параллельности, а не шум витрин.
+    """
+    live = {"now": 0, "max": 0, "total": 0}
+
+    async def slow(tab: str, filters: dict) -> dict:
+        live["now"] += 1
+        live["total"] += 1
+        live["max"] = max(live["max"], live["now"])
+        try:
+            await asyncio.sleep(0.03)
+            return _b3_payload(depts=("HR", "ФЭО"), countries=("BY", "RU", "KZ"))
+        finally:
+            live["now"] -= 1
+
+    async def slow_country(tab: str, filters: dict, cc: str) -> dict:
+        return await slow(tab, dict(filters or {}, country=[cc]))
+
+    original, original_country = collect_mod.collect, collect_mod.collect_country
+    limit = collect_mod.COLLECT_CONCURRENCY
+    collect_mod.collect, collect_mod.collect_country = slow, slow_country
+    try:
+        collect_mod.COLLECT_CONCURRENCY = 1
+        started = time.monotonic()
+        asyncio.run(engine_mod.export_deck(["b3"], {}))
+        serial = time.monotonic() - started
+        jobs_serial = live["total"]
+        live.update(now=0, max=0, total=0)
+        collect_mod.COLLECT_CONCURRENCY = limit
+        started = time.monotonic()
+        asyncio.run(engine_mod.export_deck(["b3"], {}))
+        parallel = time.monotonic() - started
+        jobs = live["total"]
+    finally:
+        collect_mod.COLLECT_CONCURRENCY = limit
+        collect_mod.collect, collect_mod.collect_country = original, original_country
+
+    check("(D1) одновременно идёт не больше семафора",
+          1 < live["max"] <= limit,
+          "макс %d, семафор %d, задач %d" % (live["max"], limit, jobs))
+    check("(D1) параллельный сбор быстрее последовательного",
+          jobs == jobs_serial and parallel < serial * 0.8,
+          "%d задач: последовательно %.2f c, параллельно %.2f c"
+          % (jobs, serial, parallel))
+
+
+def test_collect_dedup() -> None:
+    """(D2) Одинаковые срезы в рамках запроса — один поход в витрину.
+
+    Ключ дедупликации — срезы ЗАПРОСА, а не параметры сборщика: год числом и
+    строкой, страна строкой и списком, дубль страны в списке — один срез.
+    """
+    calls = {"n": 0}
+
+    async def fake(tab: str, filters: dict) -> dict:
+        calls["n"] += 1
+        await asyncio.sleep(0.01)
+        return _b3_payload(depts=("HR",))
+
+    original = collect_mod.collect
+    collect_mod.collect = fake
+    try:
+        async def scenario():
+            collector = collect_mod.Collector()
+            same = [collector.payload("b3", {"year": 2026, "country": ["BY"]}),
+                    collector.payload("b3", {"year": "2026", "country": "BY"}),
+                    collector.payload("b3",
+                                      {"country": ["BY", "BY"], "year": 2026})]
+            await collect_mod.settle(same)
+            first = same[0].result()
+            out = {"reused": collector.reused,
+                   "identical": same[0] is same[1] is same[2],
+                   "same_obj": same[1].result() is first,
+                   "calls_same": calls["n"]}
+            other = collect_mod.Collector()
+            await collect_mod.settle([other.payload("b3", {"year": 2026}),
+                                      other.payload("b3", {"year": 2027})])
+            out["calls_all"] = calls["n"]
+            return out
+
+        out = asyncio.run(scenario())
+    finally:
+        collect_mod.collect = original
+    check("(D2) одинаковые срезы переиспользуют задачу",
+          out["calls_same"] == 1 and out["identical"] and out["reused"] == 2,
+          "походов %d, переиспользовано %d" % (out["calls_same"], out["reused"]))
+    check("(D2) повторный срез отдаёт тот же payload", out["same_obj"])
+    check("(D2) разные срезы собираются отдельно",
+          out["calls_all"] == out["calls_same"] + 2,
+          "походов всего %d" % out["calls_all"])
+
+
+def test_collect_fail_closed() -> None:
+    """(D3) Сбой одного варианта — ошибка на ВЕСЬ запрос, без частичного pptx.
+
+    Ждём до первого сбоя: остальные варианты в этот момент ещё в полёте, и
+    выгрузка не должна их дожидаться.
+    """
+    async def boom(tab: str, filters: dict) -> dict:
+        data = _b3_payload(depts=("HR",), countries=("BY", "RU", "KZ"))
+        if (filters or {}).get("b3_country") == "KZ":
+            await asyncio.sleep(0.01)
+            raise engine_mod.EmptySlice("b3: тестовый сбой варианта")
+        if (filters or {}).get("b3_country"):
+            await asyncio.sleep(0.4)      # остальные варианты ЕЩЁ В ПОЛЁТЕ
+        return data
+
+    original = collect_mod.collect
+    collect_mod.collect = boom
+    try:
+        started = time.monotonic()
+        kind = None
+        try:
+            asyncio.run(engine_mod.export_deck(["b3"], {}))
+        except engine_mod.EmptySlice:
+            kind = "EmptySlice"
+        except Exception as exc:  # noqa: BLE001 - важен тип
+            kind = type(exc).__name__
+        waited = time.monotonic() - started
+    finally:
+        collect_mod.collect = original
+    check("(D3) сбой варианта — EmptySlice на весь запрос",
+          kind == "EmptySlice", "получено %r" % (kind,))
+    check("(D3) ответ сразу, без ожидания остальных вариантов",
+          waited < 0.3, "%.2f c (остальные висят 0.4 c)" % waited)
+
+
+def test_find_shape_by_xml() -> None:
+    """(D4) Поиск шейпа по имени — по XML, с тем же результатом.
+
+    find_shape читает cNvPr/@name напрямую: обход `slide.shapes` строил объект
+    python-pptx на каждый шейп и съедал больше времени, чем вся сборка. Здесь
+    сверяем, что выборка не теряет и не путает шейпы (включая вложенные в
+    группу — до них, как и раньше, не достаём).
+    """
+    blob = render({"b3": _b3_payload(countries=("BY",))})
+    slides = slides_of(blob)
+    slide = [s for s in slides
+             if s._element.find(P + "cSld").get("name").endswith("b3_summary:0")][0]
+    by_walk = {sh.name: sh.shape_id for sh in slide.shapes}
+    found = {name: shapes.find_shape(slide, name).shape_id for name in by_walk}
+    check("(D4) find_shape находит все шейпы слайда", found == by_walk,
+          "не совпало: %r" % ({k: (found.get(k), by_walk[k])
+                              for k in by_walk if found.get(k) != by_walk[k]},))
+    check("(D4) неизвестное имя — None",
+          shapes.find_shape(slide, "нет такого шейпа") is None)
+
+
 def main() -> int:
     logging.disable(logging.CRITICAL)
     tests = (test_format_boundaries, test_layout_capacities, test_empty_slice,
@@ -1262,6 +1415,9 @@ def main() -> int:
              test_b3_variants_rendered, test_b3_direction_and_country_narrow,
              test_b3_card_cloning, test_b3_labels_and_signs,
              test_b3_year_slots, test_b3_empty_slice, test_b3_nd_rule,
+             # сбор данных выгрузки: параллельность и дедупликация срезов
+             test_collect_parallel, test_collect_dedup,
+             test_collect_fail_closed, test_find_shape_by_xml,
              test_no_placeholders_all_sheets)
     for test in tests:
         try:

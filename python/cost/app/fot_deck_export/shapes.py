@@ -47,6 +47,14 @@ _C_NS = "{http://schemas.openxmlformats.org/drawingml/2006/chart}"
 A = _A_NS
 P = _P_NS
 
+#: Неймспейсы для XPath-выборок (find_shape: имя шейпа = cNvPr/@name).
+#: Выражение компилируется один раз: `tree.xpath()` python-pptx переменных не
+#: принимает, а имя шейпа приходит данными — подставлять его в строку запроса
+#: нельзя (апостроф в имени сломал бы выражение).
+_XPATH_NS = {"p": _P_NS[1:-1], "a": _A_NS[1:-1]}
+_SHAPE_BY_NAME = etree.XPath(
+    "./*/*/p:cNvPr[@name = $name]", namespaces=_XPATH_NS)
+
 #: Префикс имени выходного слайда: «fot:p17:hc_country_by:2» — по нему в
 #: PowerPoint и в отладке видно, из какого прототипа и страницы слайд собран.
 SLIDE_NAME_PREFIX = "fot:"
@@ -192,11 +200,26 @@ def delete_shape(shape) -> None:
 
 
 def find_shape(slide, name: str):
-    """Шейп слайда по имени (семантические имена проставляет сборка актива)."""
-    for sh in slide.shapes:
-        if sh.name == name:
-            return sh
-    return None
+    """Шейп слайда по имени (семантические имена проставляет сборка актива).
+
+    Выборка XPath по XML, а не обход `slide.shapes`: тот на КАЖДОМ шейпе
+    строит объект python-pptx и читает имя через отдельный xpath, поэтому на
+    полной выгрузке (тысячи поисков × десятки шейпов слайда) один этот вызов
+    съедал больше времени, чем вся остальная сборка. Здесь один запрос в C по
+    схеме «шейп → его nv*Pr → cNvPr/@name», объект python-pptx создаётся
+    только для найденного элемента.
+
+    Глубина — как у `slide.shapes`: верхний уровень spTree (у группы имя своё,
+    до имён её детей биндеры не ищут).
+    """
+    tree = slide._element.find(_P_NS + "cSld").find(_P_NS + "spTree")
+    if tree is None:
+        return None
+    found = _SHAPE_BY_NAME(tree, name=name)
+    if not found:
+        return None
+    # cNvPr → nv*Pr → сам шейп
+    return _wrap_shape(slide, found[0].getparent().getparent())
 
 
 def require_shape(slide, name: str):

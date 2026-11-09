@@ -10,6 +10,10 @@
     всё из manifest.json, ни одного литерала деки в коде;
   * по registry.SHEETS для каждой вкладки строится payload (collect) и слайды:
     на каждый прототип — клон на вариант данных, затем binder заполняет клон;
+  * payload'ы ВСЕХ вариантов собираются параллельно (collect.Collector:
+    общий семафор + дедупликация срезов) волнами по зависимостям, а клоны и
+    заполнение идут после и строго в порядке деки — полная выгрузка стоит
+    сумму времён волн, а не сумму времён всех запросов к витринам;
   * прототипы из актива удаляются (в выгрузку они попадать не должны);
   * сквозная нумерация страниц 1..N подставляется в {{page}};
   * финальная проверка: в текстах не осталось «{{» — иначе исключение с именем
@@ -29,6 +33,7 @@ import hashlib
 import io
 import logging
 import re
+import time
 from pathlib import Path
 
 from app.fot_deck_export import collect as collect_mod
@@ -526,6 +531,11 @@ async def export_deck(tabs: list[str] | None, filters: dict | None) -> bytes:
     «1:1 — все листы» на фронте): пользователь просит выгрузку дашборда, а
     состав листов определяет дека. Явный список (`["p17"]`) остаётся для
     точечной выгрузки одной вкладки и работает как раньше.
+
+    Данные всех вариантов собираются ПАРАЛЛЕЛЬНО (`collect.Collector`, общий
+    семафор на пул БД), сборка слайдов остаётся последовательной: порядок
+    клонов — это порядок деки, и он не должен зависеть от того, чей запрос к
+    витринам вернулся первым.
     """
     wanted = ([str(t).strip().lower() for t in tabs if str(t).strip()]
               if tabs else list(registry.ALL_TABS))
@@ -536,41 +546,125 @@ async def export_deck(tabs: list[str] | None, filters: dict | None) -> bytes:
         raise collect_mod.UnsupportedTab(unknown[0])
 
     engine = DeckEngine(load_template(), load_manifest())
+    started = time.monotonic()
     try:
-        for tab in wanted:
-            if tab == "b3":
-                await _build_b3(engine, filters or {})
-                continue
-            if tab in collect_mod.COUNTRY_SLICED and _has_country_filter(
-                    filters or {}):
-                # срез уже сужен пользователем: один лист на эту страну
-                payload = await collect_mod.collect(tab, filters or {})
-                engine.build_tab(tab, payload)
-                continue
-            if tab in collect_mod.COUNTRY_SLICED:
-                # листы 4–8 дека печатает ПОСТРАНИЧНО по странам присутствия:
-                # свод группы без `meta.slide.cc` не даёт шапки и подписей
-                for cc in collect_mod.COUNTRY_ORDER:
-                    payload = await collect_mod.collect_country(tab, filters or {},
-                                                                cc)
-                    if not collect_mod.has_rows(tab, payload):
-                        log(logging.INFO, "fot_deck: страна без строк — лист "
-                            "пропущен", tab=tab, cc=cc)
-                        continue
-                    engine.build_tab(tab, payload)
-                continue
-            payload = await collect_mod.collect(tab, filters or {})
-            engine.build_tab(tab, payload)
-        return engine.finish()
+        await _collect_all(engine, wanted, filters or {})
+        blob = engine.finish()
     except RuntimeError as exc:
         # tab/proto — из движка: по ним видно, на каком листе деки упало, даже
         # если текст ошибки пришёл из глубины shapes.py без этой привязки
         log(logging.ERROR, "fot_deck: сборка не удалась", tabs=wanted,
-            tab=engine.tab, proto=engine.proto, error=str(exc)[:300])
+            tab=engine.tab, proto=engine.proto,
+            seconds=round(time.monotonic() - started, 1), error=str(exc)[:300])
         raise
+    log(logging.INFO, "fot_deck: выгрузка собрана", tabs=wanted,
+        seconds=round(time.monotonic() - started, 1),
+        pages=len(engine._pages), bytes=len(blob))
+    return blob
 
 
-async def _build_b3(engine: "DeckEngine", filters: dict) -> None:
+async def _collect_all(engine: "DeckEngine", wanted: list[str],
+                       filters: dict) -> None:
+    """Три волны сбора, затем последовательная сборка слайдов в порядке деки.
+
+    Волны — это зависимости, а не удобство: срезы вкладок известны из запроса
+    сразу (их можно тянуть одной пачкой), перечень подразделений блока 3 —
+    только из его же свода, а список стран подразделения — из готового свода
+    этого подразделения. Внутри волны все задачи идут одновременно под общим
+    семафором, поэтому время выгрузки ≈ сумма времён ВОЛН, а не запросов.
+
+    Слайды собираются после, строго в порядке деки: один упавший срез роняет
+    весь запрос ещё до первого клона (fail-closed), частичного pptx нет.
+    """
+    collector = collect_mod.Collector()
+
+    # ── волна 1: всё, что не зависит от чужих данных ────────────────────────
+    # country_sliced-вкладки строятся постранично по странам присутствия,
+    # поэтому их задачи — по одной на страну; остальные — один payload.
+    plans: list[tuple[str, object]] = []
+    wave_tasks: list = []
+    for tab in wanted:
+        engine.tab = tab
+        if tab == "b3":
+            # свод по группе нужен только за перечнем подразделений
+            task = collector.payload(tab, filters)
+            wave_tasks.append(task)
+            plans.append((tab, task))
+            continue
+        if tab in collect_mod.COUNTRY_SLICED and _has_country_filter(filters):
+            # срез уже сужен пользователем: один лист на эту страну
+            task = collector.payload(tab, filters)
+            wave_tasks.append(task)
+            plans.append((tab, [(None, task)]))
+            continue
+        if tab in collect_mod.COUNTRY_SLICED:
+            # листы 4–8 дека печатает ПОСТРАНИЧНО по странам присутствия:
+            # свод группы без `meta.slide.cc` не даёт шапки и подписей
+            pairs = [(cc, collector.payload_country(tab, filters, cc))
+                     for cc in collect_mod.COUNTRY_ORDER]
+            wave_tasks.extend(task for _cc, task in pairs)
+            plans.append((tab, pairs))
+            continue
+        task = collector.payload(tab, filters)
+        wave_tasks.append(task)
+        plans.append((tab, [(None, task)]))
+    await collect_mod.settle(wave_tasks)
+
+    # ── волна 2: своды подразделений блока 3 ────────────────────────────────
+    b3_base = next((task for tab, task in plans if tab == "b3"), None)
+    summaries: dict[str, object] = {}
+    articles: dict[str, list] = {}
+    if b3_base is not None:
+        engine.tab = "b3"
+        base_payload = b3_base.result()
+        depts = collect_mod.b3_depts(base_payload, filters)
+        if not depts:
+            raise EmptySlice("b3: в срезе нет подразделений, присутствующих в "
+                             "≥2 странах — свод не строится")
+        for dept in depts:
+            summaries[dept] = collector.payload(
+                "b3", dict(filters, b3_dept=dept))
+        await collect_mod.settle(list(summaries.values()))
+
+        # ── волна 3: статьи стран каждого подразделения ─────────────────────
+        # Страны берём из ГОТОВОГО свода (это карточки присутствия), поэтому
+        # волна отдельная. Список плоский: подразделение × страна, общий
+        # семафор — зависимости между разными подразделениями нет.
+        wave3: list = []
+        for dept, task in summaries.items():
+            summary = task.result()
+            pairs = []
+            for cc in collect_mod.b3_countries(summary):
+                if not cc:
+                    continue
+                art = collector.payload(
+                    "b3", dict(filters, b3_dept=dept, b3_country=cc))
+                pairs.append((cc, art))
+                wave3.append(art)
+            articles[dept] = pairs
+        await collect_mod.settle(wave3)
+
+    # ── сборка слайдов: только теперь и строго в порядке деки ───────────────
+    for tab, plan in plans:
+        engine.tab = tab
+        if tab == "b3":
+            _build_b3(engine, summaries, articles)
+            continue
+        for cc, task in plan:
+            payload = task.result()
+            if cc is not None and not collect_mod.has_rows(tab, payload):
+                log(logging.INFO, "fot_deck: страна без строк — лист "
+                    "пропущен", tab=tab, cc=cc)
+                continue
+            engine.build_tab(tab, payload)
+
+    log(logging.INFO, "fot_deck: данные собраны", tabs=wanted,
+        jobs=collector.jobs, reused=collector.reused,
+        concurrency=collect_mod.COLLECT_CONCURRENCY)
+
+
+def _build_b3(engine: "DeckEngine", summaries: dict,
+              articles: dict) -> None:
     """Листы блока 3: свод на КАЖДОЕ подразделение и статьи на каждую страну.
 
     Перебор двойной и упорядоченный так же, как у деки: сначала свод
@@ -581,28 +675,19 @@ async def _build_b3(engine: "DeckEngine", filters: dict) -> None:
     дашборде b3 глобальный «Направление» не действует (METHODOLOGY_B3), и
     пользователь на экране видит выбранное селектором вкладки подразделение.
 
-    Каждая страница — свой запрос к сборщику (≈0,3 с на живой витрине), поэтому
-    полная выгрузка блока 3 стоит несколько секунд даже без сети.
+    Данные всех страниц уже собраны (волны 2–3 в `_collect_all`), здесь только
+    клоны и заполнение — быстро и без обращения к витринам.
     """
     engine.tab = "b3"
-    base = await collect_mod.collect("b3", filters)
-    depts = collect_mod.b3_depts(base, filters)
-    if not depts:
-        raise EmptySlice("b3: в срезе нет подразделений, присутствующих в ≥2 "
-                         "странах — свод не строится")
-    for dept in depts:
-        summary = await collect_mod.collect("b3", dict(filters, b3_dept=dept))
+    for dept, task in summaries.items():
+        summary = task.result()
         if not (summary.get("cards_by_country") or []):
             log(logging.INFO, "fot_deck: подразделение без стран — свод "
                 "пропущен", dept=dept)
             continue
         engine.build_tab("b3", _only(engine, "b3_summary", summary))
-        for cc in [str(c.get("cc") or "")
-                   for c in summary["cards_by_country"]]:
-            if not cc:
-                continue
-            art = await collect_mod.collect(
-                "b3", dict(filters, b3_dept=dept, b3_country=cc))
+        for cc, art_task in articles.get(dept, ()):
+            art = art_task.result()
             if not (art.get("articles") or []):
                 log(logging.INFO, "fot_deck: у страны нет статей — лист 30 "
                     "пропущен", dept=dept, cc=cc)

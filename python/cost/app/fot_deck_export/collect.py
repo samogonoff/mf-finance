@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 
 from app import fot_insights
 from app.logship import log
@@ -17,6 +19,16 @@ from app.logship import log
 #: Вкладки, которые выгрузка умеет собирать «1:1» (дека размечена по листам
 #: 1–3, 4–6, 7, 8 и 23–27). Расширение — новая запись в registry.SHEETS.
 SUPPORTED_TABS = ("b1", "p14", "p15", "p16", "p17", "b3")
+
+#: Сколько payload'ов вкладок собирать ОДНОВРЕМЕННО. Пул asyncpg раздела —
+#: max_size=8 (db.init_pool), и соединение занято всё время SQL вкладки, так
+#: что 6 оставляет два соединения живому дашборду и сохранению цен: это
+#: ГИГИЕНА ПУЛА, а не найденный предел — живой замер выдержал и 12, и 20
+#: (ошибок asyncpg не было), но при 8 задачах весь пул держит ОДНА выгрузка,
+#: и запрос пользователя ловит POOL_ACQUIRE_TIMEOUT (15 с).
+#: Замер полной выгрузки: 2 → 36.8 с, 4 → 25.9, 6 → 22.8, 8 → 22.1. Дальше
+#: время определяется волнами зависимостей, а не шириной семафора.
+COLLECT_CONCURRENCY = int(os.environ.get("FOT_DECK_COLLECT_CONCURRENCY", "6"))
 
 #: Вкладки, у которых срез «страна» сужает ВСЮ выгрузку: на листах 4–8 дека
 #: показывает одну страну на лист, поэтому вариант строится по срезу, а не по
@@ -48,11 +60,7 @@ async def collect(tab: str, filters: dict) -> dict:
     """
     if tab not in SUPPORTED_TABS:
         raise UnsupportedTab(tab)
-    params = fot_insights._params_from_context(filters or {})
-    _ensure_half(params, filters)
-    _ensure_b3_local(params, filters)
-    if tab in COUNTRY_SLICED:
-        _ensure_single_country(tab, params, filters)
+    params = _prepare(tab, filters)
     data = await fot_insights._fot_dashboard(tab, params)
     log(logging.INFO, "fot_deck: данные вкладки собраны", tab=tab,
         cards=len(data.get("cards") or []),
@@ -60,6 +68,22 @@ async def collect(tab: str, filters: dict) -> dict:
         slides=len(data.get("slides") or []),
         details=len(data.get("country_details") or {}))
     return data
+
+
+def _prepare(tab: str, filters: dict) -> dict:
+    """Срезы запроса → параметры сборщика вкладки (до образа к SQL).
+
+    Вынесено из `collect`, потому что по ЭТИМ параметрам считается ключ
+    дедупликации: два разных набора срезов могут дать один и тот же запрос
+    (например, `country` строкой и списком из одного элемента), и повторно
+    собирать его незачем.
+    """
+    params = fot_insights._params_from_context(filters or {})
+    _ensure_half(params, filters)
+    _ensure_b3_local(params, filters)
+    if tab in COUNTRY_SLICED:
+        _ensure_single_country(tab, params, filters)
+    return params
 
 
 def _ensure_half(params: dict, filters: dict) -> None:
@@ -182,5 +206,111 @@ def b3_depts(payload: dict, filters: dict) -> list[str]:
     return options
 
 
-__all__ = ["COUNTRY_ORDER", "COUNTRY_SLICED", "SUPPORTED_TABS", "UnsupportedTab",
-           "b3_depts", "b3_direction", "collect", "collect_country", "has_rows"]
+def b3_countries(summary: dict) -> list[str]:
+    """Страны присутствия одного подразделения (карточки его свода)."""
+    return [str(c.get("cc") or "") for c in summary.get("cards_by_country") or []]
+
+
+def _filters_key(tab: str, filters: dict) -> tuple:
+    """Ключ дедупликации: вкладка + срезы запроса в устойчивом виде.
+
+    Срезы, а не параметры сборщика: `collect` дёргает `_params_from_context`
+    на каждом вызове, и второй прогон того же разбора писал бы в лог
+    повторные строки. Значения приводятся к строкам (фронт присылает год
+    числом, `country` — строкой или списком), пустые отбрасываются, списки
+    сортируются: `{"country": ["BY"]}` и `{"country": "BY"}` — один запрос.
+    """
+    flat = []
+    for key, value in (filters or {}).items():
+        if value in (None, "", [], ()):
+            continue
+        items = value if isinstance(value, (list, tuple)) else [value]
+        # дубли внутри списка снимаем: ["BY", "BY"] — тот же срез, что ["BY"]
+        # (фронт иногда присылает страну дважды при склейке селекторов)
+        items = sorted({str(v).strip() for v in items if str(v).strip()})
+        if items:
+            flat.append((str(key), tuple(items)))
+    return (tab, tuple(sorted(flat)))
+
+
+class Collector:
+    """Параллельный сбор payload'ов выгрузки: общий семафор + дедупликация.
+
+    Варианты листов деки — это ДЕСЯТКИ независимых запросов к витринам
+    (полная выгрузка: p14 по 4 странам, p15/p16 по 4, блок 3 — свод на каждое
+    из 19 подразделений плюс статьи каждой его страны). Последовательно они
+    складывались линейно и давали ~200 с на живых витринах — за пределы
+    клиентского таймаута. Здесь все они запускаются задачами, а ожидание
+    собрано в пачки по волнам зависимостей (см. engine.export_deck), поэтому
+    время выгрузки ≈ сумма по волнам, а не по запросам.
+
+    Одинаковые срезы дедуплицируются в рамках ОДНОГО запроса: повторный
+    ключ возвращает ту же задачу, а не второй поход в SQL. Биндеры payload не
+    меняют (`_only` копирует словарь), поэтому делиться результатом безопасно.
+    """
+
+    def __init__(self) -> None:
+        self._tasks: dict[tuple, asyncio.Task] = {}
+        self._sem = asyncio.Semaphore(COLLECT_CONCURRENCY)
+        self.jobs = 0        # сколько задач реально запущено
+        self.reused = 0      # сколько раз ключ переиспользован
+
+    def payload(self, tab: str, filters: dict) -> asyncio.Task:
+        """Задача «payload вкладки по этим срезам» (или уже готовая по ключу)."""
+        key = _filters_key(tab, filters)
+        return self._task(key, lambda: collect(tab, filters))
+
+    def payload_country(self, tab: str, filters: dict, cc: str) -> asyncio.Task:
+        """Задача «лист страны»: ключ — те же срезы с добавленной страной."""
+        key = _filters_key(tab, dict(filters or {}, country=[cc]))
+        return self._task(key, lambda: collect_country(tab, filters, cc))
+
+    def _task(self, key: tuple, factory) -> asyncio.Task:
+        task = self._tasks.get(key)
+        if task is not None:
+            self.reused += 1
+            log(logging.INFO, "fot_deck: повторный срез переиспользован",
+                tab=key[0], filters=dict(key[1]))
+            return task
+        self.jobs += 1
+        task = asyncio.ensure_future(self._run(factory))
+        self._tasks[key] = task
+        return task
+
+    async def _run(self, factory):
+        """Один поход в витрины под общим семафором (пул БД не вычерпываем)."""
+        async with self._sem:
+            return await factory()
+
+
+async def settle(tasks) -> None:
+    """Дожидается пачки задач; любая упавшая валит ВСЮ выгрузку (fail-closed).
+
+    Ждём до ПЕРВОГО сбоя, а не до конца пачки: остальные задачи отменяются, и
+    пользователь получает ошибку сразу, а не через минуту ожидания остальных
+    срезов. Сбой выбирается по порядку запуска (порядок деки), поэтому тип
+    ошибки детерминирован: EmptySlice → 422, RuntimeError → 503. Частичный
+    pptx не отдаётся — исключение поднимается до первого клона слайда.
+    """
+    tasks = [t for t in dict.fromkeys(tasks) if t is not None]
+    if not tasks:
+        return
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    if pending:
+        for task in pending:
+            task.cancel()
+        # отменённые надо погасить здесь же: иначе их CancelledError всплывёт
+        # «Task exception was never retrieved» уже после ответа пользователю
+        await asyncio.gather(*pending, return_exceptions=True)
+    for task in tasks:
+        if task.cancelled():
+            continue
+        error = task.exception()
+        if error is not None:
+            raise error
+
+
+__all__ = ["COLLECT_CONCURRENCY", "COUNTRY_ORDER", "COUNTRY_SLICED",
+           "SUPPORTED_TABS", "Collector", "UnsupportedTab", "b3_countries",
+           "b3_depts", "b3_direction", "collect", "collect_country", "has_rows",
+           "settle"]
